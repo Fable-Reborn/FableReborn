@@ -375,7 +375,7 @@ class IceDragonChallenge(commands.Cog):
 
         try:
             if isinstance(ctx.channel, discord.DMChannel) or ctx.guild.id != 1199287508794626078:
-                await self.bot.reset_cooldown(ctx)
+                #await self.bot.reset_cooldown(ctx)
                 return await ctx.send("Dragon battles can only be started in the Fable server!")
 
             if ctx.author.id in self.current_parties:
@@ -397,7 +397,8 @@ class IceDragonChallenge(commands.Cog):
                     self.party_members = party_members
                     self.leader = ctx.author
                     self.msg = None
-                    self.cog = cog  # store a reference to the cog
+                    self.cog = cog  # store reference to the cog
+                    self.battle_started = False  # new flag
 
                 async def update_embed(self):
                     member_count = len(self.party_members)
@@ -437,9 +438,13 @@ class IceDragonChallenge(commands.Cog):
                 async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
                     if interaction.user != self.leader:
                         await interaction.response.send_message("Only the party leader can start the battle!",
-
                                                                 ephemeral=True)
                         return
+
+                    # Set flag and immediately stop the view so that its timeout is cancelled
+                    self.battle_started = True
+                    self.stop()
+
                     for child in self.children:
                         child.disabled = True
                     await interaction.response.edit_message(view=self)
@@ -455,14 +460,15 @@ class IceDragonChallenge(commands.Cog):
                             del self.cog.current_parties[self.leader.id]
                         except Exception:
                             pass
-                        self.stop()
-
 
                 async def on_timeout(self):
+                    # Only run timeout code if the battle was never started
+                    if self.battle_started:
+                        return
                     try:
                         await self.ctx.send(f"{self.leader.mention}, party formation timed out!")
                         del self.cog.current_parties[self.leader.id]
-                        await self.cog.bot.reset_cooldown(ctx)
+                        await self.cog.bot.reset_cooldown(self.ctx)
                     except Exception:
                         pass
 
@@ -1633,19 +1639,12 @@ class IceDragonChallenge(commands.Cog):
 
         rewards = self.STAGE_REWARDS[stage_name]
 
-        # Distribute rewards
-        #snowflakes_per_member = rewards["snowflakes"] // len(party_members)
         async with self.bot.pool.acquire() as conn:
             for member in party_members:
-                # Base snowflakes
-                #await conn.execute(
-                    #'UPDATE profile SET "snowflakes"="snowflakes"+$1 WHERE "user"=$2;',
-                    #snowflakes_per_member,
-                    #member.id
-                #)
+
 
                 # Chance for special loot
-                if random.random() < 0.001:  # 1% chance
+                if random.random() < 0.01:  # 1% chance
                     item = random.choice(rewards["items"])
                     item_name, item_type, *stats = item
 
@@ -1666,9 +1665,9 @@ class IceDragonChallenge(commands.Cog):
                     # Determine hand based on item type
                     if item_type in ["Bow", "Scythe"]:
                         hand = "both"
-                    elif item_type in ["Shield", "Wand"]:
+                    elif item_type in ["Shield"]:
                         hand = "left"
-                    else:  # Sword, Hammer, Axe
+                    else:  # Sword, Hammer, Axe, Wand <- Updated 2/2
                         hand = "any"
 
                     # Set damage or armor based on item type
