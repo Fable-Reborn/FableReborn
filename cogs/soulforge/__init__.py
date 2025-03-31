@@ -1909,27 +1909,6 @@ class Soulforge(commands.Cog):
         if not player_data or not player_data["quest_started"] or player_data["forge_built"] or player_data["primer"]:
             return
             
-        # 5% chance to find the Primer during a raid
-        if ctx.author.id == 700801066593419335:
-            async with self.bot.pool.acquire() as conn:
-                await conn.execute(
-                    'UPDATE splicing_quest SET primer_found = TRUE WHERE user_id = $1',
-                    participant
-                )
-
-            primer_dialogue = self.get_primer_discovery_dialogue(player_data["name"])
-
-            embed = discord.Embed(
-                title=primer_dialogue["title"],
-                description=primer_dialogue["description"],
-                color=0xc77dff
-            )
-            embed.add_field(
-                name="Morrigan's Revelation",
-                value=primer_dialogue["dialogue"],
-                inline=False
-            )
-            await ctx.send(embed=embed)
 
         elif random.random() < 0.05:
             async with self.bot.pool.acquire() as conn:
