@@ -1710,20 +1710,23 @@ class Adventure(commands.Cog):
             damage, armor = await self.bot.get_damage_armor_for(ctx.author)
 
             luck_booster = await self.bot.get_booster(ctx.author, "luck")
-            current_level = int(rpgtools.xptolevel(ctx.character_data["xp"]))
+            # Change: Subtract 1 from the current level to make it zero-indexed
+            current_level = int(rpgtools.xptolevel(ctx.character_data["xp"])) - 1
             luck_multiply = ctx.character_data["luck"]
             if buildings := await self.bot.get_city_buildings(ctx.character_data["guild"]):
                 bonus = buildings["adventure_building"]
             else:
                 bonus = 0
 
-            if current_level > 30:
+            # Change: Level 29 is the new level 30 (since we're zero-indexed)
+            if current_level > 29:
                 bonus = 5
 
             success = rpgtools.calcchance(
                 damage,
                 armor,
                 num,
+                # Pass the zero-indexed level to calcchance
                 current_level,
                 luck_multiply,
                 returnsuccess=True,
@@ -1762,7 +1765,8 @@ class Adventure(commands.Cog):
 
             # Calculate XP with the blessing multiplier
             xp = round(random.randint(250 * num, 500 * num) * bless_multiplier)
-            if current_level < 30:
+            # Change: Level 29 is the new level 30 (zero-indexed)
+            if current_level < 29:
                 xp = xp * 1.25
 
             chance_of_loot = 5 if num == 1 else 5 + 1.5 * num
@@ -1857,7 +1861,6 @@ class Adventure(commands.Cog):
                             "{stat}"
                             "💎 Value: **{value}**\n"
                             "⭐ Experience: **{xp}**\n"
-                            #"❄️ Snowflakes: **{snowflakes}**"
                         ).format(
                             narrative=self.get_adventure_narrative(num, ADVENTURE_NAMES[num], True),
                             gold=gold,
@@ -1872,19 +1875,17 @@ class Adventure(commands.Cog):
                             prefix=ctx.clean_prefix,
                             storage_type=storage_type,
                             xp=xp,
-                            #snowflakes=snowflakes,
                         ),
                         colour=0x00FF00,
                     )
                 )
 
-                #await conn.execute(
-                #'UPDATE profile SET "snowflakes"="snowflakes"+$1 WHERE "user"=$2',
-                #snowflakes,
-                #ctx.author.id,
-                #)
+                if current_level > 15:
+                    iscompleted = True
+                    self.bot.dispatch("adventure_completion", ctx, iscompleted)
+                    self.bot.dispatch("raid_completion", ctx, iscompleted, ctx.author.id)
 
-                new_level = int(rpgtools.xptolevel(ctx.character_data["xp"] + xp))
+                new_level = int(rpgtools.xptolevel(ctx.character_data["xp"] + xp)) - 1
 
                 if current_level != new_level:
                     await self.bot.process_levelup(ctx, new_level, current_level)
