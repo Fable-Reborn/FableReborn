@@ -121,6 +121,13 @@ class Raid(commands.Cog):
             send_messages=False, read_messages=True
         )
 
+        self.auto_raid_check.start()
+
+
+    def cog_unload(self):
+
+        self.auto_raid_check.cancel()
+
     def getfinaldmg(self, damage: Decimal, defense):
         return v if (v := damage - defense) > 0 else 0
 
@@ -162,6 +169,695 @@ class Raid(commands.Cog):
         await ctx.send("Boss HP updated!")
 
 
+    @tasks.loop(minutes=30)
+    async def auto_raid_check(self):
+        """Check if a raid needs to be spawned and spawn it if needed."""
+        try:
+            await self.bot.wait_until_ready()
+            
+            # Debug channel for logging
+            channeldebug = self.bot.get_channel(1313482408242184213)
+            if channeldebug:
+                await channeldebug.send("Auto raid check starting...")
+            
+            # Check if a raid is already active
+            if hasattr(self, 'raidactive') and self.raidactive:
+                if channeldebug:
+                    await channeldebug.send("Raid already active, skipping auto-spawn.")
+                return
+            
+            # Get the target channel
+            channel_id = 1199297906755252234
+            channel = self.bot.get_channel(channel_id)
+            
+            if not channel:
+                if channeldebug:
+                    await channeldebug.send(f"Auto raid check: Channel with ID {channel_id} not found")
+                return
+            
+            # Get the last message in the channel
+            last_message = None
+            last_spawn_time = None
+            async for message in channel.history(limit=1):
+                last_message = message
+                last_spawn_time = message.created_at
+                break
+            
+            # Use timezone-aware current time (use this method for discord.py)
+            from discord.utils import utcnow
+            current_time = utcnow()
+
+            channeldebug = self.bot.get_channel(1313482408242184213)
+            if channeldebug:
+                await channeldebug.send(f"Auto raid check: Checking Channel (last spawn: {last_spawn_time})")
+            
+            # If no spawn found or it's been 8+ hours since the last spawn
+            min_hours = 8
+            min_seconds = min_hours * 3600
+            
+            if not last_spawn_time or (current_time - last_spawn_time).total_seconds() >= min_seconds:
+                if channeldebug:
+                    await channeldebug.send(f"Auto raid check: Spawning raid (last spawn: {last_spawn_time})")
+                
+                # Generate random parameters
+                random_hp = random.randint(3500000, 4500000)
+                crate_choices = ["divine", "fortune", "legendary"]
+                random_crate = random.choice(crate_choices)
+                
+                # Auto-spawn the raid
+                await self.auto_spawn_raid(channel, random_hp, random_crate)
+            else:
+                time_diff = (current_time - last_spawn_time).total_seconds() / 3600
+                if channeldebug:
+                    await channeldebug.send(f"Auto raid check: Raid was spawned {time_diff:.1f} hours ago, waiting until at least 8 hours have passed")
+        except Exception as e:
+            channeldebug = self.bot.get_channel(1313482408242184213)
+            await channeldebug.send(e)
+
+    async def auto_spawn_raid(self, channel, hp, rarity="magic", raid_hp=17776):
+        """Auto-spawn a raid without decorator checks."""
+        try:
+            if rarity not in ["magic", "legendary", "rare", "uncommon", "common", "mystery", "fortune", "divine"]:
+                raise ValueError("Invalid rarity specified.")
+            channeldebug = self.bot.get_channel(1313482408242184213)
+            channeldebug.send(f"Auto-spawning Ragnarok raid with {hp:,} HP and {rarity} crate")
+            
+            # Get guild from channel
+            guild = channel.guild
+            
+            await self.set_raid_timer()
+            survival_used = set()
+
+            self.boss = {"hp": hp, "initial_hp": hp, "min_dmg": 1, "max_dmg": 1050}
+            self.joined = []
+
+            # Create embed
+            fi = discord.File("assets/other/startdragon.webp")
+            em = discord.Embed(
+                title="Ragnarok Spawned",
+                description=(
+                    f"This boss has {self.boss['hp']:,.0f} HP and has high-end loot!\nThe"
+                    " Ragnarok will be vulnerable in 15 Minutes!"
+                    f" Raiders HP: {'Standard' if raid_hp == 17776 else raid_hp}"
+                ),
+                color=self.bot.config.game.primary_colour,
+            )
+
+            em.set_image(url="attachment://startdragon.webp")
+            # Use bot avatar instead of author
+            em.set_thumbnail(url=self.bot.user.display_avatar.url)
+            
+            # Create button view
+            view = JoinView(
+                Button(style=ButtonStyle.primary, label="Join the raid!"),
+                message=_("You joined the raid."),
+                timeout=60 * 15,
+            )
+            
+            fi_path = "assets/other/startdragon.webp"
+            try:
+                channels_ids = [1140211789573935164, 1199297906755252234, 1158743317325041754]
+                message_ids = []
+                raid_channel = None  # Store the main channel for permissions later
+
+                for channel_id in channels_ids:
+                    try:
+                        current_channel = self.bot.get_channel(channel_id)
+                        if current_channel:
+                            if channel_id == 1199297906755252234:  # Main raid channel
+                                raid_channel = current_channel
+                                
+                            fi = discord.File(fi_path)
+                            sent_msg = await current_channel.send(embed=em, file=fi, view=view)
+                            message_ids.append(sent_msg.id)
+                        else:
+                            channeldebug = self.bot.get_channel(1313482408242184213)
+                            channeldebug.send(f"Channel with ID {channel_id} not found.")
+                    except Exception as e:
+                        channeldebug = self.bot.get_channel(1313482408242184213)
+                        error_message = f"Error in channel with ID {channel_id}: {e}. continuing.."
+                        channeldebug.send(error_message)
+                        continue
+
+                self.boss.update(message=message_ids)
+                self.raidactive = True
+                self.raid_preparation = True
+
+                if self.bot.config.bot.is_beta:
+                    summary_channel = self.bot.get_channel(1199299514490683392)
+
+                    message_ids = []  # To store the IDs of the sent messages
+
+                    for channel_id in channels_ids:
+                        try:
+                            current_channel = self.bot.get_channel(channel_id)
+                            if current_channel:
+                                role_id = 1199307259965079552  # Replace with the actual role ID
+                                role = discord.utils.get(guild.roles, id=role_id)
+                                content = f"{role.mention} Ragnarok spawned! 15 Minutes until he is vulnerable..."
+                                sent_msg = await current_channel.send(content, allowed_mentions=discord.AllowedMentions(roles=True))
+                                message_ids.append(sent_msg.id)
+                        except Exception as e:
+                            error_message = f"Error in channel with ID {channel_id}: {e}. continuing.."
+                            print(error_message)
+                            continue
+
+                    self.boss.update(message=message_ids)
+
+                    # Countdown messages
+                    time_intervals = [300, 300, 180, 60, 30, 20, 10]
+                    #time_intervals = [20, 10]
+                    messages = ["**Ragnarok will be vulnerable in 10 minutes**",
+                                "**Ragnarok will be vulnerable in 5 minutes**",
+                                "**Ragnarok will be vulnerable in 2 minutes**",
+                                "**Ragnarok will be vulnerable in 1 minute**",
+                                "**Ragnarok will be vulnerable in 30 seconds**",
+                                "**Ragnarok will be vulnerable in 20 seconds**",
+                                "**Ragnarok will be vulnerable in 10 seconds**"]
+
+                    for interval, message in zip(time_intervals, messages):
+                        await asyncio.sleep(interval)
+                        for channel_id in channels_ids:
+                            try:
+                                current_channel = self.bot.get_channel(channel_id)
+                                if current_channel:
+                                    await current_channel.send(message)
+                            except Exception as e:
+                                error_message = f"Error in channel with ID {channel_id}: {e}. continuing.."
+                                print(error_message)
+                                continue
+            except Exception as e:
+                error_message = f"Unexpected error: {e}"
+                print(error_message)
+                if channel:
+                    await channel.send(error_message)
+                self.raidactive = False
+                return
+
+            view.stop()
+
+            for channel_id in channels_ids:
+                current_channel = self.bot.get_channel(channel_id)
+                if current_channel:
+                    await current_channel.send("**Ragnarok is vulnerable! Fetching participant data... Hang on!**")
+
+            self.joined.extend(view.joined)
+            # Assuming you have the role ID for the server booster role
+            BOOSTER_ROLE_ID = 1281411439747268692  # Replace with your actual booster role ID
+
+            # Define the tier threshold and the user ID to exclude
+            tier_threshold = 1  # Assuming you want tiers >= 1
+            excluded_user_ids = [782017044828782642, 579703576570494976, 761469900853215263, 1322593504098254959]
+
+            # Fetch Discord IDs where tier is >= tier_threshold and user is not in excluded_user_ids
+            discord_ids = await self.bot.pool.fetch(
+                '''
+                SELECT "user" 
+                FROM profile 
+                WHERE "tier" >= $1 
+                AND "user" != ALL($2);
+                ''',
+                tier_threshold,
+                excluded_user_ids
+            )
+
+            # Extract the IDs from the result and append them to a list
+            user_ids_list = [record['user'] for record in discord_ids]
+
+            # Get User objects for each user ID, handling cases where a user may not be found
+            users = [self.bot.get_user(user_id) or await self.bot.fetch_user(user_id) for user_id in user_ids_list]
+
+            # Append the User objects to your existing list (e.g., self.joined)
+            self.joined.extend(users)
+
+            # Fetch members with the server booster role
+            guild = self.bot.get_guild(1199287508794626078)  # Replace YOUR_GUILD_ID with your server's ID
+            if guild:
+                booster_role = guild.get_role(BOOSTER_ROLE_ID)
+                if booster_role:
+                    # Fetch all members with the server booster role
+                    booster_members = [member for member in guild.members if booster_role in member.roles]
+                    # Append these members to self.joined
+                    self.joined.extend(booster_members)
+
+            async with self.bot.pool.acquire() as conn:
+                for u in self.joined:
+                    profile = await conn.fetchrow('SELECT * FROM profile WHERE "user"=$1;', u.id)
+                    if not profile:
+                        # You might want to send a message or log that the profile wasn't found.
+                        continue
+                    dmg, deff = await self.bot.get_raidstats(
+                        u,
+                        atkmultiply=profile["atkmultiply"],
+                        defmultiply=profile["defmultiply"],
+                        classes=profile["class"],
+                        race=profile["race"],
+                        guild=profile["guild"],
+                        conn=conn,
+                    )
+                    if raid_hp == 17776:
+                        stathp = profile["stathp"] * 50
+                        level = rpgtools.xptolevel(profile["xp"])
+                        raidhp = profile["health"] + 250 + (level * 5) + stathp
+                    else:
+                        raidhp = raid_hp
+                    self.raid[(u, "user")] = {"hp": raidhp, "armor": deff, "damage": dmg}
+
+            raiders_joined = len(self.raid)  # Replace with your actual channel IDs
+
+            # Final message with gathered data
+            for channel_id in channels_ids:
+                current_channel = self.bot.get_channel(channel_id)
+                if current_channel:
+                    await current_channel.send(f"**Done getting data! {raiders_joined} Raiders joined.**")
+
+            start = datetime.datetime.utcnow()
+
+            while (
+                    self.boss["hp"] > 0
+                    and len(self.raid) > 0
+                    and datetime.datetime.utcnow() < start + datetime.timedelta(minutes=60)
+            ):
+                (target, participant_type) = random.choice(list(self.raid.keys()))
+                dmg = random.randint(self.boss["min_dmg"], self.boss["max_dmg"])
+                finaldmg = self.getfinaldmg(dmg, self.raid[(target, participant_type)]["armor"])
+                self.raid[(target, participant_type)]["hp"] -= finaldmg
+
+                em = discord.Embed(title="Ragnarok attacked!", colour=0xFFB900)
+
+                if self.raid[(target, participant_type)]["hp"] > 0:  # If target is still alive
+                    description = f"{target.mention if participant_type == 'user' else target} now has {self.raid[(target, participant_type)]['hp']} HP!"
+                    em.description = description
+                    em.add_field(name="Theoretical Damage",
+                                value=finaldmg + self.raid[(target, participant_type)]["armor"])
+                    em.add_field(name="Shield", value=self.raid[(target, participant_type)]["armor"])
+                    em.add_field(name="Effective Damage", value=finaldmg)
+                else:  # If target has died
+                    # Check if target is a Raider and hasn't used their survival
+                    if self.raid[(target, participant_type)]["hp"] <= 0:  # Changed from else to explicit check
+                        # Check if target is a Raider and hasn't used their survival
+                        survived = False  # Add this flag
+                        if participant_type == "user" and target.id not in survival_used:
+                            # Check if they're a Raider
+                            async with self.bot.pool.acquire() as conn:
+                                profile = await conn.fetchrow('SELECT class FROM profile WHERE "user"=$1;', target.id)
+                                if profile and profile['class']:
+                                    raider_classes = {"Adventurer", "Swordsman", "Fighter", "Swashbuckler",
+                                                    "Dragonslayer",
+                                                    "Raider", "Eternal Hero"}
+
+                                    is_raider = bool(set(profile['class']) & raider_classes)
+
+                                    if is_raider:
+                                        self.raid[(target, participant_type)]["hp"] = 1
+                                        survival_used.add(target.id)
+                                        description = f"💫 {target.mention}'s Raider instincts allowed them to survive with 1 HP!"
+                                        em.description = description
+                                        em.add_field(name="Theoretical Damage",
+                                                    value=finaldmg + self.raid[(target, participant_type)]["armor"])
+                                        em.add_field(name="Shield",
+                                                    value=self.raid[(target, participant_type)]["armor"])
+                                        em.add_field(name="Effective Damage", value=finaldmg)
+                                        survived = True  # Set the flag
+
+                        # Only handle death if they didn't survive
+                        if not survived:
+                            description = f"{target.mention if participant_type == 'user' else target} died!"
+                            em.description = description
+                            em.add_field(name="Theoretical Damage",
+                                        value=finaldmg + self.raid[(target, participant_type)]["armor"])
+                            em.add_field(name="Shield", value=self.raid[(target, participant_type)]["armor"])
+                            em.add_field(name="Effective Damage", value=finaldmg)
+                            del self.raid[(target, participant_type)]
+
+                if participant_type == "user":
+                    em.set_author(name=str(target), icon_url=target.display_avatar.url)
+                else:  # For bots
+                    em.set_author(name=str(target))
+                em.set_thumbnail(url=f"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_dragonattack.webp")
+                for channel_id in channels_ids:
+                    current_channel = self.bot.get_channel(channel_id)
+                    if current_channel:
+                        await current_channel.send(embed=em)
+
+                dmg_to_take = sum(i["damage"] for i in self.raid.values())
+                self.boss["hp"] -= dmg_to_take
+                await asyncio.sleep(4)
+
+                em = discord.Embed(title="The raid attacked Ragnarok!", colour=0xFF5C00)
+                em.set_thumbnail(url=f"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_attackdragon.webp")
+                em.add_field(name="Damage", value=dmg_to_take)
+
+                if self.boss["hp"] > 0:
+                    em.add_field(name="HP left", value=self.boss["hp"])
+                else:
+                    em.add_field(name="HP left", value="Dead!")
+                for channel_id in channels_ids:
+                    current_channel = self.bot.get_channel(channel_id)
+                    if current_channel:
+                        await current_channel.send(embed=em)
+                await asyncio.sleep(4)
+
+            # Create a mock context for functions requiring it
+            class MockContext:
+                def __init__(self, bot, channel, guild):
+                    self.bot = bot
+                    self.channel = channel
+                    self.guild = guild
+                    self.message = None  # May need to be mocked further if used
+                    
+            mock_ctx = MockContext(self.bot, raid_channel, guild)
+
+            if len(self.raid) == 0:
+                for channel_id in channels_ids:
+                    current_channel = self.bot.get_channel(channel_id)
+                    if current_channel:
+                        m = await current_channel.send("The raid was all wiped!")
+                        await m.add_reaction("\U0001F1EB")
+
+                summary_text = (
+                    "Emoji_here The raid was all wiped! Ragnarok had"
+                    f" **{self.boss['hp']:,.3f}** health remaining. Better luck next time."
+                )
+                try:
+                    summary = (
+                        "**Raid result:**\n"
+                        f"Emoji_here Health: **{self.boss['initial_hp']:,.0f}**\n"
+                        f"{summary_text}\n"
+                        f"Emoji_here Raiders joined: **{raiders_joined}**"
+                    )
+                    summary = summary.replace(
+                        "Emoji_here",
+                        ":small_blue_diamond:" if self.boss["hp"] < 1 else ":vibration_mode:"
+                    )
+                    summary_channel = self.bot.get_channel(1199299514490683392)
+
+                    summary_msg = await summary_channel.send(summary)
+                    self.raid.clear()
+                    await self.clear_raid_timer()
+
+                except Exception as e:
+                    print(f"An error has occurred: {e}")
+                    if raid_channel:
+                        await raid_channel.send(f"An error has occurred: {e}")
+            elif self.boss["hp"] < 1:
+                raid_duration = datetime.datetime.utcnow() - start
+                minutes = (raid_duration.seconds % 3600) // 60
+                seconds = raid_duration.seconds % 60
+                summary_duration = f"{minutes} minutes, {seconds} seconds"
+
+                # Set permissions for the raid channel
+                if raid_channel:
+                    try:
+                        await raid_channel.set_permissions(
+                            guild.default_role,
+                            overwrite=self.allow_sending,
+                        )
+                    except Exception as e:
+                        print(f"Error setting permissions: {e}")
+
+                highest_bid = [
+                    1_136_590_782_183_264_308,
+                    0,
+                ]  # userid, amount
+
+                bots = sum(1 for _, p_type in self.raid.keys() if p_type == "bot")
+
+                self.raid = {k: v for k, v in self.raid.items() if k[1] == "user"}
+
+                raid_user_ids = [k[0].id for k, v in self.raid.items() if k[1] == 'user']
+
+                def check(msg):
+                    try:
+                        val = int(msg.content)
+                    except ValueError:
+                        return False
+                    if not raid_channel or msg.channel.id != raid_channel.id or not any(msg.author == k[0] for k in self.raid.keys()):
+                        return False
+                    if highest_bid[1] == 0:  # Allow starting bid to be $1
+                        if val < 1:
+                            return False
+                        else:
+                            return True
+                    if val > highest_bid[1]:
+                        if highest_bid[1] < 100:
+                            return True
+                    if val < int(highest_bid[1] * 1.1):  # Minimum bid is 10% higher than the highest bid
+                        return False
+                    if (
+                            msg.author.id == highest_bid[0]
+                    ):  # don't allow a player to outbid themselves
+                        return False
+                    return True
+
+                # If there are no users left in the raid, skip the bidding
+                if not self.raid:
+                    for channel_id in channels_ids:
+                        current_channel = self.bot.get_channel(channel_id)
+                        if current_channel:
+                            await current_channel.send(f"No survivors left to bid on the {rarity} Crate!")
+                    summary_text = (
+                        f"Emoji_here Defeated in: **{summary_duration}**\n"
+                        f"Emoji_here Survivors: **0 players and {bots} of Drakath's forces**"
+                    )
+                else:
+                    page = commands.Paginator()
+                    for u in self.raid.keys():
+                        page.add_line(u[0].mention)
+
+                    emote_for_rarity = getattr(self.bot.cogs['Crates'].emotes, rarity)
+                    page.add_line(
+                        f"The raid killed the boss!\nHe was guarding a {emote_for_rarity} {rarity.capitalize()} Crate!\n"
+                        "The highest bid for it wins <:roopiratef:1146234370827505686>\nSimply type how much you bid!"
+                    )
+
+                    # Assuming page.pages is a list of pages
+                    for channel_id in channels_ids:
+                        current_channel = self.bot.get_channel(channel_id)
+                        if current_channel:
+                            for p in page.pages:
+                                await current_channel.send(p[4:-4])
+
+                    while True:
+                        try:
+                            msg = await self.bot.wait_for("message", timeout=60, check=check)
+                        except asyncio.TimeoutError:
+                            break
+                        bid = int(msg.content)
+                        current_bidder = msg.author.id
+                        previous_bidder, previous_amount = highest_bid
+
+                        async with self.bot.pool.acquire() as conn:
+                            async with conn.transaction():
+                                # Check if current bidder has enough money
+                                current_balance = await conn.fetchval(
+                                    'SELECT money FROM profile WHERE "user" = $1;', current_bidder
+                                )
+                                if current_balance < bid:
+                                    await msg.channel.send(
+                                        f"{msg.author.mention} You don't have enough money to place this bid."
+                                    )
+                                    continue
+
+                                # Check if current bidder is already the highest bidder
+                                if current_bidder == previous_bidder:
+                                    await msg.channel.send(
+                                        f"{msg.author.mention} You already have the highest bid."
+                                    )
+                                    continue
+
+                                # Refund previous bidder if exists
+                                if previous_amount > 0:
+                                    await conn.execute(
+                                        'UPDATE profile SET money = money + $1 WHERE "user" = $2;',
+                                        previous_amount,
+                                        previous_bidder,
+                                    )
+
+                                # Deduct new bid from current bidder
+                                await conn.execute(
+                                    'UPDATE profile SET money = money - $1 WHERE "user" = $2;',
+                                    bid,
+                                    current_bidder,
+                                )
+
+                                # Update highest bid
+                                highest_bid = [current_bidder, bid]
+
+                        # Notify all channels
+                        next_bid = int(bid * 1.1) if bid >= 100 else None
+                        for channel_id in channels_ids:
+                            current_channel = self.bot.get_channel(channel_id)
+                            if current_channel:
+                                if next_bid is not None:
+                                    content = f"{msg.author.mention} bids **${bid}**!\nThe minimum next bid is **${next_bid}**."
+                                else:
+                                    content = f"{msg.author.mention} bids **${bid}**!"
+                                await current_channel.send(content)
+
+                    msg_content = (
+                        f"Auction done! Winner is <@{highest_bid[0]}> with"
+                        f" **${highest_bid[1]}**!\nGiving {rarity.capitalize()} Crate... Done!"
+                    )
+                    summary_crate = (
+                        f"Emoji_here {rarity.capitalize()} crate {emote_for_rarity} "
+                        f"sold to: **<@{highest_bid[0]}>** for **${highest_bid[1]:,.0f}**"
+                    )
+
+                    # Assign the crate to the winner without deducting money again
+                    column_name = f"crates_{rarity}"
+                    async with self.bot.pool.acquire() as conn:
+                        await conn.execute(
+                            f'UPDATE profile SET "{column_name}"="{column_name}"+1 WHERE "user"=$1;',
+                            highest_bid[0],
+                        )
+
+
+                    # Send the result to all channels
+                    for channel_id in channels_ids:
+                        current_channel = self.bot.get_channel(channel_id)
+                        if current_channel:
+                            await current_channel.send(msg_content)
+
+                    cash_pool = hp * 0.9
+                    survivors = len(self.raid)
+                    self.raid = {(user, p_type): data for (user, p_type), data in self.raid.items() if
+                                p_type == "user" and not user.bot}
+                    base_cash = int(cash_pool / survivors)  # This is our base reward
+
+                    # Send the base cash to all survivors first
+                    users = [user.id for user, p_type in self.raid.keys() if p_type == "user"]
+                    await self.bot.pool.execute(
+                        'UPDATE profile SET "money"="money"+$1 WHERE "user"=ANY($2);',
+                        base_cash,
+                        users
+                    )
+
+                    # Process each survivor for potential Raider bonus
+                    for (user, p_type) in list(
+                            self.raid.keys()):  # Use list() to avoid runtime changes issues
+                        async with self.bot.pool.acquire() as conn:
+                            profile = await conn.fetchrow('SELECT class FROM profile WHERE "user"=$1;',
+                                                        user.id)
+                            bonus_multiplier = 0  # Initialize bonus multiplier
+
+                            if profile and profile['class']:
+                                # Define Raider classes and their corresponding bonuses
+                                raider_classes = {
+                                    "Adventurer": 0.05,  # 5% bonus
+                                    "Swordsman": 0.10,  # 10% bonus
+                                    "Fighter": 0.15,  # 15% bonus
+                                    "Swashbuckler": 0.20,  # 20% bonus
+                                    "Dragonslayer": 0.25,  # 25% bonus
+                                    "Raider": 0.30,  # 30% bonus
+                                    "Eternal Hero": 0.40  # 40% bonus
+                                }
+
+                                # Determine the highest applicable bonus
+                                for class_name in profile['class']:
+                                    if class_name in raider_classes:
+                                        class_bonus = raider_classes[class_name]
+                                        bonus_multiplier = max(bonus_multiplier, class_bonus)
+
+                                if bonus_multiplier > 0:
+                                    bonus_amount = int(base_cash * bonus_multiplier)
+                                    await conn.execute(
+                                        'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                                        bonus_amount,
+                                        user.id
+                                    )
+                                    # Announce bonus if there was one
+                                    for channel_id in channels_ids:
+                                        current_channel = self.bot.get_channel(channel_id)
+                                        if current_channel:
+                                            await current_channel.send(
+                                                f"💰 {user.mention}'s Raider abilities earned them an extra ${bonus_amount:,.0f}!"
+                                            )
+
+                    # Send the final message to all channels
+                    for channel_id in channels_ids:
+                        current_channel = self.bot.get_channel(channel_id)
+                        if current_channel:
+                            await current_channel.send(
+                                f"**Gave ${base_cash:,.0f} of Ragnarok's ${cash_pool:,.0f} drop to all survivors!**")
+
+                        summary_text = (
+                            f"Emoji_here Defeated in: **{summary_duration}**\n"
+                            f"{summary_crate}\n"
+                            f"Emoji_here Payout per survivor: **${base_cash:,.0f}**\n"
+                            f"Emoji_here Survivors: **{survivors} and {bots} of placeholders forces**"
+                        )
+
+            if self.boss["hp"] > 1:
+                for channel_id in channels_ids:
+                    current_channel = self.bot.get_channel(channel_id)
+                    if current_channel:
+                        m = await current_channel.send(
+                            "The raid did not manage to kill Ragnarok within an hour... He disappeared!")
+                        await m.add_reaction("\U0001F1EB")
+                        summary = (
+                            f"The raid did not manage to kill Ragnarok within an hour... He disappeared with **{self.boss['hp']:,.3f}** health remaining."
+                        )
+
+            if 'users' in locals() and users:  # Check if users list exists and is not empty
+                random_user_id = random.choice(users)
+                success = True
+                self.bot.dispatch("raid_completion", mock_ctx, success, random_user_id)
+            
+            await asyncio.sleep(30)
+            
+            # Update permissions on the raid channel
+            if raid_channel:
+                try:
+                    await raid_channel.set_permissions(guild.default_role, overwrite=self.deny_sending)
+                except Exception as e:
+                    print(f"Error setting permissions: {e}")
+                    
+            await self.clear_raid_timer()
+            try:
+                self.raid.clear()
+            except Exception as e:
+                print(f"An error occurred: {e}")
+                if raid_channel:
+                    await raid_channel.send(f"An error occurred: {e}")
+
+            if self.boss["hp"] < 1 and self.bot.config.bot.is_beta:
+                summary = (
+                    "**Raid result:**\n"
+                    f"Emoji_here Health: **{self.boss['initial_hp']:,.0f}**\n"
+                    f"{summary_text}\n"
+                    f"Emoji_here Raiders joined: **{raiders_joined}**"
+                )
+                summary = summary.replace(
+                    "Emoji_here",
+                    ":small_blue_diamond:" if self.boss["hp"] < 1 else ":vibration_mode:"
+                )
+                
+            summary_channel = self.bot.get_channel(1199299514490683392)
+            if summary_channel and 'summary' in locals():
+                await summary_channel.send(summary)
+
+            try:
+                self.raid.clear()
+            except Exception as e:
+                print(f"An error occurred: {e}")
+                
+            self.raid_preparation = False
+            self.raidactive = False
+            self.boss = None
+        except Exception as e:
+            import traceback
+            current_channel = self.bot.get_channel(1313482408242184213)
+            error_message = f"Error in auto_spawn_raid: {e}\n"
+            error_message += traceback.format_exc()
+            await current_channel.send(error_message)
+            print(error_message)
+            if current_channel:
+                await current_channel.send(f"Error in auto raid: {e}")
+
+
+
+
     @is_gm()
     @raid_channel()
     @raid_free()
@@ -177,7 +873,7 @@ class Raid(commands.Cog):
             await self.set_raid_timer()
             survival_used = set()
 
-            self.boss = {"hp": hp, "initial_hp": hp, "min_dmg": 1, "max_dmg": 750}
+            self.boss = {"hp": hp, "initial_hp": hp, "min_dmg": 1, "max_dmg": 1050}
             self.joined = []
 
             # await ctx.channel.set_permissions(
@@ -433,7 +1129,7 @@ class Raid(commands.Cog):
                     if channel:
 
                         await channel.send(embed=em)
-                await ctx.send(f"{target.mention}")
+
 
                 dmg_to_take = sum(i["damage"] for i in self.raid.values())
                 self.boss["hp"] -= dmg_to_take
@@ -553,91 +1249,96 @@ class Raid(commands.Cog):
                             for p in page.pages:
                                 await channel.send(p[4:-4])
 
+
                     while True:
                         try:
                             msg = await self.bot.wait_for("message", timeout=60, check=check)
                         except asyncio.TimeoutError:
                             break
                         bid = int(msg.content)
-                        money = await self.bot.pool.fetchval(
-                            'SELECT money FROM profile WHERE "user"=$1;', msg.author.id
-                        )
-                        if money and money >= bid:
-                            highest_bid = [msg.author.id, bid]
-                            if highest_bid[1] >= 100:
-                                next_bid = int(highest_bid[1] * 1.1)
-                                for channel_id in channels_ids:
-                                    channel = self.bot.get_channel(channel_id)
-                                    if channel:
-                                        await channel.send(f"{msg.author.mention} bids **${msg.content}**!\n The minimum next bid is **${next_bid}**.")
+                        current_bidder = msg.author.id
+                        previous_bidder, previous_amount = highest_bid
 
-                            else:
-                                for channel_id in channels_ids:
-                                    channel = self.bot.get_channel(channel_id)
-                                    if channel:
-                                        await channel.send(f"{msg.author.mention} bids **${msg.content}**!")
+                        async with self.bot.pool.acquire() as conn:
+                            async with conn.transaction():
+                                # Check if current bidder has enough money
+                                current_balance = await conn.fetchval(
+                                    'SELECT money FROM profile WHERE "user" = $1;', current_bidder
+                                )
+                                if current_balance < bid:
+                                    await msg.channel.send(
+                                        f"{msg.author.mention} You don't have enough money to place this bid."
+                                    )
+                                    continue
 
+                                # Check if current bidder is already the highest bidder
+                                if current_bidder == previous_bidder:
+                                    await msg.channel.send(
+                                        f"{msg.author.mention} You already have the highest bid."
+                                    )
+                                    continue
+
+                                # Refund previous bidder if exists
+                                if previous_amount > 0:
+                                    await conn.execute(
+                                        'UPDATE profile SET money = money + $1 WHERE "user" = $2;',
+                                        previous_amount,
+                                        previous_bidder,
+                                    )
+
+                                # Deduct new bid from current bidder
+                                await conn.execute(
+                                    'UPDATE profile SET money = money - $1 WHERE "user" = $2;',
+                                    bid,
+                                    current_bidder,
+                                )
+
+                                # Update highest bid
+                                highest_bid = [current_bidder, bid]
+
+                        # Notify all channels
+                        next_bid = int(bid * 1.1) if bid >= 100 else None
+                        for channel_id in channels_ids:
+                            channel = self.bot.get_channel(channel_id)
+                            if channel:
+                                if next_bid is not None:
+                                    content = f"{msg.author.mention} bids **${bid}**!\nThe minimum next bid is **${next_bid}**."
+                                else:
+                                    content = f"{msg.author.mention} bids **${bid}**!"
+                                await channel.send(content)
 
                     msg_content = (
                         f"Auction done! Winner is <@{highest_bid[0]}> with"
                         f" **${highest_bid[1]}**!\nGiving {rarity.capitalize()} Crate... Done!"
                     )
+                    summary_crate = (
+                        f"Emoji_here {rarity.capitalize()} crate {emote_for_rarity} "
+                        f"sold to: **<@{highest_bid[0]}>** for **${highest_bid[1]:,.0f}**"
+                    )
 
-                    # Send the initial message to all channels
+                    # Assign the crate to the winner without deducting money again
+                    column_name = f"crates_{rarity}"
+                    async with self.bot.pool.acquire() as conn:
+                        await conn.execute(
+                            f'UPDATE profile SET "{column_name}"="{column_name}"+1 WHERE "user"=$1;',
+                            highest_bid[0],
+                        )
+
+                        await self.bot.log_transaction(
+                            ctx,
+                            from_=highest_bid[0],
+                            to=2,
+                            subject="raid bid winner",
+                            data={"Gold": highest_bid[1]},
+                            conn=conn,
+                        )
+
+                    # Send the result to all channels
                     for channel_id in channels_ids:
                         channel = self.bot.get_channel(channel_id)
                         if channel:
-                            msg = await channel.send(msg_content)
+                            await channel.send(msg_content)
 
-                    # Execute the database commands once outside the loop
-                    money = await self.bot.pool.fetchval(
-                        'SELECT money FROM profile WHERE "user"=$1;', highest_bid[0]
-                    )
-
-                    if money >= highest_bid[1]:
-                        column_name = f"crates_{rarity}"
-
-                        async with self.bot.pool.acquire() as conn:
-                            await conn.execute(
-                                f'UPDATE profile SET "money"="money"-$1, "{column_name}"="{column_name}"+1 WHERE "user"=$2;',
-                                highest_bid[1],
-                                highest_bid[0],
-                            )
-
-                            await self.bot.log_transaction(
-                                ctx,
-                                from_=highest_bid[0],
-                                to=2,
-                                subject="raid bid winner",
-                                data={"Gold": highest_bid[1]},
-                                conn=conn,
-                            )
-
-                        # Edit the message content once after executing the database commands
-
-                        summary_crate = (
-                            f"Emoji_here {rarity.capitalize()} crate {emote_for_rarity} "
-                            f"sold to: **<@{highest_bid[0]}>** for **${highest_bid[1]:,.0f}**"
-                        )
-                    else:
-                        for channel_id in channels_ids:
-                            channel = self.bot.get_channel(channel_id)
-                            if channel:
-                                await channel.send(
-                                    f"<@{highest_bid[0]}> spent the money in the meantime... Meh!"
-                                    " No one gets it then, pah!\nThis incident has been reported and"
-                                    " they will get banned if it happens again. Cheers!"
-                                )
-
-                        # Edit the message content once after executing the database commands
-                        for channel_id in channels_ids:
-                            channel = self.bot.get_channel(channel_id)
-                            if channel:
-                                await channel.send(
-                                    f"Emoji_here The {rarity.capitalize()} Crate was not given to anyone since the"
-                                    f" supposed winning bidder <@{highest_bid[0]}> spent the money in"
-                                    " the meantime. They will get banned if it happens again."
-                                )
 
                     cash_pool = hp * 1.3
                     survivors = len(self.raid)
@@ -720,6 +1421,12 @@ class Raid(commands.Cog):
                             "The raid did not manage to kill Ragnarok within an hour... He disappeared with **{self.boss['hp']:,.3f}** health remaining."
                         )
 
+            if users:  # Check if the list is not empty
+                random_user_id = random.choice(users)
+                success = True
+                self.bot.dispatch("raid_completion", ctx, success, random_user_id)
+                # Now you can use random_user_id for whatever you need
+            
             await asyncio.sleep(30)
             await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=self.deny_sending)
             await self.clear_raid_timer()
@@ -858,313 +1565,7 @@ class Raid(commands.Cog):
         except Exception as e:
             await ctx.send(f"An error occurred: {e}")
 
-    @is_god()
-    @raid_free()
-    @commands.command(hidden=True, brief=_("Starts Astraea's trial"))
-    async def goodspawn(self, ctx):
-        """[Astraea only] Starts a Trial."""
-        await self.set_raid_timer()
 
-        try:
-
-            view = JoinView(
-                Button(style=ButtonStyle.primary, label="Join the trial!"),
-                message=_("You joined the trial."),
-                timeout=60 * 15,
-            )
-
-            channels = [
-                self.bot.get_channel(1154245321451388948),  # This is the current channel where the command was invoked
-                self.bot.get_channel(1199300356081995847),  # Replace with the actual channel ID
-            ]
-
-            channel1 = self.bot.get_channel(1154245321451388948)
-            channel2 = self.bot.get_channel(1199300356081995847)
-            role_id1 = 1153887457775980566
-            role_id2 = 1199303066227331163
-
-            if channel1:
-                role1 = ctx.guild.get_role(role_id1)
-                if role1:
-                    await channel1.send(content=f"{role1.mention}", allowed_mentions=discord.AllowedMentions(roles=True))
-
-            if channel2:
-                role2 = ctx.guild.get_role(role_id2)
-                if role2:
-                    await channel2.send(content=f"{role2.mention}", allowed_mentions=discord.AllowedMentions(roles=True))
-
-            # Message content, organized for better formatting
-            message_intro = """
-            In Athena's grace, embrace the light,
-            Seek trials that soothe, heal the blight.
-            With kindness as your guiding star,
-            Illuminate souls from near and far.
-            """
-
-            message_trial = """
-            **__Champions of compassion, take your stand.__**
-            Trial Begins in 15 minutes
-            """
-
-            message_note = """
-            **Only followers of Astraea may join.**
-            """
-
-            # Create the embed with structured fields
-            embed = discord.Embed(
-                title="Champions of Compassion",
-                color=discord.Color.blue()
-            )
-            embed.add_field(name="Athena's Blessing", value=message_intro, inline=False)
-            embed.add_field(name="Trial Information", value=message_trial, inline=False)
-            embed.add_field(name="Notice", value=message_note, inline=False)
-            embed.set_footer(text="Prepare your souls for the trials to come.")
-            embed.timestamp = discord.utils.utcnow()
-
-            # Attach the file (image)
-            file = discord.File("assets/other/lyx.webp", filename="lyx.webp")
-            embed.set_image(url="attachment://lyx.webp")
-
-            # Updated helper function to send to both channels and handle file closing issue
-            async def send_to_channels(embed=None, content=None, view=None, file_path=None):
-                """Helper function to send a message to all channels."""
-                for channel in channels:
-                    if channel is not None:  # Ensure the channel is valid
-                        try:
-                            if file_path:
-                                file = discord.File(file_path, filename="lyx.webp")
-                                await channel.send(embed=embed, content=content, view=view, file=file)
-                            else:
-                                await channel.send(embed=embed, content=content, view=view)
-                        except Exception as e:
-                            await ctx.send(f"Failed to send message to {channel.name}: {str(e)}")
-                    else:
-                        await ctx.send("One of the channels could not be found.")
-
-            # Call this function with file_path
-            await send_to_channels(embed=embed, content=None, view=view, file_path="assets/other/lyx.webp")
-
-            # Sending the embed with the file to the channels
-
-            if not self.bot.config.bot.is_beta:
-                await asyncio.sleep(300)
-                await send_to_channels(content="**Astraea and her Ouroboros will be visible in 10 minutes**")
-                await asyncio.sleep(300)
-                await send_to_channels(content="**Astraea and her Ouroboros will be visible in 5 minutes**")
-                await asyncio.sleep(180)
-                await send_to_channels(content="**Astraea and her Ouroboros will be visible in 2 minutes**")
-                await asyncio.sleep(60)
-                await send_to_channels(content="**Astraea and her Ouroboros will be visible in 1 minute**")
-                await asyncio.sleep(30)
-                await send_to_channels(content="**Astraea and her Ouroboros will be visible in 30 seconds**")
-                await asyncio.sleep(20)
-                await send_to_channels(content="**Astraea and her Ouroboros will be visible in 10 seconds**")
-            else:
-                await asyncio.sleep(300)
-                await send_to_channels(content="**Astraea's trial will commence in 10 minutes**")
-                await asyncio.sleep(300)
-                await send_to_channels(content="**Astraea's trial will commence in 5 minutes**")
-                await asyncio.sleep(180)
-                await send_to_channels(content="**Astraea's trial will commence in 2 minutes**")
-                await asyncio.sleep(60)
-                await send_to_channels(content="**Astraea's trial will commence in 1 minute**")
-                await asyncio.sleep(30)
-                await send_to_channels(content="**Astraea's trial will commence in 30 seconds**")
-                await asyncio.sleep(20)
-                await send_to_channels(content="**Astraea's trial will commence in 10 seconds**")
-
-            view.stop()
-
-            await send_to_channels(content="**Astraea's trial will commence! Fetch participant data... Hang on!**")
-
-            async with self.bot.pool.acquire() as conn:
-                raid = []
-                HowMany = 0
-                for u in view.joined:
-                    if (
-                            not (
-                                    profile := await conn.fetchrow(
-                                        'SELECT * FROM profile WHERE "user"=$1;', u.id
-                                    )
-                            )
-                            or profile["god"] != "Astraea"
-                    ):
-                        continue
-                    HowMany = HowMany + 1
-                    raid.append(u)
-
-            await send_to_channels(content="**Done getting data!**")
-            await send_to_channels(content=f"**{HowMany} followers joined!**")
-
-            while len(raid) > 1:
-                time = random.choice(["day", "night"])
-                if time == "day":
-                    em = discord.Embed(
-                        title="It turns day",
-                        description="As the sun's golden rays grace the horizon, a sense of renewal spreads across the "
-                                    "land. The world awakens from its slumber, bathed in warmth and hope.",
-                        colour=0xFFB900,
-                    )
-                else:
-                    em = discord.Embed(
-                        title="It turns night",
-                        description="The world embraces the embrace of the night, shrouded in mystery and quietude. The "
-                                    "stars twinkle like distant promises, and the nocturnal creatures begin their "
-                                    "whispered symphony.",
-                        colour=0xFFB900,
-                    )
-                em.set_thumbnail(url=f"{self.bot.BASE_URL}/image/lyx.png")
-                await send_to_channels(embed=em)
-                await asyncio.sleep(5)
-                target = random.choice(raid)
-                if time == "day":
-                    event = random.choice(
-                        [
-                            {
-                                "text": "Extend a Healing Hand",
-                                "win": 80,
-                                "win_text": "Your compassionate efforts have brought healing and solace. Astraea smiles "
-                                            "upon you.",
-                                "lose_text": "Despite your intentions, your healing touch falters. Astraea's grace eludes "
-                                             "you.",
-                            },
-                            {
-                                "text": "Ease Emotional Burdens",
-                                "win": 50,
-                                "win_text": "Through your empathetic words, you mend fractured souls. Astraea's favor "
-                                            "shines on you.",
-                                "lose_text": "Your words fall short, unable to mend the hearts before you. Astraea's "
-                                             "blessing slips away.",
-                            },
-                            {
-                                "text": "Kindness in Action",
-                                "win": 60,
-                                "win_text": "Your selfless actions spread ripples of kindness. Astraea's radiant gaze "
-                                            "embraces you.",
-                                "lose_text": "Your attempts at kindness don't fully resonate. Astraea's warmth remains "
-                                             "distant.",
-                            },
-                        ]
-                    )
-                else:
-                    event = random.choice(
-                        [
-                            {
-                                "text": "Guiding Light of Compassion",
-                                "win": 30,
-                                "win_text": "Amidst the tranquil night, your compassion brings light to dark corners. "
-                                            "Astraea's approval graces you.",
-                                "lose_text": "Your efforts to bring solace in the night are met with challenges. Astraea's "
-                                             "light evades you.",
-                            },
-                            {
-                                "text": "Healing Moon's Embrace",
-                                "win": 45,
-                                "win_text": "Under the moon's serenity, your healing touch is magnified. Astraea's "
-                                            "presence envelops you.",
-                                "lose_text": "Your attempts to heal are hindered by unseen forces. Astraea's touch remains "
-                                             "elusive.",
-                            },
-                            {
-                                "text": "Celestial Blessing of Serenity",
-                                "win": 20,
-                                "win_text": "As the stars align in your favor, Astraea's serene blessings envelop you. A "
-                                            "tranquil aura emanates from your being, soothing all around.",
-                                "lose_text": "Despite your efforts to channel the cosmos, Astraea's tranquility eludes "
-                                             "you, leaving only fleeting traces of its presence.",
-                            },
-                            {
-                                "text": "Stellar Harmonies of Renewal",
-                                "win": 20,
-                                "win_text": "In harmony with the celestial melodies, your actions resonate with Astraea's "
-                                            "essence. The stars themselves seem to sing your praises, infusing the air "
-                                            "with renewal.",
-                                "lose_text": "The cosmic harmonies remain elusive, and your attempts to align with "
-                                             "Astraea's melody falter, leaving a sense of missed opportunity in the "
-                                             "night's chorus.",
-                            }
-                        ]
-                    )
-                does_win = event["win"] >= random.randint(1, 100)
-                if does_win:
-                    text = event["win_text"]
-                else:
-                    text = event["lose_text"]
-                    raid.remove(target)
-                em = discord.Embed(
-                    title=event["text"],
-                    description=text,
-                    colour=0xFFB900,
-                )
-                em.set_author(name=f"{target}", icon_url=target.display_avatar.url)
-                em.set_footer(text=f"{len(raid)} followers remain")
-                em.set_thumbnail(url=f"{self.bot.BASE_URL}/image/lyx.png")
-                await send_to_channels(embed=em)
-                await asyncio.sleep(5)
-
-            winner = raid[0]
-            async with self.bot.pool.acquire() as conn:
-                # Fetch the luck value for the specified user (winner)
-                luck_query = await conn.fetchval(
-                    'SELECT luck FROM profile WHERE "user" = $1;',
-                    winner.id,
-                )
-
-            # Convert luck_query to float
-            luck_query_float = float(luck_query)
-
-            # Define gods with their boundaries
-            gods = {
-                "Astraea": {"boundary_low": 0.9, "boundary_high": 1.1},
-                "Sepulchure": {"boundary_low": 0.75, "boundary_high": 1.5},
-                "Drakath": {"boundary_low": 0.3, "boundary_high": 2.0},
-            }
-
-            # Replace 'selected_god' with the actual selected god name (e.g., "Astraea")
-            selected_god = "Astraea"  # Example, replace dynamically
-            god_data = gods.get(selected_god)
-
-            if not god_data:
-                raise ValueError(f"God {selected_god} not found.")
-
-            boundary_low = god_data["boundary_low"]
-            boundary_high = god_data["boundary_high"]
-
-            # Normalize the user's luck value
-            normalized_luck = (luck_query_float - boundary_low) / (boundary_high - boundary_low)
-            normalized_luck = max(0.0, min(1.0, normalized_luck))  # Clamp between 0.0 and 1.0
-
-            # Scale the divine weight
-            weightdivine = 0.20 + (0.20 * normalized_luck)  # Example scaling factor
-            rounded_weightdivine = round(weightdivine, 3)
-
-            # Define weights for crate selection
-            options = ['legendary', 'fortune', 'divine']
-            weights = [0.40, 0.40, rounded_weightdivine]
-
-            # Select a crate based on weights
-            crate = randomm.choices(options, weights=weights)[0]
-
-            await send_to_channels(
-                content=f"In the divine radiance of Astraea, {winner.mention} ascends to the cosmic realm. Guided by the "
-                        f"goddess's embrace, they uncover a celestial treasure—an enigmatic, {crate} crate adorned with "
-                        f"stardust among the constellations."
-            )
-
-            # Update the profile and clear the raid timer
-            async with self.bot.pool.acquire() as conn:
-                await conn.execute(
-                    f'UPDATE profile SET "crates_{crate}" = "crates_{crate}" + 1 WHERE "user" = $1;',
-                    winner.id,
-                )
-
-            await self.clear_raid_timer()
-        except Exception as e:
-            import traceback
-            error_message = f"Error occurred: {e}\n"
-            error_message += traceback.format_exc()
-            await ctx.send(error_message)
-            print(error_message)
 
     async def get_player_decision(self, player, options, role, prompt=None, embed=None):
         """
@@ -2136,7 +2537,7 @@ class Raid(commands.Cog):
 
     @is_gm()
     @commands.command(hidden=True, breif=("See who was in your last raid"))
-    async def chaoslist(self, ctx):
+    async def chaoslistold(self, ctx):
         try:
             if self.chaoslist is None:
                 await ctx.send("Data on your most recent raid was not found")
@@ -2151,7 +2552,7 @@ class Raid(commands.Cog):
     @is_god()
     @raid_free()
     @commands.command(hidden=True, brief=_("Start a Drakath raid"))
-    async def chaosspawn(self, ctx, boss_hp: IntGreaterThan(0)):
+    async def chaosspawnold(self, ctx, boss_hp: IntGreaterThan(0)):
         """[Drakath only] Starts a raid."""
         try:
             await self.set_raid_timer()

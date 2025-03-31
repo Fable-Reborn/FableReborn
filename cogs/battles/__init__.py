@@ -19,6 +19,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import asyncio
 import datetime
 import decimal
+import json
 import math
 
 import asyncpg
@@ -760,32 +761,31 @@ class Battles(commands.Cog):
 
                     their_user_id = their_item['user_id']
 
-                    pet_and_egg_count = await conn.fetchval(
-                        """
-                        SELECT COUNT(*) 
-                        FROM (
-                            SELECT id FROM monster_pets WHERE user_id = $1
-                            UNION ALL
-                            SELECT id FROM monster_eggs WHERE user_id = $1 AND hatched = FALSE
-                        ) AS combined
-                        """,
-                        their_user_id
-                    )
+                    async with self.bot.pool.acquire() as conn:
+                        # Count pets, unhatched eggs, and pending splice requests (each counts as 2)
+                        pet_and_egg_count = await conn.fetchval(
+                            """
+                            SELECT 
+                                (SELECT COUNT(*) FROM monster_pets WHERE user_id = $1) +
+                                (SELECT COUNT(*) FROM monster_eggs WHERE user_id = $1 AND hatched = FALSE) +
+                                (SELECT COUNT(*) FROM splice_requests WHERE user_id = $1 AND status = 'pending')
+                            """,
+                            their_user_id
+                        )
 
                     if pet_and_egg_count >= 10:
                         await ctx.send(
-                            _("They cannot have more than 10 pets or eggs. Please release a pet or wait for an egg to hatch."))
+                            _("They cannot have more than 10 pets or eggs (Including Spliced). Please release a pet or wait for an egg to hatch."))
                         return
 
                     async with self.bot.pool.acquire() as conn:
+                        # Count pets, unhatched eggs, and pending splice requests (each counts as 2)
                         pet_and_egg_count = await conn.fetchval(
                             """
-                            SELECT COUNT(*) 
-                            FROM (
-                                SELECT id FROM monster_pets WHERE user_id = $1
-                                UNION ALL
-                                SELECT id FROM monster_eggs WHERE user_id = $1 AND hatched = FALSE
-                            ) AS combined
+                            SELECT 
+                                (SELECT COUNT(*) FROM monster_pets WHERE user_id = $1) +
+                                (SELECT COUNT(*) FROM monster_eggs WHERE user_id = $1 AND hatched = FALSE) +
+                                (SELECT COUNT(*) FROM splice_requests WHERE user_id = $1 AND status = 'pending')
                             """,
                             ctx.author.id
                         )
@@ -2098,8 +2098,9 @@ class Battles(commands.Cog):
         except Exception as e:
             await ctx.send(e)
 
+    @has_char()
     @battletower.command()  # Replace with your @battletower.command if needed.
-    @commands.cooldown(1, 600, commands.BucketType.user)
+    @user_cooldown(600)
     async def fight(self, ctx):
         # Initial variables and mappings
         authorchance = 0
@@ -3647,9 +3648,7 @@ class Battles(commands.Cog):
                         except asyncio.TimeoutError:
                             choice = random.choice(["left", "right"])
                             await ctx.send('You took too long to decide. The chest will be chosen at random.')
-                            await ctx.send(f'You have advanced to floor: {new_level}')
-                            await connection.execute('UPDATE battletower SET level = level + 1 WHERE id = $1',
-                                                     ctx.author.id)
+
                             try:
                                 await self.remove_player_from_fight(ctx.author.id)
                             except Exception as e:
@@ -3732,14 +3731,7 @@ class Battles(commands.Cog):
                         newlevel = level + 1
                         choice = random.choice(["left", "right"])
                         await ctx.send('You took too long to decide. The chest will be chosen at random.')
-                        await ctx.send(f'You have advanced to floor: {newlevel}')
-                        async with self.bot.pool.acquire() as connection:
-                            await connection.execute('UPDATE battletower SET level = level + 1 WHERE id = $1',
-                                                     ctx.author.id)
-                            try:
-                                await self.remove_player_from_fight(ctx.author.id)
-                            except Exception as e:
-                                pass
+
 
                     if choice is not None:
                         newlevel = level + 1
@@ -4331,14 +4323,7 @@ class Battles(commands.Cog):
                         newlevel = level + 1
                         choice = random.choice(["left", "right"])
                         await ctx.send('You took too long to decide. The chest will be chosen at random.')
-                        await ctx.send(f'You have advanced to floor: {newlevel}')
-                        async with self.bot.pool.acquire() as connection:
-                            await connection.execute('UPDATE battletower SET level = level + 1 WHERE id = $1',
-                                                     ctx.author.id)
-                            try:
-                                await self.remove_player_from_fight(ctx.author.id)
-                            except Exception as e:
-                                pass
+
 
                     if choice is not None:
                         newlevel = level + 1
@@ -4556,14 +4541,7 @@ class Battles(commands.Cog):
                         newlevel = level + 1
                         choice = random.choice(["left", "right"])
                         await ctx.send('You took too long to decide. The chest will be chosen at random.')
-                        await ctx.send(f'You have advanced to floor: {newlevel}')
-                        async with self.bot.pool.acquire() as connection:
-                            await connection.execute('UPDATE battletower SET level = level + 1 WHERE id = $1',
-                                                     ctx.author.id)
-                            try:
-                                await self.remove_player_from_fight(ctx.author.id)
-                            except Exception as e:
-                                pass
+
 
                     if choice is not None:
                         newlevel = level + 1
@@ -4818,14 +4796,7 @@ class Battles(commands.Cog):
                         newlevel = level + 1
                         choice = random.choice(["left", "right"])
                         await ctx.send('You took too long to decide. The chest will be chosen at random.')
-                        await ctx.send(f'You have advanced to floor: {newlevel}')
-                        async with self.bot.pool.acquire() as connection:
-                            await connection.execute('UPDATE battletower SET level = level + 1 WHERE id = $1',
-                                                     ctx.author.id)
-                            try:
-                                await self.remove_player_from_fight(ctx.author.id)
-                            except Exception as e:
-                                pass
+
 
                     if choice is not None:
                         newlevel = level + 1
@@ -4961,6 +4932,10 @@ class Battles(commands.Cog):
                                                  ctx.author.id)
 
                     await ctx.send(f'This is the end for you... {ctx.author.mention}.. or is it..?')
+
+
+                    success = True
+                    self.bot.dispatch("raid_completion", ctx, success, ctx.author.id)
 
                     crate_options = ['legendary', 'divine', 'fortune']
                     weights = [0.25, 0.25, 0.25]  # Weighted values according to percentages
@@ -5145,14 +5120,7 @@ class Battles(commands.Cog):
                         newlevel = level + 1
                         choice = random.choice(["left", "right"])
                         await ctx.send('You took too long to decide. The chest will be chosen at random.')
-                        await ctx.send(f'You have advanced to floor: {newlevel}')
-                        async with self.bot.pool.acquire() as connection:
-                            await connection.execute('UPDATE battletower SET level = level + 1 WHERE id = $1',
-                                                     ctx.author.id)
-                            try:
-                                await self.remove_player_from_fight(ctx.author.id)
-                            except Exception as e:
-                                pass
+
 
                     if choice is not None:
                         newlevel = level + 1
@@ -5420,6 +5388,8 @@ class Battles(commands.Cog):
                                 await self.remove_player_from_fight(ctx.author.id)
                             except KeyError:
                                 pass
+            completed = True
+            self.bot.dispatch("raid_completion", ctx, completed, ctx.author.id)
             try:
                 await self.remove_player_from_fight(ctx.author.id)
             except Exception as e:
@@ -6856,6 +6826,140 @@ class Battles(commands.Cog):
             await ctx.send("You forced leg off")
 
 
+    @is_gm()
+    @commands.command(name="gmcreatemonster")
+    async def gmcreatemonster(self, ctx):
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel
+
+        # Prompt for monster name
+        await ctx.send("Please enter the **name** of the monster (or type `cancel` to cancel):")
+        try:
+            name_msg = await ctx.bot.wait_for("message", timeout=60.0, check=check)
+        except asyncio.TimeoutError:
+            return await ctx.send("Timed out. Monster creation cancelled.")
+        if name_msg.content.lower() == "cancel":
+            return await ctx.send("Monster creation cancelled.")
+        monster_name = name_msg.content.strip()
+
+        # Prompt for monster level (1-10)
+        await ctx.send("Please enter the **level** of the monster (1-10) (or type `cancel` to cancel):")
+        try:
+            level_msg = await ctx.bot.wait_for("message", timeout=60.0, check=check)
+        except asyncio.TimeoutError:
+            return await ctx.send("Timed out. Monster creation cancelled.")
+        if level_msg.content.lower() == "cancel":
+            return await ctx.send("Monster creation cancelled.")
+        try:
+            level_int = int(level_msg.content.strip())
+            if level_int < 1 or level_int > 10:
+                return await ctx.send("Invalid level. Must be between 1 and 10. Monster creation cancelled.")
+        except ValueError:
+            return await ctx.send("Invalid input for level. Monster creation cancelled.")
+
+        # Prompt for monster element
+        valid_elements = {"Corrupted", "Water", "Electric", "Light", "Dark", "Wind", "Nature", "Fire"}
+        await ctx.send("Please enter the **element** of the monster (or type `cancel` to cancel):\n"
+                       f"Valid elements are: {', '.join(valid_elements)}")
+        try:
+            element_msg = await ctx.bot.wait_for("message", timeout=60.0, check=check)
+        except asyncio.TimeoutError:
+            return await ctx.send("Timed out. Monster creation cancelled.")
+        if element_msg.content.lower() == "cancel":
+            return await ctx.send("Monster creation cancelled.")
+        # Convert input to have first letter capitalized and rest lower-case
+        monster_element = element_msg.content.strip().capitalize()
+        if monster_element not in valid_elements:
+            return await ctx.send(
+                "Invalid element. Must be one of: " + ", ".join(valid_elements) + ". Monster creation cancelled."
+            )
+
+        # Prompt for stats in the format "hp, attack, defense"
+        await ctx.send(
+            "Please enter the **HP, Attack, and Defense** of the monster in the format:\n"
+            "`hp, attack, defense` (e.g., `100, 95, 100`) (or type `cancel` to cancel):"
+        )
+        try:
+            stats_msg = await ctx.bot.wait_for("message", timeout=60.0, check=check)
+        except asyncio.TimeoutError:
+            return await ctx.send("Timed out. Monster creation cancelled.")
+        if stats_msg.content.lower() == "cancel":
+            return await ctx.send("Monster creation cancelled.")
+        try:
+            parts = [part.strip() for part in stats_msg.content.split(",")]
+            if len(parts) != 3:
+                return await ctx.send(
+                    "Invalid format. Expected format: `hp, attack, defense`. Monster creation cancelled.")
+            hp_val = int(parts[0])
+            attack_val = int(parts[1])
+            defense_val = int(parts[2])
+        except ValueError:
+            return await ctx.send("Stat values must be integers. Monster creation cancelled.")
+
+        # Prompt for image URL
+        await ctx.send(
+            "Please enter the **image URL** for the monster (must end with `.png`, `.jpg` or `.webp`) (or type `cancel` to cancel):"
+        )
+        try:
+            url_msg = await ctx.bot.wait_for("message", timeout=60.0, check=check)
+        except asyncio.TimeoutError:
+            return await ctx.send("Timed out. Monster creation cancelled.")
+        if url_msg.content.lower() == "cancel":
+            return await ctx.send("Monster creation cancelled.")
+        monster_url = url_msg.content.strip()
+        if not (monster_url.lower().endswith(".png") or monster_url.lower().endswith(
+                ".jpg") or monster_url.lower().endswith(".webp")):
+            return await ctx.send(
+                "Invalid image URL. Must end with `.png`, `.jpg`, or `.webp`. Monster creation cancelled.")
+
+        # Prompt for ispublic (true/false)
+        await ctx.send("Please enter whether the monster is public and found in the wild (`true` or `false`) (or type `cancel` to cancel):")
+        try:
+            public_msg = await ctx.bot.wait_for("message", timeout=60.0, check=check)
+        except asyncio.TimeoutError:
+            return await ctx.send("Timed out. Monster creation cancelled.")
+        if public_msg.content.lower() == "cancel":
+            return await ctx.send("Monster creation cancelled.")
+        ispublic_str = public_msg.content.strip().lower()
+        if ispublic_str not in ["true", "false"]:
+            return await ctx.send("Invalid input for ispublic. Must be `true` or `false`. Monster creation cancelled.")
+        is_public = True if ispublic_str == "true" else False
+
+        # Build the monster entry
+        new_monster = {
+            "name": monster_name,
+            "hp": hp_val,
+            "attack": attack_val,
+            "defense": defense_val,
+            "element": monster_element,
+            "url": monster_url,
+            "ispublic": is_public
+        }
+
+        # Load the current monsters JSON data
+        try:
+            with open("monsters.json", "r") as f:
+                data = json.load(f)
+        except Exception as e:
+            return await ctx.send("Error loading monsters data. Monster creation cancelled.")
+
+        # Append the new monster to the appropriate level
+        level_key = str(level_int)
+        if level_key not in data:
+            data[level_key] = []
+        data[level_key].append(new_monster)
+
+        # Save the updated JSON back to file
+        try:
+            with open("monsters.json", "w") as f:
+                json.dump(data, f, indent=4)
+        except Exception as e:
+            return await ctx.send("Error saving monsters data. Monster creation cancelled.")
+
+        await ctx.send(f"Monster **{monster_name}** has been successfully added to level {level_int}!")
+
+    # To add this command to your bot:
+    # bot.add_command(gmcreatemonster)
 
     @has_char()
     @commands.command(brief=_("Battle against a monster and gain XP"), hidden=True)
@@ -6962,295 +7066,125 @@ class Battles(commands.Cog):
             "Titan": 7,
         }
 
-        # Define the monsters per level
-        monsters = {
-            1: [
-                {"name": "Sneevil", "hp": 100, "attack": 95, "defense": 100, "element": "Earth", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Sneevil-removebg-preview.png"},
-                {"name": "Slime", "hp": 120, "attack": 100, "defense": 105, "element": "Water", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_slime.png"},
-                {"name": "Frogzard", "hp": 120, "attack": 90, "defense": 95, "element": "Nature", "url": "https://static.wikia.nocookie.net/aqwikia/images/d/d6/Frogzard.png"},
-                {"name": "Rat", "hp": 90, "attack": 100, "defense": 90, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Rat-removebg-preview.png"},
-                {"name": "Bat", "hp": 150, "attack": 95, "defense": 85, "element": "Wind", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Bat-removebg-preview.png"},
-                {"name": "Skeleton", "hp": 190, "attack": 105, "defense": 100, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Skelly-removebg-preview.png"},
-                {"name": "Imp", "hp": 180, "attack": 95, "defense": 85, "element": "Fire", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_zZquzlh-removebg-preview.png"},
-                {"name": "Pixie", "hp": 100, "attack": 90, "defense": 80, "element": "Light", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_pixie-removebg-preview.png"},
-                {"name": "Zombie", "hp": 170, "attack": 100, "defense": 95, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_zombie-removebg-preview.png"},
-                {"name": "Spiderling", "hp": 220, "attack": 95, "defense": 90, "element": "Nature", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_spider-removebg-preview.png"},
-                {"name": "Spiderling", "hp": 220, "attack": 95, "defense": 90, "element": "Nature", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_spider-removebg-preview.png"},
-                {"name": "Moglin", "hp": 200, "attack": 90, "defense": 85, "element": "Light", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Moglin.png"},
-                {"name": "Red Ant", "hp": 140, "attack": 105, "defense": 100, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_redant-removebg-preview.png"},
-                {"name": "Chickencow", "hp": 300, "attack": 150, "defense": 90, "element": "Nature", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChickenCow-removebg-preview.png"},
-                {"name": "Tog", "hp": 380, "attack": 105, "defense": 95, "element": "Earth", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Tog-removebg-preview.png"},
-                {"name": "Lemurphant", "hp": 340, "attack": 95, "defense": 80, "element": "Nature", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Lemurphant-removebg-preview.png"},
-                {"name": "Fire Imp", "hp": 200, "attack": 100, "defense": 90, "element": "Fire", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_zZquzlh-removebg-preview.png"},
-                {"name": "Zardman", "hp": 300, "attack": 95, "defense": 100, "element": "Earth", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Zardman-removebg-preview.png"},
-                {"name": "Wind Elemental", "hp": 165, "attack": 90, "defense": 85, "element": "Wind", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_WindElemental-removebg-preview.png"},
-                {"name": "Dark Wolf", "hp": 200, "attack": 100, "defense": 90, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_DarkWolf-removebg-preview.png"},
-                {"name": "Treeant", "hp": 205, "attack": 105, "defense": 95, "element": "Nature", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Treeant-removebg-preview.png"},
-            ],
-            2: [
-                {"name": "Cyclops Warlord", "hp": 230, "attack": 160, "defense": 155, "element": "Earth", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_CR-removebg-preview.png"},
-                {"name": "Fishman Soldier", "hp": 200, "attack": 165, "defense": 160, "element": "Water", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Fisherman-removebg-preview.png"},
-                {"name": "Fire Elemental", "hp": 215, "attack": 150, "defense": 145, "element": "Fire", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_fire_elemental-removebg-preview.png"},
-                {"name": "Vampire Bat", "hp": 200, "attack": 170, "defense": 160, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_viO2oSJ-removebg-preview.png"},
-                {"name": "Blood Eagle", "hp": 195, "attack": 165, "defense": 150, "element": "Wind", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_BloodEagle-removebg-preview.png"},
-                {"name": "Earth Elemental", "hp": 190, "attack": 175, "defense": 160, "element": "Earth", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Earth_Elemental-removebg-preview.png"},
-                {"name": "Fire Mage", "hp": 200, "attack": 160, "defense": 140, "element": "Fire", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_FireMage-removebg-preview.png"},
-                {"name": "Dready Bear", "hp": 230, "attack": 155, "defense": 150, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_dreddy-removebg-preview.png"},
-                {"name": "Undead Soldier", "hp": 280, "attack": 160, "defense": 155, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_UndeadSoldier-removebg-preview.png"},
-                {"name": "Skeleton Warrior", "hp": 330, "attack": 155, "defense": 150, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_SkeelyWarrior-removebg-preview.png"},
-                {"name": "Giant Spider", "hp": 350, "attack": 160, "defense": 145, "element": "Nature", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_DreadSpider-removebg-preview.png"},
-                {"name": "Castle spider", "hp": 310, "attack": 170, "defense": 160, "element": "Nature", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Castle-removebg-preview.png"},
-                {"name": "ConRot", "hp": 210, "attack": 165, "defense": 155, "element": "Water", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ConRot-removebg-preview.png"},
-                {"name": "Horc Warrior", "hp": 270, "attack": 175, "defense": 170, "element": "Earth", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_HorcWarrior-removebg-preview.png"},
-                {"name": "Shadow Hound", "hp": 300, "attack": 160, "defense": 150, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Hound-removebg-preview.png"},
-                {"name": "Fire Sprite", "hp": 290, "attack": 165, "defense": 155, "element": "Fire", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_FireSprite-removebg-preview.png"},
-                {"name": "Rock Elemental", "hp": 300, "attack": 160, "defense": 165, "element": "Earth", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Earth_Elemental-removebg-preview.png"},
-                {"name": "Shadow Serpent", "hp": 335, "attack": 155, "defense": 150, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ShadowSerpant-removebg-preview.png"},
-                {"name": "Dark Elemental", "hp": 340, "attack": 165, "defense": 155, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_DarkEle-Photoroom.png"},
-                {"name": "Forest Guardian", "hp": 500, "attack": 250, "defense": 250, "element": "Nature", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ForestGuardian-removebg-preview.png"},
-            ],
-            3: [
-                {"name": "Mana Golem", "hp": 200, "attack": 220, "defense": 210, "element": "Corrupted", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_managolum-removebg-preview.png"},
-                {"name": "Karok the Fallen", "hp": 180, "attack": 215, "defense": 205, "element": "Ice", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_VIMs8un-removebg-preview.png"},
-                {"name": "Water Draconian", "hp": 220, "attack": 225, "defense": 200, "element": "Water", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_waterdrag-removebg-preview.png"},
-                {"name": "Shadow Creeper", "hp": 190, "attack": 220, "defense": 205, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_shadowcreep-removebg-preview.png"},
-                {"name": "Wind Djinn", "hp": 210, "attack": 225, "defense": 215, "element": "Wind", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_djinn-removebg-preview.png"},
-                {"name": "Autunm Fox", "hp": 205, "attack": 230, "defense": 220, "element": "Earth", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Autumn_Fox-removebg-preview.png"},
-                {"name": "Dark Draconian", "hp": 195, "attack": 220, "defense": 200, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_darkdom-removebg-preview.png"},
-                {"name": "Light Elemental", "hp": 185, "attack": 215, "defense": 210, "element": "Light", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_LightELemental-removebg-preview.png"},
-                {"name": "Undead Giant", "hp": 230, "attack": 220, "defense": 210, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_UndGiant-removebg-preview.png"},
-                {"name": "Chaos Spider", "hp": 215, "attack": 215, "defense": 205, "element": "Corrupted", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChaosSpider-removebg-preview.png"},
-                {"name": "Seed Spitter", "hp": 225, "attack": 220, "defense": 200, "element": "Nature", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_SeedSpitter-removebg-preview.png"},
-                {"name": "Beach Werewolf", "hp": 240, "attack": 230, "defense": 220, "element": "Water", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_BeachWerewold-removebg-preview.png"},
-                {"name": "Boss Dummy", "hp": 220, "attack": 225, "defense": 210, "element": "Nature", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_BossDummy-removebg-preview.png"},
-                {"name": "Rock", "hp": 235, "attack": 225, "defense": 215, "element": "Earth", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Rock-removebg-preview.png"},
-                {"name": "Shadow Serpent", "hp": 200, "attack": 220, "defense": 205, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ShadoeSerpant-removebg-preview.png"},
-                {"name": "Flame Elemental", "hp": 210, "attack": 225, "defense": 210, "element": "Fire", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_FireElemental-removebg-preview.png"},
-                {"name": "Bear", "hp": 225, "attack": 215, "defense": 220, "element": "Nature", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732611726453.png"},
-                {"name": "Chair", "hp": 215, "attack": 210, "defense": 215, "element": "Nature", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_chair-removebg-preview.png"},
-                {"name": "Chaos Serpant", "hp": 230, "attack": 220, "defense": 205, "element": "Corrupted", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChaosSerp-removebg-preview.png"},
-                {"name": "Gorillaphant", "hp": 240, "attack": 225, "defense": 210, "element": "Nature", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_gorillaserpant-removebg-preview.png"},
-            ],
-            4: [
-                {"name": "Hydra Head", "hp": 300, "attack": 280, "defense": 270, "element": "Water", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_hydra.png"},
-                {"name": "Blessed Deer", "hp": 280, "attack": 275, "defense": 265, "element": "Light", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_BlessedDeer-removebg-preview.png"},
-                {"name": "Chaos Sphinx", "hp": 320, "attack": 290, "defense": 275, "element": "Corrupted", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChaopsSpinx.png"},
-                {"name": "Inferno Dracolion", "hp": 290, "attack": 285, "defense": 270, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732614284328.png"},
-                {"name": "Wind Cyclone", "hp": 310, "attack": 290, "defense": 280, "element": "Wind", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_WindElemental-removebg-preview.png"},
-                {"name": "Mr Cuddles", "hp": 305, "attack": 295, "defense": 285, "element": "Nature", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_mrcuddles-removebg-preview.png"},
-                {"name": "Infernal Fiend", "hp": 295, "attack": 285, "defense": 270, "element": "Fire", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732614284328.png"},
-                {"name": "Dark Mukai", "hp": 285, "attack": 275, "defense": 265, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732614826889.png"},
-                {"name": "Undead Berserker", "hp": 330, "attack": 285, "defense": 275, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732614863579.png"},
-                {"name": "Chaos Warrior", "hp": 315, "attack": 280, "defense": 270, "element": "Corrupted", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChaosWarrior-removebg-preview.png"},
-                {"name": "Dire Wolf", "hp": 325, "attack": 285, "defense": 275, "element": "Nature", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_DireWolf-removebg-preview.png"},
-                {"name": "Skye Warrior", "hp": 340, "attack": 295, "defense": 285, "element": "Corrupted", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_SkyeWarrior-removebg-preview.png"},
-                {"name": "Death On Wings", "hp": 320, "attack": 290, "defense": 275, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_DeathonWings-removebg-preview.png"},
-                {"name": "Chaorruption", "hp": 335, "attack": 295, "defense": 285, "element": "Corrupted", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Chaorruption-removebg-preview.png"},
-                {"name": "Shadow Beast", "hp": 300, "attack": 285, "defense": 270, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ShadowBeast-removebg-preview.png"},
-                {"name": "Hootbear", "hp": 310, "attack": 290, "defense": 275, "element": "Nature", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_HootBear-removebg-preview.png"},
-                {"name": "Anxiety", "hp": 325, "attack": 280, "defense": 290, "element": "Dark", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_anxiety-removebg-preview.png"},
-                {"name": "Twilly", "hp": 315, "attack": 275, "defense": 285, "element": "Nature", "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Twilly-removebg-preview.png"},
-                {"name": "Black Cat", "hp": 330, "attack": 285, "defense": 270, "element": "Corrupted", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_QJsLMnk-removebg-preview.png"},
-                {"name": "Forest Guardian", "hp": 340, "attack": 290, "defense": 275, "element": "Nature", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ForestGuardian-removebg-preview.png"},
-            ],
-            5: [
-                {"name": "Chaos Dragon", "hp": 400, "attack": 380, "defense": 370, "element": "Corrupted", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChaosDragon-removebg-preview.png"},
-                {"name": "Wooden Door", "hp": 380, "attack": 375, "defense": 365, "element": "Earth", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_WoodenDoor-removebg-preview.png"},
-                {"name": "Garvodeus", "hp": 420, "attack": 390, "defense": 375, "element": "Water", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Garvodeus-removebg-preview.png"},
-                {"name": "Shadow Lich", "hp": 390, "attack": 385, "defense": 370, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ShadowLich-removebg-preview.png"},
-                {"name": "Zorbak", "hp": 410, "attack": 390, "defense": 380, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Zorbak-removebg-preview.png"},
-                {"name": "Dwakel Rocketman", "hp": 405, "attack": 395, "defense": 385, "element": "Electric", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_DwarkalRock-removebg-preview.png"},
-                {"name": "Kathool", "hp": 395, "attack": 385, "defense": 370, "element": "Water", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Kathool-removebg-preview.png"},
-                {"name": "Celestial Hound", "hp": 385, "attack": 375, "defense": 365, "element": "Light", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_CelestialHound-removebg-preview.png"},
-                {"name": "Undead Raxgore", "hp": 430, "attack": 385, "defense": 375, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Raxfore-removebg-preview_1.png"},
-                {"name": "Droognax", "hp": 415, "attack": 380, "defense": 370, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Droognax-removebg-preview.png"},
-                {"name": "Corrupted Boar", "hp": 425, "attack": 385, "defense": 375, "element": "Corrupted", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Corrupted_Bear-removebg-preview.png"},
-                {"name": "Fressa", "hp": 440, "attack": 395, "defense": 385, "element": "Water", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Fressa-removebg-preview.png"},
-                {"name": "Grimskull", "hp": 420, "attack": 390, "defense": 375, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Grimskull-removebg-preview.png"},
-                {"name": "Chaotic Chicken", "hp": 435, "attack": 385, "defense": 380, "element": "Corrupted", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChaoticChicken-removebg-preview.png"},
-                {"name": "Baelgar", "hp": 400, "attack": 385, "defense": 370, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Baelgar-removebg-preview.png"},
-                {"name": "Blood Dragon", "hp": 410, "attack": 390, "defense": 375, "element": "Fire", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_BloodDragon-removebg-preview.png"},
-                {"name": "Avatar of Desolich", "hp": 425, "attack": 380, "defense": 390, "element": "Fire", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732696555786.png"},
-                {"name": "Piggy Drake", "hp": 415, "attack": 375, "defense": 385, "element": "Wind", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732696596976.png"},
-                {"name": "Chaos Alteon", "hp": 430, "attack": 385, "defense": 370, "element": "Corrupted", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Chaos_Alteon-removebg-preview.png"},
-                {"name": "Argo", "hp": 440, "attack": 380, "defense": 375, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Argo-removebg-preview.png"},
-            ],
-            6: [
-                {"name": "Ultra Cuddles", "hp": 500, "attack": 470, "defense": 460, "element": "Corrupted", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ultracuddles-removebg-preview.png"},
-                {"name": "General Pollution", "hp": 480, "attack": 465, "defense": 455, "element": "Earth", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_genpol-removebg-preview.png"},
-                {"name": "Manslayer Fiend", "hp": 520, "attack": 475, "defense": 460, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_manlsayer-removebg-preview.png"},
-                {"name": "The Hushed", "hp": 490, "attack": 470, "defense": 455, "element": "Light", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_hushed-removebg-preview.png"},
-                {"name": "The Jailer", "hp": 510, "attack": 475, "defense": 465, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_jailer-removebg-preview.png"},
-                {"name": "Thriller", "hp": 505, "attack": 480, "defense": 470, "element": "Electric", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Thriller-removebg-preview.png"},
-                {"name": "Dire Razorclaw", "hp": 495, "attack": 470, "defense": 455, "element": "Fire", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_file.png"},
-                {"name": "Dollageddon", "hp": 485, "attack": 465, "defense": 455, "element": "Light", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Dollageddon-removebg-preview.png"},
-                {"name": "Gold Werewolf", "hp": 530, "attack": 475, "defense": 460, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Gold_Werewolf-removebg-preview.png"},
-                {"name": "FlameMane", "hp": 515, "attack": 470, "defense": 455, "element": "Fire", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_FlameMane-removebg-preview.png"},
-                {"name": "Specimen 66", "hp": 525, "attack": 475, "defense": 460, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Specimen_66-removebg-preview.png"},
-                {"name": "Frank", "hp": 540, "attack": 480, "defense": 470, "element": "Electric", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Frank-removebg-preview.png"},
-                {"name": "French Horned ToadDragon", "hp": 520, "attack": 475, "defense": 460, "element": "Water", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_file__1_-removebg-preview.png"},
-                {"name": "Mog Zard", "hp": 535, "attack": 475, "defense": 465, "element": "Earth", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_MogZard-removebg-preview.png"},
-                {"name": "Mo-Zard", "hp": 500, "attack": 470, "defense": 455, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_file__2_-removebg-preview.png"},
-                {"name": "Nulgath", "hp": 510, "attack": 475, "defense": 460, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Nulgath-removebg-preview.png"},
-                {"name": "Proto Champion", "hp": 525, "attack": 465, "defense": 475, "element": "Corrupted", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_file_3.png"},
-                {"name": "Trash Can", "hp": 515, "attack": 460, "defense": 470, "element": "Light", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_TrashCan-removebg-preview.png"},
-                {"name": "Turdragon", "hp": 530, "attack": 475, "defense": 460, "element": "Nature", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Turagon-removebg-preview.png"},
-                {"name": "Unending Avatar", "hp": 540, "attack": 470, "defense": 455, "element": "Nature", "url":" https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_file_4.png"},
-            ],
-            7: [
-                {"name": "Astral Dragon", "hp": 600, "attack": 570, "defense": 560, "element": "Light", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_AstralDragon.png"},
-                {"name": "Eise Horror", "hp": 580, "attack": 565, "defense": 555, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Elise_Horror-removebg-preview.png"},
-                {"name": "Asbane", "hp": 620, "attack": 575, "defense": 560, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Adbane.png"},
-                {"name": "Apephyryx", "hp": 590, "attack": 570, "defense": 555, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Apephryx-removebg-preview.png"},
-                {"name": "Enchantress", "hp": 610, "attack": 575, "defense": 565, "element": "Nature", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Enchantress-removebg-preview.png"},
-                {"name": "Queen of Monsters", "hp": 605, "attack": 580, "defense": 570, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_QueenOfMonsters-removebg-preview.png"},
-                {"name": "Krykan", "hp": 595, "attack": 570, "defense": 555, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove_background_project.png"},
-                {"name": "Painadin Overlord", "hp": 585, "attack": 565, "defense": 555, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Painadin_Overlord-removebg-preview.png"},
-                {"name": "EL-Blender", "hp": 630, "attack": 575, "defense": 560, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_EbilBlender-removebg-preview.png"},
-                {"name": "Key of Sholemoh", "hp": 615, "attack": 570, "defense": 555, "element": "Corrupted", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Key_of_Sholemoh-removebg-preview.png"},
-                {"name": "Specimen 30", "hp": 625, "attack": 575, "defense": 560, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Specimen_30.png"},
-                {"name": "Pinky", "hp": 640, "attack": 580, "defense": 570, "element": "Electric", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Pinky-removebg-preview.png"},
-                {"name": "Monster Cake", "hp": 620, "attack": 575, "defense": 560, "element": "Nature", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Monster_Cake-removebg-preview.png"},
-                {"name": "Angyler Fish", "hp": 635, "attack": 575, "defense": 565, "element": "Water", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Angyler_Fish-removebg-preview.png"},
-                {"name": "Big Bad Ancient.. Goose?", "hp": 600, "attack": 570, "defense": 555, "element": "Light", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_BigBadAncientGoose-removebg-preview.png"},
-                {"name": "Barlot Field", "hp": 610, "attack": 575, "defense": 560, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Barlot_Fiend-removebg-preview.png"},
-                {"name": "Barghest", "hp": 625, "attack": 565, "defense": 575, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Barghest-removebg-preview.png"},
-                {"name": "Yuzil", "hp": 615, "attack": 560, "defense": 570, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Yuzil.png"},
-                {"name": "Azkorath", "hp": 630, "attack": 575, "defense": 560, "element": "Corrupted", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Azkorath-removebg-preview.png"},
-                {"name": "Boto", "hp": 640, "attack": 570, "defense": 555, "element": "Water", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Boto.png"},
-            ],
-            8: [
-                {"name": "Meatmongous", "hp": 1200, "attack": 450, "defense": 600, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Meatmongous-removebg-preview.png"},
-                {"name": "Ebil Meta Dragon", "hp": 810, "attack": 770, "defense": 550, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_MetaDragon_n_Greg-transformed.png"},
-                {"name": "Shadow Nulgath", "hp": 850, "attack": 700, "defense": 700, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Shadow_Nulgath.png"},
-                {"name": "The First Speaker", "hp": 800, "attack": 600, "defense": 700, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_FirstSpeakerFix-Photoroom.png"},
-            ],
-            9: [
-                {"name": "Avatar Tynfdarius", "hp": 800, "attack": 780, "defense": 770, "element": "Fire", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Avatar_Tynfdarius-removebg-preview-transformed-Photoroom.png"},
-                {"name": "Mech-a-Knight", "hp": 780, "attack": 775, "defense": 790, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Mech-a-knight-removebg-preview-transformed.png"},
-                {"name": "Astraea's Engineer", "hp": 820, "attack": 790, "defense": 775, "element": "Light", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Engineer-removebg-preview-transformed.png"},
-            ],
-            10: [
-                {"name": "Deimos", "hp": 1200, "attack": 700, "defense": 900, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Deimos.png"},
-                {"name": "Void Dragon", "hp": 2500, "attack": 570, "defense": 575, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_6pnyUGr-Photoroom-Photoroom.png"},
-                {"name": "End of all things", "hp": 300, "attack": 2500, "defense": 300, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Beast-Photoroom-transformed-Photoroom.png"},
-            ],
-            11: [
-                {"name": "Drakath", "hp": 4000, "attack": 1022, "defense": 700, "element": "Corrupted", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Pngtreelightning_source_lightning_effect_purple_3916970.png"},
-                {"name": "Astraea", "hp": 3500, "attack": 930, "defense": 930, "element": "Light", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_5z90r962trs71_1-Photoroom.png"},
-                {"name": "Sepulchure", "hp": 3000, "attack": 1400, "defense": 777, "element": "Dark", "url":"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_wakai-quketsuki-sepulchuredoomknightdoomblade-Photoroom.png"},
-                {"name": "Ultra Drakath", "hp": 7950, "attack": 1750, "defense": 1460, "element": "Corrupted",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Pngtreelightning_source_lightning_effect_purple_3916970.png"},
-                {"name": "Ultra Astraea", "hp": 6550, "attack": 1440, "defense": 1650, "element": "Light",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_5z90r962trs71_1-Photoroom.png"},
-                {"name": "Ultra Sepulchure", "hp": 6990, "attack": 1985, "defense": 1290, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_wakai-quketsuki-sepulchuredoomknightdoomblade-Photoroom.png"},
 
-            ]
-        }
+        # Load the monsters from the JSON file
+        try:
+            with open("monsters.json", "r") as f:
+                monsters_data = json.load(f)
+        except Exception as e:
+            await ctx.send(_("Error loading monsters data. Please contact the admin."))
+            return
+
+        # Convert keys from strings to integers and filter out non-public monsters
+        monsters = {}
+        for level_str, monster_list in monsters_data.items():
+            level = int(level_str)
+            # Only keep monsters where ispublic is True (defaulting to True if key is missing)
+            public_monsters = [monster for monster in monster_list if monster.get("ispublic", True)]
+            monsters[level] = public_monsters
+
+        # Validate that each level has the required number of monsters
+        for level in range(1, 12):
+            if level not in monsters:
+                await ctx.send(
+                    _("Monsters for level {level} are incomplete. Please contact the admin.").format(level=level)
+                )
+                return
+            if level < 8 and len(monsters[level]) < 20:
+                await ctx.send(
+                    _("Monsters for level {level} are incomplete. Please contact the admin.").format(level=level)
+                )
+                return
+            if level >= 8 and len(monsters[level]) < 3:
+                await ctx.send(
+                    _("Level {level} monsters are incomplete. Please contact the admin.").format(level=level)
+                )
+                return
+
+        # Fetch the player's XP and determine level
+        player_xp = ctx.character_data.get("xp", 0)
+        player_level = rpgtools.xptolevel(player_xp)
+
+        # Send an embed indicating that the player is searching for a monster
+        searching_embed = discord.Embed(
+            title=_("Searching for a monster..."),
+            description=_("Your journey begins as you venture into the unknown to find a worthy foe."),
+            color=self.bot.config.game.primary_colour,
+        )
+        searching_message = await ctx.send(embed=searching_embed)
+
+        # Simulate searching time
+        if not monster_override:
+            await asyncio.sleep(randomm.randint(3, 8))  # Adjust the sleep time as desired
+
+        # Determine if a legendary monster (level 11) should spawn
+        legendary_spawn_chance = 0.01  # 1% chance
+        spawn_legendary = False
+
+        if not monster_override:  # Only perform regular spawning if no override
+            if player_level >= 5:
+                if randomm.random() < legendary_spawn_chance:
+                    spawn_legendary = True
+
+            if ctx.author.id == 295173706496475136:
+                if self.forceleg:
+                    spawn_legendary = True
+
+            if spawn_legendary:
+                # Select one of the 3 legendary monsters from level 11
+                monster = randomm.choice(monsters[11])
+                legendary_embed = discord.Embed(
+                    title=_("A Legendary God Appears!"),
+                    description=_(
+                        "Behold! **{monster}** has descended to challenge you! Prepare for an epic battle!"
+                    ).format(monster=monster["name"]),
+                    color=discord.Color.gold(),
+                )
+                await ctx.send(embed=legendary_embed)
+                levelchoice = 11
+                await asyncio.sleep(4)
+            else:
+                # Determine monster level based on player level
+                if player_level <= 4:
+                    levelchoice = randomm.randint(1, 2)
+                elif player_level <= 8:
+                    levelchoice = randomm.randint(1, 3)
+                elif player_level <= 12:
+                    levelchoice = randomm.randint(1, 4)
+                elif player_level <= 15:
+                    levelchoice = randomm.randint(1, 5)
+                elif player_level <= 20:
+                    levelchoice = randomm.randint(1, 6)
+                elif player_level <= 25:
+                    levelchoice = randomm.randint(1, 7)
+                elif player_level <= 30:
+                    levelchoice = randomm.randint(1, 8)
+                elif player_level <= 35:
+                    levelchoice = randomm.randint(1, 9)
+                elif player_level <= 40:
+                    levelchoice = randomm.randint(1, 10)
+                else:  # player_level > 40
+                    levelchoice = randomm.randint(1, 10)
+
+                monster = randomm.choice(monsters[levelchoice])
+        else:
+            # Use the overridden monster and level from the scout command
+            monster = monster_override
+            levelchoice = levelchoice_override
+
+        # Send an embed announcing the found monster
+        found_embed = discord.Embed(
+            title=_("Monster Found!"),
+            description=_("A Level {level} **{monster}** has appeared! Prepare to fight..").format(
+                level=levelchoice, monster=monster["name"]
+            ),
+            color=self.bot.config.game.primary_colour,
+        )
+        await searching_message.edit(embed=found_embed)
+        await asyncio.sleep(4)
 
         try:
-            # Ensure all levels have the required number of monsters
-            for level in range(1, 12):
-                if level not in monsters:
-                    await ctx.send(
-                        _("Monsters for level {level} are incomplete. Please contact the admin.").format(level=level))
-                    return
-                if level < 8 and len(monsters[level]) < 20:
-                    await ctx.send(
-                        _("Monsters for level {level} are incomplete. Please contact the admin.").format(level=level))
-                    return
-                if level >= 8 and len(monsters[level]) < 3:
-                    await ctx.send(
-                        _(f"Level {level} monsters are incomplete. Please contact the admin."))
-                    return
-
-            # Fetch the player's XP and level
-            player_xp = ctx.character_data.get("xp", 0)
-            player_level = rpgtools.xptolevel(player_xp)
-
-            # Send an embed indicating that the player is searching for a monster
-            searching_embed = discord.Embed(
-                title=_("Searching for a monster..."),
-                description=_("Your journey begins as you venture into the unknown to find a worthy foe."),
-                color=self.bot.config.game.primary_colour,
-            )
-            searching_message = await ctx.send(embed=searching_embed)
-
-            # Simulate searching time
-            if not monster_override:
-                await asyncio.sleep(randomm.randint(3, 8))  # Adjust the sleep time as desired
-
-            # Determine if a legendary monster (level 11) should spawn
-            legendary_spawn_chance = 0.01  # 1% chance
-            spawn_legendary = False
-
-            if not monster_override:  # Only do regular spawning if no override
-                if player_level >= 5:
-                    if randomm.random() < legendary_spawn_chance:
-                        spawn_legendary = True
-
-                if ctx.author.id == 295173706496475136:
-                    if self.forceleg:
-                        spawn_legendary = True
-
-                if spawn_legendary:
-                    # Select one of the 3 legendary gods
-                    monster = random.choice(monsters[11])
-                    # Send a dramatic announcement
-                    legendary_embed = discord.Embed(
-                        title=_("A Legendary God Appears!"),
-                        description=_(
-                            "Behold! **{monster}** has descended to challenge you! Prepare for an epic battle!").format(
-                            monster=monster["name"]
-                        ),
-                        color=discord.Color.gold(),
-                    )
-                    await ctx.send(embed=legendary_embed)
-                    levelchoice = 11
-                    await asyncio.sleep(4)
-                else:
-                    # Determine monster level based on player level
-                    if player_level <= 4:
-                        levelchoice = randomm.randint(1, 2)
-                    elif player_level <= 8:
-                        levelchoice = randomm.randint(1, 3)
-                    elif player_level <= 12:
-                        levelchoice = randomm.randint(1, 4)
-                    elif player_level <= 15:
-                        levelchoice = randomm.randint(1, 5)
-                    elif player_level <= 20:
-                        levelchoice = randomm.randint(1, 6)
-                    elif player_level <= 25:
-                        levelchoice = randomm.randint(1, 7)
-                    elif player_level <= 30:
-                        levelchoice = randomm.randint(1, 8)
-                    elif player_level <= 35:
-                        levelchoice = randomm.randint(1, 9)
-                    elif player_level <= 40:
-                        levelchoice = randomm.randint(1, 10)
-                    else:  # 40+
-                        levelchoice = randomm.randint(1, 10)
-
-                    monster = random.choice(monsters[levelchoice])
-
-            else:
-                # Use the overridden monster and level from scout command
-                monster = monster_override
-                levelchoice = levelchoice_override
-
-            # Then continue with your found monster embed
-            found_embed = discord.Embed(
-                title=_("Monster Found!"),
-                description=_("A Level {level} **{monster}** has appeared! Prepare to fight..").format(
-                    level=levelchoice, monster=monster["name"]
-                ),
-                color=self.bot.config.game.primary_colour,
-            )
-            await searching_message.edit(embed=found_embed)
-            await asyncio.sleep(4)
-
-            # Fetch the player's stats and classes
+        # Fetch the player's stats and classes
             async with self.bot.pool.acquire() as conn:
                 user_id = ctx.author.id
 
@@ -7709,6 +7643,9 @@ class Battles(commands.Cog):
             if player_stats["hp"] > 0 and monster_stats["hp"] <= 0:
                 # Player wins
 
+
+
+
                 if levelchoice == 11:
 
                     xp_gain = random.randint(75000,125000)  # Example: higher XP for legendary monsters
@@ -7760,17 +7697,15 @@ class Battles(commands.Cog):
                             final_egg_chance += ranger_bonus
 
                     # Check for egg drop with modified chance
-                    # Check for egg drop with modified chance
                     if randomm.random() < final_egg_chance:
                         async with self.bot.pool.acquire() as conn:
+                            # Count pets, unhatched eggs, and pending splice requests (each counts as 2)
                             pet_and_egg_count = await conn.fetchval(
                                 """
-                                SELECT COUNT(*) 
-                                FROM (
-                                    SELECT id FROM monster_pets WHERE user_id = $1
-                                    UNION ALL
-                                    SELECT id FROM monster_eggs WHERE user_id = $1 AND hatched = FALSE
-                                ) AS combined
+                                SELECT 
+                                    (SELECT COUNT(*) FROM monster_pets WHERE user_id = $1) +
+                                    (SELECT COUNT(*) FROM monster_eggs WHERE user_id = $1 AND hatched = FALSE) +
+                                    (SELECT COUNT(*) FROM splice_requests WHERE user_id = $1 AND status = 'pending')
                                 """,
                                 ctx.author.id
                             )
@@ -7803,7 +7738,7 @@ class Battles(commands.Cog):
                             for index, record in enumerate(pet_and_egg_list, start=1):
                                 response_message += f"{index}. {record['type'].title()} - {record['display_name']}\n"
                             response_message += _(
-                                "Type the number of the pet/egg you want to release or type `cancel` to skip:")
+                                "Type the ID of the pet/egg you want to release or type `cancel` to skip:")
 
                             await ctx.send(response_message)
 
@@ -7811,7 +7746,7 @@ class Battles(commands.Cog):
                                 return m.author == ctx.author and m.channel == ctx.channel
 
                             try:
-                                reply = await self.bot.wait_for("message", check=check, timeout=60.0)
+                                reply = await self.bot.wait_for("message", check=check, timeout=120.0)
                             except asyncio.TimeoutError:
                                 await ctx.send(_("Timed out. No egg awarded."))
                                 return
@@ -7935,6 +7870,8 @@ class Battles(commands.Cog):
                                 )
                         except Exception as e:
                             await ctx.send(str(e))
+                    success = True
+                    self.bot.dispatch("PVE_completion", ctx, success)
 
 
                 elif monster_stats["hp"] > 0 and player_stats["hp"] <= 0:
@@ -7944,6 +7881,7 @@ class Battles(commands.Cog):
                             monster=monster["name"]
                         )
                     )
+                
 
             # End of the command
         except Exception as e:

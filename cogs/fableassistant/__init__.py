@@ -18,135 +18,122 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import discord
 from discord.ext import commands
-import openai
 import json
-import asyncio
-import aiohttp
+import re
 
 from utils.checks import is_gm
 
 
 class FableAssistant(commands.Cog):
+    # Specify the channel ID as a class attribute for easy configuration
+    LISTEN_CHANNEL_ID = [1311927627803656192]
+
     def __init__(self, bot):
         self.bot = bot
-        self.conversations = {}  # Store conversation history per user
 
         # Load the JSON data once when the cog is initialized
         with open('fable_data.json', 'r') as file:
             self.fable_data = json.load(file)
 
-    def get_relevant_data(self, user_question):
-        # Simple keyword matching for demonstration purposes
-        keywords = user_question.lower().split()
-        relevant_data = {}
+        # Extract monster data for easier access
+        self.monster_data = self.fable_data.get("Monsters", {})
 
-        # Check each main category in the data
-        for category, content in self.fable_data.items():
-            if any(keyword in category.lower() for keyword in keywords):
-                relevant_data[category] = content
-            else:
-                # Check subcategories
-                if isinstance(content, dict):
-                    for subcategory, subcontent in content.items():
-                        if any(keyword in subcategory.lower() for keyword in keywords):
-                            if category not in relevant_data:
-                                relevant_data[category] = {}
-                            relevant_data[category][subcategory] = subcontent
-        return relevant_data
+    def search_monsters(self, query):
+        """
+        Search monsters by name, level, or element without using AI.
+        """
+        query = query.lower().strip()
+        results = []
 
-    def construct_prompt(self, user_question, relevant_data):
-        system_message = """You are an AI assistant for the game Fable. Use ONLY the provided data to answer the user's question. Do not include any information not present in the data. If the answer is not in the data, respond that you don't have that information."""
+        # Check for level-based search (with or without space)
+        level_search = re.search(r'level\s*(\d+)', query)
 
-        prompt = f"""{system_message}
+        # Check for element-based search
+        elements = ["earth", "water", "nature", "dark", "wind", "light", "fire", "electric", "corrupted", "ice"]
+        element_search = None
+        for element in elements:
+            if re.search(r'\b' + element + r'\b', query):
+                element_search = element
+                break
 
-User's Question:
-{user_question}
+        # Search logic
+        for name, monster in self.monster_data.items():
+            name_lower = name.lower()
 
-Relevant Data:
-{json.dumps(relevant_data, indent=2)}
+            # Search by name (full or partial)
+            if query in name_lower:
+                results.append((name, monster))
+                continue
 
-Answer:"""
-        return prompt
+            # Search by level
+            if level_search and monster.get("level") == int(level_search.group(1)):
+                results.append((name, monster))
+                continue
 
-    async def get_gpt_response_async(self, conversation_history):
-        url = "https://api.openai.com/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer ",  # Replace with your actual API key
-            "Content-Type": "application/json"
-        }
-        data = {
-            "model": "gpt-4o",  # Use the appropriate model
-            "messages": conversation_history,
-            "max_tokens": 5000,
-            "temperature": 0
-        }
+            # Search by element
+            if element_search and monster.get("element", "").lower() == element_search:
+                results.append((name, monster))
 
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=headers, json=data) as response:
-                    response_data = await response.json()
-                    # Check if the API returned an error
-                    if response.status != 200:
-                        return f"Error: {response_data.get('error', {}).get('message', 'An unknown error occurred')}"
-                    return response_data['choices'][0]['message']['content'].strip()
-        except aiohttp.ClientError as e:
-            return f"Error connecting to OpenAI: {str(e)}"
-        except Exception as e:
-            return f"Unexpected error! Is the pipeline server running? {e}"
+        return results
 
-    def split_message(self, message, max_length=2000):
-        # Discord has a message limit of 2000 characters
-        return [message[i:i+max_length] for i in range(0, len(message), max_length)]
-
-
-    @commands.command(name='helpme', help='Ask about Fable!')
-    async def helpme(self, ctx, *, question):
-        # Check if the command is invoked in one of the allowed channels
-        allowed_guilds = [969741725931298857, 1285448244859764839]
-        allowed_user_id = 500713532111716365  # Replace with your user ID if needed
-
-
-        user_id = ctx.author.id
-
-        # Retrieve relevant data
-        relevant_data = self.get_relevant_data(question)
-
-        # If no relevant data is found, inform the user
-        if not relevant_data:
-            await ctx.send("I'm sorry, I don't have information about that.")
+    async def send_monster_results(self, message, results):
+        """
+        Send monster search results using Discord embeds.
+        """
+        if not results:
+            await message.channel.send("No monsters found matching your search.")
             return
 
-        # Construct the prompt
-        prompt = self.construct_prompt(question, relevant_data)
+        # If there are too many results, inform the user
+        if len(results) > 5:
+            await message.channel.send(f"Found {len(results)} monsters. Showing the first 5:")
+            results = results[:5]
 
-        # Create the conversation
-        conversation = [
-            {"role": "system", "content": "You are an AI assistant for the game Fable. Use ONLY the provided data to answer the user's question. Do not include any information not present in the data. If the answer is not in the data, respond that you don't have that information."},
-            {"role": "user", "content": prompt}
-        ]
+        # Create an embed for each monster
+        for name, monster in results:
+            embed = discord.Embed(
+                title=name,
+                description=f"Level {monster.get('level', 'Unknown')} {monster.get('element', 'Unknown')} Monster",
+                color=0x3498db
+            )
 
-        # Fetch the response from the ChatGPT API
-        try:
-            response = await self.get_gpt_response_async(conversation)
-        except Exception as e:
-            await ctx.send(f"An error occurred: {e}")
+            # Add monster stats
+            embed.add_field(name="HP", value=monster.get('hp', 'Unknown'), inline=True)
+            embed.add_field(name="Attack", value=monster.get('attack', 'Unknown'), inline=True)
+            embed.add_field(name="Defense", value=monster.get('defense', 'Unknown'), inline=True)
+
+            # Add image if available
+            if monster.get('url'):
+                embed.set_thumbnail(url=monster.get('url'))
+
+            await message.channel.send(embed=embed)
+
+        # If we limited the results, let the user know
+        if len(results) == 5:
+            await message.channel.send("Type a more specific search to see other results.")
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        # Ignore messages sent by bots (including itself)
+        if message.author.bot:
             return
 
-        # Append to conversation history if needed
-        if user_id not in self.conversations:
-            self.conversations[user_id] = []
-        self.conversations[user_id].extend([
-            {"role": "user", "content": question},
-            {"role": "assistant", "content": response}
-        ])
+        # Check if the message is in the specified channel
+        if message.channel.id not in self.LISTEN_CHANNEL_ID:
+            return
 
-        # Ensure the conversation doesn't exceed 100 messages
-        while len(self.conversations[user_id]) > 200:
-            self.conversations[user_id].pop(0)  # Remove the oldest message
+        user_query = message.content.strip()
 
-        # Split and send the response back to the user
-        for chunk in self.split_message(response):
-            await ctx.send(chunk)
+        # Ignore empty messages
+        if not user_query:
+            return
+
+        # Search for monsters based on the query
+        monster_results = self.search_monsters(user_query)
+
+        # Send the results as embeds
+        await self.send_monster_results(message, monster_results)
+
 
 # Setup function to add the cog to the bot
 async def setup(bot):

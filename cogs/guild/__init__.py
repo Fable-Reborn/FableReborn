@@ -1477,7 +1477,7 @@ class Guild(commands.Cog):
             await ctx.send(f"No cooldown entries found for guild ID {guild_id}.")
 
     @is_guild_officer()
-    @guild_cooldown(3600)
+    @guild_cooldown(86400)
     @guild.command(brief=_("Start a guild adventure"))
     @locale_doc
     async def adventure(self, ctx, timer: int = 600):
@@ -1519,11 +1519,13 @@ class Guild(commands.Cog):
                 timeout=timer,
             )
 
+            mins = timer / 60
+
             # Send the join message
             await ctx.send(
                 _(
                     "{author} seeks a guild adventure for **{guild}**! Click the button to"
-                    " join! Unlimited players can join in the next 10 minutes. The minimum"
+                    " join! Unlimited players can join in the next {mins} minutes. The minimum"
                     " of players required is 3."
                 ).format(author=ctx.author.mention, guild=guild["name"]),
                 view=view,
@@ -1540,7 +1542,9 @@ class Guild(commands.Cog):
 
             joined = []
 
-            # Gather participants' data
+            command_user = self.bot.get_user(ctx.author.id) or await self.bot.fetch_user(ctx.author.id)
+            joined.append(command_user)
+
             async with self.bot.pool.acquire() as conn:
                 for u in view.joined:
                     user = await conn.fetchrow(
@@ -1550,11 +1554,9 @@ class Guild(commands.Cog):
                         difficulty += int(rpgtools.xptolevel(user["xp"]))
                         joined.append(u)
 
-            # Update the advmembers column for the specified guild
+            # Update the guild's advmembers with only valid members
             async with self.bot.pool.acquire() as conn:
-                # Gather all user IDs from view.joined
-                user_ids = [u.id for u in view.joined]
-
+                user_ids = [u.id for u in joined]
                 await conn.execute(
                     'UPDATE guild SET advmembers=$1 WHERE "id"=$2;',
                     user_ids, guild["id"]
@@ -2020,6 +2022,11 @@ class Guild(commands.Cog):
                             )
                             xp_summary = []
 
+
+                            randomid = random.choice(advmembers)
+                            completed = True
+                            self.bot.dispatch("raid_completion", ctx, completed, randomid)
+
                             # Loop through each user and add a random XP value
                             for record in user_xp_data:
                                 user_id = record["user"]
@@ -2091,6 +2098,8 @@ class Guild(commands.Cog):
                         color=discord.Color.green()
                     )
 
+
+
                     # Ensure each field has 1024 or fewer characters
                     if xp_summary:
                         # Split into chunks to ensure no field exceeds 1024 characters
@@ -2130,6 +2139,7 @@ class Guild(commands.Cog):
                                 if guild_channel:
                                     with suppress(discord.Forbidden, discord.HTTPException):
                                         await guild_channel.send(embed=xp_embed)
+
                                 else:
                                     print(f"Guild channel with ID {channel_id} not found.")
                         except TypeError as e:
@@ -2147,6 +2157,9 @@ class Guild(commands.Cog):
                             "Ask a guild officer to collect the reward."
                         ).format(adventure_name=adventure_type['name'])
                     )
+                    
+
+
             else:
                 await ctx.send(
                     _(
