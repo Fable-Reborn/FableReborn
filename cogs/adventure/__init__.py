@@ -1457,8 +1457,6 @@ class Adventure(commands.Cog):
         if await self.bot.get_booster(ctx.author, "time"):
             time = time / 2
 
-        if ctx.author.id == 295173706496475136:
-            time = time / 232424324443
 
 
 
