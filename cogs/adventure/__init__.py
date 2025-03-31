@@ -1460,6 +1460,7 @@ class Adventure(commands.Cog):
 
 
 
+
         await self.bot.start_adventure(ctx.author, adventure_number, time)
 
         await ctx.send(
