@@ -1,0 +1,262 @@
+{
+    "level_names": [
+      "The Tower's Foyer",
+      "Shadowy Staircase",
+      "Chamber of Whispers",
+      "Serpent's Lair",
+      "Halls of Despair",
+      "Crimson Abyss",
+      "Forgotten Abyss",
+      "Dreadlord's Domain",
+      "Gates of Twilight",
+      "Twisted Reflections",
+      "Voidforged Sanctum",
+      "Nexus of Chaos",
+      "Eternal Torment Halls",
+      "Abyssal Desolation",
+      "Cursed Citadel",
+      "The Spire of Shadows",
+      "Tempest's Descent",
+      "Roost of Doombringers",
+      "The Endless Spiral",
+      "Malevolent Apex",
+      "Apocalypse's Abyss",
+      "Chaosborne Throne",
+      "Supreme Darkness",
+      "The Tower's Heart",
+      "The Ultimate Test",
+      "Realm of Annihilation",
+      "Lord of Despair",
+      "Abyssal Overlord",
+      "The End of All",
+      "The Final Confrontation"
+    ],
+    "victories": {
+      "1": {
+        "title": "Victory!",
+        "description": "As the dust settles, you stand victorious over the fallen minions and the defeated Abyssal Guardian, its ominous form dissipating into the shadows. The floor is now free from its grasp, and the path to treasure lies ahead.",
+        "has_chest": true,
+        "chest_rewards": {
+          "default": {
+            "left": {"type": "crate", "value": "rare", "amount": 1},
+            "right": {"type": "nothing", "value": 0, "amount": 0}
+          },
+          "prestige": "random"
+        }
+      },
+      "2": {
+        "title": "Triumphant Conquest!",
+        "description": "A deafening silence falls upon the Shadowy Staircase as the lifeless forms of Wraith and Soul Eater lay shattered at your feet. The Vile Serpent writhes in agony, its malevolent presence vanquished by your unwavering determination.\n\nThe darkness recedes, unveiling a newfound path ahead, leading you deeper into the mysterious Battle Tower.",
+        "has_chest": false
+      },
+      "3": {
+        "title": "Triumph Over Warlord Grakthar!",
+        "description": "The war drums of the Chamber of Whispers have fallen silent, and the imposing Warlord Grakthar lies defeated. His goblin and orc minions cower in fear as your indomitable spirit overcame their darkness.\n\nThe chamber, once filled with dread, now echoes with your resounding victory, and the path ahead beckons with unknown challenges.",
+        "has_chest": false
+      },
+      "4": {
+        "title": "Necromancer Voss Defeated!",
+        "description": "As you stand amidst the shattered skeletons and defeated zombies, a haunting silence fills the Serpent's Lair. Necromancer Voss, a dark conjurer of unholy power, has been vanquished, his malevolent schemes thwarted.\n\nYet, the Necromancer's presence lingers in the air, and you can't help but wonder about the origins of this once hallowed tower. What secrets does it hold?\n\nWith this victory, you move deeper into the tower, your journey now intertwined with the ancient mysteries it holds.",
+        "has_chest": true,
+        "chest_rewards": {
+          "default": {
+            "left": {"type": "crate", "value": "common", "amount": 3},
+            "right": {"type": "money", "value": 20000, "amount": 1}
+          },
+          "prestige": "random"
+        }
+      },
+      "5": {
+        "title": "Triumph Over Blackblade Marauder!",
+        "description": "The Halls of Despair fall eerily silent as the notorious Blackblade Marauder lies defeated. His bandit and highwayman accomplices now tremble before your indomitable spirit.\n\nThe Marauder's sinister map, discovered in his lair, hints at hidden treasures deeper within the tower. You're drawn further into the tower's enigmatic history, eager to uncover its secrets.",
+        "has_chest": true,
+        "chest_rewards": {
+          "default": {
+            "left": {"type": "crate", "value": "common", "amount": 3},
+            "right": {"type": "money", "value": 20000, "amount": 1}
+          },
+          "prestige": "random"
+        }
+      },
+      "6": {
+        "title": "Arachnok Queen Defeated!",
+        "description": "As you stand amidst the shattered webs and the defeated {minion1_name}s and {minion2_name}s, a tense silence envelops the Crimson Abyss. The Arachnok Queen, a monstrous ruler of arachnids, has been vanquished, her venomous web dismantled, and her reign of terror put to an end.\n\nAs you take a moment to catch your breath, you notice a peculiar artifact hidden within the queen's lair. This ancient relic begins to glow with an eerie light, and when you touch it, a vision unfolds before your eyes.\n\nIn the vision, you see the tower as it once was, a beacon of hope and valor. But it's gradually consumed by darkness, as an otherworldly entity known as the 'Eclipse Wraith' appears. This malevolent being hungers for the tower's immense power and begins to absorb the very light and life from within. In desperation, the tower's defenders created the artifacts, the only weapons capable of opposing the Eclipse Wraith's darkness.\n\nWith newfound purpose, you continue your ascent, knowing that you possess one of the artifacts, and the fate of the tower now rests in your hands.",
+        "has_chest": false
+      },
+      "7": {
+        "title": "Lich Lord Moros Defeated!",
+        "description": "As you stand amidst the vanquished {minion1_name}s and {minion2_name}s, an eerie stillness surrounds the {level_name}. The Lich Lord Moros, a master of spectral dominion, has been defeated, his ethereal reign shattered, and his dark enchantments dispelled.\n\nAs you explore the aftermath, another artifact reveals a vision to you. This time, you witness a group of brave souls, the 'Order of Radiance,' who were the last defenders of the tower. They reveal their intentions to harness the power of the artifacts and use them to push back the Eclipse Wraith. But their attempts were in vain, as the Eclipse Wraith's darkness overcame them, corrupting their very souls.\n\nYour journey takes on a deeper purpose as you learn of the Eclipse Wraith's corruption and its influence over the tower. The artifacts are your only hope to stand against this malevolence.",
+        "has_chest": false
+      },
+      "8": {
+        "title": "Frostfire Behemoth Defeated!",
+        "description": "As you stand amidst the defeated {minion1_name}s and {minion2_name}s, an oppressive heat fills the {level_name}. The Frostfire Behemoth, a master of fire and ice, has been vanquished, its elemental power extinguished, and its molten heart frozen.\n\nIn the scorching aftermath, you encounter an artifact that projects yet another vision. This time, you see the Eclipse Wraith's origin. It was once a powerful entity of light and balance, but it was corrupted by its insatiable thirst for power and dominion.\n\nYou realize that the Eclipse Wraith's corruption is tied to the artifacts themselves. The more you possess, the closer you come to facing the Eclipse Wraith. You continue your journey, determined to uncover the truth and put an end to the tower's darkness.",
+        "has_chest": false
+      },
+      "9": {
+        "title": "Dragonlord Zaldrak Defeated!",
+        "description": "As you stand amidst the frozen tundra and the defeated {minion1_name}s and {minion2_name}s, an icy stillness blankets the {level_name}, the Frozen Abyss. The Dragonlord Zaldrak, a master of frost and flame, has been vanquished, its frigid and fiery power quelled, and its dominion shattered.\n\nAmidst the frost, you come across an artifact with a chilling vision. It reveals that the Eclipse Wraith has already absorbed the power of the other artifacts and has grown stronger. It seeks to devour the entire world, and the only way to stop it is by wielding the combined power of the remaining artifacts.\n\nWith the artifacts in your possession, your journey becomes a race against time, as you are the last hope to prevent the Eclipse Wraith's catastrophic release.",
+        "has_chest": false
+      },
+      "10": {
+        "title": "Soulreaver Lurkthar Defeated!",
+        "description": "As you stand amidst the shattered spirits and the defeated {minion1_name}s and {minion2_name}s, an eerie sense of tranquility washes over the {level_name}, the Soulreaver's Embrace. Soulreaver Lurkthar, a formidable entity that consumed countless souls, has been vanquished, its malevolent grip on the spectral realm broken, and the souls it enslaved set free.\n\nYou take a moment to appreciate the artifact you acquired in the Crimson Abyss, as it once again glows with an ethereal light. This time, it offers a vision of the tower's guardians, including the bosses you have faced. They were once noble protectors of the tower, known as the 'Sentinels of Radiance.'\n\nLong ago, the Sentinels guarded the tower against all threats, including the Eclipse Wraith. However, the power of the Eclipse Wraith corrupted them, turning them into the very foes they once fought against.\n\nThe artifact in your possession is not only a weapon but also a key to unlocking the potential within these fallen Sentinels. With it, you have the power to cleanse and restore them to their former glory. You realize that your journey is not just about defeating the Eclipse Wraith but also redeeming the defenders who lost their way.",
+        "has_chest": true,
+        "chest_rewards": {
+          "default": {
+            "left": {"type": "crate", "value": "magic", "amount": 2},
+            "right": {"type": "money", "value": 55000, "amount": 1}
+          },
+          "prestige": "random"
+        }
+      },
+      "11": {
+        "title": "Ravengaze Alpha Defeated!",
+        "description": "As you stand amidst the fallen Gnoll Raiders and defeated Hyena Packs, the {level_name}, the Voidforged Sanctum, echoes with an eerie silence. Ravengaze Alpha, a once-proud leader of the hyena tribe, has been vanquished, and the dark aura surrounding them has lifted.\n\nThe artifact from the Soulreaver's Embrace pulses with newfound energy. It reveals another vision, one of a grand council chamber within the tower. Here, the Guardians of Radiance, the Sentinels of Light, forged a pact with the Eclipse Wraith to protect the tower against a greater, hidden threat.\n\nThe vision hints that the tower's fall into darkness was a last resort to prevent this hidden power from being unleashed. Your journey is now a quest to unveil this hidden threat and restore the tower to its original purpose.\n\nBut the vision holds a revelation - one of the Guardians, who stood as a beacon of light, is revealed to have orchestrated the Eclipse Wraith's corruption, becoming its greatest ally and adversary.",
+        "has_chest": false
+      },
+      "12": {
+        "title": "Nightshade Serpentis Defeated!",
+        "description": "As you stand amidst the fallen Gloomhounds and defeated Nocturne Stalkers, the {level_name}, the Nexus of Chaos, resonates with a sense of restored equilibrium. Nightshade Serpentis, once a guardian of the tower, has been vanquished, and the arcane chaos that enveloped the floor dissipates.\n\nThe artifact in your possession once again shines with brilliance, revealing another vision. This vision takes you to a library within the tower, where the Guardians of Radiance researched the tower's history and its ancient purpose.\n\nYou learn that the Eclipse Wraith's curse was the result of a great betrayal by one of the Guardians, who sought to harness the tower's power for their own gain. The Eclipse Wraith was summoned as a protector, but the dark force turned against its summoners.\n\nYour journey now encompasses a quest for knowledge as you seek to understand the tower's true history and the identity of the betrayer who initiated its fall. A plot to harness ultimate power is unveiled.",
+        "has_chest": false
+      },
+      "13": {
+        "title": "Ignis Inferno Defeated!",
+        "description": "As you stand amidst the vanquished Magma Elementals and Inferno Imps, the {level_name}, the Eternal Torment Halls, ceases to tremble with searing heat. Ignis Inferno, a blazing entity with an unquenchable fire, has been extinguished, and the fires that consumed the floor subside.\n\nThe artifact shines with a fiery brilliance, revealing yet another vision. This time, it transports you to the heart of the tower's inner sanctum, where the ultimate secret is unveiled - the hidden threat is not an external force but a malevolent consciousness within the tower itself.\n\nThe Eclipse Wraith, now recognized as the Tower's Heart, was designed to contain and counterbalance this malevolent consciousness. Its transformation into darkness was intentional, and it's not the tower's adversary, but its guardian.\n\nYour journey has now reached its apex. You must confront the malevolent consciousness within the Tower's Heart to either save or seal the tower's fate. A shocking twist that challenges everything you knew about the tower's history.",
+        "has_chest": false
+      },
+      "14": {
+        "title": "Wraithlord Maroth Defeated!",
+        "description": "As you stand amidst the defeated Cursed Banshees and Spectral Harbingers, the {level_name}, the Abyssal Desolation, resonates with a newfound stillness. Wraithlord Maroth, a sinister figure with dominion over lost souls, has been vanquished, and the lingering wails of the desolation fade.\n\nYour artifact gleams, offering a vision of a council meeting among the Guardians of Radiance. Here, the decision to summon the Eclipse Wraith was made, a desperate act to combat the hidden threat that endangered the tower.\n\nHowever, this vision reveals a shocking truth - the Eclipse Wraith's dark transformation was not due to the betrayal of a Guardian, but it was always intended to be a guardian of darkness, a necessary counterbalance to the hidden threat.\n\nYour journey now becomes a quest to understand the true purpose of the Eclipse Wraith and confront the hidden threat head-on. A twist in the narrative reveals the Eclipse Wraith as a guardian of balance.",
+        "has_chest": false
+      },
+      "15": {
+        "title": "Infernus, the Infernal Defeated!",
+        "description": "As you stand amidst the defeated Demonic Imps and Hellspawn Reavers, the {level_name}, the Cursed Citadel, feels almost solemn. Infernus, the Infernal, a creature of elemental destruction, has been vanquished, and the citadel's flames subside.\n\nYour artifact radiates with power and offers a vision. This vision transports you to a chamber deep within the tower, where the ultimate secret is unveiled - the hidden threat is not an external force but a malevolent consciousness within the tower itself.\n\nThe Eclipse Wraith, now recognized as the Tower's Heart, was designed to contain and counterbalance this malevolent consciousness. Its transformation into darkness was intentional, and it's not the tower's adversary, but its guardian.\n\nYour journey has now reached its apex. You must confront the malevolent consciousness within the Tower's Heart to either save or seal the tower's fate.\n\nHowever, the vision also reveals that the remaining Guardians of Radiance are imprisoned within the tower, their power siphoned to sustain the malevolent consciousness. A plot twist that sets the stage for your most challenging battle.",
+        "has_chest": true,
+        "chest_rewards": {
+          "default": {
+            "left": {"type": "random", "legendaryChance": 0.5, "nothing": 0.5},
+            "right": {"type": "random", "legendaryChance": 0.5, "nothing": 0.5}
+          },
+          "prestige": "random"
+        }
+      },
+      "16": {
+        "title": "Master Puppeteer Defeated!",
+        "description": "As the Master Puppeteer falls amidst the wreckage of marionettes and severed strings, the {level_name}, the Manipulated Marionette Chamber, echoes with an eerie silence. The artifact in your possession, known for revealing visions, suddenly projects ancient symbols onto the chamber's walls.\n\nThese symbols tell the tale of an ancient weapon, the Tower, designed by a civilization known as the Forerunners. The tower's purpose was to stop a cosmic malevolence threatening galaxies.\n\nHowever, a startling revelation unfolds as the artifact translates these ancient inscriptions. It becomes evident that the tower itself, now controlled by a malevolent force, is the very threat the Forerunners built it to stop—an ominous power seeking to wreak havoc on cosmic scales.\n\nAs you delve deeper into the translated inscriptions, a fragmented history emerges. The malevolent force corrupted the tower, turning it against its intended purpose. It manipulated events through the Master Puppeteer to ensure chaos would reign, setting the stage for an imminent cosmic cataclysm.\n\nThe artifact, once deemed a mere visionary device, now pulses with untapped potential—a cosmic weapon capable of restoring the tower to its intended purpose or, if wielded incorrectly, unleashing a catastrophic cosmic upheaval.\n\nWith this newfound understanding, you brace yourself for the ultimate confrontation against the malevolent force controlling the tower—a showdown not just to liberate the tower but to prevent a cosmic disaster that threatens to engulf entire galaxies.\n\nArmed with the artifact's augmented power, you step forth, knowing that the fate of the cosmos hangs in the balance, and the final battle to reclaim the tower's purpose is the first step in averting a catastrophe of unprecedented proportions.",
+        "has_chest": false
+      },
+      "17": {
+        "title": "Eldritch Devourer Defeated!",
+        "description": "The {level_name}, known as the Convergence Nexus, shudders as the last echoes of battle fade. Chaos Fiends and Voidborn Horrors lie scattered, defeated. The Eldritch Devourer, a colossal cosmic anomaly, succumbs to your relentless assault, its astral essence dissipating into the void.\n\nAs the Eldritch Devourer crumbles, the artifact in your possession vibrates with newfound energy. It projects ethereal visions, revealing the birth of the Devourer—a celestial being designed by the Forerunners as the embodiment of cosmic balance. Yet, the malevolent force, lurking in the shadows, twisted its purpose, turning it into a force of destruction.\n\nIn the cosmic aftermath, the artifact speaks in resonant whispers, hinting at latent powers within the Eldritch Devourer's remnants. With the convergence of cosmic forces, a new revelation awaits you on level 18—the Tower's inner sanctum, where the fabric of reality is interwoven with the remnants of ancient guardians and the malevolent force's sinister schemes.\n\nEmbrace the cosmic energies and ascend to level 18, for the Tower's secrets are yet to unfold, and the cosmic dance of destiny continues.",
+        "has_chest": false
+      },
+      "18": {
+        "title": "Broodmother Arachna Defeated!",
+        "description": "The {level_name}, also known as Arachna's Abyss, bears the scars of a relentless clash. The Venomous Arachnids' hisses and the Arachnoid Aberrations' eerie silence now accompany the stillness of Broodmother Arachna's lair. The colossal arachnid queen lies vanquished, her once-daunting domain now a silent testament to your triumph.\n\nAs the aftermath settles, the artifact resonates with the remnants of the cosmic battle. It unfolds visions that transcend the linear flow of time—showcasing not only the corrupted past of Broodmother Arachna but glimpses of her potential redemption. Within her twisted essence, ancient echoes of a guardian's duty linger.\n\nWith each step deeper into the Tower, the artifact pulses with anticipation. It reveals the imminent convergence of destinies—the Tower's core, a crucible of ancient guardians and the malevolent force's relentless machinations. A cosmic alliance may await, as the Tower itself yearns for redemption.\n\nAs you ascend to level 19, the Tower's heartbeat becomes more palpable. The artifact, now an arcane compass, guides you towards the heart of the cosmic storm, where revelations and alliances await—a celestial dance that could reshape the very fabric of the cosmos.",
+        "has_chest": false,
+        "flash": {
+          "title": "A Momentary Flash",
+          "description": "In the midst of the cosmic chaos, there's a fleeting moment where everything shifts. The room bathes in an ethereal light, and for an instant, it seems as if you've just triumphed over a guardian of good, a defender of cosmic harmony.\n\nHowever, the vision is ephemeral, and the room swiftly returns to its dark and foreboding state. The artifact's glow dims, leaving you with a disquieting sense of uncertainty. Was it a glimpse of the past, a trick of the malevolent force, or a foreshadowing of darker revelations?"
+        }
+      },
+      "19": {
+        "title": "Spectral Overlord Defeated!",
+        "description": "The Ethereal Nexus trembles as the Spectral Overlord falls, its dominion shattered. Phantom Wraiths dissipate, and the once-formidable Overlord crumbles.\n\nAmidst the cosmic aftermath, the tower itself seems to whisper secrets, revealing the echoes of the Forerunners' desperation and the Guardians' self-sacrifice.\n\nA surge of cosmic energy propels you to Level 20, a realm shrouded in mysteries yet to unravel.",
+        "has_chest": false
+      },
+      "20": {
+        "title": "Frostbite, the Ice Tyrant Defeated!",
+        "description": "The Glacial Bastion witnesses an epic clash, Frozen Horrors crumbling under your relentless onslaught. Frostbite, the Ice Tyrant, bows before your might, and the frozen heart thaws into oblivion.\n\nVisions unfurl, unveiling an ancient alliance—a cosmic dance disrupted by betrayal. Your journey intertwines with remnants of the cosmic alliance, and the Ice Tyrant's remains hold untapped powers that could tip the cosmic balance.\n\nLevel 21 beckons, promising revelations that transcend mere artifacts.",
+        "has_chest": true,
+        "chest_rewards": {
+          "default": {
+            "left": {"type": "crate", "value": "magic", "amount": 2},
+            "right": {"type": "money", "value": 120000, "amount": 1}
+          },
+          "prestige": "random"
+        }
+      },
+      "21": {
+        "title": "Chromaggus the Flamebrand Defeated!",
+        "description": "Ember Spire roars with the clash against Dragonkin and Chromatic Wyrms. Chromaggus the Flamebrand succumbs to your relentless assault, its fiery essence extinguished into cosmic embers.\n\nThe tower itself, now a sentient force, reveals a prophecy—a chosen one, a celestial dance between light and shadow, and the impending cosmic upheaval.\n\nYour journey faces its ultimate trial, entwined with the fate of the cosmic alliance and the tower's redemption. The essence of defeated bosses pulsates within you, presenting a cosmic choice—restore balance or unleash a cataclysmic force.\n\nStanding on the precipice of destiny, you prepare for the final confrontation that will determine the fate of the tower, the Eclipse Wraith, and the entire cosmos.",
+        "has_chest": false
+      },
+      "22": {
+        "title": "Banshee Queen Shriekara Defeated!",
+        "description": "The Hallowed Mausoleum echoes with the wails of Phantom Banshees and Wailing Apparitions as you triumph over the Banshee Queen Shriekara. The spectral queen dissolves into cosmic echoes, and the tower itself seems to mourn.\n\nAs the ethereal remnants of the defeated queen coalesce, the tower shares cryptic visions—an ancient pact, a melody of sorrow, and a revelation that transcends the boundaries of life and death.\n\nLevel 23 beckons, promising a dance with the void and revelations that resonate with the cosmic harmony.",
+        "has_chest": false
+      },
+      "23": {
+        "title": "Voidlord Malgros Defeated!",
+        "description": "Abyssal Imps and Voidbringer Fiends succumb to your might in the Chaotic Abyss. The Voidlord Malgros bows before the cosmic forces at play, his abyssal dominion shattered.\n\nAs the void dissipates, the tower pulsates with ancient energies, revealing glimpses of a forbidden prophecy—a realm between realms, the Voidlord's fall, and the imminent convergence of cosmic forces.\n\nLevel 24 awaits, promising a descent into the shadows and revelations that pierce the veil of reality.",
+        "has_chest": false
+      },
+      "24": {
+        "title": "Soulshredder Vorath Defeated!",
+        "description": "Dreadshade Specters and Soulreaver Harbingers fade into the shadows as you conquer the Enigmatic Sanctum. Soulshredder Vorath, a harbinger of desolation, succumbs to your unwavering resolve.\n\nIn the aftermath, the tower itself whispers of forbidden rituals, shattered soul essences, and the Soulshredder's malevolent purpose. Cosmic energies surge, guiding you towards Level 25—a realm where the line between reality and nightmare blurs.",
+        "has_chest": false
+      },
+      "25": {
+        "title": "Pyroclasmic Overfiend Defeated!",
+        "description": "Inferno Aberrations and Brimstone Fiends bow before your might as you conquer the Blazing Abyss. The Pyroclasmic Overfiend, a creature of elemental chaos, succumbs to the cosmic flames.\n\nThe tower, now pulsating with immense energy, unfolds visions of cataclysmic convergence, a cosmic inferno, and the imminent unraveling of reality itself. As the Pyroclasmic Overfiend's essence merges with the tower, Level 26 beckons—the final threshold where destinies entwine and cosmic forces clash.",
+        "has_chest": true,
+        "chest_rewards": {
+          "default": {
+            "left": {"type": "crate", "value": "fortune", "amount": 1},
+            "right": {"type": "money", "value": 2, "amount": 1, "message": "Maybe there is a coffee shop somewhere here.."}
+          },
+          "prestige": "random"
+        }
+      },
+      "26": {
+        "title": "Sangromancer Malroth Defeated!",
+        "description": "The Crimson Serpent and Sanguine Horror writhe in defeat as you conquer the Scarlet Sanctum. Sangromancer Malroth, a master of blood magic, bows before the cosmic symphony.\n\nAs the tower resonates with arcane melodies, visions unfold—a tapestry of forbidden rituals, a symphony of despair, and the Sangromancer's malevolent dance. The tower's pulse quickens, guiding you towards Level 27—a realm where chaos forges Leviathans and destinies intertwine.",
+        "has_chest": false
+      },
+      "27": {
+        "title": "Chaosforged Leviathan Defeated!",
+        "description": "Doombringer Abominations and Chaosspawn Horrors yield before your might in the Abyssal Abyss. The Chaosforged Leviathan, a creature born of cosmic chaos, succumbs to the relentless onslaught.\n\nAs the tower vibrates with primordial energies, visions reveal a realm of discord, a Leviathan's awakening, and the imminent clash of chaotic forces. The tower's resonance deepens, beckoning you towards Level 28—a realm where nethersworn aberrations and eldritch behemoths await.",
+        "has_chest": false
+      },
+      "28": {
+        "title": "Abyssal Enderark Defeated!",
+        "description": "Nethersworn Aberrations and Eldritch Behemoths fall silent as you conquer the Netherrealm Nexus. Abyssal Enderark, a harbinger of the abyss, succumbs to your unyielding resolve.\n\nIn the aftermath, the tower pulsates with eldritch energies, revealing glimpses of a realm between realms, an Enderark's descent, and the cosmic convergence of nether forces. The tower's call grows stronger, guiding you towards Level 29—a realm where darktide krakens and abyssal voidlords await.",
+        "has_chest": false
+      },
+      "29": {
+        "title": "Tidal Terror Abaddon Defeated!",
+        "description": "Darktide Krakens and Abyssal Voidlords yield before your might in the Cursed Abyss. Tidal Terror Abaddon, a creature of abyssal waters, succumbs to the relentless onslaught.\n\nAs the tower resonates with aquatic energies, visions unfold—a tempest of darkness, a kraken's lament, and the imminent clash of abyssal forces. The tower's song reaches a crescendo, beckoning you towards Level 30—the final realm where destinies converge, and the tower's ultimate secret is laid bare.",
+        "has_chest": false
+      },
+      "30": {
+        "title": "The Cosmic Abyss: A Symphony of Despair",
+        "description": "As you stand amidst the cosmic ruins, triumphant after landing a fatal blow to the Guardian, the room immediately lights back up. However, a sinister revelation unfolds—a large shadow lurks behind you. Only then do you realize the shocking truth: you were a puppet the entire time, masked by the dark magic of the Overlord.\n\nThe malevolent magic twisted your perception, making you believe you were fighting evil. In reality, you were mercilessly slaying the forces of good. Your vision was impaired by the enchantment, distorting all that was pure into sinister illusions. The growls and snarls were not manifestations of evil, but the screams of horror as you rampaged through the tower, cutting down every good essence in your path.\n\nThe room, once filled with the triumphant glow of your victory, now becomes a haunting reminder of the manipulation that led you astray. The cosmic tragedy deepens as the Overlord's dark magic reveals its insidious nature, turning your heroic journey into a nightmarish descent into despair.\n\nThe mocking laughter of the Overlord of Shadows echoes through the void, resonating with the cruel irony of your unwitting role in this cosmic play. The once-heroic Guardians, sacrificed to contain the unleashed energies, now join the chorus of sorrowful echoes, their tales entwined with your own.\n\nAs you are forcibly teleported to a desolate room, the essence of nothingness prevails—an eternal void devoid of sensation. No family, no friends, no warmth, or comforting embrace; all connections to the world you once knew severed. Time itself unravels, trapping you in perpetual stasis amid the overwhelming silence that accentuates the profound emptiness.\n\nIn this timeless abyss, the weight of regret becomes an indomitable force. You, stripped of purpose and connection, are left to grapple with the consequences of your unwitting role in the tower's demise. The laughter of the Overlord of Shadows continues to reverberate, a haunting reminder of the malevolence that exploited your journey.\n\nAs you drift aimlessly through the emptiness, the echoes of the corrupted Guardians' stories intertwine with your own. Your existence becomes a forlorn symphony of despair, a solitary melody played in the cosmic void.\n\nThere is no escape, no redemption, only an eternity of isolation and remorse. The Battle Tower, once a beacon of hope, is now a distant memory, and you, adrift in the abyss, become a forgotten soul—lost to the cosmic tragedy orchestrated by the Overlord of Shadows.\n\nAnd in this void, a cruel twist awaits. You are subjected to an unending torment—a relentless loop that replays the events of the tower. However, in this distorted reality, you witness a distorted version of yourself, a puppet dancing to the malevolent tune of the Overlord.\n\nYou, now a mere spectator of your own nightmare, see yourself slaying innocent people, mercilessly striking down the Guardians of Radiance who once fought valiantly. The tortured souls of the fallen beg you to stop, their pleas echoing in the hollow abyss.\n\nYet, you are powerless to change the course of this macabre play. The visions unfold relentlessly, each repetition etching the weight of guilt deeper into your essence. The distorted version of you, manipulated by the Overlord's dark magic, becomes a puppet of cosmic tragedy, forever ensnared in a nightmarish loop of despair.",
+        "finale": true,
+        "rewards": {
+          "default": {"type": "crate", "value": "divine", "amount": 1},
+          "prestige": {"type": "random_premium"}
+        }
+      }
+    },
+    "chest_options": {
+      "random": {
+        "types": ["crate", "money"],
+        "crate_options": [
+          {"value": "legendary", "weight": 1},
+          {"value": "fortune", "weight": 1},
+          {"value": "mystery", "weight": 80},
+          {"value": "common", "weight": 170},
+          {"value": "uncommon", "weight": 150},
+          {"value": "magic", "weight": 20},
+          {"value": "rare", "weight": 75}
+        ],
+        "money_options": [10000, 15000, 20000, 50000, 25000, 10000, 27000, 33000, 100000, 5000, 150000]
+      },
+      "random_premium": {
+        "types": ["legendary", "divine", "fortune"],
+        "weights": [0.25, 0.25, 0.25]
+      }
+    }
+  }
