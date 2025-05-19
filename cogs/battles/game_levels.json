@@ -1,0 +1,244 @@
+{
+    "levels": {
+      "1": {
+        "minion1_name": "Imp",
+        "minion2_name": "Shadow Spirit",
+        "boss_name": "Abyssal Guardian",
+        "minion1": {"hp": 65, "armor": 15, "damage": 35},
+        "minion2": {"hp": 75, "armor": 20, "damage": 55},
+        "boss": {"hp": 150, "armor": 30, "damage": 65}
+      },
+      "2": {
+        "minion1_name": "Wraith",
+        "minion2_name": "Soul Eater",
+        "boss_name": "Vile Serpent",
+        "minion1": {"hp": 80, "armor": 35, "damage": 50},
+        "minion2": {"hp": 90, "armor": 55, "damage": 70},
+        "boss": {"hp": 250, "armor": 30, "damage": 80}
+      },
+      "3": {
+        "minion1_name": "Goblin",
+        "minion2_name": "Orc",
+        "boss_name": "Warlord Grakthar",
+        "minion1": {"hp": 100, "armor": 5, "damage": 70},
+        "minion2": {"hp": 120, "armor": 80, "damage": 50},
+        "boss": {"hp": 270, "armor": 95, "damage": 95}
+      },
+      "4": {
+        "minion1_name": "Skeleton",
+        "minion2_name": "Zombie",
+        "boss_name": "Necromancer Voss",
+        "minion1": {"hp": 130, "armor": 20, "damage": 70},
+        "minion2": {"hp": 150, "armor": 30, "damage": 70},
+        "boss": {"hp": 190, "armor": 110, "damage": 115}
+      },
+      "5": {
+        "minion1_name": "Bandit",
+        "minion2_name": "Highwayman",
+        "boss_name": "Blackblade Marauder",
+        "minion1": {"hp": 130, "armor": 30, "damage": 75},
+        "minion2": {"hp": 150, "armor": 30, "damage": 80},
+        "boss": {"hp": 250, "armor": 117, "damage": 119}
+      },
+      "6": {
+        "minion1_name": "Spiderling",
+        "minion2_name": "Venomous Arachnid",
+        "boss_name": "Arachnok Queen",
+        "minion1": {"hp": 150, "armor": 36, "damage": 79},
+        "minion2": {"hp": 170, "armor": 37, "damage": 85},
+        "boss": {"hp": 275, "armor": 122, "damage": 127}
+      },
+      "7": {
+        "minion1_name": "Wisp",
+        "minion2_name": "Specter",
+        "boss_name": "Lich Lord Moros",
+        "minion1": {"hp": 155, "armor": 38, "damage": 83},
+        "minion2": {"hp": 175, "armor": 43, "damage": 89},
+        "boss": {"hp": 280, "armor": 127, "damage": 132}
+      },
+      "8": {
+        "minion1_name": "Frost Imp",
+        "minion2_name": "Ice Elemental",
+        "boss_name": "Frostfire Behemoth",
+        "minion1": {"hp": 155, "armor": 42, "damage": 87},
+        "minion2": {"hp": 175, "armor": 47, "damage": 93},
+        "boss": {"hp": 285, "armor": 132, "damage": 137}
+      },
+      "9": {
+        "minion1_name": "Lizardman",
+        "minion2_name": "Dragonkin",
+        "boss_name": "Dragonlord Zaldrak",
+        "minion1": {"hp": 160, "armor": 45, "damage": 90},
+        "minion2": {"hp": 180, "armor": 52, "damage": 95},
+        "boss": {"hp": 295, "armor": 138, "damage": 140}
+      },
+      "10": {
+        "minion1_name": "Haunted Spirit",
+        "minion2_name": "Phantom Wraith",
+        "boss_name": "Soulreaver Lurkthar",
+        "minion1": {"hp": 160, "armor": 48, "damage": 93},
+        "minion2": {"hp": 185, "armor": 55, "damage": 97},
+        "boss": {"hp": 315, "armor": 150, "damage": 150}
+      },
+      "11": {
+        "minion1_name": "Gnoll Raider",
+        "minion2_name": "Hyena Pack",
+        "boss_name": "Ravengaze Alpha",
+        "minion1": {"hp": 170, "armor": 52, "damage": 97},
+        "minion2": {"hp": 185, "armor": 101, "damage": 70},
+        "boss": {"hp": 330, "armor": 153, "damage": 155}
+      },
+      "12": {
+        "minion1_name": "Gloomhound",
+        "minion2_name": "Nocturne Stalker",
+        "boss_name": "Nightshade Serpentis",
+        "minion1": {"hp": 170, "armor": 82, "damage": 139},
+        "minion2": {"hp": 190, "armor": 87, "damage": 144},
+        "boss": {"hp": 335, "armor": 157, "damage": 160}
+      },
+      "13": {
+        "minion1_name": "Magma Elemental",
+        "minion2_name": "Inferno Imp",
+        "boss_name": "Ignis Inferno",
+        "minion1": {"hp": 175, "armor": 85, "damage": 141},
+        "minion2": {"hp": 190, "armor": 90, "damage": 148},
+        "boss": {"hp": 335, "armor": 160, "damage": 163}
+      },
+      "14": {
+        "minion1_name": "Cursed Banshee",
+        "minion2_name": "Spectral Harbinger",
+        "boss_name": "Wraithlord Maroth",
+        "minion1": {"hp": 180, "armor": 89, "damage": 145},
+        "minion2": {"hp": 225, "armor": 93, "damage": 152},
+        "boss": {"hp": 340, "armor": 163, "damage": 166}
+      },
+      "15": {
+        "minion1_name": "Demonic Imp",
+        "minion2_name": "Hellspawn Reaver",
+        "boss_name": "Infernus, the Infernal",
+        "minion1": {"hp": 182, "armor": 145, "damage": 89},
+        "minion2": {"hp": 250, "armor": 152, "damage": 93},
+        "boss": {"hp": 350, "armor": 170, "damage": 170}
+      },
+      "16": {
+        "minion1_name": "Tainted Ghoul",
+        "minion2_name": "Necrotic Abomination",
+        "boss_name": "Master Shapeshifter",
+        "minion1": {"hp": 400, "armor": 122, "damage": 199},
+        "minion2": {"hp": 400, "armor": 127, "damage": 204},
+        "boss": {"hp": 360, "armor": 180, "damage": 180}
+      },
+      "17": {
+        "minion1_name": "Chaos Fiend",
+        "minion2_name": "Voidborn Horror",
+        "boss_name": "Eldritch Devourer",
+        "minion1": {"hp": 186, "armor": 149, "damage": 92},
+        "minion2": {"hp": 250, "armor": 156, "damage": 95},
+        "boss": {"hp": 355, "armor": 175, "damage": 175}
+      },
+      "18": {
+        "minion1_name": "Blood Warden",
+        "minion2_name": "Juzam Djinn",
+        "boss_name": "Dreadlord Vortigon",
+        "minion1": {"hp": 190, "armor": 153, "damage": 95},
+        "minion2": {"hp": 250, "armor": 159, "damage": 99},
+        "boss": {"hp": 360, "armor": 180, "damage": 175}
+      },
+      "19": {
+        "minion1_name": "Specter",
+        "minion2_name": "Phantom Wraith",
+        "boss_name": "Spectral Overlord",
+        "minion1": {"hp": 200, "armor": 153, "damage": 95},
+        "minion2": {"hp": 250, "armor": 159, "damage": 99},
+        "boss": {"hp": 250, "armor": 0, "damage": 350}
+      },
+      "20": {
+        "minion1_name": "Ice Elemental",
+        "minion2_name": "Frozen Horror",
+        "boss_name": "Frostbite, the Ice Tyrant",
+        "minion1": {"hp": 205, "armor": 155, "damage": 99},
+        "minion2": {"hp": 250, "armor": 161, "damage": 102},
+        "boss": {"hp": 365, "armor": 210, "damage": 140}
+      },
+      "21": {
+        "minion1_name": "Dragonkin",
+        "minion2_name": "Chromatic Wyrm",
+        "boss_name": "Chromaggus the Flamebrand",
+        "minion1": {"hp": 210, "armor": 160, "damage": 99},
+        "minion2": {"hp": 250, "armor": 161, "damage": 102},
+        "boss": {"hp": 365, "armor": 210, "damage": 140}
+      },
+      "22": {
+        "minion1_name": "Phantom Banshee",
+        "minion2_name": "Wailing Apparition",
+        "boss_name": "Banshee Queen Shriekara",
+        "minion1": {"hp": 205, "armor": 155, "damage": 99},
+        "minion2": {"hp": 250, "armor": 161, "damage": 102},
+        "boss": {"hp": 365, "armor": 210, "damage": 140}
+      },
+      "23": {
+        "minion1_name": "Abyssal Imp",
+        "minion2_name": "Voidbringer Fiend",
+        "boss_name": "Voidlord Malgros",
+        "minion1": {"hp": 205, "armor": 155, "damage": 99},
+        "minion2": {"hp": 250, "armor": 161, "damage": 102},
+        "boss": {"hp": 370, "armor": 200, "damage": 130}
+      },
+      "24": {
+        "minion1_name": "Dreadshade Specter",
+        "minion2_name": "Soulreaver Harbinger",
+        "boss_name": "Soulshredder Vorath",
+        "minion1": {"hp": 250, "armor": 140, "damage": 99},
+        "minion2": {"hp": 250, "armor": 140, "damage": 115},
+        "boss": {"hp": 360, "armor": 225, "damage": 125}
+      },
+      "25": {
+        "minion1_name": "Inferno Aberration",
+        "minion2_name": "Brimstone Fiend",
+        "boss_name": "Pyroclasmic Overfiend",
+        "minion1": {"hp": 250, "armor": 140, "damage": 99},
+        "minion2": {"hp": 250, "armor": 140, "damage": 115},
+        "boss": {"hp": 360, "armor": 190, "damage": 150}
+      },
+      "26": {
+        "minion1_name": "Crimson Serpent",
+        "minion2_name": "Sanguine Horror",
+        "boss_name": "Sangromancer Malroth",
+        "minion1": {"hp": 250, "armor": 140, "damage": 99},
+        "minion2": {"hp": 250, "armor": 140, "damage": 115},
+        "boss": {"hp": 360, "armor": 250, "damage": 100}
+      },
+      "27": {
+        "minion1_name": "Doombringer Abomination",
+        "minion2_name": "Chaosspawn Horror",
+        "boss_name": "Chaosforged Leviathan",
+        "minion1": {"hp": 250, "armor": 140, "damage": 99},
+        "minion2": {"hp": 250, "armor": 140, "damage": 115},
+        "boss": {"hp": 360, "armor": 110, "damage": 250}
+      },
+      "28": {
+        "minion1_name": "Nethersworn Aberration",
+        "minion2_name": "Eldritch Behemoth",
+        "boss_name": "Abyssal Enderark",
+        "minion1": {"hp": 250, "armor": 140, "damage": 99},
+        "minion2": {"hp": 250, "armor": 140, "damage": 115},
+        "boss": {"hp": 400, "armor": 180, "damage": 100}
+      },
+      "29": {
+        "minion1_name": "Darktide Kraken",
+        "minion2_name": "Abyssal Voidlord",
+        "boss_name": "Tidal Terror Abaddon",
+        "minion1": {"hp": 250, "armor": 140, "damage": 99},
+        "minion2": {"hp": 250, "armor": 140, "damage": 115},
+        "boss": {"hp": 390, "armor": 230, "damage": 150}
+      },
+      "30": {
+        "minion1_name": "Elder Voidfiend",
+        "minion2_name": "Abyssal Voidreaver",
+        "boss_name": "Eldritch Archdemon",
+        "minion1": {"hp": 250, "armor": 110, "damage": 110},
+        "minion2": {"hp": 250, "armor": 140, "damage": 140},
+        "boss": {"hp": 600, "armor": 200, "damage": 190}
+      }
+    }
+  }

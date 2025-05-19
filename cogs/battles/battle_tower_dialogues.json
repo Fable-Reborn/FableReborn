@@ -1,0 +1,159 @@
+{
+    "dialogues": {
+      "0": {
+        "title": "Entry Fee",
+        "lines": [
+          {"speaker": "Guard", "text": "Halt, brave traveler! You now stand before the awe-inspiring entrance to the Battle Tower, a place where legends are forged and glory awaits. However, passage through this imposing gate comes at a price, a test of your commitment to the path of champions.", "thumbnail": "https://i.ibb.co/CWTp4xf/download.jpg"},
+          {"speaker": "PLAYER", "text": "(Your eyes are fixed on the grand tower) How much must I offer to open this formidable gate?", "thumbnail": "PLAYER_AVATAR"},
+          {"speaker": "Guard", "text": "(The guardian, armored and stern, lowers their towering spear) The entry fee, is no trifling matter. It demands a substantial **$10,000**. Prove your dedication by paying this fee now, and the path of champions shall be unveiled before you.", "thumbnail": "https://i.ibb.co/CWTp4xf/download.jpg"},
+          {"speaker": "PLAYER", "text": "(Resolute and unwavering) Very well, here is **$10,000**, a token of my unwavering resolve.", "thumbnail": "PLAYER_AVATAR"},
+          {"speaker": "Guard", "text": "(With a slow nod of approval) Your decision is wise, traveler. With your payment, you have taken your first step into the hallowed tower. Now, proceed to level 1, where the Abyssal Guardian awaits your challenge. Be prepared for the battles that lie ahead.", "thumbnail": "https://i.ibb.co/CWTp4xf/download.jpg"}
+        ]
+      },
+      "2": {
+        "title": "Shadowy Staircase",
+        "lines": [
+          {"speaker": "Vile Serpent", "text": "(Emerges from the shadows) You dare trespass upon the Shadowy Staircase, PLAYER? We, the Wraith and the Soul Eater, will be your tormentors.", "thumbnail": "https://i.ibb.co/LJcM38s/download-2.png"},
+          {"speaker": "PLAYER", "text": "(With unwavering determination) I've come to conquer this tower. What sadistic challenges do you have for me now?", "thumbnail": "PLAYER_AVATAR"},
+          {"speaker": "Wraith", "text": "(With a chilling whisper) Sadistic is an understatement. We're here to break your spirit, to watch you crumble.", "thumbnail": "https://i.ibb.co/NC2kHpz/download-3.png"},
+          {"speaker": "Soul Eater", "text": "(With malevolence in its voice) Your bravery will be your undoing, PLAYER. We'll feast on your despair.", "thumbnail": "https://i.ibb.co/BchZsDh/download-7.png"}
+        ]
+      },
+      "3": {
+        "title": "Chamber of Whispers",
+        "lines": [
+          {"speaker": "Warlord Grakthar", "text": "(Roaring with fury) PLAYER, you've entered the Chamber of Whispers, but it is I, Warlord Grakthar, who commands this chamber. You will bow before me!", "thumbnail": "https://i.ibb.co/wLYrp17/download-8.png"},
+          {"speaker": "PLAYER", "text": "(Unyielding) I've come to conquer this tower. What twisted game are you playing, Warlord?", "thumbnail": "PLAYER_AVATAR"},
+          {"speaker": "Goblin", "text": "(With a wicked cackle) Our game is one of torment and despair. You are our plaything, PLAYER.", "thumbnail": "https://i.ibb.co/nfMcsry/download-10.png"},
+          {"speaker": "Orc", "text": "(With a thunderous roar) Your strength won't save you from our might.", "thumbnail": "https://i.ibb.co/30HY5Jx/download-9.png"}
+        ]
+      },
+      "4": {
+        "title": "Serpent's Lair",
+        "lines": [
+          {"speaker": "Necromancer Voss", "text": "(Raising his staff, emitting an eerie aura) Welcome to the Serpent's Lair, PLAYER. I am the Necromancer Voss, and this is my domain. Prepare for your doom.", "thumbnail": "https://i.ibb.co/G5DrFfv/download-13.jpg"},
+          {"speaker": "PLAYER", "text": "(With unwavering resolve) I've come to conquer the tower. What relentless nightmare do you have in store, Voss?", "thumbnail": "PLAYER_AVATAR"},
+          {"speaker": "Skeleton", "text": "(With a malevolent laugh) Nightmares are our specialty. You won't escape our grasp, PLAYER.", "thumbnail": "https://i.ibb.co/zS26jYD/download-12.jpg"},
+          {"speaker": "Zombie", "text": "(With an eerie moan) We will feast upon your despair.", "thumbnail": "https://i.ibb.co/5L6V446/download-11.jpg"}
+        ]
+      },
+      "5": {
+        "title": "Halls of Despair",
+        "lines": [
+          {"speaker": "Blackblade Marauder", "text": "(Drawing a wicked blade) You've reached the Halls of Despair, PLAYER, but it is I, the Blackblade Marauder, who governs this realm. Prepare for annihilation.", "thumbnail": "https://i.ibb.co/0BdGZBn/download-14.jpg"},
+          {"speaker": "PLAYER", "text": "(Unyielding) I've come this far, and I won't be deterred. What torment do you have for me, Marauder?", "thumbnail": "PLAYER_AVATAR"},
+          {"speaker": "Bandit", "text": "(With a sinister laugh) Torment is our art. You'll crumble under our assault, PLAYER.", "thumbnail": "https://i.ibb.co/gzsJR55/download-15.jpg"},
+          {"speaker": "Highwayman", "text": "(With malevolence in his eyes) We'll break you, one way or another.", "thumbnail": "https://i.ibb.co/zX0rXsP/download-18.jpg"}
+        ]
+      },
+      "6": {
+        "title": "Crimson Abyss",
+        "lines": [
+          {"speaker": "Arachnok Queen", "text": "(Emerges from a web of silk) PLAYER, you have ventured into the Crimson Abyss. I am the Arachnok Queen, and this is my web. Tremble before my fangs.", "thumbnail": "https://i.ibb.co/0rGtfC9/3d-illustration-dark-purple-spider-260nw-2191752107.png"},
+          {"speaker": "PLAYER", "text": "(With unwavering determination) Enough of your games, Arachnok Queen. My journey continues, and I'll crush your illusions beneath my heel.", "thumbnail": "PLAYER_AVATAR"},
+          {"speaker": "Spiderling", "text": "(With skittering legs) Illusions that shroud your path in darkness.", "thumbnail": "https://i.ibb.co/RDXvXcD/download-19.jpg"},
+          {"speaker": "Venomous Arachnid", "text": "(With a poisonous hiss) We'll savor the moment your courage wanes.", "thumbnail": "https://i.ibb.co/XZPcqCY/download-20.jpg"}
+        ]
+      },
+      "7": {
+        "title": "Forgotten Abyss",
+        "lines": [
+          {"speaker": "Lich Lord Moros", "text": "(Rising from the ethereal mist) PLAYER, you stand upon the Forgotten Abyss. I am the Lich Lord Moros, and this realm is my spectral dominion. Your fate is sealed.", "thumbnail": "https://i.ibb.co/4jF6z29/download-22.jpg"},
+          {"speaker": "PLAYER", "text": "(With resolute determination) Your illusions won't deter me, Lich Lord Moros. I'll shatter your spectral veil and press on.", "thumbnail": "PLAYER_AVATAR"},
+          {"speaker": "Wisp", "text": "(With a haunting glow) Veil of the forgotten and the lost.", "thumbnail": "https://i.ibb.co/J3PJzPR/download-26.jpg"},
+          {"speaker": "Specter", "text": "(With an otherworldly presence) You'll become a forgotten memory.", "thumbnail": "https://i.ibb.co/XZPcqCY/download-20.jpg"}
+        ]
+      },
+      "8": {
+        "title": "Dreadlord's Domain",
+        "lines": [
+          {"speaker": "Frostfire Behemoth", "text": "(Rising from the molten core) PLAYER, you have entered the Dreadlord's Domain, my domain. I am the Frostfire Behemoth, and I shall incinerate your hopes.", "thumbnail": "https://i.ibb.co/YWSkgYx/download-27.jpg"},
+          {"speaker": "PLAYER", "text": "(With fierce determination) You will find no mercy in the heart of the dreadlord, Frostfire Behemoth. Your flames won't consume me.", "thumbnail": "PLAYER_AVATAR"},
+          {"speaker": "Frost Imp", "text": "(With icy flames) Flames that burn with unrelenting fury.", "thumbnail": "https://i.ibb.co/5M6zTB4/download-28.jpg"},
+          {"speaker": "Ice Elemental", "text": "(With a frigid gaze) We'll snuff out your defiance.", "thumbnail": "https://i.ibb.co/ssLVKWv/download-29.jpg"}
+        ]
+      },
+      "9": {
+        "title": "Frozen Abyss",
+        "lines": [
+          {"speaker": "Dragonlord Zaldrak", "text": "(Emerging from the icy winds) PLAYER, you tread upon the Frozen Abyss. I am the Dragonlord Zaldrak, and your presence chills me to the bone.", "thumbnail": "https://i.ibb.co/Q7VMzD0/download-30.jpg"},
+          {"speaker": "PLAYER", "text": "(With steely resolve) I've come to conquer the tower. What frigid challenges lie ahead, Dragonlord Zaldrak?", "thumbnail": "PLAYER_AVATAR"},
+          {"speaker": "Lizardman", "text": "(With reptilian cunning) Challenges as cold as the abyss itself. Will your spirit thaw in the face of despair?", "thumbnail": "https://i.ibb.co/GC8V9cq/download-31.jpg"},
+          {"speaker": "Dragonkin", "text": "(With a fiery breath) We shall engulf you in frost and flame.", "thumbnail": "https://i.ibb.co/2ckDS1k/download-32.jpg"}
+        ]
+      },
+      "10": {
+        "title": "Ethereal Nexus",
+        "lines": [
+          {"speaker": "Soulreaver Lurkthar", "text": "(Manifesting from the void) PLAYER, you have reached the Ethereal Nexus, a realm beyond your comprehension. I am Soulreaver Lurkthar, and you are insignificant.", "thumbnail": "https://i.ibb.co/5TYNLrc/download-33.jpg"},
+          {"speaker": "PLAYER", "text": "(With unyielding determination) I've come this far. What secrets does this realm hold, Soulreaver Lurkthar?", "thumbnail": "PLAYER_AVATAR"},
+          {"speaker": "Haunted Spirit", "text": "(With spectral whispers) Secrets that unravel sanity and defy reality. Are you prepared for the abyss of the unknown?", "thumbnail": "https://i.ibb.co/kB5ypsM/download-34.jpg"},
+          {"speaker": "Phantom Wraith", "text": "(With an ethereal presence) Your mind will crumble in the presence of the enigma.", "thumbnail": "https://i.ibb.co/6BTRt3s/download-35.jpg"}
+        ]
+      },
+      "11": {
+        "title": "Ravengaze Highlands",
+        "lines": [
+          {"speaker": "Ravengaze Alpha", "text": "(Rising from the shadows) PLAYER, you have ventured into the dreaded Ravengaze Highlands. I am the Ravengaze Alpha, and this is my hunting ground. Prepare for your demise.", "thumbnail": "https://i.ibb.co/YjqfWSc/download-8.jpg"},
+          {"speaker": "PLAYER", "text": "(With indomitable resolve) I've come to conquer this tower. What challenges await, Ravengaze Alpha?", "thumbnail": "PLAYER_AVATAR"},
+          {"speaker": "Gnoll Raider", "text": "(With savage fervor) Challenges that will make you pray for mercy. Do you have what it takes to survive?", "thumbnail": "https://i.ibb.co/kJyTsWL/download-11.jpg"},
+          {"speaker": "Hyena Pack", "text": "(With menacing laughter) *growls*", "thumbnail": "https://i.ibb.co/Y7w2Sy4/download-12.jpg"}
+        ]
+      },
+      "12": {
+        "title": "Nocturne Domain",
+        "lines": [
+          {"speaker": "Nightshade Serpentis", "text": "(Emerging from the shadows) PLAYER, you stand within the cursed Nocturne Domain. I am Nightshade Serpentis, and your fate is sealed.", "thumbnail": "https://i.ibb.co/4TtY6T9/download-14.jpg"},
+          {"speaker": "PLAYER", "text": "(With unwavering determination) I've come to conquer the tower. What nightmares do you bring, Nightshade Serpentis?", "thumbnail": "PLAYER_AVATAR"},
+          {"speaker": "Gloomhound", "text": "(With eerie howling) Nightmares that will haunt your every thought. Do you have the courage to face them?", "thumbnail": "https://i.ibb.co/0BGmFXZ/download-15.jpg"},
+          {"speaker": "Nocturne Stalker", "text": "(With a sinister grin) Your resolve will crumble under the weight of your own dread.", "thumbnail": "https://i.ibb.co/svhv2XJ/download-16.jpg"}
+        ]
+      },
+      "13": {
+        "title": "Pyroclasmic Abyss",
+        "lines": [
+          {"speaker": "Ignis Inferno", "text": "(Rising from molten flames) PLAYER, you have entered the Pyroclasmic Abyss, a realm of searing torment. I am Ignis Inferno, and your presence will fuel the flames of destruction.", "thumbnail": "https://i.ibb.co/HYcdZBy/download-17.jpg"},
+          {"speaker": "PLAYER", "text": "(Unyielding) I've come to conquer this tower. What scorching challenges do you present, Ignis Inferno?", "thumbnail": "PLAYER_AVATAR"},
+          {"speaker": "Magma Elemental", "text": "(With fiery rage) Challenges as relentless as the molten core itself. Are you prepared to endure the unending inferno?", "thumbnail": "https://i.ibb.co/K0tG23M/download-18.jpg"},
+          {"speaker": "Inferno Imp", "text": "(With malevolent glee) Your flesh will sear, and your spirit will smolder.", "thumbnail": "https://i.ibb.co/2ZgBn44/download-20.jpg"}
+        ]
+      },
+      "14": {
+        "title": "Spectral Wastes",
+        "lines": [
+          {"speaker": "Wraithlord Maroth", "text": "(Emerging from the spectral mists) PLAYER, you have reached the spectral wastes, a realm of eternal torment. I am Wraithlord Maroth, and your suffering will echo through the void.", "thumbnail": "https://i.ibb.co/56dsQMY/download-21.jpg"},
+          {"speaker": "PLAYER", "text": "(With unwavering determination) I've come to conquer the tower. What spectral horrors await, Wraithlord Maroth?", "thumbnail": "PLAYER_AVATAR"},
+          {"speaker": "Cursed Banshee", "text": "(With haunting wails) Horrors that will rend your soul asunder. Do you have the will to endure?", "thumbnail": "https://i.ibb.co/pLP2djF/download-22.jpg"},
+          {"speaker": "Spectral Harbinger", "text": "(With a malevolent whisper) Your torment shall be everlasting.", "thumbnail": "https://i.ibb.co/R0PdqJ7/download-23.jpg"}
+        ]
+      },
+      "15": {
+        "title": "Infernal Abyss",
+        "lines": [
+          {"speaker": "Infernus, the Infernal", "text": "(Emerging from the depths of fire) PLAYER, you have entered the Infernal Abyss, a realm of unrelenting flames. I am Infernus, the Infernal, and your existence will be consumed by the inferno.", "thumbnail": "https://i.ibb.co/R2Nm6vY/download-24.jpg"},
+          {"speaker": "PLAYER", "text": "(Unyielding) I've come this far, and I won't be deterred. What blazing trials do you have in store, Infernus?", "thumbnail": "PLAYER_AVATAR"},
+          {"speaker": "Demonic Imp", "text": "(With a malevolent grin) Trials that will scorch your very soul. Are you prepared to burn?", "thumbnail": "https://i.ibb.co/GdhXTWN/download-25.jpg"},
+          {"speaker": "Hellspawn Reaver", "text": "(With fiery eyes) The flames of your doom shall be unquenchable.", "thumbnail": "https://i.ibb.co/ZftX1xB/download-26.jpg"}
+        ]
+      },
+      "16": {
+        "title": "Shapeshifter's Domain",
+        "lines": [
+          {"speaker": "Master Shapeshifter", "text": "In the dance of shadows, I am the conductor—every face you've known, every trust betrayed, I've worn like a symphony; now, join my orchestra or become its crescendo.", "thumbnail": "https://gcdnb.pbrd.co/images/ueKgTmbvB8qb.jpg"},
+          {"speaker": "PLAYER", "text": "In your game of deceit, I see only a feeble attempt to shroud the inevitable. Your illusions crumble against my unyielding will—cross me, and witness the true horror of defiance.", "thumbnail": "PLAYER_AVATAR"},
+          {"speaker": "RANDOM_USER_1", "text": "I mimic your friend's form, but within me, your worst nightmares lurk, a puppeteer of your trust, feeding on your doubt and fear, reveling in the impending doom.", "thumbnail": "RANDOM_USER_1_AVATAR"},
+          {"speaker": "RANDOM_USER_2", "text": "I've assumed your confidant's guise, yet beneath this borrowed skin, your anxieties writhe, whispering your secrets; in the labyrinth of your mind, I'm the embodiment of your darkest apprehensions, ready to consume your hopes.", "thumbnail": "RANDOM_USER_2_AVATAR"}
+        ],
+        "special": "random_users"
+      },
+      "17": {
+        "title": "Convergence Nexus",
+        "lines": [
+          {"speaker": "Eldritch Devourer", "text": "(Rising from the cosmic abyss) PLAYER, you stand at the Convergence Nexus, a junction of cosmic forces. I am the Eldritch Devourer, and your futile resistance will be devoured by the void.", "thumbnail": "https://i.ibb.co/R2v9jYs/image2.png"},
+          {"speaker": "PLAYER", "text": "(Fierce) I've carved my path through the chaos, and your cosmic feast won't satiate your hunger. Prepare for annihilation, Devourer.", "thumbnail": "PLAYER_AVATAR"},
+          {"speaker": "Chaos Fiend", "text": "(With malicious glee) Annihilation, you say? The chaos you face is beyond comprehension. Your defiance is merely a flicker against the impending cosmic storm.", "thumbnail": "https://i.ibb.co/c22vsWF/image.png"},
+          {"speaker": "Voidborn Horror", "text": "(With eyes like swirling galaxies) Your essence will dissipate into the cosmic winds. Prepare for oblivion, interloper.", "thumbnail": "https://i.ibb.co/kyvTszF/image3.png"}
+        ]
+      }
+    }
+  }
