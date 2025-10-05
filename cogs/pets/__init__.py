@@ -73,18 +73,11 @@ class PetSelect(discord.ui.Select):
         await view.send_page(interaction)
 
 class PetPaginator(discord.ui.View):
-<<<<<<< HEAD
     def __init__(self, pets, author, cog_instance):
         super().__init__(timeout=60)
         self.pets = pets
         self.author = author
         self.cog = cog_instance  # Store reference to the cog instance
-=======
-    def __init__(self, pets, author):
-        super().__init__(timeout=60)
-        self.pets = pets
-        self.author = author
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         self.index = 0
         self.message = None  # To store the message reference
         
@@ -128,12 +121,9 @@ class PetPaginator(discord.ui.View):
         petid = pet['id']
         iv = pet['IV']
 
-<<<<<<< HEAD
         # Get trust level info using the cog instance
         trust_info = self.cog.get_trust_level_info(pet.get('trust_level', 0))
 
-=======
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         # Improved embed design
         if pet['growth_stage'] == "baby":
             stage_icon = "🍼"
@@ -162,7 +152,6 @@ class PetPaginator(discord.ui.View):
             ),
             inline=False,
         )
-<<<<<<< HEAD
         
         # Add enhanced stats field
         level = pet.get('level', 1)
@@ -186,8 +175,6 @@ class PetPaginator(discord.ui.View):
             inline=False,
         )
         
-=======
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         embed.add_field(
             name="🌟 **Details**",
             value=(
@@ -313,7 +300,6 @@ class Pets(commands.Cog):
             "<:f_fire:1170192046632468564>": "Fire"
         }
 
-<<<<<<< HEAD
         # Enhanced Pet System Configuration
         self.FOOD_TYPES = {
             "basic_food": {"hunger": 50, "happiness": 25, "cost": 10000, "trust_gain": 1},
@@ -822,25 +808,6 @@ class Pets(commands.Cog):
                         default_name=default_name))
         except Exception as e:
             await ctx.send(e)
-=======
-    # Command to use the paginator
-    @commands.group(invoke_without_command=True)
-    async def pets(self, ctx):
-        try:
-            await self.check_pet(ctx.author.id)
-        except Exception as e:
-            if ctx.author.id == 295173706496475136:
-                await ctx.send(e)
-        async with self.bot.pool.acquire() as conn:
-            pets = await conn.fetch("SELECT * FROM monster_pets WHERE user_id = $1;", ctx.author.id)
-            if not pets:
-                await ctx.send("You don't have any pets.")
-                return
-
-        view = PetPaginator(pets, ctx.author)
-        embed = view.get_embed()
-        view.message = await ctx.send(embed=embed, view=view)
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
 
     @user_cooldown(600)
     @pets.command(brief="Trade your pet or egg with another user's pet or egg")
@@ -869,25 +836,17 @@ class Pets(commands.Cog):
                 your_table = 'monster_pets'
             else:  # egg
                 your_item = await conn.fetchrow(
-<<<<<<< HEAD
                     "SELECT * FROM monster_eggs WHERE user_id = $1 AND id = $2 AND hatched = FALSE;",
-=======
-                    "SELECT * FROM monster_eggs WHERE user_id = $1 AND id = $2;",
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                     ctx.author.id,
                     your_item_id
                 )
                 your_table = 'monster_eggs'
 
             if not your_item:
-<<<<<<< HEAD
                 if your_type == 'egg':
                     await ctx.send(f"❌ You don't have an unhatched {your_type} with ID `{your_item_id}`.")
                 else:
                     await ctx.send(f"❌ You don't have a {your_type} with ID `{your_item_id}`.")
-=======
-                await ctx.send(f"❌ You don't have a {your_type} with ID `{your_item_id}`.")
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                 await self.bot.reset_cooldown(ctx)
                 return
 
@@ -900,24 +859,16 @@ class Pets(commands.Cog):
                 their_table = 'monster_pets'
             else:  # egg
                 their_item = await conn.fetchrow(
-<<<<<<< HEAD
                     "SELECT * FROM monster_eggs WHERE id = $1 AND hatched = FALSE;",
-=======
-                    "SELECT * FROM monster_eggs WHERE id = $1;",
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                     their_item_id
                 )
                 their_table = 'monster_eggs'
 
             if not their_item:
-<<<<<<< HEAD
                 if their_type == 'egg':
                     await ctx.send(f"❌ No unhatched {their_type} found with ID `{their_item_id}`.")
                 else:
                     await ctx.send(f"❌ No {their_type} found with ID `{their_item_id}`.")
-=======
-                await ctx.send(f"❌ No {their_type} found with ID `{their_item_id}`.")
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                 await self.bot.reset_cooldown(ctx)
                 return
 
@@ -934,19 +885,6 @@ class Pets(commands.Cog):
                 await self.bot.reset_cooldown(ctx)
                 return
 
-<<<<<<< HEAD
-=======
-            # Optionally, check if the receiver has not blocked the bot here
-            # Example:
-            # if your_user_has_blocked_bot or their_user_has_blocked_bot:
-            #     await ctx.send("❌ Trade cannot be completed because one of the users has blocked the bot.")
-            #     return
-
-            # Create embeds for both items
-            your_item_embed = self.create_item_embed(ctx.author, your_type, your_item, your_item_id)
-            their_item_embed = self.create_item_embed(their_user, their_type, their_item, their_item_id)
-
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             # Create the confirmation view
             view = TradeConfirmationView(ctx.author, their_user)
 
@@ -956,36 +894,22 @@ class Pets(commands.Cog):
                 description=f"{ctx.author.mention} wants to trade their {your_type} with {their_user.mention}'s {their_type}.",
                 color=discord.Color.blue()
             )
-<<<<<<< HEAD
             
-=======
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             if your_type == "pet":
                 trade_embed.add_field(
                     name=f"{ctx.author.name}'s {your_type.capitalize()}",
                     value=f"**{your_item['name']}** (ID: `{your_item_id}`)\n"
-<<<<<<< HEAD
                         f"**Attack:** {your_item['attack']}\n"
                         f"**HP:** {your_item['hp']}\n"
                         f"**Defense:** {your_item['defense']}\n"
                         f"**IV:** {your_item['IV']}%",
                     inline=True
                 )
-=======
-                          f"**Attack:** {your_item['attack']}\n"
-                          f"**HP:** {your_item['hp']}\n"
-                          f"**Defense:** {your_item['defense']}\n"
-                          f"**IV:** {your_item['IV']}%",
-                    inline=True
-                )
-
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                 yourname = your_item['name']
             else:
                 trade_embed.add_field(
                     name=f"{ctx.author.name}'s {your_type.capitalize()}",
                     value=f"**{your_item['egg_type']}** (ID: `{your_item_id}`)\n"
-<<<<<<< HEAD
                         f"**Attack:** {your_item['attack']}\n"
                         f"**HP:** {your_item['hp']}\n"
                         f"**Defense:** {your_item['defense']}\n"
@@ -994,30 +918,14 @@ class Pets(commands.Cog):
                 )
                 yourname = your_item['egg_type']
                 
-=======
-                          f"**Attack:** {your_item['attack']}\n"
-                          f"**HP:** {your_item['hp']}\n"
-                          f"**Defense:** {your_item['defense']}\n"
-                          f"**IV:** {your_item['IV']}%",
-                    inline=True
-                )
-                yourname = your_item['egg_type']
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             if their_type == "pet":
                 trade_embed.add_field(
                     name=f"{their_user.name}'s {their_type.capitalize()}",
                     value=f"**{their_item['name']}** (ID: `{their_item_id}`)\n"
-<<<<<<< HEAD
                         f"**Attack:** {their_item['attack']}\n"
                         f"**HP:** {their_item['hp']}\n"
                         f"**Defense:** {their_item['defense']}\n"
                         f"**IV:** {their_item['IV']}%",
-=======
-                          f"**Attack:** {their_item['attack']}\n"
-                          f"**HP:** {their_item['hp']}\n"
-                          f"**Defense:** {their_item['defense']}\n"
-                          f"**IV:** {their_item['IV']}%",
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                     inline=True
                 )
                 theirname = their_item['name']
@@ -1025,7 +933,6 @@ class Pets(commands.Cog):
                 trade_embed.add_field(
                     name=f"{their_user.name}'s {their_type.capitalize()}",
                     value=f"**{their_item['egg_type']}** (ID: `{their_item_id}`)\n"
-<<<<<<< HEAD
                         f"**Attack:** {their_item['attack']}\n"
                         f"**HP:** {their_item['hp']}\n"
                         f"**Defense:** {their_item['defense']}\n"
@@ -1034,15 +941,6 @@ class Pets(commands.Cog):
                 )
                 theirname = their_item['egg_type']
                 
-=======
-                          f"**Attack:** {their_item['attack']}\n"
-                          f"**HP:** {their_item['hp']}\n"
-                          f"**Defense:** {their_item['defense']}\n"
-                          f"**IV:** {their_item['IV']}%",
-                    inline=True
-                )
-                theirname = their_item['egg_type']
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             trade_embed.set_footer(text="React below to accept or decline the trade.")
 
             message = await ctx.send(embed=trade_embed, view=view)
@@ -1051,18 +949,13 @@ class Pets(commands.Cog):
 
             if view.value is True:
                 async with self.bot.pool.acquire() as conn:
-<<<<<<< HEAD
                     # Re-fetch items to ensure they still exist and belong to the correct users
-=======
-                    # Fetch your item
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                     if your_type == 'pet':
                         your_item = await conn.fetchrow(
                             "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
                             ctx.author.id,
                             your_item_id
                         )
-<<<<<<< HEAD
                     else:  # egg
                         your_item = await conn.fetchrow(
                             "SELECT * FROM monster_eggs WHERE user_id = $1 AND id = $2 AND hatched = FALSE;",
@@ -1075,29 +968,11 @@ class Pets(commands.Cog):
                         await self.bot.reset_cooldown(ctx)
                         return
 
-=======
-                        your_table = 'monster_pets'
-                    else:  # egg
-                        your_item = await conn.fetchrow(
-                            "SELECT * FROM monster_eggs WHERE user_id = $1 AND id = $2;",
-                            ctx.author.id,
-                            your_item_id
-                        )
-                        your_table = 'monster_eggs'
-
-                    if not your_item:
-                        await ctx.send(f"❌ You don't have a {your_type} with ID `{your_item_id}`.")
-                        await self.bot.reset_cooldown(ctx)
-                        return
-
-                    # Fetch their item
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                     if their_type == 'pet':
                         their_item = await conn.fetchrow(
                             "SELECT * FROM monster_pets WHERE id = $1;",
                             their_item_id
                         )
-<<<<<<< HEAD
                     else:  # egg
                         their_item = await conn.fetchrow(
                             "SELECT * FROM monster_eggs WHERE id = $1 AND hatched = FALSE;",
@@ -1106,114 +981,15 @@ class Pets(commands.Cog):
 
                     if not their_item:
                         await ctx.send(f"❌ Their {their_type} is no longer available for trade.")
-=======
-                        their_table = 'monster_pets'
-                    else:  # egg
-                        their_item = await conn.fetchrow(
-                            "SELECT * FROM monster_eggs WHERE id = $1;",
-                            their_item_id
-                        )
-                        their_table = 'monster_eggs'
-
-                    if not their_item:
-                        await ctx.send(f"❌ No {their_type} found with ID `{their_item_id}`.")
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                         await self.bot.reset_cooldown(ctx)
                         return
 
                     their_user_id = their_item['user_id']
 
-<<<<<<< HEAD
-=======
-                    async with self.bot.pool.acquire() as conn:
-                        # Get their tier from profile table
-                        their_tier = await conn.fetchval(
-                            """
-                            SELECT tier 
-                            FROM profile 
-                            WHERE profile.user = $1
-                            """,
-                            their_user_id
-                        )
-
-                        # Count their pets, unhatched eggs, and pending splice requests
-                        their_pet_count = await conn.fetchval(
-                            """
-                            SELECT 
-                                (SELECT COUNT(*) FROM monster_pets WHERE user_id = $1) +
-                                (SELECT COUNT(*) FROM monster_eggs WHERE user_id = $1 AND hatched = FALSE) +
-                                (SELECT COUNT(*) FROM splice_requests WHERE user_id = $1 AND status = 'pending')
-                            """,
-                            their_user_id
-                        )
-
-                        # Get author's tier from profile table
-                        author_tier = await conn.fetchval(
-                            """
-                            SELECT tier 
-                            FROM profile 
-                            WHERE profile.user = $1
-                            """,
-                            ctx.author.id
-                        )
-
-                        # Count author's pets, unhatched eggs, and pending splice requests
-                        author_pet_count = await conn.fetchval(
-                            """
-                            SELECT 
-                                (SELECT COUNT(*) FROM monster_pets WHERE user_id = $1) +
-                                (SELECT COUNT(*) FROM monster_eggs WHERE user_id = $1 AND hatched = FALSE) +
-                                (SELECT COUNT(*) FROM splice_requests WHERE user_id = $1 AND status = 'pending')
-                            """,
-                            ctx.author.id
-                        )
-
-                    # Calculate max pets based on tier
-                    their_max_pets = 10
-
-                    if hasattr(ctx, 'guild') and ctx.guild.id == 1199287508794626078:
-                        their_member = ctx.guild.get_member(their_user_id)
-                        if their_member and their_member.premium_since is not None:
-                            their_max_pets = max(their_max_pets, 12)  # Ensure they get at least 12 if they're a booster
-
-                    if their_tier == 1:
-                        their_max_pets = 12
-                    elif their_tier == 2:
-                        their_max_pets = 14
-                    elif their_tier == 3:
-                        their_max_pets = 17
-                    elif their_tier == 4:
-                        their_max_pets = 25
-
-                    author_max_pets = 10
-                    if author_tier == 1 or (hasattr(ctx, 'guild') and ctx.guild.id == 1199287508794626078 and ctx.author.premium_since is not None):
-                        author_max_pets = 12
-                    elif author_tier == 2:
-                        author_max_pets = 14
-                    elif author_tier == 3:
-                        author_max_pets = 17
-                    elif author_tier == 4:
-                        author_max_pets = 25
-
-                    # Check both users' pet limits
-                    if their_pet_count > their_max_pets:
-                        await ctx.send(
-                            _("They cannot have more than {0} pets or eggs (Including Spliced). Please ask them to release a pet or wait for an egg to hatch.").format(
-                                their_max_pets))
-                        return
-
-                    if author_pet_count > author_max_pets:
-                        await ctx.send(
-                            _("You cannot have more than {0} pets or eggs. Please release a pet or wait for an egg to hatch.").format(
-                                author_max_pets))
-                        return
-
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                     if their_user_id == ctx.author.id:
                         await ctx.send("❌ You cannot trade with your own items.")
                         await self.bot.reset_cooldown(ctx)
                         return
-<<<<<<< HEAD
 
                     # Get tier information and calculate max pets for both users
                     their_tier = await conn.fetchval(
@@ -1330,33 +1106,13 @@ class Pets(commands.Cog):
                                     their_item_id
                                 )
                     
-=======
-                # Perform the trade within a transaction
-                try:
-                    async with self.bot.pool.acquire() as conn:
-                        # Update initiator's item to belong to the receiver
-                        await conn.execute(
-                            f"UPDATE {your_table} SET user_id = $1 WHERE id = $2;",
-                            their_user_id,
-                            your_item_id
-                        )
-                        # Update receiver's item to belong to the initiator
-                        await conn.execute(
-                            f"UPDATE {their_table} SET user_id = $1 WHERE id = $2;",
-                            ctx.author.id,
-                            their_item_id
-                        )
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                     success_embed = discord.Embed(
                         title="✅ Trade Successful!",
                         description=f"{ctx.author.mention} traded their **{your_type}** **{yourname}** with {their_user.mention}'s **{their_type}** **{theirname}**.",
                         color=discord.Color.green()
                     )
                     await ctx.send(embed=success_embed)
-<<<<<<< HEAD
                     
-=======
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                 except Exception as e:
                     error_embed = discord.Embed(
                         title="❌ Trade Failed",
@@ -1364,11 +1120,8 @@ class Pets(commands.Cog):
                         color=discord.Color.red()
                     )
                     await ctx.send(embed=error_embed)
-<<<<<<< HEAD
                     await self.bot.reset_cooldown(ctx)
                     
-=======
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             elif view.value is False:
                 decline_embed = discord.Embed(
                     title="❌ Trade Declined",
@@ -1577,11 +1330,7 @@ class Pets(commands.Cog):
 
                 if (
                         hasattr(ctx, 'guild')
-<<<<<<< HEAD
                         and ctx.guild.id == 1402911850802315336
-=======
-                        and ctx.guild.id == 1199287508794626078
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                         and hasattr(buyer, 'premium_since')
                         and buyer.premium_since is not None
                 ):
@@ -2076,7 +1825,6 @@ class Pets(commands.Cog):
         embed = view.get_embed()
         view.message = await ctx.send(embed=embed, view=view)
 
-<<<<<<< HEAD
     @user_cooldown(3600)
     @pets.command(brief=_("Feed your pet with specific food types"))
     async def feed(self, ctx, pet_id: int, *, food_type: str = "basic food"):
@@ -2948,11 +2696,6 @@ class Pets(commands.Cog):
 
     @tasks.loop(minutes=1)
     async def check_pet_growth(self):
-=======
-    @user_cooldown(300)
-    @pets.command(brief=_("Feed your pet"))
-    async def feed(self, ctx):
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         growth_stages = {
             1: {"stage": "baby", "growth_time": 2, "stat_multiplier": 0.25, "hunger_modifier": 1.0},
             2: {"stage": "juvenile", "growth_time": 2, "stat_multiplier": 0.50, "hunger_modifier": 0.8},
@@ -2961,7 +2704,6 @@ class Pets(commands.Cog):
             # Self-sufficient
         }
 
-<<<<<<< HEAD
         try:
             async with self.bot.pool.acquire() as conn:
                 # Fetch pets that are ready to grow
@@ -3060,379 +2802,6 @@ class Pets(commands.Cog):
                             await user.send(growth_message)
         except Exception as e:
             print(f"Error in check_pet_growth: {e}")
-=======
-        async with self.bot.pool.acquire() as conn:
-            # Fetch all pets owned by the user
-            pets = await conn.fetch(
-                "SELECT * FROM monster_pets WHERE user_id = $1",
-                ctx.author.id
-            )
-
-            current_time = datetime.datetime.utcnow()
-
-            if not pets:
-                await ctx.send("You don't have any pets to feed.")
-                await self.bot.reset_cooldown(ctx)
-                return
-
-            # Update hunger and happiness for all pets owned by the user
-            await conn.execute(
-                """
-                UPDATE monster_pets
-                SET hunger = 100, happiness = 100, last_update = $1
-                WHERE user_id = $2;
-                """,
-                current_time,
-                ctx.author.id
-            )
-
-            await ctx.send("You fed all your pets, and they look happy!")
-
-    @pets.command(brief=_("Learn how to use the pet system"))
-    async def help(self, ctx):
-        """
-        Provides a detailed guide on pet-related commands and how to get a pet.
-        """
-        embed = discord.Embed(
-            title=_("Pet System Guide"),
-            description=_("Learn how to care for, manage, and interact with your pets in the game!"),
-            color=discord.Color.green(),
-        )
-
-        embed.add_field(
-            name=_("🐾 How to Get a Pet"),
-            value=_(
-                "You can find **monster eggs** as rare rewards during PVE battles. Each egg hatches into a unique pet after a specific time.\n"
-                "Use `$pets eggs` to check your eggs!"
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="\u200b",  # Invisible spacer field
-            value="\u200b",
-            inline=False,
-        )
-
-        embed.add_field(
-            name=_("🔍 `$pets`"),
-            value=_(
-                "View all your current pets in a **paginated list**. Use the buttons to navigate through your pets.\n"
-                "This command shows their stats, growth stage, and other details."
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="\u200b",  # Invisible spacer field
-            value="\u200b",
-            inline=False,
-        )
-
-        embed.add_field(
-            name=_("🍖 `$pets feed <id>`"),
-            value=_(
-                "Feed a specific pet by its ID to increase its **hunger** and **happiness**.\n"
-                "Pets need regular feeding to stay happy and healthy.\n"
-                "⚠️ If hunger or happiness drops to zero, your pet may run away or starve!"
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="\u200b",  # Invisible spacer field
-            value="\u200b",
-            inline=False,
-        )
-
-        embed.add_field(
-            name=_("⚔️ `$pets equip <id>`"),
-            value=_(
-                "Equip a pet to fight alongside you in battles and raids.\n"
-                "Only pets in the **young** stage or older can be equipped.\n"
-                "Equipped pets will use their stats to support you in combat."
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="\u200b",  # Invisible spacer field
-            value="\u200b",
-            inline=False,
-        )
-
-        embed.add_field(
-            name=_("💔 `$pets release <id>`"),
-            value=_(
-                "Release a pet back into the wild or an egg into nature.\n"
-                "⚠️ This action is permanent, so choose wisely.\n"
-                "A touching farewell message will accompany their departure."
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="\u200b",  # Invisible spacer field
-            value="\u200b",
-            inline=False,
-        )
-
-        embed.add_field(
-            name=_("🔄 `$pets trade <type> <your_pet_id> <type> <their_pet_id>`"),
-            value=_(
-                "Initiate a **trade** with another user by exchanging pets.\n"
-                "Both users must agree to the trade within **2 minutes**, or the pets will remain with their original owners."
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="\u200b",  # Invisible spacer field
-            value="\u200b",
-            inline=False,
-        )
-
-        embed.add_field(
-            name=_("✏️ `$pets rename <id> <name>`"),
-            value=_(
-                "Rename your pet. Leaving the name field blank will default it to the orignal name."
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="\u200b",  # Invisible spacer field
-            value="\u200b",
-            inline=False,
-        )
-
-        embed.add_field(
-            name=_("💰 `$pets sell <type> <id> <@user> <amount>`"),
-            value=_(
-                "Sell one of your pets to another user for an agreed price.\n"
-                "The transaction must be completed within **2 minutes**, or the pet and money will return to their owners."
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="\u200b",  # Invisible spacer field
-            value="\u200b",
-            inline=False,
-        )
-
-        embed.add_field(
-            name=_("📦 `$pets eggs`"),
-            value=_(
-                "View all your unhatched eggs and their remaining hatch time.\n"
-                "Make sure to keep track of your eggs to avoid missing out!"
-            ),
-            inline=False,
-        )
-
-        embed.set_footer(text=_("Take care of your pets to grow them into powerful allies!"))
-        await ctx.send(embed=embed)
-
-    @pets.command(brief=_("Unequip a pet"),
-                      description="Unequip one of your pets to use in battles. Only one pet can be equipped at a time.")
-    async def unequip(self, ctx, petid: int):
-        async with self.bot.pool.acquire() as conn:
-            # Fetch the specified pet
-            pet = await conn.fetchrow(
-                "SELECT * FROM monster_pets WHERE user_id = $1 AND monster_pets.id = $2;",
-                ctx.author.id,
-                petid,
-            )
-            if not pet:
-                await ctx.send(f"You don't have a pet with the ID: {id}.")
-                return
-            petname = pet["name"]
-            # Check if the pet is at least "young"
-            if pet["growth_stage"] not in ["young", "adult"]:
-                await ctx.send(f"{petname} must be at least in the young growth stage to be equipped.")
-                return
-
-            # Unequip the currently equipped pet, if any
-            await conn.execute(
-                "UPDATE monster_pets SET equipped = FALSE WHERE user_id = $1 AND equipped = TRUE;",
-                ctx.author.id,
-            )
-
-            await ctx.send(f"You have unequipped {petname} successfully!")
-
-    @pets.command(brief=_("Equip a pet"),
-                      description="Equip one of your pets to use in battles. Only one pet can be equipped at a time.")
-    async def equip(self, ctx, petid: int):
-        async with self.bot.pool.acquire() as conn:
-            # Fetch the specified pet
-            pet = await conn.fetchrow(
-                "SELECT * FROM monster_pets WHERE user_id = $1 AND monster_pets.id = $2;",
-                ctx.author.id,
-                petid,
-            )
-            if not pet:
-                await ctx.send(f"You don't have a pet with the ID: {id}.")
-                return
-            petname = pet["name"]
-            # Check if the pet is at least "young"
-            if pet["growth_stage"] not in ["young", "adult"]:
-                await ctx.send(f"{petname} must be at least in the young growth stage to be equipped.")
-                return
-
-            # Unequip the currently equipped pet, if any
-            await conn.execute(
-                "UPDATE monster_pets SET equipped = FALSE WHERE user_id = $1 AND equipped = TRUE;",
-                ctx.author.id,
-            )
-
-            # Equip the selected pet
-            await conn.execute(
-                "UPDATE monster_pets SET equipped = TRUE WHERE monster_pets.id = $1;",
-                petid,
-            )
-
-            await ctx.send(f"You have equipped {petname} successfully!")
-
-    @user_cooldown(120)
-    @pets.command(brief=_("Rename your pet or reset its name to the default"))
-    async def rename(self, ctx, id: int, *, nickname: str = None):
-        """
-        Rename a pet or reset its name to the default.
-        - If `nickname` is provided, sets the pet's name to the given nickname.
-        - If `nickname` is omitted, resets the pet's name to the default.
-        """
-        try:
-            async with self.bot.pool.acquire() as conn:
-                # Fetch the pet from the database
-                pet = await conn.fetchrow("SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;", ctx.author.id, id)
-
-                if not pet:
-                    await ctx.send(_("❌ No pet with ID `{id}` found in your collection.").format(id=id))
-                    return
-
-                # Check if resetting or renaming
-                if nickname:
-                    if len(nickname) > 50:  # Limit nickname length to 20 characters
-                        await ctx.send(_("❌ Nickname cannot exceed 50 characters."))
-                        return
-
-                    # Update the pet's nickname in the database
-                    await conn.execute("UPDATE monster_pets SET name = $1 WHERE id = $2;", nickname, id)
-                    await ctx.send(_("✅ Successfully renamed your pet to **{nickname}**!").format(nickname=nickname))
-                else:
-                    # Reset the pet's nickname to the default name
-                    default_name = pet['default_name']
-                    await conn.execute("UPDATE monster_pets SET name = $1 WHERE id = $2;", default_name, id)
-                    await ctx.send(_("✅ Pet's name has been reset to its default: **{default_name}**.").format(
-                        default_name=default_name))
-        except Exception as e:
-            await ctx.send(e)
-
-    async def check_pet(self, user_id, pet_id=None):
-        """Calculate pet status on demand based on timestamps"""
-        async with self.bot.pool.acquire() as conn:
-            # Query to get pet(s)
-            if pet_id:
-                pets = await conn.fetch("SELECT * FROM monster_pets WHERE id = $1", pet_id)
-            else:
-                pets = await conn.fetch("SELECT * FROM monster_pets WHERE user_id = $1", user_id)
-
-            results = []
-            for pet in pets:
-                # Skip adults
-                if pet['growth_stage'] == 'adult':
-                    results.append(pet)
-                    continue
-
-                # Calculate time passed - ensure both are naive or both are aware
-                current_time = datetime.datetime.utcnow()
-                last_update = pet['last_update']
-
-                # Make last_update naive if it's aware
-                if last_update.tzinfo is not None:
-                    last_update = last_update.replace(tzinfo=None)
-
-                hours_passed = (current_time - last_update).total_seconds() / 3600
-
-                # Rate depends on growth stage
-                if pet['growth_stage'] == 'baby':
-                    hunger_rate = 10 / 12  # Per hour
-                    happiness_rate = 5 / 12
-                elif pet['growth_stage'] == 'juvenile':
-                    hunger_rate = 8 / 12
-                    happiness_rate = 4 / 12
-                elif pet['growth_stage'] == 'young':
-                    hunger_rate = 6 / 12
-                    happiness_rate = 3 / 12
-
-                # Calculate new values
-                new_hunger = max(0, pet['hunger'] - int(hours_passed * hunger_rate))
-                new_happiness = max(0, pet['happiness'] - int(hours_passed * happiness_rate))
-
-                # Update database with new values and timestamp
-                await conn.execute(
-                    """
-                    UPDATE monster_pets
-                    SET hunger = $1, happiness = $2, last_update = $3
-                    WHERE id = $4
-                    """,
-                    new_hunger, new_happiness, current_time, pet['id']
-                )
-
-                # Check for death/runaway if values hit 0
-                if new_hunger == 0 and pet['user_id'] != 5:
-                    await self.handle_pet_death(conn, pet['user_id'], pet['id'], pet['name'])
-                elif new_happiness == 0 and pet['user_id'] != 5:
-                    await self.handle_pet_runaway(conn, pet['user_id'], pet['id'], pet['name'])
-
-                # Get updated pet info
-                updated_pet = await conn.fetchrow(
-                    "SELECT * FROM monster_pets WHERE id = $1",
-                    pet['id']
-                )
-                if updated_pet:
-                    results.append(updated_pet)
-
-            return results
-
-    async def handle_pet_death(self, conn, user_id, pet_id, pet_name):
-        """Handles pet death due to starvation."""
-        # Update the pet's user_id to 5 instead of deleting
-        await conn.execute(
-            "UPDATE monster_pets SET user_id = $1 WHERE id = $2;",
-            5, pet_id
-        )
-
-        # Attempt to fetch the user
-        user = self.bot.get_user(user_id)
-        if user:
-            try:
-                await user.send(
-                    f"😢 Your pet **{pet_name}** has died from starvation. Please take better care next time."
-                )
-            except discord.Forbidden:
-                # User has DMs disabled
-                pass
-
-    async def handle_pet_runaway(self, conn, user_id, pet_id, pet_name):
-        """Handles pet running away due to unhappiness."""
-        # Delete the pet from the database
-        await conn.execute(
-            "DELETE FROM monster_pets WHERE id = $1;",
-            pet_id
-        )
-
-        # Attempt to fetch the user
-        user = self.bot.get_user(user_id)
-        if user:
-            try:
-                await user.send(
-                    f"😞 Your pet **{pet_name}** has run away due to unhappiness. Make sure to keep your pet happy!"
-                )
-            except discord.Forbidden:
-                # User has DMs disabled
-                pass
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
 
     @tasks.loop(minutes=1)
     async def check_egg_hatches(self):
@@ -3506,100 +2875,6 @@ class Pets(commands.Cog):
             if user:
                 await user.send(f"Error in check_egg_hatches: {e}")
 
-<<<<<<< HEAD
-=======
-    @tasks.loop(minutes=1)
-    async def check_pet_growth(self):
-        growth_stages = {
-            1: {"stage": "baby", "growth_time": 2, "stat_multiplier": 0.25, "hunger_modifier": 1.0},
-            2: {"stage": "juvenile", "growth_time": 2, "stat_multiplier": 0.50, "hunger_modifier": 0.8},
-            3: {"stage": "young", "growth_time": 1, "stat_multiplier": 0.75, "hunger_modifier": 0.6},
-            4: {"stage": "adult", "growth_time": None, "stat_multiplier": 1.0, "hunger_modifier": 0.0},
-            # Self-sufficient
-        }
-
-        try:
-            async with self.bot.pool.acquire() as conn:
-                # Fetch pets that are ready to grow
-                pets = await conn.fetch(
-                    "SELECT * FROM monster_pets WHERE growth_time <= NOW() AND growth_stage != 'adult';"
-                )
-                for pet in pets:
-                    next_stage_index = pet["growth_index"] + 1
-                    if next_stage_index in growth_stages:
-                        stage_data = growth_stages[next_stage_index]
-
-                        # Compute the interval as a timedelta object
-                        if stage_data["growth_time"] is not None:
-                            growth_time_interval = datetime.timedelta(days=stage_data["growth_time"])
-                        else:
-                            growth_time_interval = None
-
-                        # Calculate the multiplier ratio
-                        old_multiplier = growth_stages[pet["growth_index"]]["stat_multiplier"]
-                        new_multiplier = stage_data["stat_multiplier"]
-                        multiplier_ratio = new_multiplier / old_multiplier
-
-                        newhp = pet["hp"] * multiplier_ratio
-                        newattack = pet["attack"] * multiplier_ratio
-                        newdefense = pet["defense"] * multiplier_ratio
-
-                        # Execute the appropriate query
-                        if growth_time_interval is not None:
-                            result = await conn.fetchrow(
-                                """
-                                UPDATE monster_pets
-                                SET 
-                                    growth_stage = $1,
-                                    growth_time = NOW() + $2,
-                                    hp = $3,
-                                    attack = $4,
-                                    defense = $5,
-                                    growth_index = $6
-                                WHERE 
-                                    "id" = $7
-                                RETURNING hp, attack, defense;
-                                """,
-                                stage_data["stage"],
-                                growth_time_interval,
-                                newhp,
-                                newattack,
-                                newdefense,
-                                next_stage_index,
-                                pet["id"],
-                            )
-                        else:
-                            result = await conn.fetchrow(
-                                """
-                                UPDATE monster_pets
-                                SET 
-                                    growth_stage = $1,
-                                    growth_time = NULL,
-                                    hp = $2,
-                                    attack = $3,
-                                    defense = $4,
-                                    growth_index = $5
-                                WHERE 
-                                    "id" = $6
-                                RETURNING hp, attack, defense;
-                                """,
-                                stage_data["stage"],
-                                newhp,
-                                newattack,
-                                newdefense,
-                                next_stage_index,
-                                pet["id"],
-                            )
-
-                        # Notify the user about the growth
-                        user = self.bot.get_user(pet["user_id"])
-                        if user:
-                            await user.send(
-                                f"Your pet **{pet['name']}** has grown into a {stage_data['stage']}!"
-                            )
-        except Exception as e:
-            print(f"Error in check_pet_growth: {e}")
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
 
     @is_gm()
     @commands.command(name="gmcreatemonster")
@@ -3733,7 +3008,6 @@ class Pets(commands.Cog):
 
         await ctx.send(f"Monster **{monster_name}** has been successfully added to level {level_int}!")
 
-<<<<<<< HEAD
     @pets.command(brief=_("Learn how to use the pet system"))
     async def help(self, ctx):
         """
@@ -4938,8 +4212,3 @@ class Pets(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(Pets(bot))
-=======
-
-async def setup(bot):
-    await bot.add_cog(Pets(bot))
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e

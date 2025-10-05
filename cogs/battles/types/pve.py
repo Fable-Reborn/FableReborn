@@ -15,10 +15,7 @@ class PvEBattle(Battle):
         self.player_team = teams[0]
         self.monster_team = teams[1]
         self.monster_level = kwargs.get("monster_level", 1)
-<<<<<<< HEAD
         self.macro_penalty_level = kwargs.get("macro_penalty_level", 0)
-=======
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         self.current_turn = 0
         self.attacker = None
         self.defender = None
@@ -60,12 +57,9 @@ class PvEBattle(Battle):
         self.started = True
         self.start_time = datetime.datetime.utcnow()
         
-<<<<<<< HEAD
         # Save initial battle data to database for replay
         await self.save_battle_to_database()
         
-=======
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         monster_name = self.monster_team.combatants[0].name
         await self.add_to_log(f"Battle against {monster_name} started!")
         
@@ -126,14 +120,10 @@ class PvEBattle(Battle):
         else:
             # Players: Use luck-based system
             luck_roll = random.randint(1, 100)
-<<<<<<< HEAD
             
             # Check for perfect accuracy from Night Vision skill
             has_perfect_accuracy = getattr(self.attacker, 'perfect_accuracy', False)
             if not has_perfect_accuracy and luck_roll > self.attacker.luck:
-=======
-            if luck_roll > self.attacker.luck:
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                 hits = False
         
         if hits:
@@ -171,7 +161,6 @@ class PvEBattle(Battle):
                 # Start with base damage
                 raw_damage = self.attacker.damage
                 
-<<<<<<< HEAD
                 # PROCESS PET SKILL EFFECTS ON ATTACK
                 skill_messages = []
                 if (self.attacker.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
@@ -287,26 +276,6 @@ class PvEBattle(Battle):
                     self.defender.take_damage(damage)
                     
                     message = f"{self.attacker.name} attacks! {self.defender.name} takes **{self.format_number(damage)} HP** damage."
-=======
-                # Apply element effects to base damage if enabled
-                if self.config["element_effects"] and hasattr(self.ctx.bot.cogs["Battles"], "element_ext"):
-                    element_mod = self.ctx.bot.cogs["Battles"].element_ext.calculate_damage_modifier(
-                        self.ctx,
-                        self.attacker.element, 
-                        self.defender.element
-                    )
-                    if element_mod != 0:
-                        raw_damage = raw_damage * (1 + Decimal(str(element_mod)))
-                
-                # Add variance and apply armor
-                raw_damage += Decimal(damage_variance)
-                blocked_damage = min(raw_damage, self.defender.armor)
-                damage = max(raw_damage - self.defender.armor, Decimal('10'))
-                
-                self.defender.take_damage(damage)
-                
-                message = f"{self.attacker.name} attacks! {self.defender.name} takes **{self.format_number(damage)} HP** damage."
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 
@@ -378,7 +347,6 @@ class PvEBattle(Battle):
         # Add message to battle log
         await self.add_to_log(message)
         
-<<<<<<< HEAD
         # PROCESS PET SKILL EFFECTS PER TURN
         if hasattr(self.ctx.bot.cogs["Battles"], "battle_factory"):
             pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
@@ -415,8 +383,6 @@ class PvEBattle(Battle):
             if self.attacker.is_pet:
                 setattr(self.attacker, 'killed_enemy_this_turn', True)
         
-=======
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         # Update the battle display
         await self.update_display()
         await asyncio.sleep(1)
@@ -483,12 +449,9 @@ class PvEBattle(Battle):
         log_text = "\n\n".join([f"**Action #{i}**\n{msg}" for i, msg in self.log])
         embed.add_field(name="Battle Log", value=log_text or "Battle starting...", inline=False)
         
-<<<<<<< HEAD
         # Add battle ID to footer for GM replay functionality
         embed.set_footer(text=f"Battle ID: {self.battle_id}")
         
-=======
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         return embed
     
     async def update_display(self):
@@ -506,11 +469,8 @@ class PvEBattle(Battle):
         # Check if it's a timeout/tie
         if await self.is_timed_out():
             await self.ctx.send("The battle ended in a draw due to timeout.")
-<<<<<<< HEAD
             # Save final battle state to database for replay
             await self.save_battle_to_database()
-=======
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             return None
         
         # Determine winner
@@ -519,11 +479,8 @@ class PvEBattle(Battle):
             await self.ctx.send(
                 f"You were defeated by the **{self.monster_team.combatants[0].name}**. Better luck next time!"
             )
-<<<<<<< HEAD
             # Save final battle state to database for replay
             await self.save_battle_to_database()
-=======
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             return self.monster_team
         else:
             # Player won - calculate XP reward
@@ -532,13 +489,10 @@ class PvEBattle(Battle):
             else:
                 xp_gain = random.randint(self.monster_level * 300, self.monster_level * 1000)
             
-<<<<<<< HEAD
             # Apply macro penalty if active (count >= 12)
             if self.macro_penalty_level >= 12:
                 xp_gain = xp_gain // 10  # Divide XP by 10
             
-=======
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             # Award XP
             async with self.ctx.bot.pool.acquire() as conn:
                 await conn.execute(
@@ -547,7 +501,6 @@ class PvEBattle(Battle):
                     self.ctx.author.id,
                 )
             
-<<<<<<< HEAD
             # Award crafting resources based on monster level (skip if macro penalty active)
             crafting_resources_awarded = []
             if self.macro_penalty_level == 0:  # Only give materials if no macro penalty
@@ -593,11 +546,6 @@ class PvEBattle(Battle):
                 victory_message += f"\n🔨 **Crafting Resources Found:** {resources_text}"
             
             await self.ctx.send(victory_message)
-=======
-            await self.ctx.send(
-                f"You defeated the **{self.monster_team.combatants[0].name}** and gained **{xp_gain} XP**!"
-            )
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             
             # Check for level up
             from utils import misc as rpgtools
@@ -611,12 +559,9 @@ class PvEBattle(Battle):
             # Dispatch PVE completion event
             self.ctx.bot.dispatch("PVE_completion", self.ctx, True)
             
-<<<<<<< HEAD
             # Save final battle state to database for replay
             await self.save_battle_to_database()
             
-=======
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             return self.player_team
     
     async def is_battle_over(self):

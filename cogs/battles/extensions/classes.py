@@ -27,7 +27,6 @@ class ClassBuffExtension:
     
     # Mage evolution levels for fireball spell
     mage_evolution_levels = {
-<<<<<<< HEAD
         "Juggler": 1,
         "Witcher": 2,
         "Enchanter": 3,
@@ -35,14 +34,6 @@ class ClassBuffExtension:
         "Warlock": 5,
         "Dark Caster": 6,
         "White Sorcerer": 7,
-=======
-        "Witcher": 1,
-        "Enchanter": 2,
-        "Mage": 3,
-        "Warlock": 4,
-        "Dark Caster": 5,
-        "White Sorcerer": 6,
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
     }
     
     # Tank evolution levels for shield abilities
@@ -64,10 +55,7 @@ class ClassBuffExtension:
         4: 1.50,  # 150%
         5: 1.75,  # 175%
         6: 2.00,  # 200%
-<<<<<<< HEAD
         7: 2.10,  # 210%
-=======
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
     }
     
     # Tank health multipliers

@@ -2,15 +2,11 @@
 from abc import ABC, abstractmethod
 import asyncio
 import datetime
-<<<<<<< HEAD
 import uuid
-=======
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
 from collections import deque
 from decimal import Decimal
 import random
 from typing import List, Dict, Optional, Union, Any
-<<<<<<< HEAD
 import json
 
 class DecimalEncoder(json.JSONEncoder):
@@ -19,8 +15,6 @@ class DecimalEncoder(json.JSONEncoder):
         if isinstance(obj, Decimal):
             return float(obj)
         return super().default(obj)
-=======
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
 
 import discord
 from discord.ext import commands
@@ -44,7 +38,6 @@ class Battle(ABC):
         self.winner = None
         self.battle_message = None
         
-<<<<<<< HEAD
         # Generate unique battle ID for replay system
         self.battle_id = str(uuid.uuid4())
         self.battle_type = self.__class__.__name__
@@ -53,8 +46,6 @@ class Battle(ABC):
         self.turn_states = []  # List of detailed battle states per turn
         self.initial_state = None  # Store initial battle state
         
-=======
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         # Configuration options
         self.config = {
             "allow_pets": kwargs.get("allow_pets", True),
@@ -106,12 +97,9 @@ class Battle(ABC):
         """Add a message to the battle log"""
         self.log.append((self.action_number, message))
         self.action_number += 1
-<<<<<<< HEAD
         
         # Capture detailed state for live replay
         await self.capture_turn_state(message)
-=======
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
     
     def create_hp_bar(self, current_hp, max_hp, length=20):
         """Create a visual HP bar"""
@@ -219,7 +207,6 @@ class Battle(ABC):
             chance = self.get_effect_chance(source, target, base_chance)
             
         # Roll for effect
-<<<<<<< HEAD
         return random.random() < chance
     
     # ----- Battle Replay System Methods -----
@@ -486,6 +473,3 @@ class Battle(ABC):
 
         
         return base_data
-=======
-        return random.random() < chance
->>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
