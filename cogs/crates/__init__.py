@@ -230,6 +230,7 @@ class Crates(commands.Cog):
                             new_rarity = "uncommon"
                         else:
                             new_rarity = "common"
+
                         crates[new_rarity] += 1
 
                     await conn.execute(
@@ -287,44 +288,75 @@ class Crates(commands.Cog):
                         materials_amount=crates["materials"],
                         materials_emoji=self.emotes.materials,
                     )
+
                     await ctx.send(text)
+
                 elif rarity == "fortune":
                     for _i in range(amount):
                         level = rpgtools.xptolevel(ctx.character_data["xp"])
                         random_number = random.randint(1, 100)
+
                         if random_number <= 50:  # Lower half, reward with XP
+
                             min_value, max_value = 100, 500  # Adjust the XP range as needed
+
                             reward_type = "xp"
+
                         else:  # Upper half, reward with money
+
                             if random.randint(1, 100) <= 75:  # Simulating 70% chance
+
                                 min_value, max_value = 250000, 470000
+
                             else:
+
                                 min_value, max_value = 470001, 850000
+
                             reward_type = "money"
+
                         value = random.randint(min_value, max_value)
+
                         async with self.bot.pool.acquire() as conn:
+
                             user_id = ctx.author.id
+
                             if reward_type == "xp":
+
                                 nurflevel = level
+
                                 if level > 50:
                                     nurflevel = 50
+
                                 xpvar = 2000 * level + 1500
+
                                 random_xp = random.randint(1000 * nurflevel, xpvar)
+
                                 await conn.execute('UPDATE profile SET "xp" = "xp" + $1 WHERE "user" = $2', random_xp,
                                                    user_id)
+
                                 name = ctx.character_data["name"]
+
                                 await ctx.send(
                                     f"{name} opened a Fortune crate and gained **{random_xp}XP!**")
+
                                 await self.bot.public_log(
                                     f"**{ctx.author}** opened a fortune crate and gained **{random_xp} XP!**"
                                 )
+
                                 new_level = int(rpgtools.xptolevel(ctx.character_data["xp"] + random_xp))
+
+
+
                             else:
+
                                 reward = round(value, -2)
+
                                 await conn.execute('UPDATE profile SET "money" = "money" + $1 WHERE "user" = $2', reward,
                                                    user_id)
                                 name = ctx.character_data["name"]
+
                                 await ctx.send(f"{name} opened a Fortune crate and found **${reward}!**")
+
                                 await self.bot.public_log(
                                     f"**{ctx.author}** opened a fortune crate and received **${reward}!**"
                                 )
@@ -333,11 +365,14 @@ class Crates(commands.Cog):
                             await self.bot.process_levelup(ctx, new_level, level)
                     except Exception as e:
                         pass
+
+
                 else:
                     items = []
                     total_dragon_coins_gained = 0
                     for _i in range(amount):
                         # A number to detemine the crate item range
+
 
                         rand = random.randint(0, 9)
                         if rarity == "common":
@@ -377,6 +412,7 @@ class Crates(commands.Cog):
                                 minstat, maxstat = (41, 45)
                         elif rarity == "divine":
                             rand = random.randint(1, 100)  # Using a range of 1 to 100 for clearer percentages
+
                             if rand <= 10:
                                 minstat, maxstat = (77, 100)
                             elif rand <= 60:
@@ -386,26 +422,18 @@ class Crates(commands.Cog):
                             else:
                                 minstat, maxstat = (47, 51)
                         elif rarity == "materials":
-                            # Get amuletcrafting cog to access resource generation
-                            amulet_cog = self.bot.get_cog('AmuletCrafting')
-                            if not amulet_cog:
-                                return False, "AmuletCrafting system not available."
-                            # Generate 3-10 random materials
-                            material_count = random.randint(3, 10)
-                            # Get random materials using the amuletcrafting system
-                            materials_gained = []
-                            for _ in range(material_count):
-                                resource = amulet_cog.get_random_resource()
-                                if resource:
-                                    # Give the material to the user
-                                    await amulet_cog.give_crafting_resource(ctx.author.id, resource, 1)
-                                    materials_gained.append(resource.replace('_', ' ').title())
-                        message = (
-                            f"<:c_mats:1398983405516882002> **Materials Crate opened!**\n\n"
-                            f"You found **{material_count}** crafting materials:\n"
-                            f"• {', '.join(materials_gained)}"
-                        )
-                        await ctx.send(message)
+                            # Materials crates are handled by the premiumshop cog
+                            premiumshop_cog = self.bot.get_cog('PremiumShop')
+                            if premiumshop_cog:
+                                success, message = await premiumshop_cog.open_materials_crate(ctx)
+                                if success:
+                                    await ctx.send(message)
+                                else:
+                                    await ctx.send(f"Error: {message}")
+                                return
+                            else:
+                                await ctx.send("Materials crate system not available.")
+                                return
 
 
                         # Check for Dragon Coin chance on legendary crates (20% chance)
