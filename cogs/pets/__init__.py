@@ -1946,7 +1946,7 @@ class Pets(commands.Cog):
 
         await ctx.send(embed=embed)
 
-    @user_cooldown(60)
+    @user_cooldown(300)
     @pets.command(brief=_("Pet your pet to increase happiness and trust"))
     async def pet(self, ctx, pet_id: int):
         """Pet your pet to increase happiness and build trust"""
