@@ -295,68 +295,39 @@ class Crates(commands.Cog):
                     for _i in range(amount):
                         level = rpgtools.xptolevel(ctx.character_data["xp"])
                         random_number = random.randint(1, 100)
-
                         if random_number <= 50:  # Lower half, reward with XP
-
                             min_value, max_value = 100, 500  # Adjust the XP range as needed
-
                             reward_type = "xp"
-
                         else:  # Upper half, reward with money
-
                             if random.randint(1, 100) <= 75:  # Simulating 70% chance
-
                                 min_value, max_value = 250000, 470000
-
                             else:
-
                                 min_value, max_value = 470001, 850000
-
                             reward_type = "money"
-
                         value = random.randint(min_value, max_value)
-
                         async with self.bot.pool.acquire() as conn:
-
                             user_id = ctx.author.id
-
                             if reward_type == "xp":
-
                                 nurflevel = level
-
                                 if level > 50:
                                     nurflevel = 50
-
                                 xpvar = 2000 * level + 1500
-
                                 random_xp = random.randint(1000 * nurflevel, xpvar)
-
                                 await conn.execute('UPDATE profile SET "xp" = "xp" + $1 WHERE "user" = $2', random_xp,
                                                    user_id)
-
                                 name = ctx.character_data["name"]
-
                                 await ctx.send(
                                     f"{name} opened a Fortune crate and gained **{random_xp}XP!**")
-
                                 await self.bot.public_log(
                                     f"**{ctx.author}** opened a fortune crate and gained **{random_xp} XP!**"
                                 )
-
                                 new_level = int(rpgtools.xptolevel(ctx.character_data["xp"] + random_xp))
-
-
-
                             else:
-
                                 reward = round(value, -2)
-
                                 await conn.execute('UPDATE profile SET "money" = "money" + $1 WHERE "user" = $2', reward,
                                                    user_id)
                                 name = ctx.character_data["name"]
-
                                 await ctx.send(f"{name} opened a Fortune crate and found **${reward}!**")
-
                                 await self.bot.public_log(
                                     f"**{ctx.author}** opened a fortune crate and received **${reward}!**"
                                 )
@@ -366,13 +337,11 @@ class Crates(commands.Cog):
                     except Exception as e:
                         pass
 
-
                 else:
                     items = []
                     total_dragon_coins_gained = 0
                     for _i in range(amount):
                         # A number to detemine the crate item range
-
 
                         rand = random.randint(0, 9)
                         if rarity == "common":
@@ -412,7 +381,6 @@ class Crates(commands.Cog):
                                 minstat, maxstat = (41, 45)
                         elif rarity == "divine":
                             rand = random.randint(1, 100)  # Using a range of 1 to 100 for clearer percentages
-
                             if rand <= 10:
                                 minstat, maxstat = (77, 100)
                             elif rand <= 60:
