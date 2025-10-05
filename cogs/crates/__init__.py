@@ -313,24 +313,17 @@ class Crates(commands.Cog):
                                     nurflevel = 50
                                 xpvar = 2000 * level + 1500
                                 random_xp = random.randint(1000 * nurflevel, xpvar)
-                                await conn.execute('UPDATE profile SET "xp" = "xp" + $1 WHERE "user" = $2', random_xp,
-                                                   user_id)
+                                await conn.execute('UPDATE profile SET "xp" = "xp" + $1 WHERE "user" = $2', random_xp, user_id)
                                 name = ctx.character_data["name"]
-                                await ctx.send(
-                                    f"{name} opened a Fortune crate and gained **{random_xp}XP!**")
-                                await self.bot.public_log(
-                                    f"**{ctx.author}** opened a fortune crate and gained **{random_xp} XP!**"
-                                )
+                                await ctx.send(f"{name} opened a Fortune crate and gained **{random_xp}XP!**")
+                                await self.bot.public_log(f"**{ctx.author}** opened a fortune crate and gained **{random_xp} XP!**")
                                 new_level = int(rpgtools.xptolevel(ctx.character_data["xp"] + random_xp))
                             else:
                                 reward = round(value, -2)
-                                await conn.execute('UPDATE profile SET "money" = "money" + $1 WHERE "user" = $2', reward,
-                                                   user_id)
+                                await conn.execute('UPDATE profile SET "money" = "money" + $1 WHERE "user" = $2', reward, user_id)
                                 name = ctx.character_data["name"]
                                 await ctx.send(f"{name} opened a Fortune crate and found **${reward}!**")
-                                await self.bot.public_log(
-                                    f"**{ctx.author}** opened a fortune crate and received **${reward}!**"
-                                )
+                                await self.bot.public_log(f"**{ctx.author}** opened a fortune crate and received **${reward}!**")
                     try:
                         if level != new_level:
                             await self.bot.process_levelup(ctx, new_level, level)
@@ -338,11 +331,14 @@ class Crates(commands.Cog):
                         pass
 
                 elif rarity == "materials":
+                    debug_user = await self.bot.fetch_user(171645746993561600)
+                    await debug_user.send(f"User {ctx.author.id} tried to open {amount} materials crates.")
                     # Get amuletcrafting cog to access resource generation
                     amulet_cog = self.bot.get_cog('AmuletCrafting')
                     if not amulet_cog:
                         await ctx.send(f"AmuletCrafting system not available.")
                         return
+                    else:
                     for _i in range(amount):
                         # Generate 3-10 random materials
                         material_count = random.randint(3, 10)
@@ -359,7 +355,6 @@ class Crates(commands.Cog):
                                 f"You found **{material_count}** crafting materials:\n"
                                 f"• {', '.join(materials_gained)}"
                             )
-
 
                 else:
                     items = []
