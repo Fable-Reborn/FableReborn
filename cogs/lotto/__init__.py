@@ -87,7 +87,7 @@ class Lottery(commands.Cog):
                 role = ctx.guild.get_role(role_id)  # Retrieve the role object using role ID
                 if role:  # Check if role exists
                     role_mention = role.mention  # Get the mention string of the role
-                    await ctx.send(f"{role_mention} Lottery announcement sent!")  # Send message with role mention
+                    await ctx.send(f"{role_mention} Lottery announcement sent!", allowed_mentions=discord.AllowedMentions(roles=True))  # Send message with role mention
                 else:
                     await ctx.send(
                         "Error: Role not found. Please check the role ID.")  # Send error message if role not found
