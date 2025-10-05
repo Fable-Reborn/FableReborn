@@ -339,22 +339,22 @@ class Crates(commands.Cog):
                         await ctx.send(f"AmuletCrafting system not available.")
                         return
                     else:
-                    for _i in range(amount):
-                        # Generate 3-10 random materials
-                        material_count = random.randint(3, 10)
-                        # Get random materials using the amuletcrafting system
-                        materials_gained = []
-                        for _ in range(material_count):
-                            resource = amulet_cog.get_random_resource()
-                            if resource:
-                                # Give the material to the user
-                                await amulet_cog.give_crafting_resource(ctx.author.id, resource, 1)
-                                materials_gained.append(resource.replace('_', ' ').title())
-                            await ctx.send(
-                                f"<:c_mats:1398983405516882002> **Materials Crate opened!**\n\n"
-                                f"You found **{material_count}** crafting materials:\n"
-                                f"• {', '.join(materials_gained)}"
-                            )
+                        for _i in range(amount):
+                            # Generate 3-10 random materials
+                            material_count = random.randint(3, 10)
+                            # Get random materials using the amuletcrafting system
+                            materials_gained = []
+                            for _ in range(material_count):
+                                resource = amulet_cog.get_random_resource()
+                                if resource:
+                                    # Give the material to the user
+                                    await amulet_cog.give_crafting_resource(ctx.author.id, resource, 1)
+                                    materials_gained.append(resource.replace('_', ' ').title())
+                                await ctx.send(
+                                    f"<:c_mats:1398983405516882002> **Materials Crate opened!**\n\n"
+                                    f"You found **{material_count}** crafting materials:\n"
+                                    f"• {', '.join(materials_gained)}"
+                                )
 
                 else:
                     items = []
