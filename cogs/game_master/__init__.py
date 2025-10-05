@@ -2275,13 +2275,13 @@ class GameMaster(commands.Cog):
         # Get the auctions channel
         channel = discord.utils.get(
             self.bot.get_guild(self.bot.config.game.support_server_id).channels,
-            name="『🧾』auctions",
+            name="「🎩」auctions",
         )
 
         if not channel:
             return await ctx.send(_("Auctions channel wasn't found."))
 
-        role_id = 1199287508857540699
+        role_id = 1404803970572226760  # event ping for the moment
         role = discord.utils.get(ctx.guild.roles, id=role_id)
 
         if not role:
