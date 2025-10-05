@@ -390,6 +390,31 @@ class Sharding(commands.Cog):
     @locale_doc
     async def timers(self, ctx):
         _("""Lists all your cooldowns, including your adventure timer.""")
+        
+        def split_field_content(content_list, max_length=1024):
+            """Split a list of strings into chunks that fit Discord's field value limit"""
+            if not content_list:
+                return []
+            
+            chunks = []
+            current_chunk = []
+            current_length = 0
+            
+            for item in content_list:
+                item_length = len(item) + 1  # +1 for newline
+                if current_length + item_length > max_length and current_chunk:
+                    chunks.append("\n".join(current_chunk))
+                    current_chunk = [item]
+                    current_length = item_length
+                else:
+                    current_chunk.append(item)
+                    current_length += item_length
+            
+            if current_chunk:
+                chunks.append("\n".join(current_chunk))
+            
+            return chunks
+        
         try:
             cooldowns = await self.bot.redis.execute_command(
                 "KEYS", f"cd:{ctx.author.id}:*"
@@ -411,6 +436,15 @@ class Sharding(commands.Cog):
                 "tournament": "🏆",  # Trophy emoji for Tournament
                 "raidtournament": "🏆",  # Trophy emoji for Raid Tournament
                 "bless": "🙏",
+                "pve": "⚔️",
+                "scout": "🐾",
+                "dragonchallenge party":"❄️",
+                "pets feed": "🐾",
+                "pets train": "🐾",
+                "pets play": "🐾",
+                "pets trade": "💰",
+                "pets treat": "🐾",
+                "pets pet": "🐾",
             }
 
             # Create empty lists to store formatted cooldowns for different categories
@@ -419,6 +453,7 @@ class Sharding(commands.Cog):
             family_cooldowns = []  # New list for family cooldowns
             class_cooldowns = []  # New list for class cooldowns
             adventure_cooldowns = []  # New list for adventure cooldowns
+            pets_cooldowns = []  # New list for adventure cooldowns
 
             if not cooldowns and (not adv or adv[2]):
                 embed = discord.Embed(
@@ -437,13 +472,15 @@ class Sharding(commands.Cog):
                     formatted_time = timedelta(seconds=int(cooldown))
 
                     # Check the category of the cooldown and add it to the respective list
-                    if cmd in ["battle", "raidbattle"]:
+                    if cmd in ["battle", "raidbattle", "tournament", "raidtournament"]:
                         category_cooldowns = battle_cooldowns
                     elif cmd in ["child", "familyevent", "date"]:
                         category_cooldowns = family_cooldowns
-                    elif cmd in ["class", "fun", "hunt", "steal", "bless", "gift"]:
+                    elif cmd in ["pets feed", "pets train", "pets play", "pets trade", "pets treat", "pets pet"]:
+                        category_cooldowns = pets_cooldowns
+                    elif cmd in ["class", "fun", "hunt", "steal", "bless", "gift", "scout"]:
                         category_cooldowns = class_cooldowns
-                    elif cmd in ["adventure", "activebattle"]:
+                    elif cmd in ["adventure", "activebattle", "pve", "dragonchallenge party", "activeadventure", "battletower fight"]:
                         category_cooldowns = adventure_cooldowns
                     else:
                         category_cooldowns = general_cooldowns
@@ -460,57 +497,64 @@ class Sharding(commands.Cog):
 
                     max_message_length = max(message_lengths)
 
-                # ... (previous code)
-
                 embed = discord.Embed(
                     title=_("Cooldowns"),
                     color=discord.Color.purple()
                 )
 
+                def add_category_fields(embed, category_list, category_name):
+                    """Add category fields, splitting into multiple fields if needed"""
+                    if not category_list:
+                        return
+                    
+                    chunks = split_field_content(category_list)
+                    for i, chunk in enumerate(chunks):
+                        field_name = category_name if i == 0 else f"{category_name} (cont.)"
+                        embed.add_field(name=field_name, value=chunk, inline=False)
+                    
+                    # Add spacing between categories if not the last category
+                    return len(chunks) > 0
+
+                # Track if we need spacing
+                has_content = False
+
                 if general_cooldowns:
-                    embed.add_field(
-                        name=_("General Cooldowns"),
-                        value="\n".join(general_cooldowns),
-                        inline=False
-                    )
-                    # Add a blank field with a single line of space if there are more fields to follow
-                    if battle_cooldowns or family_cooldowns or class_cooldowns or adventure_cooldowns:
-                        embed.add_field(name="\u200B", value="\n", inline=False)
+                    add_category_fields(embed, general_cooldowns, _("General Cooldowns"))
+                    has_content = True
 
                 if battle_cooldowns:
-                    embed.add_field(
-                        name=_("Battle Cooldowns"),
-                        value="\n".join(battle_cooldowns),
-                        inline=False
-                    )
-                    # Add a blank field with a single line of space if there are more fields to follow
-                    if family_cooldowns or class_cooldowns or adventure_cooldowns:
+                    if has_content:
                         embed.add_field(name="\u200B", value="\n", inline=False)
+                    add_category_fields(embed, battle_cooldowns, _("Battle Cooldowns"))
+                    has_content = True
 
                 if family_cooldowns:
-                    embed.add_field(
-                        name=_("Family Cooldowns"),
-                        value="\n".join(family_cooldowns),
-                        inline=False
-                    )
-                    # Add a blank field with a single line of space if there are more fields to follow
-                    if class_cooldowns or adventure_cooldowns:
+                    if has_content:
                         embed.add_field(name="\u200B", value="\n", inline=False)
+                    add_category_fields(embed, family_cooldowns, _("Family Cooldowns"))
+                    has_content = True
+
+                if pets_cooldowns:
+                    if has_content:
+                        embed.add_field(name="\u200B", value="\n", inline=False)
+                    add_category_fields(embed, pets_cooldowns, _("Pets Cooldowns"))
+                    has_content = True
 
                 if class_cooldowns:
-                    embed.add_field(
-                        name=_("Class Cooldowns"),
-                        value="\n".join(class_cooldowns),
-                        inline=False
-                    )
-                    # Add a blank field with a single line of space if there are more fields to follow
-                    if adventure_cooldowns or adv:
+                    if has_content:
                         embed.add_field(name="\u200B", value="\n", inline=False)
+                    add_category_fields(embed, class_cooldowns, _("Class Cooldowns"))
+                    has_content = True
 
-
-                # ... (continue adding a space between other fields as needed)
+                if adventure_cooldowns:
+                    if has_content:
+                        embed.add_field(name="\u200B", value="\n", inline=False)
+                    add_category_fields(embed, adventure_cooldowns, _("Adventure Cooldowns"))
+                    has_content = True
 
                 if adv and not adv[2]:
+                    if has_content:
+                        embed.add_field(name="\u200B", value="\n", inline=False)
                     adventure_message = _("⏳ Adventure is running and will be done after {time}").format(
                         time=adv[1]
                     )
@@ -519,7 +563,6 @@ class Sharding(commands.Cog):
                         value=adventure_message,
                         inline=False
                     )
-
 
                 # Send the embed
                 await ctx.send(embed=embed)

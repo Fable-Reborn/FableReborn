@@ -1,1446 +1,714 @@
-import discord
-from discord.ext import commands
-from discord.ui import View, Button
-from discord.enums import ButtonStyle
 import asyncio
-import random
 import datetime
-import traceback
-import uuid
 
-# If you have a custom "is_gm" check:
-from utils.checks import is_gm
+import discord
+from discord.enums import ButtonStyle
+import random as randomm
+from discord.ext import commands, tasks
+from discord.ui import Button, View
 
-
-# ------------------------------------------------
-#                 RAID CLASS
-# ------------------------------------------------
-class Raid:
-    def __init__(self, boss_hp, channels):
-        self.initial_boss_hp = boss_hp
-        self.boss_hp = boss_hp
-        self.channels = channels
-        self.participants = {}
-        self.defeated_players = set()
-        self.insane_players = set()
-        self.join_phase = True
-        self.raid_started = False
-        self.turn_order = []
-        self.current_turn = None
-        self.is_choice_phase = False
-        self.view = View(timeout=None)
-
-        # Boss states
-        self.current_form = 1
-        self.group_sanity = 1000
-        self.synergy_triggered = False
-        self.final_summary_posted = False
-        self.aggro_table = {}
-
-        # Mid-raid objectives
-        self.mid_raid_objectives = [
-            {
-                "name": "Seal the Dark Altar",
-                "description": "A pulsating altar from the void must be neutralized before it empowers Eclipse further.",
-                "completed": False,
-                "reward": 200
-            },
-            {
-                "name": "Banish the Wailing Specters",
-                "description": "Ghostly apparitions roam the field, draining everyone's sanity.",
-                "completed": False,
-                "reward": 150
-            }
-        ]
-        self.current_objective = None
-        self.objective_deadline = None
-
-        # Boss turn toggles
-        self.is_boss_turn = False
-
-    def remove_player(self, player: discord.User):
-        """Remove a player from the raid participants and turn order."""
-        if player in self.participants:
-            del self.participants[player]
-        if player in self.turn_order:
-            self.turn_order.remove(player)
-        if player in self.aggro_table:
-            del self.aggro_table[player]
+from classes.converters import IntGreaterThan
+from utils import random
+from utils.checks import has_char, is_gm, is_god
+from utils.i18n import _
+from utils.joins import JoinView
 
 
-# ------------------------------------------------
-#           HORROR BUTTON CLASS
-# ------------------------------------------------
-class HorrorButton(Button):
-    def __init__(self, style, label, callback):
-        super().__init__(style=style, label=label)
-        self.callback_func = callback
-
-    async def callback(self, interaction: discord.Interaction):
-        await self.callback_func(interaction)
-
-
-# ------------------------------------------------
-#           HORROR RAID COG
-# ------------------------------------------------
 class HorrorRaid(commands.Cog):
+    """Raids are only available in the support server. Use the support command for an invite link."""
+
     def __init__(self, bot):
         self.bot = bot
-        self.active_raids = {}
+        self.raid = {}
+        self.toggle_list = set()  # For efficient membership checking
+        self.chaoslist = []
+        self.joined = []
+        self.raidactive = False  # Indicates if a raid is currently running
+        self.active_view = None
+        self.raid_preparation = False
+        self.boss = None
+        self.last_keyword_response = 0  # Timestamp for keyword response cooldown
 
-    # --------------------------------------------
-    #      BASIC UTILS: Sending Messages
-    # --------------------------------------------
-    async def send_to_channels(self, *, embed=None, content=None, view=None, raid: Raid = None):
-        """Send a message to all channels associated with a given raid."""
-        for ch in raid.channels:
-            if ch:
-                try:
-                    await ch.send(embed=embed, content=content, view=view)
-                except Exception as e:
-                    print(f"[send_to_channels] Error: {e}")
+        # Define raid channel IDs (adjust as necessary)
+        self.raid_channel_ids = [1406637960262320230]
 
-    async def create_lore_thread(self, raid: Raid):
-        """Optional: create a separate thread for lore or side-narration."""
-        main_channel = raid.channels[0]
+        self.allow_sending = discord.PermissionOverwrite(send_messages=True, read_messages=True)
+        self.deny_sending = discord.PermissionOverwrite(send_messages=False, read_messages=False)
+        self.read_only = discord.PermissionOverwrite(send_messages=False, read_messages=True)
+
+        # Store eclipse taunts so they can be used on a timer
+        self.eclipse_taunts = [
+            "**Eclipse whispers**: I sense your fear... delicious.",
+            "**Eclipse hisses**: Your chaos god cannot save you from the void.",
+            "**Eclipse laughs**: Your pathetic attempts amuse me.",
+            "**Eclipse roars**: I've devoured entire realms. You are nothing!",
+            "**Eclipse mocks**: Drakath's followers are as fragile as glass figurines.",
+            "**Eclipse threatens**: I will consume your souls one by one.",
+            "**Eclipse sneers**: Your master abandoned you—now face me alone.",
+            "**Eclipse taunts**: Which one of you shall I break first?",
+            "**Eclipse growls**: The void hungers... and you look appetizing.",
+            "**Eclipse whispers**: I can hear your hearts racing with terror. Music to my ears."
+        ]
+        self.taunt_task = None
+
+    async def taunt_loop(self, channels):
+        """Background loop that sends a random eclipse taunt to all raid channels every 60 seconds."""
         try:
-            lore_thread = await main_channel.create_thread(
-                name="Raid-Lore-Thread",
-                auto_archive_duration=60
-            )
-            return lore_thread
-        except Exception as e:
-            print(f"Error creating thread: {e}")
-            return None
+            while self.raidactive:
+                await asyncio.sleep(60)
+                taunt = randomm.choice(self.eclipse_taunts)
+                for channel in channels:
+                    await channel.send(taunt)
+        except asyncio.CancelledError:
+            return
 
-    # --------------------------------------------
-    #  Chat Reading & Thematic Reaction (50% CHANCE)
-    # --------------------------------------------
+    async def convert_to_display_names(self):
+        display_names = []
+
+        for user_id in self.chaoslist:
+            # Fetch the user object (if you only have user IDs in self.chaoslist)
+            user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
+
+            if user:  # Ensure the user exists
+                display_names.append(user.display_name)
+            else:
+                display_names.append(f"Unknown User ({user_id})")  # Fallback for missing users
+
+        return display_names
+
+    @is_gm()
+    @commands.command(hidden=True, breif=("See who was in your last raid"))
+    async def chaoslist(self, ctx):
+        try:
+            if self.chaoslist is None:
+                await ctx.send("Data on your most recent raid was not found")
+            else:
+
+                display_names = await self.convert_to_display_names()
+                await ctx.send(content=f"Participants: {', '.join(display_names)}")
+        except Exception as e:
+            await ctx.send(e)
+
+    @is_gm()
+    @commands.command(hidden=True, brief=_("Start a Drakath raid"))
+    async def chaosspawn(self, ctx, boss_hp: IntGreaterThan(0)):
+        """[Drakath only] Starts a raid against Eclipse the Void Conqueror."""
+        try:
+            # Delay factor to slow down messages for readability.
+            delay_factor = 2
+
+            # Define the channels where the raid messages will be sent.
+            channels = [
+                self.bot.get_channel(1406637960262320230)
+                # Add additional channels if needed.
+            ]
+
+            async def send_to_channels(embed=None, content=None, view=None):
+                """Helper function to send a message to all raid channels."""
+                for channel in channels:
+                    await channel.send(embed=embed, content=content, view=view)
+
+            # Eclipse's critical hit messages.
+            critical_messages = [
+                "**Eclipse tears through reality** and rips into {target}'s essence!",
+                "**Eclipse opens a void rift** beneath {target}'s feet!",
+                "**Eclipse's tendrils of darkness** pierce {target}'s defenses!",
+                "**Eclipse unleashes primordial horror** against {target}!",
+                "**Eclipse consumes {target}'s life force** in a terrifying display!",
+                "**Eclipse reveals its true form** to {target}, causing psychic damage!"
+            ]
+
+            # Join raid button with horror styling.
+            view = JoinView(
+                Button(style=ButtonStyle.danger, label="Sacrifice yourself to the raid!"),
+                message=_("You've pledged your soul to the raid. There's no turning back now."),
+                timeout=60 * 15,  # Join period lasts 15 minutes.
+            )
+
+            # Initial announcement with a horror-themed description.
+            em = discord.Embed(
+                title="𝔗𝔥𝔢 𝔙𝔬𝔦𝔡 𝔄𝔴𝔞𝔨𝔢𝔫𝔰",
+                description=f"""
+*The air grows cold. Reality warps and twists before your eyes.*
+
+In Drakath's unholy name, unleash the storm,
+Disciples of chaos, in darkness swarm.
+The Void hungers, it calls, it screams,
+Your nightmares manifest beyond your darkest dreams.
+
+**Eclipse the Void Conqueror** has awakened with **{boss_hp} HP** 
+and will breach our realm in **15 Minutes**
+
+*Do you dare to defy the inevitable?*
+""",
+                color=0x9400D3,
+            )
+            em.set_image(url="https://i.imgur.com/YoszTlc.png")
+
+            # Send the initial raid message and join button.
+            await send_to_channels(embed=em, view=view)
+
+            # --- Countdown Sequence ---
+            await send_to_channels(content="**The void looms... 15 minutes remain until Eclipse descends!**")
+            await asyncio.sleep(300)  # 5 minutes (15 -> 10 minutes remain)
+
+            await send_to_channels(content="**The void stirs... Only 10 minutes remain before Eclipse descends!**")
+            await asyncio.sleep(300)  # 5 minutes (10 -> 5 minutes remain)
+
+            await send_to_channels(content="**The abyss roars with anticipation... 5 minutes remain until your doom!**")
+            await asyncio.sleep(120)  # 2 minutes (5 -> 3 minutes remain)
+
+            await send_to_channels(content="**Darkness gathers... 3 minutes remain before Eclipse awakens fully!**")
+            await asyncio.sleep(60)   # 1 minute (3 -> 2 minutes remain)
+
+            await send_to_channels(content="**The air grows colder... 2 minutes remain until the void consumes you!**")
+            await asyncio.sleep(60)   # 1 minute (2 -> 1 minute remain)
+
+            await send_to_channels(content="**Time is running thin... 1 minute remains before Eclipse tears through reality!**")
+            await asyncio.sleep(30)   # 30 seconds (1 minute -> 30 seconds remain)
+
+            await send_to_channels(content="**The void pulses with malignant energy... 30 seconds remain until your final reckoning!**")
+            await asyncio.sleep(20)   # 20 seconds (30 -> 10 seconds remain)
+
+            await send_to_channels(content="**Terror peaks... Only 10 seconds remain until the nightmare begins!**")
+            await asyncio.sleep(10)   # Final 10 seconds before starting the raid
+            # --- End of Countdown Sequence ---
+
+            view.stop()
+
+            # Activate raid listening.
+            self.raidactive = True
+
+            # Start the periodic taunt task.
+            self.taunt_task = self.bot.loop.create_task(self.taunt_loop(channels))
+
+            # Store the original boss health for accurate health bar computation.
+            original_boss_hp = boss_hp
+
+            # Raid begins.
+            em = discord.Embed(
+                title="𝕿𝖍𝖊 𝖁𝖔𝖎𝖉 𝕭𝖗𝖊𝖆𝖈𝖍",
+                description="**Eclipse tears through reality! The raid has begun!**\n*Gathering the souls who dare challenge the void...*",
+                color=0x9400D3,
+            )
+            em.set_image(url="https://i.imgur.com/lDqNHua.png")
+            await send_to_channels(embed=em)
+
+            HowMany = 0
+
+            # Process participants: verify that only Drakath's followers join.
+            async with self.bot.pool.acquire() as conn:
+                raid = {}
+                for u in view.joined:
+                    if not (profile := await conn.fetchrow('SELECT * FROM profile WHERE "user"=$1;', u.id)) or profile["god"] != "Drakath":
+                        await send_to_channels(
+                            content=f"**Eclipse laughs**: {u.mention}, you are unworthy! The void rejects your offering."
+                        )
+                        continue
+                    raid[u] = 250
+                    HowMany += 1
+
+            await send_to_channels(content=f"**{HowMany} souls have been claimed by the void!**")
+
+            if HowMany == 0:
+                em = discord.Embed(
+                    title="The Void Retreats... For Now",
+                    description="**Eclipse's laughter echoes**: Not even Drakath's followers dare face me? I shall return when your fear subsides...",
+                    color=0x9400D3,
+                )
+                await send_to_channels(embed=em)
+                self.raidactive = False
+                if self.taunt_task:
+                    self.taunt_task.cancel()
+                return
+
+            self.chaoslist = [u.id for u in raid.keys()]
+
+            # Pre-battle taunt.
+            pre_battle_taunt = discord.Embed(
+                title="Eclipse Emerges",
+                description=f"**Eclipse's voice booms**: {HowMany} insignificant mortals? Is this all Drakath sends? I will savor your terror as I consume you one by one.",
+                color=0x9400D3,
+            )
+            pre_battle_taunt.set_image(url="https://i.imgur.com/YS4A6R7.png")
+            await send_to_channels(embed=pre_battle_taunt)
+            await asyncio.sleep(5 * delay_factor)
+
+            start = datetime.datetime.utcnow()
+
+            # Main battle loop.
+            while boss_hp > 0 and len(raid) > 0 and datetime.datetime.utcnow() < start + datetime.timedelta(minutes=45):
+                target = randomm.choice(list(raid.keys()))
+
+                # Eclipse attacks a random player.
+                is_critical = randomm.random() < 0.3  # 30% chance of a critical hit.
+                dmg = randomm.randint(150, 350) if is_critical else randomm.randint(100, 300)
+                raid[target] -= dmg
+
+                if is_critical:
+                    crit_message = randomm.choice(critical_messages).format(target=target)
+                    em = discord.Embed(
+                        title="𝕮𝖗𝖎𝖙𝖎𝖈𝖆𝖑 𝕳𝖎𝖙!",
+                        description=f"{crit_message}",
+                        colour=0xFF0000,
+                    )
+                    em.add_field(name="Devastating Damage", value=f"**{dmg}**")
+                    em.set_thumbnail(url="https://i.imgur.com/YS4A6R7.png")
+                elif raid[target] > 0:
+                    em = discord.Embed(
+                        title="Eclipse Strikes!",
+                        description=f"{target} battles the void! **{raid[target]} HP** remains!",
+                        colour=0x9400D3,
+                    )
+                    em.add_field(name="Damage", value=dmg)
+                    em.set_thumbnail(url="https://i.imgur.com/YS4A6R7.png")
+                else:
+                    em = discord.Embed(
+                        title="Soul Devoured!",
+                        description=f"Eclipse consumes {target}'s essence! They are lost to the void!",
+                        colour=0xFF0000,
+                    )
+                    em.add_field(name="Fatal Damage", value=dmg)
+                    em.set_thumbnail(url="https://i.imgur.com/YS4A6R7.png")
+
+                em.set_author(name=str(target), icon_url=target.display_avatar.url)
+                await send_to_channels(embed=em)
+
+                if raid[target] <= 0:
+                    del raid[target]
+                    if len(raid) == 0:
+                        break
+                    await asyncio.sleep(2 * delay_factor)
+                    await send_to_channels(
+                        content=f"**Eclipse savors**: One down... who's next? I can taste your fear, {randomm.choice(list(raid.keys())).mention}."
+                    )
+
+                # Random events.
+                # Chaos Restore – follower health recovery.
+                if randomm.randint(1, 5) == 1:
+                    await asyncio.sleep(3 * delay_factor)
+                    target = randomm.choice(list(raid.keys()))
+                    heal_amount = randomm.randint(100, 150)
+                    raid[target] += heal_amount
+                    em = discord.Embed(
+                        title="𝕮𝖍𝖆𝖔𝖘 𝕽𝖊𝖘𝖙𝖔𝖗𝖊!",
+                        description=f"*Drakath's chaotic energy courses through {target}!* They recover to **{raid[target]} HP**!",
+                        colour=0xFFB900,
+                    )
+                    em.set_author(name=str(target), icon_url=target.display_avatar.url)
+                    em.set_thumbnail(url="https://i.imgur.com/md5dWFk.png")
+                    await send_to_channels(embed=em)
+
+                    healing_prompts = [
+                        "**Eclipse bellows**: {target}, your healing is a dying gasp against the eternal void!",
+                        "**Eclipse roars**: Every drop of your mending blood mocks your existence, {target}—the abyss awaits.",
+                        "**Eclipse snarls**: {target}, your feeble recovery is the last lament of a doomed soul, soon to be swallowed by darkness!",
+                        "**Eclipse jeers**: Your pitiful attempts to heal shatter like fragile glass before the relentless void, {target}!",
+                        "**Eclipse mocks**: {target}, your recovery is but a futile spark destined to be devoured by endless night!",
+                        "**Eclipse rages**: The light of your healing falters, {target}; soon, the void will extinguish your feeble hope forever!"
+                    ]
+                    await asyncio.sleep(2 * delay_factor)
+                    await send_to_channels(content=randomm.choice(healing_prompts).format(target=target.mention))
+
+                # Void Pulse – an AoE attack.
+                if randomm.randint(1, 5) == 1:
+                    await asyncio.sleep(3 * delay_factor)
+                    warning_em = discord.Embed(
+                        title="𝕰𝖈𝖑𝖎𝖕𝖘𝖊 𝕮𝖍𝖆𝖗𝖌𝖊𝖘 𝖆 𝕿𝖊𝖗𝖗𝖎𝖋𝖞𝖎𝖓𝖌 𝕬𝖙𝖙𝖆𝖈𝖐!",
+                        description="*The void pulses with malevolent energy...*\n\n**Eclipse draws power from the darkness between stars!**",
+                        colour=0xFF0000,
+                    )
+                    warning_em.set_thumbnail(url="https://i.imgur.com/lDqNHua.png")
+                    await send_to_channels(embed=warning_em)
+
+                    await asyncio.sleep(3 * delay_factor)
+
+                    if len(raid) >= 3:
+                        targets = randomm.sample(list(raid.keys()), 3)
+                    else:
+                        targets = list(raid.keys())
+
+                    pulse_damage = randomm.randint(90, 130)
+                    dead_targets = []
+                    for tgt in targets:
+                        raid[tgt] -= pulse_damage
+                        if raid[tgt] <= 0:
+                            dead_targets.append(tgt)
+                    for tgt in dead_targets:
+                        if tgt in raid:
+                            del raid[tgt]
+                    if dead_targets:
+                        em = discord.Embed(
+                            title="𝕰𝖝𝖙𝖎𝖓𝖈𝖙𝖎𝖔𝖓 𝕰𝖛𝖊𝖓𝖙!",
+                            description=f"*Eclipse unleashes a devastating pulse!* {', '.join(str(u) for u in targets)} are struck!\n\n**{', '.join(str(u) for u in dead_targets)} {'have' if len(dead_targets) > 1 else 'has'} been obliterated!**",
+                            colour=0xFF0000,
+                        )
+                    else:
+                        em = discord.Embed(
+                            title="𝕰𝖝𝖙𝖎𝖓𝖈𝖙𝖎𝖔𝖓 𝕰𝖛𝖊𝖓𝖙!",
+                            description=f"*Eclipse unleashes a devastating pulse!* {', '.join(str(u) for u in targets)} take **{pulse_damage}** damage!",
+                            colour=0xFF0000,
+                        )
+                    em.set_thumbnail(url="https://i.imgur.com/lDqNHua.png")
+                    await send_to_channels(embed=em)
+
+                    if len(raid) == 0:
+                        break
+
+                # Chaos followers attack Eclipse.
+                await asyncio.sleep(3 * delay_factor)
+                dmg_to_take = 0
+                critical_attackers = []
+                for attacker in raid:
+                    if randomm.random() < 0.15:
+                        damage = randomm.randint(75, 150)
+                        critical_attackers.append(attacker)
+                    else:
+                        damage = randomm.randint(20, 40)
+                    dmg_to_take += damage
+
+                boss_hp -= dmg_to_take
+
+                # Update the health bar based on original boss HP.
+                if boss_hp < 0:
+                    boss_hp = 0
+                hp_percentage = boss_hp / original_boss_hp
+                hp_bar = "█" * int(hp_percentage * 10) + "░" * (10 - int(hp_percentage * 10))
+
+                if boss_hp > 0:
+                    em = discord.Embed(
+                        title="Eclipse Under Siege!",
+                        description="*The void trembles under the combined assault...*",
+                        colour=0x9400D3,
+                    )
+                    em.add_field(name="Combined Damage", value=f"**{dmg_to_take}**")
+                    em.add_field(name="Eclipse HP", value=f"{boss_hp} |{hp_bar}|")
+                    if hp_percentage < 0.3:
+                        em.add_field(name="Eclipse's Rage", value="*Eclipse's form distorts with fury as it weakens!*", inline=False)
+                else:
+                    em = discord.Embed(
+                        title="Eclipse Crumbles!",
+                        description="**The void entity is faltering!**",
+                        colour=0xFF0000,
+                    )
+                em.set_thumbnail(url="https://i.imgur.com/kf3zcLs.png")
+                await send_to_channels(embed=em)
+
+                if boss_hp > 0:
+                    await asyncio.sleep(2 * delay_factor)
+                    if dmg_to_take > 300:
+                        messages_over_300 = [
+                            "**Eclipse howls in pain**: IMPOSSIBLE! You will suffer for this!",
+                            "**Eclipse screams in agony**: Your assault defies mortal limits—prepare for endless torment!",
+                            "**Eclipse bellows**: Such devastating force! The void trembles at your challenge.",
+                            "**Eclipse roars in despair**: Your might is overwhelming... yet it only deepens your suffering!",
+                            "**Eclipse shrieks**: That damage is an affront to the cosmos—your fate is sealed!"
+                        ]
+                        await send_to_channels(content=randomm.choice(messages_over_300))
+                    elif dmg_to_take > 150:
+                        messages_over_150 = [
+                            "**Eclipse hisses**: Your resistance is... unexpected.",
+                            "**Eclipse growls**: You have strength, but it will not save you.",
+                            "**Eclipse threatens**: I will make you regret that!",
+                            "**Eclipse snarls**: Your feeble assault only fuels my wrath.",
+                            "**Eclipse murmurs**: Such valor is futile; the void will consume you.",
+                            "**Eclipse whispers**: Your efforts are noted... and doomed.",
+                            "**Eclipse taunts**: Every blow you strike only intensifies your inevitable end!"
+                        ]
+                        await send_to_channels(content=randomm.choice(messages_over_150))
+                    else:
+                        messages_else = [
+                            "**Eclipse laughs**: Is that all?",
+                            "**Eclipse mocks**: Pathetic. I've been hurt worse by cosmic dust.",
+                            "**Eclipse taunts**: Drakath's power grows weaker with each generation.",
+                            "**Eclipse cackles**: Your feeble strikes barely ruffle the void.",
+                            "**Eclipse snickers**: Even the slightest resistance amuses me.",
+                            "**Eclipse ridicules**: Your puny attacks are nothing but whispers in the void.",
+                            "**Eclipse jeers**: I expected more, mortal. Your efforts are laughable.",
+                            "**Eclipse chortles**: You barely make a dent; the void remains unyielding.",
+                            "**Eclipse snarls**: Insignificant damage! The abyss grows stronger at your expense."
+                        ]
+                        await send_to_channels(content=randomm.choice(messages_else))
+                await asyncio.sleep(2 * delay_factor)
+
+            # End-of-raid outcomes.
+            if boss_hp > 1 and len(raid) > 0:
+                em = discord.Embed(
+                    title="𝕿𝖍𝖊 𝕯𝖆𝖗𝖐𝖓𝖊𝖘𝖘 𝕽𝖊𝖎𝖌𝖓𝖘",
+                    description="*The void consumes all light, all hope...*\n\nDrakath's followers stand defeated before Eclipse's overwhelming might.",
+                    color=0x9400D3,
+                )
+                em.set_image(url="https://i.imgur.com/s5tvHMd.png")
+                final_message = discord.Embed(
+                    title="Eclipse Ascends",
+                    description="**Eclipse's voice booms**: Your god has abandoned you. Your chaos is nothing compared to the void's entropy. I will return... stronger... hungrier... And next time, not even Drakath will save you.",
+                    color=0x9400D3
+                )
+                await send_to_channels(embed=em)
+                await asyncio.sleep(3 * delay_factor)
+                await send_to_channels(embed=final_message)
+
+            elif len(raid) == 0:
+                em = discord.Embed(
+                    title="𝕿𝖔𝖙𝖆𝖑 𝕰𝖝𝖙𝖎𝖓𝖈𝖙𝖎𝖔𝖓",
+                    description="*The last screams fade into the endless void...*\n\nAll of Drakath's followers have fallen; their souls now fuel Eclipse's growing power.",
+                    color=0x9400D3,
+                )
+                em.set_image(url="https://i.imgur.com/UpWW3fF.png")
+                final_taunt = discord.Embed(
+                    title="Eclipse Feasts",
+                    description="**Eclipse's satisfaction is palpable**: Such delicious souls... Tell your god I thank him for the offering. Perhaps next time, more worthy vessels will be sent.",
+                    color=0x9400D3
+                )
+                await send_to_channels(embed=em)
+                await asyncio.sleep(3 * delay_factor)
+                await send_to_channels(embed=final_taunt)
+            else:
+                # Players win!
+                winner = randomm.choice(list(raid.keys()))
+                survivors = list(raid.keys())
+                try:
+                    async with self.bot.pool.acquire() as conn:
+                        luck_query = await conn.fetchval('SELECT luck FROM profile WHERE "user" = $1;', winner.id)
+                    luck_query_float = float(luck_query)
+                    gods = {
+                        "Astraea": {"boundary_low": 0.9, "boundary_high": 1.1},
+                        "Sepulchure": {"boundary_low": 0.75, "boundary_high": 1.5},
+                        "Drakath": {"boundary_low": 0.3, "boundary_high": 2.0},
+                    }
+                    selected_god = "Drakath"
+                    god_data = gods.get(selected_god)
+                    if not god_data:
+                        raise ValueError(f"God {selected_god} not found.")
+                    boundary_low = god_data["boundary_low"]
+                    boundary_high = god_data["boundary_high"]
+                    normalized_luck = (luck_query_float - boundary_low) / (boundary_high - boundary_low)
+                    normalized_luck = max(0.0, min(1.0, normalized_luck))
+                    weightdivine = 0.20 + (0.20 * normalized_luck)
+                    rounded_weightdivine = round(weightdivine, 3)
+                    options = ['legendary', 'fortune', 'divine']
+                    weights = [0.40, 0.40, rounded_weightdivine]
+                    crate = randomm.choices(options, weights=weights)[0]
+                    try:
+                        async with self.bot.pool.acquire() as conn:
+
+                            await conn.execute(f'UPDATE profile SET "crates_{crate}" = "crates_{crate}" + 1 WHERE "user" = $1;', winner.id)
+                            await self.bot.log_transaction(
+                                ctx,
+                                from_=1,
+                                to=winner.id,
+                                subject="Chaos Raid Crate",
+                                data={"Rarity": crate, "Amount": 1},
+                                conn=conn,
+                            )
+                    except Exception as e:
+                        print(f"An error occurred: {e}")
+                        crate = "legendary"  # Fallback if database update fails.
+
+                    victory_em = discord.Embed(
+                        title="𝕿𝖍𝖊 𝕷𝖎𝖌𝖍𝖙 𝕰𝖒𝖊𝖗𝖌𝖊𝖘",
+                        description=f"*The void shudders as Eclipse's power fades...*\n\n**{len(survivors)} followers of Drakath** have banished Eclipse back to the void!",
+                        color=0xFFB900,
+                    )
+                    victory_em.set_image(url="https://i.imgur.com/s5tvHMd.png")
+                    survivors_list = ", ".join([s.mention for s in survivors])
+                    victory_em.add_field(name="Survivors", value=survivors_list, inline=False)
+                    prize_em = discord.Embed(
+                        title="𝕯𝖗𝖆𝖐𝖆𝖙𝖍'𝖘 𝕾𝖊𝖑𝖊𝖈𝖙𝖎𝖔𝖓",
+                        description=f"From the ruins of Eclipse, a {crate.capitalize()} crate materializes—drawn to {winner.mention}'s chaotic energy!\n\n*Drakath's laughter echoes across the battlefield*",
+                        color=0xFFB900,
+                    )
+                    prize_em.set_thumbnail(url="https://i.imgur.com/3pg9Msj.png")
+                    defeat_em = discord.Embed(
+                        title="Eclipse Fades",
+                        description="**Eclipse's voice weakens**: This... is not the end... I will return... and your souls... will be... *mine*...",
+                        color=0x9400D3
+                    )
+                    await send_to_channels(embed=victory_em)
+                    await asyncio.sleep(3 * delay_factor)
+                    await send_to_channels(embed=prize_em)
+                    await asyncio.sleep(3 * delay_factor)
+                    await send_to_channels(embed=defeat_em)
+                except Exception as e:
+                    em = discord.Embed(
+                        title="𝕿𝖍𝖊 𝕷𝖎𝖌𝖍𝖙 𝕰𝖒𝖊𝖗𝖌𝖊𝖘",
+                        description=f"Drakath's forces have triumphed over Eclipse!\n{winner.mention} emerges as a true champion of anarchy!",
+                        color=0xFFB900,
+                    )
+                    em.set_thumbnail(url="https://i.imgur.com/3pg9Msj.png")
+                    em.set_image(url="https://i.imgur.com/s5tvHMd.png")
+                    await send_to_channels(embed=em)
+
+            # End of raid: disable keyword listening and cancel taunt loop.
+            self.raidactive = False
+            if self.taunt_task:
+                self.taunt_task.cancel()
+
+        except Exception as e:
+            import traceback
+            error_message = f"Error occurred: {e}\n" + traceback.format_exc()
+            await ctx.send(error_message)
+            print(error_message)
+
     @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        """
-        Checks if there's an active raid in this channel.
-        If certain keywords appear, there's a 50% chance Eclipse responds.
-        Even after the first manifest, we keep listening until the raid ends.
-        """
+    async def on_message(self, message):
+        """Listen for keywords during an active raid and have Eclipse respond with context-sensitive taunts."""
+        if not self.raidactive:
+            return
+        if message.channel.id not in self.raid_channel_ids:
+            return
         if message.author.bot:
             return
 
-        raid = self.active_raids.get(message.channel.id)
-        # Keep listening the entire raid, so check `raid` and `raid.raid_started`
-        if not raid or not raid.raid_started:
-            return
-
-        content_lower = message.content.lower()
-        triggered_keywords = ["attack", "focus", "guard", "betray", "plan", "strategy", "dark gift"]
-
-        if any(kw in content_lower for kw in triggered_keywords):
-            if random.random() < 0.50:  # 50% chance
-                if not raid.participants:
-                    return
-
-                victim = random.choice(list(raid.participants.keys()))
-                data = raid.participants[victim]
-                chat_taunts = [
-                    f"**Eclipse**: *I hear your schemes, {message.author.mention}. They are futile...*",
-                    f"**Eclipse**: *Your words amuse me, {message.author.mention}... keep talking.*",
-                    f"**Eclipse**: *Whisper louder, {message.author.mention}... let the void listen.*",
-                    f"**Eclipse**: *Your 'plans' feed the darkness, {message.author.mention}.*",
-                    f"**Eclipse**: *Your mortal plotting, {message.author.mention}, tastes of fear.*"
-                ]
-                chosen_line = random.choice(chat_taunts)
-
-                guard_active = data.pop("guard_active", False)
-                sanity_loss = random.randint(5, 10)
-                if guard_active:
-                    sanity_loss //= 2
-                data["sanity"] = max(0, data["sanity"] - sanity_loss)
-
-                em = discord.Embed(
-                    title="ECLIPSE HEARS YOU",
-                    description=(
-                        f"{chosen_line}\n\n"
-                        f"{victim.mention} feels a psychic lance pierce their mind!\n"
-                        f"```diff\n- {sanity_loss} Sanity\n```"
-                    ),
-                    color=0x8B008B
-                )
-                await self.send_to_channels(embed=em, raid=raid)
-                # Check if it kills or breaks them
-                await self.check_player_state(victim, raid)
-
-    # --------------------------------------------
-    #    Drakath Follower Check (DB Example)
-    # --------------------------------------------
-    async def is_drakath_follower(self, user: discord.User) -> bool:
-        async with self.bot.pool.acquire() as conn:
-            result = await conn.fetchrow(
-                'SELECT god FROM profile WHERE "user"=$1;',
-                user.id
-            )
-            return result and result['god'] == 'Drakath'
-
-    # --------------------------------------------
-    #  MAIN COMMAND: Start the ECLIPSE Raid
-    # --------------------------------------------
-    @commands.command(hidden=True)
-    @is_gm()
-    async def chaosspawnbeta(self, ctx, boss_hp: int):
-        """Starts a cosmic-horror raid with a 50% chat-listening chance, HP clamp, and turn fix."""
-        try:
-            channels = [
-                self.bot.get_channel(1313482408242184213)
+        keyword_responses = {
+            "omg": [
+                "Oh, {user}, your 'omg' only pleases the void. Embrace the inevitable!",
+                "Is that an 'omg', {user}? Your shock is but a prelude to your doom.",
+                "Your 'omg' echoes pitifully, {user}. The abyss awaits your fall."
+            ],
+            "wtf": [
+                "WTF indeed, {user}. Your confusion deepens your descent into darkness.",
+                "I hear your 'wtf', {user}—it resounds like the wail of a doomed soul.",
+                "Such bafflement, {user}! Your 'wtf' is music to the void."
+            ],
+            "lol": [
+                "LOL, {user}? Your laughter is as futile as it is feeble.",
+                "Ha! {user} laughs, but the void finds your mirth delightfully pathetic.",
+                "Your 'lol' stings, {user}. It is but the whisper of your impending demise."
+            ],
+            "no": [
+                "No, {user}? Denial only delays the inevitable, and the void will not be denied.",
+                "Your 'no' is as empty as your hopes, {user}. Surrender to darkness.",
+                "Refuse all you want, {user}. The void cares not for your protests."
+            ],
+            "ouch": [
+                "Ouch, {user}? That pain is merely the first taste of despair.",
+                "Every 'ouch' you utter, {user}, draws you closer to oblivion.",
+                "Your cry of 'ouch' fuels the darkness, {user}—it is the sound of your downfall."
+            ],
+            "ugh": [
+                "Ugh, {user}, your disgust is a flavor I savor in the abyss.",
+                "Let that 'ugh' resound, {user}. It only heightens your impending ruin.",
+                "Your exasperation is noted, {user}—and it only serves to feed the void."
+            ],
+            "fail": [
+                "Fail already, {user}? The abyss welcomes your inadequacy.",
+                "Your failure is inevitable, {user}. How deliciously predictable.",
+                "Embrace your failure, {user}; it is the first step into eternal darkness."
+            ],
+            "damn": [
+                "Damn, {user}. Even your curses cannot stave off the coming storm.",
+                "Your 'damn' is like a dying echo, {user}. The void mocks your defiance.",
+                "Every damn you utter brings you one step closer to your demise, {user}."
+            ],
+            "stupid": [
+                "Stupid, {user}? Your foolishness is the void’s sweetest delight.",
+                "How delightfully stupid, {user}. Your ignorance seals your fate.",
+                "The void feasts on your 'stupid', {user}. Savor your impending end."
+            ],
+            "suck": [
+                "Suck all you want, {user}; it only deepens the void’s hunger for you.",
+                "Your complaints that you 'suck' confirm your inevitable doom, {user}.",
+                "Every time you say you suck, {user}, the abyss grows ever more ravenous."
+            ],
+            "yes": [
+                "Yes, {user}? Your eager agreement only hastens your fall into oblivion.",
+                "Affirmative, {user}? Your compliance is noted, yet it seals your fate.",
+                "Your 'yes' is a whisper in the void, {user}—a prelude to your doom."
+            ],
+            "yeah": [
+                "Yeah, {user}? Even your casual nod is futile against the void.",
+                "Your 'yeah' is as empty as your soul, {user}. The abyss awaits.",
+                "Simply 'yeah'? Your indifference deepens your despair, {user}."
+            ],
+            "yep": [
+                "Yep, {user}? That simple word echoes with your impending demise.",
+                "A mere 'yep', {user}—and the void laughs at your simplicity.",
+                "Your 'yep' is the sound of a falling soul, {user}."
+            ],
+            "sure": [
+                "Sure, {user}? Your naive certainty will be your undoing.",
+                "You think it's sure, {user}? The void offers no guarantees, only despair.",
+                "Your 'sure' is as brittle as your hope, {user}."
+            ],
+            "okay": [
+                "Okay, {user}? Your acceptance is the first step into eternal darkness.",
+                "So you say 'okay', {user}? It tastes like surrender to the void.",
+                "Your 'okay' seals your fate, {user}—there is no escape."
+            ],
+            "ok": [
+                "Ok, {user}? That brevity is but a whisper before the storm of oblivion.",
+                "A simple 'ok', {user}—it will not save you from the void.",
+                "Your 'ok' is insignificant, {user}; soon, all will be lost in darkness."
+            ],
+            "brb": [
+                "BRB, {user}? The void waits for no one; your absence is but a momentary pause in your doom.",
+                "You say 'brb', {user}, but the void never rests.",
+                "Even if you return, {user}, the darkness will have claimed you."
+            ],
+            "gtg": [
+                "GTG, {user}? You cannot outrun the void. Your departure only hastens your end.",
+                "Leaving so soon, {user}? The abyss will follow you, even in your absence.",
+                "Your 'gtg' is futile, {user}; the void consumes all who attempt escape."
+            ],
+            "haha": [
+                "Haha, {user}? Your laughter is as hollow as your soul.",
+                "Laugh all you want, {user}, but the void finds your mirth deliciously tragic.",
+                "Your 'haha' is the sound of a dying star, {user}—flickering before oblivion."
+            ],
+            "rofl": [
+                "ROFL, {user}? Your amusement is insignificant in the grand scheme of eternal despair.",
+                "Rolling on the floor, {user}? The void will soon have you flattened by your own futility.",
+                "Your 'rofl' is a prelude to ruin, {user}."
+            ],
+            "lmao": [
+                "LMAO, {user}? Even your mocking laughter cannot stave off the void's hunger.",
+                "Your 'lmao' only deepens the irony of your inevitable demise, {user}.",
+                "Laugh if you must, {user}; it only echoes louder in the abyss."
+            ],
+            "fml": [
+                "FML, {user}? Fate has already marked you for oblivion.",
+                "Your lament, {user}, only sweetens the void's feast.",
+                "Every 'fml' is another nail in the coffin of your existence, {user}."
+            ],
+            "hi": [
+                "Hi, {user}? Such a trivial greeting before facing eternal darkness.",
+                "Greetings, {user}? The void offers no solace in your naive hello.",
+                "Your 'hi' is but a fleeting sound, soon to be silenced by the abyss."
+            ],
+            "hello": [
+                "Hello, {user}? The void hears your greeting and laughs at your insignificance.",
+                "Your 'hello' is a futile attempt at connection in a realm of despair, {user}.",
+                "Even as you say hello, {user}, the darkness looms ever closer."
+            ],
+            "bye": [
+                "Bye, {user}? There is no escape from the void, not in life nor in death.",
+                "Your farewell, {user}, only hastens your descent into oblivion.",
+                "Goodbye is the final word, {user}; soon, all will be consumed by darkness."
+            ],
+            "idk": [
+                "IDK, {user}? Ignorance is bliss until the void shatters your delusions.",
+                "Not knowing seals your fate, {user}. The abyss awaits your enlightenment.",
+                "Your 'idk' is a whisper of uncertainty—soon drowned out by despair, {user}."
             ]
-            if not channels[0]:
-                await ctx.send("Raid channel not found.")
+        }
+
+        message_content = message.content.lower()
+        matched_responses = []
+        for kw, responses in keyword_responses.items():
+            if kw in message_content:
+                matched_responses.extend(responses)
+        if matched_responses:
+            now = datetime.datetime.utcnow().timestamp()
+            if now - self.last_keyword_response < 10:
                 return
-
-            raid = Raid(boss_hp=boss_hp, channels=channels)
-            self.active_raids[ctx.channel.id] = raid
-
-            lore_thread = await self.create_lore_thread(raid)
-            if lore_thread:
-                raid.channels.append(lore_thread)
-
-            # Join Button
-            async def join_raid_callback(interaction: discord.Interaction):
-                try:
-                    if not raid.join_phase:
-                        await interaction.response.send_message(
-                            "```diff\n- The horror has manifested. You cannot join now.\n```",
-                            ephemeral=True
-                        )
-                        return
-
-                    is_drakath = await self.is_drakath_follower(interaction.user)
-                    if not is_drakath:
-                        await interaction.response.send_message(
-                            "```diff\n- The void rejects you. Only Drakath's chosen may enter.\n```",
-                            ephemeral=True
-                        )
-                        return
-
-                    if interaction.user in raid.participants:
-                        await interaction.response.send_message(
-                            "```diff\n- You have already joined...\n```",
-                            ephemeral=True
-                        )
-                        return
-
-                    consumables = ["Lunarium Talisman", "Arcane Ward", "Bloodthistle Potion", "Ethereal Lantern"]
-                    chosen = random.choice(consumables)
-
-                    raid.participants[interaction.user] = {
-                        "hp": 250,
-                        "sanity": 100,
-                        "corrupted": False,
-                        "cursed": False,
-                        "void_touched": False,
-                        "madness_points": 0,
-                        "last_curse_time": None,
-                        "consumable": chosen,
-                        "betray_charges": 1,
-                        "guard_active": False,
-                        "dark_gift_cooldown": 0
-                    }
-                    raid.aggro_table[interaction.user] = 0
-
-                    em = discord.Embed(
-                        description=(
-                            f"{interaction.user.mention} drifts into the collapsing void...\n"
-                            f"**Starting Consumable**: {chosen}"
-                        ),
-                        color=0x000000
-                    )
-                    await interaction.response.send_message(
-                        "```diff\n- The cosmic rift widens at your approach...\n```",
-                        ephemeral=True
-                    )
-                    await self.send_to_channels(embed=em, raid=raid)
-                except Exception as e:
-                    print(f"Join raid error: {e}")
-                    await interaction.response.send_message(
-                        f"Error: {e}", ephemeral=True
-                    )
-
-            join_button = HorrorButton(
-                style=ButtonStyle.danger,
-                label="JOIN THE HORROR",
-                callback=join_raid_callback
-            )
-            raid.view.add_item(join_button)
-
-            intro_em = discord.Embed(
-                title="🌑 ECLIPSE BREACH 🌑",
-                description=(
-                    "A dimensional rift tears open the sky. **Eclipse** stirs beyond...\n\n"
-                    "**15 minutes** remain until full manifestation."
-                ),
-                color=0x000000
-            )
-            await self.send_to_channels(embed=intro_em, view=raid.view, raid=raid)
-
-            total_time = 2
-            prev = total_time
-            milestones = [2, 1]
-
-            for m in milestones:
-                diff = (prev - m) * 60
-                if diff > 0:
-                    await asyncio.sleep(diff)
-                await self.update_countdown_message(raid, m)
-                prev = m
-
-            final_sleep = prev * 60
-            if final_sleep > 0:
-                await asyncio.sleep(final_sleep)
-
-            for sec in [30, 10]:
-                await asyncio.sleep(60 - sec)
-                c_em = discord.Embed(
-                    title="⚠️ REALITY BREACH IMMINENT ⚠️",
-                    description=f"```diff\n- TIME LEFT: {sec} SECONDS\n```",
-                    color=0xFF0000
-                )
-                await self.send_to_channels(embed=c_em, raid=raid)
-
-            await asyncio.sleep(10)
-
-            raid.join_phase = False
-            if len(raid.participants) < 1:
-                em = discord.Embed(
-                    title="NO CHALLENGERS",
-                    description="Eclipse senses no prey and recedes into the void.",
-                    color=0x000000
-                )
-                await self.send_to_channels(embed=em, raid=raid)
-                del self.active_raids[ctx.channel.id]
-                return
-
-            raid.current_objective = random.choice(raid.mid_raid_objectives)
-            raid.objective_deadline = datetime.datetime.utcnow() + datetime.timedelta(minutes=5)
-
-            start_em = discord.Embed(
-                title="🕯️ THE HORROR ARRIVES 🕯️",
-                description=(
-                    "Reality distorts as **Eclipse** fully manifests.\n"
-                    "The air crackles with unspeakable dread..."
-                ),
-                color=0xFF0000
-            )
-            await self.send_to_channels(embed=start_em, raid=raid)
-            await self.announce_objective(raid)
-
-            raid.raid_started = True
-            await asyncio.sleep(2)
-            self.build_turn_order(raid)
-            await self.start_next_turn(raid)
-
-        except Exception as e:
-            tb = traceback.format_exc()
-            await ctx.send(f"Error: {e}\n```py\n{tb}\n```")
-            print(tb)
-
-    def build_turn_order(self, raid: Raid):
-        plist = list(raid.participants.keys())
-        random.shuffle(plist)
-        raid.turn_order = plist
-        raid.current_turn = None
-
-    async def update_countdown_message(self, raid: Raid, minutes_left: int):
-        em = discord.Embed(
-            title="⏳ ECLIPSE APPROACHES ⏳",
-            description=f"```diff\n- {minutes_left} MINUTES UNTIL FULL MANIFESTATION\n```",
-            color=0xFFA500
-        )
-        await self.send_to_channels(embed=em, raid=raid)
-
-    # ----------------------------------------------------------
-    #                   TURN LOGIC
-    # ----------------------------------------------------------
-    async def start_next_turn(self, raid: Raid):
-        """Alternate Player turn → Boss turn → Next Player turn → etc."""
-        if not raid.participants:
-            # If no participants remain, handle defeat
-            await self.handle_defeat(raid)
-            return
-
-        if raid.is_boss_turn:
-            raid.is_boss_turn = False
-            await self._advance_player_turn(raid)
-        else:
-            if raid.raid_started:
-                raid.is_boss_turn = True
-                await self.boss_turn(raid)
-
-    async def _advance_player_turn(self, raid: Raid):
-        valid_ids = set(raid.participants.keys())
-        if not raid.turn_order or not set(raid.turn_order).issubset(valid_ids):
-            self.build_turn_order(raid)
-
-        if raid.current_turn in raid.participants:
-            idx = raid.turn_order.index(raid.current_turn)
-            nxt_idx = (idx + 1) % len(raid.turn_order)
-            raid.current_turn = raid.turn_order[nxt_idx]
-        else:
-            raid.current_turn = raid.turn_order[0]
-
-        await self.check_evolving_forms(raid)
-        await self.check_synergy_event(raid)
-        await self.check_group_sanity(raid)
-        await self.check_objective_deadline(raid)
-
-        if raid.current_turn not in raid.participants:
-            await self.handle_defeat(raid)
-            return
-
-        await self.show_player_action_menu(raid)
-
-    async def show_player_action_menu(self, raid: Raid):
-        raid.is_choice_phase = True
-        player = raid.current_turn
-
-        desc = (
-            f"**{player.mention}, it's your turn!**\n\n"
-            f"**Boss HP**: {raid.boss_hp}\n"
-            f"**Group Sanity**: {raid.group_sanity}\n"
-            f"**Active**: {len(raid.participants)} | **Fallen**: {len(raid.defeated_players)} "
-            f"| **Insane**: {len(raid.insane_players)}\n\n"
-            "*Select an action below (30s). Eclipse waits for no one.*"
-        )
-        em = discord.Embed(
-            title="PLAYER TURN",
-            description=desc,
-            color=0x87CEFA
-        )
-        view = View(timeout=30)
-
-        # Buttons
-        btn_attack = Button(style=ButtonStyle.danger, label="Attack")
-        btn_guard = Button(style=ButtonStyle.primary, label="Guard")
-        btn_focus = Button(style=ButtonStyle.success, label="Focus")
-        btn_betray = Button(style=ButtonStyle.danger, label="Betray")
-        btn_consumable = Button(style=ButtonStyle.secondary, label="Use Consumable")
-        btn_stats = Button(style=ButtonStyle.blurple, label="Check Stats")
-
-        if raid.participants[player].get("void_touched"):
-            btn_darkgift = Button(style=ButtonStyle.danger, label="Dark Gift")
-            view.add_item(btn_darkgift)
-
-        if raid.current_objective and not raid.current_objective["completed"]:
-            btn_objective = Button(style=ButtonStyle.success, label="Complete Objective")
-            view.add_item(btn_objective)
-
-        async def disable_view_and_call(interaction: discord.Interaction, func):
-            """Disable all buttons, end choice phase, call the action function."""
-            for item in view.children:
-                item.disabled = True
-            await interaction.message.edit(view=view)
-            raid.is_choice_phase = False
-            await interaction.response.defer()
-            await func(interaction)
-
-        # Action callbacks
-        async def attack_cb(interaction: discord.Interaction):
-            if interaction.user != player:
-                await interaction.response.send_message("Not your turn!", ephemeral=True)
-                return
-            await disable_view_and_call(interaction, lambda i: self.player_attack(player, raid))
-
-        async def guard_cb(interaction: discord.Interaction):
-            if interaction.user != player:
-                await interaction.response.send_message("Not your turn!", ephemeral=True)
-                return
-            await disable_view_and_call(interaction, lambda i: self.player_guard(player, raid))
-
-        async def focus_cb(interaction: discord.Interaction):
-            if interaction.user != player:
-                await interaction.response.send_message("Not your turn!", ephemeral=True)
-                return
-            await disable_view_and_call(interaction, lambda i: self.player_focus(player, raid))
-
-        async def betray_cb(interaction: discord.Interaction):
-            if interaction.user != player:
-                await interaction.response.send_message("Not your turn!", ephemeral=True)
-                return
-            await disable_view_and_call(interaction, lambda i: self.player_betray(player, raid))
-
-        async def consumable_cb(interaction: discord.Interaction):
-            if interaction.user != player:
-                await interaction.response.send_message("Not your turn!", ephemeral=True)
-                return
-            await disable_view_and_call(interaction, lambda i: self.player_consumable(player, raid))
-
-        async def stats_cb(interaction: discord.Interaction):
-            # Checking stats doesn't end the turn or disable the menu
-            await self.show_player_stats_ephemeral(interaction, raid)
-
-        async def darkgift_cb(interaction: discord.Interaction):
-            if interaction.user != player:
-                await interaction.response.send_message("Not your turn!", ephemeral=True)
-                return
-            await disable_view_and_call(interaction, lambda i: self.player_darkgift(player, raid))
-
-        async def objective_cb(interaction: discord.Interaction):
-            if interaction.user != player:
-                await interaction.response.send_message("Not your turn!", ephemeral=True)
-                return
-            # Note: We must also continue the turn after completing the objective!
-            await disable_view_and_call(interaction, lambda i: self.player_complete_objective(player, raid))
-
-        # Link
-        btn_attack.callback = attack_cb
-        btn_guard.callback = guard_cb
-        btn_focus.callback = focus_cb
-        btn_betray.callback = betray_cb
-        btn_consumable.callback = consumable_cb
-        btn_stats.callback = stats_cb
-
-        view.add_item(btn_attack)
-        view.add_item(btn_guard)
-        view.add_item(btn_focus)
-        view.add_item(btn_betray)
-        view.add_item(btn_consumable)
-        view.add_item(btn_stats)
-
-        if raid.participants[player].get("void_touched"):
-            btn_darkgift.callback = darkgift_cb
-
-        if raid.current_objective and not raid.current_objective["completed"]:
-            btn_obj = [i for i in view.children if i.label == "Complete Objective"][0]
-            btn_obj.callback = objective_cb
-
-        await self.send_to_channels(embed=em, view=view, raid=raid)
-        await asyncio.sleep(30)
-
-        if raid.is_choice_phase:
-            # user did nothing
-            raid.is_choice_phase = False
-            for item in view.children:
-                item.disabled = True
-            await self.handle_timeout(player, raid)
-
-    async def end_player_turn(self, raid: Raid):
-        await self.start_next_turn(raid)
-
-    # ----------------------------------------------------------
-    #            PLAYER ACTIONS
-    # ----------------------------------------------------------
-    async def clamp_boss_hp(self, raid: Raid):
-        if raid.boss_hp < 0:
-            raid.boss_hp = 0
-            # Check for immediate victory if boss HP is 0
-            await self.handle_victory(raid)
-
-    async def clamp_player_hp(self, player_data: dict):
-        if player_data["hp"] < 0:
-            player_data["hp"] = 0
-
-    async def player_attack(self, player: discord.User, raid: Raid):
-        data = raid.participants[player]
-        if random.random() <= 0.7:
-            dmg = random.randint(150, 300)
-            if data["void_touched"]:
-                dmg = int(dmg * 1.5)
-            if data["cursed"]:
-                dmg = int(dmg * 0.7)
-
-            raid.boss_hp -= dmg
-            await self.clamp_boss_hp(raid)
-            raid.aggro_table[player] = raid.aggro_table.get(player, 0) + dmg
-
-            em = discord.Embed(
-                title="ATTACK SUCCESS",
-                description=(
-                    f"{player.mention} strikes Eclipse!\n"
-                    f"```diff\n+Damage: {dmg}\n```"
-                ),
-                color=0x00FF00
-            )
-        else:
-            backfire = random.randint(20, 50)
-            data["hp"] -= backfire
-            await self.clamp_player_hp(data)
-            em = discord.Embed(
-                title="ATTACK FAILED",
-                description=(
-                    f"{player.mention} attempts a strike, but Eclipse warps reality\n"
-                    f"reflecting **{backfire}** damage back!"
-                ),
-                color=0xFF0000
-            )
-
-        await self.send_to_channels(embed=em, raid=raid)
-        await self.check_player_state(player, raid)
-        await self.end_player_turn(raid)
-
-    async def player_guard(self, player: discord.User, raid: Raid):
-        data = raid.participants[player]
-        data["guard_active"] = True
-        em = discord.Embed(
-            title="GUARD",
-            description=(
-                f"{player.mention} braces for the incoming horror!\n"
-                "```diff\n+ Next negative effect halved!\n```"
-            ),
-            color=0x00FF00
-        )
-        await self.send_to_channels(embed=em, raid=raid)
-        await self.check_player_state(player, raid)
-        await self.end_player_turn(raid)
-
-    async def player_focus(self, player: discord.User, raid: Raid):
-        data = raid.participants[player]
-        if random.random() <= 0.6:
-            restore = random.randint(15, 30)
-            old_sanity = data["sanity"]
-            data["sanity"] = min(100, data["sanity"] + restore)
-            gained = data["sanity"] - old_sanity
-
-            em = discord.Embed(
-                title="FOCUS",
-                description=(
-                    f"{player.mention} fortifies their mind!\n"
-                    f"```diff\n+Sanity Restored: {gained}\n```"
-                ),
-                color=0x00FF00
-            )
-        else:
-            backlash = random.randint(10, 25)
-            data["hp"] -= backlash
-            await self.clamp_player_hp(data)
-            raid.group_sanity -= 10
-            em = discord.Embed(
-                title="FOCUS FAILED",
-                description=(
-                    f"{player.mention} tries to repel the whispers but fails,\n"
-                    f"**{backlash}** HP lost, -10 Group Sanity!"
-                ),
-                color=0xFF0000
-            )
-
-        await self.send_to_channels(embed=em, raid=raid)
-        await self.check_player_state(player, raid)
-        await self.end_player_turn(raid)
-
-    async def player_betray(self, player: discord.User, raid: Raid):
-        data = raid.participants[player]
-        if data["betray_charges"] <= 0:
-            em = discord.Embed(
-                title="BETRAYAL FAILED",
-                description="No betrayal charges remain.",
-                color=0xFF0000
-            )
-            await self.send_to_channels(embed=em, raid=raid)
-            await self.end_player_turn(raid)
-            return
-
-        valid_targets = [p for p in raid.participants if p != player]
-        if not valid_targets:
-            em = discord.Embed(
-                title="NO TARGETS",
-                description="No allies remain to betray...",
-                color=0xFF0000
-            )
-            await self.send_to_channels(embed=em, raid=raid)
-            await self.end_player_turn(raid)
-            return
-
-        victim = random.choice(valid_targets)
-        vdata = raid.participants[victim]
-        dmg = random.randint(30, 60)
-        vdata["hp"] -= dmg
-        await self.clamp_player_hp(vdata)
-
-        data["betray_charges"] -= 1
-        raid.group_sanity -= 30
-        raid.aggro_table[player] = raid.aggro_table.get(player, 0) + 10
-
-        benefit_text = ""
-        if self.player_can_benefit_from_betrayal(data, raid):
-            heal_amount = random.randint(15, 30)
-            data["hp"] = min(data["hp"] + heal_amount, 250)
-            benefit_text = f"\n+ {player.mention} recovers {heal_amount} HP!"
-
-        em = discord.Embed(
-            title="BETRAYAL",
-            description=(
-                f"{player.mention} betrays {victim.mention}!\n"
-                "```diff\n"
-                f"- {victim.display_name} loses {dmg} HP\n"
-                f"- Group Sanity -30\n"
-                f"{benefit_text}\n"
-                "```"
-            ),
-            color=0xFF0000
-        )
-        await self.send_to_channels(embed=em, raid=raid)
-        await self.check_player_state(victim, raid)
-        await self.check_player_state(player, raid)
-        await self.end_player_turn(raid)
-
-    async def player_consumable(self, player: discord.User, raid: Raid):
-        data = raid.participants[player]
-        c = data.get("consumable")
-        if not c:
-            em = discord.Embed(
-                title="NO CONSUMABLE",
-                description="You have no item to use!",
-                color=0xFF0000
-            )
-            await self.send_to_channels(embed=em, raid=raid)
-            await self.end_player_turn(raid)
-            return
-
-        effect_desc = ""
-        if c == "Lunarium Talisman":
-            old_sanity = data["sanity"]
-            data["sanity"] = min(100, data["sanity"] + 30)
-            gained = data["sanity"] - old_sanity
-            effect_desc = f"**+{gained} Sanity**"
-        elif c == "Arcane Ward":
-            data["guard_active"] = True
-            effect_desc = "A protective aura forms around you (Guard)."
-        elif c == "Bloodthistle Potion":
-            raid.boss_hp -= 100
-            await self.clamp_boss_hp(raid)
-            raid.aggro_table[player] = raid.aggro_table.get(player, 0) + 30
-            effect_desc = "**-100 Boss HP**"
-        elif c == "Ethereal Lantern":
-            raid.group_sanity += 50
-            effect_desc = "**+50 Group Sanity**"
-
-        data["consumable"] = None
-        em = discord.Embed(
-            title="CONSUMABLE USED",
-            description=(
-                f"{player.mention} uses **{c}**!\n"
-                f"{effect_desc}"
-            ),
-            color=0x00FF00
-        )
-        await self.send_to_channels(embed=em, raid=raid)
-        await self.check_player_state(player, raid)
-        await self.end_player_turn(raid)
-
-    async def player_darkgift(self, player: discord.User, raid: Raid):
-        data = raid.participants[player]
-        if data["dark_gift_cooldown"] > 0:
-            em = discord.Embed(
-                title="DARK GIFT UNAVAILABLE",
-                description="Your void power is still recovering.",
-                color=0xFF0000
-            )
-            await self.send_to_channels(embed=em, raid=raid)
-            await self.end_player_turn(raid)
-            return
-
-        if random.random() <= 0.5:
-            dmg = random.randint(300, 600)
-            raid.boss_hp -= dmg
-            await self.clamp_boss_hp(raid)
-            recoil = random.randint(10, 30)
-            data["sanity"] = max(0, data["sanity"] - recoil)
-            raid.aggro_table[player] = raid.aggro_table.get(player, 0) + dmg
-
-            em = discord.Embed(
-                title="DARK GIFT",
-                description=(
-                    f"{player.mention} channels a torrent of void energy!\n"
-                    f"```diff\n+{dmg} damage to Eclipse\n-{recoil} sanity\n```"
-                ),
-                color=0x800080
-            )
-            data["dark_gift_cooldown"] = 2
-        else:
-            backlash = random.randint(20, 50)
-            data["hp"] -= backlash
-            await self.clamp_player_hp(data)
-            data["madness_points"] += 2
-
-            em = discord.Embed(
-                title="DARK GIFT BACKFIRES",
-                description=(
-                    f"{player.mention} fails to harness the void,\n"
-                    f"suffering **{backlash}** HP damage and +2 Madness."
-                ),
-                color=0xFF0000
-            )
-            data["dark_gift_cooldown"] = 1
-
-        await self.send_to_channels(embed=em, raid=raid)
-        await self.check_player_state(player, raid)
-        await self.end_player_turn(raid)
-
-    def player_can_benefit_from_betrayal(self, data: dict, raid: Raid) -> bool:
-        if data["cursed"] or data["sanity"] < 50 or raid.group_sanity < 300:
-            return True
-        return False
-
-    # ----------------------------------------------------------
-    #                   BOSS TURN
-    # ----------------------------------------------------------
-    async def boss_turn(self, raid: Raid):
-        raid.is_boss_turn = True
-        await self.check_evolving_forms(raid)
-
-        if not raid.participants:
-            await self.handle_defeat(raid)
-            return
-
-        # pick target via aggro
-        target = None
-        if raid.aggro_table:
-            target = max(raid.aggro_table, key=raid.aggro_table.get)
-        if not target or target not in raid.participants:
-            target = random.choice(list(raid.participants.keys()))
-
-        em = discord.Embed(
-            title="ECLIPSE'S TURN",
-            description=(
-                "Eclipse swells with malice...\n"
-                f"**Target**: {target.mention}"
-            ),
-            color=0x8B0000
-        )
-        await self.send_to_channels(embed=em, raid=raid)
-
-        form = raid.current_form
-        roll = random.random()
-
-        if form == 1:
-            await self.boss_basic_attack(raid, target)
-        elif form == 2:
-            if roll < 0.5:
-                await self.boss_basic_attack(raid, target)
-            else:
-                await self.boss_void_spike(raid, target)
-        elif form == 3:
-            if roll < 0.3:
-                await self.boss_void_spike(raid, target)
-            elif roll < 0.6:
-                await self.boss_mind_break(raid, target)
-            else:
-                await self.boss_basic_attack(raid, target)
-        elif form == 4:
-            if roll < 0.25:
-                await self.boss_void_spike(raid, target)
-            elif roll < 0.5:
-                await self.boss_mind_break(raid, target)
-            else:
-                await self.boss_reality_rend(raid, target)
-        elif form == 5:
-            if roll < 0.2:
-                await self.boss_void_spike(raid, target)
-            elif roll < 0.4:
-                await self.boss_mind_break(raid, target)
-            elif roll < 0.6:
-                await self.boss_reality_rend(raid, target)
-            else:
-                await self.boss_aoe_havoc(raid)
-        else:
-            if roll < 0.2:
-                await self.boss_void_spike(raid, target)
-            elif roll < 0.4:
-                await self.boss_mind_break(raid, target)
-            elif roll < 0.6:
-                await self.boss_reality_rend(raid, target)
-            else:
-                await self.boss_aoe_havoc(raid)
-
-        raid.is_boss_turn = False
-        await asyncio.sleep(3)
-        await self._advance_player_turn(raid)
-
-    # Boss abilities
-    async def boss_basic_attack(self, raid: Raid, target: discord.User):
-        data = raid.participants[target]
-        guard_active = data.pop("guard_active", False)
-        dmg = random.randint(20, 50)
-        if guard_active:
-            dmg //= 2
-        data["hp"] -= dmg
-        await self.clamp_player_hp(data)
-
-        em = discord.Embed(
-            title="ECLIPSE STRIKES",
-            description=(
-                f"Eclipse's tendril slams {target.mention} for {dmg} HP!"
-            ),
-            color=0x8B0000
-        )
-        await self.send_to_channels(embed=em, raid=raid)
-        await self.check_player_state(target, raid)
-
-    async def boss_void_spike(self, raid: Raid, target: discord.User):
-        data = raid.participants[target]
-        guard_active = data.pop("guard_active", False)
-        dmg = random.randint(40, 80)
-        if guard_active:
-            dmg //= 2
-        data["hp"] -= dmg
-        await self.clamp_player_hp(data)
-        raid.group_sanity -= 20
-
-        em = discord.Embed(
-            title="VOID SPIKE",
-            description=(
-                f"Eclipse coalesces void matter into a spike, impaling {target.mention}!\n"
-                f"**-{dmg} HP**, -20 Group Sanity"
-            ),
-            color=0x4B0082
-        )
-        await self.send_to_channels(embed=em, raid=raid)
-        await self.check_player_state(target, raid)
-
-    async def boss_mind_break(self, raid: Raid, target: discord.User):
-        data = raid.participants[target]
-        guard_active = data.pop("guard_active", False)
-        s_loss = random.randint(20, 40)
-        if guard_active:
-            s_loss //= 2
-        data["sanity"] = max(0, data["sanity"] - s_loss)
-
-        em = discord.Embed(
-            title="MIND BREAK",
-            description=(
-                f"Eclipse saturates {target.mention}'s mind with horrific visions!\n"
-                f"**-{s_loss} Sanity**"
-            ),
-            color=0x800080
-        )
-        await self.send_to_channels(embed=em, raid=raid)
-        await self.check_player_state(target, raid)
-
-    async def boss_reality_rend(self, raid: Raid, target: discord.User):
-        data = raid.participants[target]
-        guard_active = data.pop("guard_active", False)
-        dmg = random.randint(60, 100)
-        if guard_active:
-            dmg //= 2
-        data["hp"] -= dmg
-        await self.clamp_player_hp(data)
-
-        s_loss = random.randint(5, 15)
-        data["sanity"] = max(0, data["sanity"] - s_loss)
-
-        em = discord.Embed(
-            title="REALITY REND",
-            description=(
-                f"Eclipse distorts space around {target.mention}!\n"
-                f"```diff\n-HP {dmg}, -Sanity {s_loss}\n```"
-            ),
-            color=0xFF1493
-        )
-        await self.send_to_channels(embed=em, raid=raid)
-        await self.check_player_state(target, raid)
-
-    async def boss_aoe_havoc(self, raid: Raid):
-        em = discord.Embed(
-            title="AEONIC HAVOC",
-            description=(
-                "Eclipse conjures a howling rift, assailing **all** who remain!"
-            ),
-            color=0x8B0000
-        )
-        await self.send_to_channels(embed=em, raid=raid)
-
-        for player, data in list(raid.participants.items()):
-            guard_active = data.pop("guard_active", False)
-            dmg = random.randint(20, 40)
-            s_loss = random.randint(5, 10)
-            if guard_active:
-                dmg //= 2
-                s_loss //= 2
-            data["hp"] -= dmg
-            await self.clamp_player_hp(data)
-            data["sanity"] = max(0, data["sanity"] - s_loss)
-            await self.check_player_state(player, raid)
-
-    # ----------------------------------------------------------
-    #       EVOLVING FORMS (percentage-based)
-    # ----------------------------------------------------------
-    async def check_evolving_forms(self, raid: Raid):
-        if raid.initial_boss_hp <= 0:
-            return
-        hp_ratio = raid.boss_hp / raid.initial_boss_hp
-
-        form_upgrades = [
-            (2, 0.8),
-            (3, 0.6),
-            (4, 0.4),
-            (5, 0.2),
-            (6, 0.1)
-        ]
-        for new_form, threshold in form_upgrades:
-            if raid.current_form < new_form and hp_ratio < threshold:
-                raid.current_form = new_form
-                await self.evolve_boss(raid, new_form)
-
-    async def evolve_boss(self, raid: Raid, new_form: int):
-        penalty = new_form * 25
-        raid.group_sanity -= penalty
-        em = discord.Embed(
-            title=f"ECLIPSE EVOLVES - FORM {new_form}",
-            description=(
-                "A churning metamorphosis reshapes Eclipse,\n"
-                f"**Group Sanity** -{penalty}\n"
-                "Its presence intensifies beyond mortal comprehension..."
-            ),
-            color=0x9400D3
-        )
-        await self.send_to_channels(embed=em, raid=raid)
-
-    # ----------------------------------------------------------
-    #       SYNERGY, GROUP SANITY, OBJECTIVE
-    # ----------------------------------------------------------
-    async def check_synergy_event(self, raid: Raid):
-        if raid.synergy_triggered:
-            return
-        vt_players = [p for p, d in raid.participants.items() if d["void_touched"]]
-        if len(vt_players) >= 2:
-            raid.synergy_triggered = True
-            synergy_em = discord.Embed(
-                title="VOID SYNERGY",
-                description=(
-                    "Multiple void-touched souls resonate in a twisted union!\n"
-                    "Eclipse reels from the surging energies..."
-                ),
-                color=0x8B00FF
-            )
-            await self.send_to_channels(embed=synergy_em, raid=raid)
-
-            synergy_damage = random.randint(500, 1000)
-            raid.boss_hp -= synergy_damage
-            await self.clamp_boss_hp(raid)
-            for p, d in raid.participants.items():
-                d["madness_points"] += 2
-
-            synergy_em2 = discord.Embed(
-                title="RIFT SURGE",
-                description=(
-                    f"**{synergy_damage}** damage dealt to Eclipse!\n"
-                    "All participants gain **+2** Madness Points.\n"
-                    "Will this chaotic power be your salvation or doom?"
-                ),
-                color=0x8B00FF
-            )
-            await self.send_to_channels(embed=synergy_em2, raid=raid)
-
-    async def check_group_sanity(self, raid: Raid):
-        if raid.group_sanity <= 300:
-            illusions_em = discord.Embed(
-                title="MASS ILLUSIONS",
-                description=(
-                    "Eclipse's dread presence shatters the group's collective resolve.\n"
-                    "Nightmarish visions swirl around you..."
-                ),
-                color=0x660066
-            )
-            await self.send_to_channels(embed=illusions_em, raid=raid)
-
-            for player, data in list(raid.participants.items()):
-                guard_active = data.pop("guard_active", False)
-                s_loss = random.randint(5, 10)
-                hp_loss = random.randint(0, 5)
-                if guard_active:
-                    s_loss //= 2
-                    hp_loss //= 2
-                data["sanity"] -= s_loss
-                data["hp"] -= hp_loss
-                await self.clamp_player_hp(data)
-                data["madness_points"] += 1
-                await self.check_player_state(player, raid)
-
-    async def announce_objective(self, raid: Raid):
-        if not raid.current_objective:
-            return
-        obj = raid.current_objective
-        em = discord.Embed(
-            title=f"MID-RAID OBJECTIVE: {obj['name']}",
-            description=(
-                f"{obj['description']}\n\n"
-                "You have **5 minutes** to address this threat!"
-            ),
-            color=0xFFFF00
-        )
-        await self.send_to_channels(embed=em, raid=raid)
-
-    async def check_objective_deadline(self, raid: Raid):
-        if not raid.current_objective or raid.current_objective["completed"]:
-            return
-        now = datetime.datetime.utcnow()
-        if now >= raid.objective_deadline:
-            penalty = random.randint(300, 500)
-            raid.boss_hp += penalty
-            await self.clamp_boss_hp(raid)
-            raid.current_objective["completed"] = True
-
-            em = discord.Embed(
-                title=f"OBJECTIVE FAILED: {raid.current_objective['name']}",
-                description=(
-                    "Time has lapsed, and Eclipse draws strength from your inaction...\n"
-                ),
-                color=0xFF0000
-            )
-            em.add_field(name="Penalty", value=f"Eclipse regains {penalty} HP!")
-            await self.send_to_channels(embed=em, raid=raid)
-
-    # --------------------------------------------
-    #  CRITICAL FIX: Next turn after completing objective
-    # --------------------------------------------
-    async def player_complete_objective(self, player: discord.User, raid: Raid):
-        """
-        We call this from the objective callback. Then we continue to the next turn.
-        """
-        await self.complete_objective(player, raid)
-        # After completing the objective, we must check player state & move on:
-        await self.check_player_state(player, raid)
-        await self.end_player_turn(raid)
-
-    async def complete_objective(self, player: discord.User, raid: Raid):
-        """Actually finish the objective. Then rely on the code above to do end turn."""
-        if not raid.current_objective or raid.current_objective["completed"]:
-            return
-        raid.current_objective["completed"] = True
-        reward = raid.current_objective["reward"]
-        raid.boss_hp = max(0, raid.boss_hp - reward)
-
-        em = discord.Embed(
-            title="OBJECTIVE COMPLETED",
-            description=(
-                f"{player.mention} neutralizes the threat!\n"
-                f"Eclipse howls in fury, losing **{reward}** HP..."
-            ),
-            color=0x00FF00
-        )
-        await self.send_to_channels(embed=em, raid=raid)
-        raid.current_objective = None
-
-    # ----------------------------------------------------------
-    #         TIMEOUT, INSANITY, DEATH, DEFEAT, VICTORY
-    # ----------------------------------------------------------
-    async def handle_timeout(self, player: discord.User, raid: Raid):
-        data = raid.participants[player]
-        guard_active = data.pop("guard_active", False)
-        s_loss = 20
-        hp_loss = 30
-        if guard_active:
-            s_loss //= 2
-            hp_loss //= 2
-
-        data["sanity"] -= s_loss
-        data["hp"] -= hp_loss
-        await self.clamp_player_hp(data)
-        data["madness_points"] += random.randint(2, 4)
-
-        boss_gain = random.randint(150, 400)
-        raid.boss_hp += boss_gain
-        await self.clamp_boss_hp(raid)
-        raid.group_sanity -= 30
-
-        em = discord.Embed(
-            title="PARALYZED BY TERROR",
-            description=(
-                f"{player.mention} hesitates and suffers grave consequences!\n"
-                "```diff\n"
-                f"- HP -{hp_loss}\n"
-                f"- Sanity -{s_loss}\n"
-                f"- Group Sanity -30\n"
-                f"+ Eclipse regains {boss_gain} HP\n"
-                "```"
-            ),
-            color=0xFF0000
-        )
-        await self.send_to_channels(embed=em, raid=raid)
-        await self.check_player_state(player, raid)
-        await self.end_player_turn(raid)
-
-    async def check_player_state(self, player: discord.User, raid: Raid):
-        if player not in raid.participants:
-            return
-        data = raid.participants[player]
-
-        # Check for insanity
-        if data["sanity"] <= 0:
-            await self.handle_insanity(player, raid)
-            return
-
-        # Check for death
-        if data["hp"] <= 0:
-            await self.handle_death(player, raid)
-            return
-
-        # Check for madness transform
-        if data["madness_points"] >= 10 and not data["void_touched"]:
-            data["void_touched"] = True
-            data["madness_points"] = 0
-            data["sanity"] = max(0, data["sanity"] - 20)
-            em = discord.Embed(
-                title="A SOUL EMBRACES THE VOID",
-                description=(
-                    f"{player.mention} is consumed by cosmic whispers, becoming **Void-Touched**!\n"
-                    "```diff\n- Sanity -20\n```"
-                ),
-                color=0x9400D3
-            )
-            await self.send_to_channels(embed=em, raid=raid)
-
-        # Random curse triggers if cursed
-        if data.get("cursed") and random.random() < 0.3:
-            curse_effect = random.choice([
-                ("Your veins writhe with black poison...", -20, "hp"),
-                ("Voices claw at your psyche...", -15, "sanity"),
-                ("The curse deepens ever more...", 2, "madness_points")
-            ])
-            if curse_effect[2] == "madness_points":
-                data["madness_points"] += curse_effect[1]
-            else:
-                data[curse_effect[2]] = max(0, data[curse_effect[2]] + curse_effect[1])
-
-            c_em = discord.Embed(
-                title="CURSE MANIFESTATION",
-                description=(
-                    f"{player.mention}'s curse ignites anew!\n"
-                    f"{curse_effect[0]}"
-                ),
-                color=0x800000
-            )
-            await self.send_to_channels(embed=c_em, raid=raid)
-
-            if data["hp"] <= 0:
-                await self.handle_death(player, raid)
-                return
-            if data["sanity"] <= 0:
-                await self.handle_insanity(player, raid)
-                return
-
-        # If void_touched, random sanity drain
-        if data.get("void_touched") and random.random() < 0.2:
-            guard_active = data.pop("guard_active", False)
-            drain = random.randint(5, 15)
-            if guard_active:
-                drain //= 2
-            data["sanity"] = max(0, data["sanity"] - drain)
-            if data["sanity"] <= 0:
-                await self.handle_insanity(player, raid)
-            else:
-                v_em = discord.Embed(
-                    title="VOID CORRUPTION",
-                    description=(
-                        f"{player.mention} feels the swirling darkness nibbling at their mind...\n"
-                        f"```diff\n- Sanity -{drain}\n```"
-                    ),
-                    color=0x2F4F4F
-                )
-                await self.send_to_channels(embed=v_em, raid=raid)
-
-    async def handle_insanity(self, player: discord.User, raid: Raid):
-        raid.insane_players.add(player)
-        raid.remove_player(player)
-
-
-
-        gain = random.randint(200, 500)
-        raid.boss_hp += gain
-        await self.clamp_boss_hp(raid)
-        raid.group_sanity -= 50
-
-        em = discord.Embed(
-            title="INSANITY CLAIMS A SOUL",
-            description=(
-                f"{player.mention} collapses into mind-shredding terror!\n"
-                "```diff\n"
-                f"+ Eclipse feasts: HP +{gain}\n"
-                f"- Group Sanity -50\n"
-                "```"
-            ),
-            color=0x000000
-        )
-        await self.send_to_channels(embed=em, raid=raid)
-
-        # If that was the last player, we declare defeat
-        if not raid.participants:
-            await self.handle_defeat(raid)
-
-    async def handle_death(self, player: discord.User, raid: Raid):
-        raid.defeated_players.add(player)
-        raid.remove_player(player)
-
-        gain = random.randint(300, 600)
-        raid.boss_hp += gain
-        await self.clamp_boss_hp(raid)
-        raid.group_sanity -= 80
-
-        em = discord.Embed(
-            title="CONSUMED BY THE VOID",
-            description=(
-                f"Eclipse devours the remnants of {player.mention}!\n"
-                "```diff\n"
-                f"+ Eclipse HP +{gain}\n"
-                f"- Group Sanity -80\n"
-                "```"
-            ),
-            color=0x8B0000
-        )
-        await self.send_to_channels(embed=em, raid=raid)
-
-        # If no participants remain, defeat
-        if not raid.participants:
-            await self.handle_defeat(raid)
-
-    async def handle_defeat(self, raid: Raid):
-        """No participants remain or all insane. End the raid as a defeat."""
-        if raid.channels[0].id not in self.active_raids:
-            return
-
-        em = discord.Embed(
-            title="TOTAL PARTY KILL",
-            description=(
-                "Eclipse stands triumphant among the fragments of mortal minds...\n"
-                "```diff\n- The void embraces all...\n```"
-            ),
-            color=0xFF0000
-        )
-        await self.send_to_channels(embed=em, raid=raid)
-
-        await self.post_raid_summary(raid, victory=False)
-
-        if raid.channels[0].id in self.active_raids:
-            del self.active_raids[raid.channels[0].id]
-
-    async def handle_victory(self, raid: Raid):
-        """If boss HP <= 0, call this from e.g. clamp or after an action check."""
-        if raid.channels[0].id not in self.active_raids:
-            return
-
-        survivors = [p for p, d in raid.participants.items() if d["hp"] > 0]
-        if survivors:
-            winner = random.choice(survivors)
-            cursed_rewards = {
-                'fortune': {
-                    'chance': 0.4,
-                    'effect': 'Corrupts your inventory with void essence...',
-                    'bonus': 'void_essence'
-                },
-                'legendary': {
-                    'chance': 0.3,
-                    'effect': 'Fragments of lost minds swirl within...',
-                    'bonus': 'madness_shard'
-                },
-                'divine': {
-                    'chance': 0.3,
-                    'effect': 'Pure horror in material form...',
-                    'bonus': 'horror_fragment'
-                }
-            }
-            reward_type = random.choices(
-                list(cursed_rewards.keys()),
-                weights=[r['chance'] for r in cursed_rewards.values()],
-                k=1
-            )[0]
-            reward_data = cursed_rewards[reward_type]
-
-            async with self.bot.pool.acquire() as conn:
-                await conn.execute(
-                    f'UPDATE profile SET "crates_{reward_type}"="crates_{reward_type}"+1 WHERE "user"=$1;',
-                    winner.id
-                )
-
-            em = discord.Embed(
-                title="ECLIPSE FALLS",
-                description=(
-                    f"{winner.mention} delivers the final blow...\n"
-                    f"**Reward**: {reward_type}\n*{reward_data['effect']}*\n\n"
-                    "```diff\n- The void shall remember your transgression...\n```"
-                ),
-                color=0x000000
-            )
-            await self.send_to_channels(embed=em, raid=raid)
-            await self.post_raid_summary(raid, victory=True)
-        else:
-            await self.handle_defeat(raid)
-
-        if raid.channels[0].id in self.active_raids:
-            del self.active_raids[raid.channels[0].id]
-
-    async def post_raid_summary(self, raid: Raid, victory: bool):
-        if raid.final_summary_posted:
-            return
-        raid.final_summary_posted = True
-
-        survivors = [p for p in raid.participants if p not in raid.defeated_players and p not in raid.insane_players]
-        insane = list(raid.insane_players)
-        defeated = list(raid.defeated_players)
-
-        desc = (
-            f"**Survivors ({len(survivors)})**: {', '.join([x.mention for x in survivors])}\n"
-            f"**Insane ({len(insane)})**: {', '.join([x.mention for x in insane])}\n"
-            f"**Fallen ({len(defeated)})**: {', '.join([x.mention for x in defeated])}\n"
-        )
-        result_title = "VICTORY SUMMARY" if victory else "DEFEAT SUMMARY"
-        color = 0x00FF00 if victory else 0xFF0000
-        em = discord.Embed(
-            title=result_title,
-            description=desc,
-            color=color
-        )
-        await self.send_to_channels(embed=em, raid=raid)
-
-    # --------------------------------------------
-    #  HELPER: SHOW STATS (EPHEMERAL)
-    # --------------------------------------------
-    async def show_player_stats_ephemeral(self, interaction: discord.Interaction, raid: Raid):
-        user = interaction.user
-        if user not in raid.participants:
-            await interaction.response.send_message("You are not in this raid!", ephemeral=True)
-            return
-
-        data = raid.participants[user]
-        hp = data["hp"]
-        sanity = data["sanity"]
-        madness = data["madness_points"]
-        consumed = data.get("consumable", "None")
-        betray_left = data.get("betray_charges", 0)
-        effects = self.get_status_effects(data)
-        aggro = raid.aggro_table.get(user, 0)
-
-        desc = (
-            f"**HP**: {hp}\n"
-            f"**Sanity**: {sanity}\n"
-            f"**Madness**: {madness}\n"
-            f"**Effects**: {effects}\n"
-            f"**Consumable**: {consumed}\n"
-            f"**Betray Charges**: {betray_left}\n"
-            f"**Aggro**: {aggro}\n"
-        )
-        em = discord.Embed(
-            title=f"{user.display_name}'s Status",
-            description=desc,
-            color=0x666666
-        )
-        await interaction.response.send_message(embed=em, ephemeral=True)
-
-    @staticmethod
-    def get_status_effects(p_data: dict) -> str:
-        effects = []
-        if p_data.get("cursed"):
-            effects.append("CURSED")
-        if p_data.get("void_touched"):
-            effects.append("VOID-TOUCHED")
-        if p_data["sanity"] < 30:
-            effects.append("DERANGED")
-        if p_data["sanity"] < 15:
-            effects.append("BREAKING")
-        if p_data["hp"] < 50:
-            effects.append("DYING")
-        if p_data["hp"] < 25:
-            effects.append("CRITICAL")
-        if p_data["madness_points"] >= 8:
-            effects.append("UNSTABLE")
-
-        return " | ".join(effects) if effects else "NORMAL"
+            self.last_keyword_response = now
+            response = randomm.choice(matched_responses).format(user=message.author.mention)
+            await message.channel.send(response)
 
 
 async def setup(bot):
-    await bot.add_cog(HorrorRaid(bot))
+    designated_shard_id = 0  # Choose shard 0 as the primary.
+    if designated_shard_id in bot.shard_ids:
+        await bot.add_cog(HorrorRaid(bot))
+        print(f"Raid loaded on shard {designated_shard_id}")

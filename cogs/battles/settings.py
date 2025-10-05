@@ -8,7 +8,7 @@ from discord.ext import commands
 from typing import Dict, Any, Optional, List, Union
 import json
 
-class BattleSettings:
+class BattleSettings(commands.Cog):
     """Manages battle system settings and configurations"""
     
     def __init__(self, bot):
@@ -88,7 +88,7 @@ class BattleSettings:
         await self.load_settings()
         return True
     
-    async def get_setting(self, battle_type: str, key: str) -> Any:
+    async def get_setting_async(self, battle_type: str, key: str) -> Any:
         """Get a specific setting for a battle type"""
         # First check battle-specific settings
         if battle_type in self.cache and key in self.cache[battle_type]:
@@ -107,6 +107,26 @@ class BattleSettings:
         
         # No setting found
         return None
+    
+    def get_setting(self, battle_type: str, key: str, default: Any = None) -> Any:
+        """Get a specific setting for a battle type (synchronous version using cache)"""
+        # First check battle-specific settings
+        if battle_type in self.cache and key in self.cache[battle_type]:
+            return self.cache[battle_type][key]
+        
+        # Then check global settings
+        if "global" in self.cache and key in self.cache["global"]:
+            return self.cache["global"][key]
+        
+        # Then check defaults
+        if battle_type in self.default_settings and key in self.default_settings[battle_type]:
+            return self.default_settings[battle_type][key]
+        
+        if "global" in self.default_settings and key in self.default_settings["global"]:
+            return self.default_settings["global"][key]
+        
+        # Return provided default or None
+        return default
     
     async def set_setting(self, battle_type: str, key: str, value: Any) -> bool:
         """Set a specific setting for a battle type"""
@@ -160,13 +180,13 @@ class BattleSettings:
         if battle_type:
             # Get specific battle type settings
             for key in self.default_settings["global"].keys():
-                result[key] = await self.get_setting(battle_type, key)
+                result[key] = await self.get_setting_async(battle_type, key)
         else:
             # Get all settings
             for bt in ["global", "pve", "pvp", "raid", "tower", "team"]:
                 result[bt] = {}
                 for key in self.default_settings["global"].keys():
-                    result[bt][key] = await self.get_setting(bt, key)
+                    result[bt][key] = await self.get_setting_async(bt, key)
         
         return result
     
@@ -178,10 +198,19 @@ class BattleSettings:
         for key in self.default_settings["global"].keys():
             # Only override if not explicitly provided in kwargs
             if key not in kwargs:
-                result[key] = await self.get_setting(battle_type, key)
+                result[key] = await self.get_setting_async(battle_type, key)
         
         return result
     
     def get_configurable_settings(self) -> List[str]:
         """Get a list of all configurable settings"""
         return list(self.default_settings["global"].keys())
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+
+    async def cog_load(self):
+        await self.initialize()
+
+    async def cog_unload(self):
+        pass

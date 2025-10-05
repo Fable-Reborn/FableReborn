@@ -1,0 +1,124 @@
+{
+    "level_names": [
+        "First Steps Together", "Trust in the Darkness", "The Jealous Mirrors", "The Storm of Doubt", "Protecting What Matters",
+        "The Bridge of Sacrifice", "The Memory Garden", "The Crucible of Anger", "The Test of Patience", "The Milestone of Commitment",
+        "The Haunted Ballroom", "The Frozen Wastes", "The Maze of Misunderstanding", "The Mountain of Pride", "The Battlefield of Loyalty",
+        "The Cavern of Forgiveness", "The Library of Secrets", "The Garden of Temptation", "The Chamber of Vulnerability", "The Threshold Guardian",
+        "The Forge of Sacrifice", "The Valley of Despair", "The Mirror of Truth", "The Storm of Chaos", "The Abyss of Fear",
+        "The Crucible of Pain", "The Test of Time", "The Garden of Renewal", "The Threshold of Eternity", "The Apex of Love"
+    ],
+    "victories": {
+        "1": {"title": "First Steps, United", "description": "The sprites dissolve into golden sparkles that swirl around you both, and you feel your bond strengthen. The tower approves."},
+        "2": {"title": "A Light in the Dark", "description": "As the stalkers fall, torches ignite around the room, and you see your partner's face illuminated by firelight. You've never looked more beautiful to each other."},
+        "3": {"title": "Reflections of Truth", "description": "The mirrors shatter, and where they once showed false images, they now reflect the truth - two people deeply in love, standing together against the world."},
+        "4": {"title": "Calm After the Storm", "description": "The storm calms, and a rainbow appears overhead. You've weathered your first real test together, and you feel invincible."},
+        "5": {
+            "title": "Our Future, Protected", 
+            "description": "You've successfully protected everything that matters to you, and you realize that the most precious thing you're protecting is each other.",
+            "has_chest": true,
+            "chest_rewards": {
+                "default": {
+                    "left": {"type": "crate", "value": "common", "amount": 2},
+                    "right": {"type": "money", "value": 25000, "amount": 1}
+                },
+                "prestige": "random"
+            }
+        },
+        "6": {"title": "A Leap of Faith", "description": "You reunite on the far side of the chasm, and the embrace you share is fierce and desperate. You've learned that you'd do anything for each other."},
+        "7": {"title": "Our Story, Our Strength", "description": "Your memories are safe, and as you walk through the garden together, you relive every precious moment. Your love story is worth fighting for."},
+        "8": {"title": "Cooler Heads, Warm Hearts", "description": "The fires cool, and you realize that your love is stronger than any temporary anger. You've learned to fight for each other, not against each other."},
+        "9": {"title": "Persistence of Love", "description": "Finally, mercifully, the demons fall. You've learned that love isn't always exciting, but it's always worth fighting for."},
+        "10": {
+            "title": "A Vow Renewed", 
+            "description": "The guardian bows to you both, recognizing your commitment. You've proven that your love can endure, and you're ready for whatever comes next.",
+            "has_chest": true,
+            "chest_rewards": {
+                "default": {
+                    "left": {"type": "crate", "value": "uncommon", "amount": 2},
+                    "right": {"type": "money", "value": 50000, "amount": 1}
+                },
+                "prestige": "random"
+            }
+        },
+        "11": {"title": "A Dance of Our Own", "description": "The phantoms fade away, and you're left dancing alone in the ballroom. But you're not alone - you have each other, and that makes all the difference."},
+        "12": {"title": "The Warmth of Your Love", "description": "The ice melts around you, and spring flowers bloom in the warmth of your love. You've learned that love is the antidote to a cold world."},
+        "13": {"title": "A Language Beyond Words", "description": "You find each other at the maze's center and share a kiss that says everything words cannot. You've learned that love speaks its own language."},
+        "14": {"title": "Humble Hearts, United", "description": "At the mountain's peak, you plant a flag together - not for individual glory, but as a symbol that you conquered this challenge as one."},
+        "15": {
+            "title": "Unbreakable Loyalty", 
+            "description": "The illusions shatter, and you see only truth - two people who will never abandon each other. Your loyalty is unshakeable.",
+            "has_chest": true,
+            "chest_rewards": {
+                "default": {
+                    "left": {"type": "crate", "value": "rare", "amount": 1},
+                    "right": {"type": "money", "value": 75000, "amount": 1}
+                },
+                "prestige": "random"
+            }
+        },
+        "16": {"title": "The Grace of Forgiveness", "description": "The cavern fills with light, and you realize that forgiveness isn't weakness - it's the power to heal and move forward together."},
+        "17": {"title": "The Strength of Honesty", "description": "The library's hidden passages become open corridors, and you realize that honesty isn't just about avoiding lies - it's about choosing to share your whole self with your partner."},
+        "18": {"title": "A Choice Rekindled", "description": "The false temptations fade away, and you see only the real beauty - the person you chose to love, standing beside you."},
+        "19": {"title": "Known and Loved", "description": "Your vulnerabilities become strengths as you realize that being truly known and still loved is the greatest victory of all."},
+        "20": {
+            "title": "One Heart, One Soul", 
+            "description": "The Guardian bows deeply, recognizing that you've crossed the threshold from mere lovers to true partners. The tower's upper floors await.",
+            "has_chest": true,
+            "chest_rewards": {
+                "default": {
+                    "left": {"type": "crate", "value": "magic", "amount": 1},
+                    "right": {"type": "money", "value": 100000, "amount": 1}
+                },
+                "prestige": "random"
+            }
+        },
+        "21": {"title": "The Gift of Giving", "description": "The forge cools, and you realize that by giving everything to each other, you've both received everything you need."},
+        "22": {"title": "Hope Rekindled", "description": "Light breaks through the darkness, and you realize that together, you can weather any storm. Your love is your hope."},
+        "23": {"title": "Perfect for Each Other", "description": "The mirrors now show the truth - not perfect people, but people perfect for each other."},
+        "24": {"title": "The Anchor in the Chaos", "description": "The chaos settles, and you realize that love is the one thing that never changes, no matter how crazy life gets."},
+        "25": {
+            "title": "Stronger Than Fear", 
+            "description": "The abyss fills with light, and you realize that together, you can face anything. Your love is stronger than your fears.",
+            "has_chest": true,
+            "chest_rewards": {
+                "default": {
+                    "left": {"type": "crate", "value": "fortune", "amount": 1},
+                    "right": {"type": "money", "value": 150000, "amount": 1}
+                },
+                "prestige": "random"
+            }
+        },
+        "26": {"title": "Meaning in a Shared Struggle", "description": "The pain fades, and you realize that you've learned to suffer well together - not just to endure, but to find meaning in shared struggle."},
+        "27": {"title": "Love Beyond Time", "description": "You return to your normal ages, but with the wisdom of seeing your love as eternal. You've learned that true love transcends time."},
+        "28": {"title": "A Love That Always Grows", "description": "The garden blooms with new flowers, representing all the ways you'll continue to grow together. Your love is always becoming something more beautiful."},
+        "29": {"title": "A Promise of Forever", "description": "The Guardian smiles and steps aside, recognizing that you understand what forever truly means."},
+        "30": {
+            "title": "An Eternal Bond", 
+            "description": "The light engulfs you both, and you feel your love become literally eternal - not just lasting forever, but transcending time itself. You are bound not just for life, but for all existence. You have become living proof that true love conquers all.",
+            "finale": true,
+            "rewards": {
+                "default": {"type": "crate", "value": "legendary", "amount": 1},
+                "prestige": {"type": "random_premium"}
+            }
+        }
+    },
+    "chest_options": {
+        "random": {
+            "types": ["crate", "money"],
+            "crate_options": [
+                {"value": "legendary", "weight": 2},
+                {"value": "fortune", "weight": 3},
+                {"value": "mystery", "weight": 50},
+                {"value": "common", "weight": 100},
+                {"value": "uncommon", "weight": 80},
+                {"value": "magic", "weight": 15},
+                {"value": "rare", "weight": 40}
+            ],
+            "money_options": [15000, 25000, 35000, 75000, 45000, 20000, 55000, 65000, 125000, 10000, 200000]
+        },
+        "random_premium": {
+            "types": ["legendary", "divine", "fortune"],
+            "weights": [0.4, 0.3, 0.3]
+        }
+    }
+}

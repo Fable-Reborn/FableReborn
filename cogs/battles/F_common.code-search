@@ -1,0 +1,31 @@
+# Query: F_common
+# ContextLines: 1
+
+6 results - 3 files
+
+cogs/battles/__init__.py:
+  1601              emotes = {
+  1602:                 "common": "<:F_common:1139514874016309260>",
+  1603                  "uncommon": "<:F_uncommon:1139514875828252702>",
+
+  1790              emotes = {
+  1791:                 "common": "<:F_common:1139514874016309260>",
+  1792                  "uncommon": "<:F_uncommon:1139514875828252702>",
+
+  4058                              emotes = {
+  4059:                                 "common": "<:F_common:1139514874016309260>",
+  4060                                  "uncommon": "<:F_uncommon:1139514875828252702>",
+
+  4366                              emotes = {
+  4367:                                 "common": "<:F_common:1139514874016309260>",
+  4368                                  "uncommon": "<:F_uncommon:1139514875828252702>",
+
+cogs/battles/__init__.py.backup:
+  1400              emotes = {
+  1401:                 "common": "<:F_common:1139514874016309260>",
+  1402                  "uncommon": "<:F_uncommon:1139514875828252702>",
+
+cogs/crates/__init__.py:
+  758              emotes = {
+  759:                 "common": "<:F_common:1139514874016309260>",
+  760                  "uncommon": "<:F_uncommon:1139514875828252702>",

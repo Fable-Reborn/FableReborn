@@ -15,6 +15,7 @@ class PvEBattle(Battle):
         self.player_team = teams[0]
         self.monster_team = teams[1]
         self.monster_level = kwargs.get("monster_level", 1)
+        self.macro_penalty_level = kwargs.get("macro_penalty_level", 0)
         self.current_turn = 0
         self.attacker = None
         self.defender = None
@@ -55,6 +56,9 @@ class PvEBattle(Battle):
         """Initialize and start the battle"""
         self.started = True
         self.start_time = datetime.datetime.utcnow()
+        
+        # Save initial battle data to database for replay
+        await self.save_battle_to_database()
         
         monster_name = self.monster_team.combatants[0].name
         await self.add_to_log(f"Battle against {monster_name} started!")
@@ -116,7 +120,10 @@ class PvEBattle(Battle):
         else:
             # Players: Use luck-based system
             luck_roll = random.randint(1, 100)
-            if luck_roll > self.attacker.luck:
+            
+            # Check for perfect accuracy from Night Vision skill
+            has_perfect_accuracy = getattr(self.attacker, 'perfect_accuracy', False)
+            if not has_perfect_accuracy and luck_roll > self.attacker.luck:
                 hits = False
         
         if hits:
@@ -154,24 +161,121 @@ class PvEBattle(Battle):
                 # Start with base damage
                 raw_damage = self.attacker.damage
                 
-                # Apply element effects to base damage if enabled
-                if self.config["element_effects"] and hasattr(self.ctx.bot.cogs["Battles"], "element_ext"):
-                    element_mod = self.ctx.bot.cogs["Battles"].element_ext.calculate_damage_modifier(
-                        self.ctx,
-                        self.attacker.element, 
-                        self.defender.element
-                    )
-                    if element_mod != 0:
-                        raw_damage = raw_damage * (1 + Decimal(str(element_mod)))
-                
-                # Add variance and apply armor
-                raw_damage += Decimal(damage_variance)
-                blocked_damage = min(raw_damage, self.defender.armor)
-                damage = max(raw_damage - self.defender.armor, Decimal('10'))
-                
-                self.defender.take_damage(damage)
-                
-                message = f"{self.attacker.name} attacks! {self.defender.name} takes **{self.format_number(damage)} HP** damage."
+                # PROCESS PET SKILL EFFECTS ON ATTACK
+                skill_messages = []
+                if (self.attacker.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
+                    pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
+                    raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(self.attacker, self.defender, raw_damage)
+                    # Set flag for turn processing (damage will be set after final calculation)
+                    setattr(self.attacker, 'attacked_this_turn', True)
+                    
+                    # Apply element effects to base damage if enabled
+                    if self.config["element_effects"] and hasattr(self.ctx.bot.cogs["Battles"], "element_ext"):
+                        element_mod = self.ctx.bot.cogs["Battles"].element_ext.calculate_damage_modifier(
+                            self.ctx,
+                            self.attacker.element, 
+                            self.defender.element
+                        )
+                        
+                        # Apply void affinity protection to defender
+                        if hasattr(self.ctx.bot.cogs["Battles"], "battle_factory"):
+                            pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
+                            element_mod = pet_ext.apply_void_affinity_protection(self.defender, element_mod)
+                        
+                        if element_mod != 0:
+                            raw_damage = raw_damage * (1 + Decimal(str(element_mod)))
+                    
+                    # Add variance
+                    raw_damage += Decimal(damage_variance)
+                    
+                    # Check for special damage types
+                    ignore_armor = getattr(self.defender, 'ignore_armor_this_hit', False)
+                    true_damage = getattr(self.defender, 'true_damage', False)
+                    bypass_defenses = getattr(self.defender, 'bypass_defenses', False)
+                    ignore_all = getattr(self.defender, 'ignore_all_defenses', False)
+                    
+                    if ignore_all or true_damage or ignore_armor or bypass_defenses:
+                        damage = raw_damage  # No armor reduction
+                        blocked_damage = Decimal('0')
+                    else:
+                        blocked_damage = min(raw_damage, self.defender.armor)
+                        damage = max(raw_damage - self.defender.armor, Decimal('10'))
+                    
+                    # Clear special damage flags
+                    for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses']:
+                        if hasattr(self.defender, flag):
+                            delattr(self.defender, flag)
+                    
+                    # PROCESS PET SKILL EFFECTS ON DAMAGE TAKEN
+                    defender_messages = []
+                    if (self.defender.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
+                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
+                        damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(self.defender, self.attacker, damage)
+                    
+                    # Store the actual final damage dealt (for skills like Soul Drain)
+                    if self.attacker.is_pet:
+                        setattr(self.attacker, 'last_damage_dealt', damage)
+                    
+                    self.defender.take_damage(damage)
+                    
+                    message = f"{self.attacker.name} attacks! {self.defender.name} takes **{self.format_number(damage)} HP** damage."
+                    
+                    # Add skill effect messages
+                    if skill_messages:
+                        message += "\n" + "\n".join(skill_messages)
+                    if defender_messages:
+                        message += "\n" + "\n".join(defender_messages)
+                        
+                    # Check for skeleton summoning after skill processing
+                    if hasattr(self.attacker, 'summon_skeleton'):
+                        skeleton_data = self.attacker.summon_skeleton
+                        
+                        # Create skeleton combatant
+                        from cogs.battles.core.combatant import Combatant
+                        skeleton = Combatant(
+                            user=f"Skeleton Warrior #{self.attacker.skeleton_count}",  # User/name
+                            hp=skeleton_data['hp'],
+                            max_hp=skeleton_data['hp'],  # Same as current HP
+                            damage=skeleton_data['damage'],
+                            armor=skeleton_data['armor'],
+                            element=skeleton_data['element'],
+                            luck=50,  # Base luck
+                            is_pet=True,
+                            name=f"Skeleton Warrior #{self.attacker.skeleton_count}"
+                        )
+                        skeleton.is_summoned = True
+                        skeleton.summoner = self.attacker
+                        
+                        # Add skeleton to player team
+                        self.player_team.combatants.append(skeleton)
+                        # Also add to turn order
+                        self.turn_order.append(skeleton)
+                        message += f"\n💀 A skeleton warrior joins your side!"
+                        
+                        # Clear the summon flag
+                        delattr(self.attacker, 'summon_skeleton')
+                else:
+                    # Non-pet regular attack - apply element effects to base damage if enabled
+                    if self.config["element_effects"] and hasattr(self.ctx.bot.cogs["Battles"], "element_ext"):
+                        element_mod = self.ctx.bot.cogs["Battles"].element_ext.calculate_damage_modifier(
+                            self.ctx,
+                            self.attacker.element, 
+                            self.defender.element
+                        )
+                        
+                        if element_mod != 0:
+                            raw_damage = raw_damage * (1 + Decimal(str(element_mod)))
+                    
+                    # Add variance
+                    raw_damage += Decimal(damage_variance)
+                    
+                    # Calculate damage with armor
+                    blocked_damage = min(raw_damage, self.defender.armor)
+                    damage = max(raw_damage - self.defender.armor, Decimal('10'))
+                    
+                    self.defender.take_damage(damage)
+                    
+                    message = f"{self.attacker.name} attacks! {self.defender.name} takes **{self.format_number(damage)} HP** damage."
             
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 
@@ -243,6 +347,42 @@ class PvEBattle(Battle):
         # Add message to battle log
         await self.add_to_log(message)
         
+        # PROCESS PET SKILL EFFECTS PER TURN
+        if hasattr(self.ctx.bot.cogs["Battles"], "battle_factory"):
+            pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
+            
+            # Process player team combatants
+            for combatant in self.player_team.combatants:
+                if combatant.is_pet and combatant.is_alive():
+                    # Set team references for skills that need them
+                    setattr(combatant, 'team', self.player_team)
+                    setattr(combatant, 'enemy_team', self.monster_team)
+                    
+                    # Process per-turn effects
+                    turn_messages = pet_ext.process_skill_effects_per_turn(combatant)
+                    if turn_messages:
+                        for turn_msg in turn_messages:
+                            await self.add_to_log(turn_msg)
+                    
+            # Process monster team combatants (if any pets)
+            for combatant in self.monster_team.combatants:
+                if combatant.is_pet and combatant.is_alive():
+                    # Set team references for skills that need them  
+                    setattr(combatant, 'team', self.monster_team)
+                    setattr(combatant, 'enemy_team', self.player_team)
+                    
+                    # Process per-turn effects
+                    turn_messages = pet_ext.process_skill_effects_per_turn(combatant)
+                    if turn_messages:
+                        for turn_msg in turn_messages:
+                            await self.add_to_log(turn_msg)
+        
+        # Check for death from turn effects
+        if not self.defender.is_alive():
+            # Mark if pet killed an enemy for Soul Harvest
+            if self.attacker.is_pet:
+                setattr(self.attacker, 'killed_enemy_this_turn', True)
+        
         # Update the battle display
         await self.update_display()
         await asyncio.sleep(1)
@@ -309,6 +449,9 @@ class PvEBattle(Battle):
         log_text = "\n\n".join([f"**Action #{i}**\n{msg}" for i, msg in self.log])
         embed.add_field(name="Battle Log", value=log_text or "Battle starting...", inline=False)
         
+        # Add battle ID to footer for GM replay functionality
+        embed.set_footer(text=f"Battle ID: {self.battle_id}")
+        
         return embed
     
     async def update_display(self):
@@ -326,6 +469,8 @@ class PvEBattle(Battle):
         # Check if it's a timeout/tie
         if await self.is_timed_out():
             await self.ctx.send("The battle ended in a draw due to timeout.")
+            # Save final battle state to database for replay
+            await self.save_battle_to_database()
             return None
         
         # Determine winner
@@ -334,6 +479,8 @@ class PvEBattle(Battle):
             await self.ctx.send(
                 f"You were defeated by the **{self.monster_team.combatants[0].name}**. Better luck next time!"
             )
+            # Save final battle state to database for replay
+            await self.save_battle_to_database()
             return self.monster_team
         else:
             # Player won - calculate XP reward
@@ -341,6 +488,10 @@ class PvEBattle(Battle):
                 xp_gain = random.randint(75000, 125000)
             else:
                 xp_gain = random.randint(self.monster_level * 300, self.monster_level * 1000)
+            
+            # Apply macro penalty if active (count >= 12)
+            if self.macro_penalty_level >= 12:
+                xp_gain = xp_gain // 10  # Divide XP by 10
             
             # Award XP
             async with self.ctx.bot.pool.acquire() as conn:
@@ -350,9 +501,51 @@ class PvEBattle(Battle):
                     self.ctx.author.id,
                 )
             
-            await self.ctx.send(
-                f"You defeated the **{self.monster_team.combatants[0].name}** and gained **{xp_gain} XP**!"
-            )
+            # Award crafting resources based on monster level (skip if macro penalty active)
+            crafting_resources_awarded = []
+            if self.macro_penalty_level == 0:  # Only give materials if no macro penalty
+                amulet_cog = self.ctx.bot.get_cog("AmuletCrafting")
+                if amulet_cog:
+                    # Determine number of resources based on monster level (reduced amounts)
+                    if self.monster_level == 11:  # Legendary monster
+                        resource_count = random.randint(2, 3)
+                        amount_range = (1, 2)
+                    elif self.monster_level >= 8:  # High level monsters
+                        resource_count = random.randint(1, 2)
+                        amount_range = (1, 2)
+                    elif self.monster_level >= 5:  # Mid level monsters
+                        resource_count = 1
+                        amount_range = (1, 2)
+                    else:  # Low level monsters
+                        # 70% chance to get 1 resource, 30% chance to get nothing
+                        if random.random() < 0.7:
+                            resource_count = 1
+                            amount_range = (1, 1)
+                        else:
+                            resource_count = 0
+                            amount_range = (0, 0)
+                    
+                    # Award multiple random resources
+                    for _ in range(resource_count):
+                        resource_name, amount = await amulet_cog.give_random_resource(
+                            self.ctx.author.id,
+                            amount_range=amount_range,
+                            category=None,  # Any category
+                            respect_level=True  # Respect player level for resource rarity
+                        )
+                        
+                        if resource_name:
+                            display_name = resource_name.replace('_', ' ').title()
+                            crafting_resources_awarded.append(f"{amount}x {display_name}")
+            
+            # Create victory message with both XP and resources
+            victory_message = f"You defeated the **{self.monster_team.combatants[0].name}** and gained **{xp_gain} XP**!"
+            
+            if crafting_resources_awarded:
+                resources_text = ", ".join(crafting_resources_awarded)
+                victory_message += f"\n🔨 **Crafting Resources Found:** {resources_text}"
+            
+            await self.ctx.send(victory_message)
             
             # Check for level up
             from utils import misc as rpgtools
@@ -365,6 +558,9 @@ class PvEBattle(Battle):
             
             # Dispatch PVE completion event
             self.ctx.bot.dispatch("PVE_completion", self.ctx, True)
+            
+            # Save final battle state to database for replay
+            await self.save_battle_to_database()
             
             return self.player_team
     

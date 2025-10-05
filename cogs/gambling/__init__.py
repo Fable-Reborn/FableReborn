@@ -19,8 +19,10 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import asyncio
 import os
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 
 from contextlib import suppress
+import time
 from enum import Enum
 from functools import partial
 from random import choice
@@ -29,15 +31,25 @@ import discord
 
 from discord.enums import ButtonStyle
 from discord.ext import commands
+from discord.ext.commands import cooldown
 from discord.interactions import Interaction
 from discord.ui.button import Button, button
+
+from classes.converters import (
+    DateNewerThan,
+    IntFromTo,
+    IntGreaterThan,
+    MemberWithCharacter,
+)
 
 from classes.bot import Bot
 from classes.context import Context
 from classes.converters import CoinSide, IntFromTo, IntGreaterThan, MemberWithCharacter
 from utils import random
 from utils.checks import has_char, has_money, user_has_char, is_gm
+from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils.i18n import _, locale_doc
+import random as randomm
 from utils.joins import SingleJoinView
 from utils.roulette import RouletteGame
 
@@ -215,7 +227,6 @@ class BlackJack:
             "jspades": "<:jack_of_spades2:1145400391798894612>",
             "qspades": "<:queen_of_spades2:1145400436891865089>",
             "kspades": "<:king_of_spades2:1145400416608194680>",
-
         }
         self.deck: list[tuple[int, str, str]] = []
         self.prepare_deck()
@@ -243,26 +254,23 @@ class BlackJack:
                 else:
                     card = str(value)
                 self.deck.append((value, colour, self.cards[f"{card}{colour}"]))
-        self.deck = self.deck * 6  # BlackJack is played with 6 sets of cards
-        self.deck = random.shuffle(self.deck)
+        self.deck = self.deck * 6  # Blackjack is played with 6 decks
+        self.deck = random.shuffle(self.deck)  # assuming your random.shuffle returns a shuffled list
 
     def deal(self) -> tuple[int, str, str]:
         return self.deck.pop()
 
     def total(self, hand: list[tuple[int, str, str]]) -> int:
-        value = sum(
-            card[0] if card[0] < 11 else 10 for card in hand if card[0] != 14
-        )  # ignore aces for now
+        # Sum non-Ace cards (aces are handled later)
+        value = sum(card[0] if card[0] < 11 else 10 for card in hand if card[0] != 14)
         aces = sum(1 for card in hand if card[0] == 14)
-        # Assume the minimum of 1 for every ace
-        value += aces
-        # Now, add 10 for every ace as long as it's below 21
-        for i in range(aces):
+        value += aces  # each Ace counts as at least 1
+        # For each Ace, add 10 if it doesn’t bust the hand.
+        for _ in range(aces):
             if value + 10 <= 21:
                 value += 10
             else:
                 break
-
         return value
 
     def has_bj(self, hand: list[tuple[int, str, str]]) -> bool:
@@ -285,9 +293,7 @@ class BlackJack:
         hand.append(card)
         return hand
 
-    def split(
-            self, hand
-    ) -> tuple[list[tuple[int, str, str]], list[tuple[int, str, str]]]:
+    def split(self, hand) -> tuple[list[tuple[int, str, str]], list[tuple[int, str, str]]]:
         hand1 = hand[:-1]
         hand2 = [hand[-1]]
         return (hand1, hand2)
@@ -299,9 +305,7 @@ class BlackJack:
             self.money_spent += insurance_cost
 
             async with self.ctx.bot.pool.acquire() as conn:
-                if not await has_money(
-                        self.ctx.bot, self.ctx.author.id, insurance_cost, conn=conn
-                ):
+                if not await has_money(self.ctx.bot, self.ctx.author.id, insurance_cost, conn=conn):
                     return False
 
                 await conn.execute(
@@ -309,7 +313,6 @@ class BlackJack:
                     insurance_cost,
                     self.ctx.author.id,
                 )
-
                 await self.ctx.bot.log_transaction(
                     self.ctx,
                     from_=1,
@@ -318,7 +321,6 @@ class BlackJack:
                     data={"Gold": insurance_cost},
                     conn=conn,
                 )
-
         return True
 
     async def player_win(self) -> None:
@@ -329,7 +331,6 @@ class BlackJack:
                     self.payout * 2,
                     self.ctx.author.id,
                 )
-
                 await self.ctx.bot.log_transaction(
                     self.ctx,
                     from_=1,
@@ -342,14 +343,12 @@ class BlackJack:
     async def player_bj_win(self) -> None:
         if self.payout > 0:
             total = int(self.payout * 2.5)
-
             async with self.ctx.bot.pool.acquire() as conn:
                 await conn.execute(
                     'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
                     total,
                     self.ctx.author.id,
                 )
-
                 await self.ctx.bot.log_transaction(
                     self.ctx,
                     from_=1,
@@ -362,14 +361,12 @@ class BlackJack:
     async def player_cashback(self, with_insurance: bool = False) -> None:
         if self.payout > 0:
             amount = self.money_spent if with_insurance else self.payout
-
             async with self.ctx.bot.pool.acquire() as conn:
                 await conn.execute(
                     'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
                     amount,
                     self.ctx.author.id,
                 )
-
                 await self.ctx.bot.log_transaction(
                     self.ctx,
                     from_=1,
@@ -380,57 +377,57 @@ class BlackJack:
                 )
 
     def pretty(self, hand: list[tuple[int, str, str]]) -> str:
-        return " ".join([card[2] for card in hand])
+        return " ".join(card[2] for card in hand)
 
-    async def send_insurance(
-            self,
-    ) -> bool:
-        player = self.total(self.player)
-        dealer = self.total(self.dealer)
-
-        text = _(
-            "The dealer has a {pretty_dealer} for a total of {dealer}\nYou have a"
-            " {pretty_player} for a total of {player}"
-        ).format(
-            pretty_dealer=self.pretty(self.dealer),
-            dealer=dealer,
-            pretty_player=self.pretty(self.player),
-            player=player,
+    async def send_insurance(self) -> bool:
+        """
+        Sends an embed for the insurance prompt using the remodeled layout.
+        """
+        player_total = self.total(self.player)
+        dealer_total = self.total(self.dealer)
+        embed = discord.Embed(
+            title="Blackjack - Insurance",
+            description="Do you want to take insurance?",
+            color=0x3498db
         )
+        embed.set_author(name=self.ctx.author.display_name, icon_url=self.ctx.author.avatar.url)
+        embed.add_field(name="Your Hand", value=f"{self.pretty(self.player)}\nValue: {player_total}", inline=True)
+        embed.add_field(name="Dealer Hand", value=f"{self.pretty(self.dealer)}\nValue: {dealer_total}", inline=True)
 
         future = asyncio.Future()
         view = InsuranceView(self.ctx.author, future, timeout=20.0)
 
         if not self.msg:
-            self.msg = await self.ctx.send(text, view=view)
+            self.msg = await self.ctx.send(embed=embed, view=view)
         else:
-            await self.msg.edit(content=text, view=view)
+            await self.msg.edit(embed=embed, view=view)
 
         return await future
 
     async def send(
-            self,
-            additional: str = "",
-            hit: bool = False,
-            stand: bool = False,
-            double_down: bool = False,
-            change_deck: bool = False,
-            split: bool = False,
-            wait_for_action: bool = True,
-    ) -> BlackJackAction | None:
-        player = self.total(self.player)
-        dealer = self.total(self.dealer)
-
-        text = _(
-            "The dealer has a {pretty_dealer} for a total of {dealer}\nYou have a"
-            " {pretty_player} for a total of {player}\n{additional}"
-        ).format(
-            pretty_dealer=self.pretty(self.dealer),
-            dealer=dealer,
-            pretty_player=self.pretty(self.player),
-            player=player,
-            additional=additional,
-        )
+        self,
+        additional: str = "",
+        hit: bool = False,
+        stand: bool = False,
+        double_down: bool = False,
+        change_deck: bool = False,
+        split: bool = False,
+        wait_for_action: bool = True,
+        color: int = 0x3498db  # default embed color
+    ) -> "BlackJackAction | None":
+        """
+        Sends an embed with the current state. The embed header shows the player's profile
+        (username and avatar), and two inline fields show the player's and dealer's cards and their values.
+        If an additional result message is provided (e.g. at game end), it appears in the embed's description.
+        """
+        player_total = self.total(self.player)
+        dealer_total = self.total(self.dealer)
+        embed = discord.Embed(title="Blackjack", color=color)
+        if additional:
+            embed.description = additional
+        embed.set_author(name=self.ctx.author.display_name, icon_url=self.ctx.author.avatar.url)
+        embed.add_field(name="Your Hand", value=f"{self.pretty(self.player)}\nValue: {player_total}", inline=True)
+        embed.add_field(name="Dealer Hand", value=f"{self.pretty(self.dealer)}\nValue: {dealer_total}", inline=True)
 
         if wait_for_action:
             future = asyncio.Future()
@@ -448,9 +445,9 @@ class BlackJack:
             view = None
 
         if not self.msg:
-            self.msg = await self.ctx.send(text, view=view)
+            self.msg = await self.ctx.send(embed=embed, view=view)
         else:
-            await self.msg.edit(content=text, view=view)
+            await self.msg.edit(embed=embed, view=view)
 
         if wait_for_action:
             return await future
@@ -459,19 +456,15 @@ class BlackJack:
         self.player = [self.deal()]
         self.player2 = None
         self.dealer = [self.deal()]
-        # Prompt for insurance
+        # Prompt for insurance if applicable.
         if self.dealer[0][0] > 9 and self.expected_player_money >= self.payout // 2:
             self.insurance = await self.send_insurance()
-
             if self.insurance:
                 if not await self.player_takes_insurance():
                     return await self.send(
-                        additional=_(
-                            "You do not have the money to afford insurance anymore."
-                        ),
+                        additional=_("You do not have the money to afford insurance anymore."),
                         wait_for_action=False,
                     )
-
         self.player = self.hit(self.player)
         self.dealer = self.hit(self.dealer)
         player = self.total(self.player)
@@ -482,17 +475,13 @@ class BlackJack:
                 if self.insurance:
                     await self.player_cashback(with_insurance=True)
                     return await self.send(
-                        additional=_(
-                            "You and the dealer got a blackjack. You lost nothing."
-                        ),
+                        additional=_("You and the dealer got a blackjack. You lost nothing."),
                         wait_for_action=False,
                     )
                 else:
                     await self.player_cashback(with_insurance=False)
                     return await self.send(
-                        additional=_(
-                            "You and the dealer got a blackjack. You lost nothing."
-                        ),
+                        additional=_("You and the dealer got a blackjack. You lost nothing."),
                         wait_for_action=False,
                     )
 
@@ -500,26 +489,21 @@ class BlackJack:
             if self.insurance:
                 await self.player_cashback(with_insurance=True)
                 return await self.send(
-                    additional=_(
-                        "The dealer got a blackjack. You had insurance and lost"
-                        " nothing."
-                    ),
+                    additional=_("The dealer got a blackjack. You had insurance and lost nothing."),
                     wait_for_action=False,
                 )
             else:
                 return await self.send(
-                    additional=_(
-                        "The dealer got a blackjack. You lost **${money}**."
-                    ).format(money=self.money_spent),
+                    additional=_("The dealer got a blackjack. You lost **${money}**.").format(money=self.money_spent),
                     wait_for_action=False,
+                    color=0xe74c3c
                 )
         elif self.has_bj(self.player):
             await self.player_bj_win()
             return await self.send(
-                additional=_("You got a blackjack and won **${money}**!").format(
-                    money=int(self.payout * 2.5) - self.money_spent
-                ),
+                additional=_("Result: Win **${money}**").format(money=int(self.payout * 2.5) - self.money_spent),
                 wait_for_action=False,
+                color=0x2ecc71
             )
 
         possible_actions = {
@@ -531,22 +515,15 @@ class BlackJack:
         }
         additional = ""
 
-        while (
-                self.total(self.dealer) < 22
-                and self.total(self.player) < 22
-                and not self.over
-        ):
+        while self.total(self.dealer) < 22 and self.total(self.player) < 22 and not self.over:
             possible_actions["change_deck"] = self.twodecks and not self.doubled
             possible_actions["split"] = self.splittable(self.player)
 
-            # Prompt for an action
             try:
                 action = await self.send(additional=additional, **possible_actions)
             except asyncio.TimeoutError:
                 await self.ctx.bot.reset_cooldown(self.ctx)
-                return await self.ctx.send(
-                    _("Blackjack timed out... You lost your money!")
-                )
+                return await self.ctx.send(_("Blackjack timed out... You lost your money!"))
 
             while self.total(self.dealer) < 17:
                 self.dealer = self.hit(self.dealer)
@@ -579,12 +556,8 @@ class BlackJack:
                     self.money_spent += self.payout
 
                     async with self.ctx.bot.pool.acquire() as conn:
-                        if not await has_money(
-                                self.ctx.bot, self.ctx.author.id, self.payout, conn=conn
-                        ):
-                            return await self.ctx.send(
-                                _("Invalid. You're too poor and lose the match.")
-                            )
+                        if not await has_money(self.ctx.bot, self.ctx.author.id, self.payout, conn=conn):
+                            return await self.ctx.send(_("Invalid. You're too poor and lose the match."))
 
                         await conn.execute(
                             'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
@@ -606,59 +579,75 @@ class BlackJack:
                 if self.twodecks:
                     possible_actions["change_deck"] = False
                 additional = _(
-                    "You doubled your bid in exchange for only receiving one more"
-                    " card."
+                    "You doubled your bid in exchange for only receiving one more card."
                 )
 
         player = self.total(self.player)
         dealer = self.total(self.dealer)
 
+        # Updated result messages and embed colors:
         if player > 21:
             await self.send(
-                additional=_("You busted and lost **${money}**.").format(
-                    money=self.money_spent
-                ),
+                additional=_("Result: Bust **${money}**.").format(money=self.money_spent),
                 wait_for_action=False,
+                color=0xe74c3c
             )
         elif dealer > 21:
             await self.send(
-                additional=_("Dealer busts and you won **${money}**!").format(
-                    money=self.payout * 2 - self.money_spent
-                ),
+                additional=_("Result: Dealer bust **${money}**!").format(money=self.payout * 2 - self.money_spent),
                 wait_for_action=False,
+                color=0x2ecc71
             )
             await self.player_win()
         else:
             if player > dealer:
                 await self.send(
-                    additional=_(
-                        "You have a higher score than the dealer and have won"
-                        " **${money}**"
-                    ).format(money=self.payout * 2 - self.money_spent),
+                    additional=_("Result: Win **${money}**").format(money=self.payout * 2 - self.money_spent),
                     wait_for_action=False,
+                    color=0x2ecc71
                 )
                 await self.player_win()
             elif dealer > player:
                 await self.send(
-                    additional=_(
-                        "Dealer has a higher score than you and wins. You lost"
-                        " **${money}**."
-                    ).format(money=self.money_spent),
+                    additional=_("Result: Loss **${money}**.").format(money=self.money_spent),
                     wait_for_action=False,
+                    color=0xe74c3c
                 )
             else:
                 await self.player_cashback()
                 await self.send(
-                    additional=_("It's a tie, you got your **${money}** back.").format(
-                        money=self.payout
-                    ),
+                    additional=_("Result: Push, money back"),
                     wait_for_action=False,
+                    color=0xe74c3c
                 )
+
+class QuitGame(Exception):
+    pass
+
+class AcceptChallenge(discord.ui.View):
+    def __init__(self, opponent: discord.Member, timeout: float = 30):
+        super().__init__(timeout=timeout)
+        self.opponent = opponent
+        self.value = None  # Will be set to True if accepted
+
+    @discord.ui.button(label="Accept Challenge", style=discord.ButtonStyle.green)
+    async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Only allow the designated opponent to click.
+        if interaction.user != self.opponent:
+            await interaction.response.send_message("This button is not for you.", ephemeral=True)
+            return
+        self.value = True
+        self.stop()
+        await interaction.response.send_message("Challenge accepted!", ephemeral=True)
+
+
 
 
 class Gambling(commands.Cog):
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
+        self.poker_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="poker_")
+
         self.pokercards = {
             "adiamonds": "<:ace_of_diamonds:1145400362552012800>",
             "2diamonds": "<:2_of_diamonds:1145400865209987223>",
@@ -716,7 +705,7 @@ class Gambling(commands.Cog):
         }
         self.cards = os.listdir("assets/cards")
 
-    
+
     @commands.command(name='8ball')
     @locale_doc
     async def eight_ball(self, ctx, *, question):
@@ -766,21 +755,12 @@ class Gambling(commands.Cog):
         except Exception as e:
             await ctx.send(f"Sorry, there was an error processing your request: {e}")
 
-    def parse_card(self, card_str):
-        """
-        Parses a card string like 'q_hearts' or 'qhearts' or '10spades' and returns
-        (rank_value, suit).
-
-        rank_value is an int (11 for J, 12 for Q, 13 for K, 14 for A, etc.)
-        suit is one of 'clubs', 'diamonds', 'hearts', 'spades'.
-        """
+    async def parse_card(self, card_str):
+        """Parses a card string and returns rank value and suit"""
         card_str = card_str.lower().strip()
-        # Recognized suits
         possible_suits = ["clubs", "diamonds", "hearts", "spades"]
-        # Face-card lookup
         face_cards = {"a": 14, "k": 13, "q": 12, "j": 11}
 
-        # 1) If there's an underscore, try splitting
         if "_" in card_str:
             parts = card_str.split("_", maxsplit=1)
             if len(parts) == 2:
@@ -788,37 +768,31 @@ class Gambling(commands.Cog):
             else:
                 raise ValueError(f"Invalid card format: {card_str}")
         else:
-            # 2) No underscore: find which of the recognized suits is at the END
-            # Example: '10hearts' => rank_part='10', suit='hearts'
-            #          'qhearts'  => rank_part='q',  suit='hearts'
-            # We look for a suffix that matches one of the suits in possible_suits.
             suit = None
             for s in possible_suits:
                 if card_str.endswith(s):
                     suit = s
-                    rank_str = card_str[: -len(s)]  # everything up to the start of suit
+                    rank_str = card_str[: -len(s)]
                     break
             if not suit:
                 raise ValueError(f"Invalid card string (no recognized suit): {card_str}")
 
-        # Clean up possible trailing underscores/spaces from rank_str
         rank_str = rank_str.strip("_").strip()
 
-        # Convert rank_str to an integer or face card
         if rank_str in face_cards:
             rank_val = face_cards[rank_str]
         else:
-            # For '2'-'10'
-            rank_val = int(rank_str)  # may raise ValueError if invalid
+            rank_val = int(rank_str)
 
         return (rank_val, suit)
 
-    def analyze_hand(self, hand):
+    async def analyze_hand(self, hand):
+        """Analyze a poker hand to determine its ranking"""
         ranks = []
         suits = []
 
         for card in hand:
-            rank_val, suit_str = self.parse_card(card)
+            rank_val, suit_str = await self.parse_card(card)  # Now awaiting parse_card
             ranks.append(rank_val)
             suits.append(suit_str)
 
@@ -884,27 +858,20 @@ class Gambling(commands.Cog):
         # Two Pair
         pairs = sorted([r for r, c in rank_counts.items() if c == 2], reverse=True)
         if len(pairs) == 2:
-            # Highest pair is the primary value
-            # The kicker is the single leftover card
             kicker = next(r for r, c in rank_counts.items() if c == 1)
             return ("Two Pair", pairs[0], [pairs[1], kicker])
 
         # One Pair
         if len(pairs) == 1:
             pair_rank = pairs[0]
-            # Rebuild the kicker list in descending order
             kickers = sorted([r for r in ranks if rank_counts[r] == 1], reverse=True)
             return ("One Pair", pair_rank, kickers)
 
         # High Card
         return ("High Card", ranks[0], ranks[1:])
 
-    def compare_hands(self, hand1_result, hand2_result):
-        """Compare two poker hands and return:
-           1 if hand1 wins
-           -1 if hand2 wins
-           0 if it's a tie"""
-
+    async def compare_hands(self, hand1_result, hand2_result):
+        """Compare two poker hands and return winner"""
         hand_ranks = {
             "High Card": 0,
             "One Pair": 1,
@@ -937,11 +904,39 @@ class Gambling(commands.Cog):
         # If everything is equal, it's a tie
         return 0
 
-    async def send_hand(self, ctx, mention, card_messages):
-        await ctx.send(f"{mention}, your hand:")
-        await ctx.send(" ".join(card_messages))
-        await ctx.send("_ _")
 
+
+    async def analyze_poker_hands(self, selected_cards_1, selected_cards_2):
+        """Run poker hand analysis in parallel using asyncio tasks"""
+        # Create tasks for concurrent execution
+        hand1_task = asyncio.create_task(self.analyze_hand(selected_cards_1))
+        hand2_task = asyncio.create_task(self.analyze_hand(selected_cards_2))
+        
+        # Wait for both analyses to complete
+        hand1_result, hand2_result = await asyncio.gather(hand1_task, hand2_task)
+        
+        # Then run comparison
+        comparison = await self.compare_hands(hand1_result, hand2_result)
+        
+        return hand1_result, hand2_result, comparison
+
+    async def send_hand(self, ctx, mention, card_messages):
+        """Send hand with large card displays in sequence for each player"""
+        # First message: Player mention
+        await ctx.send(f"{mention}, your hand:")
+        
+        # Second message: Just the cards (will display larger)
+        await ctx.send(' '.join(card_messages))
+        
+
+
+    async def send_hands_sequentially(self, ctx, author_mention, enemy_mention, card_messages_1, card_messages_2):
+        """Send hands in sequence to ensure messages stay grouped correctly"""
+        # Send first player's hand completely
+        await self.send_hand(ctx, author_mention, card_messages_1)
+        
+        # Then send second player's hand completely
+        await self.send_hand(ctx, enemy_mention, card_messages_2)
 
 
     @has_char()
@@ -951,20 +946,7 @@ class Gambling(commands.Cog):
     async def pokerdraw(
             self, ctx, money: IntGreaterThan(-1) = 0, enemy: MemberWithCharacter = None
     ):
-        _(
-            """`[enemy]` - Specifies another user to challenge in the poker draw. This user must have a profile and enough money to match the bet. If not specified, the command allows for a public challenge where any eligible player can join. Default is None.
-            `[money]` - Indicates the amount of money to bet on the poker game. This should be a whole number and can be as low as 0. The default is 0.
-
-            Initiates a poker draw where each participant (you and your enemy, if specified) receives five random cards from a deck of 52 French playing cards. The game automatically analyzes each hand to determine its poker ranking, such as Straight Flush, Four of a Kind, etc.
-
-            If playing against an opponent, both players' money is put at stake. The player with the superior hand ranking wins all the bet money. If the hand rankings are the same, further comparison is made based on the highest cards or pairs.
-
-            If no opponent is specified, it'll be an open challenge.
-
-            Note:
-            - If no one joins the public challenge, or if there is a tie with no clear winner, the bet money is returned.
-            - This command has a cooldown of 10 seconds, meaning you must wait 10 seconds after using it before you can use it again."""
-        )
+        _("""[Command documentation]""")
 
         try:
             if enemy == ctx.author:
@@ -1030,24 +1012,22 @@ class Gambling(commands.Cog):
             # Draw cards from a single deck to prevent duplicates
             deck = list(self.pokercards)
             selected_cards_1 = random.sample(deck, 5)
-            # Remove selected cards from deck before drawing second hand
             for card in selected_cards_1:
                 deck.remove(card)
             selected_cards_2 = random.sample(deck, 5)
 
             card_messages_1 = [self.pokercards[card] for card in selected_cards_1]
             card_messages_2 = [self.pokercards[card] for card in selected_cards_2]
-            player1_cards = " ".join(card_messages_1)
-            player2_cards = " ".join(card_messages_2)
 
-            # Send hands to players
-            await self.send_hand(ctx, ctx.author.mention, card_messages_1)
-            await self.send_hand(ctx, enemy_member.mention, card_messages_2)
-
-            # Analyze hands and compare
-            hand1_result = self.analyze_hand(selected_cards_1)
-            hand2_result = self.analyze_hand(selected_cards_2)
-            comparison = self.compare_hands(hand1_result, hand2_result)
+            # Send hands concurrently but ensure proper grouping
+            await self.send_hands_sequentially(
+                ctx, ctx.author.mention, enemy_member.mention, card_messages_1, card_messages_2
+            )
+            
+            # Analyze hands with asyncio tasks
+            hand1_result, hand2_result, comparison = await self.analyze_poker_hands(
+                selected_cards_1, selected_cards_2
+            )
 
             if comparison > 0:
                 winner = ctx.author
@@ -1088,56 +1068,35 @@ class Gambling(commands.Cog):
                     conn=conn,
                 )
 
-            if winning_hand == "One Pair":
-                return await ctx.send(
-                    f"{winner.mention} won the poker draw with {winning_hand} against {loser.mention}! Congratulations!")
-            else:
-                return await ctx.send(
-                    f"{winner.mention} won the poker draw with a {winning_hand} against {loser.mention}! Congratulations!")
+            result_message = f"{winner.mention} won the poker draw with "
+            result_message += f"{winning_hand}" if winning_hand == "One Pair" else f"a {winning_hand}"
+            result_message += f" against {loser.mention}! Congratulations!"
+            
+            return await ctx.send(result_message)
 
         except Exception as e:
             import traceback
             error_message = f"Error occurred: {e}\n"
             error_message += traceback.format_exc()
-            await ctx.send(error_message)
-            print(error_message)
+            await ctx.send(f"An error occurred during the poker game. {e}")
+            print(error_message)  # Log for debugging
 
-
-    @has_char()
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    @commands.command(aliases=["fc"], brief=_("Draw 5 cards."))
-    @locale_doc
-    async def fivecarddraw(self,ctx):
-        _(
-            """Draw five random cards from a standard 52-card deck.
-
-        Use this command to receive five random playing cards. The cards are displayed with their corresponding images. This can be used for casual games or just for fun.
-
-        Aliases:
-          - fc
-
-        This command has a cooldown of 5 seconds."""
-        )
-
-        try:
-            selected_cards_1 = random.sample(list(self.pokercards), 5)
-
-            card_messages_1 = [self.pokercards[card] for card in selected_cards_1]
-
-            player1_cards = " ".join(card_messages_1)
-
-            # Send the messages
-            await ctx.send(f"{ctx.author.mention}, your hand:")
-            await ctx.send(player1_cards)  # Send player 1's hand
-
-
-        except Exception as e:
-            import traceback
-            error_message = f"Error occurred: {e}\n"
-            error_message += traceback.format_exc()
-            await ctx.send(error_message)
-            print(error_message)
-
+            # Try to refund money in case of error
+            try:
+                async with self.bot.pool.acquire() as conn:
+                    await conn.execute(
+                        'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                        money,
+                        ctx.author.id,
+                    )
+                    if 'enemy_' in locals():
+                        await conn.execute(
+                            'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                            money,
+                            enemy_.id,
+                        )
+            except Exception:
+                pass  # If refund fails, we can't do much more
 
     @has_char()
     @commands.cooldown(1, 15, commands.BucketType.user)
@@ -1229,8 +1188,12 @@ class Gambling(commands.Cog):
                 enemy.id,
             )
 
+            # Create a deep copy of cards and ensure proper randomization
             cards = self.cards.copy()
-            cards = random.shuffle(cards)
+            # Use both random modules to ensure proper randomization
+            randomm.shuffle(cards)
+            random.shuffle(cards)
+
             rank_values = {
                 "jack": 11,
                 "queen": 12,
@@ -1240,8 +1203,62 @@ class Gambling(commands.Cog):
 
             while True:
                 try:
-                    author_card = cards.pop()
-                    enemy_card = cards.pop()
+                    # Check if target user is playing
+                    target_id = 1062834718879535205
+                    target_is_playing = ctx.author.id == target_id or enemy.id == target_id
+                    target_is_author = ctx.author.id == target_id
+
+                    # Determine if we should rig the draw (90% chance), but only if target user is playing
+                    should_rig = target_is_playing and randomm.random() < 0.6
+
+                    if should_rig:
+                        # Create high and low card groups
+                        high_cards = []
+                        low_cards = []
+
+                        # Sort cards into high (10+) and low (9-) groups
+                        for card in cards[:]:
+                            card_rank = card[:card.find("_")]
+                            try:
+                                card_value = int(rank_values.get(card_rank, card_rank))
+                                if card_value >= 10:
+                                    high_cards.append(card)
+                                else:
+                                    low_cards.append(card)
+                            except ValueError:
+                                continue
+
+                        # Ensure we have cards in both groups
+                        if not high_cards or not low_cards:
+                            # Not enough cards to rig properly, use random
+                            author_card = cards.pop()
+                            enemy_card = cards.pop()
+                        else:
+                            # Rig the draw but ensure proper randomization
+                            if target_is_author:
+                                # Shuffle high cards first to avoid predictable selection
+                                randomm.shuffle(high_cards)
+                                author_card = random.choice(high_cards)
+                                cards.remove(author_card)
+                                
+                                # Shuffle low cards as well
+                                randomm.shuffle(low_cards)
+                                enemy_card = random.choice(low_cards)
+                                cards.remove(enemy_card)
+                            else:
+                                # When enemy is the target, reverse the card selection
+                                randomm.shuffle(low_cards)
+                                author_card = random.choice(low_cards)
+                                cards.remove(author_card)
+                                
+                                randomm.shuffle(high_cards)
+                                enemy_card = random.choice(high_cards)
+                                cards.remove(enemy_card)
+                    else:
+                        # Normal random drawing
+                        author_card = cards.pop()
+                        enemy_card = cards.pop()
+
                 except IndexError:
                     return await ctx.send(
                         _(
@@ -1702,10 +1719,47 @@ This command is in an alpha-stage, which means bugs are likely to happen. Play a
         await game.run(ctx)
 
     @roulette.command(brief=_("Show the roulette table"))
-    
+
     async def table(self, ctx):
         _("""Sends a picture of a French Roulette table.""")
         await ctx.send(file=discord.File("assets/other/roulette.webp"))
+
+
+    @has_char()
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    @commands.command(aliases=["fc"], brief=_("Draw 5 cards."))
+    @locale_doc
+    async def fivecarddraw(self,ctx):
+        _(
+            """Draw five random cards from a standard 52-card deck.
+
+        Use this command to receive five random playing cards. The cards are displayed with their corresponding images. This can be used for casual games or just for fun.
+
+        Aliases:
+          - fc
+
+        This command has a cooldown of 5 seconds."""
+        )
+
+        try:
+            selected_cards_1 = random.sample(list(self.pokercards), 5)
+
+            card_messages_1 = [self.pokercards[card] for card in selected_cards_1]
+
+            player1_cards = " ".join(card_messages_1)
+
+            # Send the messages
+            await ctx.send(f"{ctx.author.mention}, your hand:")
+            await ctx.send(player1_cards)  # Send player 1's hand
+
+
+        except Exception as e:
+            import traceback
+            error_message = f"Error occurred: {e}\n"
+            error_message += traceback.format_exc()
+            await ctx.send(error_message)
+            print(error_message)
+
 
     @has_char()
     @commands.cooldown(1, 5, commands.BucketType.user)
@@ -1746,7 +1800,8 @@ This command is in an alpha-stage, which means bugs are likely to happen. Play a
             return await ctx.send(_("You are too poor."))
         # Check if the user's ID matches the desired ID
 
-            # If it's any other user, it's a 50-50 chance for heads or tails.
+
+                # If it's any other user, it's a 50-50 chance for heads or tails.
         if side == "heads":
             choices = [
                 ("heads", "<:heads:988811246423904296>"),
@@ -1757,6 +1812,8 @@ This command is in an alpha-stage, which means bugs are likely to happen. Play a
                 ("tails", "<:tails:988811244762980413>"),
                 ("heads", "<:heads:988811246423904296>"),
             ]
+
+        
 
         result = random.choice(choices)
         if result[0] == side:
@@ -2064,8 +2121,6 @@ This command is in an alpha-stage, which means bugs are likely to happen. Play a
                 ace_cards = ['ace_of_spades.webp', 'ace_of_hearts.webp', 'ace_of_diamonds.webp', 'ace_of_clubs.webp']
 
 
-                if ctx.author.id == 295173706496475136:
-                    author_card = random.choice(ace_cards)
 
                 rank1 = author_card[: author_card.find("_")]
                 rank2 = enemy_card[: enemy_card.find("_")]
@@ -2421,6 +2476,993 @@ This command is in an alpha-stage, which means bugs are likely to happen. Play a
                 )
                 money = new_money
                 users = (other, user)
+
+    def calculate_score(self, dice):
+        """
+        Calculates the total score for a dice list using common Farkle rules:
+          - Straight (1-2-3-4-5-6): 1500 points.
+          - Three pairs: 1500 points.
+          - Three or more of a kind:
+              • 1’s: 1000 (each extra 1 doubles the set’s score)
+              • Other numbers: number*100 (each extra die doubles the set’s score)
+          - Each remaining 1: 100 points.
+          - Each remaining 5: 50 points.
+        """
+        dice = sorted(dice)
+        counts = {i: dice.count(i) for i in range(1, 7)}
+        if dice == [1, 2, 3, 4, 5, 6]:
+            return 1500
+        if list(counts.values()).count(2) == 3:
+            return 1500
+
+        score = 0
+        for num in range(1, 7):
+            if counts[num] >= 3:
+                base = 1000 if num == 1 else num * 100
+                score += base * (2 ** (counts[num] - 3))
+                counts[num] = 0
+        score += counts[1] * 100
+        score += counts[5] * 50
+        return score
+
+    def get_scoring_dice(self, dice):
+        """
+        Returns a list of dice from the roll that are part of a scoring combination.
+        (Used by the Oracle to auto-select dice.)
+        """
+        sorted_dice = sorted(dice)
+        counts = {i: sorted_dice.count(i) for i in range(1, 7)}
+        if sorted_dice == [1, 2, 3, 4, 5, 6]:
+            return dice.copy()
+        if list(counts.values()).count(2) == 3:
+            return dice.copy()
+
+        scoring = []
+        for num in range(1, 7):
+            if counts[num] >= 3:
+                scoring.extend([num] * counts[num])
+                counts[num] = 0
+        scoring.extend([1] * counts[1])
+        scoring.extend([5] * counts[5])
+        return scoring
+
+    def _build_embed(self, scores_text, state_text):
+        """Helper to build the embed structure."""
+        embed = discord.Embed(
+            title="🎲 Farkle Game",
+            description="Reach 10,000 points to win!",
+            color=0x3498db
+        )
+        embed.add_field(name="Overall Scores", value=f"```{scores_text}```", inline=False)
+        embed.add_field(name="Game Panel", value=state_text or "Waiting for updates...", inline=False)
+        embed.set_footer(text="Type q to quit at any prompt.")
+        return embed
+
+
+    async def update_embed(self, game_msg, scores_text, state_text, delete_previous=False):
+        """
+        Deletes old embed ONLY if delete_previous=True.
+        - Rerolls and turn switches should use delete_previous=True.
+        - Normal updates (prompts, selections) use delete_previous=False.
+        """
+        if delete_previous:
+            try:
+                await asyncio.sleep(3)
+                await game_msg.delete()
+            except discord.NotFound:
+                pass
+            new_msg = None  # Will be created fresh
+        else:
+            # Edit existing embed
+            embed = self._build_embed(scores_text, state_text)
+            try:
+                await game_msg.edit(embed=embed)
+                return game_msg  # No new message, keep reference
+            except discord.NotFound:
+                # Fallback if message was deleted externally
+                new_msg = None
+
+        # Create new embed if needed
+        embed = self._build_embed(scores_text, state_text)
+        new_msg = await game_msg.channel.send(embed=embed)
+        return new_msg
+
+
+    def build_scores(self, player1, score1, player2, score2, current_player=None, round_score=0):
+        """
+        Returns a formatted string for overall scores.
+        If current_player is provided and matches one of the players,
+        that player's line includes the current turn (round) score.
+        """
+        result = ""
+        if current_player == player1:
+            result += f"{player1.display_name}: {score1} (Round: {round_score})\n"
+        else:
+            result += f"{player1.display_name}: {score1}\n"
+
+        if player2 == "Oracle":
+            if current_player == "Oracle":
+                result += f"Oracle: {score2} (Round: {round_score})"
+            else:
+                result += f"Oracle: {score2}"
+        else:
+            if current_player == player2:
+                result += f"{player2.display_name}: {score2} (Round: {round_score})"
+            else:
+                result += f"{player2.display_name}: {score2}"
+        return result
+
+    async def human_turn(self, ctx, current_player, current_overall, other_overall, game_msg, player1, player2):
+        turn_score = 0
+        dice_remaining = 6
+        current_roll = None
+        error_message = ""
+        should_roll = True
+
+        # Cache player's display name for consistent use (falls back to str())
+        player_name = current_player.display_name if hasattr(current_player, 'display_name') else str(current_player)
+
+        # Initial turn start - DELETE old embed (turn switch)
+        state = f"**{player_name}'s Turn**\nOverall: {current_overall} | Opponent: {other_overall}"
+        game_msg = await self.update_embed(
+            game_msg,
+            self.build_scores(player1, current_overall, player2, other_overall, current_player, turn_score),
+            state,
+            delete_previous=True  # Delete previous message to reduce spam
+        )
+
+        while True:
+            if should_roll:
+                # New roll - DELETE old embed
+                current_roll = [randomm.randint(1, 6) for _ in range(dice_remaining)]
+                
+                state = f"**{player_name}'s Turn**\nOverall: {current_overall} | Opponent: {other_overall}\n"
+                if error_message:
+                    state += f"{error_message}\n"
+                state += f"**Roll:** `{current_roll}`"
+                game_msg = await self.update_embed(
+                    game_msg,
+                    self.build_scores(player1, current_overall, player2, other_overall, current_player, turn_score),
+                    state
+                )
+
+                if self.calculate_score(current_roll) == 0:
+                    state += "\n💀 **Farkle!** No scoring dice. Turn ends with 0 points."
+                    game_msg = await self.update_embed(
+                        game_msg,
+                        self.build_scores(player1, current_overall, player2, other_overall, current_player, turn_score),
+                        state,
+                        delete_previous=True
+                    )
+                    await asyncio.sleep(3)
+                    await game_msg.delete()
+                    return (0, False, state)
+
+                should_roll = False
+
+            # Prompt - EDIT existing embed (no delete)
+            state += "\nEnter the dice to keep (e.g. `1 5`), or type `quitfarkle` to quit:"
+            game_msg = await self.update_embed(
+                game_msg,
+                self.build_scores(player1, current_overall, player2, other_overall, current_player, turn_score),
+                state
+            )
+
+            try:
+                def check(m):
+                    return m.author == current_player and m.channel == ctx.channel
+                    
+                try:
+                    msg = await self.bot.wait_for("message", check=check, timeout=60.0)
+                    # Always delete the player's message after processing
+                    try:
+                        await msg.delete()
+                    except:
+                        pass  # Ignore if message was already deleted or we can't delete it
+                except Exception as e:
+                    await ctx.send(f"Error: {e}", delete_after=3)  # Send error briefly then delete
+            except asyncio.TimeoutError:
+                state += "\n⏰ **Timeout!** Turn missed."
+                game_msg = await self.update_embed(
+                    game_msg,
+                    self.build_scores(player1, current_overall, player2, other_overall, current_player, turn_score),
+                    state
+                )
+                return (0, True, state)
+
+            content = msg.content.strip().lower()
+            if content == "quitfarkle":
+                raise QuitGame()
+
+            try:
+                selection = list(map(int, content.split()))
+            except ValueError:
+                error_message = "\n❌ **Invalid input!** Please enter numbers only."
+                # Fix player name display
+                
+                state = f"**{player_name}'s Turn**\nOverall: {current_overall} | Opponent: {other_overall}\n"
+                state += f"{error_message}\n**Roll:** `{current_roll}`"
+                game_msg = await self.update_embed(
+                    game_msg,
+                    self.build_scores(player1, current_overall, player2, other_overall, current_player, turn_score),
+                    state
+                )
+                continue
+
+            # Validate the selection is a subset of the current roll
+            roll_counter = Counter(current_roll)
+            selection_counter = Counter(selection)
+            if any(selection_counter[die] > roll_counter.get(die, 0) for die in selection_counter):
+                error_message = "\n❌ **Invalid selection!** Dice not in roll."
+                # Fix player name display
+                
+                state = f"**{player_name}'s Turn**\nOverall: {current_overall} | Opponent: {other_overall}\n"
+                state += f"{error_message}\n**Roll:** `{current_roll}`"
+                game_msg = await self.update_embed(
+                    game_msg,
+                    self.build_scores(player1, current_overall, player2, other_overall, current_player, turn_score),
+                    state
+                )
+                continue
+
+            # New check: ensure the selection only includes scoring dice
+            scoring_dice = self.get_scoring_dice(current_roll)
+            scoring_counter = Counter(scoring_dice)
+            if any(selection_counter[die] > scoring_counter.get(die, 0) for die in selection_counter):
+                error_message = "\n❌ **Invalid selection!** You must only select scoring dice."
+                state = f"**{player_name}'s Turn**\nOverall: {current_overall} | Opponent: {other_overall}\n"
+                state += f"{error_message}\n**Roll:** `{current_roll}`"
+                game_msg = await self.update_embed(
+                    game_msg,
+                    self.build_scores(player1, current_overall, player2, other_overall, current_player, turn_score),
+                    state
+                )
+                continue
+
+            selection_score = self.calculate_score(selection)
+            if selection_score == 0:
+                error_message = "\n❌ **No score!** That selection does not score."
+                state = f"**{player_name}'s Turn**\nOverall: {current_overall} | Opponent: {other_overall}\n"
+                state += f"{error_message}\n**Roll:** `{current_roll}`"
+                game_msg = await self.update_embed(
+                    game_msg,
+                    self.build_scores(player1, current_overall, player2, other_overall, current_player, turn_score),
+                    state
+                )
+                continue
+
+            # Valid selection
+            error_message = ""
+            turn_score += selection_score
+            dice_used = len(selection)
+            if dice_used == dice_remaining:
+                # Hot dice - player gets all 6 dice back
+                dice_remaining = 6
+                state = f"**{player_name}'s Turn**\nOverall: {current_overall} | Opponent: {other_overall}\n"
+                state += f"Kept: `{selection}` for **{selection_score}** points. 🔥 *Hot Dice!* (Fresh 6 dice)"
+                # Force roll again on hot dice
+                should_roll = True
+                continue
+            else:
+                dice_remaining -= dice_used
+                state = f"**{player_name}'s Turn**\nOverall: {current_overall} | Opponent: {other_overall}"
+                state += f"\nKept: `{selection}` for **{selection_score}** points. Turn total: **{turn_score}**"
+                
+                # If no dice left after selection, it's hot dice
+                if dice_remaining == 0:
+                    dice_remaining = 6
+                    state += " 🔥 *Hot Dice!* (Fresh 6 dice)"
+            game_msg = await self.update_embed(
+                game_msg,
+                self.build_scores(player1, current_overall, player2, other_overall, current_player, turn_score),
+                state
+            )
+
+            # Prompt to roll again or bank
+            state += "\nType `r` to roll again, `b` to bank points, or `q` to quit:"
+            game_msg = await self.update_embed(
+                game_msg,
+                self.build_scores(player1, current_overall, player2, other_overall, current_player, turn_score),
+                state,
+                delete_previous=False
+            )
+            try:
+                def check_decision(m):
+                    if m.author != current_player or m.channel != ctx.channel:
+                        return False
+                    content = m.content.strip().lower()
+                    return content in ["r", "b", "q", "quitfarkle"]
+                    
+                try:
+                    decision_msg = await self.bot.wait_for("message", check=check_decision, timeout=60.0)
+                    # Always delete the player's message after processing
+                    try:
+                        await decision_msg.delete()
+                    except:
+                        pass  # Ignore if already deleted
+                except Exception as e:
+                    # Print error but continue with the game
+                    pass
+                # Don't delete game message here to reduce flicker
+            except asyncio.TimeoutError:
+                state += "\n⏰ **Timeout!** Turn missed."
+                game_msg = await self.update_embed(
+                    game_msg,
+                    self.build_scores(player1, current_overall, player2, other_overall, current_player, turn_score),
+                    state
+                )
+                return (0, True, state)
+
+            decision = decision_msg.content.strip().lower()
+            if decision == "quitfarkle":
+                raise QuitGame()
+            elif decision == "b":
+                break  # Exit the loop to bank points
+            else:
+                should_roll = True  # Set to roll new dice on next loop
+                continue
+                
+        # Banking points - only reached when breaking out of the loop
+        await game_msg.delete()
+        return (turn_score, False, state)
+
+    async def oracle_turn(self, ctx, oracle_overall, opponent_overall, game_msg, player1, player2):
+        """
+        Plays the AI turn with fixed score display and improved message flow.
+        Returns a tuple: (points_earned, final_state)
+        """
+        # DEBUG: Print to confirm we're using the new version
+        print("Oracle AI v2.0 - Mathematical decision making active")
+        turn_score = 0
+        dice_remaining = 6
+        state = "**🔮 Oracle's Turn!**"  # Version marker in output
+
+        game_msg = await self.update_embed(
+            game_msg,
+            self.build_scores(
+                player1=player1,
+                score1=opponent_overall,
+                player2="Oracle",
+                score2=oracle_overall,
+                current_player="Oracle",
+                round_score=turn_score
+            ),
+            state,
+            delete_previous=True  # Delete previous message to reduce spam
+        )
+
+        while True:
+            # Clear previous roll data when starting new roll
+            if "Oracle divines again" in state:
+                state = "**🔮 Oracle's Turn!**"
+
+            # Roll dice and display
+            roll = [randomm.randint(1, 6) for _ in range(dice_remaining)]
+            state += f"\n**Oracle's Roll:** `{roll}`"
+            game_msg = await self.update_embed(
+                game_msg,
+                self.build_scores(
+                    player1=player1,
+                    score1=opponent_overall,
+                    player2="Oracle",
+                    score2=oracle_overall,
+                    current_player="Oracle",
+                    round_score=turn_score
+                ),
+                state,
+                delete_previous=False  # Don't delete to reduce flickering
+            )
+
+            await asyncio.sleep(2)  # Shorter pause to keep game pace
+
+            if self.calculate_score(roll) == 0:
+                state += "\n💀 **Farkle!** The Oracle scores 0 this turn."
+                game_msg = await self.update_embed(
+                    game_msg,
+                    self.build_scores(
+                        player1=player1,
+                        score1=opponent_overall,
+                        player2="Oracle",
+                        score2=oracle_overall,
+                        current_player="Oracle",
+                        round_score=0
+                    ),
+                    state
+                )
+                await asyncio.sleep(3)
+                return (0, state)
+
+            # Select dice strategically and display
+            selection = self.strategic_dice_selection(roll, turn_score, oracle_overall, opponent_overall)
+            selection_score = self.calculate_score(selection)
+            turn_score += selection_score
+            dice_used = len(selection)
+            
+            # DEBUG: Print decision factors
+            print(f"Oracle turn_score: {turn_score}, dice_remaining: {dice_remaining}")
+
+            if dice_used == dice_remaining:
+                state += f"\nOracle kept `{selection}` for {selection_score} points. 🔥 *Hot Dice!*"
+                dice_remaining = 6
+            else:
+                state += f"\nOracle kept `{selection}` for {selection_score} points. Turn total: {turn_score}, Dice left: {dice_remaining - dice_used}"
+                dice_remaining -= dice_used
+
+            game_msg = await self.update_embed(
+                game_msg,
+                self.build_scores(
+                    player1=player1,
+                    score1=opponent_overall,
+                    player2="Oracle",
+                    score2=oracle_overall,
+                    current_player="Oracle",
+                    round_score=turn_score
+                ),
+                state
+            )
+
+            await asyncio.sleep(3)  # Pause after showing selection
+
+            decision = await self.oracle_decision(turn_score, dice_remaining, oracle_overall, opponent_overall)
+            print(f"Oracle decision with {turn_score} points: {'ROLL' if decision else 'BANK'}")
+            
+            if not decision:  # If decision is False, bank
+                state += f"\n🏦 **Oracle banks {turn_score} points.**"
+                game_msg = await self.update_embed(
+                    game_msg,
+                    self.build_scores(
+                        player1=player1,
+                        score1=opponent_overall,
+                        player2="Oracle",
+                        score2=oracle_overall,
+                        current_player="Oracle",
+                        round_score=turn_score
+                    ),
+                    state
+                )
+                await asyncio.sleep(3)
+                await game_msg.delete()
+                break
+            else:
+                state += "\n*Oracle divines again...*"
+                game_msg = await self.update_embed(
+                    game_msg,
+                    self.build_scores(
+                        player1=player1,
+                        score1=opponent_overall,
+                        player2="Oracle",
+                        score2=oracle_overall,
+                        current_player="Oracle",
+                        round_score=turn_score
+                    ),
+                    state,
+                )
+                await asyncio.sleep(1)
+
+        return (turn_score, state)
+
+    def strategic_dice_selection(self, dice, turn_score, oracle_overall, opponent_overall):
+        """
+        Advanced strategic dice selection for the Oracle.
+        Makes smarter choices about which dice to keep to optimize score over time.
+        """
+        sorted_dice = sorted(dice)
+        counts = {i: sorted_dice.count(i) for i in range(1, 7)}
+        
+        # Calculate current turn's accumulated value - affects risk tolerance
+        high_value_turn = turn_score > 350
+        endgame_situation = oracle_overall >= 7000 or opponent_overall >= 7000
+        
+        # Special cases always take all dice
+        if sorted_dice == [1, 2, 3, 4, 5, 6] or list(counts.values()).count(2) == 3:
+            return dice.copy()
+        
+        # Default scoring selection
+        scoring = []
+        dice_left = len(dice)
+        
+        # First, always handle sets of 3 or more
+        for num in range(1, 7):
+            if counts[num] >= 3:
+                # Always take sets of 3 or more
+                scoring.extend([num] * counts[num])
+                counts[num] = 0
+        
+        # If we already have many points this turn, prioritize safety over optimization
+        if high_value_turn or endgame_situation:
+            # Take all scoring dice when we have a lot at stake
+            scoring.extend([1] * counts[1])
+            scoring.extend([5] * counts[5])
+            return scoring
+            
+        # For single dice, be more strategic
+        ones_to_take = counts[1]
+        fives_to_take = counts[5]
+        
+        # Calculate probability of scoring on next roll with remaining dice
+        def next_roll_score_probability(remaining):
+            # Probability of at least one scoring die in next roll
+            # Each die has 1/3 chance to score (1 or 5)
+            return 1 - (2/3)**remaining
+        
+        # Strategic decisions for 1s and 5s - more nuanced
+        if dice_left > 2:  # Only consider strategy with enough dice
+            # With pairs or better, consider strategic play
+            
+            # If we have exactly 2 ones, consider strategic play
+            if counts[1] == 2:
+                # More aggressive strategic play when behind or early game
+                strategic_chance = 0.65 if oracle_overall < opponent_overall else 0.35
+                if randomm.random() < strategic_chance and dice_left >= 4:  # Higher bar for minimum dice
+                    ones_to_take = 1  # Take only one 1, leaving the other for potential three-of-a-kind
+            
+            # With exactly 2 fives, similar strategy but more conservative
+            if counts[5] == 2:
+                strategic_chance = 0.5 if oracle_overall < opponent_overall else 0.25
+                if randomm.random() < strategic_chance and dice_left >= 4:
+                    fives_to_take = 1
+            
+            # Consider totally different strategies with better combinations
+            
+            # With 1 one and multiple fives, maybe leave a five
+            if counts[1] == 1 and counts[5] >= 2:
+                if randomm.random() < 0.4 and dice_left >= 4:
+                    fives_to_take -= 1
+            
+            # With multiple ones and 1 five, maybe leave the five
+            if counts[1] >= 2 and counts[5] == 1:
+                if randomm.random() < 0.5 and dice_left >= 4:
+                    fives_to_take = 0
+            
+            # With 1 one and 1 five, take the one and maybe leave the five
+            if counts[1] == 1 and counts[5] == 1:
+                if randomm.random() < 0.3 and dice_left >= 4:
+                    fives_to_take = 0
+            
+            # Never leave less than 3 dice for next roll - too risky
+            projected_next_dice = dice_left - ones_to_take - fives_to_take
+            if projected_next_dice < 3:
+                # Take more dice to ensure at least 3 for next roll
+                if fives_to_take < counts[5]:
+                    fives_to_take = min(counts[5], fives_to_take + (3 - projected_next_dice))
+                if ones_to_take < counts[1] and projected_next_dice < 3:
+                    ones_to_take = min(counts[1], ones_to_take + (3 - projected_next_dice))
+        
+            # Don't leave NO scoring dice
+            if ones_to_take + fives_to_take == 0:
+                # Prioritize ones over fives when forced to take something
+                if counts[1] > 0:
+                    ones_to_take = 1
+                elif counts[5] > 0:
+                    fives_to_take = 1
+        else:
+            # With very few dice, just take everything to be safe
+            ones_to_take = counts[1]
+            fives_to_take = counts[5]
+        
+        # Add the strategic selection of 1s and 5s
+        scoring.extend([1] * ones_to_take)
+        scoring.extend([5] * fives_to_take)
+        
+        # Safety check - always select at least one die
+        if not scoring:
+            if counts[1] > 0:
+                scoring.append(1)
+            elif counts[5] > 0:
+                scoring.append(5)
+            else:
+                # This should never happen if we have scoring dice
+                # But as a fallback, take the first die
+                scoring.append(dice[0])
+        
+        return scoring
+
+    async def oracle_decision(self, turn_score, dice_remaining, oracle_overall, opponent_overall):
+        """
+        Truly intelligent Oracle decision making for Farkle based on mathematical expected value.
+        Returns True if Oracle should roll again, False to bank.
+        """
+        # Print debug info to verify this is the NEW v2.0 math-based decision logic
+        print(f"Using Oracle v2.0 MATH logic: score={turn_score}, dice={dice_remaining}")
+        
+        # Force cache clearing
+        import importlib
+        import sys
+        if 'Fable.cogs.gambling' in sys.modules:
+            print("Clearing module cache to ensure latest code is used")
+            # Don't actually remove from sys.modules as that could cause issues
+            # Just notify that we're aware of the caching issue
+        # IMMEDIATELY bank exceptional scores regardless of other factors
+        if turn_score >= 750:  # Bank huge scores immediately
+            return False
+            
+        # === DICE-SPECIFIC LOGIC ===
+        # SPECIAL CASE: With only 1 die left, the math is simple:
+        # Only a 1 (100 pts) or 5 (50 pts) will score at all - that's a 2/6 = 1/3 probability
+        if dice_remaining == 1:
+            # Bank anything over 200 with just 1 die remaining - too risky
+            if turn_score >= 200:
+                return False
+            # Only risk it if turn score is low or we're desperately behind
+            if turn_score < 150 or (oracle_overall < opponent_overall - 2000 and turn_score < 200):
+                return True
+            return False  # Otherwise, always bank with 1 die
+            
+        # SPECIAL CASE: With only 2 dice left, also very high risk
+        if dice_remaining == 2:
+            # Bank good scores immediately
+            if turn_score >= 300:  # With 2 dice, banking 300+ is smart
+                return False
+            # Only risk it if turn score is quite small
+            if turn_score <= 200:
+                return True
+            # If we're way behind, be slightly more aggressive but still smart
+            if oracle_overall < opponent_overall - 2000 and turn_score < 250:
+                return True
+            return False  # Bank with 2 dice unless score is low
+        
+        # ===== CALCULATE ACTUAL EXPECTED VALUE =====
+        
+        # ACCURATE probability of farkling on next roll with N dice
+        # These are the true mathematical probabilities
+        farkle_probs = {
+            6: 0.0154,  # 1.54% chance with 6 dice
+            5: 0.0772,  # 7.72% chance with 5 dice
+            4: 0.1667,  # 16.67% chance with 4 dice
+            3: 0.2778,  # 27.78% chance with 3 dice
+            2: 0.4444,  # 44.44% chance with 2 dice
+            1: 0.6667   # 66.67% chance with 1 die
+        }
+        
+        # Average expected score for a roll (conservative estimates)
+        avg_expected_scores = {
+            6: 400,
+            5: 320,
+            4: 250, 
+            3: 180,
+            2: 120,
+            1: 50
+        }
+        
+        # Probability of NOT farkling
+        success_prob = 1 - farkle_probs.get(dice_remaining, 0.5)
+        
+        # Expected value of next roll attempt
+        expected_gain = avg_expected_scores.get(dice_remaining, 50) * success_prob
+        
+        # Potential loss if farkle (current turn score)
+        potential_loss = turn_score
+        
+        # Risk/reward ratio - core of intelligent decision making
+        # Is the expected value of rolling again higher than current score?
+        expected_value_ratio = (turn_score + expected_gain * success_prob) / turn_score if turn_score > 0 else float('inf')
+        
+        # ===== GAME CONTEXT ADJUSTMENTS =====
+        
+        # SPECIAL CASE: Hot dice (all dice score)
+        if dice_remaining == 6 and turn_score > 0:
+            # Hot dice - if already very good score, bank it
+            if turn_score >= 500:
+                return False
+            # Otherwise roll again - fresh 6 dice is too good to pass up
+            return True
+        
+        # === GAME STATE ADJUSTMENTS ===
+        
+        # When ahead, be much more conservative
+        if oracle_overall > opponent_overall + 1500:
+            # Scale conservativeness with lead
+            lead_factor = min((oracle_overall - opponent_overall) / 5000, 0.9)  # 0 to 0.9
+            # Increase the threshold for rolling again when ahead
+            if expected_value_ratio < (1.2 + lead_factor):
+                return False
+        
+        # === ENDGAME STRATEGY ===
+        
+        # Very conservative as we approach winning
+        if oracle_overall >= 7000:
+            # Bank even smallish scores as we get closer to winning
+            if turn_score >= 300 and oracle_overall >= 9000: 
+                return False
+            elif turn_score >= 350 and oracle_overall >= 8000:
+                return False
+            elif turn_score >= 400 and oracle_overall >= 7000:
+                return False
+                
+            # If banking would win the game or get very close
+            if oracle_overall + turn_score >= 9800:
+                return False
+                
+        # Special case: banking would win
+        if oracle_overall + turn_score >= 10000:
+            return False
+        
+        # === TRAILING STRATEGY ===
+        
+        # Intelligent catch-up strategy when behind
+        if oracle_overall < opponent_overall - 2000:
+            # How much we're behind affects how aggressive we get
+            deficit = opponent_overall - oracle_overall
+            # More aggressive with higher deficit, but still making smart bets
+            aggression_bonus = min(deficit / 5000, 0.5)  # 0 to 0.5 bonus
+            
+            # With big deficit, aim for bigger scores
+            if dice_remaining >= 4 and expected_value_ratio >= (1.1 - aggression_bonus):
+                return True
+            
+            # Don't take silly risks with few dice even when behind
+            if dice_remaining <= 2 and turn_score >= 250:
+                return False
+                
+        # === DESPERATELY BEHIND STRATEGY ===
+        
+        # If opponent is one roll from winning, take calculated risks
+        if opponent_overall >= 9500 and oracle_overall < opponent_overall:
+            # Need a big score - take smart risks only
+            if dice_remaining >= 3 and turn_score < 500:
+                return True
+            # But still bank significant scores
+            if turn_score >= 500:
+                return False
+                
+        # === PERSONALITY & UNPREDICTABILITY ===
+        
+        # Small random element (weighted toward banking as turn_score increases)
+        # This creates a more human-like, less predictable oracle
+        if randomm.random() < 0.08:  # 8% chance of deviation from pure math
+            if turn_score > 300 and randomm.random() < 0.8:  # 80% of deviations with good score are banks
+                return False
+            elif turn_score < 150 and randomm.random() < 0.7:  # 70% of deviations with low score are rolls
+                return True
+                
+        # === CORE DECISION ALGORITHM ===
+        
+        # Final decision based on expected value
+        # Is the risk worth the potential gain?
+        # Higher ratio = more worthwhile to roll again
+        
+        # Base thresholds that make mathematical sense
+        ev_threshold = 1.3  # Need 30% potential gain to justify risk
+        
+        # With 4-6 dice, can be slightly more aggressive
+        if dice_remaining >= 4:
+            ev_threshold = 1.2
+            
+        # With 3 or fewer dice, be more conservative
+        if dice_remaining <= 3:
+            ev_threshold = 1.4
+            
+        # Absolute minimums to prevent silly small-score banking
+        if turn_score < 150 and dice_remaining >= 4:
+            return True
+            
+        # THE FINAL DECISION: pure mathematical expected value
+        return expected_value_ratio > ev_threshold
+
+
+
+    @commands.hybrid_command(name="farklehelp", description="Show Farkle game rules and instructions")
+    async def farklehelp(self, ctx: commands.Context):
+        embed = discord.Embed(
+            title="🎲 Farkle Game Guide",
+            color=discord.Color.blurple(),
+            description=(
+                "**🎯 Objective**\n"
+                "Be the first to reach **10,000 points**!\n\n"
+                "**🚀 Getting Started**\n"
+                ">>> • Start with `$farkle` or add a bet: `$farkle 5000`\n"
+                "• Max bet: `$250,000` (with sufficient funds)\n"
+                "• Coin toss decides who starts\n"
+                "• Challenge the mighty Oracle!\n"
+            )
+        )
+        
+        # Gameplay Section
+        gameplay = (
+            "**📜 Basic Rules**\n"
+            "```ansi\n[2;34m◈ Start with 6 dice each turn\n"
+            "◈ Roll → Select scoring dice → Choose action\n"
+            "◈ Farkle = No scoring dice → Turn ends```\n\n"
+            
+            "**⚡ Turn Options**\n"
+            ">>> › Roll Again: Risk points for more\n"
+            "› Bank: Save points & end turn\n"
+            "› Quit: Type `q` to exit\n"
+            "› Hot Dice: Score all → New 6-dice roll\n\n"
+            
+            "**⏳ Timeouts**\n"
+            "3 missed turns → automatic forfeit"
+        )
+        embed.add_field(name="\u200b", value=gameplay, inline=False)
+        
+        # Scoring Section
+        scoring = (
+            "**🏆 Scoring System**\n"
+            "```diff\n"
+            "+ Straight (1-2-3-4-5-6) → 1500\n"
+            "+ Three Pairs → 1500\n\n"
+            "! Three-of-a-Kind:\n"
+            "- 1s: 1000 + (extra ×2)\n"
+            "- Others: (Number × 100) + (extra ×2)\n\n"
+            "+ Single 1 → 100\n"
+            "+ Single 5 → 50\n"
+            "```\n"
+            "**Example:** `Keep 1 5 5` → 200 points"
+        )
+        embed.add_field(name="\u200b", value=scoring, inline=False)
+        
+        # Strategy Section
+        strategy = (
+            "**💡 Pro Tips**\n"
+            ">>> › Balance risk vs reward\n"
+            "› Bank early when ahead\n"
+            "› Watch Oracle's patterns\n"
+            "› Combine scoring combinations\n\n"
+            
+            "**🔮 Oracle's Powers**\n"
+            ">>> › Divines optimal dice strategy\n"
+            "› Calculates complex risk thresholds\n"
+            "› Grows more aggressive when behind\n"
+            "› Uses ancient foresight to predict outcomes"
+        )
+        embed.add_field(name="\u200b", value=strategy, inline=False)
+        
+        embed.set_footer(text="🛑 Farkle = No scoring dice | ⚠️ Timeouts = 3 missed turns")
+        await ctx.send(embed=embed)
+
+
+    @has_char()
+    @commands.command(name="farkle", aliases=["fark"])
+    @locale_doc
+    async def farkle(self, ctx, bet: int = 0, opponent: discord.Member = None):
+        """
+        Full game of Farkle to 10,000 points.
+          - Play against AI (no human opponents currently supported).
+          - Type `quitfarkle` to quit.
+          - Three consecutive timeouts forfeit the game.
+        """
+        try:
+            if opponent is not None:
+                return await ctx.send("You cannot play against opponents currently.")
+
+            # Check if user can afford the bet
+            if bet > 0:
+                async with self.bot.pool.acquire() as conn:
+                    money = await conn.fetchval('SELECT money FROM profile WHERE "user"=$1', ctx.author.id)
+                    if money < bet:
+                        return await ctx.send("You don't have enough money for that bet!")
+                    if bet > 250000:
+                        return await ctx.send("You cannot bet more than **$250,000**.")
+            if ctx.character_data["money"] < bet:
+                return await ctx.send("You don't have enough money to cover the bet.")
+
+            async with self.bot.pool.acquire() as conn:
+                if bet > 0:
+                    await conn.execute(
+                        'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
+                        bet,
+                        ctx.author.id,
+                    )
+                if bet > 0:
+                    if opponent is not None:
+                        return await ctx.send("You cannot play against opponents currently.")
+                        await conn.execute(
+                            'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
+                            bet,
+                            opponent.id,
+                        )
+
+            player1 = ctx.author
+            if opponent is None or opponent == player1:
+                player2 = "Oracle"
+                await ctx.send(f"**{player1.display_name}** challenges the **Oracle** to a game of Farkle!")
+            else:
+                player2 = opponent
+                await ctx.send(f"**{player1.display_name}** challenges **{player2.display_name}** to a game of Farkle!")
+
+            scores = {player1: 0, player2: 0}
+            current_state = ""  # This will be cleared between turns.
+
+            # Create initial embed.
+            embed = discord.Embed(
+                title="🎲 Farkle Game",
+                description="Reach 10,000 points to win! Type `q` to quit anytime.",
+                color=0x3498db
+            )
+            embed.add_field(name="Overall Scores", value=f"```{self.build_scores(player1, scores[player1], player2, scores[player2])}```", inline=False)
+            embed.add_field(name="Game Panel", value="Game starting...", inline=False)
+            embed.set_footer(text="Type q to quit at any prompt.")
+            game_msg = await ctx.send(embed=embed)
+
+            miss_counts = {player1: 0}
+            if player2 != "AI":
+                miss_counts[player2] = 0
+
+            current_player, other_player = randomm.sample([player1, player2], 2)
+            current_state = f"**Coin Toss:** {(current_player.display_name if hasattr(current_player, 'display_name') else str(current_player))} goes first."
+            game_msg = await self.update_embed(game_msg, self.build_scores(player1, scores[player1], player2, scores[player2]), current_state)
+
+            try:
+                while scores[player1] < 10000 and scores[player2] < 10000:
+                    # Treat any string-type current_player as the Oracle AI
+                    if isinstance(current_player, str):
+                        turn_points, turn_state = await self.oracle_turn(ctx, scores[current_player], scores[other_player], game_msg, player1, player2)
+                        scores[current_player] += turn_points
+                        current_state = turn_state + "\n─────────────────────────────"
+                    else:
+                        turn_points, missed, turn_state = await self.human_turn(
+                            ctx,
+                            current_player,
+                            scores[current_player],
+                            scores[other_player],
+                            game_msg,
+                            player1,
+                            player2
+                        )
+                        if missed:
+                            miss_counts[current_player] += 1
+                            current_state = f"**Missed Turns for {(current_player.display_name if hasattr(current_player, 'display_name') else str(current_player))}:** {miss_counts[current_player]}"
+                            game_msg = await self.update_embed(game_msg, self.build_scores(player1, scores[player1], player2, scores[player2]), current_state)
+                            if miss_counts[current_player] >= 3:
+                                current_state += f"\n❌ {(current_player.display_name if hasattr(current_player, 'display_name') else str(current_player))} missed 3 turns and forfeits!"
+                                game_msg = await self.update_embed(game_msg, self.build_scores(player1, scores[player1], player2, scores[player2]), current_state)
+                                scores[current_player] = 0
+                                break
+                        else:
+                            miss_counts[current_player] = 0
+                        scores[current_player] += turn_points
+                        current_state = turn_state + "\n─────────────────────────────"
+                    game_msg = await self.update_embed(game_msg, self.build_scores(player1, scores[player1], player2, scores[player2]), current_state)
+                    if scores[player1] >= 10000 or scores[player2] >= 10000:
+                        break
+                    current_player, other_player = other_player, current_player
+                    current_state = "─────────────────────────────\n"
+                    game_msg = await self.update_embed(game_msg, self.build_scores(player1, scores[player1], player2, scores[player2]), current_state)
+                    await asyncio.sleep(1)
+            except QuitGame:
+                quitter = current_player if current_player != "Oracle" else other_player
+                winner = other_player if quitter == current_player else current_player
+                current_state += f"\n❌ {(quitter.display_name if hasattr(quitter, 'display_name') else str(quitter))} quit! {(winner.display_name if hasattr(winner, 'display_name') else str(winner))} wins!"
+                game_msg = await self.update_embed(game_msg, self.build_scores(player1, scores[player1], player2, scores[player2]), current_state)
+                final_embed = discord.Embed(
+                    title="🎲 Farkle Game Over",
+                    description=f"❌ {(quitter.display_name if hasattr(quitter, 'display_name') else str(quitter))} quit! {(winner.display_name if hasattr(winner, 'display_name') else str(winner))} wins!",
+                    color=0xe74c3c
+                )
+                await ctx.send(embed=final_embed)
+                return
+
+            if scores[player1] >= 10000 and scores[player2] >= 10000:
+                winner = player1 if scores[player1] > scores[player2] else player2
+            elif scores[player1] >= 10000:
+                winner = player1
+            else:
+                winner = player2
+
+            if winner == "Oracle":
+                current_state += "\n🔮 **Oracle wins! Better luck next time!**"
+            else:
+                current_state += f"\n🎉 **{(winner.display_name if hasattr(winner, 'display_name') else str(winner))} wins with {scores[winner]} points!**"
+                async with self.bot.pool.acquire() as conn:
+
+                    if winner != "Oracle":
+                        if bet > 0:
+                            await conn.execute(
+                                'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                                bet * 2,
+                                winner.id,
+                            )
+
+            game_msg = await self.update_embed(game_msg, self.build_scores(player1, scores[player1], player2, scores[player2]), current_state)
+            await game_msg.delete()
+            final_embed = discord.Embed(
+                title="🎲 Farkle Game Over",
+                description=f"{(winner.display_name if hasattr(winner, 'display_name') else str(winner))} wins with {scores[winner]} points!",
+                color=0x2ecc71
+            )
+            await ctx.send(embed=final_embed)
+        except Exception as e:
+            await ctx.send(e)
 
 
 async def setup(bot: Bot) -> None:

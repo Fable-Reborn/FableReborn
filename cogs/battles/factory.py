@@ -12,6 +12,7 @@ from .types.raid import RaidBattle
 from .types.tower import TowerBattle
 from .types.team_battle import TeamBattle
 from .types.dragon import DragonBattle
+from .types.couples_tower import CouplesTowerBattle
 from .extensions.elements import ElementExtension
 from .extensions.classes import ClassBuffExtension
 from .extensions.pets import PetExtension
@@ -50,6 +51,8 @@ class BattleFactory:
             return await self.create_team_battle(ctx, **settings_kwargs)
         elif battle_type == "dragon":
             return await self.create_dragon_battle(ctx, **settings_kwargs)
+        elif battle_type == "couples_tower":
+            return await self.create_couples_tower_battle(ctx, **settings_kwargs)
         else:
             raise ValueError(f"Unknown battle type: {battle_type}")
     
@@ -88,6 +91,7 @@ class BattleFactory:
         monster_data = kwargs.get("monster_data")
         monster_override = kwargs.get("monster_override")
         levelchoice_override = kwargs.get("levelchoice_override")
+        macro_penalty_level = kwargs.get("macro_penalty_level", 0)
         allow_pets = kwargs.get("allow_pets")  # Get allow_pets from settings system
         
         # Handle overrides
@@ -149,7 +153,9 @@ class BattleFactory:
         kwargs_copy = kwargs.copy()
         if 'monster_level' in kwargs_copy:
             del kwargs_copy['monster_level']
-        return PvEBattle(ctx, [player_team, monster_team], monster_level=monster_level, **kwargs_copy)
+        if 'macro_penalty_level' in kwargs_copy:
+            del kwargs_copy['macro_penalty_level']
+        return PvEBattle(ctx, [player_team, monster_team], monster_level=monster_level, macro_penalty_level=macro_penalty_level, **kwargs_copy)
     
     async def create_raid_battle(self, ctx, **kwargs):
         """Create a raid battle with player and pet vs enemy and pet"""
@@ -233,12 +239,16 @@ class BattleFactory:
             }
         )
         
+        # For level 16, don't apply prestige multipliers to minions since they use real player stats
+        minion_prestige_multiplier = 1 if level == 16 else prestige_multiplier
+        minion_prestige_hp_multiplier = 1 if level == 16 else prestige_hp_multiplier
+        
         minion1 = await self.create_monster_combatant(
             {
                 "name": level_data.get("minion1_name", "Minion 1"),
-                "hp": int(round(float(minion1_data.get("hp", 100)) * prestige_hp_multiplier)),
-                "attack": int(round(float(minion1_data.get("damage", 20)) * prestige_multiplier)),
-                "defense": int(round(float(minion1_data.get("armor", 10)) * prestige_multiplier)),
+                "hp": int(round(float(minion1_data.get("hp", 100)) * minion_prestige_hp_multiplier)),
+                "attack": int(round(float(minion1_data.get("damage", 20)) * minion_prestige_multiplier)),
+                "defense": int(round(float(minion1_data.get("armor", 10)) * minion_prestige_multiplier)),
                 "element": minion1_data.get("element", "Unknown")
             }
         )
@@ -246,9 +256,9 @@ class BattleFactory:
         minion2 = await self.create_monster_combatant(
             {
                 "name": level_data.get("minion2_name", "Minion 2"),
-                "hp": int(round(float(minion2_data.get("hp", 100)) * prestige_hp_multiplier)),
-                "attack": int(round(float(minion2_data.get("damage", 20)) * prestige_multiplier)),
-                "defense": int(round(float(minion2_data.get("armor", 10)) * prestige_multiplier)),
+                "hp": int(round(float(minion2_data.get("hp", 100)) * minion_prestige_hp_multiplier)),
+                "attack": int(round(float(minion2_data.get("damage", 20)) * minion_prestige_multiplier)),
+                "defense": int(round(float(minion2_data.get("armor", 10)) * minion_prestige_multiplier)),
                 "element": minion2_data.get("element", "Unknown")
             }
         )
@@ -311,6 +321,64 @@ class BattleFactory:
         # Create and return the battle
         return DragonBattle(ctx, [dragon_team, player_team], dragon_level=dragon_level, **kwargs)
     
+    async def create_couples_tower_battle(self, ctx, **kwargs):
+        """Create a couples battle tower battle for a specific level"""
+        try:
+            player = kwargs.get("player", ctx.author)
+            level = kwargs.pop("level", 1)
+            game_levels = kwargs.get("game_levels")
+            level_data = game_levels["levels"][level - 1] # -1 for 0-based index
+
+            # Create player combatants
+            player_team = Team("Player")
+            partner1 = player
+            query = "SELECT marriage FROM profile WHERE profile.user = $1"
+            result = await self.bot.pool.fetchval(query, player.id)
+            partner2_id = result  # This will be the marriage partner's ID, or None if not married
+            partner2_user = await self.bot.fetch_user(partner2_id)
+
+            p1_combatant = await self.create_player_combatant(ctx, partner1, include_pet=True)
+            p2_combatant = await self.create_player_combatant(ctx, partner2_user, include_pet=True)
+            player_team.add_combatant(p1_combatant)
+            player_team.add_combatant(p2_combatant)
+
+            # Apply prestige multipliers if any
+            async with self.bot.pool.acquire() as conn:
+                prestige_level = await conn.fetchval(
+                    'SELECT prestige FROM couples_battle_tower WHERE (partner1_id = $1 AND partner2_id = $2) OR (partner1_id = $2 AND partner2_id = $1)', 
+                    partner1.id, partner2_id
+                ) or 0
+            
+            prestige_multiplier = 1 + (0.25 * prestige_level)
+            prestige_hp_multiplier = 1 + (0.20 * prestige_level)
+
+            # Create enemy combatants - Level 30 is a special reward level with no enemies
+            enemy_team = Team("Enemies")
+            if level != 30 and "enemies" in level_data:
+                for enemy_info in level_data["enemies"]:
+                    # Apply prestige scaling to enemy stats
+                    scaled_enemy_info = {
+                        "name": enemy_info.get("name"),
+                        "hp": int(round(float(enemy_info.get("hp", 100)) * prestige_hp_multiplier)),
+                        "attack": int(round(float(enemy_info.get("attack", 20)) * prestige_multiplier)),
+                        "defense": int(round(float(enemy_info.get("defense", 10)) * prestige_multiplier)),
+                        "element": enemy_info.get("element", "Unknown")
+                    }
+                    
+                    enemy_combatant = await self.create_monster_combatant(
+                        scaled_enemy_info,
+                        level=level,
+                        name=enemy_info.get("name")
+                    )
+                    enemy_team.add_combatant(enemy_combatant)
+            
+            return CouplesTowerBattle(ctx, [player_team, enemy_team], level=level, **kwargs)
+        except Exception as e:
+            import traceback
+            error_msg = f"🚨 **FACTORY ERROR for Level {level}**:\n```\n{traceback.format_exc()}\n```"
+            await ctx.send(error_msg[:2000])  # Discord limit
+            raise e
+
     async def create_player_combatant(self, ctx, player, include_pet=False):
         """Create a combatant object for a player with full stats"""
         if not player:
@@ -353,6 +421,14 @@ class BattleFactory:
             health = result['health'] + base_health
             stathp = result['stathp'] * 50
             total_health = health + (level * 15) + stathp
+            print(f"[DEBUG] Pre-Amulet Health for {player.display_name}: {total_health}")
+
+            # Add equipped amulet HP
+            amulet = await conn.fetchrow('SELECT hp FROM amulets WHERE user_id=$1 AND equipped=true', player.id)
+            if amulet:
+                print(f"[DEBUG] Amulet HP Bonus for {player.display_name}: {amulet['hp']}")
+                total_health += amulet['hp']
+            print(f"[DEBUG] Final Health for {player.display_name}: {total_health}")
             
             # Get damage and armor
             dmg, deff = await ctx.bot.get_raidstats(player, conn=conn)
@@ -392,66 +468,6 @@ class BattleFactory:
                 damage_reflection=damage_reflection,
                 has_shield=has_shield
             )
-
-        # Calculate level
-        from utils import misc as rpgtools
-        level = rpgtools.xptolevel(result["xp"])
-
-        # Calculate luck
-        luck_value = float(result['luck'])
-        luck = 20 if luck_value <= 0.3 else ((luck_value - 0.3) / (1.5 - 0.3)) * 80 + 20
-        luck = round(luck, 2)
-
-        # Apply luck booster
-        luck_booster = await ctx.bot.get_booster(player, "luck")
-        if luck_booster:
-            luck += luck * 0.25
-            luck = min(luck, 100.0)
-
-        # Calculate health
-        base_health = 200
-        health = result['health'] + base_health
-        stathp = result['stathp'] * 50
-        total_health = health + (level * 15) + stathp
-
-        # Get damage and armor
-        dmg, deff = await ctx.bot.get_raidstats(player, conn=conn)
-
-        # Get element
-        element = await self.element_ext.get_player_element(ctx, player.id)
-
-        # Get class buffs
-        classes = result['class'] if isinstance(result['class'], list) else [result['class']]
-        buffs = await self.class_ext.get_class_buffs(classes)
-
-        # Check for shield
-        shield_data = await conn.fetchrow(
-            "SELECT 1 FROM profile p JOIN allitems ai ON (p.user=ai.owner) JOIN inventory i ON (ai.id=i.item) "
-            "WHERE p.user=$1 AND i.equipped IS TRUE AND ai.type='Shield'",
-            player.id
-        )
-        has_shield = bool(shield_data)
-
-        # Apply tank buffs if applicable
-        tank_evolution = buffs.get("tank_evolution")
-        total_health, damage_reflection = self.class_ext.apply_tank_buffs(total_health, tank_evolution, has_shield)
-
-        # Create the combatant
-        return Combatant(
-            user=player,
-            hp=total_health,
-            max_hp=total_health,
-            damage=dmg,
-            armor=deff,
-            element=element,
-            luck=luck,
-            lifesteal_percent=buffs.get("lifesteal_percent", 0),
-            death_cheat_chance=buffs.get("death_cheat_chance", 0),
-            mage_evolution=buffs.get("mage_evolution"),
-            tank_evolution=tank_evolution,
-            damage_reflection=damage_reflection,
-            has_shield=has_shield
-        )
 
     async def create_monster_combatant(self, monster_data, level=1, name=None):
         """Create a combatant object for a monster or boss"""

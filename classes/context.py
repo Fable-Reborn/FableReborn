@@ -1,7 +1,6 @@
 """
 The IdleRPG Discord Bot
 Copyright (C) 2018-2021 Diniboy and Gelbpunkt
-Copyright (C) 2024 Lunar (discord itslunar.)
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as published by
@@ -16,8 +15,6 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
-
-
 from __future__ import annotations
 
 import asyncio
@@ -118,7 +115,7 @@ class Context(commands.Context):
     async def confirm(
         self,
         message: str,
-        timeout: int = 20,
+        timeout: int = 60,
         user: discord.User | discord.Member | None = None,
     ) -> bool:
         future: asyncio.Future[bool] = asyncio.Future()

@@ -20,6 +20,8 @@ import asyncio
 import datetime
 import math
 import random as randomm
+from typing import Optional
+
 import utils.misc as rpgtools
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -316,8 +318,6 @@ class Tournament(commands.Cog):
             await self.bot.reset_cooldown(ctx)
             return await ctx.send(_("You are too poor."))
 
-        # if ctx.author.id != 457096185333940237:
-        # return await ctx.send("Access Denied: Being reworked")
 
         await self.bot.pool.execute(
             'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
@@ -350,7 +350,7 @@ class Tournament(commands.Cog):
                     f" prize is **${prize}**!",
                     view=view,
                 )
-            await asyncio.sleep(60 * 3)
+            await asyncio.sleep(60 * 5)
             view.stop()
             participants = []
             async with self.bot.pool.acquire() as conn:
@@ -1046,6 +1046,954 @@ class Tournament(commands.Cog):
             print(error_message)
 
     @has_char()
+    @user_cooldown(1800)  # 30-minute cooldown, adjust as you wish
+    @commands.command(name="brackettournament")
+    @locale_doc
+    async def brackettournament(
+            self,
+            ctx,
+            prize: IntFromTo(0, 100_000_000) = 0,
+            level_low: int = 1,
+            level_high: int = 10
+    ):
+        """
+        `<prize>` - The amount of money the winner will receive
+        `<level_low>` - The minimum level for participants (inclusive)
+        `<level_high>` - The maximum level for participants (inclusive)
+
+        Starts a bracket-based tournament, restricted to players whose XP-based level
+        (via rpgtools.xptolevel) is between `level_low` and `level_high`. Everyone in that range
+        can join, and battles use the same advanced raidbattle logic (pets, reflection, etc.).
+
+        The winner at the end receives the `prize` from the host.
+        (This command has a 30-minute cooldown.)
+        """
+
+        # 1) Check the host can afford the prize
+        if ctx.character_data["money"] < prize:
+            await self.bot.reset_cooldown(ctx)
+            return await ctx.send(_("You are too poor to start this bracket tournament."))
+
+        # Deduct the prize from the host
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
+                prize,
+                ctx.author.id,
+            )
+
+        # 2) Create a JoinView for players to join within 2 minutes (adjust as you like)
+        view = JoinView(
+            Button(
+                style=ButtonStyle.primary,
+                label=_("Join the bracket tournament!"),
+                emoji="\U00002694",
+            ),
+            message=_("You joined the bracket tournament."),
+            timeout=60 * 10  # 2 minutes
+        )
+        # Host auto-joins
+
+
+        join_msg = await ctx.send(
+            _(
+                "{author} started a bracket tournament! Prize: **${prize}**.\n"
+                "Level bracket: {low}–{high}.\n"
+                "Click the button to join!"
+            ).format(
+                author=ctx.author.mention,
+                prize=prize,
+                low=level_low,
+                high=level_high
+            ),
+            view=view,
+        )
+
+        # Wait for the join period
+        await asyncio.sleep(10 * 60)  # 2 minutes
+        view.stop()
+        try:
+
+            all_participants = list(view.joined)
+            if len(all_participants) < 2:
+                # Not enough participants
+                await self.bot.reset_cooldown(ctx)
+                # Refund
+                async with self.bot.pool.acquire() as conn:
+                    await conn.execute(
+                        'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                        prize,
+                        ctx.author.id,
+                    )
+                return await ctx.send(_("No one else joined your bracket tournament, {author}.").format(
+                    author=ctx.author.mention
+                ))
+
+            # 3) Filter by level range
+            bracket_participants = []
+            async with self.bot.pool.acquire() as conn:
+                for user in all_participants:
+                    xp = await conn.fetchval('SELECT xp FROM profile WHERE "user"=$1;', user.id)
+                    if xp is None:
+                        continue
+                    lvl = rpgtools.xptolevel(xp)
+                    if level_low <= lvl <= level_high:
+                        bracket_participants.append(user)
+
+            if len(bracket_participants) < 2:
+                # Not enough valid participants
+                await self.bot.reset_cooldown(ctx)
+                # Refund
+                async with self.bot.pool.acquire() as conn:
+                    await conn.execute(
+                        'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                        prize,
+                        ctx.author.id,
+                    )
+                return await ctx.send(
+                    _("No valid participants in the level bracket ({low}–{high}).").format(
+                        low=level_low,
+                        high=level_high
+                    )
+                )
+
+            await ctx.send(
+                _(
+                    "Bracket tournament starts with **{num}** players (Lv. {low}–{high})."
+                ).format(
+                    num=len(bracket_participants),
+                    low=level_low,
+                    high=level_high
+                )
+            )
+
+            # 4) Single-Elimination Bracket (nearest power of 2, byes, etc.)
+            participants = bracket_participants
+            nearest_power_of_2 = 2 ** math.ceil(math.log2(len(participants)))
+            byes_needed = nearest_power_of_2 - len(participants)
+
+            bye_recipients = []
+            if byes_needed > 0:
+                bye_recipients = random.sample(participants, byes_needed)
+                for bye_user in bye_recipients:
+                    await ctx.send(
+                        _("{participant} receives a bye for this round!").format(
+                            participant=bye_user.mention
+                        )
+                    )
+                    participants.remove(bye_user)
+
+            await ctx.send(_("Tournament is now beginning! Good luck to all."))
+
+            # 5) Run matches round by round
+            while len(participants) > 1:
+                random.shuffle(participants)
+                matches = list(chunks(participants, 2))
+
+                winners = []
+
+                for match in matches:
+                    # If odd leftover
+                    if len(match) < 2:
+                        winners.extend(match)
+                        continue
+
+                    p1, p2 = match
+                    await ctx.send(f"{p1.mention} **VS** {p2.mention}")
+
+                    # Run an advanced fight using the same logic as raidbattle
+                    result_winner = await self.run_bracket_match(ctx, p1, p2)
+                    if result_winner is None:
+                        # It's a tie -> we can do what we want here. For bracket, we might just pick random or give both a loss.
+                        # We'll pick a random winner to keep the bracket going:
+                        result_winner = random.choice([p1, p2])
+                        await ctx.send(_(
+                            "Time limit or tie occurred! Randomly choosing {winner} to advance."
+                        ).format(winner=result_winner.mention))
+
+                    winners.append(result_winner)
+
+                # Add back the bye recipients
+                winners.extend(bye_recipients)
+                bye_recipients = []  # reset for next round
+                participants = winners
+
+            # 6) Declare final champion
+            champion = participants[0]
+            await ctx.send(_(
+                "Bracket Tournament ended! The champion is {winner}. Great battles!"
+            ).format(winner=champion.mention))
+
+            # 7) Award the prize
+            async with self.bot.pool.acquire() as conn:
+                await conn.execute(
+                    'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                    prize,
+                    champion.id,
+                )
+                await self.bot.log_transaction(
+                    ctx,
+                    from_=ctx.author.id,
+                    to=champion.id,
+                    subject="Bracket Tournament Prize",
+                    data={"Gold": prize},
+                    conn=conn,
+                )
+            await ctx.send(
+                _("Congratulations! {winner} received **${prize}**!").format(
+                    winner=champion.mention,
+                    prize=prize
+                )
+            )
+        except Exception as e:
+            await ctx.send(e)
+
+
+    async def fetch_highest_element(self, user_id):
+        try:
+            highest_items = await self.bot.pool.fetch(
+                "SELECT ai.element FROM profile p JOIN allitems ai ON (p.user=ai.owner) JOIN"
+                " inventory i ON (ai.id=i.item) WHERE i.equipped IS TRUE AND p.user=$1"
+                " ORDER BY GREATEST(ai.damage, ai.armor) DESC;",
+                user_id,
+            )
+            highest_element = highest_items[0]["element"].capitalize() if highest_items and highest_items[0][
+                "element"] else "Unknown"
+            return highest_element
+        except Exception as e:
+            await self.bot.pool.execute(
+                'UPDATE profile SET "element"="Unknown" WHERE "user"=$1;',
+                user_id
+            )
+            return "Unknown"
+
+
+    async def fetch_combatants(self, ctx, player, highest_element, level, lifesteal, mage_evolution, conn):
+        try:
+            # First check if player has a shield equipped
+            shield_check = await conn.fetchrow(
+                "SELECT ai.* FROM profile p JOIN allitems ai ON (p.user=ai.owner) "
+                "JOIN inventory i ON (ai.id=i.item) WHERE p.user=$1 AND "
+                "i.equipped IS TRUE AND ai.type='Shield';",
+                player.id
+            )
+            has_shield = bool(shield_check)
+
+            # Fetch stats
+            query = 'SELECT "luck", "health", "stathp", "class" FROM profile WHERE "user" = $1;'
+            result = await conn.fetchrow(query, player.id)
+            if result:
+                luck_value = float(result['luck'])
+                if luck_value <= 0.3:
+                    Luck = 20.0
+                else:
+                    Luck = ((luck_value - 0.3) / (1.5 - 0.3)) * 80 + 20
+                Luck = round(Luck, 2)
+
+                # Apply luck booster
+                luck_booster = await self.bot.get_booster(player, "luck")
+                if luck_booster:
+                    Luck += Luck * 0.25
+                    Luck = min(Luck, 100.0)
+
+                base_health = 200.0
+                health = float(result['health']) + base_health
+                stathp = float(result['stathp']) * 50.0
+                player_classes = result['class']
+                dmg, deff = await self.bot.get_raidstats(player, conn=conn)
+
+                # Ensure dmg and deff are floats
+                dmg = float(dmg)
+                deff = float(deff)
+
+                total_health = health + level * 15.0 + stathp
+
+                # Get tank evolution level from player classes
+                tank_evolution = None
+                tank_evolution_levels = {
+                    "Protector": 1,
+                    "Guardian": 2,
+                    "Bulwark": 3,
+                    "Defender": 4,
+                    "Vanguard": 5,
+                    "Fortress": 6,
+                    "Titan": 7,
+                }
+
+                for class_name in player_classes:
+                    if class_name in tank_evolution_levels:
+                        level = tank_evolution_levels[class_name]
+                        if tank_evolution is None or level > tank_evolution:
+                            tank_evolution = level
+
+                # Only apply tank bonuses if they have a shield equipped
+                damage_reflection = 0.0
+                if tank_evolution and has_shield:
+                    # Health bonus: +4% per evolution
+                    health_multiplier = 1 + (0.04 * tank_evolution)
+                    total_health *= health_multiplier
+
+                    # Damage reflection: +3% per evolution
+                    damage_reflection = 0.03 * tank_evolution
+                elif tank_evolution and not has_shield:
+                    # If they're a tank but don't have a shield, still give them a smaller health bonus
+                    # but no reflection
+                    health_multiplier = 1 + (0.01 * tank_evolution)  # Half the normal bonus
+                    total_health *= health_multiplier
+
+
+
+                # Create combatant dictionary
+                combatant = {
+                    "user": player,
+                    "hp": total_health,
+                    "armor": deff,
+                    "damage": dmg,
+                    "luck": Luck,
+                    "mage_evolution": mage_evolution,
+                    "tank_evolution": tank_evolution,
+                    "has_shield": has_shield,  # Add this to track shield status
+                    "damage_reflection": damage_reflection,
+                    "max_hp": total_health,
+                    "is_pet": False,
+                    "element": highest_element if highest_element else "Unknown"
+                }
+
+
+                return combatant, None
+            else:
+                # Default combatant if no profile found
+                combatant = {
+                    "user": player,
+                    "hp": 500.0,
+                    "armor": 50.0,
+                    "damage": 50.0,
+                    "luck": 50.0,
+                    "mage_evolution": None,
+                    "tank_evolution": None,
+                    "has_shield": False,
+                    "damage_reflection": 0.0,
+                    "max_hp": 500.0,
+                    "is_pet": False,
+                    "element": "Unknown"
+                }
+                return combatant, None
+        except Exception as e:
+            await ctx.send(f"An error occurred while fetching stats for {player.display_name}: {e}")
+            # Return default combatant
+            combatant = {
+                "user": player,
+                "hp": 500.0,
+                "armor": 50.0,
+                "damage": 50.0,
+                "luck": 50.0,
+                "mage_evolution": None,
+                "tank_evolution": None,
+                "has_shield": False,
+                "damage_reflection": 0.0,
+                "max_hp": 500.0,
+                "is_pet": False,
+                "element": "Unknown"
+            }
+            return combatant, None
+
+    def create_hp_bar(self, current_hp, max_hp, length=20):
+        ratio = current_hp / max_hp if max_hp > 0 else 0
+        ratio = max(0, min(1, ratio))  # Ensure ratio is between 0 and 1
+        filled_length = int(length * ratio)
+        bar = '█' * filled_length + '░' * (length - filled_length)
+        return bar
+
+
+    def select_target(self, player_combatant, pet_combatant, player_prob=0.60, pet_prob=0.40):
+        targets = []
+        weights = []
+        if player_combatant and player_combatant['hp'] > 0:
+            targets.append(player_combatant)
+            weights.append(player_prob)
+        if pet_combatant and pet_combatant['hp'] > 0:
+            targets.append(pet_combatant)
+            weights.append(pet_prob)
+        if targets:
+            return randomm.choices(targets, weights=weights)[0]
+        else:
+            return None
+
+
+
+    async def run_bracket_match(self, ctx, player1: discord.Member, player2: discord.Member) -> Optional[
+        discord.Member]:
+        """
+        Run an advanced battle between two players, with all the HP bars,
+        class bonuses, lifesteal, reflection, and pet logic from your raidbattle code.
+
+        Returns:
+            winner (discord.Member) if there's a clear winner,
+            or None if it's a tie (time ran out).
+        """
+        # Very similar to your raidbattle logic:
+        try:
+            # 1) Gather data needed for both combatants
+            #    e.g. highest_element, classes, xp, etc.
+            highest_element_p1 = await self.fetch_highest_element(player1.id)
+            highest_element_p2 = await self.fetch_highest_element(player2.id)
+
+            async with self.bot.pool.acquire() as conn:
+                row_p1 = await conn.fetchrow('SELECT "class", "xp" FROM profile WHERE "user" = $1;', player1.id)
+                row_p2 = await conn.fetchrow('SELECT "class", "xp" FROM profile WHERE "user" = $1;', player2.id)
+
+            p1_classes = row_p1["class"] if row_p1 else []
+            p1_xp = row_p1["xp"] if row_p1 else 0
+            p1_level = rpgtools.xptolevel(p1_xp)
+
+            p2_classes = row_p2["class"] if row_p2 else []
+            p2_xp = row_p2["xp"] if row_p2 else 0
+            p2_level = rpgtools.xptolevel(p2_xp)
+
+            # 2) Calculate special bonuses (lifesteal, death chance, etc.)
+            #    same approach as your raidbattle
+            specified_words_values = {
+                "Deathshroud": 20,
+                "Soul Warden": 30,
+                "Reaper": 40,
+                "Phantom Scythe": 50,
+                "Soul Snatcher": 60,
+                "Deathbringer": 70,
+                "Grim Reaper": 80,
+            }
+            life_steal_values = {
+                "Little Helper": 7,
+                "Gift Gatherer": 14,
+                "Holiday Aide": 21,
+                "Joyful Jester": 28,
+                "Yuletide Guardian": 35,
+                "Festive Enforcer": 40,
+                "Festive Champion": 60,
+            }
+
+            p1_death_chance = sum(specified_words_values.get(c, 0) for c in p1_classes)
+            p1_lifesteal = sum(life_steal_values.get(c, 0) for c in p1_classes)
+
+            p2_death_chance = sum(specified_words_values.get(c, 0) for c in p2_classes)
+            p2_lifesteal = sum(life_steal_values.get(c, 0) for c in p2_classes)
+
+            # 3) Build full combatant dicts (including pets) using your fetch_combatants
+            async with self.bot.pool.acquire() as conn:
+                p1_combatant, p1_pet = await self.fetch_combatants(
+                    ctx, player1, highest_element_p1, p1_level, p1_lifesteal, None, conn
+                )
+                # The "mage_evolution" param is included in your code. If you need it,
+                # pass it. For brevity, passing None here or handle similarly.
+                p2_combatant, p2_pet = await self.fetch_combatants(
+                    ctx, player2, highest_element_p2, p2_level, p2_lifesteal, None, conn
+                )
+
+            # Optionally store the death_chance in the combatant for "cheat death" logic
+            p1_combatant["deathchance"] = p1_death_chance
+            if p1_pet:
+                p1_pet["deathchance"] = 0
+
+            p2_combatant["deathchance"] = p2_death_chance
+            if p2_pet:
+                p2_pet["deathchance"] = 0
+
+            # 4) Prepare an embed and battle log
+            battle_log = deque(
+                [
+                    f"**Action #0**\nBracket Match: {player1.mention} vs. {player2.mention}!"
+                ],
+                maxlen=5
+            )
+            embed = discord.Embed(
+                title=f"Bracket Battle: {player1.display_name} vs {player2.display_name}",
+                color=self.bot.config.game.primary_colour
+            )
+            # Initialize some fields
+            for c in [p1_combatant, p1_pet, p2_combatant, p2_pet]:
+                if c:
+                    current_hp = round(c["hp"], 1)
+                    max_hp = round(c["max_hp"], 1)
+                    hp_bar = self.create_hp_bar(current_hp, max_hp)
+
+                    field_name = (
+                        c["pet_name"] if c.get("is_pet")
+                        else c["user"].display_name
+                    )
+                    embed.add_field(name=field_name, value=f"HP: {current_hp}/{max_hp}\n{hp_bar}", inline=False)
+
+            embed.add_field(name="Battle Log", value=battle_log[0], inline=False)
+            log_message = await ctx.send(embed=embed)
+            await asyncio.sleep(2)
+
+            # 5) Combat Round Loop (similar to your raidbattle)
+            start_time = datetime.datetime.utcnow()
+            action_number = 1
+            cheated_death_p1 = False
+            cheated_death_p2 = False
+
+            # You can define a turn order. E.g. randomly shuffle:
+            turn_order = [p1_combatant, p1_pet, p2_combatant, p2_pet]
+            random.shuffle(turn_order)
+
+            while datetime.datetime.utcnow() < start_time + datetime.timedelta(minutes=5):
+                # If both sides are wiped, tie
+                if self.all_dead(p1_combatant, p1_pet) and self.all_dead(p2_combatant, p2_pet):
+                    return None  # tie
+
+                # If p1 is fully dead
+                if self.all_dead(p1_combatant, p1_pet):
+                    return player2  # p2 wins
+
+                # If p2 is fully dead
+                if self.all_dead(p2_combatant, p2_pet):
+                    return player1  # p1 wins
+
+                for attacker in turn_order:
+                    if attacker is None or attacker["hp"] <= 0:
+                        continue
+
+                    # Determine the "defender side"
+                    if attacker in [p1_combatant, p1_pet]:
+                        defender_main, defender_pet = p2_combatant, p2_pet
+                    else:
+                        defender_main, defender_pet = p1_combatant, p1_pet
+
+                    if self.all_dead(defender_main, defender_pet):
+                        # They are all dead => attacker side wins
+                        if attacker in [p1_combatant, p1_pet]:
+                            return player1
+                        else:
+                            return player2
+
+                    # Attacker chooses a target
+                    target = self.select_target(defender_main, defender_pet)
+                    if target is None:
+                        continue
+
+                    # Calculate damage (similar to your code):
+                    dmg_variance = random.randint(0, 100 if not attacker.get("is_pet") else 50)
+                    raw_damage = attacker["damage"] + dmg_variance
+                    blocked = min(raw_damage, target["armor"])
+                    dmg = max(raw_damage - target["armor"], 10)
+
+                    # Apply damage
+                    target["hp"] = max(target["hp"] - dmg, 0)
+
+                    # Construct a small log message
+                    attacker_name = attacker["pet_name"] if attacker.get("is_pet") else attacker["user"].mention
+                    target_name = target["pet_name"] if target.get("is_pet") else target["user"].mention
+                    action_text = f"{attacker_name} attacks! {target_name} takes **{dmg:.1f} HP** damage."
+
+                    # Reflection if target is a tank with reflection
+                    if target.get("damage_reflection", 0) > 0:
+                        reflected_damage = round(blocked * target["damage_reflection"], 3)
+                        if reflected_damage > 0:
+                            attacker["hp"] = max(attacker["hp"] - reflected_damage, 0)
+                            action_text += f" {target_name} reflects **{reflected_damage}** damage back!"
+
+                    # Lifesteal if not pet
+                    if not attacker.get("is_pet"):
+                        # Check if this is p1 or p2
+                        if attacker["user"].id == player1.id and p1_lifesteal > 0:
+                            # attacker lifesteals
+                            heal = round((p1_lifesteal / 100.0) * dmg, 3)
+                            attacker["hp"] = min(attacker["hp"] + heal, attacker["max_hp"])
+                            if heal > 0:
+                                action_text += f" Lifesteal: **{heal}**"
+                        elif attacker["user"].id == player2.id and p2_lifesteal > 0:
+                            heal = round((p2_lifesteal / 100.0) * dmg, 3)
+                            attacker["hp"] = min(attacker["hp"] + heal, attacker["max_hp"])
+                            if heal > 0:
+                                action_text += f" Lifesteal: **{heal}**"
+
+                    # Check if target died => cheat death?
+                    if target["hp"] <= 0 and not target.get("is_pet"):
+                        # It's a player, see if they can cheat death once
+                        if target["user"].id == player1.id and (p1_death_chance > 0) and not cheated_death_p1:
+                            # roll
+                            r = random.randint(1, 100)
+                            if r <= p1_death_chance:
+                                target["hp"] = 75
+                                cheated_death_p1 = True
+                                action_text += f"\n{attacker_name} delivered a lethal blow, but {target_name} cheated death and revives at 75 HP!"
+                        elif target["user"].id == player2.id and (p2_death_chance > 0) and not cheated_death_p2:
+                            r = random.randint(1, 100)
+                            if r <= p2_death_chance:
+                                target["hp"] = 75
+                                cheated_death_p2 = True
+                                action_text += f"\n{attacker_name} delivered a lethal blow, but {target_name} cheated death and revives at 75 HP!"
+
+                    # Add to log
+                    battle_log.append(f"**Action #{action_number}**\n{action_text}")
+                    action_number += 1
+
+                    # Update embed with new HP
+                    embed = discord.Embed(
+                        title=f"Bracket Battle: {player1.display_name} vs {player2.display_name}",
+                        color=self.bot.config.game.primary_colour
+                    )
+
+                    for c in [p1_combatant, p1_pet, p2_combatant, p2_pet]:
+                        if not c:
+                            continue
+                        current_hp = round(c["hp"], 1)
+                        max_hp = round(c["max_hp"], 1)
+                        hp_bar = self.create_hp_bar(current_hp, max_hp)
+
+                        field_name = c["pet_name"] if c.get("is_pet") else c["user"].display_name
+                        extra_info = ""
+                        if c.get("damage_reflection", 0) > 0:
+                            reflect_pc = round(c["damage_reflection"] * 100, 1)
+                            extra_info = f" (Reflect {reflect_pc}%)"
+                        field_value = f"HP: {current_hp}/{max_hp}\n{hp_bar}{extra_info}"
+                        embed.add_field(name=field_name, value=field_value, inline=False)
+
+                    # Add the battle log
+                    log_str = "\n\n".join(battle_log)
+                    embed.add_field(name="Battle Log", value=log_str, inline=False)
+
+                    await log_message.edit(embed=embed)
+                    await asyncio.sleep(3)
+
+                    # Check if that attack ended the battle
+                    if self.all_deaddraw(p1_combatant, p1_pet, p2_combatant, p2_pet):
+                        await ctx.send(f"Both {player1.mention} and {player2.mention} have fallen and neither are able to proceed!")
+                        return None
+                    if self.all_dead(p1_combatant, p1_pet):
+                        await ctx.send(f"{player2.mention} wins and advances to the next round!")
+                        return player2
+                    if self.all_dead(p2_combatant, p2_pet):
+                        await ctx.send(f"{player1.mention} wins and advances to the next round!")
+                        return player1
+
+            # If we exit the while, it’s a 5-min timeout => tie
+            return None
+
+        except Exception as e:
+            await ctx.send(f"Error in bracket match: {e}")
+            return None
+
+    def all_dead(self, main_combatant, pet_combatant):
+        """
+        Utility: Return True if main_combatant is dead (hp <= 0)
+        AND pet_combatant is either None or also dead.
+        """
+        if not main_combatant or main_combatant["hp"] <= 0:
+            if pet_combatant is None or pet_combatant["hp"] <= 0:
+                return True
+        return False
+
+    def all_deaddraw(self, main_combatant, pet_combatant, main_combatant2, pet_combatant2):
+        """
+        Utility: Return True if main_combatant is dead (hp <= 0)
+        AND pet_combatant is either None or also dead.
+        """
+        if not main_combatant or main_combatant["hp"] <= 0:
+            if pet_combatant is None or pet_combatant["hp"] <= 0:
+                if not main_combatant2 or main_combatant2["hp"] <= 0:
+                    if pet_combatant2 is None or pet_combatant2["hp"] <= 0:
+                        return True
+        return False
+
+    @commands.command()
+    @has_char()
+    @user_cooldown(1800)
+    @locale_doc
+    async def petstournament(self, ctx, prize: int = 0, base_hp: int = 250):
+        """
+        [prize] - The money prize for the winner.
+
+        Start a pet-only tournament where only users’ equipped pets fight.
+        Pets battle with their proper stats and HP bars in a style similar to the raid tournament.
+        The winning owner is awarded the prize.
+        (This command has a cooldown of 30 minutes.)
+        """
+        # Verify host still has an equipped pet.
+        host_pet = await self.get_equipped_pet(ctx.author)
+        if not host_pet:
+            return await ctx.send("You need to have an equipped pet to host a pet tournament.")
+
+        # Check host funds.
+        async with self.bot.pool.acquire() as conn:
+            money = await conn.fetchval('SELECT "money" FROM profile WHERE "user"=$1;', ctx.author.id)
+        if money < prize:
+            return await ctx.send("You do not have enough money to host this tournament.")
+
+        # Deduct the host’s prize amount.
+        await self.bot.pool.execute(
+            'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
+            prize, ctx.author.id
+        )
+
+        # Create a join view (without a check function).
+        view = JoinView(
+            Button(
+                style=discord.ButtonStyle.primary,
+                label="Join the pet tournament!",
+                emoji="\U0001F43E"  # Using a paw print emoji.
+            ),
+            message="You joined the pet tournament!",
+            timeout=300
+        )
+
+        # Announce the tournament.
+        if (hasattr(self.bot.config.game, "official_tournament_channel_id") and
+                ctx.channel.id == self.bot.config.game.official_tournament_channel_id):
+            await ctx.send(
+                f"A pet tournament has started! The tournament will begin in 5 minutes!\nPrize: **${prize}**",
+                view=view
+            )
+        else:
+            view.joined.add(ctx.author)
+            await ctx.send(
+                f"{ctx.author.mention} started a pet tournament!\nFree entries. Prize: **${prize}**",
+                view=view
+            )
+
+        # Wait for the join period to elapse.
+        await asyncio.sleep(300)
+        view.stop()
+
+        # Get list of participants; remove anyone who no longer has an equipped pet.
+        participants = []
+        async with self.bot.pool.acquire() as conn:
+            for member in list(view.joined):
+                profile = await conn.fetchrow('SELECT * FROM profile WHERE "user"=$1;', member.id)
+                pet = await self.get_equipped_pet(member)
+                if profile and pet:
+                    participants.append(member)
+                else:
+                    await ctx.send(
+                        f"{member.mention} has been disqualified for not having an equipped pet at tournament lock-in.")
+
+        if len(participants) < 2:
+            # Refund prize if too few participants remain.
+            await self.bot.pool.execute(
+                'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                prize, ctx.author.id
+            )
+            return await ctx.send(
+                f"Not enough participants remain. The pet tournament has been cancelled, {ctx.author.mention}.")
+
+        # Adjust participants to a power of 2 (using byes).
+        nearest_power = 2 ** math.ceil(math.log2(len(participants)))
+        byes_needed = nearest_power - len(participants)
+        bye_recipients = []
+        if byes_needed > 0:
+            bye_recipients = random.sample(participants, byes_needed)
+            for bye in bye_recipients:
+                await ctx.send(f"{bye.mention} receives a bye for this round!")
+                participants.remove(bye)
+
+        await ctx.send(f"Tournament starting with **{len(participants) + len(bye_recipients)}** entries!")
+
+        round_no = 1
+        # Run tournament bracket.
+        while len(participants) > 1:
+            await ctx.send(f"**Round {round_no} start!**")
+            random.shuffle(participants)
+            matches = list(self.chunks(participants, 2))
+            winners_this_round = []
+            for match in matches:
+                if len(match) < 2:
+                    winners_this_round.append(match[0])
+                    continue
+
+                # Recheck that both participants still have an equipped pet.
+                pet1 = await self.get_equipped_pet(match[0])
+                pet2 = await self.get_equipped_pet(match[1])
+                if not pet1 and not pet2:
+                    await ctx.send(
+                        f"Both {match[0].mention} and {match[1].mention} have no equipped pet and are disqualified.")
+                    continue
+                elif not pet1:
+                    await ctx.send(
+                        f"{match[0].mention} has unequipped their pet and is disqualified. {match[1].mention} automatically wins the duel!")
+                    winners_this_round.append(match[1])
+                    continue
+                elif not pet2:
+                    await ctx.send(
+                        f"{match[1].mention} has unequipped their pet and is disqualified. {match[0].mention} automatically wins the duel!")
+                    winners_this_round.append(match[0])
+                    continue
+
+                # Announce the duel.
+                duel_embed = discord.Embed(
+                    title="Pet Duel",
+                    description=f"{match[0].mention}'s **{pet1['name']}** vs {match[1].mention}'s **{pet2['name']}**",
+                    color=self.bot.config.game.primary_colour
+                )
+                await ctx.send(embed=duel_embed)
+
+                # Execute the pet duel.
+                winner = await self.battle_pets(ctx, match[0], pet1, match[1], pet2, base_hp)
+                winners_this_round.append(winner)
+                await asyncio.sleep(2)
+
+            # Next round participants: winners plus any byes from this round.
+            participants = winners_this_round + bye_recipients
+            bye_recipients = []  # Byes only apply for the first round.
+            round_no += 1
+            await asyncio.sleep(3)
+
+        # Final champion.
+        winner = participants[0]
+        await ctx.send(f"🏆 The pet tournament has ended! Congratulations to {winner.mention} and their pet!")
+
+        # Award prize to the winner.
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                prize, winner.id
+            )
+            await self.bot.log_transaction(
+                ctx,
+                from_=ctx.author.id,
+                to=winner.id,
+                subject="Pet Tournament Prize",
+                data={"Gold": prize},
+                conn=conn,
+            )
+
+    # –––––– Helper Methods –––––––
+
+    async def get_equipped_pet(self, user: discord.Member):
+        """
+        Returns the user's equipped pet from monster_pets,
+        or None if no pet is equipped.
+        """
+        async with self.bot.pool.acquire() as conn:
+            pet = await conn.fetchrow(
+                "SELECT * FROM monster_pets WHERE user_id = $1 AND equipped = TRUE;",
+                user.id
+            )
+        return pet
+
+    def create_hp_bar(self, current_hp, max_hp, length=20):
+        ratio = current_hp / max_hp if max_hp > 0 else 0
+        ratio = max(0, min(1, ratio))
+        filled_length = int(length * ratio)
+        bar = '█' * filled_length + '░' * (length - filled_length)
+        return bar
+
+    def chunks(self, lst, n):
+        """
+        Yield successive n-sized chunks from lst.
+        """
+        for i in range(0, len(lst), n):
+            yield lst[i:i + n]
+
+    async def battle_pets(self, ctx, owner1: discord.Member, pet1, owner2: discord.Member, pet2, base_hp: int):
+        """
+        Simulate a battle between two pets using the same embed style as your raid battles.
+        Before the duel starts the pets' stats (including HP bars) are shown in two fields,
+        and a third field labeled "Battle Log" displays log messages (last five entries only).
+        If during battle a pet is missing (due to unequipping), the owner is disqualified.
+        Returns the owner (discord.Member) of the winning pet.
+        """
+        # Build combatant dictionaries.
+        combatant1 = {
+            "owner": owner1,
+            "name": pet1["name"],
+            "hp": float(pet1["hp"]) if pet1["hp"] > 0 else base_hp,
+            "attack": float(pet1["attack"]),
+            "defense": float(pet1["defense"]),
+            "element": pet1["element"].capitalize() if pet1["element"] else "Unknown",
+            "max_hp": float(pet1["hp"]) if pet1["hp"] > 0 else base_hp
+        }
+        combatant2 = {
+            "owner": owner2,
+            "name": pet2["name"],
+            "hp": float(pet2["hp"]) if pet2["hp"] > 0 else base_hp,
+            "attack": float(pet2["attack"]),
+            "defense": float(pet2["defense"]),
+            "element": pet2["element"].capitalize() if pet2["element"] else "Unknown",
+            "max_hp": float(pet2["hp"]) if pet2["hp"] > 0 else base_hp
+        }
+
+        # Prepare the battle log (max 5 entries).
+        battle_log = deque(maxlen=5)
+        battle_log.append(f"**Battle Start!** {combatant1['name']} VS {combatant2['name']}")
+
+        # Create an embed displaying the current HP bars and battle log.
+        embed = discord.Embed(
+            title="Pet Duel",
+            color=self.bot.config.game.primary_colour
+        )
+        embed.add_field(
+            name=f"{combatant1['name']} ({combatant1['element']})",
+            value=f"HP: {combatant1['hp']:.0f}/{combatant1['max_hp']:.0f}\n{self.create_hp_bar(combatant1['hp'], combatant1['max_hp'])}",
+            inline=True
+        )
+        embed.add_field(
+            name=f"{combatant2['name']} ({combatant2['element']})",
+            value=f"HP: {combatant2['hp']:.0f}/{combatant2['max_hp']:.0f}\n{self.create_hp_bar(combatant2['hp'], combatant2['max_hp'])}",
+            inline=True
+        )
+        embed.add_field(
+            name="Battle Log",
+            value="\n".join(battle_log),
+            inline=False
+        )
+        battle_message = await ctx.send(embed=embed)
+        await asyncio.sleep(2)
+
+        # (Optional) Element modifier system.
+        element_strengths = {"Fire": "Nature", "Nature": "Water", "Water": "Fire"}
+
+        def calc_modifier(attacker, defender):
+            if attacker["element"] in element_strengths and element_strengths[attacker["element"]] == defender[
+                "element"]:
+                return 0.2  # 20% bonus damage.
+            return 0.0
+
+        round_no = 1
+        # Randomly determine who attacks first.
+        attacker, defender = (combatant1, combatant2) if random.choice([True, False]) else (combatant2, combatant1)
+
+        while combatant1["hp"] > 0 and combatant2["hp"] > 0:
+            # Calculate damage with a small random variance and element modifier.
+            modifier = calc_modifier(attacker, defender)
+            raw_dmg = attacker["attack"] * (1 + modifier) + random.randint(0, 20)
+            dmg = max(raw_dmg - defender["defense"], 1)
+            defender["hp"] -= dmg
+            if defender["hp"] < 0:
+                defender["hp"] = 0
+
+            battle_log.append(
+                f"Round {round_no}: **{attacker['name']}** deals {dmg:.0f} damage to **{defender['name']}** (HP left: {defender['hp']:.0f}).")
+            # Update embed fields.
+            embed.set_field_at(0,
+                               name=f"{combatant1['name']} ({combatant1['element']})",
+                               value=f"HP: {combatant1['hp']:.0f}/{combatant1['max_hp']:.0f}\n{self.create_hp_bar(combatant1['hp'], combatant1['max_hp'])}",
+                               inline=True
+                               )
+            embed.set_field_at(1,
+                               name=f"{combatant2['name']} ({combatant2['element']})",
+                               value=f"HP: {combatant2['hp']:.0f}/{combatant2['max_hp']:.0f}\n{self.create_hp_bar(combatant2['hp'], combatant2['max_hp'])}",
+                               inline=True
+                               )
+            embed.set_field_at(2, name="Battle Log", value="\n".join(battle_log), inline=False)
+            await battle_message.edit(embed=embed)
+            await asyncio.sleep(2)
+
+            # If a pet reaches 0 HP, break out.
+            if defender["hp"] <= 0:
+                battle_log.append(f"**{defender['name']}** has been defeated!")
+                embed.set_field_at(2, name="Battle Log", value="\n".join(battle_log), inline=False)
+                await battle_message.edit(embed=embed)
+                break
+
+            # Swap roles for next round.
+            attacker, defender = defender, attacker
+            round_no += 1
+
+        # Determine winner.
+        winner_owner = combatant1["owner"] if combatant1["hp"] > 0 else combatant2["owner"]
+        return winner_owner
+
+
+    @has_char()
     @user_cooldown(1800)
     @commands.command()
     @locale_doc
@@ -1267,14 +2215,14 @@ class Tournament(commands.Cog):
 
                             if result:
                                 # Extract the health value from the result
-                                base_health = 250
+                                base_health = 200
                                 health = result['health'] + base_health
                                 stathp = result['stathp'] * 50
 
                                 # Calculate total health based on level and add to current health
                                 level = rpgtools.xptolevel(
                                     auth_xp[0]['xp']) if player == ctx.author else rpgtools.xptolevel(opp_xp[0]['xp'])
-                                total_health = health + (level * 5)
+                                total_health = health + (level * 15)
                                 total_health = total_health + stathp
 
                             dmg, deff = await self.bot.get_raidstats(player, conn=conn)

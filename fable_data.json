@@ -1,0 +1,1821 @@
+{
+  "General": {
+    "GameName": "FableReborn",
+    "Description": "Fable is a Discord Fantasy RPG game developed in 2023 by Lunar, and maintained since 2025 by Jay. It is based off of a now extinct bot called IdleRPG. By using commands, the user can send their character on quests, gamble, join fellow characters in raids, battle each other, and create families. These characters gain experience, loot, money, and weapon crates to level up their character to go on more fierce adventures.",
+    "Prefix": "$"
+  },
+  "CharacterCreation": {
+    "Commands": {
+      "Create": "$create",
+      "Rename": "$rename",
+      "SetRace": "$race",
+      "SetClass": "$class",
+      "FollowGod": "$follow"
+    },
+    "StartingAttributes": {
+      "Level": 1,
+      "Gold": 100,
+      "StartingItems": {
+        "Sword": "3 stat sword",
+        "Shield": "3 stat shield"
+      },
+      "MigrationOption": {
+        "FromIdleRPG": {
+          "XP": "Up to level 30",
+          "Money": "Up to $300,000",
+          "Items": "No items migrate"
+        }
+      }
+    }
+  },
+  "Races": {
+    "Orc": {
+      "Defense": 4,
+      "Damage": 0,
+      "Description": "+4 defense and +0 damage"
+    },
+    "Dwarf": {
+      "Defense": 3,
+      "Damage": 1,
+      "Description": "+3 defense and +1 damage"
+    },
+    "Human": {
+      "Defense": 2,
+      "Damage": 2,
+      "Description": "+2 defense and +2 damage"
+    },
+    "Elf": {
+      "Defense": 1,
+      "Damage": 3,
+      "Description": "+1 defense and +3 damage"
+    },
+    "Jkill": {
+      "Defense": 0,
+      "Damage": 4,
+      "Description": "+0 defense and +4 damage"
+    },
+    "Shadeborn": {
+      "Defense": 5,
+      "Damage": -1,
+      "Description": "+5 defense and -1 damage"
+    },
+    "Djinn": {
+      "Defense": -1,
+      "Damage": 5,
+      "Description": "-1 defense and +5 damage"
+    }
+  },
+  "Classes": {
+    "Warrior": {
+      "WeaponBonus": "+5 damage to Swords",
+      "EvolutionBonus": "+1 defense per evolution",
+      "Special": null,
+      "MaxEvolutions": 6,
+      "SecondaryClassLevel": 12,
+      "Cooldown": "24h",
+      "ChangeCost": 5000
+    },
+    "Thief": {
+      "WeaponBonus": "+5 damage to Knives or Daggers",
+      "EvolutionBonus": null,
+      "Special": "Access to the $steal command (chance to steal 10% from another player)",
+      "MaxEvolutions": null,
+      "SecondaryClassLevel": 12,
+      "Cooldown": "24h",
+      "ChangeCost": 5000
+    },
+    "Ritualist": {
+      "WeaponBonus": "+5 damage to Wands",
+      "EvolutionBonus": null,
+      "Special": "Gain additional favor from sacrificing items; twice as likely to receive loot from adventures",
+      "MaxEvolutions": null,
+      "SecondaryClassLevel": 12,
+      "Cooldown": "24h",
+      "ChangeCost": 5000
+    },
+    "Mage": {
+      "WeaponBonus": "+5 damage to Wands",
+      "EvolutionBonus": "+1 damage per evolution",
+      "Special": null,
+      "MaxEvolutions": 6,
+      "SecondaryClassLevel": 12,
+      "Cooldown": "24h",
+      "ChangeCost": 5000
+    },
+    "Ranger": {
+      "WeaponBonus": "+10 damage to Bows",
+      "EvolutionBonus": null,
+      "Special": "Access to a $pet that can hunt for weapons",
+      "MaxEvolutions": null,
+      "SecondaryClassLevel": 12,
+      "Cooldown": "24h",
+      "ChangeCost": 5000
+    },
+    "Paragon": {
+      "WeaponBonus": "+5 damage to Spears",
+      "EvolutionBonus": "+1 damage and +1 defense per evolution",
+      "Special": null,
+      "MaxEvolutions": 6,
+      "SecondaryClassLevel": 12,
+      "Cooldown": "24h",
+      "ChangeCost": 5000
+    },
+    "Paladin": {
+      "WeaponBonus": "+5 damage to Hammers",
+      "EvolutionBonus": null,
+      "Special": "Access to the $bless command (grant temporary XP boost to another player)",
+      "MaxEvolutions": null,
+      "SecondaryClassLevel": 12,
+      "Cooldown": "24h",
+      "ChangeCost": 5000
+    },
+    "Reaper": {
+      "WeaponBonus": "+10 damage to Scythes",
+      "EvolutionBonus": null,
+      "Special": "Unlocks Undying Loyalty (ability to cheat death in raid battles)",
+      "MaxEvolutions": null,
+      "Availability": "Halloween Event Only",
+      "SecondaryClassLevel": 12
+    },
+    "Santa's Helper": {
+      "WeaponBonus": "Grants lifesteal in battles",
+      "EvolutionBonus": null,
+      "Special": "Access to the $gift command (ability to gift a player a random weapon crate)",
+      "MaxEvolutions": null,
+      "Availability": "Christmas Event Only",
+      "SecondaryClassLevel": 12
+    }
+  },
+  "Gods": {
+    "Godless": {
+      "Luck": 1,
+      "LuckRange": [
+        1,
+        1
+      ],
+      "VariableLuck": false,
+      "Description": "Not following a god has constant luck of 1.0"
+    },
+    "Astraea": {
+      "LuckRange": [
+        0.9,
+        1.1
+      ],
+      "VariableLuck": true,
+      "Description": "The good-aligned Goddess with variable luck"
+    },
+    "Sepulchure": {
+      "LuckRange": [
+        0.75,
+        1.5
+      ],
+      "VariableLuck": true,
+      "Description": "The evil-aligned God with variable luck"
+    },
+    "Drakath": {
+      "LuckRange": [
+        0.3,
+        2
+      ],
+      "VariableLuck": true,
+      "Description": "The chaos-aligned God with variable luck"
+    }
+  },
+  "FavorBonuses": {
+    "TopFollowers": [
+      {
+        "Rank": "Top 1-5",
+        "LuckBonus": 0.5
+      },
+      {
+        "Rank": "Top 6-10",
+        "LuckBonus": 0.4
+      },
+      {
+        "Rank": "Top 11-15",
+        "LuckBonus": 0.3
+      },
+      {
+        "Rank": "Top 16-20",
+        "LuckBonus": 0.2
+      },
+      {
+        "Rank": "Top 21-25",
+        "LuckBonus": 0.1
+      }
+    ],
+    "FavorReset": "Weekly",
+    "FavorGainMethods": [
+      "Praying daily",
+      "Sacrificing loot using $sacrifice"
+    ],
+    "SwitchingGods": {
+      "Requirement": "Reset Token",
+      "StartingTokens": 2,
+      "TokenUsage": "Used to change gods or race",
+      "TokenAcquisition": "Rare to acquire; check with $tokens"
+    }
+  },
+  "Weapons": {
+    "OneHanded": {
+      "AnyHand": [
+        "Sword",
+        "Dagger",
+        "Axe",
+        "Knife",
+        "Hammer"
+      ],
+      "RightHandOnly": [
+        "Wand",
+        "Spear"
+      ],
+      "LeftHandOnly": [
+        "Shield"
+      ],
+      "MaxStat": 100
+    },
+    "TwoHanded": {
+      "BothHands": [
+        "Bow",
+        "Mace",
+        "Scythe"
+      ],
+      "MaxStat": 200
+    },
+    "AcquisitionMethods": {
+      "Adventure": {
+        "Command": "$adventure",
+        "MaxStat": {
+          "OneHanded": 35,
+          "TwoHanded": 70
+        }
+      },
+      "Pet": {
+        "Command": "$pet",
+        "MaxStat": {
+          "OneHanded": 30,
+          "TwoHanded": 60
+        }
+      },
+      "Trader": {
+        "Command": "$trader",
+        "MaxStat": {
+          "OneHanded": 80,
+          "TwoHanded": 160
+        }
+      },
+      "Market": {
+        "Command": "$market",
+        "MaxStat": {
+          "OneHanded": 100,
+          "TwoHanded": 200
+        },
+        "Note": "Player-populated market"
+      },
+      "LevelUp": {
+        "MaxStat": {
+          "OneHanded": 75,
+          "TwoHanded": 150
+        }
+      },
+      "Events": "Winning weapons during events"
+    },
+    "Modification": {
+      "Rename": "$weaponname",
+      "ChangeType": {
+        "Command": "$weapontype",
+        "Requirement": "Weapon Token",
+        "TokenCheck": "$tokens",
+        "Notes": "1h weapons can only change to other 1h types; same for 2h. Modified weapons cannot be sold or traded unless reset with $resetitem."
+      },
+      "Upgrade": {
+        "Command": "$upgrade",
+        "Cost": "Using money",
+        "MaxUpgrade": {
+          "OneHanded": 61,
+          "TwoHanded": 122
+        }
+      },
+      "Merge": {
+        "Command": "$merge",
+        "Requirement": "Two weapons of the same type",
+        "Effect": "Increase stat by one"
+      }
+    }
+  },
+  "Crates": {
+    "Types": {
+      "Common": {
+        "WeaponStatRange": {
+          "OneHanded": [
+            1,
+            30
+          ],
+          "TwoHanded": [
+            2,
+            60
+          ]
+        }
+      },
+      "Uncommon": {
+        "WeaponStatRange": {
+          "OneHanded": [
+            10,
+            35
+          ],
+          "TwoHanded": [
+            20,
+            70
+          ]
+        }
+      },
+      "Rare": {
+        "WeaponStatRange": {
+          "OneHanded": [
+            20,
+            40
+          ],
+          "TwoHanded": [
+            40,
+            80
+          ]
+        }
+      },
+      "Magic": {
+        "WeaponStatRange": {
+          "OneHanded": [
+            34,
+            55
+          ],
+          "TwoHanded": [
+            68,
+            110
+          ]
+        }
+      },
+      "Legendary": {
+        "WeaponStatRange": {
+          "OneHanded": [
+            41,
+            80
+          ],
+          "TwoHanded": [
+            82,
+            160
+          ]
+        }
+      },
+      "Divine": {
+        "WeaponStatRange": {
+          "OneHanded": [
+            47,
+            100
+          ],
+          "TwoHanded": [
+            94,
+            200
+          ]
+        }
+      },
+      "Fortune": {
+        "Contents": [
+          "Experience Points (XP)",
+          "Money"
+        ],
+        "XPFormula": "Up to (2000 * Level) + 1500",
+        "MoneyMax": 850000
+      },
+      "Mystery": {
+        "Contents": "Can contain any other crate type"
+      }
+    },
+    "AcquisitionMethods": [
+      "Purchased from Trader ($trader)",
+      "Found in Battle Tower",
+      "Gifted",
+      "Received by leveling up",
+      "Using $daily command",
+      "Using $vote command",
+      "Using $familyevent ($fe) command",
+      "Won during Raids or Events"
+    ]
+  },
+  "RaidStats": {
+    "DamageMultiplier": {
+      "Base": 1,
+      "IncreasePerPoint": 0.1
+    },
+    "DefenseMultiplier": {
+      "Base": 1,
+      "IncreasePerPoint": 0.1
+    },
+    "Health": {
+      "Base": 500,
+      "IncreasePerPoint": 50
+    },
+    "StatPoints": {
+      "GainRate": "1 point every 2 levels",
+      "Usage": "Allocate to increase damage, defense, or health"
+    }
+  },
+  "GameplayMechanics": {
+    "Adventures": {
+      "Command": "$adventure",
+      "Description": "Complete quests to gain experience, loot, money, and weapon crates.",
+      "SuccessRate": "Influenced by luck (from chosen god and favor)",
+      "Rewards": [
+        "Experience Points",
+        "Loot",
+        "Money",
+        "Weapon Crates"
+      ]
+    },
+    "Raids": {
+      "Occurrence": "Multiple times a day",
+      "JoinWindow": "15 minutes after boss spawns",
+      "Duration": "Up to 45 minutes",
+      "Mechanics": {
+        "BossAttacks": "Random player each turn",
+        "PlayerAttacks": "Combined damage against boss",
+        "PlayerDeath": "Removes player's attack power from total"
+      },
+      "Outcomes": {
+        "BossDefeated": {
+          "CrateBidding": "Survivors bid on boss's crate; highest bid wins",
+          "MoneyReward": "Boss's HP * 2, split equally among survivors",
+          "Note": "If no one bids, the crate disappears"
+        },
+        "BossEscapes": "No rewards"
+      }
+    },
+    "Battles": {
+      "Commands": {
+        "Battle": "$battle",
+        "Tournament": "$tournament",
+        "RaidBattle": "$raidbattle",
+        "RaidTournament": "$raidtournament",
+        "Horde": "$horde"
+      },
+      "Types": [
+        "Regular Battle",
+        "Tournament",
+        "Raid Battle",
+        "Raid Tournament",
+        "Horde"
+      ],
+      "RegularBattle": {
+        "Uses": "Base weapon stats, race/class bonuses",
+        "Mechanics": "Character vs. character until one is defeated"
+      },
+      "RaidBattle": {
+        "Uses": "Raid stats and class abilities",
+        "Mechanics": "Possible to trip instead of attack if luck is poor"
+      },
+      "Horde": {
+        "Description": "Raid battles against characters until defeated",
+        "StartingHealth": 500
+      }
+    },
+    "BattleTower": {
+      "Command": "$battletower",
+      "StartCommand": "$battletower start",
+      "FightCommand": "$battletower fight",
+      "LeaderboardCommand": "$battletowerlb",
+      "TotalLevels": 30,
+      "EntryFee": 10000,
+      "PerLevel": {
+        "Battles": 3,
+        "Progression": "Survive battles to advance"
+      },
+      "Rewards": {
+        "Every5Levels": "Chest with possible rewards",
+        "Completion": "Option to retry with increased difficulty and random rewards"
+      },
+      "Notes": "Players may choose paths for prizes; failure to choose results in loss of prize"
+    },
+    "GodRaids": {
+      "Frequency": "A couple of times a week",
+      "Participation": "Only followers of the respective god",
+      "Rewards": [
+        "Legendary Crate",
+        "Fortune Crate",
+        "Divine Crate",
+        "Money Reward"
+      ],
+      "Raids": {
+        "Astraea": {
+          "Name": "Champions of Compassion",
+          "Mechanics": "Followers try to heal or help others; continues until one remains"
+        },
+        "Drakath": {
+          "Name": "Raid the Void",
+          "Mechanics": "Defeat Eclipse the Void Conqueror; ends when boss or followers are defeated"
+        },
+        "Sepulchure": {
+          "Name": "A Sacred Temple Emerges",
+          "Mechanics": "Active raid where followers make moves to complete the ritual; all participants earn money"
+        }
+      }
+    },
+    "Gambling": {
+      "SoloGames": {
+        "Slots": {
+          "Command": "$slots",
+          "CostPerPlay": 1500,
+          "Description": "Play slots for a chance to win"
+        },
+        "Blackjack": {
+          "Command": "$blackjack or $bj",
+          "MaxBet": 5000,
+          "Description": "Play against dealer"
+        },
+        "Roulette": {
+          "Command": "$roulette or $rou",
+          "MaxBet": 25000,
+          "Description": "Bet on roulette outcomes"
+        },
+        "Bet": {
+          "Command": "$bet",
+          "MaxBet": 100000,
+          "Description": "Bet on dice roll outcome"
+        },
+        "Flip": {
+          "Command": "$flip",
+          "MaxBet": 250000,
+          "Description": "Bet on coin flip (heads or tails)"
+        }
+      },
+      "PlayerVersusPlayer": {
+        "Games": {
+          "Poker": "$poker",
+          "DoubleOrSteal": "$dos",
+          "Draw": "$draw",
+          "Battle": "$battle / $tournament",
+          "RaidBattle": "$raidbattle / $raidtournament",
+          "RussianRoulette": "$rr"
+        },
+        "Description": "Gamble against other players without a bet cap",
+        "BetCap": "No maximum bet"
+      }
+    },
+    "MarriageAndFamily": {
+      "Commands": {
+        "Marry": "$marry",
+        "Family": "$family",
+        "Date": "$date",
+        "Spoil": "$spoil",
+        "Child": "$child",
+        "FamilyEvent": "$familyevent or $fe"
+      },
+      "Marriage": {
+        "Benefits": [
+          "Access to family-related commands",
+          "Gain a portion of partner's adventure winnings"
+        ],
+        "LoveScore": {
+          "Impact": "Affects maximum number of children (10 + (combined lovescore / 250,000))",
+          "IncreaseMethods": [
+            "$date command",
+            "$spoil command (buy gifts)"
+          ]
+        }
+      },
+      "Children": {
+        "Actions": [
+          "Grow older",
+          "Give money",
+          "Take money",
+          "Find crates",
+          "Possibility to die"
+        ],
+        "Importance": "Needed for family events"
+      }
+    }
+  },
+  "Monsters": {
+    "Sneevil": {
+      "level": 1,
+      "hp": 100,
+      "attack": 95,
+      "defense": 100,
+      "element": "Earth",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Sneevil-removebg-preview.png"
+    },
+    "Slime": {
+      "level": 1,
+      "hp": 120,
+      "attack": 100,
+      "defense": 105,
+      "element": "Water",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_slime.png"
+    },
+    "Frogzard": {
+      "level": 1,
+      "hp": 120,
+      "attack": 90,
+      "defense": 95,
+      "element": "Nature",
+      "url": "https://static.wikia.nocookie.net/aqwikia/images/d/d6/Frogzard.png"
+    },
+    "Rat": {
+      "level": 1,
+      "hp": 90,
+      "attack": 100,
+      "defense": 90,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Rat-removebg-preview.png"
+    },
+    "Bat": {
+      "level": 1,
+      "hp": 150,
+      "attack": 95,
+      "defense": 85,
+      "element": "Wind",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Bat-removebg-preview.png"
+    },
+    "Skeleton": {
+      "level": 1,
+      "hp": 190,
+      "attack": 105,
+      "defense": 100,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Skelly-removebg-preview.png"
+    },
+    "Imp": {
+      "level": 1,
+      "hp": 180,
+      "attack": 95,
+      "defense": 85,
+      "element": "Fire",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_zZquzlh-removebg-preview.png"
+    },
+    "Pixie": {
+      "level": 1,
+      "hp": 100,
+      "attack": 90,
+      "defense": 80,
+      "element": "Light",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_pixie-removebg-preview.png"
+    },
+    "Zombie": {
+      "level": 1,
+      "hp": 170,
+      "attack": 100,
+      "defense": 95,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_zombie-removebg-preview.png"
+    },
+    "Spiderling_1": {
+      "level": 1,
+      "hp": 220,
+      "attack": 95,
+      "defense": 90,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_spider-removebg-preview.png"
+    },
+    "Spiderling_2": {
+      "level": 1,
+      "hp": 220,
+      "attack": 95,
+      "defense": 90,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_spider-removebg-preview.png"
+    },
+    "Moglin": {
+      "level": 1,
+      "hp": 200,
+      "attack": 90,
+      "defense": 85,
+      "element": "Light",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Moglin.png"
+    },
+    "Red Ant": {
+      "level": 1,
+      "hp": 140,
+      "attack": 105,
+      "defense": 100,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_redant-removebg-preview.png"
+    },
+    "Chickencow": {
+      "level": 1,
+      "hp": 300,
+      "attack": 150,
+      "defense": 90,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChickenCow-removebg-preview.png"
+    },
+    "Tog": {
+      "level": 1,
+      "hp": 380,
+      "attack": 105,
+      "defense": 95,
+      "element": "Earth",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Tog-removebg-preview.png"
+    },
+    "Lemurphant": {
+      "level": 1,
+      "hp": 340,
+      "attack": 95,
+      "defense": 80,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Lemurphant-removebg-preview.png"
+    },
+    "Fire Imp": {
+      "level": 1,
+      "hp": 200,
+      "attack": 100,
+      "defense": 90,
+      "element": "Fire",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_zZquzlh-removebg-preview.png"
+    },
+    "Zardman": {
+      "level": 1,
+      "hp": 300,
+      "attack": 95,
+      "defense": 100,
+      "element": "Earth",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Zardman-removebg-preview.png"
+    },
+    "Wind Elemental": {
+      "level": 1,
+      "hp": 165,
+      "attack": 90,
+      "defense": 85,
+      "element": "Wind",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_WindElemental-removebg-preview.png"
+    },
+    "Dark Wolf": {
+      "level": 1,
+      "hp": 200,
+      "attack": 100,
+      "defense": 90,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_DarkWolf-removebg-preview.png"
+    },
+    "Treeant_1": {
+      "level": 1,
+      "hp": 205,
+      "attack": 105,
+      "defense": 95,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Treeant-removebg-preview.png"
+    },
+    "Cyclops Warlord": {
+      "level": 2,
+      "hp": 230,
+      "attack": 160,
+      "defense": 155,
+      "element": "Earth",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_CR-removebg-preview.png"
+    },
+    "Fishman Soldier": {
+      "level": 2,
+      "hp": 200,
+      "attack": 165,
+      "defense": 160,
+      "element": "Water",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Fisherman-removebg-preview.png"
+    },
+    "Fire Elemental_L2": {
+      "level": 2,
+      "hp": 215,
+      "attack": 150,
+      "defense": 145,
+      "element": "Fire",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_fire_elemental-removebg-preview.png"
+    },
+    "Vampire Bat": {
+      "level": 2,
+      "hp": 200,
+      "attack": 170,
+      "defense": 160,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_viO2oSJ-removebg-preview.png"
+    },
+    "Blood Eagle": {
+      "level": 2,
+      "hp": 195,
+      "attack": 165,
+      "defense": 150,
+      "element": "Wind",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_BloodEagle-removebg-preview.png"
+    },
+    "Earth Elemental_L2": {
+      "level": 2,
+      "hp": 190,
+      "attack": 175,
+      "defense": 160,
+      "element": "Earth",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Earth_Elemental-removebg-preview.png"
+    },
+    "Fire Mage": {
+      "level": 2,
+      "hp": 200,
+      "attack": 160,
+      "defense": 140,
+      "element": "Fire",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_FireMage-removebg-preview.png"
+    },
+    "Dready Bear": {
+      "level": 2,
+      "hp": 230,
+      "attack": 155,
+      "defense": 150,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_dreddy-removebg-preview.png"
+    },
+    "Undead Soldier": {
+      "level": 2,
+      "hp": 280,
+      "attack": 160,
+      "defense": 155,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_UndeadSoldier-removebg-preview.png"
+    },
+    "Skeleton Warrior": {
+      "level": 2,
+      "hp": 330,
+      "attack": 155,
+      "defense": 150,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_SkeelyWarrior-removebg-preview.png"
+    },
+    "Giant Spider": {
+      "level": 2,
+      "hp": 350,
+      "attack": 160,
+      "defense": 145,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_DreadSpider-removebg-preview.png"
+    },
+    "Castle spider": {
+      "level": 2,
+      "hp": 310,
+      "attack": 170,
+      "defense": 160,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Castle-removebg-preview.png"
+    },
+    "ConRot": {
+      "level": 2,
+      "hp": 210,
+      "attack": 165,
+      "defense": 155,
+      "element": "Water",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ConRot-removebg-preview.png"
+    },
+    "Horc Warrior": {
+      "level": 2,
+      "hp": 270,
+      "attack": 175,
+      "defense": 170,
+      "element": "Earth",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_HorcWarrior-removebg-preview.png"
+    },
+    "Shadow Hound": {
+      "level": 2,
+      "hp": 300,
+      "attack": 160,
+      "defense": 150,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Hound-removebg-preview.png"
+    },
+    "Fire Sprite": {
+      "level": 2,
+      "hp": 290,
+      "attack": 165,
+      "defense": 155,
+      "element": "Fire",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_FireSprite-removebg-preview.png"
+    },
+    "Rock Elemental": {
+      "level": 2,
+      "hp": 300,
+      "attack": 160,
+      "defense": 165,
+      "element": "Earth",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Earth_Elemental-removebg-preview.png"
+    },
+    "Shadow Serpent_L3": {
+      "level": 3,
+      "hp": 200,
+      "attack": 220,
+      "defense": 205,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ShadoeSerpant-removebg-preview.png"
+    },
+    "Dark Elemental": {
+      "level": 2,
+      "hp": 340,
+      "attack": 165,
+      "defense": 155,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_DarkEle-Photoroom.png"
+    },
+    "Forest Guardian": {
+      "level": 2,
+      "hp": 500,
+      "attack": 250,
+      "defense": 250,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ForestGuardian-removebg-preview.png"
+    },
+    "Mana Golem": {
+      "level": 3,
+      "hp": 200,
+      "attack": 220,
+      "defense": 210,
+      "element": "Corrupted",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_managolum-removebg-preview.png"
+    },
+    "Karok the Fallen": {
+      "level": 3,
+      "hp": 180,
+      "attack": 215,
+      "defense": 205,
+      "element": "Ice",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_VIMs8un-removebg-preview.png"
+    },
+    "Water Draconian": {
+      "level": 3,
+      "hp": 220,
+      "attack": 225,
+      "defense": 200,
+      "element": "Water",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_waterdrag-removebg-preview.png"
+    },
+    "Shadow Creeper": {
+      "level": 3,
+      "hp": 190,
+      "attack": 220,
+      "defense": 205,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_shadowcreep-removebg-preview.png"
+    },
+    "Wind Djinn": {
+      "level": 3,
+      "hp": 210,
+      "attack": 225,
+      "defense": 215,
+      "element": "Wind",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_djinn-removebg-preview.png"
+    },
+    "Autunm Fox": {
+      "level": 3,
+      "hp": 205,
+      "attack": 230,
+      "defense": 220,
+      "element": "Earth",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Autumn_Fox-removebg-preview.png"
+    },
+    "Dark Draconian": {
+      "level": 3,
+      "hp": 195,
+      "attack": 220,
+      "defense": 200,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_darkdom-removebg-preview.png"
+    },
+    "Light Elemental": {
+      "level": 3,
+      "hp": 185,
+      "attack": 215,
+      "defense": 210,
+      "element": "Light",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_LightELemental-removebg-preview.png"
+    },
+    "Undead Giant": {
+      "level": 3,
+      "hp": 230,
+      "attack": 220,
+      "defense": 210,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_UndGiant-removebg-preview.png"
+    },
+    "Chaos Spider": {
+      "level": 3,
+      "hp": 215,
+      "attack": 215,
+      "defense": 205,
+      "element": "Corrupted",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChaosSpider-removebg-preview.png"
+    },
+    "Seed Spitter": {
+      "level": 3,
+      "hp": 225,
+      "attack": 220,
+      "defense": 200,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_SeedSpitter-removebg-preview.png"
+    },
+    "Beach Werewolf": {
+      "level": 3,
+      "hp": 240,
+      "attack": 230,
+      "defense": 220,
+      "element": "Water",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_BeachWerewold-removebg-preview.png"
+    },
+    "Boss Dummy": {
+      "level": 3,
+      "hp": 220,
+      "attack": 225,
+      "defense": 210,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_BossDummy-removebg-preview.png"
+    },
+    "Rock": {
+      "level": 3,
+      "hp": 235,
+      "attack": 225,
+      "defense": 215,
+      "element": "Earth",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Rock-removebg-preview.png"
+    },
+    "Flame Elemental": {
+      "level": 3,
+      "hp": 210,
+      "attack": 225,
+      "defense": 210,
+      "element": "Fire",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_FireElemental-removebg-preview.png"
+    },
+    "Bear": {
+      "level": 3,
+      "hp": 225,
+      "attack": 215,
+      "defense": 220,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732611726453.png"
+    },
+    "Chair": {
+      "level": 3,
+      "hp": 215,
+      "attack": 210,
+      "defense": 215,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_chair-removebg-preview.png"
+    },
+    "Chaos Serpent": {
+      "level": 3,
+      "hp": 230,
+      "attack": 220,
+      "defense": 205,
+      "element": "Corrupted",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChaosSerp-removebg-preview.png"
+    },
+    "Gorillaphant": {
+      "level": 3,
+      "hp": 240,
+      "attack": 225,
+      "defense": 210,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_gorillaserpant-removebg-preview.png"
+    },
+    "Hydra Head": {
+      "level": 4,
+      "hp": 300,
+      "attack": 280,
+      "defense": 270,
+      "element": "Water",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_hydra.png"
+    },
+    "Blessed Deer": {
+      "level": 4,
+      "hp": 280,
+      "attack": 275,
+      "defense": 265,
+      "element": "Light",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_BlessedDeer-removebg-preview.png"
+    },
+    "Chaos Sphinx": {
+      "level": 4,
+      "hp": 320,
+      "attack": 290,
+      "defense": 275,
+      "element": "Corrupted",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChaopsSpinx.png"
+    },
+    "Inferno Dracolion": {
+      "level": 4,
+      "hp": 290,
+      "attack": 285,
+      "defense": 270,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732614284328.png"
+    },
+    "Wind Cyclone": {
+      "level": 4,
+      "hp": 310,
+      "attack": 290,
+      "defense": 280,
+      "element": "Wind",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_WindElemental-removebg-preview.png"
+    },
+    "Mr Cuddles": {
+      "level": 4,
+      "hp": 305,
+      "attack": 295,
+      "defense": 285,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_mrcuddles-removebg-preview.png"
+    },
+    "Infernal Fiend": {
+      "level": 4,
+      "hp": 295,
+      "attack": 285,
+      "defense": 270,
+      "element": "Fire",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732614284328.png"
+    },
+    "Dark Mukai": {
+      "level": 4,
+      "hp": 285,
+      "attack": 275,
+      "defense": 265,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732614826889.png"
+    },
+    "Undead Berserker": {
+      "level": 4,
+      "hp": 330,
+      "attack": 285,
+      "defense": 275,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732614863579.png"
+    },
+    "Chaos Warrior": {
+      "level": 4,
+      "hp": 315,
+      "attack": 280,
+      "defense": 270,
+      "element": "Corrupted",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChaosWarrior-removebg-preview.png"
+    },
+    "Dire Wolf": {
+      "level": 4,
+      "hp": 325,
+      "attack": 285,
+      "defense": 275,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_DireWolf-removebg-preview.png"
+    },
+    "Skye Warrior": {
+      "level": 4,
+      "hp": 340,
+      "attack": 295,
+      "defense": 285,
+      "element": "Corrupted",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_SkyeWarrior-removebg-preview.png"
+    },
+    "Death On Wings": {
+      "level": 4,
+      "hp": 320,
+      "attack": 290,
+      "defense": 275,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_DeathonWings-removebg-preview.png"
+    },
+    "Chaorruption": {
+      "level": 4,
+      "hp": 335,
+      "attack": 295,
+      "defense": 285,
+      "element": "Corrupted",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Chaorruption-removebg-preview.png"
+    },
+    "Shadow Beast": {
+      "level": 4,
+      "hp": 300,
+      "attack": 285,
+      "defense": 270,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ShadowBeast-removebg-preview.png"
+    },
+    "Hootbear": {
+      "level": 4,
+      "hp": 310,
+      "attack": 290,
+      "defense": 275,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_HootBear-removebg-preview.png"
+    },
+    "Anxiety": {
+      "level": 4,
+      "hp": 325,
+      "attack": 280,
+      "defense": 290,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_anxiety-removebg-preview.png"
+    },
+    "Twilly": {
+      "level": 4,
+      "hp": 315,
+      "attack": 275,
+      "defense": 285,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Twilly-removebg-preview.png"
+    },
+    "Black Cat": {
+      "level": 4,
+      "hp": 330,
+      "attack": 285,
+      "defense": 270,
+      "element": "Corrupted",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_QJsLMnk-removebg-preview.png"
+    },
+    "Forest Guardian_L4": {
+      "level": 4,
+      "hp": 340,
+      "attack": 290,
+      "defense": 275,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ForestGuardian-removebg-preview.png"
+    },
+    "Chaos Dragon": {
+      "level": 5,
+      "hp": 400,
+      "attack": 380,
+      "defense": 370,
+      "element": "Corrupted",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChaosDragon-removebg-preview.png"
+    },
+    "Wooden Door": {
+      "level": 5,
+      "hp": 380,
+      "attack": 375,
+      "defense": 365,
+      "element": "Earth",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_WoodenDoor-removebg-preview.png"
+    },
+    "Garvodeus": {
+      "level": 5,
+      "hp": 420,
+      "attack": 390,
+      "defense": 375,
+      "element": "Water",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Garvodeus-removebg-preview.png"
+    },
+    "Shadow Lich": {
+      "level": 5,
+      "hp": 390,
+      "attack": 385,
+      "defense": 370,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ShadowLich-removebg-preview.png"
+    },
+    "Zorbak": {
+      "level": 5,
+      "hp": 410,
+      "attack": 390,
+      "defense": 380,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Zorbak-removebg-preview.png"
+    },
+    "Dwakel Rocketman": {
+      "level": 5,
+      "hp": 405,
+      "attack": 395,
+      "defense": 385,
+      "element": "Electric",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_DwarkalRock-removebg-preview.png"
+    },
+    "Kathool": {
+      "level": 5,
+      "hp": 395,
+      "attack": 385,
+      "defense": 370,
+      "element": "Water",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Kathool-removebg-preview.png"
+    },
+    "Celestial Hound": {
+      "level": 5,
+      "hp": 385,
+      "attack": 375,
+      "defense": 365,
+      "element": "Light",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_CelestialHound-removebg-preview.png"
+    },
+    "Undead Raxgore": {
+      "level": 5,
+      "hp": 430,
+      "attack": 385,
+      "defense": 375,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Raxfore-removebg-preview_1.png"
+    },
+    "Droognax": {
+      "level": 5,
+      "hp": 415,
+      "attack": 380,
+      "defense": 370,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Droognax-removebg-preview.png"
+    },
+    "Corrupted Boar": {
+      "level": 5,
+      "hp": 425,
+      "attack": 385,
+      "defense": 375,
+      "element": "Corrupted",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Corrupted_Bear-removebg-preview.png"
+    },
+    "Fressa": {
+      "level": 5,
+      "hp": 440,
+      "attack": 395,
+      "defense": 385,
+      "element": "Water",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Fressa-removebg-preview.png"
+    },
+    "Grimskull": {
+      "level": 5,
+      "hp": 420,
+      "attack": 390,
+      "defense": 375,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Grimskull-removebg-preview.png"
+    },
+    "Chaotic Chicken": {
+      "level": 5,
+      "hp": 435,
+      "attack": 385,
+      "defense": 380,
+      "element": "Corrupted",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChaoticChicken-removebg-preview.png"
+    },
+    "Baelgar": {
+      "level": 5,
+      "hp": 400,
+      "attack": 385,
+      "defense": 370,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Baelgar-removebg-preview.png"
+    },
+    "Blood Dragon": {
+      "level": 5,
+      "hp": 410,
+      "attack": 390,
+      "defense": 375,
+      "element": "Fire",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_BloodDragon-removebg-preview.png"
+    },
+    "Avatar of Desolich": {
+      "level": 5,
+      "hp": 425,
+      "attack": 380,
+      "defense": 390,
+      "element": "Fire",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732696555786.png"
+    },
+    "Piggy Drake": {
+      "level": 5,
+      "hp": 415,
+      "attack": 375,
+      "defense": 385,
+      "element": "Wind",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732696596976.png"
+    },
+    "Chaos Alteon": {
+      "level": 5,
+      "hp": 430,
+      "attack": 385,
+      "defense": 370,
+      "element": "Corrupted",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Chaos_Alteon-removebg-preview.png"
+    },
+    "Argo": {
+      "level": 5,
+      "hp": 440,
+      "attack": 380,
+      "defense": 375,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Argo-removebg-preview.png"
+    },
+    "Ultra Cuddles": {
+      "level": 6,
+      "hp": 500,
+      "attack": 470,
+      "defense": 460,
+      "element": "Corrupted",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ultracuddles-removebg-preview.png"
+    },
+    "General Pollution": {
+      "level": 6,
+      "hp": 480,
+      "attack": 465,
+      "defense": 455,
+      "element": "Earth",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_genpol-removebg-preview.png"
+    },
+    "Manslayer Fiend": {
+      "level": 6,
+      "hp": 520,
+      "attack": 475,
+      "defense": 460,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_manlsayer-removebg-preview.png"
+    },
+    "The Hushed": {
+      "level": 6,
+      "hp": 490,
+      "attack": 470,
+      "defense": 455,
+      "element": "Light",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_hushed-removebg-preview.png"
+    },
+    "The Jailer": {
+      "level": 6,
+      "hp": 510,
+      "attack": 475,
+      "defense": 465,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_jailer-removebg-preview.png"
+    },
+    "Thriller": {
+      "level": 6,
+      "hp": 505,
+      "attack": 480,
+      "defense": 470,
+      "element": "Electric",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Thriller-removebg-preview.png"
+    },
+    "Dire Razorclaw": {
+      "level": 6,
+      "hp": 495,
+      "attack": 470,
+      "defense": 455,
+      "element": "Fire",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_file.png"
+    },
+    "Dollageddon": {
+      "level": 6,
+      "hp": 485,
+      "attack": 465,
+      "defense": 455,
+      "element": "Light",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Dollageddon-removebg-preview.png"
+    },
+    "Gold Werewolf": {
+      "level": 6,
+      "hp": 530,
+      "attack": 475,
+      "defense": 460,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Gold_Werewolf-removebg-preview.png"
+    },
+    "FlameMane": {
+      "level": 6,
+      "hp": 515,
+      "attack": 470,
+      "defense": 455,
+      "element": "Fire",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_FlameMane-removebg-preview.png"
+    },
+    "Specimen 66": {
+      "level": 6,
+      "hp": 525,
+      "attack": 475,
+      "defense": 460,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Specimen_66-removebg-preview.png"
+    },
+    "Frank": {
+      "level": 6,
+      "hp": 540,
+      "attack": 480,
+      "defense": 470,
+      "element": "Electric",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Frank-removebg-preview.png"
+    },
+    "French Horned ToadDragon": {
+      "level": 6,
+      "hp": 520,
+      "attack": 475,
+      "defense": 460,
+      "element": "Water",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_file__1_-removebg-preview.png"
+    },
+    "Mog Zard": {
+      "level": 6,
+      "hp": 535,
+      "attack": 475,
+      "defense": 465,
+      "element": "Earth",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_MogZard-removebg-preview.png"
+    },
+    "Mo-Zard": {
+      "level": 6,
+      "hp": 500,
+      "attack": 470,
+      "defense": 455,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_file__2_-removebg-preview.png"
+    },
+    "Nulgath": {
+      "level": 6,
+      "hp": 510,
+      "attack": 475,
+      "defense": 460,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Nulgath-removebg-preview.png"
+    },
+    "Proto Champion": {
+      "level": 6,
+      "hp": 525,
+      "attack": 465,
+      "defense": 475,
+      "element": "Corrupted",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_file_3.png"
+    },
+    "Trash Can": {
+      "level": 6,
+      "hp": 515,
+      "attack": 460,
+      "defense": 470,
+      "element": "Light",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_TrashCan-removebg-preview.png"
+    },
+    "Turdragon": {
+      "level": 6,
+      "hp": 530,
+      "attack": 475,
+      "defense": 460,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Turagon-removebg-preview.png"
+    },
+    "Unending Avatar": {
+      "level": 6,
+      "hp": 540,
+      "attack": 470,
+      "defense": 455,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_file_4.png"
+    },
+    "Astral Dragon": {
+      "level": 7,
+      "hp": 600,
+      "attack": 570,
+      "defense": 560,
+      "element": "Light",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_AstralDragon.png"
+    },
+    "Eise Horror": {
+      "level": 7,
+      "hp": 580,
+      "attack": 565,
+      "defense": 555,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Elise_Horror-removebg-preview.png"
+    },
+    "Asbane": {
+      "level": 7,
+      "hp": 620,
+      "attack": 575,
+      "defense": 560,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Adbane.png"
+    },
+    "Apephyryx": {
+      "level": 7,
+      "hp": 590,
+      "attack": 570,
+      "defense": 555,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Apephryx-removebg-preview.png"
+    },
+    "Enchantress": {
+      "level": 7,
+      "hp": 610,
+      "attack": 575,
+      "defense": 565,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Enchantress-removebg-preview.png"
+    },
+    "Queen of Monsters": {
+      "level": 7,
+      "hp": 605,
+      "attack": 580,
+      "defense": 570,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_QueenOfMonsters-removebg-preview.png"
+    },
+    "Krykan": {
+      "level": 7,
+      "hp": 595,
+      "attack": 570,
+      "defense": 555,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove_background_project.png"
+    },
+    "Painadin Overlord": {
+      "level": 7,
+      "hp": 585,
+      "attack": 565,
+      "defense": 555,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Painadin_Overlord-removebg-preview.png"
+    },
+    "EL-Blender": {
+      "level": 7,
+      "hp": 630,
+      "attack": 575,
+      "defense": 560,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_EbilBlender-removebg-preview.png"
+    },
+    "Key of Sholemoh": {
+      "level": 7,
+      "hp": 615,
+      "attack": 570,
+      "defense": 555,
+      "element": "Corrupted",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Key_of_Sholemoh-removebg-preview.png"
+    },
+    "Specimen 30": {
+      "level": 7,
+      "hp": 625,
+      "attack": 575,
+      "defense": 560,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Specimen_30.png"
+    },
+    "Pinky": {
+      "level": 7,
+      "hp": 640,
+      "attack": 580,
+      "defense": 570,
+      "element": "Electric",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Pinky-removebg-preview.png"
+    },
+    "Monster Cake": {
+      "level": 7,
+      "hp": 620,
+      "attack": 575,
+      "defense": 560,
+      "element": "Nature",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Monster_Cake-removebg-preview.png"
+    },
+    "Angyler Fish": {
+      "level": 7,
+      "hp": 635,
+      "attack": 575,
+      "defense": 565,
+      "element": "Water",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Angyler_Fish-removebg-preview.png"
+    },
+    "Big Bad Ancient.. Goose?": {
+      "level": 7,
+      "hp": 600,
+      "attack": 570,
+      "defense": 555,
+      "element": "Light",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_BigBadAncientGoose-removebg-preview.png"
+    },
+    "Barlot Field": {
+      "level": 7,
+      "hp": 610,
+      "attack": 575,
+      "defense": 560,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Barlot_Fiend-removebg-preview.png"
+    },
+    "Barghest": {
+      "level": 7,
+      "hp": 625,
+      "attack": 565,
+      "defense": 575,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Barghest-removebg-preview.png"
+    },
+    "Yuzil": {
+      "level": 7,
+      "hp": 615,
+      "attack": 560,
+      "defense": 570,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Yuzil.png"
+    },
+    "Azkorath": {
+      "level": 7,
+      "hp": 630,
+      "attack": 575,
+      "defense": 560,
+      "element": "Corrupted",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Azkorath-removebg-preview.png"
+    },
+    "Boto": {
+      "level": 7,
+      "hp": 640,
+      "attack": 570,
+      "defense": 555,
+      "element": "Water",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Boto.png"
+    },
+    "Meatmongous": {
+      "level": 8,
+      "hp": 1200,
+      "attack": 450,
+      "defense": 600,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Meatmongous-removebg-preview.png"
+    },
+    "Ebil Meta Dragon": {
+      "level": 8,
+      "hp": 810,
+      "attack": 770,
+      "defense": 550,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_MetaDragon_n_Greg-transformed.png"
+    },
+    "Shadow Nulgath": {
+      "level": 8,
+      "hp": 850,
+      "attack": 700,
+      "defense": 700,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Shadow_Nulgath.png"
+    },
+    "The First Speaker": {
+      "level": 8,
+      "hp": 800,
+      "attack": 600,
+      "defense": 700,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_FirstSpeakerFix-Photoroom.png"
+    },
+    "Avatar Tynfdarius": {
+      "level": 9,
+      "hp": 800,
+      "attack": 780,
+      "defense": 770,
+      "element": "Fire",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Avatar_Tynfdarius-removebg-preview-transformed-Photoroom.png"
+    },
+    "Mech-a-Knight": {
+      "level": 9,
+      "hp": 780,
+      "attack": 775,
+      "defense": 765,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Mech-a-knight-removebg-preview-transformed.png"
+    },
+    "Astraea's Engineer": {
+      "level": 9,
+      "hp": 820,
+      "attack": 790,
+      "defense": 775,
+      "element": "Light",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Engineer-removebg-preview-transformed.png"
+    },
+    "Deimos": {
+      "level": 10,
+      "hp": 1200,
+      "attack": 700,
+      "defense": 900,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Deimos.png"
+    },
+    "Void Dragon": {
+      "level": 10,
+      "hp": 2500,
+      "attack": 570,
+      "defense": 595,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_6pnyUGr-Photoroom-Photoroom.png"
+    },
+    "End of all things": {
+      "level": 10,
+      "hp": 300,
+      "attack": 2500,
+      "defense": 300,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Beast-Photoroom-transformed-Photoroom.png"
+    },
+    "Drakath": {
+      "level": 11,
+      "hp": 15000,
+      "attack": 4000,
+      "defense": 2500,
+      "element": "Corrupted",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Pngtreelightning_source_lightning_effect_purple_3916970.png"
+    },
+    "Astraea": {
+      "level": 11,
+      "hp": 17000,
+      "attack": 3500,
+      "defense": 2500,
+      "element": "Light",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_5z90r962trs71_1-Photoroom.png"
+    },
+    "Sepulchure": {
+      "level": 11,
+      "hp": 16000,
+      "attack": 3000,
+      "defense": 3000,
+      "element": "Dark",
+      "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_wakai-quketsuki-sepulchuredoomknightdoomblade-Photoroom.png"
+    }
+  }
+}

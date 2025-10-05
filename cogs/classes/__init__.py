@@ -179,7 +179,7 @@ class Classes(commands.Cog):
         choices = [Tank, Paladin, Thief, Mage, Ranger, Raider, Ritualist, Paragon]
         async with self.bot.pool.acquire() as conn:
             profile_data = await conn.fetchrow(
-                'SELECT spookyclass, chrissy2023, tier FROM profile WHERE "user"=$1;', ctx.author.id
+                'SELECT spookyclass, chrissy2023, easter2025, tier FROM profile WHERE "user"=$1;', ctx.author.id
             )
 
         if profile_data:
@@ -214,6 +214,25 @@ class Classes(commands.Cog):
                     )
                 )
                 choices.append(SantasHelper)
+
+            #if profile_data['easter2025']: # or profile_data['tier'] == 4:
+                #embeds.append(
+                    #discord.Embed(
+                        #title=_("Egg Guardian"),
+                        #description=_(
+                            #"Protector of spring's sacred eggs, wielding the magic of renewal to weaken foes with elemental afflictions.\n\n"
+                            #"Unlocks `Vernal Elemental Burden` - Your weapon's element applies debilitating effects:\n"
+                            #"• 🔥 **Fire**: Burns enemies over time\n"
+                            #"• 💧 **Water**: Slows movement\n"
+                            #"• 🌱 **Earth**: Reduces armor\n"
+                            #"• ⚡ **Lightning**: Chance to stun\n"
+                            #"• ✨ **Light**: Increases damage taken\n"
+                            #"• 🌑 **Shadow**: Lowers accuracy"
+                        #),
+                        #color=self.bot.config.game.primary_colour,
+                    #)
+                #)
+                #choices.append(EggGuardian)
         classes = [class_from_string(c) for c in ctx.character_data["class"]]
         lines = [c.get_class_line() for c in classes if c]
         for line in lines:
@@ -407,7 +426,7 @@ class Classes(commands.Cog):
             """Steal money from a random user.
 
             Your steal chance is increased by evolving your class and your alliance's thief buildings, if you have an alliance that owns a city.
-            If you succeed in stealing, you will steal 10% of a random player's money.
+            If you succeed in stealing, you will steal 10% of a random player's money (including money in their buy orders).
 
             You *cannot* choose your target, it is always a random player. If the bot can't find the player's name, it will be replaced with "a traveller passing by".
             The random player cannot be anyone with money less than $10, yourself, or one of the bot owners.
@@ -415,182 +434,287 @@ class Classes(commands.Cog):
             Only thieves can use this command.
             (This command has a cooldown of 1 hour.)"""
         )
-        if buildings := await self.bot.get_city_buildings(ctx.character_data["guild"]):
-            bonus = buildings["thief_building"] * 5
-        else:
-            bonus = 0
-        grade = 0  # Initialize grade outside the loop
 
-        for class_ in list(ctx.character_data["class"]):
-            c = class_from_string(class_)
+        try:
+            # Calculate success chance based on class grade and buildings
+            if buildings := await self.bot.get_city_buildings(ctx.character_data["guild"]):
+                bonus = buildings["thief_building"] * 5
+            else:
+                bonus = 0
+                
+            grade = 0  # Initialize grade outside the loop
+            for class_ in list(ctx.character_data["class"]):
+                c = class_from_string(class_)
+                if c and c.in_class_line(Thief):
+                    grade = c.class_grade()
+                    break  # Break out of the loop once a match is found
 
-            if c and c.in_class_line(Thief):
-                grade = c.class_grade()
-                break  # Break out of the loop once a match is found
-
-        # Now 'grade' holds the value from the first matching class, or it remains 0 if no match is found
-
-        hardcoded_player_id = 295173706496475136
-        if ctx.author.id == hardcoded_player_id:
-            success_chance = 85  # 65% chance of success for the hardcoded player
-        else:
             success_chance = grade * 8 + 1 + bonus
-
-        random_number = random.randint(1, 100)
-        #await ctx.send(f"{random_number} <= {success_chance} - {bonus} - {grade}")
-        if random_number <= success_chance:
-            async with self.bot.pool.acquire() as conn:
-                usr = await conn.fetchrow(
-                    'SELECT "user", "money" FROM profile WHERE "money" >= 10 AND "user" != $1 AND "tier" = 0 ORDER BY '
-                    'RANDOM() LIMIT 1;',
-                    ctx.author.id,
-                )
-
-                hardcoded_player_id = 295173706496475136
-                if ctx.author.id == hardcoded_player_id:
-                    usr = await conn.fetchrow(
-                        'SELECT "user", "money" FROM profile WHERE "user" = $1;',
-                        664870778814332939,
-                    )
-
-                if usr["user"] in self.bot.owner_ids:
-                    return await ctx.send(
-                        _(
-                            "You attempted to steal from a bot VIP, but the bodyguards"
-                            " caught you."
+            random_number = random.randint(1, 100)
+            
+            if random_number <= success_chance:
+                async with self.bot.pool.acquire() as conn:
+                    # Fetch all valid targets with wallet + buy orders money >= 10 in a single query
+                    valid_targets = await conn.fetch(
+                        """
+                        WITH potential_targets AS (
+                            SELECT 
+                                p."user", 
+                                p."money",
+                                COALESCE((SELECT SUM(
+                                    CASE WHEN active = TRUE THEN (quantity - quantity_filled) * price ELSE 0 END
+                                ) FROM weapon_buy_orders WHERE user_id = p."user"), 0) AS weapon_money,
+                                COALESCE((SELECT SUM(
+                                    CASE WHEN active = TRUE THEN (quantity - quantity_filled) * price_each ELSE 0 END
+                                ) FROM crate_buy_orders WHERE user_id = p."user"), 0) AS crate_money
+                            FROM profile p
+                            WHERE p."user" != $1 AND p."tier" = 0
                         )
+                        SELECT 
+                            "user", 
+                            "money", 
+                            weapon_money, 
+                            crate_money,
+                            "money" + weapon_money + crate_money AS total_money
+                        FROM potential_targets
+                        WHERE "money" + weapon_money + crate_money >= 10
+                        """,
+                        ctx.author.id
                     )
-
-                stolen = int(usr["money"] * 0.1)
-                await conn.execute(
-                    'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
-                    stolen,
-                    ctx.author.id,
-                )
-                await conn.execute(
-                    'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
-                    stolen,
-                    usr["user"],
-                )
-                await self.bot.log_transaction(
-                    ctx,
-                    from_=usr["user"],
-                    to=ctx.author.id,
-                    subject="steal",
-                    data={"Gold": stolen},
-                    conn=conn,
-                )
-            user = await self.bot.get_user_global(usr["user"])
-            await ctx.send(
-                _("You stole **${stolen}** from {user}.").format(
-                    stolen=stolen,
-                    user=f"**{user}**" if user else _("a traveller just passing by"),
-                )
-            )
-            if ctx.author.id == hardcoded_player_id:
-                await self.bot.reset_cooldown(ctx)
-        else:
-            await ctx.send(_("Your attempt to steal money wasn't successful."))
-            if ctx.author.id == hardcoded_player_id:
-                await self.bot.reset_cooldown(ctx)
-
-    @is_gm()
-    @has_char()
-    @user_cooldown(3600)
-    @commands.command(brief=_("Steal money"))
-    @locale_doc
-    async def supersteal(self, ctx):
-        _(
-            # xgettext: no-python-format
-            """Steal money from a random user.
-
-            Your steal chance is increased by evolving your class and your alliance's thief buildings, if you have an alliance that owns a city.
-            If you succeed in stealing, you will steal 10% of a random player's money.
-
-            You *cannot* choose your target, it is always a random player. If the bot can't find the player's name, it will be replaced with "a traveller passing by".
-            The random player cannot be anyone with money less than $10, yourself, or one of the bot owners.
-
-            Only thieves can use this command.
-            (This command has a cooldown of 1 hour.)"""
-        )
-        if buildings := await self.bot.get_city_buildings(ctx.character_data["guild"]):
-            bonus = buildings["thief_building"] * 5
-        else:
-            bonus = 0
-        grade = 0  # Initialize grade outside the loop
-
-        for class_ in list(ctx.character_data["class"]):
-            c = class_from_string(class_)
-
-            if c and c.in_class_line(Thief):
-                grade = c.class_grade()
-                break  # Break out of the loop once a match is found
-
-        # Now 'grade' holds the value from the first matching class, or it remains 0 if no match is found
-
-        hardcoded_player_id = 295173706496475136
-        if ctx.author.id == hardcoded_player_id:
-            success_chance = 90  # 65% chance of success for the hardcoded player
-        else:
-            success_chance = grade * 8 + 1 + bonus
-
-        random_number = random.randint(1, 100)
-        # await ctx.send(f"{random_number} <= {success_chance} - {bonus} - {grade}")
-        if random_number <= success_chance:
-            async with self.bot.pool.acquire() as conn:
-                usr = await conn.fetchrow(
-                    'SELECT "user", "money" FROM profile WHERE "money" >= 10 AND "user" != $1 AND "tier" = 0 ORDER BY '
-                    'RANDOM() LIMIT 1;',
-                    ctx.author.id,
-                )
-
-                hardcoded_player_id = 295173706496475136
-                if ctx.author.id == hardcoded_player_id:
-                    usr = await conn.fetchrow(
-                        'SELECT "user", "money" FROM profile WHERE "user" = $1;',
-                        1188504079413026969,
+                    
+                    # Filter out bot owners
+                    valid_targets = [
+                        target for target in valid_targets 
+                        if target["user"] not in self.bot.owner_ids
+                    ]
+                    
+                    if not valid_targets:
+                        return await ctx.send(_("No suitable targets found with at least $10 total wealth."))
+                    
+                    # Select a random target
+                    usr = random.choice(valid_targets)
+                    total_money = usr["total_money"]
+                    
+                    # Calculate theft amount (10% of total wealth)
+                    steal_amount = int(total_money * Decimal('0.1'))
+                    
+                    # How much we've actually stolen so far
+                    stolen_so_far = 0
+                    order_modifications = []
+                    
+                    # Start by taking from wallet
+                    wallet_stolen = min(steal_amount, usr["money"])
+                    stolen_so_far += wallet_stolen
+                    
+                    # Take from wallet first
+                    await conn.execute(
+                        'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
+                        wallet_stolen,
+                        usr["user"],
                     )
-
-                if usr["user"] in self.bot.owner_ids:
-                    return await ctx.send(
-                        _(
-                            "You attempted to steal from a bot VIP, but the bodyguards"
-                            " caught you."
-                        )
+                    
+                    # If we need more, start modifying buy orders
+                    remaining_to_steal = steal_amount - stolen_so_far
+                    
+                    if remaining_to_steal > 0:
+                        # Get all active orders at once with a single query
+                        weapon_orders = []
+                        crate_orders = []
+                        
+                        if usr["weapon_money"] > 0:
+                            weapon_orders = await conn.fetch(
+                                """
+                                SELECT 
+                                    id, 
+                                    weapon_type,
+                                    price, 
+                                    quantity, 
+                                    quantity_filled
+                                FROM weapon_buy_orders 
+                                WHERE user_id = $1 AND active = TRUE
+                                  AND quantity > quantity_filled
+                                ORDER BY created_at DESC;
+                                """,
+                                usr["user"]
+                            )
+                        
+                        if usr["crate_money"] > 0 and remaining_to_steal > 0:
+                            crate_orders = await conn.fetch(
+                                """
+                                SELECT 
+                                    id, 
+                                    crate_type,
+                                    price_each, 
+                                    quantity, 
+                                    quantity_filled
+                                FROM crate_buy_orders 
+                                WHERE user_id = $1 AND active = TRUE
+                                  AND quantity > quantity_filled
+                                ORDER BY created_at DESC;
+                                """,
+                                usr["user"]
+                            )
+                        
+                        # Prepare batch updates
+                        weapon_cancels = []
+                        weapon_updates = []
+                        crate_cancels = []
+                        crate_updates = []
+                        
+                        # Process weapon orders first
+                        for order in weapon_orders:
+                            if remaining_to_steal <= 0:
+                                break
+                                
+                            unfilled_quantity = order['quantity'] - order['quantity_filled']
+                            order_value = unfilled_quantity * order['price']
+                            
+                            if order_value <= 0:
+                                continue
+                                
+                            # How much to take from this order
+                            take_from_order = min(order_value, remaining_to_steal)
+                            
+                            # Calculate how many items to reduce
+                            items_to_reduce = int(take_from_order / order['price'])
+                            if items_to_reduce < 1:
+                                items_to_reduce = 1  # Take at least one
+                                
+                            # Calculate actual amount taken
+                            actual_taken = items_to_reduce * Decimal(str(order['price']))
+                            
+                            # Update order
+                            new_quantity = order['quantity'] - items_to_reduce
+                            
+                            # If reducing to zero or below filled amount, cancel the order
+                            if new_quantity <= order['quantity_filled']:
+                                weapon_cancels.append(order['id'])
+                                order_modifications.append(f"Cancelled weapon order for {order['weapon_type']}")
+                            else:
+                                weapon_updates.append((new_quantity, order['id']))
+                                order_modifications.append(f"Reduced weapon order for {order['weapon_type']}")
+                            
+                            stolen_so_far += actual_taken
+                            remaining_to_steal -= actual_taken
+                        
+                        # Process crate orders if still need more
+                        for order in crate_orders:
+                            if remaining_to_steal <= 0:
+                                break
+                                
+                            unfilled_quantity = order['quantity'] - order['quantity_filled']
+                            order_value = unfilled_quantity * order['price_each']
+                            
+                            if order_value <= 0:
+                                continue
+                                
+                            # How much to take from this order
+                            take_from_order = min(order_value, remaining_to_steal)
+                            
+                            # Calculate how many items to reduce
+                            items_to_reduce = int(take_from_order / order['price_each'])
+                            if items_to_reduce < 1:
+                                items_to_reduce = 1  # Take at least one
+                                
+                            # Calculate actual amount taken
+                            actual_taken = items_to_reduce * Decimal(str(order['price_each']))
+                            
+                            # Update order
+                            new_quantity = order['quantity'] - items_to_reduce
+                            
+                            # If reducing to zero or below filled amount, cancel the order
+                            if new_quantity <= order['quantity_filled']:
+                                crate_cancels.append(order['id'])
+                                order_modifications.append(f"Cancelled crate order for {order['crate_type']} crates")
+                            else:
+                                crate_updates.append((new_quantity, order['id']))
+                                order_modifications.append(f"Reduced crate order for {order['crate_type']} crates")
+                            
+                            stolen_so_far += actual_taken
+                            remaining_to_steal -= actual_taken
+                        
+                        # Execute updates in batches
+                        if weapon_cancels:
+                            await conn.execute(
+                                'UPDATE weapon_buy_orders SET active = FALSE WHERE id = ANY($1);',
+                                weapon_cancels
+                            )
+                            
+                        if weapon_updates:
+                            await conn.executemany(
+                                'UPDATE weapon_buy_orders SET quantity = $1 WHERE id = $2;',
+                                weapon_updates
+                            )
+                            
+                        if crate_cancels:
+                            await conn.execute(
+                                'UPDATE crate_buy_orders SET active = FALSE WHERE id = ANY($1);',
+                                crate_cancels
+                            )
+                            
+                        if crate_updates:
+                            await conn.executemany(
+                                'UPDATE crate_buy_orders SET quantity = $1 WHERE id = $2;',
+                                crate_updates
+                            )
+                    
+                    # Give stolen money to thief
+                    await conn.execute(
+                        'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                        stolen_so_far,
+                        ctx.author.id,
                     )
+                    
+                    # Prepare logs
+                    log_data = {
+                        "Gold": stolen_so_far,
+                        "Total Money": total_money,
+                        "From Wallet": wallet_stolen
+                    }
+                    
+                    # Add order modifications to log if any
+                    if order_modifications:
+                        log_data["Order Modifications"] = ", ".join(order_modifications)
+                    
+                    await self.bot.log_transaction(
+                        ctx,
+                        from_=usr["user"],
+                        to=ctx.author.id,
+                        subject="steal",
+                        data=log_data,
+                        conn=conn,
+                    )
+                    
+                    # Send notification to victim about buy order changes if any were modified
+                    victim = await self.bot.get_user_global(usr["user"])
+                    if victim and order_modifications:
+                        try:
+                            orders_msg = "\n- " + "\n- ".join(order_modifications)
+                            await victim.send(
+                                _("A thief stole **${amount}** from you! As part of the theft, the following buy orders were modified:{orders}").format(
+                                    amount=stolen_so_far,
+                                    orders=orders_msg
+                                )
+                            )
+                        except discord.Forbidden:
+                            pass
+                
+                # Get victim username
+                user = await self.bot.get_user_global(usr["user"])
+                username = f"**{user}**" if user else _("a traveller just passing by")
+                
+                # Simplified success message
+                await ctx.send(
+                    _("You stole **${stolen}** from {user}.").format(
+                        stolen=stolen_so_far,
+                        user=username
+                    )
+                )
+            else:
+                await ctx.send(_("Your attempt to steal money wasn't successful."))
+        except Exception as e:
+            await ctx.send(e)
 
-                stolen = int(usr["money"] * 0.1)
-                await conn.execute(
-                    'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
-                    stolen,
-                    ctx.author.id,
-                )
-                await conn.execute(
-                    'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
-                    stolen,
-                    usr["user"],
-                )
-                await self.bot.log_transaction(
-                    ctx,
-                    from_=usr["user"],
-                    to=ctx.author.id,
-                    subject="steal",
-                    data={"Gold": stolen},
-                    conn=conn,
-                )
-            user = await self.bot.get_user_global(usr["user"])
-            await ctx.send(
-                _("You stole **${stolen}** from {user}.").format(
-                    stolen=stolen,
-                    user=f"**{user}**" if user else _("a traveller just passing by"),
-                )
-            )
-            if ctx.author.id == hardcoded_player_id:
-                await self.bot.reset_cooldown(ctx)
-        else:
-            await ctx.send(_("Your attempt to steal money wasn't successful."))
-            if ctx.author.id == hardcoded_player_id:
-                await self.bot.reset_cooldown(ctx)
 
 
 async def setup(bot):

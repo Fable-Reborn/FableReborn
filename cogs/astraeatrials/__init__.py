@@ -49,24 +49,16 @@ class AstraeaTrials(commands.Cog):
             )
 
             channels = [
-                self.bot.get_channel(1154245321451388948),  # This is the current channel where the command was invoked
-                self.bot.get_channel(1199300356081995847),  # Replace with the actual channel ID
+                self.bot.get_channel(1406638071671292018),  # This is the current channel where the command was invoked
             ]
 
-            channel1 = self.bot.get_channel(1154245321451388948)
-            channel2 = self.bot.get_channel(1199300356081995847)
-            role_id1 = 1153887457775980566
-            role_id2 = 1199303066227331163
+            channel1 = self.bot.get_channel(1406638071671292018)
+            role_id1 = 1406639398795219126
 
             if channel1:
                 role1 = ctx.guild.get_role(role_id1)
                 if role1:
                     await channel1.send(content=f"{role1.mention}", allowed_mentions=discord.AllowedMentions(roles=True))
-
-            if channel2:
-                role2 = ctx.guild.get_role(role_id2)
-                if role2:
-                    await channel2.send(content=f"{role2.mention}", allowed_mentions=discord.AllowedMentions(roles=True))
 
             # Message content, organized for better formatting
             message_intro = """
@@ -188,7 +180,7 @@ class AstraeaTrials(commands.Cog):
                                     "whispered symphony.",
                         colour=0xFFB900,
                     )
-                em.set_thumbnail(url=f"{self.bot.BASE_URL}/image/lyx.png")
+                em.set_thumbnail(url=f"http://vivi.1.free.fr/lyx.png")
                 await send_to_channels(embed=em)
                 await asyncio.sleep(5)
                 target = random.choice(raid)
@@ -273,7 +265,7 @@ class AstraeaTrials(commands.Cog):
                 )
                 em.set_author(name=f"{target}", icon_url=target.display_avatar.url)
                 em.set_footer(text=f"{len(raid)} followers remain")
-                em.set_thumbnail(url=f"{self.bot.BASE_URL}/image/lyx.png")
+                em.set_thumbnail(url=f"http://vivi.1.free.fr/lyx.png")
                 await send_to_channels(embed=em)
                 await asyncio.sleep(5)
 

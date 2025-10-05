@@ -173,9 +173,7 @@ class Miscellaneous(commands.Cog):
           `$all`
 
         Note:
-        - Commands that are on cooldown will be skipped
-        - If you are a Thief class, it will attempt to use `steal` as well
-        - This command itself has a cooldown of 1 second""")
+        - Commands that are on cooldown will be skipped""")
 
         # Check tier access
         character_data = await ctx.bot.pool.fetchrow(
@@ -189,10 +187,6 @@ class Miscellaneous(commands.Cog):
             'cratesdaily': {'cooldown': 12 * 3600},  # 12 hours
             'daily': {'cooldown': self.time_until_midnight()},
             'boosterdaily': {'cooldown': self.time_until_midnight()},
-            'steal': {
-                'cooldown': 60 * 60,  # 1 hour
-                'class_requirement': 'Thief'
-            },
             'date': {'cooldown': 12 * 3600},  # 12 hours
             'pray': {'cooldown': self.time_until_midnight()},
             'familyevent': {'cooldown': 30 * 60}  # 30 minutes
@@ -271,6 +265,8 @@ class Miscellaneous(commands.Cog):
         """Calculate the number of seconds until the next midnight UTC."""
         return int(86400 - (time.time() % 86400))
 
+
+    # Updated daily command with database streak tracking
     @has_char()
     @next_day_cooldown()
     @commands.hybrid_command(brief=_("Get your daily reward"))
@@ -289,53 +285,87 @@ class Miscellaneous(commands.Cog):
             Day 300: 1 Divine Crate + 300,000 gold
             Day 400: 3 Fortune Crates + 400,000 gold
             Day 500: 2 Divine Crates + 500,000 gold
-            
+
             **These milestones cycle every 500 days**
 
-
-            Regular rewards:
-            __Day 1__
-            $50 or 1-6 common crates
-
-            __Day 2__
-            $100 or 1-5 common crates
-
-            __Day 3__
-            $200 or 1-4 common (99%) or uncommon (1%) crates
-
-            __Day 4__
-            $400 or 1-4 common (99%) or uncommon (1%) crates
-
-            __Day 5__
-            $800 or 1-4 common (99%) or uncommon (1%) crates
-
-            __Day 6__
-            $1,600 or 1-3 common (80%), uncommon (19%) or rare (1%) crates
-
-            __Day 7__
-            $3,200 or 1-2 uncommon (80%), rare (19%) or magic (1%) crates
-
-            __Day 8__
-            $6,400 or 1-2 uncommon (80%), rare (19%) or magic (1%) crates
-
-            __Day 9__
-            $12,800 or 1-2 uncommon (80%), rare (19%) or magic (1%) crates
-
-            __Day 10__
-            $25,600 or 1 rare (80%), magic (19%) or legendary (1%) crate
-
             If you don't use this command up to 48 hours after the first use, you will lose your streak.
+            You can restore lost streaks using `restore` command (3 uses available).
 
             (This command has a cooldown until 12am UTC.)"""
         )
 
         try:
-            streak = await self.bot.redis.execute_command(
-                "INCR", f"idle:daily:{ctx.author.id}"
+            # Create streaks table if it doesn't exist
+            async with self.bot.pool.acquire() as conn:
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS streaks (
+                        user_id BIGINT PRIMARY KEY,
+                        current_streak INTEGER DEFAULT 0,
+                        highest_days INTEGER DEFAULT 0,
+                        restore_points INTEGER DEFAULT 3,
+                        last_daily TIMESTAMP DEFAULT NOW()
+                    );
+                """)
+
+            # First, try to get streak from Redis (this is the primary source)
+            redis_streak = await self.bot.redis.execute_command("GET", f"idle:daily:{ctx.author.id}")
+
+            if redis_streak is not None:
+                # User has active Redis streak, increment it
+                current_streak = int(redis_streak) + 1
+            else:
+                # No Redis streak, check if they have database data
+                async with self.bot.pool.acquire() as conn:
+                    user_data = await conn.fetchrow(
+                        'SELECT current_streak, highest_days, restore_points, last_daily FROM streaks WHERE user_id = $1;',
+                        ctx.author.id
+                    )
+
+                    if user_data is None:
+                        # Brand new user
+                        current_streak = 1
+                    else:
+                        # Check if they can continue from database or if it's been too long
+                        import datetime
+                        last_daily = user_data['last_daily']
+                        now = datetime.datetime.now(datetime.timezone.utc)
+                        time_diff = now - last_daily.replace(tzinfo=datetime.timezone.utc)
+
+                        if time_diff.total_seconds() <= 48 * 60 * 60:  # Within 48 hours
+                            current_streak = user_data['current_streak'] + 1
+                        else:
+                            current_streak = 1  # Reset streak
+
+            # Update both Redis and database
+            await self.bot.redis.execute_command(
+                "SET", f"idle:daily:{ctx.author.id}", current_streak
             )
             await self.bot.redis.execute_command(
                 "EXPIRE", f"idle:daily:{ctx.author.id}", 48 * 60 * 60
-            )  # 48h: after 2 days, they missed it
+            )
+
+            # Update database
+            async with self.bot.pool.acquire() as conn:
+                user_data = await conn.fetchrow(
+                    'SELECT highest_days, restore_points FROM streaks WHERE user_id = $1;',
+                    ctx.author.id
+                )
+
+                if user_data is None:
+                    # New user
+                    await conn.execute(
+                        'INSERT INTO streaks (user_id, current_streak, highest_days, restore_points, last_daily) VALUES ($1, $2, $3, $4, NOW());',
+                        ctx.author.id, current_streak, current_streak, 3
+                    )
+                else:
+                    # Update existing user
+                    new_highest = max(current_streak, user_data['highest_days'])
+                    await conn.execute(
+                        'UPDATE streaks SET current_streak = $1, highest_days = $2, last_daily = NOW() WHERE user_id = $3;',
+                        current_streak, new_highest, ctx.author.id
+                    )
+
+            streak = current_streak
 
             # Handle milestone rewards
             milestone_rewards = {
@@ -447,14 +477,6 @@ class Miscellaneous(commands.Cog):
                         )
                     txt = f"**{amt}** {getattr(self.bot.cogs['Crates'].emotes, type_)}"
 
-            if ctx.guild == 969741725931298857:
-                async with self.bot.pool.acquire() as conn:
-                    await conn.execute(
-                        'UPDATE profile SET "freeimage"=$1 WHERE "user"=$2;',
-                        3,
-                        ctx.author.id,
-                    )
-
             await ctx.send(
                 _(
                     "You received your daily {txt}!\nYou are on a streak of **{streak}**"
@@ -467,6 +489,341 @@ class Miscellaneous(commands.Cog):
             error_message = f"Error occurred: {e}\n"
             error_message += traceback.format_exc()
             await ctx.send(error_message)
+            print(error_message)
+
+    # New restore command
+    @has_char()
+    @commands.hybrid_command(brief=_("Restore your lost daily streak"))
+    @locale_doc
+    async def restore(self, ctx):
+        _(
+            """Restore your lost daily streak using restore points.
+
+            You have 3 restore points available. Each use will restore your streak
+            to your previous highest streak achieved.
+
+            This can only be used if your current streak is lower than your highest
+            recorded streak and you have restore points remaining."""
+        )
+
+        try:
+            async with self.bot.pool.acquire() as conn:
+                # Get user streak data
+                user_data = await conn.fetchrow(
+                    'SELECT current_streak, highest_days, restore_points FROM streaks WHERE user_id = $1;',
+                    ctx.author.id
+                )
+
+                if user_data is None:
+                    await ctx.send(_("You haven't used the daily command yet! Use `{prefix}daily` first.").format(
+                        prefix=ctx.clean_prefix))
+                    return
+
+                current_streak = user_data['current_streak']
+                highest_days = user_data['highest_days']
+                restore_points = user_data['restore_points']
+
+                # Check if they have restore points
+                if restore_points <= 0:
+                    await ctx.send(_("❌ You have no restore points remaining!"))
+                    return
+
+                # Check if they need to restore (current streak is lower than highest)
+                if current_streak >= highest_days:
+                    await ctx.send(
+                        _("❌ Your current streak (**{current}**) is already at or above your highest streak (**{highest}**)!").format(
+                            current=current_streak, highest=highest_days
+                        ))
+                    return
+
+                # Allow restoration regardless of Redis cooldown since that's the whole point
+
+                # Perform the restore
+                await conn.execute(
+                    'UPDATE streaks SET current_streak = $1, restore_points = $2, last_daily = NOW() WHERE user_id = $3;',
+                    highest_days, restore_points - 1, ctx.author.id
+                )
+
+                # Update Redis to reflect the restored streak
+                await self.bot.redis.execute_command(
+                    "SET", f"idle:daily:{ctx.author.id}", highest_days
+                )
+                await self.bot.redis.execute_command(
+                    "EXPIRE", f"idle:daily:{ctx.author.id}", 48 * 60 * 60
+                )
+
+                # Log the restore
+                await self.bot.log_transaction(
+                    ctx,
+                    from_=ctx.author.id,
+                    to=1,
+                    subject="streak_restore",
+                    data={"From": current_streak, "To": highest_days, "Points_Remaining": restore_points - 1},
+                    conn=conn,
+                )
+
+                await ctx.send(_(
+                    "✅ **Streak Restored!**\n"
+                    "Your streak has been restored from **{old}** to **{new}** days!\n"
+                    "Restore points remaining: **{points}**/2"
+                ).format(old=current_streak, new=highest_days, points=restore_points - 1))
+
+        except Exception as e:
+            import traceback
+            error_message = f"Error occurred: {e}\n"
+            error_message += traceback.format_exc()
+            await ctx.send(error_message)
+            print(error_message)
+
+
+    # Command to check streak status
+    @has_char()
+    @commands.hybrid_command(brief=_("Check your streak status"))
+    @locale_doc
+    async def streaks(self, ctx):
+        _(
+            """Check your current streak status, highest streak achieved, and remaining restore points."""
+        )
+
+        try:
+            # Get current streak from Redis
+            redis_streak = await self.bot.redis.execute_command("GET", f"idle:daily:{ctx.author.id}")
+            current_streak = int(redis_streak) if redis_streak else 0
+            ctx.send(f"loaded from redis")
+            # Get database data for highest streak and restore points
+            async with self.bot.pool.acquire() as conn:
+                user_data = await conn.fetchrow(
+                    'SELECT highest_days, restore_points FROM streaks WHERE user_id = $1;',
+                    ctx.author.id
+                )
+
+                if user_data is None:
+                    # No database data - use Redis streak as highest if it exists
+                    if current_streak == 0:
+                        await ctx.send(_("You haven't used the daily command yet! Use `{prefix}daily` first.").format(
+                            prefix=ctx.clean_prefix))
+                        return
+                    highest_days = current_streak
+                    restore_points = 2  # Default restore points
+                else:
+                    highest_days = user_data['highest_days']
+                    restore_points = user_data['restore_points']
+                    # If no database highest but we have Redis streak, use Redis as highest
+                    if highest_days == 0 and current_streak > 0:
+                        highest_days = current_streak
+
+                message = _(
+                    "You are on a daily streak of **{current}** days!\n"
+                    "Your highest streak is **{highest}** days.\n"
+                    "You have **{points}**/2 restore points remaining."
+                ).format(current=current_streak, highest=highest_days, points=restore_points)
+
+                if current_streak < highest_days and restore_points > 0:
+                    message += _("\n\n💡 *Tip: Use `{prefix}restore` to restore your streak to {highest} days!*").format(
+                        prefix=ctx.clean_prefix, highest=highest_days
+                    )
+
+                await ctx.send(message)
+
+        except Exception as e:
+            import traceback
+            error_message = f"Error occurred: {e}\n"
+            error_message += traceback.format_exc()
+            await ctx.send(error_message)
+            print(error_message)
+
+    @is_gm()
+    @commands.command(name="gameusername", hidden=True)
+    async def gameusername(self, ctx, *, username: str):
+        """Set your game username. Can only be set once."""
+
+        # Check if user already has a game username set
+        async with self.bot.pool.acquire() as conn:
+            existing = await conn.fetchval(
+                "SELECT gameusername FROM profile WHERE \"user\" = $1",
+                ctx.author.id
+            )
+
+            if existing is not None:
+                await ctx.send("❌ You already have a game username set. Contact an admin to change this.")
+                return
+
+        # Confirm the username with the user
+        confirmation_msg = f"Are you sure you want to set your game username to `{username}`?\n" \
+                           f"⚠️ **This can only be set once and cannot be changed without admin help.**"
+
+        confirmed = await ctx.confirm(confirmation_msg)
+        if not confirmed:
+            await ctx.send("❌ Game username setup cancelled.")
+            return
+
+        # Update the database
+        try:
+            async with self.bot.pool.acquire() as conn:
+                # Check again in case it was set during confirmation
+                double_check = await conn.fetchval(
+                    "SELECT gameusername FROM profile WHERE \"user\" = $1",
+                    ctx.author.id
+                )
+
+                if double_check is not None:
+                    await ctx.send("❌ Someone already set your game username. Contact an admin to change this.")
+                    return
+
+                await conn.execute(
+                    "UPDATE profile SET gameusername = $1 WHERE \"user\" = $2",
+                    username, ctx.author.id
+                )
+
+            await ctx.send(f"✅ Successfully set your game username to `{username}`!")
+
+        except Exception as e:
+            await ctx.send(f"❌ An error occurred while setting your game username: {e}")
+            # Log the error if you have logging set up
+            print(f"Error setting game username for {ctx.author.id}: {e}")
+
+    @commands.hybrid_command(brief=_("Admin: Set a user's daily streak"))
+    @locale_doc
+    async def setstreak(self, ctx, user_input: str, streak: int):
+        _(
+            """Admin command to set a user's daily streak.
+
+            Usage: setstreak <user_id_or_mention> <streak_days>
+
+            This command will:
+            - Set the user's current streak
+            - Update their highest streak if the new streak is higher
+            - Update both Redis and database
+            - Reset their daily cooldown
+
+            User can be specified by ID or mention.
+            Only accessible by bot owner."""
+        )
+
+        # Check if user is authorized (your user ID)
+        if ctx.author.id != 295173706496475136:
+            await ctx.send("❌ You don't have permission to use this command!")
+            return
+
+        # Try to resolve user from input (ID or mention)
+        user = None
+        try:
+            # First try to convert as member mention
+            user = await commands.MemberConverter().convert(ctx, user_input)
+        except commands.BadArgument:
+            # If that fails, try to parse as user ID
+            try:
+                user_id = int(user_input)
+                user = await self.bot.fetch_user(user_id)
+            except (ValueError, discord.NotFound):
+                await ctx.send("❌ Could not find user! Please provide a valid user ID or mention.")
+                return
+
+        if user is None:
+            await ctx.send("❌ Could not find user! Please provide a valid user ID or mention.")
+            return
+
+        # Validate streak value
+        if streak < 0:
+            await ctx.send("❌ Streak cannot be negative!")
+            return
+
+        if streak > 10000:  # Reasonable upper limit
+            await ctx.send("❌ Streak cannot exceed 10,000 days!")
+            return
+
+        try:
+            # Create streaks table if it doesn't exist
+            async with self.bot.pool.acquire() as conn:
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS streaks (
+                        user_id BIGINT PRIMARY KEY,
+                        current_streak INTEGER DEFAULT 0,
+                        highest_days INTEGER DEFAULT 0,
+                        restore_points INTEGER DEFAULT 3,
+                        last_daily TIMESTAMP DEFAULT NOW()
+                    );
+                """)
+
+                # Get current user data
+                user_data = await conn.fetchrow(
+                    'SELECT current_streak, highest_days, restore_points FROM streaks WHERE user_id = $1;',
+                    user.id
+                )
+
+                old_streak = 0
+                old_highest = 0
+                restore_points = 2  # Default restore points
+
+                if user_data:
+                    old_streak = user_data['current_streak']
+                    old_highest = user_data['highest_days']
+                    restore_points = user_data['restore_points']
+
+                # Calculate new highest streak
+                new_highest = max(streak, old_highest)
+
+                # Update or insert user data
+                if user_data:
+                    await conn.execute(
+                        'UPDATE streaks SET current_streak = $1, highest_days = $2, last_daily = NOW() WHERE user_id = $3;',
+                        streak, new_highest, user.id
+                    )
+                else:
+                    await conn.execute(
+                        'INSERT INTO streaks (user_id, current_streak, highest_days, restore_points, last_daily) VALUES ($1, $2, $3, $4, NOW());',
+                        user.id, streak, new_highest, restore_points
+                    )
+
+                # Update Redis
+                if streak > 0:
+                    await self.bot.redis.execute_command(
+                        "SET", f"idle:daily:{user.id}", streak
+                    )
+                    await self.bot.redis.execute_command(
+                        "EXPIRE", f"idle:daily:{user.id}", 48 * 60 * 60
+                    )
+                else:
+                    # If streak is 0, remove from Redis
+                    await self.bot.redis.execute_command("DEL", f"idle:daily:{user.id}")
+
+                # Also clear their daily cooldown so they can use daily command immediately
+                await self.bot.redis.execute_command("DEL", f"cd:{user.id}:daily")
+
+                # Log the admin action
+                await self.bot.log_transaction(
+                    ctx,
+                    from_=ctx.author.id,
+                    to=user.id,
+                    subject="admin_set_streak",
+                    data={
+                        "Old_Streak": old_streak,
+                        "New_Streak": streak,
+                        "Old_Highest": old_highest,
+                        "New_Highest": new_highest,
+                        "Admin": ctx.author.id
+                    },
+                    conn=conn,
+                )
+
+                # Create response message
+                response = f"✅ **Streak Updated for {user.display_name}!**\n"
+                response += f"Current streak: **{old_streak}** → **{streak}** days\n"
+                response += f"Highest streak: **{old_highest}** → **{new_highest}** days\n"
+                response += f"Restore points: **{restore_points}**/2\n"
+
+                if streak == 0:
+                    response += "\n🔄 Daily cooldown cleared - they can use `daily` command immediately."
+                else:
+                    response += f"\n🔄 Daily cooldown cleared - they can use `daily` command to get day {streak + 1} rewards."
+
+                await ctx.send(response)
+
+        except Exception as e:
+            import traceback
+            error_message = f"Error occurred: {e}\n"
+            error_message += traceback.format_exc()
+            await ctx.send(f"❌ An error occurred while setting the streak:\n```\n{error_message}\n```")
             print(error_message)
 
     def read_challenges_from_file(self, filename):
@@ -584,7 +941,7 @@ class Miscellaneous(commands.Cog):
             async with aiohttp.ClientSession() as session:
                 # Replace 'YOUR_GIPHY_API_KEY' with your Giphy API key
                 async with session.get(
-                        f"https://api.giphy.com/v1/gifs/search?api_key=VYSGSDAzA8X0PPWf252QMdG5wvvDyJG2&q=hug&limit=20&rating=pg") as r:
+                        f"https://api.giphy.com/v1/gifs/search?api_key=YOURKEY&q=hug&limit=20&rating=pg") as r:
                     if r.status == 200:
                         data = await r.json()
                         gif_url = random.choice(data['data'])['images']['original']['url']
@@ -625,7 +982,7 @@ class Miscellaneous(commands.Cog):
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                        f"https://api.giphy.com/v1/gifs/search?api_key=VYSGSDAzA8X0PPWf252QMdG5wvvDyJG2&q=kiss&limit=20&rating=pg") as r:
+                        f"https://api.giphy.com/v1/gifs/search?api_key=YOURKEY&q=kiss&limit=20&rating=pg") as r:
                     if r.status == 200:
                         data = await r.json()
                         gif_url = random.choice(data['data'])['images']['original']['url']
@@ -708,7 +1065,7 @@ class Miscellaneous(commands.Cog):
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                        f"https://api.giphy.com/v1/gifs/search?api_key=VYSGSDAzA8X0PPWf252QMdG5wvvDyJG2&q=pat&limit=20&rating=pg") as r:
+                        f"https://api.giphy.com/v1/gifs/search?api_key=YOURKEY&q=pat&limit=20&rating=pg") as r:
                     if r.status == 200:
                         data = await r.json()
                         gif_url = random.choice(data['data'])['images']['original']['url']
@@ -749,7 +1106,7 @@ class Miscellaneous(commands.Cog):
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                        f"https://api.giphy.com/v1/gifs/search?api_key=VYSGSDAzA8X0PPWf252QMdG5wvvDyJG2&q=slap&limit=20&rating=pg") as r:
+                        f"https://api.giphy.com/v1/gifs/search?api_key=YOURKEY&q=slap&limit=20&rating=pg") as r:
                     if r.status == 200:
                         data = await r.json()
                         gif_url = random.choice(data['data'])['images']['original']['url']
@@ -790,7 +1147,7 @@ class Miscellaneous(commands.Cog):
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                        f"https://api.giphy.com/v1/gifs/search?api_key=VYSGSDAzA8X0PPWf252QMdG5wvvDyJG2&q=highfive&limit=20&rating=pg") as r:
+                        f"https://api.giphy.com/v1/gifs/search?api_key=YOURKEY&q=highfive&limit=20&rating=pg") as r:
                     if r.status == 200:
                         data = await r.json()
                         gif_url = random.choice(data['data'])['images']['original']['url']
@@ -831,7 +1188,7 @@ class Miscellaneous(commands.Cog):
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                        f"https://api.giphy.com/v1/gifs/search?api_key=VYSGSDAzA8X0PPWf252QMdG5wvvDyJG2&q=wave&limit=20&rating=pg") as r:
+                        f"https://api.giphy.com/v1/gifs/search?api_key=YOURKEY&q=wave&limit=20&rating=pg") as r:
                     if r.status == 200:
                         data = await r.json()
                         gif_url = random.choice(data['data'])['images']['original']['url']
@@ -872,7 +1229,7 @@ class Miscellaneous(commands.Cog):
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                        f"https://api.giphy.com/v1/gifs/search?api_key=VYSGSDAzA8X0PPWf252QMdG5wvvDyJG2&q=cuddle&limit=20&rating=pg") as r:
+                        f"https://api.giphy.com/v1/gifs/search?api_key=YOURKEY&q=cuddle&limit=20&rating=pg") as r:
                     if r.status == 200:
                         data = await r.json()
                         gif_url = random.choice(data['data'])['images']['original']['url']
@@ -913,7 +1270,7 @@ class Miscellaneous(commands.Cog):
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                        f"https://api.giphy.com/v1/gifs/search?api_key=VYSGSDAzA8X0PPWf252QMdG5wvvDyJG2&q=poke&limit=20&rating=pg") as r:
+                        f"https://api.giphy.com/v1/gifs/search?api_key=YOURKEY&q=poke&limit=20&rating=pg") as r:
                     if r.status == 200:
                         data = await r.json()
                         gif_url = random.choice(data['data'])['images']['original']['url']
@@ -954,7 +1311,7 @@ class Miscellaneous(commands.Cog):
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                        f"https://api.giphy.com/v1/gifs/search?api_key=VYSGSDAzA8X0PPWf252QMdG5wvvDyJG2&q=bite&limit=20&rating=pg") as r:
+                        f"https://api.giphy.com/v1/gifs/search?api_key=YOURKEY&q=bite&limit=20&rating=pg") as r:
                     if r.status == 200:
                         data = await r.json()
                         gif_url = random.choice(data['data'])['images']['original']['url']
@@ -995,7 +1352,7 @@ class Miscellaneous(commands.Cog):
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                        f"https://api.giphy.com/v1/gifs/search?api_key=VYSGSDAzA8X0PPWf252QMdG5wvvDyJG2&q=tickle&limit=20&rating=pg") as r:
+                        f"https://api.giphy.com/v1/gifs/search?api_key=YOURKEY&q=tickle&limit=20&rating=pg") as r:
                     if r.status == 200:
                         data = await r.json()
                         gif_url = random.choice(data['data'])['images']['original']['url']
@@ -1036,7 +1393,7 @@ class Miscellaneous(commands.Cog):
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                        f"https://api.giphy.com/v1/gifs/search?api_key=VYSGSDAzA8X0PPWf252QMdG5wvvDyJG2&q=nuzzle&limit=20&rating=pg") as r:
+                        f"https://api.giphy.com/v1/gifs/search?api_key=YOURKEY&q=nuzzle&limit=20&rating=pg") as r:
                     if r.status == 200:
                         data = await r.json()
                         gif_url = random.choice(data['data'])['images']['original']['url']
@@ -1077,7 +1434,7 @@ class Miscellaneous(commands.Cog):
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                        f"https://api.giphy.com/v1/gifs/search?api_key=VYSGSDAzA8X0PPWf252QMdG5wvvDyJG2&q=lick-face&limit=20&rating=pg") as r:
+                        f"https://api.giphy.com/v1/gifs/search?api_key=YOURKEY&q=lick-face&limit=20&rating=pg") as r:
                     if r.status == 200:
                         data = await r.json()
                         gif_url = random.choice(data['data'])['images']['original']['url']
@@ -1118,7 +1475,7 @@ class Miscellaneous(commands.Cog):
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                        f"https://api.giphy.com/v1/gifs/search?api_key=VYSGSDAzA8X0PPWf252QMdG5wvvDyJG2&q=punch&limit=20&rating=pg") as r:
+                        f"https://api.giphy.com/v1/gifs/search?api_key=YOURKEY&q=punch&limit=20&rating=pg") as r:
                     if r.status == 200:
                         data = await r.json()
                         gif_url = random.choice(data['data'])['images']['original']['url']
@@ -1154,28 +1511,7 @@ class Miscellaneous(commands.Cog):
         await ctx.send("🥖")
 
 
-    @has_char()
-    @commands.hybrid_command(brief=_("View your current streak"))
-    @locale_doc
-    async def streak(self, ctx):
-        _(
-            """Want to flex your streak on someone or just check how many days in a row you've claimed your daily reward? This command is for you"""
-        )
-        streak = await self.bot.redis.execute_command(
-            "GET", f"idle:daily:{ctx.author.id}"
-        )
-        if not streak:
-            return await ctx.send(
-                _(
-                    "You don't have a daily streak yet. You can get one going by using"
-                    " the command `{prefix}daily`!"
-                ).format(prefix=ctx.clean_prefix)
-            )
-        await ctx.send(
-            _("You are on a daily streak of **{streak}!**").format(
-                streak=streak.decode()
-            )
-        )
+
 
 
     @commands.hybrid_command(aliases=["donate"], brief=_("Support the bot financially"))
@@ -1308,12 +1644,6 @@ Even $1 can help us.
     async def allcommands(self, ctx):
         """Displays all available commands categorized by their cogs, excluding @is_gm() commands."""
 
-        # Example check for blacklisted user
-        if ctx.author.id == 764904008833171478:
-            return await ctx.send(
-                f"{ctx.author.mention} your access to `allcommands` has automatically been revoked due to the reason: Automod Spam"
-            )
-
         loading_message = await ctx.send("Please wait while I gather that information for you...")
 
         try:
@@ -1374,7 +1704,7 @@ Even $1 can help us.
     @locale_doc
     async def stats(self, ctx):
         _(
-            """Show some stats about the bot, ranging from hard- and software statistics, over performance to ingame stats."""
+            """Show detailed stats about the bot, including hardware usage, software statistics, and in-game metrics."""
         )
         async with self.bot.pool.acquire() as conn:
             characters = await conn.fetchval("SELECT COUNT(*) FROM profile;")
@@ -1384,7 +1714,47 @@ Even $1 can help us.
         d0 = self.bot.user.created_at
         d1 = datetime.datetime.now(datetime.timezone.utc)
         delta = d1 - d0
-        myhours = delta.days * 1.5
+        myhours = delta.days * 24  # Convert days to hours (accurate)
+        uptime_days = delta.days
+        uptime_hours = delta.seconds // 3600
+        uptime_minutes = (delta.seconds % 3600) // 60
+        
+        # System usage stats
+        try:
+            import psutil
+            cpu_percent = psutil.cpu_percent(interval=1)
+            
+            # Get CPU name
+            try:
+                with open('/proc/cpuinfo', 'r') as f:
+                    cpuinfo = f.read()
+                cpu_model = re.search(r'model name\s+:\s+(.*)', cpuinfo).group(1)
+            except:
+                # Fallback if we can't read cpuinfo
+                cpu_model = "Unknown CPU"
+            
+            memory = psutil.virtual_memory()
+            memory_percent = memory.percent
+            memory_used_gb = memory.used / (1024 ** 3)  # Convert to GB
+            memory_total_gb = memory.total / (1024 ** 3)  # Convert to GB
+            
+            
+            boot_time = datetime.datetime.fromtimestamp(psutil.boot_time())
+            system_uptime = datetime.datetime.now() - boot_time
+            system_uptime_days = system_uptime.days
+            system_uptime_hours = system_uptime.seconds // 3600
+            system_uptime_minutes = (system_uptime.seconds % 3600) // 60
+        except:
+            # Fallback if psutil fails or is not available
+            cpu_percent = 0
+            cpu_model = "Unknown CPU"
+            memory_percent = 0
+            memory_used_gb = 0
+            memory_total_gb = 0
+            system_uptime_days = 0
+            system_uptime_hours = 0
+            system_uptime_minutes = 0
+            
         sysinfo = distro.linux_distribution()
         if self.bot.owner_ids:
             owner = nice_join(
@@ -1412,18 +1782,41 @@ Even $1 can help us.
             text=f"Fable {self.bot.version} | By {owner}",
             icon_url=self.bot.user.display_avatar.url,
         )
+        
+        # System stats with usage percentages
+        embed.add_field(
+            name=_("System Resources"),
+            value=_(
+                """\
+    CPU: **{cpu_model}**
+    CPU Usage: **{cpu_percent}%**
+    Memory: **{memory_used:.2f} GB / {memory_total:.2f} GB ({memory_percent}%)**
+    System Uptime: **{sys_days}d {sys_hours}h {sys_minutes}m**"""
+            ).format(
+                cpu_model=cpu_model,
+                cpu_percent=cpu_percent,
+                memory_used=memory_used_gb,
+                memory_total=memory_total_gb,
+                memory_percent=memory_percent,
+                sys_days=system_uptime_days,
+                sys_hours=system_uptime_hours,
+                sys_minutes=system_uptime_minutes,
+            ),
+            inline=False,
+        )
+        
+        # Hosting stats
         embed.add_field(
             name=_("Hosting Statistics"),
             value=_(
                 """\
-CPU: **AMD Ryzen Threadripper PRO 7995WX**
-Python Version **{python}** 
-discord.py Version **{dpy}**
-Compiler: **{compiler}**
-Operating System: **{osname} {osversion}**
-Kernel Version: **{kernel}**
-PostgreSQL Version: **{pg_version}**
-Redis Version: **{redis_version}**"""
+    Python Version: **{python}** 
+    discord.py Version: **{dpy}**
+    Compiler: **{compiler}**
+    Operating System: **{osname} {osversion}**
+    Kernel Version: **{kernel}**
+    PostgreSQL Version: **{pg_version}**
+    Redis Version: **{redis_version}**"""
             ).format(
                 python=platform.python_version(),
                 dpy=pkg.get_distribution("discord.py").version,
@@ -1436,23 +1829,41 @@ Redis Version: **{redis_version}**"""
             ),
             inline=False,
         )
+        
+        # Bot stats without artificially inflated numbers
         embed.add_field(
             name=_("Bot Statistics"),
             value=_(
                 """\
-Code lines written: **{lines}**
-Shards: **{shards}**
-Servers: **{guild_count}**
-Characters: **{characters}**
-Items: **{items}**
-Average hours of work: **{hours}**"""
+    Code Lines: **{lines:,}**
+    Shards: **{shards}**
+    Servers: **{guild_count:,}**
+    Bot Uptime: **{bot_days}d {bot_hours}h {bot_minutes}m**
+    Total Runtime: **{total_hours:,} hours**"""
             ).format(
                 lines=self.bot.linecount,
                 shards=self.bot.shard_count,
-                guild_count=guild_count,
-                characters=characters,
-                items=items,
-                hours=myhours,
+                guild_count=guild_count,  # Removed artificial inflation
+                bot_days=uptime_days,
+                bot_hours=uptime_hours,
+                bot_minutes=uptime_minutes,
+                total_hours=int(myhours),
+            ),
+            inline=False,
+        )
+        
+        # Game stats without artificially inflated numbers
+        embed.add_field(
+            name=_("Game Statistics"),
+            value=_(
+                """\
+    Characters: **{characters:,}**
+    Items: **{items:,}**
+    Items per Character: **{items_per_char:.2f}**"""
+            ).format(
+                characters=characters,  # Removed artificial inflation
+                items=items,  # Removed artificial inflation
+                items_per_char=(items / characters) if characters > 0 else 0,
             ),
             inline=False,
         )
@@ -1468,227 +1879,6 @@ Average hours of work: **{hours}**"""
                 time=str(self.bot.uptime).split(".")[0]
             )
         )
-
-
-    @commands.hybrid_command()
-    @has_char()
-    @locale_doc
-    async def credits(self, ctx):
-        _(
-            """Check your remaining image generation credits.
-
-        This command shows how many free images you have left and your current balance of image credits.
-
-        Usage:
-          `$credits`
-
-        Note:
-        - Image credits are used for generating images with certain commands."""
-        )
-
-        creditss = ctx.character_data["imagecredits"]
-        freecredits = ctx.character_data["freeimage"]
-
-        await ctx.send(f"You have **{freecredits}** free images left and a balance of **${creditss}**.")
-
-
-    @commands.hybrid_command()
-    @has_char()
-    @user_cooldown(60)
-    @locale_doc
-    async def imagine(self, ctx, *, prompt):
-        _(
-            """`<prompt>` - The text prompt describing the image you want to generate.
-
-        Generate an image based on your text prompt using AI.
-
-        Usage:
-          `$imagine a sunset over the mountains`
-
-        Note:
-        - This command uses image credits. You have a limited number of free images per day, after which generating images will cost in-game currency.
-        - The prompt should not exceed 120 characters.
-        - This command has a cooldown of 60 seconds."""
-        )
-
-
-        creditss = ctx.character_data["imagecredits"]
-        freecredits = 0
-        # await ctx.send(f"{credits}")
-
-        if ctx.author.id == 295173706496475136:
-            await self.bot.reset_cooldown(ctx)
-
-        if ctx.author.id == 598004694060892183:
-            await self.bot.reset_cooldown(ctx)
-
-        if ctx.author.id == 749263133620568084:
-            await self.bot.reset_cooldown(ctx)
-
-
-
-        if freecredits <= 0:
-
-            if creditss <= 0.03:
-                return await ctx.send(f"You have used up all free images for today. Additional images cost **$0.04**.")
-
-        try:
-            if ctx.author.id != 295173706496475136:
-                if ctx.author.id != 598004694060892183:
-                    if len(prompt) > 120:
-                        return await ctx.send("The prompt cannot exceed 120 characters.")
-            await ctx.send("Generating image, please wait. (This can take up to 2 minutes.)")
-            client = AsyncOpenAI()
-            response = await client.images.generate(
-                model="dall-e-3",
-                prompt=prompt,
-                size="1024x1024",
-                quality="standard",
-                n=1,
-            )
-
-            image_url = response.data[0].url
-            async with ctx.typing():
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(image_url) as resp:
-                        if resp.status != 200:
-                            return await ctx.send('Could not download file...')
-                        data = io.BytesIO(await resp.read())
-                        await ctx.send(f"{ctx.author.mention}, your image is ready!")
-
-                        if freecredits > 0:
-                            async with self.bot.pool.acquire() as connection:
-                                await connection.execute(
-                                    f'UPDATE profile SET "freeimage" = freeimage -1 WHERE "user" = {ctx.author.id}'
-                                )
-                        else:
-                            async with self.bot.pool.acquire() as connection:
-                                await connection.execute(
-                                    f'UPDATE profile SET "imagecredits" = imagecredits -0.04 WHERE "user" = {ctx.author.id}'
-                                )
-                        await ctx.send(file=discord.File(data, 'image.png'))
-        except Exception as e:
-            await ctx.send(f"An error has occurred")
-
-
-    @commands.hybrid_command()
-    @user_cooldown(80)
-    @has_char()
-    @locale_doc
-    async def imaginebig(self, ctx, *, prompt):
-        _(
-            """`<prompt>` - The text prompt describing the high-resolution image you want to generate.
-
-        Generate a high-definition image based on your text prompt using AI.
-
-        Usage:
-          `$imaginebig a detailed cityscape at night`
-
-        Note:
-        - This command costs more image credits than the standard `imagine` command.
-        - You must have enough image credits to use this command.
-        - The prompt should not exceed 120 characters.
-        - This command has a cooldown of 80 seconds."""
-        )
-
-        creditss = ctx.character_data["imagecredits"]
-        freecredits = ctx.character_data["freeimage"]
-        # await ctx.send(f"{credits}")
-
-        if ctx.author.id == 295173706496475136:
-            await self.bot.reset_cooldown(ctx)
-
-        if ctx.author.id != 598004694060892183:
-            await self.bot.reset_cooldown(ctx)
-
-        if creditss <= 0.11:
-            return await ctx.send(f"You do not have enough credits for this model. Additional images cost **$0.12**.")
-
-        try:
-            if ctx.author.id != 295173706496475136:
-                if ctx.author.id != 698612238549778493:
-                    if len(prompt) > 120:
-                        return await ctx.send("The prompt cannot exceed 120 characters.")
-            await ctx.send("Generating HD image, please wait. (This can take up to 2 minutes.)")
-            client = AsyncOpenAI()
-            response = await client.images.generate(
-                model="dall-e-3",
-                prompt=prompt,
-                size="1792x1024",
-                quality="hd",
-                n=1,
-            )
-
-            image_url = response.data[0].url
-            async with ctx.typing():
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(image_url) as resp:
-                        if resp.status != 200:
-                            return await ctx.send('Could not download file...')
-                        data = io.BytesIO(await resp.read())
-                        await ctx.send(f"{ctx.author.mention}, your image is ready!")
-                        async with self.bot.pool.acquire() as connection:
-                            await connection.execute(
-                                f'UPDATE profile SET "imagecredits" = imagecredits -0.12 WHERE "user" = {ctx.author.id}'
-                            )
-                        await ctx.send(file=discord.File(data, 'image.png'))
-        except Exception as e:
-            await ctx.send(f"An error has occurred")
-
-
-    @commands.hybrid_command(name='talk', help='Ask ChatGPT a question!')
-    @locale_doc
-    async def talk(self, ctx, *, question):
-        _(
-            """`<question>` - The message or question you want to ask.
-
-        Chat with the AI assistant. This command allows you to have a conversation with the bot.
-
-        Usage:
-          `$talk How are you today?`
-
-        Note:
-        - Your conversation history is maintained during the session.
-        - Use `$wipe` to clear your conversation history.
-        - Please adhere to the community guidelines when using this command."""
-        )
-
-        # Check if the command is invoked in one of the allowed channels
-
-        if ctx.author.id != 295173706496475136:
-            if ctx.author.id != 698612238549778493:
-                if ctx.guild:
-                    if ctx.guild.id not in [969741725931298857, 1285448244859764839]:
-                        return
-                else:
-                    if ctx.author.id != 500713532111716365:
-                        return
-
-        user_id = ctx.author.id
-
-        # Add the user's new message to their conversation history
-        if user_id not in self.conversations:
-            self.conversations[user_id] = []
-        try:
-            # Fetch the response from GPT-3 using the entire conversation as context
-            response = await self.get_gpt_response_async(
-                self.conversations[user_id] + [{"role": "user", "content": question}])
-        except Exception as e:
-            await ctx.send(e)
-        # Append the user message and response to the conversation
-        self.conversations[user_id].extend([
-            {"role": "user", "content": question},
-            {"role": "system", "content": response}
-        ])
-
-        # Ensure the conversation doesn't exceed 100 messages
-        while len(self.conversations[user_id]) > 400:
-            self.conversations[user_id].pop(0)  # remove the oldest message
-
-        # Split and send the response back to the user
-        for chunk in self.split_message(response):
-            await ctx.send(chunk)
-
 
     @commands.hybrid_command()
     @locale_doc

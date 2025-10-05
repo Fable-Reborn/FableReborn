@@ -16,6 +16,9 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
+import importlib
+import sys
+
 import discord
 from discord.ext import commands
 
@@ -26,11 +29,11 @@ class ReloadCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    @is_gm()
     @commands.command(name="unload", hidden=True)
     async def unload_cog(self, ctx, cog_name: str):
         try:
-            if ctx.author.id != 295173706496475136:
-                return await ctx.send("Access Denied")
+
             # Unload the existing cog
             await ctx.send("Unloading Cog...")
             await self.bot.unload_extension(f"cogs.{cog_name}")
@@ -38,32 +41,31 @@ class ReloadCog(commands.Cog):
         except Exception as e:
             await ctx.send(f"An error occurred: {e}")
 
+    @is_gm()
     @commands.command(name="load", hidden=True)
     async def load_cog(self, ctx, cog_name: str):
         try:
-            if ctx.author.id != 295173706496475136:
-                if ctx.author.id != 708435868842459169:
-                    return await ctx.send("Access Denied")
+
             # Unload the existing cog
             await ctx.send("Loading Cog...")
             # Reload the cog using Discord.py's reload_extension
             await self.bot.load_extension(f"cogs.{cog_name}")
             await ctx.send(f"{cog_name} has been loaded.")
         except Exception as e:
-            await ctx.send(f"An error occurred: {e}")
+
+            await ctx.send(e)
+            print(e)
 
     @is_gm()
     @commands.command(name="reload", hidden=True)
-    async def reload_cog(self, ctx, cog_name: str):
+    async def reload(self, ctx, cog: str):
         try:
-            # Unload the existing cog
-            await self.bot.unload_extension(f"cogs.{cog_name}")
-            await ctx.send("Reloading Cog...")
-            # Reload the cog using Discord.py's reload_extension
-            await self.bot.load_extension(f"cogs.{cog_name}")
-            await ctx.send(f"{cog_name} has been reloaded.")
+            self.bot.unload_extension(f"cogs.{cog}")
+            importlib.reload(importlib.import_module(f"cogs.{cog}"))
+            self.bot.load_extension(f"cogs.{cog}")
+            await ctx.send(f"Successfully reloaded cog: {cog}")
         except Exception as e:
-            await ctx.send(f"An error occurred: {e}")
+            await ctx.send(f"Failed to reload cog: {cog}\n{type(e).__name__}: {e}")
 
 
 async def setup(bot):

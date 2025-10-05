@@ -348,6 +348,33 @@ items = [
 
 
 
-def get_item() -> dict[str, str | int]:
-    item = random.choice(items)
+def get_item(adventure_level: int = 1) -> dict[str, str | int]:
+    """Get a random item based on adventure level.
+    
+    Args:
+        adventure_level: The level of the adventure (1-100)
+        
+    Returns:
+        dict: Item with name and value
+    """
+    # Calculate the minimum value threshold based on adventure level
+    # At level 1: 0% of max value
+    # At level 100: 90% of max value
+    min_value_threshold = (adventure_level / 100) * 0.9
+    
+    # Get max value from all items
+    max_value = max(item[1] for item in items)
+    
+    # Calculate minimum value for this adventure level
+    min_value = int(max_value * min_value_threshold)
+    
+    # Filter items that are at or above the minimum value
+    eligible_items = [item for item in items if item[1] >= min_value]
+    
+    # If no items meet the criteria (shouldn't happen), use all items
+    if not eligible_items:
+        eligible_items = items
+    
+    # Randomly select an item from eligible items
+    item = random.choice(eligible_items)
     return {"name": item[0], "value": item[1]}

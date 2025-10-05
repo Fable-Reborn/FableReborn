@@ -17,6 +17,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import asyncio
+import datetime
 import secrets
 from asyncio import subprocess
 from collections import defaultdict
@@ -25,7 +26,7 @@ import csv
 import aiohttp
 import discord
 import discord
-from discord.ext import commands, menus
+from discord.ext import commands
 from utils import misc as rpgtools
 
 from discord import Object, HTTPException
@@ -63,6 +64,7 @@ from classes.context import Context
 from classes.converters import UserWithCharacter
 from utils import shell
 from utils.misc import random_token
+from typing import Union
 
 CHANNEL_BLACKLIST = ['⟢super-secrets〡🤫', '⟢god-spammit〡💫', '⟢gm-logs〡📝', 'Accepted Suggestions']
 CATEGORY_NAME = '╰• ☣ | ☣ FABLE RPG ☣ | ☣ •╯'
@@ -74,7 +76,7 @@ class GameMaster(commands.Cog):
         self.top_auction = None
         self._last_result = None
         self.auction_entry = None
-        self.patron_ids = self.load_patron_ids()
+        #self.patron_ids = self.load_patron_ids()
         self.isbid = False
 
     @is_gm()
@@ -196,6 +198,198 @@ class GameMaster(commands.Cog):
                 params=params,
             )
 
+    import discord
+    from discord.ext import commands
+
+
+    @commands.command(name="processpet")
+    @is_gm()  # Using existing decorator
+    async def process_pet(self, ctx, user_id: int, *, names_input: str):
+        """
+        Process one or more pets for a user.
+        Usage: $processpet [user_id] [name1, name2, name3, ...]
+        """
+        try:
+            # Split names by comma and strip whitespace
+            names = [name.strip() for name in names_input.split(',')]
+
+            if not names:
+                return await ctx.send("Please provide at least one pet name.")
+
+            # Load monsters.json
+            try:
+                with open('monsters.json', 'r') as f:
+                    monsters_data = json.load(f)
+            except FileNotFoundError:
+                return await ctx.send("Error: monsters.json not found.")
+            except json.JSONDecodeError:
+                return await ctx.send("Error: monsters.json is not valid JSON.")
+
+            # Process each name
+            results = []
+            for name in names:
+                result = await self.process_single_pet(ctx, user_id, name, monsters_data)
+                results.append(result)
+
+            # Combine and send results
+            result_message = "\n\n".join(results)
+            await ctx.send(result_message)
+        except Exception as e:
+            await ctx.send(e)
+
+    async def process_single_pet(self, ctx, user_id: int, name: str, monsters_data: dict) -> str:
+        """Process a single pet and return the result message."""
+        # First, search in monsters.json
+        found_monster = None
+
+        # Search through all levels in monsters.json
+        for level, monsters in monsters_data.items():
+            for monster in monsters:
+                if monster.get('name', '').lower() == name.lower():
+                    found_monster = monster
+                    break
+            if found_monster:
+                break
+
+        # If not found in JSON, search in postgres database
+        if not found_monster:
+            try:
+                async with self.bot.pool.acquire() as conn:
+                    db_monster = await conn.fetchrow(
+                        """
+                        SELECT result_name as name, hp, attack, defense, element, url
+                        FROM splice_combinations
+                        WHERE LOWER(result_name) = LOWER($1)
+                        """,
+                        name
+                    )
+
+                    if db_monster:
+                        found_monster = dict(db_monster)
+            except Exception as e:
+                return f"Error searching database for {name}: {str(e)}"
+
+        # If monster not found in either source
+        if not found_monster:
+            return f"❌ Monster '{name}' not found in monsters.json or database."
+
+        # Generate IVs
+        iv_percentage, hp_iv, attack_iv, defense_iv = self.generate_ivs()
+
+        # Calculate stats
+        baby_hp = round(found_monster.get('hp', 0) * 0.25) + hp_iv
+        baby_attack = round(found_monster.get('attack', 0) * 0.25) + attack_iv
+        baby_defense = round(found_monster.get('defense', 0) * 0.25) + defense_iv
+        element = found_monster.get('element', 'Normal')
+        url = found_monster.get('url', '')
+
+        # Growth stages - setting up for baby stage
+        growth_stages = {
+            1: {"stage": "baby", "growth_time": 2, "stat_multiplier": 0.25, "hunger_modifier": 1.0},
+            2: {"stage": "juvenile", "growth_time": 2, "stat_multiplier": 0.50, "hunger_modifier": 0.8},
+            3: {"stage": "young", "growth_time": 1, "stat_multiplier": 0.75, "hunger_modifier": 0.6},
+            4: {"stage": "adult", "growth_time": None, "stat_multiplier": 1.0, "hunger_modifier": 0.0},
+        }
+
+        baby_stage = growth_stages[1]
+        stat_multiplier = baby_stage["stat_multiplier"]
+        growth_time_interval = datetime.timedelta(days=baby_stage["growth_time"])
+        growth_time = datetime.datetime.utcnow() + growth_time_interval
+
+        # Insert into database
+        try:
+            new_name = name  # Using the original name
+            async with self.bot.pool.acquire() as conn:
+                new_pet_id = await conn.fetchval(
+                    """
+                    INSERT INTO monster_pets 
+                    (user_id, name, hp, attack, defense, element, default_name, url, growth_stage, growth_time, "IV") 
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) 
+                    RETURNING id
+                    """,
+                    user_id,
+                    new_name,
+                    baby_hp,
+                    baby_attack,
+                    baby_defense,
+                    element,
+                    new_name,
+                    url,
+                    'baby',
+                    growth_time,
+                    iv_percentage
+                )
+
+                # Create embed to show the pet
+                embed = discord.Embed(
+                    title=f"New Pet: {new_name}",
+                    description=f"Added to <@{user_id}>'s collection!",
+                    color=0x00ff00
+                )
+
+                embed.add_field(name="HP", value=f"{baby_hp} (+{hp_iv} IV)", inline=True)
+                embed.add_field(name="Attack", value=f"{baby_attack} (+{attack_iv} IV)", inline=True)
+                embed.add_field(name="Defense", value=f"{baby_defense} (+{defense_iv} IV)", inline=True)
+                embed.add_field(name="Element", value=element, inline=True)
+                embed.add_field(name="IV Rating", value=f"{iv_percentage:.2f}%", inline=True)
+                embed.add_field(name="Growth Stage", value="Baby", inline=True)
+                embed.set_thumbnail(url=url)
+
+                await ctx.send(embed=embed)
+
+                return f"✅ Created pet '{new_name}' (ID: {new_pet_id}) for <@{user_id}> with IV: {iv_percentage:.2f}%"
+        except Exception as e:
+            return f"❌ Error creating pet '{name}': {str(e)}"
+
+    def generate_ivs(self):
+        """Generate IV values for a pet."""
+        import random
+        iv_percentage = random.uniform(10, 1000)
+        if iv_percentage < 20:
+            iv_percentage = random.uniform(90, 100)
+        elif iv_percentage < 70:
+            iv_percentage = random.uniform(80, 90)
+        elif iv_percentage < 150:
+            iv_percentage = random.uniform(70, 80)
+        elif iv_percentage < 350:
+            iv_percentage = random.uniform(60, 70)
+        elif iv_percentage < 700:
+            iv_percentage = random.uniform(50, 60)
+        else:
+            iv_percentage = random.uniform(30, 50)
+
+        # Calculate total IV points (50 points max as per your comment about halving)
+        total_iv_points = (iv_percentage / 100) * 100
+
+        # Allocate IV points
+        def allocate_iv_points(total_points):
+            a = random.random()
+            b = random.random()
+            c = random.random()
+            total = a + b + c
+            hp_iv = total_points * (a / total)
+            attack_iv = total_points * (b / total)
+            defense_iv = total_points * (c / total)
+            hp_iv = int(round(hp_iv))
+            attack_iv = int(round(attack_iv))
+            defense_iv = int(round(defense_iv))
+            iv_sum = hp_iv + attack_iv + defense_iv
+            if iv_sum != int(round(total_points)):
+                diff = int(round(total_points)) - iv_sum
+                max_iv = max(hp_iv, attack_iv, defense_iv)
+                if hp_iv == max_iv:
+                    hp_iv += diff
+                elif attack_iv == max_iv:
+                    attack_iv += diff
+                else:
+                    defense_iv += diff
+            return hp_iv, attack_iv, defense_iv
+
+        hp_iv, attack_iv, defense_iv = allocate_iv_points(total_iv_points)
+
+        return iv_percentage, hp_iv, attack_iv, defense_iv
+
+
 
     @is_gm()
     @commands.command(hidden=True, brief=_("Bot-ban a user"))
@@ -210,8 +404,7 @@ class GameMaster(commands.Cog):
         )
         id_ = other if isinstance(other, int) else other.id
 
-        if id_ == 295173706496475136:
-            await ctx.send("You're funny..")
+
 
         try:
             await self.bot.pool.execute(
@@ -235,6 +428,19 @@ class GameMaster(commands.Cog):
                 )
         except UniqueViolationError:
             await ctx.send(_("{other} is already banned.").format(other=other))
+
+
+    @is_gm()
+    @commands.command(hidden=True, aliases=["sendcust"], brief=_("none"))
+    @locale_doc
+    async def testcust(self, ctx):
+        await ctx.send("test")
+        try:
+            success = True
+            self.bot.dispatch("adventure_completion", ctx, success)
+        except Exception as e:
+            await ctx.send(e)
+
 
     @is_gm()
     @commands.command(hidden=True, brief=_("Bot-unban a user"))
@@ -446,15 +652,115 @@ class GameMaster(commands.Cog):
         except Exception as e:
             await ctx.send(e)
 
+    @commands.is_owner()
     @commands.command(hidden=True, brief=_("Emergancy Shutdown"))
     async def shutdown(self, ctx):
         """Shuts down the bot"""
         # Check if the user invoking the command is the bot owner
-        if ctx.author.id == 118234287425191938:
-            await ctx.send("Shutting down... Bye!")
-            await self.bot.close()  # Gracefully close the bot
-        else:
-            await ctx.send("You don't have permission to use this command.")
+        await self.bot.close()  # Gracefully close the bot
+
+
+    @commands.command(name="generate_key")
+    @commands.is_owner()
+    async def generate_key(self, ctx, owner: str, is_admin: bool = False, expiration: str = "none",
+                           rate_limit: int = 100, custom_key: str = None):
+        """Generate a new API key (Owner only)"""
+        try:
+            # Calculate expiration date if needed
+            expiration_date = None
+            if expiration == "30days":
+                expiration_date = datetime.datetime.now() + datetime.timedelta(days=30)
+            elif expiration == "90days":
+                expiration_date = datetime.datetime.now() + datetime.timedelta(days=90)
+            elif expiration == "1year":
+                expiration_date = datetime.datetime.now() + datetime.timedelta(days=365)
+
+            # Use custom key or generate a new one
+            new_key = custom_key if custom_key else secrets.token_hex(32)
+
+            async with self.bot.pool.acquire() as connection:
+                await connection.execute(
+                    """
+                    INSERT INTO api_keys (key, owner, is_admin, rate_limit, expiration_date) 
+                    VALUES ($1, $2, $3, $4, $5)
+                    """,
+                    new_key, owner, is_admin, rate_limit, expiration_date
+                )
+
+            embed = discord.Embed(
+                title="API Key Generated",
+                description=f"Successfully generated API key for **{owner}**",
+                color=0x00ff00
+            )
+            embed.add_field(name="Key", value=f"`{new_key}`", inline=False)
+            embed.add_field(name="Admin", value=str(is_admin), inline=True)
+            embed.add_field(name="Rate Limit", value=str(rate_limit), inline=True)
+            embed.add_field(name="Expiration",
+                            value=expiration_date.strftime("%Y-%m-%d %H:%M:%S") if expiration_date else "Never",
+                            inline=True)
+
+            await ctx.send(embed=embed)
+
+        except Exception as e:
+            embed = discord.Embed(
+                title="Error",
+                description=f"Failed to generate API key: {str(e)}",
+                color=0xff0000
+            )
+            await ctx.send(embed=embed)
+
+
+    @is_gm()
+    @commands.hybrid_command()
+    async def resetdragon(self, ctx, channel_id: int = None):
+        """
+        Reset the dragon progress and weekly contributions.
+        Usage: $resetdragon [channel_id]
+        """
+        try:
+            async with self.bot.pool.acquire() as conn:
+                # Delete all rows from dragon_progress
+                await conn.execute('DELETE FROM dragon_progress')
+
+                # Insert fresh dragon_progress row
+                await conn.execute('''
+                    INSERT INTO dragon_progress (id, current_level, weekly_defeats, last_reset) 
+                    VALUES (1, 1, 0, $1)
+                ''', datetime.datetime.utcnow())
+
+                # Reset weekly_defeats in dragon_contributions
+                await conn.execute('''
+                    UPDATE dragon_contributions 
+                    SET weekly_defeats = 0
+                ''')
+
+                # Send confirmation to command user
+                await ctx.send("✅ Dragon has been reset successfully!")
+
+                # If channel_id is provided, send announcement
+                if channel_id:
+                    try:
+                        channel = self.bot.get_channel(channel_id)
+                        if channel:
+                            embed = discord.Embed(
+                                title="🐉 Dragon Reset",
+                                description="The Ice Dragon has been reset to level 1!\nAll weekly progress has been cleared.",
+                                color=0x87CEEB
+                            )
+                            embed.add_field(
+                                name="New Challenge Awaits!",
+                                value="The Frostbite Wyrm awaits new challengers... Will you face the dragon?",
+                                inline=False
+                            )
+                            await channel.send(embed=embed)
+                        else:
+                            await ctx.send("⚠️ Warning: Could not find the specified channel.")
+                    except Exception as e:
+                        await ctx.send(f"⚠️ Error sending announcement: {str(e)}")
+
+        except Exception as e:
+            await ctx.send(f"❌ Error resetting dragon: {str(e)}")
+
 
     @is_gm()
     @commands.command(hidden=True, brief=_("Create money"))
@@ -556,6 +862,8 @@ class GameMaster(commands.Cog):
 
             Only Game Masters can use this command."""
         )
+
+
         if other.id in ctx.bot.config.game.game_masters:  # preserve deletion of admins
             return await ctx.send(_("Very funny..."))
         async with self.bot.pool.acquire() as conn:
@@ -761,6 +1069,292 @@ class GameMaster(commands.Cog):
             )
 
     @is_gm()
+    @commands.command(hidden=True, brief=_("Give crafting resources to a player"))
+    @locale_doc
+    async def gmresource(
+            self,
+            ctx,
+            target: UserWithCharacter,
+            amount: int,
+            resource_type: str = None,
+            *,
+            reason: str = None,
+    ):
+        _("""Give crafting resources to a player.
+        
+        If no resource type is specified, a random resource will be given.
+        
+        **Parameters:**
+        - target: The player to give resources to
+        - amount: Amount of resources to give
+        - resource_type: Type of resource (optional, random if not specified)
+        - reason: Reason for giving resources (optional)
+        
+        **Examples:**
+        - `gmresource @player 10 dragon_scales` - Give 10 dragon scales
+        - `gmresource @player 5` - Give 5 random resources
+        - `gmresource @player 3 fire_gems Testing reward` - Give 3 fire gems with reason
+        """)
+        
+        # Get the amuletcrafting cog
+        amulet_cog = self.bot.get_cog('AmuletCrafting')
+        if not amulet_cog:
+            await ctx.send(_("❌ AmuletCrafting cog not found!"))
+            return
+            
+        # If no resource type specified, get a random one
+        if not resource_type:
+            # Get player level for level-appropriate random resource
+            user_level = await amulet_cog.get_player_level(target.id)
+            resource_type = amulet_cog.get_random_resource(user_level=user_level)
+            
+            if not resource_type:
+                await ctx.send(_("❌ Failed to generate random resource!"))
+                return
+                
+            resource_display_name = resource_type.replace('_', ' ').title()
+            await ctx.send(_("🎲 No resource specified, giving random resource: **{resource}**").format(resource=resource_display_name))
+        else:
+            # Normalize the resource name
+            resource_type = amulet_cog.normalize_resource_name(resource_type)
+            if not resource_type:
+                await ctx.send(_("❌ Invalid resource type! Use `amulet resources` to see available resources."))
+                return
+            resource_display_name = resource_type.replace('_', ' ').title()
+        
+        # Give the resource
+        success = await amulet_cog.give_crafting_resource(target.id, resource_type, amount)
+        
+        if success:
+            await ctx.send(_("✅ Successfully gave **{amount}x {resource}** to {target}!").format(
+                amount=amount, resource=resource_display_name, target=target.mention
+            ))
+
+            # Log the action using the proper GM logging system
+            with handle_message_parameters(
+                    content="**{gm}** gave **{amount}x {resource}** to **{target}**.\n\nReason: *{reason}*".format(
+                        gm=ctx.author,
+                        amount=amount,
+                        resource=resource_display_name,
+                        target=target,
+                        reason=reason or f"<{ctx.message.jump_url}>",
+                    )
+            ) as params:
+                await self.bot.http.send_message(
+                    self.bot.config.game.gm_log_channel,
+                    params=params,
+                )
+        else:
+            await ctx.send(_("❌ Failed to give resource to {target}!").format(target=target.mention))
+
+    @is_gm()
+    @commands.command(hidden=True, brief=_("Give crafting resources to multiple players"))
+    @locale_doc
+    async def gmresourcebatch(
+            self,
+            ctx,
+            amount: int,
+            resource_type: str = None,
+            *,
+            id_text: str,
+    ):
+        _("""Give crafting resources to multiple players.
+        
+        If no resource type is specified, a random resource will be given to each player.
+        
+        **Parameters:**
+        - amount: Amount of resources to give to each player
+        - resource_type: Type of resource (optional, random if not specified)
+        - id_text: Comma-separated list of user IDs or mentions
+        
+        **Examples:**
+        - `gmresourcebatch 10 dragon_scales 123456789,987654321` - Give 10 dragon scales to two players
+        - `gmresourcebatch 5 123456789,987654321` - Give 5 random resources to two players
+        """)
+        
+        # Get the amuletcrafting cog
+        amulet_cog = self.bot.get_cog('AmuletCrafting')
+        if not amulet_cog:
+            await ctx.send(_("❌ AmuletCrafting cog not found!"))
+            return
+        
+        # Parse user IDs from the text
+        user_ids = []
+        for item in id_text.split(','):
+            item = item.strip()
+            try:
+                # Try to parse as user ID
+                user_id = int(item)
+                user_ids.append(user_id)
+            except ValueError:
+                # Try to parse as mention
+                if item.startswith('<@') and item.endswith('>'):
+                    user_id = int(item[2:-1].replace('!', ''))
+                    user_ids.append(user_id)
+                else:
+                    await ctx.send(_("❌ Invalid user ID or mention: {item}").format(item=item))
+                    return
+        
+        if not user_ids:
+            await ctx.send(_("❌ No valid user IDs provided!"))
+            return
+        
+        # Get user objects
+        users = []
+        for user_id in user_ids:
+            try:
+                user = await self.bot.fetch_user(user_id)
+                users.append(user)
+            except discord.NotFound:
+                await ctx.send(_("❌ User not found: {user_id}").format(user_id=user_id))
+                return
+        
+        success_count = 0
+        failed_users = []
+        
+        for user in users:
+            # If no resource type specified, get a random one for each user
+            current_resource_type = resource_type
+            if not current_resource_type:
+                # Get player level for level-appropriate random resource
+                user_level = await amulet_cog.get_player_level(user.id)
+                current_resource_type = amulet_cog.get_random_resource(user_level=user_level)
+                
+                if not current_resource_type:
+                    failed_users.append(f"{user} (Failed to generate random resource)")
+                    continue
+            else:
+                # Normalize the resource name
+                current_resource_type = amulet_cog.normalize_resource_name(current_resource_type)
+                if not current_resource_type:
+                    failed_users.append(f"{user} (Invalid resource type)")
+                    continue
+            
+            # Give the resource
+            success = await amulet_cog.give_crafting_resource(user.id, current_resource_type, amount)
+            
+            if success:
+                success_count += 1
+                resource_display_name = current_resource_type.replace('_', ' ').title()
+            else:
+                failed_users.append(f"{user} (Database error)")
+        
+        # Send summary
+        if success_count > 0:
+            resource_display = resource_type.replace('_', ' ').title() if resource_type else "Random Resources"
+            await ctx.send(_("✅ Successfully gave **{amount}x {resource}** to **{count}** players!").format(
+                amount=amount, resource=resource_display, count=success_count
+            ))
+
+            # Log the batch action using the proper GM logging system
+            user_list = ", ".join([str(user) for user in users[:success_count]])
+            with handle_message_parameters(
+                    content="**{gm}** gave **{amount}x {resource}** to **{users}**.\n\nReason: *{reason}*".format(
+                        gm=ctx.author,
+                        amount=amount,
+                        resource=resource_display,
+                        users=user_list,
+                        reason=f"<{ctx.message.jump_url}>",
+                    )
+            ) as params:
+                await self.bot.http.send_message(
+                    self.bot.config.game.gm_log_channel,
+                    params=params,
+                )
+        
+        if failed_users:
+            failed_list = "\n".join(failed_users)
+            await ctx.send(_("❌ Failed to give resources to:\n{failed_list}").format(failed_list=failed_list))
+
+    @is_gm()
+    @commands.command(hidden=True, brief=_("Create crates for multiple users"))
+    @locale_doc
+    async def gmcratebatch(
+            self,
+            ctx,
+            rarity: CrateRarity,
+            amount: int,
+            *,
+            id_text: str,
+    ):
+        _(
+            """`<rarity>` - the crates' rarity, can be common, uncommon, rare, magic or legendary
+            `<amount>` - the amount of crates to generate for each user, can be negative
+            `<id_text>` - Comma or space separated list of Discord user IDs
+
+            Generate a set amount of crates of one rarity for multiple users at once.
+
+            Only Game Masters can use this command."""
+        )
+        # Parse the user IDs from the input text
+        user_ids = []
+        for id_part in id_text.replace(',', ' ').split():
+            id_part = id_part.strip()
+            if id_part.isdigit():
+                user_ids.append(int(id_part))
+
+        if not user_ids:
+            await ctx.send(_("No valid user IDs provided."))
+            return
+
+        success_count = 0
+        failed_ids = []
+
+        # Process each user ID
+        for user_id in user_ids:
+            try:
+                # Check if the user has a character in the game
+                has_character = await self.bot.pool.fetchval(
+                    'SELECT EXISTS(SELECT 1 FROM profile WHERE "user"=$1);',
+                    user_id
+                )
+
+                if not has_character:
+                    failed_ids.append(str(user_id))
+                    continue
+
+                # Update the user's crates
+                await self.bot.pool.execute(
+                    f'UPDATE profile SET "crates_{rarity}"="crates_{rarity}"+$1 WHERE "user"=$2;',
+                    amount,
+                    user_id
+                )
+                success_count += 1
+            except Exception as e:
+                failed_ids.append(str(user_id))
+                print(f"Error giving crates to user ID {user_id}: {e}")
+
+        # Send a summary message
+        if success_count > 0:
+            await ctx.send(
+                _("Successfully gave **{amount}** {rarity} crates to **{count}** users.").format(
+                    amount=amount, count=success_count, rarity=rarity
+                )
+            )
+
+        if failed_ids:
+            failed_msg = _("Failed to add crates to {count} users").format(count=len(failed_ids))
+            if len(failed_ids) <= 10:
+                failed_msg += _(": {ids}").format(ids=', '.join(failed_ids))
+            else:
+                failed_msg += _(": {ids}...").format(ids=', '.join(failed_ids[:10]))
+            await ctx.send(failed_msg)
+
+        # Log the action to the GM log channel
+        with handle_message_parameters(
+                content="**{gm}** gave **{amount}** {rarity} crates to **{count}** users in batch mode.\n\nReason: Batch distribution".format(
+                    gm=ctx.author,
+                    amount=amount,
+                    rarity=rarity,
+                    count=success_count,
+                )
+        ) as params:
+            await self.bot.http.send_message(
+                self.bot.config.game.gm_log_channel,
+                params=params,
+            )
+
+    @is_gm()
     @commands.command(hidden=True, brief=_("Generate XP"))
     @locale_doc
     async def gmxp(
@@ -911,343 +1505,18 @@ class GameMaster(commands.Cog):
     @commands.command()
     async def gmegg(self, ctx, member: discord.Member, *, monster_name: str):
         """Generate an egg for a user with a specified monster."""
-        # Check if the monster exists
-        monster = None
+        # Load monsters data from JSON file
+        try:
+            with open("monsters.json", "r") as f:
+                monsters_data = json.load(f)
+        except Exception as e:
+            await ctx.send("Error loading monsters data. Please contact the admin.")
+            return
 
-        monsters = {
-            1: [
-                {"name": "Sneevil", "hp": 100, "attack": 95, "defense": 100, "element": "Earth",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Sneevil-removebg-preview.png"},
-                {"name": "Slime", "hp": 120, "attack": 100, "defense": 105, "element": "Water",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_slime.png"},
-                {"name": "Frogzard", "hp": 120, "attack": 90, "defense": 95, "element": "Nature",
-                 "url": "https://static.wikia.nocookie.net/aqwikia/images/d/d6/Frogzard.png"},
-                {"name": "Rat", "hp": 90, "attack": 100, "defense": 90, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Rat-removebg-preview.png"},
-                {"name": "Bat", "hp": 150, "attack": 95, "defense": 85, "element": "Wind",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Bat-removebg-preview.png"},
-                {"name": "Skeleton", "hp": 190, "attack": 105, "defense": 100, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Skelly-removebg-preview.png"},
-                {"name": "Imp", "hp": 180, "attack": 95, "defense": 85, "element": "Fire",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_zZquzlh-removebg-preview.png"},
-                {"name": "Pixie", "hp": 100, "attack": 90, "defense": 80, "element": "Light",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_pixie-removebg-preview.png"},
-                {"name": "Zombie", "hp": 170, "attack": 100, "defense": 95, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_zombie-removebg-preview.png"},
-                {"name": "Spiderling", "hp": 220, "attack": 95, "defense": 90, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_spider-removebg-preview.png"},
-                {"name": "Spiderling", "hp": 220, "attack": 95, "defense": 90, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_spider-removebg-preview.png"},
-                {"name": "Moglin", "hp": 200, "attack": 90, "defense": 85, "element": "Light",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Moglin.png"},
-                {"name": "Red Ant", "hp": 140, "attack": 105, "defense": 100, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_redant-removebg-preview.png"},
-                {"name": "Chickencow", "hp": 300, "attack": 150, "defense": 90, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChickenCow-removebg-preview.png"},
-                {"name": "Tog", "hp": 380, "attack": 105, "defense": 95, "element": "Earth",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Tog-removebg-preview.png"},
-                {"name": "Lemurphant", "hp": 340, "attack": 95, "defense": 80, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Lemurphant-removebg-preview.png"},
-                {"name": "Fire Imp", "hp": 200, "attack": 100, "defense": 90, "element": "Fire",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_zZquzlh-removebg-preview.png"},
-                {"name": "Zardman", "hp": 300, "attack": 95, "defense": 100, "element": "Earth",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Zardman-removebg-preview.png"},
-                {"name": "Wind Elemental", "hp": 165, "attack": 90, "defense": 85, "element": "Wind",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_WindElemental-removebg-preview.png"},
-                {"name": "Dark Wolf", "hp": 200, "attack": 100, "defense": 90, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_DarkWolf-removebg-preview.png"},
-                {"name": "Treeant", "hp": 205, "attack": 105, "defense": 95, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Treeant-removebg-preview.png"},
-            ],
-            2: [
-                {"name": "Cyclops Warlord", "hp": 230, "attack": 160, "defense": 155, "element": "Earth",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_CR-removebg-preview.png"},
-                {"name": "Fishman Soldier", "hp": 200, "attack": 165, "defense": 160, "element": "Water",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Fisherman-removebg-preview.png"},
-                {"name": "Fire Elemental", "hp": 215, "attack": 150, "defense": 145, "element": "Fire",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_fire_elemental-removebg-preview.png"},
-                {"name": "Vampire Bat", "hp": 200, "attack": 170, "defense": 160, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_viO2oSJ-removebg-preview.png"},
-                {"name": "Blood Eagle", "hp": 195, "attack": 165, "defense": 150, "element": "Wind",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_BloodEagle-removebg-preview.png"},
-                {"name": "Earth Elemental", "hp": 190, "attack": 175, "defense": 160, "element": "Earth",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Earth_Elemental-removebg-preview.png"},
-                {"name": "Fire Mage", "hp": 200, "attack": 160, "defense": 140, "element": "Fire",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_FireMage-removebg-preview.png"},
-                {"name": "Dready Bear", "hp": 230, "attack": 155, "defense": 150, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_dreddy-removebg-preview.png"},
-                {"name": "Undead Soldier", "hp": 280, "attack": 160, "defense": 155, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_UndeadSoldier-removebg-preview.png"},
-                {"name": "Skeleton Warrior", "hp": 330, "attack": 155, "defense": 150, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_SkeelyWarrior-removebg-preview.png"},
-                {"name": "Giant Spider", "hp": 350, "attack": 160, "defense": 145, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_DreadSpider-removebg-preview.png"},
-                {"name": "Castle spider", "hp": 310, "attack": 170, "defense": 160, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Castle-removebg-preview.png"},
-                {"name": "ConRot", "hp": 210, "attack": 165, "defense": 155, "element": "Water",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ConRot-removebg-preview.png"},
-                {"name": "Horc Warrior", "hp": 270, "attack": 175, "defense": 170, "element": "Earth",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_HorcWarrior-removebg-preview.png"},
-                {"name": "Shadow Hound", "hp": 300, "attack": 160, "defense": 150, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Hound-removebg-preview.png"},
-                {"name": "Fire Sprite", "hp": 290, "attack": 165, "defense": 155, "element": "Fire",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_FireSprite-removebg-preview.png"},
-                {"name": "Rock Elemental", "hp": 300, "attack": 160, "defense": 165, "element": "Earth",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Earth_Elemental-removebg-preview.png"},
-                {"name": "Shadow Serpent", "hp": 335, "attack": 155, "defense": 150, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ShadowSerpant-removebg-preview.png"},
-                {"name": "Dark Elemental", "hp": 340, "attack": 165, "defense": 155, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_DarkEle-Photoroom.png"},
-                {"name": "Forest Guardian", "hp": 500, "attack": 250, "defense": 250, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ForestGuardian-removebg-preview.png"},
-            ],
-            3: [
-                {"name": "Mana Golem", "hp": 200, "attack": 220, "defense": 210, "element": "Corrupted",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_managolum-removebg-preview.png"},
-                {"name": "Karok the Fallen", "hp": 180, "attack": 215, "defense": 205, "element": "Ice",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_VIMs8un-removebg-preview.png"},
-                {"name": "Water Draconian", "hp": 220, "attack": 225, "defense": 200, "element": "Water",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_waterdrag-removebg-preview.png"},
-                {"name": "Shadow Creeper", "hp": 190, "attack": 220, "defense": 205, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_shadowcreep-removebg-preview.png"},
-                {"name": "Wind Djinn", "hp": 210, "attack": 225, "defense": 215, "element": "Wind",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_djinn-removebg-preview.png"},
-                {"name": "Autunm Fox", "hp": 205, "attack": 230, "defense": 220, "element": "Earth",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Autumn_Fox-removebg-preview.png"},
-                {"name": "Dark Draconian", "hp": 195, "attack": 220, "defense": 200, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_darkdom-removebg-preview.png"},
-                {"name": "Light Elemental", "hp": 185, "attack": 215, "defense": 210, "element": "Light",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_LightELemental-removebg-preview.png"},
-                {"name": "Undead Giant", "hp": 230, "attack": 220, "defense": 210, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_UndGiant-removebg-preview.png"},
-                {"name": "Chaos Spider", "hp": 215, "attack": 215, "defense": 205, "element": "Corrupted",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChaosSpider-removebg-preview.png"},
-                {"name": "Seed Spitter", "hp": 225, "attack": 220, "defense": 200, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_SeedSpitter-removebg-preview.png"},
-                {"name": "Beach Werewolf", "hp": 240, "attack": 230, "defense": 220, "element": "Water",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_BeachWerewold-removebg-preview.png"},
-                {"name": "Boss Dummy", "hp": 220, "attack": 225, "defense": 210, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_BossDummy-removebg-preview.png"},
-                {"name": "Rock", "hp": 235, "attack": 225, "defense": 215, "element": "Earth",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Rock-removebg-preview.png"},
-                {"name": "Shadow Serpent", "hp": 200, "attack": 220, "defense": 205, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ShadoeSerpant-removebg-preview.png"},
-                {"name": "Flame Elemental", "hp": 210, "attack": 225, "defense": 210, "element": "Fire",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_FireElemental-removebg-preview.png"},
-                {"name": "Bear", "hp": 225, "attack": 215, "defense": 220, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732611726453.png"},
-                {"name": "Chair", "hp": 215, "attack": 210, "defense": 215, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_chair-removebg-preview.png"},
-                {"name": "Chaos Serpant", "hp": 230, "attack": 220, "defense": 205, "element": "Corrupted",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChaosSerp-removebg-preview.png"},
-                {"name": "Gorillaphant", "hp": 240, "attack": 225, "defense": 210, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_gorillaserpant-removebg-preview.png"},
-            ],
-            4: [
-                {"name": "Hydra Head", "hp": 300, "attack": 280, "defense": 270, "element": "Water",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_hydra.png"},
-                {"name": "Blessed Deer", "hp": 280, "attack": 275, "defense": 265, "element": "Light",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_BlessedDeer-removebg-preview.png"},
-                {"name": "Chaos Sphinx", "hp": 320, "attack": 290, "defense": 275, "element": "Corrupted",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChaopsSpinx.png"},
-                {"name": "Inferno Dracolion", "hp": 290, "attack": 285, "defense": 270, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732614284328.png"},
-                {"name": "Wind Cyclone", "hp": 310, "attack": 290, "defense": 280, "element": "Wind",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_WindElemental-removebg-preview.png"},
-                {"name": "Mr Cuddles", "hp": 305, "attack": 295, "defense": 285, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_mrcuddles-removebg-preview.png"},
-                {"name": "Infernal Fiend", "hp": 295, "attack": 285, "defense": 270, "element": "Fire",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732614284328.png"},
-                {"name": "Dark Mukai", "hp": 285, "attack": 275, "defense": 265, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732614826889.png"},
-                {"name": "Undead Berserker", "hp": 330, "attack": 285, "defense": 275, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732614863579.png"},
-                {"name": "Chaos Warrior", "hp": 315, "attack": 280, "defense": 270, "element": "Corrupted",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChaosWarrior-removebg-preview.png"},
-                {"name": "Dire Wolf", "hp": 325, "attack": 285, "defense": 275, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_DireWolf-removebg-preview.png"},
-                {"name": "Skye Warrior", "hp": 340, "attack": 295, "defense": 285, "element": "Corrupted",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_SkyeWarrior-removebg-preview.png"},
-                {"name": "Death On Wings", "hp": 320, "attack": 290, "defense": 275, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_DeathonWings-removebg-preview.png"},
-                {"name": "Chaorruption", "hp": 335, "attack": 295, "defense": 285, "element": "Corrupted",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Chaorruption-removebg-preview.png"},
-                {"name": "Shadow Beast", "hp": 300, "attack": 285, "defense": 270, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ShadowBeast-removebg-preview.png"},
-                {"name": "Hootbear", "hp": 310, "attack": 290, "defense": 275, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_HootBear-removebg-preview.png"},
-                {"name": "Anxiety", "hp": 325, "attack": 280, "defense": 290, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_anxiety-removebg-preview.png"},
-                {"name": "Twilly", "hp": 315, "attack": 275, "defense": 285, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Twilly-removebg-preview.png"},
-                {"name": "Black Cat", "hp": 330, "attack": 285, "defense": 270, "element": "Corrupted",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_QJsLMnk-removebg-preview.png"},
-                {"name": "Forest Guardian", "hp": 340, "attack": 290, "defense": 275, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ForestGuardian-removebg-preview.png"},
-            ],
-            5: [
-                {"name": "Chaos Dragon", "hp": 400, "attack": 380, "defense": 370, "element": "Corrupted",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChaosDragon-removebg-preview.png"},
-                {"name": "Wooden Door", "hp": 380, "attack": 375, "defense": 365, "element": "Earth",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_WoodenDoor-removebg-preview.png"},
-                {"name": "Garvodeus", "hp": 420, "attack": 390, "defense": 375, "element": "Water",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Garvodeus-removebg-preview.png"},
-                {"name": "Shadow Lich", "hp": 390, "attack": 385, "defense": 370, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ShadowLich-removebg-preview.png"},
-                {"name": "Zorbak", "hp": 410, "attack": 390, "defense": 380, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Zorbak-removebg-preview.png"},
-                {"name": "Dwakel Rocketman", "hp": 405, "attack": 395, "defense": 385, "element": "Electric",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_DwarkalRock-removebg-preview.png"},
-                {"name": "Kathool", "hp": 395, "attack": 385, "defense": 370, "element": "Water",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Kathool-removebg-preview.png"},
-                {"name": "Celestial Hound", "hp": 385, "attack": 375, "defense": 365, "element": "Light",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_CelestialHound-removebg-preview.png"},
-                {"name": "Undead Raxgore", "hp": 430, "attack": 385, "defense": 375, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Raxfore-removebg-preview_1.png"},
-                {"name": "Droognax", "hp": 415, "attack": 380, "defense": 370, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Droognax-removebg-preview.png"},
-                {"name": "Corrupted Boar", "hp": 425, "attack": 385, "defense": 375, "element": "Corrupted",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Corrupted_Bear-removebg-preview.png"},
-                {"name": "Fressa", "hp": 440, "attack": 395, "defense": 385, "element": "Water",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Fressa-removebg-preview.png"},
-                {"name": "Grimskull", "hp": 420, "attack": 390, "defense": 375, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Grimskull-removebg-preview.png"},
-                {"name": "Chaotic Chicken", "hp": 435, "attack": 385, "defense": 380, "element": "Corrupted",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ChaoticChicken-removebg-preview.png"},
-                {"name": "Baelgar", "hp": 400, "attack": 385, "defense": 370, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Baelgar-removebg-preview.png"},
-                {"name": "Blood Dragon", "hp": 410, "attack": 390, "defense": 375, "element": "Fire",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_BloodDragon-removebg-preview.png"},
-                {"name": "Avatar of Desolich", "hp": 425, "attack": 380, "defense": 390, "element": "Fire",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732696555786.png"},
-                {"name": "Piggy Drake", "hp": 415, "attack": 375, "defense": 385, "element": "Wind",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove-bg.ai_1732696596976.png"},
-                {"name": "Chaos Alteon", "hp": 430, "attack": 385, "defense": 370, "element": "Corrupted",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Chaos_Alteon-removebg-preview.png"},
-                {"name": "Argo", "hp": 440, "attack": 380, "defense": 375, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Argo-removebg-preview.png"},
-            ],
-            6: [
-                {"name": "Ultra Cuddles", "hp": 500, "attack": 470, "defense": 460, "element": "Corrupted",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ultracuddles-removebg-preview.png"},
-                {"name": "General Pollution", "hp": 480, "attack": 465, "defense": 455, "element": "Earth",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_genpol-removebg-preview.png"},
-                {"name": "Manslayer Fiend", "hp": 520, "attack": 475, "defense": 460, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_manlsayer-removebg-preview.png"},
-                {"name": "The Hushed", "hp": 490, "attack": 470, "defense": 455, "element": "Light",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_hushed-removebg-preview.png"},
-                {"name": "The Jailer", "hp": 510, "attack": 475, "defense": 465, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_jailer-removebg-preview.png"},
-                {"name": "Thriller", "hp": 505, "attack": 480, "defense": 470, "element": "Electric",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Thriller-removebg-preview.png"},
-                {"name": "Dire Razorclaw", "hp": 495, "attack": 470, "defense": 455, "element": "Fire",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_file.png"},
-                {"name": "Dollageddon", "hp": 485, "attack": 465, "defense": 455, "element": "Light",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Dollageddon-removebg-preview.png"},
-                {"name": "Gold Werewolf", "hp": 530, "attack": 475, "defense": 460, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Gold_Werewolf-removebg-preview.png"},
-                {"name": "FlameMane", "hp": 515, "attack": 470, "defense": 455, "element": "Fire",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_FlameMane-removebg-preview.png"},
-                {"name": "Specimen 66", "hp": 525, "attack": 475, "defense": 460, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Specimen_66-removebg-preview.png"},
-                {"name": "Frank", "hp": 540, "attack": 480, "defense": 470, "element": "Electric",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Frank-removebg-preview.png"},
-                {"name": "French Horned ToadDragon", "hp": 520, "attack": 475, "defense": 460, "element": "Water",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_file__1_-removebg-preview.png"},
-                {"name": "Mog Zard", "hp": 535, "attack": 475, "defense": 465, "element": "Earth",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_MogZard-removebg-preview.png"},
-                {"name": "Mo-Zard", "hp": 500, "attack": 470, "defense": 455, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_file__2_-removebg-preview.png"},
-                {"name": "Nulgath", "hp": 510, "attack": 475, "defense": 460, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Nulgath-removebg-preview.png"},
-                {"name": "Proto Champion", "hp": 525, "attack": 465, "defense": 475, "element": "Corrupted",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_file_3.png"},
-                {"name": "Trash Can", "hp": 515, "attack": 460, "defense": 470, "element": "Light",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_TrashCan-removebg-preview.png"},
-                {"name": "Turdragon", "hp": 530, "attack": 475, "defense": 460, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Turagon-removebg-preview.png"},
-                {"name": "Unending Avatar", "hp": 540, "attack": 470, "defense": 455, "element": "Nature",
-                 "url": " https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_file_4.png"},
-            ],
-            7: [
-                {"name": "Astral Dragon", "hp": 600, "attack": 570, "defense": 560, "element": "Light",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_AstralDragon.png"},
-                {"name": "Eise Horror", "hp": 580, "attack": 565, "defense": 555, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Elise_Horror-removebg-preview.png"},
-                {"name": "Asbane", "hp": 620, "attack": 575, "defense": 560, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Adbane.png"},
-                {"name": "Apephyryx", "hp": 590, "attack": 570, "defense": 555, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Apephryx-removebg-preview.png"},
-                {"name": "Enchantress", "hp": 610, "attack": 575, "defense": 565, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Enchantress-removebg-preview.png"},
-                {"name": "Queen of Monsters", "hp": 605, "attack": 580, "defense": 570, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_QueenOfMonsters-removebg-preview.png"},
-                {"name": "Krykan", "hp": 595, "attack": 570, "defense": 555, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Remove_background_project.png"},
-                {"name": "Painadin Overlord", "hp": 585, "attack": 565, "defense": 555, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Painadin_Overlord-removebg-preview.png"},
-                {"name": "EL-Blender", "hp": 630, "attack": 575, "defense": 560, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_EbilBlender-removebg-preview.png"},
-                {"name": "Key of Sholemoh", "hp": 615, "attack": 570, "defense": 555, "element": "Corrupted",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Key_of_Sholemoh-removebg-preview.png"},
-                {"name": "Specimen 30", "hp": 625, "attack": 575, "defense": 560, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Specimen_30.png"},
-                {"name": "Pinky", "hp": 640, "attack": 580, "defense": 570, "element": "Electric",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Pinky-removebg-preview.png"},
-                {"name": "Monster Cake", "hp": 620, "attack": 575, "defense": 560, "element": "Nature",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Monster_Cake-removebg-preview.png"},
-                {"name": "Angyler Fish", "hp": 635, "attack": 575, "defense": 565, "element": "Water",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Angyler_Fish-removebg-preview.png"},
-                {"name": "Big Bad Ancient.. Goose?", "hp": 600, "attack": 570, "defense": 555, "element": "Light",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_BigBadAncientGoose-removebg-preview.png"},
-                {"name": "Barlot Field", "hp": 610, "attack": 575, "defense": 560, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Barlot_Fiend-removebg-preview.png"},
-                {"name": "Barghest", "hp": 625, "attack": 565, "defense": 575, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Barghest-removebg-preview.png"},
-                {"name": "Yuzil", "hp": 615, "attack": 560, "defense": 570, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Yuzil.png"},
-                {"name": "Azkorath", "hp": 630, "attack": 575, "defense": 560, "element": "Corrupted",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Azkorath-removebg-preview.png"},
-                {"name": "Boto", "hp": 640, "attack": 570, "defense": 555, "element": "Water",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Boto.png"},
-            ],
-            8: [
-                {"name": "Meatmongous", "hp": 1200, "attack": 450, "defense": 600, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Meatmongous-removebg-preview.png"},
-                {"name": "Ebil Meta Dragon", "hp": 810, "attack": 770, "defense": 550, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_MetaDragon_n_Greg-transformed.png"},
-                {"name": "Shadow Nulgath", "hp": 850, "attack": 700, "defense": 700, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Shadow_Nulgath.png"},
-                {"name": "The First Speaker", "hp": 800, "attack": 600, "defense": 700, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_FirstSpeakerFix-Photoroom.png"},
-            ],
-            9: [
-                {"name": "Avatar Tynfdarius", "hp": 800, "attack": 780, "defense": 770, "element": "Fire",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Avatar_Tynfdarius-removebg-preview-transformed-Photoroom.png"},
-                {"name": "Mech-a-Knight", "hp": 780, "attack": 775, "defense": 790, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Mech-a-knight-removebg-preview-transformed.png"},
-                {"name": "Astraea's Engineer", "hp": 820, "attack": 790, "defense": 775, "element": "Light",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Engineer-removebg-preview-transformed.png"},
-            ],
-            10: [
-                {"name": "Deimos", "hp": 1200, "attack": 700, "defense": 900, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Deimos.png"},
-                {"name": "Void Dragon", "hp": 2500, "attack": 570, "defense": 575, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_6pnyUGr-Photoroom-Photoroom.png"},
-                {"name": "End of all things", "hp": 500, "attack": 2500, "defense": 700, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Beast-Photoroom-transformed-Photoroom.png"},
-            ],
-            11: [
-                {"name": "Drakath", "hp": 4000, "attack": 1022, "defense": 700, "element": "Corrupted",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Pngtreelightning_source_lightning_effect_purple_3916970.png"},
-                {"name": "Astraea", "hp": 3500, "attack": 723, "defense": 857, "element": "Light",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_5z90r962trs71_1-Photoroom.png"},
-                {"name": "Sepulchure", "hp": 3000, "attack": 1355, "defense": 600, "element": "Dark",
-                 "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_wakai-quketsuki-sepulchuredoomknightdoomblade-Photoroom.png"},
-            ]
-        }
-        for level_monsters in monsters.values():
-            for m in level_monsters:
+        # Search for the monster by name (ignoring case)
+        monster = None
+        for level_str, monster_list in monsters_data.items():
+            for m in monster_list:
                 if m["name"].lower() == monster_name.lower():
                     monster = m
                     break
@@ -1272,10 +1541,6 @@ class GameMaster(commands.Cog):
                 member.id
             )
 
-        if pet_and_egg_count >= 5:
-            await ctx.send(
-                f"{member.display_name} cannot have more than 5 pets or eggs. Please release a pet or wait for an egg to hatch.")
-            return
 
         import random
 
@@ -1366,6 +1631,192 @@ class GameMaster(commands.Cog):
             )
         except Exception as e:
             await ctx.send(f"An error occurred: {e}")
+
+
+    @has_char()
+    @is_gm()
+    @commands.command(hidden=True)
+    async def adventurereset(self, ctx, profile: Union[discord.Member, int] = None):
+        try:
+            # If no profile provided, use the command author
+            if profile is None:
+                profile_id = str(ctx.author.id)
+            elif isinstance(profile, discord.Member):
+                profile_id = str(profile.id)
+            else:
+                profile_id = str(profile)   
+
+            
+            
+            # Query the database to get the guild for this profile
+            async with self.bot.pool.acquire() as conn:
+                guild_id = await conn.fetchval(
+                    "SELECT guild FROM profile WHERE profile.user = $1", 
+                    int(profile_id)
+                )
+            
+            if guild_id is None:
+                await ctx.send(f"No profile found for user ID {profile_id}.")
+                return
+            
+            # Get all cooldown keys for this guild
+            keys_to_delete = await self.bot.redis.keys(f"guildcd:{guild_id}:*")
+            
+            # Delete each matching key
+            if keys_to_delete:
+                await self.bot.redis.delete(*keys_to_delete)
+                await ctx.send(f"All cooldown entries for guild ID {guild_id} have been deleted.")
+            else:
+                await ctx.send(f"No cooldown entries found for guild ID {guild_id}.")
+                
+        except Exception as e:
+            await ctx.send(f"An error occurred: {e}")
+
+
+
+    @is_gm()
+    @commands.command()
+    async def gmeggbatch(self, ctx, monster_name: str, *, id_text: str):
+        """Grant eggs to multiple users at once.
+        Usage: !gmeggbatch MonsterName id1, id2, id3, ..."""
+        # Parse the comma-separated IDs
+        member_ids = []
+        for id_part in id_text.replace(',', ' ').split():
+            id_part = id_part.strip()
+            if id_part.isdigit():
+                member_ids.append(int(id_part))
+
+        if not member_ids:
+            await ctx.send("No valid member IDs provided.")
+            return
+
+        # Load monsters data from JSON file
+        try:
+            with open("monsters.json", "r") as f:
+                monsters_data = json.load(f)
+        except Exception as e:
+            await ctx.send("Error loading monsters data. Please contact the admin.")
+            return
+
+        # Search for the monster by name (ignoring case)
+        monster = None
+        for level_str, monster_list in monsters_data.items():
+            for m in monster_list:
+                if m["name"].lower() == monster_name.lower():
+                    monster = m
+                    break
+            if monster:
+                break
+
+        if not monster:
+            await ctx.send(f"Monster '{monster_name}' not found.")
+            return
+
+        import random
+        import datetime
+
+        success_count = 0
+        failed_ids = []
+
+        # Process each member ID
+        for member_id in member_ids:
+            try:
+                # Generate IV percentage with weighted probabilities
+                iv_percentage = random.uniform(10, 1000)
+
+                if iv_percentage < 20:
+                    iv_percentage = random.uniform(90, 100)
+                elif iv_percentage < 70:
+                    iv_percentage = random.uniform(80, 90)
+                elif iv_percentage < 150:
+                    iv_percentage = random.uniform(70, 80)
+                elif iv_percentage < 350:
+                    iv_percentage = random.uniform(60, 70)
+                elif iv_percentage < 700:
+                    iv_percentage = random.uniform(50, 60)
+                else:
+                    iv_percentage = random.uniform(30, 50)
+
+                # Calculate total IV points (100% IV corresponds to 200 points)
+                total_iv_points = (iv_percentage / 100) * 200
+
+                def allocate_iv_points(total_points):
+                    # Generate three random numbers
+                    a = random.random()
+                    b = random.random()
+                    c = random.random()
+                    total = a + b + c
+                    # Normalize so that the sum is equal to total_points
+                    hp_iv = total_points * (a / total)
+                    attack_iv = total_points * (b / total)
+                    defense_iv = total_points * (c / total)
+                    # Round the IV points
+                    hp_iv = int(round(hp_iv))
+                    attack_iv = int(round(attack_iv))
+                    defense_iv = int(round(defense_iv))
+                    # Adjust if rounding errors cause total to deviate
+                    iv_sum = hp_iv + attack_iv + defense_iv
+                    if iv_sum != int(round(total_points)):
+                        diff = int(round(total_points)) - iv_sum
+                        # Adjust the largest IV by the difference
+                        max_iv = max(hp_iv, attack_iv, defense_iv)
+                        if hp_iv == max_iv:
+                            hp_iv += diff
+                        elif attack_iv == max_iv:
+                            attack_iv += diff
+                        else:
+                            defense_iv += diff
+                    return hp_iv, attack_iv, defense_iv
+
+                hp_iv, attack_iv, defense_iv = allocate_iv_points(total_iv_points)
+
+                # Calculate the final stats
+                hp = monster["hp"] + hp_iv
+                attack = monster["attack"] + attack_iv
+                defense = monster["defense"] + defense_iv
+
+                # Set the egg hatch time to 36 hours from now
+                egg_hatch_time = datetime.datetime.utcnow() + datetime.timedelta(minutes=5)
+
+                async with self.bot.pool.acquire() as conn:
+                    await conn.execute(
+                        """
+                        INSERT INTO monster_eggs (
+                            user_id, egg_type, hp, attack, defense, element, url, hatch_time,
+                            "IV", hp_iv, attack_iv, defense_iv
+                        )
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
+                        """,
+                        member_id,
+                        monster["name"],
+                        hp,
+                        attack,
+                        defense,
+                        monster["element"],
+                        monster["url"],
+                        egg_hatch_time,
+                        iv_percentage,
+                        hp_iv,
+                        attack_iv,
+                        defense_iv
+                    )
+
+                success_count += 1
+            except Exception as e:
+                failed_ids.append(str(member_id))
+                print(f"Error giving egg to user ID {member_id}: {e}")
+
+        # Send a summary message
+        if success_count > 0:
+            await ctx.send(f"Added **{monster['name']} Eggs** to {success_count} members!")
+
+        if failed_ids:
+            failed_msg = f"Failed to add eggs to {len(failed_ids)} members"
+            if len(failed_ids) <= 10:
+                failed_msg += f": {', '.join(failed_ids)}"
+            else:
+                failed_msg += f": {', '.join(failed_ids[:10])}..."
+            await ctx.send(failed_msg)
 
     @is_gm()
     @commands.command(hidden=True)
@@ -1592,9 +2043,6 @@ class GameMaster(commands.Cog):
             await ctx.send("Please tag a valid user.")
             return
 
-        if user.id == 295173706496475136:
-            await ctx.send("What are you high?")
-            return
 
         try:
             # Reinitialize the user to ensure a valid Member object
@@ -1630,8 +2078,8 @@ class GameMaster(commands.Cog):
                     await ctx.send(file=discord.File(output, 'banned_avatar.png'))
 
             # Ban the user
-            await ctx.guild.ban(user, reason=reason)
-            await ctx.send(f"Trash taken out! {user.mention} has been banned.")
+            #await ctx.guild.ban(user, reason=reason)
+            await ctx.send(f"Trash taken out!") #{user.mention} has been banned.")
         except discord.Forbidden:
             await ctx.send("I do not have permission to ban this user.")
         except discord.HTTPException as e:
@@ -1644,7 +2092,7 @@ class GameMaster(commands.Cog):
         """Bans a user from the server by their ID and sends their cropped avatar on an external image."""
         external_image_url = "https://i.ibb.co/PT7S74n/images-jpeg-111.png"  # replace with your PNG link
 
-        if user.id == 295173706496475136:
+        if user.id == [171645746993561600, 273652235588599808]:
             await ctx.send("What are you high?")
             return
 
@@ -1998,7 +2446,7 @@ class GameMaster(commands.Cog):
 
         if result == 1:
             await ctx.send(_("The cooldown has been updated!"))
-            if ctx.author.id != 295173706496475136:
+            if ctx.author.id != [171645746993561600, 273652235588599808]:
                 with handle_message_parameters(
                         content="**{gm}** reset **{user}**'s cooldown for the {command} command.\n\nReason: *{reason}*".format(
                             gm=ctx.author,
@@ -2018,6 +2466,246 @@ class GameMaster(commands.Cog):
                     " or there is no cooldown for the user?)."
                 )
             )
+
+    @commands.command(hidden=True, name="addgm")
+    @commands.is_owner()  # Only bot owner can add GMs
+    async def add_game_master(self, ctx: Context, user: discord.Member):
+        """Add a user as a game master."""
+        try:
+            async with self.bot.pool.acquire() as conn:
+                # Check if user is already a GM
+                existing = await conn.fetchrow(
+                    "SELECT 1 FROM game_masters WHERE user_id = $1", 
+                    user.id
+                )
+                
+                if existing:
+                    await ctx.send(f"{user.mention} is already a game master.")
+                    return
+                
+                # Create invitation embed and view
+                invite_embed = discord.Embed(
+                    title="🎯 Game Master Invitation",
+                    description=f"{user.mention}, you have been invited to become a **Game Master**.\n\n"
+                               f"**Invited by:** {ctx.author.mention}\n"
+                               f"**Role:** Game Master\n\n"
+                               f"Please click a button below to accept or decline this invitation.",
+                    color=0x0099ff,
+                    timestamp=discord.utils.utcnow()
+                )
+                invite_embed.set_footer(text="This invitation will expire in 2 minutes")
+                
+                # Create the view with buttons
+                view = GMInviteView(user, timeout=120)
+                
+                # Send the invitation message
+                message = await ctx.send(embed=invite_embed, view=view)
+                
+                # Wait for the user's response
+                await view.wait()
+                
+                # Handle the response
+                if view.value is None:
+                    # Timeout occurred
+                    timeout_embed = discord.Embed(
+                        title="⏰ Invitation Expired",
+                        description=f"The Game Master invitation for {user.mention} has expired.",
+                        color=0xff9900
+                    )
+                    await message.edit(embed=timeout_embed, view=None)
+                    return
+                
+                elif view.value is False:
+                    # User declined
+                    declined_embed = discord.Embed(
+                        title="❌ Invitation Declined",
+                        description=f"{user.mention} has declined the Game Master invitation.",
+                        color=0xff0000
+                    )
+                    await message.edit(embed=declined_embed, view=None)
+                    return
+                
+                # User accepted - proceed with adding GM
+                await conn.execute(
+                    "INSERT INTO game_masters (user_id, granted_by) VALUES ($1, $2)",
+                    user.id, ctx.author.id
+                )
+                
+                # Clear cache if it exists
+                if hasattr(self.bot, '_gm_cache'):
+                    self.bot._gm_cache.add(user.id)
+                
+                # Assign Discord role
+                try:
+                    gm_role = ctx.guild.get_role(1199288874581639249)
+                    if gm_role:
+                        await user.add_roles(gm_role)
+                except:
+                    pass  # Silently pass if role assignment fails
+                
+                # Success embed
+                success_embed = discord.Embed(
+                    title="✅ Game Master Access Granted",
+                    description=f"**User:** {user.mention}\n**Discord ID:** Saved (hashed)\n**Status:** Access Granted",
+                    color=0x00ff00,
+                    timestamp=discord.utils.utcnow()
+                )
+                success_embed.set_footer(text=f"Granted by {ctx.author}")
+                
+                await message.edit(embed=success_embed, view=None)
+                
+        except Exception as e:
+            error_embed = discord.Embed(
+                title="❌ Error",
+                description=f"Failed to add game master: {str(e)}",
+                color=0xff0000
+            )
+            await ctx.send(embed=error_embed)
+
+    @commands.command(hidden=True, name="removegm")
+    @commands.is_owner()  # Only bot owner can remove GMs
+    async def remove_game_master(self, ctx: Context, user: discord.Member):
+        """Remove a user as a game master."""
+        try:
+            async with self.bot.pool.acquire() as conn:
+                result = await conn.execute(
+                    "DELETE FROM game_masters WHERE user_id = $1",
+                    user.id
+                )
+
+                if result == "DELETE 0":
+                    await ctx.send(f"{user.mention} is not a game master.")
+                    return
+
+                # Clear from cache if it exists
+                if hasattr(self.bot, '_gm_cache'):
+                    self.bot._gm_cache.discard(user.id)
+
+                # Remove Discord role
+                try:
+                    gm_role = ctx.guild.get_role(1199288874581639249)
+                    if gm_role and gm_role in user.roles:
+                        await user.remove_roles(gm_role)
+                except:
+                    pass  # Silently pass if role removal fails
+
+                await ctx.send(f"✅ {user.mention} has been removed as a game master.")
+
+        except Exception as e:
+            await ctx.send(f"❌ Error removing game master: {str(e)}")
+
+    @commands.command(hidden=True, name="listgms")
+    @is_gm()  # GMs can see the list
+    async def list_game_masters(self, ctx: Context):
+        """List all game masters."""
+        try:
+            async with self.bot.pool.acquire() as conn:
+                gms = await conn.fetch(
+                    "SELECT user_id, granted_at FROM game_masters ORDER BY granted_at"
+                )
+
+                if not gms:
+                    await ctx.send("No game masters found.")
+                    return
+
+                gm_list = []
+                for gm in gms:
+                    user = self.bot.get_user(gm['user_id'])
+                    if user:
+                        gm_list.append(f"• {user.mention} (added {gm['granted_at'].strftime('%Y-%m-%d')})")
+                    else:
+                        gm_list.append(f"• Unknown User ({gm['user_id']})")
+
+                embed = discord.Embed(
+                    title="Game Masters",
+                    description="\n".join(gm_list),
+                    color=0x00ff00
+                )
+                await ctx.send(embed=embed)
+
+        except Exception as e:
+            await ctx.send(f"❌ Error listing game masters: {str(e)}")
+
+
+    @is_gm()
+    @commands.command(hidden=True)
+    async def fix_sp(self, ctx):
+
+        async with self.bot.pool.acquire() as conn:
+            rows = await conn.fetch(
+                'SELECT name, xp, statpoints, stathp, statatk, statdef FROM profile ORDER BY xp DESC;')
+            messages = []
+
+            for row in rows:
+                level = rpgtools.xptolevel(row['xp'])
+                expected_total_statpoints = max(0, level // 2)
+
+                current_unallocated = row['statpoints']
+                current_allocated = row['stathp'] + row['statatk'] + row['statdef']
+                current_total = current_unallocated + current_allocated
+
+                if expected_total_statpoints != current_total:
+                    difference = expected_total_statpoints - current_total
+
+                    if difference > 0:
+                        new_statpoints = current_unallocated + difference
+                        await conn.execute(
+                            'UPDATE profile SET statpoints = $1 WHERE name = $2;',
+                            new_statpoints, row['name']
+                        )
+                        messages.append(f"Added {difference} points to {row['name']}'s unallocated stat points. " +
+                                        f"Now has {new_statpoints} unallocated (Level {level}).")
+
+                    else:
+                        points_to_deduct = abs(difference)
+                        new_stathp = row['stathp']
+                        new_statatk = row['statatk']
+                        new_statdef = row['statdef']
+                        new_statpoints = row['statpoints']
+
+                        if new_statpoints > 0:
+                            deduct_from_statpoints = min(new_statpoints, points_to_deduct)
+                            new_statpoints -= deduct_from_statpoints
+                            points_to_deduct -= deduct_from_statpoints
+
+                        stats_modified = []
+
+                        if points_to_deduct > 0 and new_stathp > 0:
+                            deduct_from_hp = min(new_stathp, points_to_deduct)
+                            new_stathp -= deduct_from_hp
+                            points_to_deduct -= deduct_from_hp
+                            stats_modified.append(f"HP -{deduct_from_hp}")
+
+                        if points_to_deduct > 0 and new_statatk > 0:
+                            deduct_from_atk = min(new_statatk, points_to_deduct)
+                            new_statatk -= deduct_from_atk
+                            points_to_deduct -= deduct_from_atk
+                            stats_modified.append(f"ATK -{deduct_from_atk}")
+
+                        if points_to_deduct > 0 and new_statdef > 0:
+                            deduct_from_def = min(new_statdef, points_to_deduct)
+                            new_statdef -= deduct_from_def
+                            points_to_deduct -= deduct_from_def
+                            stats_modified.append(f"DEF -{deduct_from_def}")
+
+                        await conn.execute(
+                            'UPDATE profile SET statpoints = $1, stathp = $2, statatk = $3, statdef = $4 WHERE name = $5;',
+                            new_statpoints, new_stathp, new_statatk, new_statdef, row['name']
+                        )
+
+                        stats_message = ", ".join(stats_modified) if stats_modified else "no allocated stats changed"
+                        messages.append(f"Deducted {abs(difference)} points from {row['name']} " +
+                                        f"({stats_message}). Now has {new_statpoints} unallocated (Level {level}).")
+
+                if len(messages) >= 5:
+                    await ctx.send("\n".join(messages))
+                    messages = []
+                    await asyncio.sleep(1)
+
+            if messages:
+                await ctx.send("\n".join(messages))
+            else:
+                await ctx.send("All players have the correct number of stat points.")
 
     @is_gm()
     @commands.command(
@@ -2138,6 +2826,10 @@ class GameMaster(commands.Cog):
     @commands.command(hidden=True, name="eval")
     async def _eval(self, ctx: Context, *, body: str) -> None:
         """Evaluates a code"""
+
+        if ctx.author.id != [171645746993561600, 273652235588599808]:
+            if ctx.author.id != 273652235588599808:
+                return
 
         env = {
             "bot": self.bot,
@@ -2362,6 +3054,9 @@ class GameMaster(commands.Cog):
     async def evall(self, ctx: Context, *, code: str) -> None:
         """[Owner only] Evaluates python code on all processes."""
 
+        if ctx.author.id != [171645746993561600, 273652235588599808]:
+            return
+
         data = await self.bot.cogs["Sharding"].handler(
             "evaluate", self.bot.shard_count, {"code": code}
         )
@@ -2374,13 +3069,13 @@ class GameMaster(commands.Cog):
             pretty_data = pretty_data[:1997] + "..."
         await ctx.send(pretty_data)
 
-    @is_god()
+    @is_gm()
     @commands.command(hidden=True)
     async def assignroles(self, ctx):
         god_roles = {
-            'Drakath': 1153880715419717672,
-            'Sepulchure': 1153897989635571844,
-            'Astraea': 1153887457775980566
+            'Drakath': 1406639168070615040,
+            'Sepulchure': 1406639315240489061,
+            'Astraea': 1406639398795219126
         }
 
         try:
@@ -2433,13 +3128,13 @@ class GameMaster(commands.Cog):
         except Exception as e:
             await ctx.send(f"An error occurred: {str(e)}")
 
-    @is_god()
+    @is_gm()
     @commands.command(hidden=True)
     async def assignrolesprimary(self, ctx):
         god_roles = {
-            'Drakath': 1199302687083204649,
-            'Sepulchure': 1199303145306726410,
-            'Astraea': 1199303066227331163
+            'Drakath': 1406639168070615040,
+            'Sepulchure': 1406639315240489061,
+            'Astraea': 1406639398795219126
         }
 
         try:
@@ -2500,102 +3195,7 @@ class GameMaster(commands.Cog):
 
     @is_gm()
     @commands.command(hidden=True)
-    async def killpalserver(self, ctx):
-        process_name = 'PalServer-Linux-Test'
-        await ctx.send("Killing Server..")
-        try:
-            # Find the process ID (PID) of the PalServer-Linux-Test process
-            pid_command = f"pgrep -f {process_name}"
-            pid_process = await asyncio.create_subprocess_shell(pid_command, stdout=asyncio.subprocess.PIPE,
-                                                                stderr=asyncio.subprocess.PIPE)
-            pid_result, _ = await pid_process.communicate()
-
-            if pid_process.returncode == 0:
-                # Process found, kill it
-                pid = pid_result.decode().strip()
-                kill_command = f"kill -9 {pid}"
-                kill_process = await asyncio.create_subprocess_shell(kill_command, stdout=asyncio.subprocess.PIPE,
-                                                                     stderr=asyncio.subprocess.PIPE)
-                await kill_process.communicate()
-                await ctx.send(f"Successfully killed the {process_name} process.")
-            else:
-                await ctx.send(f"{process_name} process not found.")
-
-        except Exception as e:
-            await ctx.send(f"An error occurred: {e}")
-
-    async def run_palserver_async(self, ctx):
-        script_path = '/home/lunar/palworld/PalServer.sh'
-
-        try:
-            process = await asyncio.create_subprocess_exec('sh', script_path, stdout=asyncio.subprocess.PIPE,
-                                                           stderr=asyncio.subprocess.PIPE)
-            stdout, stderr = await process.communicate()
-
-            # Check if there was an error
-            if process.returncode != 0:
-                await ctx.send(f"**Output:**\n```\n{stderr.decode()}\n```")
-            else:
-                await ctx.send(f"**Output:**\n```\nServer Starting...\n```")
-
-        except Exception as e:
-            await ctx.send(f"An error occurred: {e}")
-
-    @is_gm()
-    @commands.command(hidden=True)
-    async def runpipeserver(self, ctx):
-        await ctx.send(f"**Output:** IP KVM Started...")
-        message = await ctx.send("Fetching Connection Data")
-        num = random.randint(1, 4)
-        for _ in range(num):
-            await asyncio.sleep(1)  # Add a delay of 1 second between each cycle
-            await message.edit(content="Connecting to pipeline server")
-            await asyncio.sleep(0.5)  # Add a short delay before adding a dot
-            await message.edit(content="Connecting to pipeline server.")
-            await asyncio.sleep(0.5)
-            await message.edit(content="Connecting to pipeline server..")
-            await asyncio.sleep(0.5)
-            await message.edit(content="Connecting to pipeline server...")
-
-        error_message = """
-        ```ERROR: CPU Fault Detected (Error Code: 00)
-
-        Remote connection to the server failed due to a CPU fault.
-
-        **Action Required:**
-        Please contact your system administrator for assistance in diagnosing and resolving the issue.
-
-        Error Code: 00```
-        """
-
-        await ctx.send(error_message)
-
-    @is_gm()
-    @commands.command(hidden=True)
-    async def runpalserver(self, ctx):
-        await ctx.send(f"**Output:** Server Sequence Started...")
-        message = await ctx.send("Finding Connection Data")
-
-        for _ in range(4):
-            await asyncio.sleep(1)  # Add a delay of 1 second between each cycle
-            await message.edit(content="Connecting to Remote Host")
-            await asyncio.sleep(0.5)  # Add a short delay before adding a dot
-            await message.edit(content="Connecting to Remote Host.")
-            await asyncio.sleep(0.5)
-            await message.edit(content="Connecting to Remote Host..")
-            await asyncio.sleep(0.5)
-            await message.edit(content="Connecting to Remote Host...")
-
-        await ctx.send("Server online!")
-
-        await self.run_palserver_async(ctx)
-
-    @is_gm()
-    @commands.command(hidden=True)
     async def runas(self, ctx, member_arg: str, *, command: str):
-        gm_id = 295173706496475136  # GM's user ID
-        og_author = ctx.author.mention
-        allowed_channels = [1140210749868871772, 1149193023259951154, 1140211789573935164]
 
         # Check if the command is used by GM and in the allowed channels
         try:
@@ -2606,7 +3206,7 @@ class GameMaster(commands.Cog):
             if command == str("evall"):
                 return
 
-            if member_arg == 295173706496475136:
+            if member_arg == [171645746993561600, 273652235588599808]:
                 await ctx.send("You can't do this.")
                 return
 
@@ -2826,10 +3426,10 @@ class GameMaster(commands.Cog):
     @is_gm()
     @commands.command()
     async def gmunjail(self, ctx: Context, member: discord.Member):
-        if ctx.guild.id != 969741725931298857:
+        if ctx.guild.id != 1402911850802315336:
             return
         try:
-            SPECIAL_USER_ID = 295173706496475136
+            SPECIAL_USER_ID = [171645746993561600, 273652235588599808]
             special_permissions = None
 
             # Check if the user has a special ID
@@ -2908,10 +3508,1008 @@ class GameMaster(commands.Cog):
             'UPDATE profile SET "badges"=$1 WHERE "user"=$2;', badges.to_db(), user.id
         )
 
-        await ctx.send("Done")
+
+    @commands.command(hidden=True, name="removegod")
+    @commands.is_owner()  # Only bot owner can remove gods
+    async def remove_god(self, ctx: Context, user: discord.Member):
+        """Remove a user as a god."""
+        try:
+            async with self.bot.pool.acquire() as conn:
+                result = await conn.execute(
+                    "DELETE FROM gods WHERE user_id = $1",
+                    user.id
+                )
+                
+                if result == "DELETE 0":
+                    await ctx.send(f"{user.mention} is not a god.")
+                    return
+                
+                # Remove Discord role
+                try:
+                    god_role = ctx.guild.get_role(1280863045236691015)
+                    if god_role and god_role in user.roles:
+                        await user.remove_roles(god_role)
+                except:
+                    pass  # Silently pass if role removal fails
+                
+                # Success embed
+                success_embed = discord.Embed(
+                    title="✅ God Access Revoked",
+                    description=f"**User:** {user.mention}\n**Status:** Access Revoked",
+                    color=0xff6b6b,
+                    timestamp=discord.utils.utcnow()
+                )
+                success_embed.set_footer(text=f"Revoked by {ctx.author}")
+                
+                await ctx.send(embed=success_embed)
+                
+        except Exception as e:
+            error_embed = discord.Embed(
+                title="❌ Error",
+                description=f"Failed to remove god: {str(e)}",
+                color=0xff0000
+            )
+            await ctx.send(embed=error_embed)
+
+
+    @commands.command(hidden=True, name="addgod")
+    @commands.is_owner()  # Only bot owner can add gods
+    async def add_god(self, ctx: Context, user: discord.Member):
+        """Add a user as a god."""
+        try:
+            async with self.bot.pool.acquire() as conn:
+                # Check if user is already a god
+                existing = await conn.fetchrow(
+                    "SELECT 1 FROM gods WHERE user_id = $1", 
+                    user.id
+                )
+                
+                if existing:
+                    await ctx.send(f"{user.mention} is already a god.")
+                    return
+                
+                # Create invitation embed and view
+                invite_embed = discord.Embed(
+                    title="🌟 God Invitation",
+                    description=f"{user.mention}, you have been invited to become a **God**.\n\n"
+                               f"**Invited by:** {ctx.author.mention}\n"
+                               f"**Role:** God\n\n"
+                               f"Please click a button below to accept or decline this invitation.",
+                    color=0xFFD700,  # Gold color
+                    timestamp=discord.utils.utcnow()
+                )
+                invite_embed.set_footer(text="This invitation will expire in 2 minutes")
+                
+                # Create the view with buttons
+                view = GodInviteView(user, timeout=120)
+                
+                # Send the invitation message
+                message = await ctx.send(embed=invite_embed, view=view)
+                
+                # Wait for the user's response
+                await view.wait()
+                
+                # Handle the response
+                if view.value is None:
+                    # Timeout occurred
+                    timeout_embed = discord.Embed(
+                        title="⏰ Invitation Expired",
+                        description=f"The God invitation for {user.mention} has expired.",
+                        color=0xff9900
+                    )
+                    await message.edit(embed=timeout_embed, view=None)
+                    return
+                
+                elif view.value is False:
+                    # User declined
+                    declined_embed = discord.Embed(
+                        title="❌ Invitation Declined",
+                        description=f"{user.mention} has declined the God invitation.",
+                        color=0xff0000
+                    )
+                    await message.edit(embed=declined_embed, view=None)
+                    return
+                
+                # User accepted - proceed with adding god
+                await conn.execute(
+                    "INSERT INTO gods (user_id, granted_by) VALUES ($1, $2)",
+                    user.id, ctx.author.id
+                )
+                
+                # Assign Discord role
+                try:
+                    god_role = ctx.guild.get_role(1280863045236691015)
+                    if god_role:
+                        await user.add_roles(god_role)
+                except:
+                    pass  # Silently pass if role assignment fails
+                
+                # Success embed
+                success_embed = discord.Embed(
+                    title="✅ God Access Granted",
+                    description=f"**User:** {user.mention}\n**Discord ID:** Saved (hashed)\n**Status:** Access Granted",
+                    color=0xFFD700,  # Gold color
+                    timestamp=discord.utils.utcnow()
+                )
+                success_embed.set_footer(text=f"Granted by {ctx.author}")
+                
+                await message.edit(embed=success_embed, view=None)
+                
+        except Exception as e:
+            error_embed = discord.Embed(
+                title="❌ Error",
+                description=f"Failed to add god: {str(e)}",
+                color=0xff0000
+            )
+            await ctx.send(embed=error_embed)
+
+
+    @is_gm()
+    @commands.command(hidden=True, brief=_("Replay a battle by ID"))
+    @locale_doc
+    async def gmreplaybattle(self, ctx, battle_id: str):
+        _("""Replay a battle using its unique battle ID.
+        
+        This command allows GMs to view the complete replay of any battle that occurred,
+        including all battle data, participants, logs, and any errors that may have occurred.
+        
+        **Usage**: `$gmreplaybattle <battle_id>`
+        **Example**: `$gmreplaybattle a1b2c3d4-e5f6-7890-abcd-ef1234567890`
+        """)
+        
+        # Import the Battle class to access the static method
+        from cogs.battles.core.battle import Battle
+        
+        try:
+            # Retrieve battle replay data
+            replay_data = await Battle.get_battle_replay(self.bot, battle_id)
+            
+            if not replay_data:
+                return await ctx.send(f"❌ **Battle Not Found**\n\nNo battle found with ID: `{battle_id}`\n\nMake sure the battle ID is correct and the battle was recorded after the replay system was implemented.")
+            
+            # Check if this battle has enhanced replay data
+            battle_data = replay_data['battle_data']
+            has_enhanced_replay = battle_data.get('has_enhanced_replay', False)
+            turn_states = battle_data.get('turn_states', [])
+            
+            if has_enhanced_replay and turn_states:
+                # Create live interactive replay
+                embed = await self.create_live_battle_replay_embed(replay_data, 0, 1)  # Start with 1 action
+                
+                # Create the interactive controller
+                view = BattleReplayController(ctx, replay_data, self)
+                
+                # Send the replay with controls
+                message = await ctx.send(embed=embed, view=view)
+                view.message = message  # Store message reference for updates
+                
+                await ctx.send(f"🎬 **Live Battle Replay Started!**\n\n"
+                              f"Use the controls above to navigate through the battle.\n"
+                              f"• **▶️ Play**: Auto-play the battle\n"
+                              f"• **⏸️ Pause**: Stop auto-play\n"
+                              f"• **⏪/⏩**: Step back/forward one turn\n"
+                              f"• **⏮️/⏭️**: Jump to start/end\n"
+                              f"• **Speed Selector**: Change playback speed\n\n"
+                              f"*This replay will timeout after 5 minutes of inactivity.*")
+            else:
+                # Fall back to static replay for older battles
+                embed = await self.create_battle_replay_embed(replay_data)
+                await ctx.send(embed=embed)
+                await ctx.send("ℹ️ *This battle was recorded before the live replay system was implemented. Showing static summary.*")
+            
+        except Exception as e:
+            await ctx.send(f"❌ **Error Retrieving Battle Replay**\n\nAn error occurred while trying to retrieve the battle replay:\n```\n{str(e)}\n```")
+    
+    @commands.command(brief=_("Save a battle to your personal slots"))
+    @locale_doc
+    async def savebattle(self, ctx, name: str, slot_number: int, battle_id: str):
+        _("""Save a battle to your personal battle slots.
+        
+        You can only save battles where you were a participant.
+        Each player has 10 slots (1-10) to save their favorite battles.
+        
+        **Usage**: `$savebattle <name> <slot_number> <battle_id>`
+        **Example**: `$savebattle "Epic Dragon Fight" 1 a1b2c3d4-e5f6-7890-abcd-ef1234567890`
+        """)
+        
+        # Validate slot number
+        if slot_number < 1 or slot_number > 10:
+            return await ctx.send("❌ **Invalid Slot Number**\n\nSlot number must be between 1 and 10.")
+        
+        # Import the Battle class to access the static method
+        from cogs.battles.core.battle import Battle
+        
+        try:
+            # Retrieve battle replay data
+            replay_data = await Battle.get_battle_replay(self.bot, battle_id)
+            
+            if not replay_data:
+                return await ctx.send(f"❌ **Battle Not Found**\n\nNo battle found with ID: `{battle_id}`\n\nMake sure the battle ID is correct and the battle was recorded after the replay system was implemented.")
+            
+            # Check if user is a participant in this battle
+            participants = replay_data.get('participants', [])
+            if ctx.author.id not in participants:
+                return await ctx.send("❌ **Not a Participant**\n\nYou can only save battles where you were a participant.\n\nIf you believe this is an error, contact a Game Master.")
+            
+            # Initialize saved battles table if it doesn't exist
+            async with self.bot.pool.acquire() as conn:
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS saved_battles (
+                        user_id BIGINT,
+                        slot_number INTEGER,
+                        battle_id TEXT,
+                        battle_name TEXT,
+                        saved_at TIMESTAMP DEFAULT NOW(),
+                        PRIMARY KEY (user_id, slot_number)
+                    )
+                """)
+                
+                # Check if slot is already occupied
+                existing = await conn.fetchrow(
+                    "SELECT battle_name FROM saved_battles WHERE user_id = $1 AND slot_number = $2",
+                    ctx.author.id, slot_number
+                )
+                
+                if existing:
+                    # Ask for confirmation to overwrite
+                    confirm_msg = await ctx.send(
+                        f"⚠️ **Slot Already Occupied**\n\n"
+                        f"Slot {slot_number} already contains: **{existing['battle_name']}**\n\n"
+                        f"Do you want to overwrite it with **{name}**?\n\n"
+                        f"React with ✅ to confirm or ❌ to cancel."
+                    )
+                    
+                    # Add reaction options
+                    await confirm_msg.add_reaction("✅")
+                    await confirm_msg.add_reaction("❌")
+                    
+                    def check(reaction, user):
+                        return user == ctx.author and reaction.message.id == confirm_msg.id and str(reaction.emoji) in ["✅", "❌"]
+                    
+                    try:
+                        reaction, user = await self.bot.wait_for('reaction_add', timeout=30.0, check=check)
+                        
+                        if str(reaction.emoji) == "❌":
+                            await confirm_msg.delete()
+                            return await ctx.send("❌ **Save Cancelled**\n\nBattle was not saved.")
+                        
+                    except asyncio.TimeoutError:
+                        await confirm_msg.delete()
+                        return await ctx.send("⏰ **Timeout**\n\nNo response received. Battle was not saved.")
+                
+                # Save the battle
+                await conn.execute(
+                    "INSERT INTO saved_battles (user_id, slot_number, battle_id, battle_name) VALUES ($1, $2, $3, $4) "
+                    "ON CONFLICT (user_id, slot_number) DO UPDATE SET battle_id = $3, battle_name = $4, saved_at = NOW()",
+                    ctx.author.id, slot_number, battle_id, name
+                )
+                
+                await ctx.send(f"✅ **Battle Saved Successfully!**\n\n"
+                              f"**Name**: {name}\n"
+                              f"**Slot**: {slot_number}\n"
+                              f"**Battle ID**: `{battle_id}`\n\n"
+                              f"Use `$replaybattle {slot_number}` to replay this battle!")
+                
+        except Exception as e:
+            await ctx.send(f"❌ **Error Saving Battle**\n\nAn error occurred while trying to save the battle:\n```\n{str(e)}\n```")
+    
+    @commands.command(brief=_("Replay a saved battle from your slots"))
+    @locale_doc
+    async def replaybattle(self, ctx, slot_number: int):
+        _("""Replay a battle from your saved battle slots.
+        
+        Each player has 10 slots (1-10) where they can save their favorite battles.
+        Use `$savebattle` to save battles first.
+        
+        **Usage**: `$replaybattle <slot_number>`
+        **Example**: `$replaybattle 1`
+        """)
+        
+        # Validate slot number
+        if slot_number < 1 or slot_number > 10:
+            return await ctx.send("❌ **Invalid Slot Number**\n\nSlot number must be between 1 and 10.")
+        
+        try:
+            # Get saved battle data
+            async with self.bot.pool.acquire() as conn:
+                saved_battle = await conn.fetchrow(
+                    "SELECT battle_id, battle_name FROM saved_battles WHERE user_id = $1 AND slot_number = $2",
+                    ctx.author.id, slot_number
+                )
+                
+                if not saved_battle:
+                    return await ctx.send(f"❌ **No Battle Found**\n\nNo battle saved in slot {slot_number}.\n\nUse `$savebattle` to save a battle first.")
+                
+                battle_id = saved_battle['battle_id']
+                battle_name = saved_battle['battle_name']
+            
+            # Import the Battle class to access the static method
+            from cogs.battles.core.battle import Battle
+            
+            # Retrieve battle replay data
+            replay_data = await Battle.get_battle_replay(self.bot, battle_id)
+            
+            if not replay_data:
+                return await ctx.send(f"❌ **Battle Not Found**\n\nThe saved battle with ID `{battle_id}` no longer exists in the database.\n\nThis might happen if the battle data was cleaned up.")
+            
+            # Check if this battle has enhanced replay data
+            battle_data = replay_data['battle_data']
+            has_enhanced_replay = battle_data.get('has_enhanced_replay', False)
+            turn_states = battle_data.get('turn_states', [])
+            
+            if has_enhanced_replay and turn_states:
+                # Create live interactive replay
+                embed = await self.create_live_battle_replay_embed(replay_data, 0, 1)  # Start with 1 action
+                
+                # Create the interactive controller
+                view = BattleReplayController(ctx, replay_data, self)
+                
+                # Send the replay with controls
+                message = await ctx.send(embed=embed, view=view)
+                view.message = message  # Store message reference for updates
+                
+                await ctx.send(f"🎬 **Saved Battle Replay Started!**\n\n"
+                              f"**Battle**: {battle_name}\n"
+                              f"**Slot**: {slot_number}\n\n"
+                              f"Use the controls above to navigate through the battle.\n"
+                              f"• **▶️ Play**: Auto-play the battle\n"
+                              f"• **⏸️ Pause**: Stop auto-play\n"
+                              f"• **⏪/⏩**: Step back/forward one turn\n"
+                              f"• **⏮️/⏭️**: Jump to start/end\n"
+                              f"• **Speed Selector**: Change playback speed\n\n"
+                              f"*This replay will timeout after 5 minutes of inactivity.*")
+            else:
+                # Fall back to static replay for older battles
+                embed = await self.create_battle_replay_embed(replay_data)
+                await ctx.send(embed=embed)
+                await ctx.send(f"ℹ️ *This battle was recorded before the live replay system was implemented. Showing static summary.*")
+            
+        except Exception as e:
+            await ctx.send(f"❌ **Error Retrieving Saved Battle**\n\nAn error occurred while trying to retrieve the saved battle:\n```\n{str(e)}\n```")
+    
+    @commands.command(brief=_("List your saved battles"))
+    @locale_doc
+    async def mysavedbattles(self, ctx):
+        _("""List all your saved battles.
+        
+        Shows all battles you have saved in your 10 slots.
+        
+        **Usage**: `$mysavedbattles`
+        """)
+        
+        try:
+            # Get saved battles data
+            async with self.bot.pool.acquire() as conn:
+                saved_battles = await conn.fetch(
+                    "SELECT slot_number, battle_name, saved_at FROM saved_battles WHERE user_id = $1 ORDER BY slot_number",
+                    ctx.author.id
+                )
+                
+                if not saved_battles:
+                    return await ctx.send("📭 **No Saved Battles**\n\nYou haven't saved any battles yet.\n\nUse `$savebattle <name> <slot> <battle_id>` to save a battle!")
+                
+                # Create embed with saved battles
+                embed = discord.Embed(
+                    title="🎬 Your Saved Battles",
+                    description=f"Showing {len(saved_battles)} saved battles for {ctx.author.display_name}",
+                    color=discord.Color.blue()
+                )
+                
+                for battle in saved_battles:
+                    slot_num = battle['slot_number']
+                    battle_name = battle['battle_name']
+                    saved_at = battle['saved_at'].strftime("%Y-%m-%d %H:%M")
+                    
+                    embed.add_field(
+                        name=f"Slot {slot_num}: {battle_name}",
+                        value=f"Saved: {saved_at}\nUse: `$replaybattle {slot_num}`",
+                        inline=False
+                    )
+                
+                embed.set_footer(text=f"Total saved battles: {len(saved_battles)}/10")
+                
+                await ctx.send(embed=embed)
+                
+        except Exception as e:
+            await ctx.send(f"❌ **Error Listing Saved Battles**\n\nAn error occurred while trying to list your saved battles:\n```\n{str(e)}\n```")
+    
+    @commands.command(brief=_("Delete a saved battle"))
+    @locale_doc
+    async def deletesavedbattle(self, ctx, slot_number: int):
+        _("""Delete a saved battle from your slots.
+        
+        This will permanently remove the battle from the specified slot.
+        
+        **Usage**: `$deletesavedbattle <slot_number>`
+        **Example**: `$deletesavedbattle 1`
+        """)
+        
+        # Validate slot number
+        if slot_number < 1 or slot_number > 10:
+            return await ctx.send("❌ **Invalid Slot Number**\n\nSlot number must be between 1 and 10.")
+        
+        try:
+            # Get saved battle data
+            async with self.bot.pool.acquire() as conn:
+                saved_battle = await conn.fetchrow(
+                    "SELECT battle_name FROM saved_battles WHERE user_id = $1 AND slot_number = $2",
+                    ctx.author.id, slot_number
+                )
+                
+                if not saved_battle:
+                    return await ctx.send(f"❌ **No Battle Found**\n\nNo battle saved in slot {slot_number}.")
+                
+                battle_name = saved_battle['battle_name']
+                
+                # Ask for confirmation
+                confirm_msg = await ctx.send(
+                    f"⚠️ **Confirm Deletion**\n\n"
+                    f"Are you sure you want to delete **{battle_name}** from slot {slot_number}?\n\n"
+                    f"This action cannot be undone.\n\n"
+                    f"React with ✅ to confirm or ❌ to cancel."
+                )
+                
+                # Add reaction options
+                await confirm_msg.add_reaction("✅")
+                await confirm_msg.add_reaction("❌")
+                
+                def check(reaction, user):
+                    return user == ctx.author and reaction.message.id == confirm_msg.id and str(reaction.emoji) in ["✅", "❌"]
+                
+                try:
+                    reaction, user = await self.bot.wait_for('reaction_add', timeout=30.0, check=check)
+                    
+                    if str(reaction.emoji) == "❌":
+                        await confirm_msg.delete()
+                        return await ctx.send("❌ **Deletion Cancelled**\n\nBattle was not deleted.")
+                    
+                except asyncio.TimeoutError:
+                    await confirm_msg.delete()
+                    return await ctx.send("⏰ **Timeout**\n\nNo response received. Battle was not deleted.")
+                
+                # Delete the battle
+                await conn.execute(
+                    "DELETE FROM saved_battles WHERE user_id = $1 AND slot_number = $2",
+                    ctx.author.id, slot_number
+                )
+                
+                await ctx.send(f"✅ **Battle Deleted Successfully!**\n\n"
+                              f"**{battle_name}** has been removed from slot {slot_number}.")
+                
+        except Exception as e:
+            await ctx.send(f"❌ **Error Deleting Saved Battle**\n\nAn error occurred while trying to delete the saved battle:\n```\n{str(e)}\n```")
+    
+
+    
+    async def create_live_battle_replay_embed(self, replay_data, current_turn=0, action_count=1):
+        """Create an embed for live battle replay at a specific turn"""
+        
+        # Check if this is an enhanced replay with turn states
+        battle_data = replay_data['battle_data']
+        has_enhanced_replay = battle_data.get('has_enhanced_replay', False)
+        
+        if not has_enhanced_replay or not battle_data.get('turn_states'):
+            # Fall back to static replay if no enhanced data
+            return await self.create_battle_replay_embed(replay_data)
+        
+        turn_states = battle_data['turn_states']
+        
+        # Use initial state if current_turn is 0, otherwise use the specified turn
+        if current_turn == 0 and battle_data.get('initial_state'):
+            current_state = battle_data['initial_state']
+        elif current_turn < len(turn_states):
+            current_state = turn_states[current_turn]
+        else:
+            current_state = turn_states[-1]  # Use last state if beyond range
+        
+        # Create embed based on current state
+        battle_info = current_state.get('battle_info', {})
+        battle_type = battle_info.get('battle_type', replay_data['battle_type'])
+        
+        # Get participants for title
+        participants = replay_data.get('participants', [])
+        participant_names = []
+        for user_id in participants[:2]:  # Show first 2 participants
+            try:
+                user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
+                participant_names.append(user.display_name)
+            except:
+                participant_names.append("Unknown")
+        
+        # Create title similar to battle format
+        if len(participant_names) >= 2:
+            battle_title = f"{battle_type.replace('Battle', '').strip()}: {participant_names[0]} vs {participant_names[1]}"
+        elif len(participant_names) == 1:
+            battle_title = f"{battle_type.replace('Battle', '').strip()}: {participant_names[0]}"
+        else:
+            battle_title = f"{battle_type} Replay"
+        
+        embed = discord.Embed(
+            title=f"🎬 {battle_title}",
+            color=self.bot.config.game.primary_colour,
+            timestamp=replay_data['created_at']
+        )
+        
+        # Add combatant information from current state
+        teams = current_state.get('teams', [])
+        
+        for team_idx, team in enumerate(teams):
+            # Use same team naming as actual battles
+            team_name = f"**[TEAM {chr(65 + team_idx)}]**"  # A, B, C, etc.
+            team_info = []
+            
+            for combatant in team.get('combatants', []):
+                # Get proper name - use pet_name for pets, display_name for players
+                is_pet = combatant.get('is_pet', False)
+                if is_pet and combatant.get('pet_name'):
+                    name = combatant.get('pet_name')
+                    name_suffix = " 🐾"  # Pet indicator
+                else:
+                    name = combatant.get('display_name', combatant.get('name', 'Unknown'))
+                    name_suffix = ""
+                
+                current_hp = combatant.get('current_hp', 0)
+                max_hp = combatant.get('max_hp', 1)
+                hp_percentage = combatant.get('hp_percentage', 0)
+                
+                # Create HP bar using the same style as battles
+                hp_bar_length = 20
+                filled_length = int(hp_bar_length * max(0, min(1, hp_percentage)))
+                empty_length = hp_bar_length - filled_length
+                hp_bar = "█" * filled_length + "░" * empty_length
+                
+                # Use stored element emoji from battle data
+                element_emoji = combatant.get('element_emoji', "❓")
+                
+                # Format like actual battle display
+                combatant_text = f"{name}{name_suffix} {element_emoji}\nHP: {current_hp:.1f}/{max_hp:.1f}\n{hp_bar}"
+                
+                # Add damage reflection if present
+                damage_reflection = combatant.get('damage_reflection', 0)
+                if damage_reflection > 0:
+                    reflection_percent = float(damage_reflection) * 100
+                    combatant_text += f"\nDamage Reflection: {reflection_percent:.1f}%"
+                
+                team_info.append(combatant_text)
+            
+            if team_info:
+                embed.add_field(
+                    name=team_name,
+                    value="\n\n".join(team_info),
+                    inline=False
+                )
+        
+        # Add battle log section with sliding window of actions
+        actions_to_show = []
+        
+        # Calculate which actions to show (sliding window)
+        if action_count == 1:
+            # Show current action only
+            action_message = current_state.get('action_message', 'Battle starting...')
+            action_number = current_state.get('action_number', 0)
+            actions_to_show.append(f"**Action #{action_number}**\n{action_message}")
+        else:
+            # Show multiple actions in sliding window
+            # Get the current turn's action first
+            current_action_number = current_state.get('action_number', 0)
+            
+            # Calculate start position for sliding window
+            start_turn = max(0, current_turn - action_count + 1)
+            end_turn = min(len(turn_states), current_turn + 1)
+            
+            # Collect actions for the window
+            for turn_idx in range(start_turn, end_turn):
+                if turn_idx < len(turn_states):
+                    turn_state = turn_states[turn_idx]
+                    action_msg = turn_state.get('action_message', 'Battle action...')
+                    action_num = turn_state.get('action_number', turn_idx)
+                    actions_to_show.append(f"**Action #{action_num}**\n{action_msg}")
+        
+        # Join actions with separator
+        battle_log_value = "\n\n".join(actions_to_show) if actions_to_show else "Battle starting..."
+        
+        embed.add_field(
+            name="Battle Log",
+            value=battle_log_value,
+            inline=False
+        )
+        
+        # Add replay controls info
+        progress_percentage = (current_turn + 1) / len(turn_states)
+        progress_bar = self.create_progress_bar(progress_percentage)
+        
+        embed.add_field(
+            name="🎬 Replay Controls",
+            value=f"{progress_bar} {progress_percentage:.1%}\nTurn {current_turn + 1}/{len(turn_states)} • Showing {action_count} action{'s' if action_count > 1 else ''}",
+            inline=False
+        )
+        
+        # Add footer with battle ID (like actual battles)
+        embed.set_footer(text=f"Battle ID: {replay_data['battle_id']}")
+        
+        return embed
+    
+    def create_replay_hp_bar(self, hp_percentage, length=15):
+        """Create a HP bar for replay display"""
+        filled_length = int(length * max(0, min(1, hp_percentage)))
+        empty_length = length - filled_length
+        
+        if hp_percentage > 0.6:
+            bar_char = "🟢"
+        elif hp_percentage > 0.3:
+            bar_char = "🟡"
+        else:
+            bar_char = "🔴"
+        
+        return bar_char * filled_length + "⚫" * empty_length
+    
+    def create_progress_bar(self, percentage, length=20):
+        """Create a progress bar for replay"""
+        filled_length = int(length * max(0, min(1, percentage)))
+        empty_length = length - filled_length
+        return "█" * filled_length + "░" * empty_length
+
+    async def create_battle_replay_embed(self, replay_data):
+        """Create an embed displaying battle replay information"""
+        
+        embed = discord.Embed(
+            title=f"🔍 Battle Replay: {replay_data['battle_type']}",
+            description=f"**Battle ID**: `{replay_data['battle_id']}`",
+            color=discord.Color.blue(),
+            timestamp=replay_data['created_at']
+        )
+        
+        # Add basic battle information
+        participants_text = ""
+        if replay_data['participants']:
+            try:
+                # Get user objects for participant names
+                participant_names = []
+                for user_id in replay_data['participants']:
+                    try:
+                        user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
+                        participant_names.append(f"{user.display_name} ({user_id})")
+                    except:
+                        participant_names.append(f"Unknown User ({user_id})")
+                participants_text = "\n".join(participant_names)
+            except:
+                participants_text = f"{len(replay_data['participants'])} participants"
+        else:
+            participants_text = "No participants recorded"
+        
+        embed.add_field(
+            name="👥 **Participants**",
+            value=participants_text,
+            inline=False
+        )
+        
+        # Add battle configuration
+        config = replay_data['battle_data'].get('config', {})
+        config_text = []
+        important_settings = ['allow_pets', 'status_effects', 'simple', 'cheat_death', 'element_effects']
+        for setting in important_settings:
+            if setting in config:
+                status = "✅" if config[setting] else "❌"
+                config_text.append(f"{status} {setting.replace('_', ' ').title()}")
+        
+        if config_text:
+            embed.add_field(
+                name="⚙️ **Battle Settings**",
+                value="\n".join(config_text),
+                inline=True
+            )
+        
+        # Add battle statistics
+        stats_text = []
+        battle_data = replay_data['battle_data']
+        
+        if battle_data.get('start_time'):
+            stats_text.append(f"📅 **Started**: {battle_data['start_time']}")
+        
+        if battle_data.get('finished'):
+            stats_text.append(f"🏁 **Status**: Finished")
+        else:
+            stats_text.append(f"⏸️ **Status**: In Progress/Interrupted")
+        
+        if battle_data.get('winner'):
+            stats_text.append(f"🏆 **Winner**: {battle_data['winner']}")
+        
+        stats_text.append(f"📊 **Total Actions**: {battle_data.get('action_number', 0)}")
+        
+        embed.add_field(
+            name="📈 **Battle Statistics**",
+            value="\n".join(stats_text),
+            inline=True
+        )
+        
+        # Add battle log (truncated if too long)
+        battle_log = replay_data['battle_log']
+        if battle_log:
+            log_text = []
+            for action_num, message in battle_log:
+                log_text.append(f"**Action {action_num}**: {message}")
+            
+            log_content = "\n\n".join(log_text)
+            
+            # Truncate if too long for Discord
+            if len(log_content) > 1000:
+                log_content = log_content[:900] + f"\n\n... *({len(battle_log) - len(log_text[:3])} more actions)*"
+            
+            embed.add_field(
+                name="📝 **Battle Log**",
+                value=log_content or "No battle log recorded",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="📝 **Battle Log**",
+                value="No battle log recorded",
+                inline=False
+            )
+        
+        # Add footer with additional info
+        embed.set_footer(text=f"Recorded at {replay_data['created_at'].strftime('%Y-%m-%d %H:%M:%S UTC')} • Use this replay for debugging")
+        
+        return embed
 
 
 
+
+
+class GMInviteView(discord.ui.View):
+    def __init__(self, target_user: discord.Member, timeout: int = 120):
+        super().__init__(timeout=timeout)
+        self.target_user = target_user
+        self.value = None  # Will be True (accepted) or False (declined)
+        
+    @discord.ui.button(label="Accept GM Role", style=discord.ButtonStyle.green, emoji="✅")
+    async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.target_user.id:
+            await interaction.response.send_message("❌ This invitation is not for you.", ephemeral=True)
+            return
+        
+        self.value = True
+        await interaction.response.send_message("✅ You have accepted the Game Master role!", ephemeral=True)
+        self.stop()
+    
+    @discord.ui.button(label="Decline", style=discord.ButtonStyle.red, emoji="❌")
+    async def decline_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.target_user.id:
+            await interaction.response.send_message("❌ This invitation is not for you.", ephemeral=True)
+            return
+        
+        self.value = False
+        await interaction.response.send_message("❌ You have declined the Game Master role.", ephemeral=True)
+        self.stop()
+
+    async def on_timeout(self):
+        # Disable all buttons when the view times out
+        for item in self.children:
+            item.disabled = True
+
+
+class GodInviteView(discord.ui.View):
+    def __init__(self, target_user: discord.Member, timeout: int = 120):
+        super().__init__(timeout=timeout)
+        self.target_user = target_user
+        self.value = None  # Will be True (accepted) or False (declined)
+        
+    @discord.ui.button(label="Accept God Role", style=discord.ButtonStyle.green, emoji="🌟")
+    async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.target_user.id:
+            await interaction.response.send_message("❌ This invitation is not for you.", ephemeral=True)
+            return
+        
+        self.value = True
+        await interaction.response.send_message("🌟 You have accepted the God role!", ephemeral=True)
+        self.stop()
+    
+    @discord.ui.button(label="Decline", style=discord.ButtonStyle.red, emoji="❌")
+    async def decline_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.target_user.id:
+            await interaction.response.send_message("❌ This invitation is not for you.", ephemeral=True)
+            return
+        
+        self.value = False
+        await interaction.response.send_message("❌ You have declined the God role.", ephemeral=True)
+        self.stop()
+
+    async def on_timeout(self):
+        # Disable all buttons when the view times out
+        for item in self.children:
+            item.disabled = True
+
+
+
+
+
+class BattleReplayController(discord.ui.View):
+    """Interactive controller for live battle replays"""
+    
+    def __init__(self, ctx, replay_data, gm_cog):
+        super().__init__(timeout=300)  # 5 minute timeout
+        self.ctx = ctx
+        self.replay_data = replay_data
+        self.gm_cog = gm_cog
+        self.current_turn = 0
+        self.is_playing = False
+        self.play_speed = 2.0  # seconds between turns
+        self.action_count = 1  # number of actions to display (1-4)
+        self.max_turns = len(replay_data['battle_data'].get('turn_states', []))
+        
+        # Update button states
+        self.update_button_states()
+    
+    def update_button_states(self):
+        """Update button enabled/disabled states based on current position"""
+        # Disable rewind if at start
+        self.rewind_button.disabled = (self.current_turn <= 0)
+        # Disable fast forward if at end
+        self.fast_forward_button.disabled = (self.current_turn >= self.max_turns - 1)
+        # Update play/pause button
+        self.play_pause_button.emoji = "⏸️" if self.is_playing else "▶️"
+        self.play_pause_button.label = "Pause" if self.is_playing else "Play"
+    
+    @discord.ui.button(emoji="⏪", label="Rewind", style=discord.ButtonStyle.secondary, row=0)
+    async def rewind_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message("❌ Only the command user can control the replay.", ephemeral=True)
+        
+        self.is_playing = False
+        self.current_turn = max(0, self.current_turn - 1)
+        self.update_button_states()
+        
+        embed = await self.gm_cog.create_live_battle_replay_embed(self.replay_data, self.current_turn, self.action_count)
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    @discord.ui.button(emoji="▶️", label="Play", style=discord.ButtonStyle.primary, row=0)
+    async def play_pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message("❌ Only the command user can control the replay.", ephemeral=True)
+        
+        self.is_playing = not self.is_playing
+        self.update_button_states()
+        
+        if self.is_playing:
+            # Start auto-playing
+            await interaction.response.edit_message(view=self)
+            await self.auto_play()
+        else:
+            await interaction.response.edit_message(view=self)
+    
+    @discord.ui.button(emoji="⏩", label="Fast Forward", style=discord.ButtonStyle.secondary, row=0)
+    async def fast_forward_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message("❌ Only the command user can control the replay.", ephemeral=True)
+        
+        self.is_playing = False
+        self.current_turn = min(self.max_turns - 1, self.current_turn + 1)
+        self.update_button_states()
+        
+        embed = await self.gm_cog.create_live_battle_replay_embed(self.replay_data, self.current_turn, self.action_count)
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    @discord.ui.button(emoji="⏮️", label="Start", style=discord.ButtonStyle.secondary, row=1)
+    async def start_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message("❌ Only the command user can control the replay.", ephemeral=True)
+        
+        self.is_playing = False
+        self.current_turn = 0
+        self.update_button_states()
+        
+        embed = await self.gm_cog.create_live_battle_replay_embed(self.replay_data, self.current_turn, self.action_count)
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    @discord.ui.button(emoji="⏭️", label="End", style=discord.ButtonStyle.secondary, row=1)
+    async def end_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message("❌ Only the command user can control the replay.", ephemeral=True)
+        
+        self.is_playing = False
+        self.current_turn = self.max_turns - 1
+        self.update_button_states()
+        
+        embed = await self.gm_cog.create_live_battle_replay_embed(self.replay_data, self.current_turn, self.action_count)
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    @discord.ui.select(
+        placeholder="⚡ Choose playback speed...",
+        options=[
+            discord.SelectOption(label="🐌 Slow (4s per turn)", value="4.0", emoji="🐌"),
+            discord.SelectOption(label="🚶 Normal (2s per turn)", value="2.0", emoji="🚶", default=True),
+            discord.SelectOption(label="🏃 Fast (1s per turn)", value="1.0", emoji="🏃"),
+            discord.SelectOption(label="⚡ Lightning (0.5s per turn)", value="0.5", emoji="⚡"),
+        ],
+        row=2
+    )
+    async def speed_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message("❌ Only the command user can control the replay.", ephemeral=True)
+        
+        self.play_speed = float(select.values[0])
+        speed_name = {
+            "4.0": "🐌 Slow",
+            "2.0": "🚶 Normal", 
+            "1.0": "🏃 Fast",
+            "0.5": "⚡ Lightning"
+        }.get(select.values[0], "Normal")
+        
+        await interaction.response.send_message(f"⚡ **Speed changed to {speed_name}**", ephemeral=True)
+    
+    @discord.ui.select(
+        placeholder="📜 Choose number of actions to display...",
+        options=[
+            discord.SelectOption(label="1 Action", value="1", emoji="1️⃣", default=True),
+            discord.SelectOption(label="2 Actions", value="2", emoji="2️⃣"),
+            discord.SelectOption(label="3 Actions", value="3", emoji="3️⃣"),
+            discord.SelectOption(label="4 Actions", value="4", emoji="4️⃣"),
+        ],
+        row=3
+    )
+    async def action_count_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message("❌ Only the command user can control the replay.", ephemeral=True)
+        
+        self.action_count = int(select.values[0])
+        action_text = f"{self.action_count} Action{'s' if self.action_count > 1 else ''}"
+        
+        # Update the embed with new action count
+        embed = await self.gm_cog.create_live_battle_replay_embed(self.replay_data, self.current_turn, self.action_count)
+        await interaction.response.edit_message(embed=embed, view=self)
+        
+        # Also send confirmation message
+        await interaction.followup.send(f"📜 **Now displaying {action_text}**", ephemeral=True)
+    
+    async def auto_play(self):
+        """Auto-play the replay with the current speed"""
+        while self.is_playing and self.current_turn < self.max_turns - 1:
+            await asyncio.sleep(self.play_speed)
+            
+            if not self.is_playing:  # Check if stopped during sleep
+                break
+                
+            self.current_turn += 1
+            self.update_button_states()
+            
+            try:
+                embed = await self.gm_cog.create_live_battle_replay_embed(self.replay_data, self.current_turn, self.action_count)
+                
+                # Get the original message and edit it
+                if hasattr(self, 'message') and self.message:
+                    await self.message.edit(embed=embed, view=self)
+            except discord.NotFound:
+                # Message was deleted
+                self.is_playing = False
+                break
+            except Exception as e:
+                print(f"Error during auto-play: {e}")
+                self.is_playing = False
+                break
+        
+        # Auto-play finished
+        if self.is_playing:
+            self.is_playing = False
+            self.update_button_states()
+            try:
+                if hasattr(self, 'message') and self.message:
+                    await self.message.edit(view=self)
+            except:
+                pass
+    
+    async def on_timeout(self):
+        """Handle view timeout"""
+        self.is_playing = False
+        
+        # Disable all buttons
+        for item in self.children:
+            item.disabled = True
+        
+        try:
+            if hasattr(self, 'message') and self.message:
+                await self.message.edit(view=self)
+        except:
+            pass
 
 
 async def setup(bot):

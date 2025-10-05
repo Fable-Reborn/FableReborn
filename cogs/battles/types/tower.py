@@ -79,11 +79,17 @@ class TowerBattle(Battle):
             # Add to the most recent action
             action_count, old_message = self.log[-1]
             self.log[-1] = (action_count, f"{old_message}\n{message}")
+        
+        # IMPORTANT: Call parent method to capture turn state for replay
+        await self.capture_turn_state(message)
 
     async def start_battle(self):
         """Initialize and start the battle"""
         self.started = True
         self.start_time = datetime.datetime.utcnow()
+        
+        # Save initial battle data to database for replay
+        await self.save_battle_to_database()
         
         # Build initial turn order with player team and first enemy
         self.update_turn_order()
@@ -223,7 +229,12 @@ class TowerBattle(Battle):
         if current_combatant in self.enemy_team.combatants:
             hit_success = random.random() > 0.10  # 10% chance to miss
         else:
-            hit_success = luck_roll <= current_combatant.luck
+            # Check for perfect accuracy from Night Vision skill
+            has_perfect_accuracy = getattr(current_combatant, 'perfect_accuracy', False)
+            hit_success = has_perfect_accuracy or (luck_roll <= current_combatant.luck)
+            
+        # Initialize message variable
+        message = ""
             
         if hit_success:
             # Attack hits
@@ -272,12 +283,89 @@ class TowerBattle(Battle):
                 
                 # Add variance and apply armor
                 raw_damage += Decimal(damage_variance)
-                blocked_damage = min(raw_damage, target.armor)  # Can't block more than the armor value
-                damage = max(raw_damage - target.armor, Decimal('10'))  # Minimum 10 damage
+                
+                # PROCESS PET SKILL EFFECTS ON ATTACK
+                skill_messages = []
+                if (current_combatant.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
+                    pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
+                    raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(current_combatant, target, raw_damage)
+                    # Set flag for turn processing (damage will be set after final calculation)
+                    setattr(current_combatant, 'attacked_this_turn', True)
+                
+                # Check for special damage types
+                ignore_armor = getattr(target, 'ignore_armor_this_hit', False)
+                true_damage = getattr(target, 'true_damage', False)
+                bypass_defenses = getattr(target, 'bypass_defenses', False)
+                ignore_all = getattr(target, 'ignore_all_defenses', False)
+                partial_true_damage = getattr(target, 'partial_true_damage', 0)
+                
+                if ignore_all or true_damage or ignore_armor or bypass_defenses:
+                    damage = raw_damage  # No armor reduction
+                    blocked_damage = Decimal('0')
+                elif partial_true_damage > 0:
+                    # Handle partial true damage: some bypasses armor, some doesn't
+                    normal_damage_after_armor = max(raw_damage - target.armor, Decimal('10'))
+                    damage = normal_damage_after_armor + Decimal(str(partial_true_damage))
+                    blocked_damage = min(raw_damage, target.armor)
+                else:
+                    blocked_damage = min(raw_damage, target.armor)  # Can't block more than the armor value
+                    damage = max(raw_damage - target.armor, Decimal('10'))  # Minimum 10 damage
+                
+                # Clear special damage flags
+                for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses', 'partial_true_damage']:
+                    if hasattr(target, flag):
+                        delattr(target, flag)
+                
+                # PROCESS PET SKILL EFFECTS ON DAMAGE TAKEN
+                defender_messages = []
+                if (target.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
+                    pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
+                    damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(target, current_combatant, damage)
+                
+                # Store the actual final damage dealt (for skills like Soul Drain)
+                if current_combatant.is_pet:
+                    setattr(current_combatant, 'last_damage_dealt', damage)
                 
                 target.take_damage(damage)
                 
                 message = f"{current_combatant.name} attacks! {target.name} takes **{self.format_number(damage)} HP** damage."
+                
+                # Add skill effect messages
+                if skill_messages:
+                    message += "\n" + "\n".join(skill_messages)
+                if defender_messages:
+                    message += "\n" + "\n".join(defender_messages)
+                
+                # Check for skeleton summoning after skill processing
+                if hasattr(current_combatant, 'summon_skeleton'):
+                    skeleton_data = current_combatant.summon_skeleton
+                    
+                    # Create skeleton combatant
+                    from cogs.battles.core.combatant import Combatant
+                    skeleton = Combatant(
+                        user=f"Skeleton Warrior #{current_combatant.skeleton_count}",  # User/name
+                        hp=skeleton_data['hp'],
+                        max_hp=skeleton_data['hp'],  # Same as current HP
+                        damage=skeleton_data['damage'],
+                        armor=skeleton_data['armor'],
+                        element=skeleton_data['element'],
+                        luck=50,  # Base luck
+                        is_pet=True,
+                        name=f"Skeleton Warrior #{current_combatant.skeleton_count}"
+                    )
+                    skeleton.is_summoned = True
+                    skeleton.summoner = current_combatant
+                    
+                    # Add skeleton to player team (tower battles use player_team and enemy_team)
+                    if current_combatant in self.player_team.combatants:
+                        self.player_team.combatants.append(skeleton)
+                        message += f"\n💀 A skeleton warrior joins your side!"
+                    else:
+                        self.enemy_team.combatants.append(skeleton)
+                        message += f"\n💀 A skeleton warrior joins the enemy side!"
+                    
+                    # Clear the summon flag
+                    delattr(current_combatant, 'summon_skeleton')
             
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 
@@ -313,8 +401,12 @@ class TowerBattle(Battle):
             
             # Check if target is defeated
             if not target.is_alive():
+                # Check for water immortality first
+                if getattr(target, 'water_immortality', False):
+                    target.hp = Decimal('1')  # Stay at 1 HP
+                    message += f"\n💧 {target.name} is protected by Immortal Waters and refuses to fall!"
                 # Check for cheat death ability for players
-                if (self.config["class_buffs"] and 
+                elif (self.config["class_buffs"] and 
                     self.config["cheat_death"] and
                     not target.is_pet and 
                     target in self.player_team.combatants and  # Only player can cheat death
@@ -344,15 +436,52 @@ class TowerBattle(Battle):
             if self.config.get("tripping", False):
                 damage = Decimal('10')
                 current_combatant.take_damage(damage)
-                message = f"{current_combatant.name} tripped and took **{damage} HP** damage. Bad luck!"
+                message = f"{current_combatant.name} tripped and took **{self.format_number(damage)} HP** damage. Bad luck!"
             else:
                 message = f"{current_combatant.name}'s attack missed!"
         
         # Add message to battle log - use a new action number for each combat action
         await self.add_to_log(message, force_new_action=True)
         
+        # PROCESS PET SKILL EFFECTS PER TURN
+        if hasattr(self.ctx.bot.cogs["Battles"], "battle_factory"):
+            pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
+            
+            # Process player team pets
+            for combatant in self.player_team.combatants:
+                if combatant.is_pet and combatant.is_alive():
+                    # Set team references for skills that need them
+                    setattr(combatant, 'team', self.player_team)
+                    setattr(combatant, 'enemy_team', self.enemy_team)
+                    
+                    # Process per-turn effects
+                    turn_messages = pet_ext.process_skill_effects_per_turn(combatant)
+                    if turn_messages:
+                        for turn_msg in turn_messages:
+                            await self.add_to_log(turn_msg)
+            
+            # Process enemy team pets (if any)
+            for combatant in self.enemy_team.combatants:
+                if combatant.is_pet and combatant.is_alive():
+                    # Set team references for skills that need them
+                    setattr(combatant, 'team', self.enemy_team)
+                    setattr(combatant, 'enemy_team', self.player_team)
+                    
+                    # Process per-turn effects
+                    turn_messages = pet_ext.process_skill_effects_per_turn(combatant)
+                    if turn_messages:
+                        for turn_msg in turn_messages:
+                            await self.add_to_log(turn_msg)
+        
+        # Check for death from turn effects
+        if hasattr(target, 'is_alive') and not target.is_alive():
+            # Mark if pet killed an enemy for Soul Harvest
+            if current_combatant.is_pet:
+                setattr(current_combatant, 'killed_enemy_this_turn', True)
+        
         # Update the battle display
         await self.update_display()
+        await asyncio.sleep(1)
         
         return True
     
@@ -418,6 +547,9 @@ class TowerBattle(Battle):
         log_text = "\n\n".join([f"**Action #{i}**\n{msg}" for i, msg in self.log])
         embed.add_field(name="Battle Log", value=log_text or "Battle starting...", inline=False)
         
+        # Add battle ID to footer for GM replay functionality
+        embed.set_footer(text=f"Battle ID: {self.battle_id}")
+        
         return embed
     
     async def update_display(self):
@@ -432,31 +564,45 @@ class TowerBattle(Battle):
         """End the battle and determine outcome"""
         self.finished = True
         
-        # Check if it's a timeout
-        if await self.is_timed_out():
-            # Special case for timeout
-            self.battle_timed_out = True
-            return None
-            
+        # Check victory/defeat conditions BEFORE timeout
+        # This ensures that if enemies are defeated on the last turn before timeout, it's still a victory
+        
         # Check if the player character (non-pet) is defeated when pets_continue_battle is false
         player_char_defeated = not any(not c.is_pet and c.is_alive() for c in self.player_team.combatants)
         if player_char_defeated and not self.config.get("pets_continue_battle", False):
             # Player lost if character is dead and pets can't continue
+            # Save final battle state to database for replay
+            await self.save_battle_to_database()
             return self.enemy_team
         
         # Check if player team is completely defeated
         if self.player_team.is_defeated():
             # Player lost - return the enemy team as winner
+            # Save final battle state to database for replay
+            await self.save_battle_to_database()
             return self.enemy_team
         
-        # Check if all enemies are defeated
+        # Check if all enemies are defeated (VICTORY)
         if all(not enemy.is_alive() for enemy in self.enemy_team.combatants):
             # Player only wins if the character is still alive or pets_continue_battle is true
             if not player_char_defeated or self.config.get("pets_continue_battle", False):
+                # Save final battle state to database for replay
+                await self.save_battle_to_database()
                 return self.player_team
             else:
                 # Both player and enemies are defeated - draw or enemy wins
+                # Save final battle state to database for replay
+                await self.save_battle_to_database()
                 return self.enemy_team
+        
+        # Only check timeout AFTER victory/defeat conditions
+        # This prevents timeout from overriding a legitimate victory/defeat
+        if await self.is_timed_out():
+            # Special case for timeout
+            self.battle_timed_out = True
+            # Save final battle state to database for replay
+            await self.save_battle_to_database()
+            return None
         
         # Compare remaining HP percentages - only if player character still alive or pets can continue
         if not player_char_defeated or self.config.get("pets_continue_battle", False):
@@ -464,9 +610,13 @@ class TowerBattle(Battle):
             enemy_health_percent = sum(c.hp / c.max_hp for c in self.enemy_team.combatants) / len(self.enemy_team.combatants)
             
             if player_health_percent > enemy_health_percent:
+                # Save final battle state to database for replay
+                await self.save_battle_to_database()
                 return self.player_team
         
         # Default to enemy win if no other condition is met
+        # Save final battle state to database for replay
+        await self.save_battle_to_database()
         return self.enemy_team
     
     async def is_battle_over(self):
@@ -478,17 +628,15 @@ class TowerBattle(Battle):
         if self.finished:
             return True
         
-        # Check if battle timed out
-        if await self.is_timed_out():
-            self.battle_timed_out = True
-            return True
+        # Check victory/defeat conditions BEFORE timeout
+        # This ensures that if enemies are defeated on the last turn before timeout, it's still a victory
         
-        # Check if all enemies are defeated
+        # Check if all enemies are defeated (VICTORY)
         enemy_defeated = all(not c.is_alive() for c in self.enemy_team.combatants)
         if enemy_defeated:
             return True
             
-        # Check if player team is defeated based on settings
+        # Check if player team is defeated based on settings (DEFEAT)
         player_char_defeated = not any(not c.is_pet and c.is_alive() for c in self.player_team.combatants)
         
         # If player character is defeated but pets should continue battle
@@ -497,9 +645,16 @@ class TowerBattle(Battle):
             if self.config.get("pets_continue_battle", False) and self.config.get("allow_pets", True):
                 # Only end battle if all pets are also defeated
                 all_defeated = all(not c.is_alive() for c in self.player_team.combatants)
-                return all_defeated
+                if all_defeated:
+                    return True
             else:
                 # Default behavior: end battle if player character is defeated
                 return True
+        
+        # Only check timeout AFTER victory/defeat conditions
+        # This prevents timeout from overriding a legitimate victory/defeat
+        if await self.is_timed_out():
+            self.battle_timed_out = True
+            return True
                 
         return False

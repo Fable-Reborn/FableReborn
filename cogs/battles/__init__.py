@@ -21,28 +21,54 @@ from .core.team import Team
 from .core.combatant import Combatant
 from classes.classes import from_string as class_from_string
 from classes.converters import IntGreaterThan
+from classes.items import ItemType, Hand
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils.checks import has_char, has_money, is_gm
 from utils.i18n import _, locale_doc
 from utils.joins import JoinView, SingleJoinView
+from classes.errors import NoChoice
 
 class PetEggSelect(Select):
-    def __init__(self, items):
+    def __init__(self, items, page=0):
         self.items = items
+        self.total_pages = max(1, (len(items) + 24) // 25)  # Calculate total pages (25 items per page)
+        self.current_page = min(page, self.total_pages - 1)  # Ensure page is valid
+        
+        # Get items for current page
+        start_idx = self.current_page * 25
+        end_idx = min(start_idx + 25, len(items))
+        page_items = items[start_idx:end_idx]
+        
         options = [
             discord.SelectOption(
-                label=f"{i+1}. {item['type'].title()}",
-                description=item['display_name'][:50],  # Limit description length
-                value=str(i)
-            ) for i, item in enumerate(items)
+                label=f"{start_idx + i + 1}. {item['type'].title()}",
+                description=self._safe_description(item),
+                value=str(start_idx + i)
+            ) for i, item in enumerate(page_items)
         ]
         
         super().__init__(
-            placeholder="Select a pet/egg to release...",
+            placeholder=f"Select a pet/egg to release... (Page {self.current_page + 1}/{self.total_pages})",
             min_values=1,
             max_values=1,
             options=options
         )
+    
+    def _safe_description(self, item):
+        """Create a safe description that won't cause Discord API issues"""
+        try:
+            # Use a safe default if display_name is missing
+            display_name = item.get('display_name', 'Unknown')
+            
+            # Ensure it's a string
+            if not isinstance(display_name, str):
+                display_name = str(display_name)
+                
+            # Limit length and strip any problematic characters
+            return display_name[:50].strip()
+        except Exception as e:
+            print(f"Error creating description: {e}")
+            return "Unknown"
     
     async def callback(self, interaction: discord.Interaction):
         # Update the view with the selected item's details
@@ -220,11 +246,76 @@ class PetEggReleaseView(View):
         self.items = items
         self.value = None
         self.message = None  # Store the message reference
+        self.current_page = 0
+        self.total_pages = max(1, (len(items) + 24) // 25)  # Calculate total pages (25 items per page)
         
-        # Add the select dropdown
-        self.select = PetEggSelect(items)
+        # Add the select dropdown for the first page
+        self.update_select()
+        
+        # Only add page buttons if there are multiple pages
+        if self.total_pages > 1:
+            self.add_item(discord.ui.Button(
+                style=discord.ButtonStyle.secondary,
+                label="◀️ Previous Page",
+                custom_id="prev_page",
+                row=2,
+                disabled=self.current_page == 0
+            ))
+            self.prev_page_button = self.children[-1]  # Store reference to the button
+            self.prev_page_button.callback = self.prev_page_callback
+            
+            self.add_item(discord.ui.Button(
+                style=discord.ButtonStyle.secondary,
+                label="Next Page ▶️",
+                custom_id="next_page",
+                row=2,
+                disabled=self.current_page >= self.total_pages - 1
+            ))
+            self.next_page_button = self.children[-1]  # Store reference to the button
+            self.next_page_button.callback = self.next_page_callback
+    
+    def update_select(self):
+        # Remove existing select if any
+        for item in self.children[:]:
+            if isinstance(item, PetEggSelect):
+                self.remove_item(item)
+        
+        # Add new select for current page
+        self.select = PetEggSelect(self.items, self.current_page)
         self.add_item(self.select)
+    
+    async def prev_page_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("This is not your selection.", ephemeral=True)
         
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.update_select()
+            
+            # Update button states
+            if hasattr(self, 'prev_page_button'):
+                self.prev_page_button.disabled = self.current_page == 0
+            if hasattr(self, 'next_page_button'):
+                self.next_page_button.disabled = self.current_page >= self.total_pages - 1
+            
+            await interaction.response.edit_message(view=self)
+    
+    async def next_page_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("This is not your selection.", ephemeral=True)
+        
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self.update_select()
+            
+            # Update button states
+            if hasattr(self, 'prev_page_button'):
+                self.prev_page_button.disabled = self.current_page == 0
+            if hasattr(self, 'next_page_button'):
+                self.next_page_button.disabled = self.current_page >= self.total_pages - 1
+            
+            await interaction.response.edit_message(view=self)
+    
     @discord.ui.button(label="Release", style=discord.ButtonStyle.danger, row=1, emoji="🗑️")
     async def confirm_release(self, interaction: discord.Interaction, button: Button):
         try:
@@ -397,8 +488,194 @@ class DialogueView(discord.ui.View):
     @discord.ui.button(label="Start Battle", style=discord.ButtonStyle.success)
     async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         # End dialogue immediately
-        await interaction.response.edit_message(content="Dialogue skipped. The battle begins!", embed=None, view=None)
+        await interaction.response.defer()
         self.stop()
+
+class CouplesDialogueView(discord.ui.View):
+    def __init__(self, pages: list[discord.Embed], author: discord.User, partner: discord.User):
+        super().__init__(timeout=300)  # 5 minute timeout
+        self.pages = pages
+        self.current_page = 0
+        self.author = author
+        self.partner = partner
+        self.total_pages = len(pages)
+        
+        # Add page numbers to all embeds and update button states
+        self.update_page_footer()
+        self.update_button_states()
+        
+    def update_page_footer(self):
+        """Add page numbers to the current embed footer"""
+        current_embed = self.pages[self.current_page]
+        page_text = f"Page {self.current_page + 1} of {self.total_pages}"
+        
+        # Preserve existing footer text if any
+        if current_embed.footer.text:
+            if "Page" not in current_embed.footer.text:
+                current_embed.set_footer(text=f"{current_embed.footer.text} | {page_text}")
+        else:
+            current_embed.set_footer(text=page_text)
+    
+    def update_button_states(self):
+        """Update button disabled states based on current page"""
+        # Find the Previous and Next buttons
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                if item.emoji and str(item.emoji) == "⬅️":  # Previous button
+                    item.disabled = (self.current_page == 0)
+                elif item.emoji and str(item.emoji) == "➡️":  # Next button
+                    item.disabled = (self.current_page == self.total_pages - 1)
+    
+    async def update_message(self, interaction: discord.Interaction):
+        """Update the message with the current page"""
+        self.update_page_footer()
+        self.update_button_states()
+        
+        if interaction.response.is_done():
+            if interaction.message:
+                await interaction.message.edit(embed=self.pages[self.current_page], view=self)
+        else:
+            await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
+    
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Only allow the couple to interact with these buttons"""
+        return interaction.user.id in (self.author.id, self.partner.id)
+    
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.primary, emoji="⬅️", row=0)
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_page > 0:
+            self.current_page -= 1
+            await self.update_message(interaction)
+    
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.primary, emoji="➡️", row=0)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            await self.update_message(interaction)
+    
+    @discord.ui.button(label="Begin Battle Together", style=discord.ButtonStyle.success, emoji="💕", row=1)
+    async def start_battle_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Start the battle immediately"""
+        self.stop()
+        await interaction.response.edit_message(
+            content="💕 **The Tower of Eternal Bonds resonates with your love! The battle begins!** 💕", 
+            embed=None, 
+            view=None
+        )
+
+class CouplesDialogueViewOnly(discord.ui.View):
+    """View for dialogue-only viewing without battle buttons"""
+    def __init__(self, pages: list[discord.Embed], author: discord.User, partner: discord.User):
+        super().__init__(timeout=300)  # Longer timeout since it's just for viewing
+        self.pages = pages
+        self.current_page = 0
+        self.author = author
+        self.partner = partner
+        self.total_pages = len(pages)
+        
+        # Add page numbers to all embeds and update button states
+        self.update_page_footer()
+        self.update_button_states()
+        
+    def update_page_footer(self):
+        """Add page numbers to the current embed footer"""
+        current_embed = self.pages[self.current_page]
+        page_text = f"Page {self.current_page + 1} of {self.total_pages}"
+        
+        # Preserve existing footer text if any
+        if current_embed.footer.text:
+            if "Page" not in current_embed.footer.text:
+                current_embed.set_footer(text=f"{current_embed.footer.text} | {page_text}")
+        else:
+            current_embed.set_footer(text=page_text)
+    
+    def update_button_states(self):
+        """Update button disabled states based on current page"""
+        # Find the Previous and Next buttons
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                if item.emoji and str(item.emoji) == "⬅️":  # Previous button
+                    item.disabled = (self.current_page == 0)
+                elif item.emoji and str(item.emoji) == "➡️":  # Next button
+                    item.disabled = (self.current_page == self.total_pages - 1)
+        
+    async def update_message(self, interaction: discord.Interaction):
+        """Update the message with the current page"""
+        self.update_page_footer()
+        self.update_button_states()
+        
+        if interaction.response.is_done():
+            if interaction.message:
+                await interaction.message.edit(embed=self.pages[self.current_page], view=self)
+        else:
+            await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
+    
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Only allow the couple to interact with these buttons"""
+        return interaction.user.id in (self.author.id, self.partner.id)
+    
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.primary, emoji="⬅️", row=0)
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_page > 0:
+            self.current_page -= 1
+            await self.update_message(interaction)
+    
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.primary, emoji="➡️", row=0)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            await self.update_message(interaction)
+    
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.secondary, emoji="❌", row=0)
+    async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Close the dialogue viewer"""
+        self.stop()
+        await interaction.response.edit_message(
+            content="📖 **Dialogue closed.** Use `$cbt start` when you're ready to battle together! 💕", 
+            embed=None, 
+            view=None
+        )
+
+class CouplesTowerView(discord.ui.View):
+    def __init__(self, author, partner, on_join, on_cancel):
+        super().__init__(timeout=120)
+        self.author = author
+        self.partner = partner
+        self.on_join = on_join
+        self.on_cancel = on_cancel
+        self.joined = False
+
+    @discord.ui.button(label="Join Battle", style=discord.ButtonStyle.success, emoji="⚔️")
+    async def join_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.partner.id:
+            return await interaction.response.send_message("You are not the partner in this battle.", ephemeral=True)
+        
+        self.joined = True
+        button.disabled = True
+        self.children[1].disabled = True
+        await interaction.response.edit_message(view=self)
+        self.stop()
+        await self.on_join()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, emoji="❌")
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in (self.author.id, self.partner.id):
+            return await interaction.response.send_message("This is not your battle to cancel.", ephemeral=True)
+        
+        self.joined = False
+        self.children[0].disabled = True
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+        self.stop()
+        if self.on_cancel:
+            await self.on_cancel()
+
+    async def on_timeout(self):
+        if not self.joined:
+            for item in self.children:
+                item.disabled = True
+            if self.on_cancel:
+                await self.on_cancel()
 
 class Battles(commands.Cog):
     def __init__(self, bot):
@@ -406,6 +683,17 @@ class Battles(commands.Cog):
         self.forceleg = False
         self.battle_factory = BattleFactory(bot)
         self.fighting_players = {}
+        
+        self.dragon_party_views = []  # Track active dragon party views
+        self.battle_settings = BattleSettings(bot)
+        self.active_battles = {}
+        self.settings = BattleSettings(bot)
+        self.currently_in_fight = set()
+        
+        # Macro detection storage
+        self.pve_macro_detection = {}  # {user_id: {"count": int, "timestamp": float}}
+        
+        self.load_data_files()
 
         # Element mappings
         self.emoji_to_element = {
@@ -421,6 +709,24 @@ class Battles(commands.Cog):
 
         # Load data files
         self.load_data_files()
+        
+        # Initialize database tables
+        asyncio.create_task(self.initialize_tables())
+    
+    async def initialize_tables(self):
+        """Initialize database tables for battles"""
+        async with self.bot.pool.acquire() as conn:
+            # Create couples battle tower table if it doesn't exist
+            
+            # Create battletower table if it doesn't exist (for regular battle tower)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS battletower (
+                    id BIGINT PRIMARY KEY,
+                    level INTEGER DEFAULT 1,
+                    prestige INTEGER DEFAULT 0,
+                    dialoguetoggle BOOLEAN DEFAULT FALSE
+                )
+            """)
 
     def load_data_files(self):
         """Load all necessary data files for battles"""
@@ -448,6 +754,12 @@ class Battles(commands.Cog):
         from .extensions.elements import ElementExtension
         self.element_ext = ElementExtension()
 
+        # Load couples battle tower data
+        with open("cogs/battles/couples_battletower_data.json", "r") as f:
+            self.couples_battle_tower_data = json.load(f)
+        with open("cogs/battles/couples_game_levels.json", "r") as f:
+            self.couples_game_levels = json.load(f)
+
     @commands.command()
     @commands.is_owner()
     async def element_debug(self, ctx):
@@ -463,6 +775,48 @@ class Battles(commands.Cog):
                 await ctx.send(f"```\n{chunk}\n```")
         except Exception as e:
             await ctx.send(f"Error getting debug info: {str(e)}")
+
+    @commands.command()
+    @commands.is_owner()
+    async def macro_debug(self, ctx):
+        """View macro detection data (Owner only)"""
+        if not self.pve_macro_detection:
+            await ctx.send("No macro detection data available yet.")
+            return
+        
+        debug_info = "PVE Macro Detection Data (Count > 12):\n"
+        filtered_data = False
+        
+        for user_id, data in self.pve_macro_detection.items():
+            if data["count"] > 48:
+                timestamp_str = datetime.datetime.fromtimestamp(data["timestamp"]).strftime("%Y-%m-%d %H:%M:%S")
+                debug_info += f"User {user_id}: Count={data['count']}, Last Run={timestamp_str}\n"
+                filtered_data = True
+        
+        if not filtered_data:
+            await ctx.send("No users with macro detection count > 48 found.")
+            return
+        
+        # Split into chunks if too long
+        for i in range(0, len(debug_info), 1900):
+            chunk = debug_info[i:i+1900]
+            await ctx.send(f"```\n{chunk}\n```")
+    
+    @commands.command(hidden=True)
+    @commands.is_owner()
+    async def macro_set(self, ctx, user_id: int, count: int):
+        """Manually set macro detection count for a user (Owner only)"""
+        current_time = datetime.datetime.now().timestamp()
+        
+        self.pve_macro_detection[user_id] = {
+            "count": count,
+            "timestamp": current_time
+        }
+        
+        await ctx.send(f"Set macro detection count for user {user_id} to {count}")
+    
+
+
     
     async def is_player_in_fight(self, player_id):
         """Check if the player is in a fight based on the dictionary"""
@@ -478,6 +832,59 @@ class Battles(commands.Cog):
         if player_id in self.fighting_players:
             self.fighting_players[player_id].release()
             del self.fighting_players[player_id]
+
+    async def check_pve_macro_detection(self, user_id):
+        """
+        Check and update PVE macro detection for a user.
+        Returns True if macro detected (count >= 12), False otherwise.
+        """
+        current_time = datetime.datetime.now().timestamp()
+        
+        if user_id not in self.pve_macro_detection:
+            # First time running PVE
+            self.pve_macro_detection[user_id] = {
+                "count": 1,
+                "timestamp": current_time
+            }
+            return False
+        
+        user_data = self.pve_macro_detection[user_id]
+        time_diff = current_time - user_data["timestamp"]
+        
+        # Convert minutes to seconds
+        thirty_minutes = 30 * 60  # 30 minutes in seconds
+        forty_minutes = 40 * 60   # 40 minutes in seconds
+        
+        if time_diff <= thirty_minutes:
+            # Within 30 minutes, increment count by 2
+            user_data["count"] += 1
+            user_data["timestamp"] = current_time
+        elif time_diff <= forty_minutes:
+            # Between 30-40 minutes, increment count by 2
+            user_data["count"] += 1
+            user_data["timestamp"] = current_time
+        else:
+            # More than 40 minutes, reset counter to 1
+            user_data["count"] = 1
+            user_data["timestamp"] = current_time
+        
+        # Check if macro detected (count >= 48)
+        if user_data["count"] >= 48:
+            print(f"Macro detected for user {user_id}: count={user_data['count']}")
+            return True
+        
+        return False
+    
+    def get_pve_macro_penalty_level(self, user_id):
+        """
+        Get the macro penalty level for a user.
+        Returns the count if >= 48, otherwise 0.
+        """
+        if user_id not in self.pve_macro_detection:
+            return 0
+        
+        user_data = self.pve_macro_detection[user_id]
+        return user_data["count"] if user_data["count"] >= 48 else 0
     
     async def display_dialogue(self, ctx, level, name_value, dialoguetoggle=False):
         """Display dialogue for battle tower levels"""
@@ -658,19 +1065,27 @@ class Battles(commands.Cog):
         
         # Update the database with results
         async with self.bot.pool.acquire() as conn:
+            # Award PvP wins regardless of money
             await conn.execute(
-                'UPDATE profile SET "pvpwins"="pvpwins"+1, "money"="money"+$1 WHERE "user"=$2;',
-                money * 2,
+                'UPDATE profile SET "pvpwins"="pvpwins"+1 WHERE "user"=$1;',
                 winner.id,
             )
-            await self.bot.log_transaction(
-                ctx,
-                from_=looser.id,
-                to=winner.id,
-                subject="Battle Bet",
-                data={"Gold": money},
-                conn=conn,
-            )
+            
+            # Handle money rewards if there's money involved
+            if money > 0:
+                await conn.execute(
+                    'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                    money * 2,
+                    winner.id,
+                )
+                await self.bot.log_transaction(
+                    ctx,
+                    from_=looser.id,
+                    to=winner.id,
+                    subject="Battle Bet",
+                    data={"Gold": money},
+                    conn=conn,
+                )
         
         await ctx.send(
             _("{winner} won the battle vs {looser}! Congratulations!").format(
@@ -905,6 +1320,7 @@ class Battles(commands.Cog):
     
     async def handle_chest_rewards(self, ctx, level, name_value, emotes):
         """Handle chest rewards for battle tower victories."""
+
         level_str = str(level)
         victory_data = self.battle_data["victories"][level_str]
         chest_rewards = victory_data["chest_rewards"]
@@ -935,6 +1351,7 @@ class Battles(commands.Cog):
             await self.handle_prestige_chest_rewards(ctx, level, emotes)
         else:
             await self.handle_default_chest_rewards(ctx, level, chest_rewards["default"], emotes)
+
     
     async def handle_prestige_chest_rewards(self, ctx, level, emotes):
         """Handle randomized rewards for prestige players in battle tower."""
@@ -1183,14 +1600,14 @@ class Battles(commands.Cog):
                     
             # Get emoji mapping for display
             emotes = {
-                "common": "<:F_common:1139514874016309260>",
-                "uncommon": "<:F_uncommon:1139514875828252702>",
-                "rare": "<:F_rare:1139514880517484666>",
-                "magic": "<:F_Magic:1139514865174720532>",
-                "legendary": "<:F_Legendary:1139514868400132116>",
-                "mystery": "<:F_mystspark:1139521536320094358>",
-                "fortune": "<:f_money:1146593710516224090>",
-                "divine": "<:f_divine:1169412814612471869>"
+                "common": "<:c_common:1403797578197368923>",
+                "uncommon": "<:c_uncommon:1403797597532983387>",
+                "rare": "<:c_rare:1403797594827657247>",
+                "magic": "<:c_Magic:1403797589169541330>",
+                "legendary": "<:c_Legendary:1403797587236225044>",
+                "mystery": "<:c_mystspark:1403797593129222235>",
+                "fortune": "<:c_money:1403797585411575971>",
+                "divine": "<:c_divine:1403797579635884202>",
             }
                     
             await ctx.send(f"You have received 1 {emotes[selected_crate]} crate for completing the battletower on prestige level: {prestige_level}. Congratulations!")
@@ -1228,7 +1645,12 @@ class Battles(commands.Cog):
                     return
 
                 # Get user's level and other data
+
                 level = await connection.fetchval('SELECT level FROM battletower WHERE id = $1', ctx.author.id)
+                if level == 0:
+                    await connection.execute('UPDATE battletower SET level = 1 WHERE id = $1', ctx.author.id)
+                    level = 1
+
                 player_balance = await connection.fetchval('SELECT money FROM profile WHERE "user" = $1', ctx.author.id)
                 god_value = await connection.fetchval('SELECT god FROM profile WHERE "user" = $1', ctx.author.id)
                 name_value = await connection.fetchval('SELECT name FROM profile WHERE "user" = $1', ctx.author.id)
@@ -1256,6 +1678,10 @@ class Battles(commands.Cog):
                     await ctx.send("Prestige canceled due to timeout.")
                     await self.bot.reset_cooldown(ctx)
                     return
+                except NoChoice:
+                    await ctx.send("Prestige canceled - no choice was made.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
 
             # Display dialogue for the current level
             await self.display_dialogue(ctx, level, name_value, dialoguetoggle)
@@ -1277,6 +1703,70 @@ class Battles(commands.Cog):
                 await self.remove_player_from_fight(ctx.author.id)
                 await self.bot.reset_cooldown(ctx)
                 return
+
+            # Special handling for level 16 - use random players as minions
+            if level == 16:
+                async with self.bot.pool.acquire() as connection:
+                    query = 'SELECT "user" FROM profile WHERE "user" != $1 ORDER BY RANDOM() LIMIT 2'
+                    random_users = await connection.fetch(query, ctx.author.id)
+
+                    random_user_objects = []
+                    for user in random_users:
+                        user_id = user['user']
+                        try:
+                            fetched_user = await self.bot.fetch_user(user_id)
+                            if fetched_user:
+                                random_user_objects.append(fetched_user)
+                        except:
+                            continue
+
+                    if len(random_user_objects) >= 2:
+                        random_user_object_1 = random_user_objects[0]
+                        random_user_object_2 = random_user_objects[1]
+                        async with self.bot.pool.acquire() as conn:
+                            minion1atk, minion1def = await self.bot.get_raidstats(random_user_object_1, conn=conn)
+                            minion2atk, minion2def = await self.bot.get_raidstats(random_user_object_2, conn=conn)
+
+                            # Calculate HP for minion 1
+                            minion1_result = await conn.fetchrow('SELECT "health", "stathp", "xp" FROM profile WHERE "user" = $1', random_user_object_1.id)
+                            if minion1_result:
+                                from utils import misc as rpgtools
+                                minion1_level = rpgtools.xptolevel(minion1_result['xp'])
+                                base_health = 200
+                                minion1_health = minion1_result['health'] + base_health
+                                minion1_stathp = minion1_result['stathp'] * 50
+                                minion1_total_hp = minion1_health + (minion1_level * 15) + minion1_stathp
+                            else:
+                                minion1_total_hp = 250  # fallback
+
+                            # Calculate HP for minion 2
+                            minion2_result = await conn.fetchrow('SELECT "health", "stathp", "xp" FROM profile WHERE "user" = $1', random_user_object_2.id)
+                            if minion2_result:
+                                minion2_level = rpgtools.xptolevel(minion2_result['xp'])
+                                base_health = 200
+                                minion2_health = minion2_result['health'] + base_health
+                                minion2_stathp = minion2_result['stathp'] * 50
+                                minion2_total_hp = minion2_health + (minion2_level * 15) + minion2_stathp
+                            else:
+                                minion2_total_hp = 150  # fallback
+
+                        level_data = level_data.copy()
+                        level_data["minion1_name"] = random_user_object_1.display_name
+                        level_data["minion2_name"] = random_user_object_2.display_name
+                        level_data["minion1"] = {
+                            "hp": minion1_total_hp,
+                            "damage": minion1atk,
+                            "armor": minion1def,
+                            "element": "unknown"
+                        }
+                        level_data["minion2"] = {
+                            "hp": minion2_total_hp,
+                            "damage": minion2atk,
+                            "armor": minion2def,
+                            "element": "unknown"
+                        }
+                    else:
+                        await ctx.send("Warning: Could not find enough players for special level 16 battle. Using default enemies.")
 
             # Create and start the battle
             battle = await self.battle_factory.create_battle(
@@ -1303,14 +1793,14 @@ class Battles(commands.Cog):
 
             # Define emoji map for rewards
             emotes = {
-                "common": "<:F_common:1139514874016309260>",
-                "uncommon": "<:F_uncommon:1139514875828252702>",
-                "rare": "<:F_rare:1139514880517484666>",
-                "magic": "<:F_Magic:1139514865174720532>",
-                "legendary": "<:F_Legendary:1139514868400132116>",
-                "mystery": "<:F_mystspark:1139521536320094358>",
-                "fortune": "<:f_money:1146593710516224090>",
-                "divine": "<:f_divine:1169412814612471869>"
+                "common": "<:c_common:1403797578197368923>",
+                "uncommon": "<:c_uncommon:1403797597532983387>",
+                "rare": "<:c_rare:1403797594827657247>",
+                "magic": "<:c_Magic:1403797589169541330>",
+                "legendary": "<:c_Legendary:1403797587236225044>",
+                "mystery": "<:c_mystspark:1403797593129222235>",
+                "fortune": "<:c_money:1403797585411575971>",
+                "divine": "<:c_divine:1403797579635884202>",
             }
 
             # Handle victory or defeat
@@ -1847,6 +2337,21 @@ class Battles(commands.Cog):
     @locale_doc
     async def pve(self, ctx):
         """Battle against a monster and gain experience points."""
+        # Check for macro detection
+        macro_detected = await self.check_pve_macro_detection(ctx.author.id)
+        if macro_detected:
+            try:
+                user = await self.bot.fetch_user(295173706496475136)
+                await user.send(f"User {ctx.author.id} detected using macros in PVE command!")
+            except:
+                pass  # Silently fail if DM fails
+        
+        # Debug: Log macro detection data
+        if ctx.author.id in self.pve_macro_detection:
+            user_data = self.pve_macro_detection[ctx.author.id]
+            print(f"Macro debug - User {ctx.author.id}: count={user_data['count']}, macro_detected={macro_detected}")
+
+        
         # Check for monster override from scout command
         monster_override = getattr(ctx, 'monster_override', None)
         levelchoice_override = getattr(ctx, 'levelchoice_override', None)
@@ -1894,8 +2399,6 @@ class Battles(commands.Cog):
                 if random.random() < legendary_spawn_chance:
                     spawn_legendary = True
 
-            if ctx.author.id == 295173706496475136 and self.forceleg:
-                spawn_legendary = True
 
             if spawn_legendary:
                 # Select legendary monster
@@ -1929,14 +2432,15 @@ class Battles(commands.Cog):
                 elif player_level <= 35:
                     levelchoice = random.randint(1, 9)
                 elif player_level <= 40:
-                    # For levels 1-40, levels 1-9 have normal chance, level 10 has half chance
-                    level_weights = [10] * 10  # Default weight of 10 for all levels
-                    level_weights[9] = 5  # Level 10 (index 9) gets half weight (5/10)
+                    # For levels 1-10, level 10 has half chance
+                    level_weights = [10] * 10  # 10 weights for levels 1-10
+                    level_weights[9] = 5  # Level 10 (index 9) gets half weight
                     levelchoice = random.choices(range(1, 11), weights=level_weights, k=1)[0]
                 else:  # player_level > 40
-                    # For level 41+, levels 1-9 and 11 have normal chance, level 10 has half chance
-                    level_weights = [10] * 11  # Default weight of 10 for all levels
-                    level_weights[9] = 5  # Level 10 (index 9) gets half weight (5/10)
+                    # For levels 1-11, level 10 has half chance, level 11 much lower
+                    level_weights = [10] * 11  # 11 weights for levels 1-11
+                    level_weights[9] = 5  # Level 10 (index 9) gets half weight
+                    level_weights[10] = 1  # Level 11 (index 10) gets much lower weight
                     levelchoice = random.choices(range(1, 12), weights=level_weights, k=1)[0]
 
                 monster = random.choice(monsters[levelchoice])
@@ -1956,6 +2460,9 @@ class Battles(commands.Cog):
         await searching_message.edit(embed=found_embed)
         await asyncio.sleep(4)
 
+        # Check for macro penalty
+        macro_penalty_level = self.get_pve_macro_penalty_level(ctx.author.id)
+        
         # Create and start the battle
         try:
             battle = await self.battle_factory.create_battle(
@@ -1963,7 +2470,8 @@ class Battles(commands.Cog):
                 ctx,
                 player=ctx.author,
                 monster_data=monster,
-                monster_level=levelchoice
+                monster_level=levelchoice,
+                macro_penalty_level=macro_penalty_level
             )
             
             # Start the battle
@@ -1980,7 +2488,8 @@ class Battles(commands.Cog):
             # Handle egg drops and other PvE-specific outcomes
             if result and result.name == "Player":
                 # Player won - check for egg drops based on level
-                if levelchoice < 12:
+                # Skip egg drops if macro penalty is active (count >= 12)
+                if levelchoice < 12 and macro_penalty_level == 0:
                     # Calculate base egg chance
                     base_egg_chance = 0.50 - ((levelchoice - 1) / 9) * 0.45
                     final_egg_chance = base_egg_chance
@@ -2154,14 +2663,22 @@ class Battles(commands.Cog):
                 
                 # Remove the chosen pet/egg from its table
                 try:
-                    if record_to_remove["type"] == "pet":
-                        await conn.execute("DELETE FROM monster_pets WHERE id = $1;",
-                                          record_to_remove["id"])
-                    else:
-                        await conn.execute("DELETE FROM monster_eggs WHERE id = $1;",
-                                          record_to_remove["id"])
+                    # Check if the item exists in the user's collection
+                    table = "monster_pets" if record_to_remove["type"] == "pet" else "monster_eggs"
+                    item = await conn.fetchrow(f"SELECT * FROM {table} WHERE user_id = $1 AND id = $2;",
+                                               ctx.author.id, record_to_remove["id"])
+
+                    if not item:
+                        await ctx.send(_("❌ No {type} with ID `{id}` found in your collection.").format(
+                            type=record_to_remove["type"], id=record_to_remove["id"]))
+                        return
+
+                    # Delete the item
+                    await conn.execute(f"DELETE FROM {table} WHERE id = $1;", record_to_remove["id"])
+
                     await ctx.send(
                         _(f"Released {record_to_remove['type']} '{record_to_remove['display_name']}' to make room."))
+
                 except Exception as e:
                     await ctx.send(_("An error occurred while releasing the pet/egg: ") + str(e))
                     return
@@ -2463,14 +2980,15 @@ class Battles(commands.Cog):
                     elif player_level <= 35:
                         levelchoice = random.randint(1, 9)
                     elif player_level <= 40:
-                        # For levels 1-40, levels 1-9 have normal chance, level 10 has half chance
-                        level_weights = [10] * 10  # Default weight of 10 for all levels
-                        level_weights[9] = 5  # Level 10 (index 9) gets half weight (5/10)
+                        # For levels 1-10, level 10 has half chance
+                        level_weights = [10] * 10  # 10 weights for levels 1-10
+                        level_weights[9] = 5  # Level 10 (index 9) gets half weight
                         levelchoice = random.choices(range(1, 11), weights=level_weights, k=1)[0]
                     else:  # player_level > 40
-                        # For level 41+, levels 1-9 and 11 have normal chance, level 10 has half chance
-                        level_weights = [10] * 11  # Default weight of 10 for all levels
-                        level_weights[9] = 5  # Level 10 (index 9) gets half weight (5/10)
+                        # For levels 1-11, level 10 has half chance, level 11 much lower
+                        level_weights = [10] * 11  # 11 weights for levels 1-11
+                        level_weights[9] = 5  # Level 10 (index 9) gets half weight
+                        level_weights[10] = 1  # Level 11 (index 10) gets much lower weight
                         levelchoice = random.choices(range(1, 12), weights=level_weights, k=1)[0]
                     
                     # Select and display monster
@@ -2718,8 +3236,11 @@ class Battles(commands.Cog):
         introducing new powerful abilities and passives. Form a party and challenge
         this formidable foe!
         """
-        if ctx.invoked_subcommand is None:
-            await self._show_dragon_status(ctx)
+        try:
+            if ctx.invoked_subcommand is None:
+                await self._show_dragon_status(ctx)
+        except Exception as e:
+            await ctx.send(f"An error occurred: {e}")
     
     async def _show_dragon_status(self, ctx):
         """Show the current status of the Ice Dragon Challenge"""
@@ -2790,210 +3311,213 @@ class Battles(commands.Cog):
         
         **Aliases**: `p`
         """
-        # Check if the user is already in a party
-        if any(view.is_complete is False and ctx.author in view.party_members 
-               for view in self.dragon_party_views):
-            return await ctx.send("You are already in a party formation!")
-            
-        # Create party formation view
-        class DragonPartyView(discord.ui.View):
-            def __init__(self, bot):
-                super().__init__(timeout=60)  # Full 60-second timeout
-                self.bot = bot
-                self.party_members = [ctx.author]  # Author automatically joins
-                self.is_complete = False
-                self._warning_task = None
-                self._warning_sent = False
-                self.message = None  # Will be set after view is sent
-                self.ctx = ctx  # Store context for sending warning message
+        try:
+            # Check if the user is already in a party
+            if any(view.is_complete is False and ctx.author in view.party_members 
+                for view in self.dragon_party_views):
+                return await ctx.send("You are already in a party formation!")
                 
-            async def update_embed(self):
-                embed = discord.Embed(
-                    title="Ice Dragon Challenge - Party Formation",
-                    description="Form a party to challenge the Ice Dragon!",
-                    color=discord.Color.blue()
-                )
-                
-                # List party members
-                member_list = "\n".join([f"• {member.mention}" for member in self.party_members])
-                embed.add_field(
-                    name=f"Party Members ({len(self.party_members)}/4)",
-                    value=member_list or "No members yet",
-                    inline=False
-                )
-                
-                return embed
-                
-            @discord.ui.button(label="Join Party", style=discord.ButtonStyle.primary, emoji="⚔️")
-            async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
-                # Check if user has a character
-                if not await self.bot.pool.fetchrow('SELECT 1 FROM profile WHERE "user"=$1', interaction.user.id):
-                    return await interaction.response.send_message("You don't have a character to join the party!", ephemeral=True)
+            # Create party formation view
+            class DragonPartyView(discord.ui.View):
+                def __init__(self, bot):
+                    super().__init__(timeout=120)  # Full 60-second timeout
+                    self.bot = bot
+                    self.party_members = [ctx.author]  # Author automatically joins
+                    self.is_complete = False
+                    self._warning_task = None
+                    self._warning_sent = False
+                    self.message = None  # Will be set after view is sent
+                    self.ctx = ctx  # Store context for sending warning message
                     
-                # Check if user is already in the party
-                if interaction.user in self.party_members:
-                    return await interaction.response.send_message("You are already in the party!", ephemeral=True)
+                async def update_embed(self):
+                    embed = discord.Embed(
+                        title="Ice Dragon Challenge - Party Formation",
+                        description="Form a party to challenge the Ice Dragon!",
+                        color=discord.Color.blue()
+                    )
                     
-                # Add user to party
-                if len(self.party_members) < 4:
-                    self.party_members.append(interaction.user)
-                    await interaction.response.send_message("You have joined the party!", ephemeral=True)
+                    # List party members
+                    member_list = "\n".join([f"• {member.mention}" for member in self.party_members])
+                    embed.add_field(
+                        name=f"Party Members ({len(self.party_members)}/4)",
+                        value=member_list or "No members yet",
+                        inline=False
+                    )
+                    
+                    return embed
+                    
+                @discord.ui.button(label="Join Party", style=discord.ButtonStyle.primary, emoji="⚔️")
+                async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+                    # Check if user has a character
+                    if not await self.bot.pool.fetchrow('SELECT 1 FROM profile WHERE "user"=$1', interaction.user.id):
+                        return await interaction.response.send_message("You don't have a character to join the party!", ephemeral=True)
+                        
+                    # Check if user is already in the party
+                    if interaction.user in self.party_members:
+                        return await interaction.response.send_message("You are already in the party!", ephemeral=True)
+                        
+                    # Add user to party
+                    if len(self.party_members) < 4:
+                        self.party_members.append(interaction.user)
+                        await interaction.response.send_message("You have joined the party!", ephemeral=True)
+                        
+                        # Update the embed
+                        await interaction.message.edit(embed=await self.update_embed())
+                    else:
+                        await interaction.response.send_message("The party is already full!", ephemeral=True)
+                
+                @discord.ui.button(label="Leave Party", style=discord.ButtonStyle.danger, emoji="🚪")
+                async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
+                    # Check if user is in the party
+                    if interaction.user not in self.party_members:
+                        return await interaction.response.send_message("You are not in the party!", ephemeral=True)
+                        
+                    # Don't allow the party leader to leave
+                    if interaction.user == ctx.author:
+                        return await interaction.response.send_message("As the party leader, you cannot leave the party!", ephemeral=True)
+                        
+                    # Remove user from party
+                    self.party_members.remove(interaction.user)
+                    await interaction.response.send_message("You have left the party!", ephemeral=True)
                     
                     # Update the embed
                     await interaction.message.edit(embed=await self.update_embed())
-                else:
-                    await interaction.response.send_message("The party is already full!", ephemeral=True)
-            
-            @discord.ui.button(label="Leave Party", style=discord.ButtonStyle.danger, emoji="🚪")
-            async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
-                # Check if user is in the party
-                if interaction.user not in self.party_members:
-                    return await interaction.response.send_message("You are not in the party!", ephemeral=True)
-                    
-                # Don't allow the party leader to leave
-                if interaction.user == ctx.author:
-                    return await interaction.response.send_message("As the party leader, you cannot leave the party!", ephemeral=True)
-                    
-                # Remove user from party
-                self.party_members.remove(interaction.user)
-                await interaction.response.send_message("You have left the party!", ephemeral=True)
                 
-                # Update the embed
-                await interaction.message.edit(embed=await self.update_embed())
-            
-            @discord.ui.button(label="Start Challenge", style=discord.ButtonStyle.success, emoji="🐉")
-            async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
-                # Only the party leader can start the challenge
-                if interaction.user != ctx.author:
-                    return await interaction.response.send_message("Only the party leader can start the challenge!", ephemeral=True)
+                @discord.ui.button(label="Start Challenge", style=discord.ButtonStyle.success, emoji="🐉")
+                async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
+                    # Only the party leader can start the challenge
+                    if interaction.user != ctx.author:
+                        return await interaction.response.send_message("Only the party leader can start the challenge!", ephemeral=True)
+                        
+                    # At least one member needed to start
+                    if not self.party_members:
+                        return await interaction.response.send_message("You need at least one member to start the challenge!", ephemeral=True)
                     
-                # At least one member needed to start
-                if not self.party_members:
-                    return await interaction.response.send_message("You need at least one member to start the challenge!", ephemeral=True)
-                
-                # Acknowledge the interaction
-                await interaction.response.defer()
-                
-                # Mark as complete to start the challenge
-                self.is_complete = True
-                self.stop()
-            
-            async def on_timeout(self):
-                # This runs after the full 60 seconds
-                if not self.is_complete:
-                    self.is_complete = False
+                    # Acknowledge the interaction
+                    await interaction.response.defer()
+                    
+                    # Mark as complete to start the challenge
+                    self.is_complete = True
                     self.stop()
-            
-            async def start_warning_timer(self):
-                # Schedule the warning for 50 seconds in
-                await asyncio.sleep(50)
-                if not self.is_complete and not self.is_finished():
-                    self._warning_sent = True
-                    warning_embed = discord.Embed(
-                        title="⚠️ Party Formation Expiring Soon",
-                        description="The party formation will time out in 10 seconds. Start the challenge now or the party will be disbanded.",
-                        color=discord.Color.orange()
-                    )
-                    try:
-                        await self.ctx.send(embed=warning_embed, delete_after=10)
-                    except Exception as e:
-                        print(f"Error sending warning message: {e}")
-            
-            async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item):
-                if self._timeout_task:
-                    self._timeout_task.cancel()
-                    self._timeout_task = None
-                await super().on_error(interaction, error, item)
-            
-            def stop(self):
-                # Cancel any pending warning task
-                if hasattr(self, '_warning_task') and self._warning_task:
-                    self._warning_task.cancel()
-                super().stop()
-            
-            async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item):
-                # Cancel warning task on error
-                if hasattr(self, '_warning_task') and self._warning_task:
-                    self._warning_task.cancel()
-                await super().on_error(interaction, error, item)
-        
-        # Create and send the party view
-        view = DragonPartyView(self.bot)
-        message = await ctx.send(embed=await view.update_embed(), view=view)
-        view.message = message  # Store message reference
-        # Start the warning timer
-        view._warning_task = asyncio.create_task(view.start_warning_timer())
-        
-        # Wait for the view to complete
-        await view.wait()
-        
-        # Check if party formation was successful
-        if view.is_complete:
-            await message.edit(content="Party formed! Starting the challenge...", embed=None, view=None)
-            
-            # Add all party members to the fighting players
-            for member in view.party_members:
-                await self.add_player_to_fight(member.id)
                 
-            try:
-                # Create and start the dragon battle
-                try:
-                    battle = await self.battle_factory.create_battle(
-                        "dragon",
-                        ctx,
-                        party_members=view.party_members
-                    )
-                    
-                    # Start the battle
-                    success = await battle.start_battle()
-                    if not success:
-                        # Remove players from fighting
-                        for member in view.party_members:
-                            await self.remove_player_from_fight(member.id)
-                        return await ctx.send("Failed to start the dragon challenge!")
-                    
-                    # Process battle turns
-                    turn_count = 0
-                    battle_msg = await ctx.send("⚔️ Battle started! Dragons and adventurers clash...")
-                    
-                    while not await battle.is_battle_over():
+                async def on_timeout(self):
+                    # This runs after the full 60 seconds
+                    if not self.is_complete:
+                        self.is_complete = False
+                        self.stop()
+                
+                async def start_warning_timer(self):
+                    # Schedule the warning for 50 seconds in
+                    await asyncio.sleep(110)
+                    if not self.is_complete and not self.is_finished():
+                        self._warning_sent = True
+                        warning_embed = discord.Embed(
+                            title="⚠️ Party Formation Expiring Soon",
+                            description="The party formation will time out in 10 seconds. Start the challenge now or the party will be disbanded.",
+                            color=discord.Color.orange()
+                        )
                         try:
-                            turn_count += 1
-                            result = await battle.process_turn()
-                            
-                            # Only update message every 5 turns to reduce spam
-                            if turn_count % 5 == 0:
-                                await battle_msg.edit(content=f"⚔️ Battle in progress - Turn {turn_count} - The dragon and party continue to battle...")
-                            
-                            await asyncio.sleep(1)  # 1 second delay between turns for faster battles
+                            await self.ctx.send(embed=warning_embed, delete_after=10)
                         except Exception as e:
-                            await ctx.send(f"⚠️ Error in turn {turn_count}: {str(e)}\n```{traceback.format_exc()}```")
-                            break
-                    
-                    # Get the battle result
-                    await ctx.send("Battle completed. Processing result...")
-                    victory = await battle.end_battle()
-                    
-                except Exception as e:
-                    await ctx.send(f"⚠️ Error in dragon battle: {str(e)}\n```{traceback.format_exc()}```")
-                    return
+                            print(f"Error sending warning message: {e}")
                 
-                # Handle rewards
-                if victory is True:  # Players won
-                    await self._handle_dragon_victory(ctx, view.party_members)
-                elif victory is False:  # Players lost
-                    await self._handle_dragon_defeat(ctx, view.party_members)
-                else:  # Draw
-                    await ctx.send("The battle ended in a draw!")
-                    
-            finally:
-                # Always remove players from fighting status
+                async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item):
+                    if self._timeout_task:
+                        self._timeout_task.cancel()
+                        self._timeout_task = None
+                    await super().on_error(interaction, error, item)
+                
+                def stop(self):
+                    # Cancel any pending warning task
+                    if hasattr(self, '_warning_task') and self._warning_task:
+                        self._warning_task.cancel()
+                    super().stop()
+                
+                async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item):
+                    # Cancel warning task on error
+                    if hasattr(self, '_warning_task') and self._warning_task:
+                        self._warning_task.cancel()
+                    await super().on_error(interaction, error, item)
+            
+            # Create and send the party view
+            view = DragonPartyView(self.bot)
+            message = await ctx.send(embed=await view.update_embed(), view=view)
+            view.message = message  # Store message reference
+            # Start the warning timer
+            view._warning_task = asyncio.create_task(view.start_warning_timer())
+            
+            # Wait for the view to complete
+            await view.wait()
+            
+            # Check if party formation was successful
+            if view.is_complete:
+                await message.edit(content="Party formed! Starting the challenge...", embed=None, view=None)
+                
+                # Add all party members to the fighting players
                 for member in view.party_members:
-                    await self.remove_player_from_fight(member.id)
+                    await self.add_player_to_fight(member.id)
                     
-        else:
-            await message.edit(content="Party formation timed out!", embed=None, view=None)
-            await self.bot.reset_cooldown(ctx)
+                try:
+                    # Create and start the dragon battle
+                    try:
+                        battle = await self.battle_factory.create_battle(
+                            "dragon",
+                            ctx,
+                            party_members=view.party_members
+                        )
+                        
+                        # Start the battle
+                        success = await battle.start_battle()
+                        if not success:
+                            # Remove players from fighting
+                            for member in view.party_members:
+                                await self.remove_player_from_fight(member.id)
+                            return await ctx.send("Failed to start the dragon challenge!")
+                        
+                        # Process battle turns
+                        turn_count = 0
+                        battle_msg = await ctx.send("⚔️ Battle started! Dragons and adventurers clash...")
+                        
+                        while not await battle.is_battle_over():
+                            try:
+                                turn_count += 1
+                                result = await battle.process_turn()
+                                
+                                # Only update message every 5 turns to reduce spam
+                                if turn_count % 5 == 0:
+                                    await battle_msg.edit(content=f"⚔️ Battle in progress - Turn {turn_count} - The dragon and party continue to battle...")
+                                
+                                await asyncio.sleep(1)  # 1 second delay between turns for faster battles
+                            except Exception as e:
+                                await ctx.send(f"⚠️ Error in turn {turn_count}: {str(e)}\n```{traceback.format_exc()}```")
+                                break
+                        
+                        # Get the battle result
+                        await ctx.send("Battle completed. Processing result...")
+                        victory = await battle.end_battle()
+                        
+                    except Exception as e:
+                        await ctx.send(f"⚠️ Error in dragon battle: {str(e)}\n```{traceback.format_exc()}```")
+                        return
+                    
+                    # Handle rewards
+                    if victory is True:  # Players won
+                        await self._handle_dragon_victory(ctx, view.party_members)
+                    elif victory is False:  # Players lost
+                        await self._handle_dragon_defeat(ctx, view.party_members)
+                    else:  # Draw
+                        await ctx.send("The battle ended in a draw!")
+                        
+                finally:
+                    # Always remove players from fighting status
+                    for member in view.party_members:
+                        await self.remove_player_from_fight(member.id)
+                        
+            else:
+                await message.edit(content="Party formation timed out!", embed=None, view=None)
+                await self.bot.reset_cooldown(ctx)
+        except Exception as e:
+            await ctx.send(e)
     
     async def _handle_dragon_victory(self, ctx, party_members):
         """Handle rewards for defeating the dragon"""
@@ -3050,6 +3574,7 @@ class Battles(commands.Cog):
         
         # Give rewards to each party member
         reward_text = ""
+        weapon_rewards_text = ""
         try:
             async with self.bot.pool.acquire() as conn:
                 for idx, member in enumerate(party_members):
@@ -3073,11 +3598,86 @@ class Battles(commands.Cog):
 
                         # Calculate new level and check for level-up
                         new_level = int(rpgtools.xptolevel(current_xp + member_xp))
+
+                        # Debug output for specific member
+                        if member.id == 295173706496475136:
+                            await ctx.send(
+                                f"**Debug Info for {member.display_name}:**\n"
+                                f"Current XP: {current_xp}\n"
+                                f"Current Level: {current_level}\n"
+                                f"Member Money Awarded: {member_money}\n"
+                                f"Member XP Awarded: {member_xp}\n"
+                                f"New XP Total: {current_xp + member_xp}\n"
+                                f"New Level: {new_level}\n"
+                                f"Level Up: {current_level != new_level}"
+                            )
+
                         if current_level != new_level:
-                            await self.bot.process_levelup(ctx, new_level, current_level)
+                            await self.bot.process_guildlevelup(ctx, member.id, new_level, current_level)
                         
                         # Record in reward text
                         reward_text += f"• {member.mention}: {member_money} 💰, {member_xp} XP\n"
+                        
+                        # ICE DRAGON WEAPON REWARDS
+                        # Roll for weapon rewards for each player
+                        
+                        # Define ice dragon themed weapon names and types
+                        # Drop rates increase slightly with dragon level (max +8% at level 30+)
+                        level_bonus = min(0.08, (old_level - 1) * 0.003)  # 0.3% bonus per level, max 8%
+                        
+                        ice_dragon_weapons = [
+                            # 1-handed weapons (90-100 stats) - 1% chance each + level bonus (max 5% total)
+                            {"name": "Frostbite Blade", "type": ItemType.Sword, "min_stat": 20, "max_stat": 70, "chance": min(0.005, 0.001 + level_bonus)},
+                            {"name": "Ice Shard Dagger", "type": ItemType.Dagger, "min_stat": 20, "max_stat": 70, "chance": min(0.005, 0.001 + level_bonus)},
+                            {"name": "Glacial Axe", "type": ItemType.Axe, "min_stat": 20, "max_stat": 70, "chance": min(0.005, 0.001 + level_bonus)},
+                            {"name": "Frozen Spear", "type": ItemType.Spear, "min_stat": 20, "max_stat": 70, "chance": min(0.005, 0.001 + level_bonus)},
+                            {"name": "Permafrost Hammer", "type": ItemType.Hammer, "min_stat": 20, "max_stat": 70, "chance": min(0.005, 0.001 + level_bonus)},
+                            {"name": "Crystal Wand", "type": ItemType.Wand, "min_stat": 20, "max_stat": 70, "chance": min(0.005, 0.001 + level_bonus)},
+                            {"name": "Arctic Shield", "type": ItemType.Shield, "min_stat": 20, "max_stat": 70, "chance": min(0.005, 0.001 + level_bonus)},
+                            
+                            # 2-handed weapons (100-200 stats) - 0.5% chance each + level bonus (max 2.5% total)
+                            {"name": "Dragon's Breath Bow", "type": ItemType.Bow, "min_stat": 40, "max_stat": 150, "chance": min(0.0025, 0.0005 + level_bonus)},
+                            {"name": "Frost Giant's Scythe", "type": ItemType.Scythe, "min_stat": 40, "max_stat": 150, "chance": min(0.0025, 0.0005 + level_bonus)},
+                            {"name": "Absolute Zero Mace", "type": ItemType.Mace, "min_stat": 40, "max_stat": 150, "chance": min(0.0025, 0.0005 + level_bonus)},
+                        ]
+                        
+                        # Calculate total drop chance for display
+                        total_chance_1h = min(0.05, 0.01 + level_bonus) * 7
+                        total_chance_2h = min(0.025, 0.005 + level_bonus) * 3
+                        total_chance = total_chance_1h + total_chance_2h
+                        try:
+                        # Roll for each weapon type
+                            for weapon in ice_dragon_weapons:
+                                if random.random() < weapon["chance"]:
+                                    try:
+                                        # Player won this weapon!
+                                        stat = random.randint(weapon["min_stat"], weapon["max_stat"])
+                                        hand = weapon["type"].get_hand().value
+                                        
+                                        # Create the weapon
+                                        item = await self.bot.create_item(
+                                            name=weapon["name"],
+                                            value=10000,  # Value based on stat
+                                            type_=weapon["type"].value,
+                                            damage=stat if weapon["type"] != ItemType.Shield else 0,
+                                            armor=stat if weapon["type"] == ItemType.Shield else 0,
+                                            hand=hand,
+                                            owner=member,
+                                            element="Water",  # Ice dragon weapons are Water element
+                                            conn=conn
+                                        )
+                                        
+                                        # Add to weapon rewards text with rarity indicator
+                                        weapon_type_display = "2H" if hand == "both" else "1H"
+                                        rarity_emoji = "🌟" if hand == "both" else "⭐"  # 2H weapons are rarer
+                                        weapon_rewards_text += f"{rarity_emoji} **{member.mention}** found **{weapon['name']}** ({weapon_type_display}) with {stat} stats!\n"
+                                    except Exception as e:
+                                        # Log error but continue with other rewards
+                                        print(f"Error creating ice dragon weapon for {member.display_name}: {e}")
+                                        continue
+                        except Exception as e:
+                            await ctx.send(f"Error creating ice dragon weapon for {member.display_name}: {e}")
+                            continue
                         
                         # Update dragon_contributions for this player
                         player_count = await conn.fetchval(
@@ -3112,11 +3712,47 @@ class Battles(commands.Cog):
                 inline=False
             )
             
+            # Add weapon rewards if any were found
+            if weapon_rewards_text:
+                embed.add_field(
+                    name="❄️ Ice Dragon Weapon Drops",
+                    value=weapon_rewards_text,
+                    inline=False
+                )
+            else:
+                # Add a note about the weapon drop system with drop rate info
+                level_bonus = min(0.08, (old_level - 1) * 0.003)
+                base_chance_1h = min(0.09, 0.01 + level_bonus)
+                base_chance_2h = min(0.045, 0.005 + level_bonus)
+                total_chance = base_chance_1h * 7 + base_chance_2h * 3
+                embed.add_field(
+                    name="❄️ Ice Dragon Loot",
+                    value=f"No legendary weapons were found this time. Keep challenging the dragon for a chance at rare ice-themed weapons!\n\n**Drop Rates:**\n• 1H Weapons: {base_chance_1h:.1%} each (7 types, 90-100 stats)\n• 2H Weapons: {base_chance_2h:.1%} each (3 types, 100-200 stats)",
+                    inline=False
+                )
+            
             await ctx.send(embed=embed)
         except Exception:
             # Try a simple text message as fallback
             await ctx.send("Victory! The dragon has been defeated and rewards have been distributed.")
             pass
+
+    def _get_dragon_stage_name(self, level: int) -> str:
+        """Get the dragon stage name for a given level"""
+        if level <= 5:
+            return "Frostbite Wyrm"
+        elif level <= 10:
+            return "Corrupted Ice Dragon"
+        elif level <= 15:
+            return "Permafrost"
+        elif level <= 20:
+            return "Absolute Zero"
+        elif level <= 25:
+            return "Void Tyrant"
+        elif level <= 30:
+            return "Eternal Frost"
+        else:
+            return "Eternal Frost"
 
     
     async def _handle_dragon_defeat(self, ctx, party_members):
@@ -3134,24 +3770,51 @@ class Battles(commands.Cog):
             value="Each party member receives a small amount of XP for their efforts.",
             inline=False
         )
-        
+
         # Get current dragon level
         dragon_stats = await self.battle_factory.dragon_ext.get_dragon_stats_from_database(self.bot)
         dragon_level = dragon_stats.get("level", 1)
-        
+
         # Give small XP reward for trying
         async with self.bot.pool.acquire() as conn:
             for member in party_members:
-                # Small XP consolation
-                consolation_xp = 50 * dragon_level
-                
-                await conn.execute(
-                    'UPDATE profile SET "xp"="xp"+$1 WHERE "user"=$2;',
-                    consolation_xp, member.id
+                # Get current XP and level before update
+                current_data = await conn.fetchrow(
+                    'SELECT "xp" FROM profile WHERE "user"=$1;',
+                    member.id
                 )
-        
+
+                if current_data:
+                    current_xp = current_data["xp"]
+                    current_level = int(rpgtools.xptolevel(current_xp))
+
+                    # Small XP consolation
+                    consolation_xp = 50 * dragon_level
+
+                    await conn.execute(
+                        'UPDATE profile SET "xp"="xp"+$1 WHERE "user"=$2;',
+                        consolation_xp, member.id
+                    )
+
+                    # Calculate new level and check for level-up
+                    new_level = int(rpgtools.xptolevel(current_xp + consolation_xp))
+
+                    # Debug output for specific member (if needed)
+                    if member.id == 295173706496475136:
+                        await ctx.send(
+                            f"**Debug Info for {member.display_name}:**\n"
+                            f"Current XP: {current_xp}\n"
+                            f"Current Level: {current_level}\n"
+                            f"Consolation XP: {consolation_xp}\n"
+                            f"New XP Total: {current_xp + consolation_xp}\n"
+                            f"New Level: {new_level}\n"
+                            f"Level Up: {current_level != new_level}"
+                        )
+
+                    if current_level != new_level:
+                        await self.bot.process_guildlevelup(ctx, member.id, new_level, current_level, conn)
+
         await ctx.send(embed=embed)
-    
     
     @dragon_challenge.command(name="leaderboard", aliases=["lb"])
     async def dragon_leaderboard(self, ctx):
@@ -3254,8 +3917,1113 @@ class Battles(commands.Cog):
         except Exception as e:
             print(f"[ERROR] Failed to check dragon weekly reset: {e}")
 
+    @commands.group(aliases=["cbt"])
+    async def couples_battletower(self, ctx):
+        """Commands for the Couples Battle Tower."""
+        if ctx.invoked_subcommand is None:
+            await ctx.invoke(self.cbt_progress)
+
+    async def reset_couples_cooldown(self, user1_id, user2_id, command_type="both"):
+        """Reset couples battle tower cooldown for both partners."""
+        try:
+            if command_type == "both":
+                # Reset both start and begin cooldowns
+                await self.bot.redis.execute_command("DEL", f"cd:{user1_id}:couples_battletower start")
+                await self.bot.redis.execute_command("DEL", f"cd:{user2_id}:couples_battletower start")
+                await self.bot.redis.execute_command("DEL", f"cd:{user1_id}:couples_battletower begin")
+                await self.bot.redis.execute_command("DEL", f"cd:{user2_id}:couples_battletower begin")
+            else:
+                # Reset specific command cooldown
+                await self.bot.redis.execute_command("DEL", f"cd:{user1_id}:couples_battletower {command_type}")
+                await self.bot.redis.execute_command("DEL", f"cd:{user2_id}:couples_battletower {command_type}")
+        except Exception:
+            pass  # Ignore redis errors
+
+    async def get_couple_progress(self, user_id, partner_id):
+        """Fetch couple's battle tower progress from the database."""
+        id1, id2 = sorted((user_id, partner_id))
+        query = "SELECT current_level, prestige FROM couples_battle_tower WHERE partner1_id = $1 AND partner2_id = $2"
+        async with self.bot.pool.acquire() as conn:
+            row = await conn.fetchrow(query, id1, id2)
+        if row:
+            return dict(row)
+        return None
+
+    async def update_couple_progress(self, user_id, partner_id, level, prestige_up=False):
+        """Update or insert a couple's battle tower progress."""
+        id1, id2 = sorted((user_id, partner_id))
+        prestige_change = 1 if prestige_up else 0
+        query = """
+            INSERT INTO couples_battle_tower (partner1_id, partner2_id, current_level, prestige, last_attempt_at)
+            VALUES ($1, $2, $3, $4, NOW())
+            ON CONFLICT (partner1_id, partner2_id)
+            DO UPDATE SET
+                current_level = GREATEST(couples_battle_tower.current_level, $3),
+                prestige = couples_battle_tower.prestige + $4,
+                last_attempt_at = NOW();
+        """
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(query, id1, id2, level, prestige_change)
+            
+    @couples_battletower.command(name="start")
+    @has_char()
+    @user_cooldown(3600)
+    async def cbt_start(self, ctx):
+        """Starts a Couples Battle Tower fight."""
+        try:
+            author = ctx.author
+            query = "SELECT marriage FROM profile WHERE profile.user = $1"
+            result = await self.bot.pool.fetchval(query, ctx.author.id)
+            partner_id = result  # This will be the marriage partner's ID, or None if not married
+
+            if not partner_id:
+                await self.bot.reset_cooldown(ctx)
+                return await ctx.send(_("You are not married. This challenge is for couples only!"))
+            
+
+            partner = await self.bot.fetch_user(partner_id)
+
+            
+            # Apply cooldown to both partners at the start
+            await self.bot.redis.execute_command(
+                "SET", f"cd:{ctx.author.id}:couples_battletower start",
+                "couples_battletower start",
+                "EX", 3600
+            )
+            await self.bot.redis.execute_command(
+                "SET", f"cd:{partner_id}:couples_battletower start", 
+                "couples_battletower start",
+                "EX", 3600
+            )
+
+
+
+
+            progress = await self.get_couple_progress(author.id, partner.id)
+            if not progress:
+                progress = {'current_level': 1, 'prestige': 0}
+                await self.update_couple_progress(author.id, partner.id, 1) # Create initial record
+
+            level = progress['current_level']
+
+            if level > len(self.couples_game_levels["levels"]):
+                return await ctx.send(_("You have already conquered the tower!"))
+
+            level_info = self.couples_game_levels["levels"][level - 1]
+
+            embed = discord.Embed(
+                title=f"💕 The Tower of Eternal Bonds - Floor {level} 💕",
+                description=f"**{level_info['title']}**\n\n{level_info['story']}",
+                color=discord.Color.magenta()
+            )
+            embed.add_field(name="💑 Your Partner", value=f"{partner.display_name}, please join the battle!", inline=False)
+            embed.set_footer(text=f"Your love will be tested on this floor...")
+
+            original_message = await ctx.send(embed=embed)
+
+            async def on_join():
+                await original_message.edit(content=_("💕 Your partner has joined! Preparing for battle..."), embed=None, view=None)
+                
+                # Show couples dialogue
+                await self.display_couples_dialogue(ctx, level, author, partner)
+                
+                await self.add_player_to_fight(author.id)
+                await self.add_player_to_fight(partner.id)
+
+                try:
+                    battle = await self.battle_factory.create_battle(
+                        "couples_tower",
+                        ctx,
+                        player=author,
+                        level=level,
+                        game_levels=self.couples_game_levels,
+                    )
+                    
+                    # Start the battle
+                    await battle.start_battle()
+                    
+                    # Run the battle until completion
+                    while not await battle.is_battle_over():
+                        await battle.process_turn()
+                        await asyncio.sleep(2)  # 2 second delay between turns
+                    
+                    # Get the result (winner team)
+                    result = await battle.end_battle()
+
+                    if result and result.name == "Player":
+                        victory_data = self.couples_battle_tower_data["victories"].get(str(level), {})
+                        vic_embed = discord.Embed(title=f"🏆 Floor {level} Conquered! - {victory_data.get('title', 'Victory!')} 🏆",
+                                                  description=victory_data.get('description', 'You are victorious!'),
+                                                  color=discord.Color.gold())
+                        await ctx.send(embed=vic_embed)
+                        
+                        # Check if this level has chest rewards (every 5 levels)
+                        if victory_data.get('has_chest', False):
+                            # Get emotes for crate display
+                            emotes = {
+                                "common": "<:c_common:1403797578197368923>",
+                                "uncommon": "<:c_uncommon:1403797597532983387>",
+                                "rare": "<:c_rare:1403797594827657247>",
+                                "magic": "<:c_Magic:1403797589169541330>",
+                                "legendary": "<:c_Legendary:1403797587236225044>",
+                                "mystery": "<:c_mystspark:1403797593129222235>",
+                                "fortune": "<:c_money:1403797585411575971>",
+                                "divine": "<:c_divine:1403797579635884202>",
+                            }
+                            await self.handle_couples_chest_rewards(ctx, level, author, partner, emotes)
+                        # Check if this is the finale (level 30)
+                        elif victory_data.get('finale', False):
+                            await self.handle_couples_finale_rewards(ctx, level, author, partner)
+                        else:
+                            # Regular level completion - just update progress
+                            await self.update_couple_progress(author.id, partner.id, level + 1)
+                    else:
+                        await ctx.send("💔 You have been defeated. Train harder and try again!")
+
+                finally:
+                    await self.remove_player_from_fight(author.id)
+                    await self.remove_player_from_fight(partner.id)
+
+
+            async def on_cancel():
+                await original_message.edit(content=_("💔 The battle was cancelled or your partner did not respond in time."), embed=None, view=None)
+                # Reset cooldown for both partners since battle didn't start
+                await self.reset_couples_cooldown(author.id, partner.id)
+
+            view = CouplesTowerView(author, partner, on_join, on_cancel)
+            await original_message.edit(embed=embed, view=view)
+        except Exception as e:
+            await ctx.send(e)
+
+    @couples_battletower.command(name="progress")
+    @has_char()
+    async def cbt_progress(self, ctx):
+        """Shows your Couples Battle Tower progress."""
+        try:
+            author = ctx.author
+            query = "SELECT marriage FROM profile WHERE profile.user = $1"
+            result = await self.bot.pool.fetchval(query, ctx.author.id)
+            partner_id = result
+
+            if not partner_id:
+                return await ctx.send(_("You are not married. This challenge is for couples only!"))
+
+            partner = await self.bot.fetch_user(partner_id)
+            progress = await self.get_couple_progress(author.id, partner.id)
+            
+            if not progress:
+                progress = {'current_level': 1, 'prestige': 0}
+                await self.update_couple_progress(author.id, partner.id, 1)
+
+            level = progress['current_level']
+            prestige = progress['prestige']
+
+            # Get level names from the couples game levels
+            level_names = []
+            for i, level_info in enumerate(self.couples_game_levels["levels"], 1):
+                level_names.append(level_info['title'])
+
+            # Function to generate the formatted level list (similar to regular battle tower)
+            def generate_couples_level_list(levels, start_level=1):
+                result = "```\n"
+                for level_num, level_name in enumerate(levels, start=start_level):
+                    checkbox = "❌" if level_num == level else "✅" if level_num < level else "❌"
+                    result += f"Floor {level_num:<2} {checkbox} {level_name}\n"
+                result += "```"
+                return result
+
+            embed = discord.Embed(
+                title="💕 Couples Battle Tower Progress 💕",
+                description=f"**{author.display_name}** & **{partner.display_name}**\nLevel: {level}\nPrestige Level: {prestige}",
+                color=discord.Color.magenta()
+            )
+            
+            if level <= len(level_names):
+                embed.add_field(
+                    name="Floor Progress", 
+                    value=generate_couples_level_list(level_names), 
+                    inline=False
+                )
+                
+                # Show next challenge info
+                level_info = self.couples_game_levels["levels"][level - 1]
+                embed.add_field(
+                    name="Next Challenge",
+                    value=f"**{level_info['title']}**\n{level_info['story'][:150]}...",
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name="Status",
+                    value="🏆 **You have conquered the Tower of Eternal Bonds!** 🏆",
+                    inline=False
+                )
+
+            embed.set_footer(text="💕 **Your love grows stronger with each floor conquered** 💕")
+
+            await ctx.send(embed=embed)
+        except Exception as e:
+            await ctx.send(f"Error: {e}")
+
+    @couples_battletower.command(name="dialogue")
+    @has_char()
+    async def cbt_dialogue(self, ctx, level: int = None):
+        """View the dialogue for a specific level of the Couples Battle Tower."""
+        try:
+            author = ctx.author
+            query = "SELECT marriage FROM profile WHERE profile.user = $1"
+            result = await self.bot.pool.fetchval(query, ctx.author.id)
+            partner_id = result
+
+            if not partner_id:
+                return await ctx.send(_("You are not married. This challenge is for couples only!"))
+
+            partner = await self.bot.fetch_user(partner_id)
+
+            if not partner:
+                return await ctx.send(_("Your partner is not online. Please try again later."))
+
+            # If no level specified, show current level
+            if not level:
+                progress = await self.get_couple_progress(author.id, partner.id)
+                if not progress:
+                    return await ctx.send(_("You haven't started the Couples Battle Tower yet. Use `$couples_battletower begin` to begin!"))
+                level = progress['current_level']
+            
+            # Validate level
+            if level < 1 or level > len(self.couples_game_levels["levels"]):
+                return await ctx.send(_(f"Invalid level. Please choose a level between 1 and {len(self.couples_game_levels['levels'])}."))
+
+            # Show dialogue for the specified level
+            await self.display_couples_dialogue(ctx, level, author, partner, dialogue_only=True)
+            
+        except Exception as e:
+            await ctx.send(f"An error occurred: {e}")
+
+    @couples_battletower.command(name="preview")
+    @has_char()
+    async def cbt_preview(self, ctx, level: int):
+        """Preview the dialogue for a specific level without starting a battle."""
+        try:
+            author = ctx.author
+            query = "SELECT marriage FROM profile WHERE profile.user = $1"
+            result = await self.bot.pool.fetchval(query, ctx.author.id)
+            partner_id = result
+
+            if not partner_id:
+                return await ctx.send(_("You are not married. This challenge is for couples only!"))
+
+            partner = await self.bot.fetch_user(partner_id)
+
+            if not partner:
+                return await ctx.send(_("Your partner is not online. Please try again later."))
+
+            # Validate level
+            if level < 1 or level > len(self.couples_game_levels["levels"]):
+                return await ctx.send(_(f"Invalid level. Please choose a level between 1 and {len(self.couples_game_levels['levels'])}."))
+
+            level_info = self.couples_game_levels["levels"][level - 1]
+            
+            # Get full story text, but limit to embed field limits
+            story_text = level_info['story']
+            if len(story_text) > 900:
+                story_text = story_text[:900] + "..."
+            
+            dialogue_text = level_info['dialogue_start']
+            if len(dialogue_text) > 900:
+                dialogue_text = dialogue_text[:900] + "..."
+            
+            embed = discord.Embed(
+                title=f"💕 Preview: Floor {level} - {level_info['title']} 💕",
+                description=f"**Story Preview:**\n{story_text}",
+                color=discord.Color.magenta()
+            )
+            embed.add_field(name="Challenge", value=dialogue_text, inline=False)
+            
+            # Show mechanics if available
+            mechanics_desc = self.get_level_mechanics_description(level)
+            if len(mechanics_desc) > 1000:
+                mechanics_desc = mechanics_desc[:1000] + "..."
+            embed.add_field(name="⚙️ Floor Mechanics", value=mechanics_desc, inline=False)
+            
+            # Enemy info
+            if "enemies" in level_info:
+                enemy_count = len(level_info['enemies'])
+                enemy_names = [enemy.get('name', 'Unknown') for enemy in level_info['enemies'][:3]]  # Show first 3
+                enemy_text = f"**{enemy_count} enemies await:** {', '.join(enemy_names)}"
+                if enemy_count > 3:
+                    enemy_text += f" and {enemy_count - 3} more..."
+                embed.add_field(name="👹 Enemies", value=enemy_text, inline=False)
+            
+            embed.set_footer(text=f"Use $couples_battletower dialogue {level} to see the full story!")
+            
+            await ctx.send(embed=embed)
+            
+        except Exception as e:
+            await ctx.send(f"An error occurred: {e}")
+
+    @couples_battletower.command(name="begin")
+    @has_char()
+    @user_cooldown(300)
+    async def cbt_begin(self, ctx):
+        """Starts a Couples Battle Tower fight."""
+        try:
+            author = ctx.author
+            query = "SELECT marriage FROM profile WHERE profile.user = $1"
+            result = await self.bot.pool.fetchval(query, ctx.author.id)
+            partner_id = result  # This will be the marriage partner's ID, or None if not married
+
+            if not partner_id:
+                return await ctx.send(_("You are not married. This challenge is for couples only!"))
+
+            partner = await self.bot.fetch_user(partner_id)
+
+            # Check if either partner is already on couples battle tower cooldown (check both commands)
+            author_start_cooldown = await user_cooldown(self.bot, ctx.author.id, "couples_battletower start", 3600)
+            partner_start_cooldown = await user_cooldown(self.bot, partner_id, "couples_battletower start", 3600)
+            author_begin_cooldown = await user_cooldown(self.bot, ctx.author.id, "couples_battletower begin", 300)
+            partner_begin_cooldown = await user_cooldown(self.bot, partner_id, "couples_battletower begin", 300)
+            
+            if author_start_cooldown or partner_start_cooldown or author_begin_cooldown or partner_begin_cooldown:
+                if author_start_cooldown or author_begin_cooldown:
+                    cooldown_partner = "You are"
+                else:
+                    cooldown_partner = f"{partner.display_name} is"
+                return await ctx.send(f"{cooldown_partner} still on cooldown for the couples battle tower. Please wait before starting another challenge.")
+
+            # Check if either is currently in a fight
+            if await self.is_player_in_fight(author.id) or await self.is_player_in_fight(partner.id):
+                 return await ctx.send(_("One of you is already in a fight."))
+
+            # Apply cooldown to both partners at the start
+            await self.bot.redis.execute_command(
+                "SET", f"cd:{ctx.author.id}:couples_battletower begin",
+                "couples_battletower begin",
+                "EX", 300
+            )
+            await self.bot.redis.execute_command(
+                "SET", f"cd:{partner_id}:couples_battletower begin", 
+                "couples_battletower begin",
+                "EX", 300
+            )
+
+            progress = await self.get_couple_progress(author.id, partner.id)
+            if not progress:
+                progress = {'current_level': 1, 'prestige': 0}
+                await self.update_couple_progress(author.id, partner.id, 1) # Create initial record
+
+            level = progress['current_level']
+
+            if level > len(self.couples_game_levels["levels"]):
+                return await ctx.send(_("You have already conquered the tower!"))
+
+            level_info = self.couples_game_levels["levels"][level - 1]
+
+            embed = discord.Embed(
+                title=f"💕 The Tower of Eternal Bonds - Floor {level} 💕",
+                description=f"**{level_info['title']}**\n\n{level_info['story']}",
+                color=discord.Color.magenta()
+            )
+            embed.add_field(name="💑 Your Partner", value=f"{partner.display_name}, please join the battle!", inline=False)
+            embed.set_footer(text=f"Your love will be tested on this floor...")
+
+            original_message = await ctx.send(embed=embed)
+
+            async def on_join():
+                await original_message.edit(content=_("💕 Your partner has joined! Preparing for battle..."), embed=None, view=None)
+                
+                # Show couples dialogue
+                await self.display_couples_dialogue(ctx, level, author, partner)
+                
+                await self.add_player_to_fight(author.id)
+                await self.add_player_to_fight(partner.id)
+
+                try:
+                    battle = await self.battle_factory.create_battle(
+                        "couples_tower",
+                        ctx,
+                        player=author,
+                        level=level,
+                        game_levels=self.couples_game_levels,
+                    )
+                    
+                    # Start the battle
+                    await battle.start_battle()
+                    
+                    # Run the battle until completion
+                    while not await battle.is_battle_over():
+                        await battle.process_turn()
+                        await asyncio.sleep(2)  # 2 second delay between turns
+                    
+                    # Get the result (winner team)
+                    result = await battle.end_battle()
+
+                    if result and result.name == "Player":
+                        victory_data = self.couples_battle_tower_data["victories"].get(str(level), {})
+                        vic_embed = discord.Embed(title=f"🏆 Floor {level} Conquered! - {victory_data.get('title', 'Victory!')} 🏆",
+                                                  description=victory_data.get('description', 'You are victorious!'),
+                                                  color=discord.Color.gold())
+                        await ctx.send(embed=vic_embed)
+                        
+                        # Check if this level has chest rewards (every 5 levels)
+                        if victory_data.get('has_chest', False):
+                            # Get emotes for crate display
+                            emotes = {
+                                "common": "<:c_common:1403797578197368923>",
+                                "uncommon": "<:c_uncommon:1403797597532983387>",
+                                "rare": "<:c_rare:1403797594827657247>",
+                                "magic": "<:c_Magic:1403797589169541330>",
+                                "legendary": "<:c_Legendary:1403797587236225044>",
+                                "mystery": "<:c_mystspark:1403797593129222235>",
+                                "fortune": "<:c_money:1403797585411575971>",
+                                "divine": "<:c_divine:1403797579635884202>",
+                            }
+                            await self.handle_couples_chest_rewards(ctx, level, author, partner, emotes)
+                        # Check if this is the finale (level 30)
+                        elif victory_data.get('finale', False):
+                            await self.handle_couples_finale_rewards(ctx, level, author, partner)
+                        else:
+                            # Regular level completion - just update progress
+                            await self.update_couple_progress(author.id, partner.id, level + 1)
+                    else:
+                        await ctx.send("💔 You have been defeated. Train harder and try again!")
+
+                finally:
+                    await self.remove_player_from_fight(author.id)
+                    await self.remove_player_from_fight(partner.id)
+
+
+            async def on_cancel():
+                await original_message.edit(content=_("💔 The battle was cancelled or your partner did not respond in time."), embed=None, view=None)
+                # Reset cooldown for both partners since battle didn't start
+                await self.reset_couples_cooldown(author.id, partner.id)
+
+            view = CouplesTowerView(author, partner, on_join, on_cancel)
+            await original_message.edit(embed=embed, view=view)
+        except Exception as e:
+            await ctx.send(e)
+
+    async def display_couples_dialogue(self, ctx, level, author, partner, dialogue_only=False):
+        """Display dialogue for couples battle tower levels"""
+        try:
+            level_info = self.couples_game_levels["levels"][level - 1]
+            
+            # Create dialogue pages
+            pages = []
+            
+            # Page 1: Level introduction with romantic theme
+            intro_embed = discord.Embed(
+                title=f"💕 Floor {level}: {level_info['title']} 💕",
+                description=f"*The Tower of Eternal Bonds hums with ancient magic as you and your beloved step forward...*\n\n{level_info['story']}",
+                color=discord.Color.magenta()
+            )
+            intro_embed.set_footer(text=f"💑 Together, you face the challenge ahead... 💑")
+            intro_embed.add_field(name="💕 Your Bond", value=f"**{author.display_name}** & **{partner.display_name}**\n*United in love and purpose*", inline=False)
+            pages.append(intro_embed)
+            
+            # Page 2: The challenge with dramatic presentation
+            challenge_embed = discord.Embed(
+                title=f"⚔️ The Challenge That Awaits ⚔️",
+                description=f"*The air crackles with anticipation as the tower's guardians prepare to test your love...*\n\n{level_info['dialogue_start']}",
+                color=discord.Color.dark_red()
+            )
+            challenge_embed.set_footer(text=f"🔥 Your love will be tested... 🔥")
+            challenge_embed.add_field(name="💪 Your Strength", value="*The power of your bond will guide you through this trial*", inline=False)
+            pages.append(challenge_embed)
+            
+            # Page 3: Special Floor Mechanics (NEW!)
+            mechanics_embed = discord.Embed(
+                title=f"⚙️ Floor {level} Special Mechanics ⚙️",
+                description="*The tower's magic imbues this floor with unique challenges...*",
+                color=discord.Color.orange()
+            )
+            
+            # Add level-specific mechanics explanation
+            mechanics_text = self.get_level_mechanics_description(level)
+            mechanics_embed.add_field(name="🎯 How This Floor Works", value=mechanics_text, inline=False)
+            mechanics_embed.set_footer(text=f"⚡ Understanding the mechanics is key to victory! ⚡")
+            pages.append(mechanics_embed)
+            
+            # Page 4: Enemy information with strategic presentation (only if there are enemies)
+            if "enemies" in level_info and level_info.get("type") != "reward":
+                enemy_embed = discord.Embed(
+                    title=f"👹 Your Adversaries 👹",
+                    description="*The tower's guardians emerge from the shadows, ready to challenge your unity...*",
+                    color=discord.Color.dark_purple()
+                )
+                
+                enemy_text = ""
+                for i, enemy in enumerate(level_info['enemies'], 1):
+                    enemy_text += f"**{i}. {enemy['name']}**\n"
+                    enemy_text += f"   ❤️ HP: {enemy['hp']} | ⚔️ Attack: {enemy['attack']} | 🛡️ Defense: {enemy['defense']}\n"
+                    if 'special' in enemy:
+                        enemy_text += f"   ✨ *Special: {enemy['special']}*\n"
+                    enemy_text += "\n"
+                
+                enemy_embed.description += f"\n\n{enemy_text}"
+                enemy_embed.set_footer(text=f"💪 Face them together as one... 💪")
+                enemy_embed.add_field(name="🤝 Strategy", value="*Remember: your love is your greatest weapon. Fight as one, not as two.*", inline=False)
+                pages.append(enemy_embed)
+            else:
+                # For Level 30 and other reward levels, show special reward page instead
+                reward_embed = discord.Embed(
+                    title=f"🌟 The Ultimate Reward 🌟",
+                    description="*At the tower's peak, you find not enemies to fight, but a divine altar surrounded by pure light...*",
+                    color=discord.Color.gold()
+                )
+                reward_embed.add_field(name="✨ Divine Choice", value="*You will be offered three sacred blessings: Power, Wealth, or Youth. But remember - the greatest treasure is what you already possess.*", inline=False)
+                reward_embed.set_footer(text=f"💖 Your love has already conquered all... 💖")
+                pages.append(reward_embed)
+            
+            # Page 4: Final preparation with romantic motivation
+            final_embed = discord.Embed(
+                title=f"💑 Ready to Fight Together 💑",
+                description=f"**{author.display_name}** and **{partner.display_name}**,\n\n"
+                           f"*Your bond has brought you to Floor {level} of the Tower of Eternal Bonds. "
+                           f"Every step you've taken together has strengthened your love, every challenge overcome has deepened your connection.*\n\n"
+                           f"*Now, face this challenge as one. Remember why you're here - "
+                           f"not just to conquer the tower, but to prove that your love can overcome any obstacle, "
+                           f"that together you are stronger than any force that would try to separate you.*\n\n"
+                           f"**💕 When you're ready, begin your battle together. 💕**",
+                color=discord.Color.gold()
+            )
+            final_embed.set_footer(text=f"💖 Your love is your greatest weapon... 💖")
+            final_embed.add_field(name="💕 Final Words", value="*May your love guide you to victory, and may this trial only strengthen the bond you share.*", inline=False)
+            pages.append(final_embed)
+            
+            # Show dialogue with enhanced presentation
+            await ctx.send("💕 **The Tower of Eternal Bonds welcomes you both...** 💕")
+            
+            # Choose the appropriate view based on the dialogue_only parameter
+            if dialogue_only:
+                view = CouplesDialogueViewOnly(pages, author, partner) 
+            else:
+                view = CouplesDialogueView(pages, author, partner)
+                
+            await ctx.send(embed=pages[0], view=view)
+            await view.wait()
+            
+            return True
+            
+        except Exception as e:
+            await ctx.send(f"Error displaying dialogue: {e}")
+            return False
+    
+    def get_level_mechanics_description(self, level):
+        """Get a description of the special mechanics for each level."""
+        mechanics = {
+            1: "**✨ Standard Combat**: Basic couples combat with coordination bonuses for teamwork!",
+            2: "**🫥 Blind Combat**: HP bars are hidden! Fight by faith and trust, not sight.",
+            3: "**🪞 Twisted Reflections**: Face the demons of false jealousy - they attack with poisonous words!",
+            4: "**🌪️ Storm Push**: Dynamic weather effects that show the fury of doubt battering your love!",
+            5: "**🗡️ Split Combat**: You must fight separate enemies - each partner protects a different target!",
+            6: "**💕 Shared Hearts**: Partners share each other's pain - 25% of damage to one is felt by both!",
+            7: "**💎 Memory Shield**: Generate memory fragments each successful hit, use them to reduce incoming damage by 25% per fragment!",
+            8: "**😠 Friendly Fire**: Your anger has a 15% chance to make you accidentally strike your partner!",
+            9: "**⏰ Patience Test**: All actions take twice as long - test your patience and commitment!",
+            10: "**💪 Unity Mode**: Deal +50% damage when your partner is critically wounded (below 25% HP)!",
+            11: "**💃 Ballroom Dancing**: Combat becomes an elegant dance - all attacks are described as dance moves!",
+            12: "**🧊 Frozen Stiff**: 20% chance each turn to be too frozen to act (Frost Giants are immune)!",
+            13: "**🗣️ Miscommunication**: Fight 5 enemies at once with 30% chance to hit wrong targets due to confusion!",
+            14: "**📊 Pride Tracking**: Your damage dealt is tracked and displayed - beware competitive feelings!",
+            15: "**💔 Betrayal Illusions**: 25% chance to see false visions of betrayal, reducing your damage by 25%!",
+            16: "**😠 Grudge Mechanics**: Taking damage builds grudges (+1 per hit), each grudge gives +10% damage but 5% friendly fire chance!",
+            17: "**🤐 Hidden Secrets**: All damage numbers are hidden in the battle log - fight without knowing the impact!",
+            18: "**😈 Temptation**: 30% chance to be charmed each turn, reducing your damage by half when distracted!",
+            19: "**💥 Exposed Vulnerabilities**: 25% chance for critical hits that deal double damage by exploiting insecurities!",
+            20: "**🛡️ Guardian's Test**: Every 5 turns, pause for coordination challenges to test your unity!",
+            21: "**🔥 Heat Shield Sacrifice**: Every round, forge heat damages both partners (starts at 50, increases by 8). Each partner can 'shield' the other by taking 2.5x damage to protect them completely. Mutual sacrifice = normal damage, one-sided sacrifice = full protection + 2.5x damage to shielder, mutual selfishness = 1.5x damage to both!",
+            22: "**😞 Valley of Despair**: Taking damage, missing attacks, and Despair Wraith strikes build despair stacks. Each stack reduces your damage by 8% and accuracy by 5% (max 80%/50%). Partners can encourage each other (20% chance when despair ≥5) to remove 2-4 stacks. Successful attacks have a 20% chance to reduce despair by 1!",
+            23: "**🪞 Mirror of Truth**: One partner gets randomly possessed by a Truth Demon and attacks the other! The defender must survive 20 turns without killing their possessed partner. **Strategy Tip**: Consider unequipping weapons to reduce damage and avoid accidentally killing your beloved!",
+            24: "**⚡ Storm of Chaos**: Environmental chaos every round! Damage variance becomes extreme (-150 to +250 for attacks, -200 to +300 for fireballs). Partners can anchor each other (25% chance per turn) for stable damage. Turn order randomizes every 3 rounds. Chaos intensity escalates over time. Chaos Elementals use reality-warping special attacks!",
+            25: "**😨 Paralyzing Fear**: 30% chance each turn to be too terrified to act!",
+            26: "**💢 Pain Fury**: Taking damage builds pain bonuses that increase your damage output! Each 25 damage taken = +1% damage bonus (capped at 50%). The more you suffer, the stronger you become! Pain bonuses apply to all attacks and show milestone messages at 10%, 25%, and 40% fury!",
+            27: "**⏳ Aging Effect**: You age rapidly - all stats reduce by 3% each turn as time accelerates! Only affects partners, not pets or enemies. Milestone aging messages at turns 5, 10, and 15!",
+            28: "**🌱 Growth Requirement**: You must heal each other before the final enemy becomes vulnerable!",
+            29: "**👻 Spirit Healing**: Dead partners become spirits that can heal their living partner! Battle only ends when BOTH partners are dead. 80% chance for successful spirit healing (15-25% of target's max HP). Spirits provide emotional support and can keep fights going longer!",
+            30: "**🌟 Divine Ceremony**: No combat - pure reward ceremony at the tower's peak!"
+        }
+        return mechanics.get(level, "**⚔️ Standard Combat**: No special mechanics - pure skill and teamwork!")
+
+    async def handle_couples_chest_rewards(self, ctx, level, author, partner, emotes):
+        """Handle chest rewards for couples battle tower victories."""
+        try:
+            level_str = str(level)
+            victory_data = self.couples_battle_tower_data["victories"][level_str]
+            chest_rewards = victory_data["chest_rewards"]
+            
+            # Create an embed for the treasure chest options
+            chest_embed = discord.Embed(
+                title="💕 Choose Your Treasure Together 💕",
+                description=(
+                    "Before you lie two treasure chests, each shimmering with an otherworldly aura. "
+                    "The left chest appears ancient and ornate, while the right chest is smaller but radiates a faint magical glow.\n\n"
+                    f"**{author.display_name}** and **{partner.display_name}**, you must decide together which chest to open. "
+                    f"**Both of you must type the same choice** (`left` or `right`) to proceed. You have 60 seconds to agree!"
+                ),
+                color=0xff69b4  # Pink color for couples
+            )
+            chest_embed.set_footer(text=f"💑 Both partners must choose the same option... 💑")
+            await ctx.send(embed=chest_embed)
+            
+
+            
+            # Get prestige level for the couple
+            async with self.bot.pool.acquire() as connection:
+                prestige_level = await connection.fetchval('SELECT prestige FROM couples_battle_tower WHERE (partner1_id = $1 AND partner2_id = $2) OR (partner1_id = $2 AND partner2_id = $1)', author.id, partner.id)
+                
+            # Track both partners' choices
+            author_choice = None
+            partner_choice = None
+            choices_made = set()
+            
+            # Define check function for user response - either partner can respond
+            def check(m):
+                # Simple check without async calls
+                return (m.author == author or m.author == partner) and m.content.lower() in ['left', 'right']
+            
+            # Collect choices from both partners
+            start_time = asyncio.get_event_loop().time()
+            timeout = 120.0
+            
+
+            
+            while asyncio.get_event_loop().time() - start_time < timeout:
+                try:
+                    remaining_time = timeout - (asyncio.get_event_loop().time() - start_time)
+
+                    
+                    msg = await asyncio.wait_for(self.bot.wait_for('message', check=check), timeout=remaining_time)
+                    choice = msg.content.lower()
+                    
+
+                    
+                    if msg.author == author:
+                        if author_choice is None:
+                            author_choice = choice
+                            choices_made.add(author.id)
+                            await ctx.send(f"💕 **{author.display_name}** chose: **{choice}**")
+                        else:
+                            await ctx.send(f"💭 **{author.display_name}**, you already chose **{author_choice}**. You cannot change your choice!")
+                            
+                    elif msg.author == partner:
+                        if partner_choice is None:
+                            partner_choice = choice
+                            choices_made.add(partner.id)
+                            await ctx.send(f"💕 **{partner.display_name}** chose: **{choice}**")
+                        else:
+                            await ctx.send(f"💭 **{partner.display_name}**, you already chose **{partner_choice}**. You cannot change your choice!")
+                    
+                    # Check if both partners have made their choices
+                    if author_choice is not None and partner_choice is not None:
+                        if author_choice == partner_choice:
+                            # They agree! Process the reward
+                            await ctx.send(f"💕 **Perfect!** You both chose **{author_choice}**! Opening the chest...")
+                            break
+                        else:
+                            # They disagree - show current choices and ask them to try again
+                            await ctx.send(f"💔 **You disagree!** {author.display_name} chose **{author_choice}** and {partner.display_name} chose **{partner_choice}**. Please try to agree on the same choice!")
+                            # Reset choices to allow them to try again
+                            author_choice = None
+                            partner_choice = None
+                            choices_made.clear()
+                            continue
+                            
+                except asyncio.TimeoutError:
+                    break
+        
+            # Handle timeout or no agreement
+            if author_choice != partner_choice:
+                choice = random.choice(["left", "right"])
+                chooser = "The tower"
+                await ctx.send('💔 You could not agree on a choice in time. The tower will choose randomly for you.')
+            else:
+                choice = author_choice
+                chooser = f"{author.display_name} & {partner.display_name}"
+            
+            
+            # Generate rewards based on prestige level
+            if prestige_level and prestige_level >= 1:
+                await self.handle_couples_prestige_chest_rewards(ctx, level, author, partner, emotes, choice, chooser)
+            else:
+                await self.handle_couples_default_chest_rewards(ctx, level, chest_rewards["default"], author, partner, emotes, choice, chooser)
+        except Exception as e:
+            await ctx.send(f"An error occurred while handling chest rewards: {e}")
+    
+    async def handle_couples_prestige_chest_rewards(self, ctx, level, author, partner, emotes, choice, chooser):
+        """Handle randomized rewards for prestige couples in battle tower."""
+        async with self.bot.pool.acquire() as connection:
+            # Generate random rewards for both chests
+            left_reward_type = random.choice(['crate', 'money'])
+            right_reward_type = random.choice(['crate', 'money'])
+            
+            # Get options from config
+            chest_options = self.couples_battle_tower_data["chest_options"]["random"]
+            
+            # Generate the specific rewards
+            if left_reward_type == 'crate':
+                left_options = [opt["value"] for opt in chest_options["crate_options"]]
+                left_weights = [opt["weight"] for opt in chest_options["crate_options"]]
+                left_crate_type = random.choices(left_options, left_weights)[0]
+            else:
+                left_money_amount = random.choice(chest_options["money_options"])
+                
+            if right_reward_type == 'crate':
+                right_options = [opt["value"] for opt in chest_options["crate_options"]]
+                right_weights = [opt["weight"] for opt in chest_options["crate_options"]]
+                right_crate_type = random.choices(right_options, right_weights)[0]
+            else:
+                right_money_amount = random.choice(chest_options["money_options"])
+            
+            # Process the reward based on choice
+            new_level = level + 1
+            if choice == 'left':
+                if left_reward_type == 'crate':
+                    await ctx.send(f'💕 **{chooser}** chose the left chest! You both find {emotes[left_crate_type]} crates!')
+                    await connection.execute(
+                        f'UPDATE profile SET crates_{left_crate_type} = crates_{left_crate_type} + 1 WHERE "user" = $1',
+                        author.id)
+                    await connection.execute(
+                        f'UPDATE profile SET crates_{left_crate_type} = crates_{left_crate_type} + 1 WHERE "user" = $1',
+                        partner.id)
+                    
+                    # Show what they missed
+                    if right_reward_type == 'crate':
+                        await ctx.send(f'💭 You could have both gotten {emotes[right_crate_type]} crates if you chose the right chest.')
+                    else:
+                        await ctx.send(f'💭 You could have both gotten **${right_money_amount}** if you chose the right chest.')
+                else:
+                    await ctx.send(f'💕 **{chooser}** chose the left chest! You both find **${left_money_amount}**!')
+                    await connection.execute('UPDATE profile SET money = money + $1 WHERE "user" = $2',
+                                            left_money_amount, author.id)
+                    await connection.execute('UPDATE profile SET money = money + $1 WHERE "user" = $2',
+                                            left_money_amount, partner.id)
+                    
+                    # Show what they missed
+                    if right_reward_type == 'crate':
+                        await ctx.send(f'💭 You could have both gotten {emotes[right_crate_type]} crates if you chose the right chest.')
+                    else:
+                        await ctx.send(f'💭 You could have both gotten **${right_money_amount}** if you chose the right chest.')
+            else:  # right choice
+                if right_reward_type == 'crate':
+                    await ctx.send(f'💕 **{chooser}** chose the right chest! You both find {emotes[right_crate_type]} crates!')
+                    await connection.execute(
+                        f'UPDATE profile SET crates_{right_crate_type} = crates_{right_crate_type} + 1 WHERE "user" = $1',
+                        author.id)
+                    await connection.execute(
+                        f'UPDATE profile SET crates_{right_crate_type} = crates_{right_crate_type} + 1 WHERE "user" = $1',
+                        partner.id)
+                    
+                    # Show what they missed
+                    if left_reward_type == 'crate':
+                        await ctx.send(f'💭 You could have both gotten {emotes[left_crate_type]} crates if you chose the left chest.')
+                    else:
+                        await ctx.send(f'💭 You could have both gotten **${left_money_amount}** if you chose the left chest.')
+                else:
+                    await ctx.send(f'💕 **{chooser}** chose the right chest! You both find **${right_money_amount}**!')
+                    await connection.execute('UPDATE profile SET money = money + $1 WHERE "user" = $2',
+                                            right_money_amount, author.id)
+                    await connection.execute('UPDATE profile SET money = money + $1 WHERE "user" = $2',
+                                            right_money_amount, partner.id)
+                    
+                    # Show what they missed
+                    if left_reward_type == 'crate':
+                        await ctx.send(f'💭 You could have both gotten {emotes[left_crate_type]} crates if you chose the left chest.')
+                    else:
+                        await ctx.send(f'💭 You could have both gotten **${left_money_amount}** if you chose the left chest.')
+            
+            # Update level and clean up
+            await ctx.send(f'💕 You have both advanced to floor: {new_level}')
+            await connection.execute('UPDATE couples_battle_tower SET current_level = current_level + 1 WHERE (partner1_id = $1 AND partner2_id = $2) OR (partner1_id = $2 AND partner2_id = $1)', author.id, partner.id)
+            try:
+                await self.remove_player_from_fight(author.id)
+                await self.remove_player_from_fight(partner.id)
+            except Exception as e:
+                pass
+
+    @couples_battletower.command(name="help")
+    @has_char()
+    async def cbt_help(self, ctx):
+        """Get comprehensive help about the Couples Battle Tower system"""
+        # Check if user is married
+        query = "SELECT marriage FROM profile WHERE profile.user = $1"
+        result = await self.bot.pool.fetchval(query, ctx.author.id)
+        partner_id = result
+
+        if partner_id:
+            partner = await self.bot.fetch_user(partner_id)
+            partner_name = partner.display_name
+        else:
+            partner_name = "your beloved"
+
+        embed = discord.Embed(
+            title="💕 Couples Battle Tower 💕",
+            description="**The Tower of Eternal Bonds**\n30-floor challenge for married couples!",
+            color=discord.Color.magenta()
+        )
+        
+        # Requirements & Commands - merged for mobile
+        embed.add_field(
+            name="📋 Basics",
+            value=(
+                "**Requirements:** Must be married, both participate\n"
+                "**Cooldown:** 5 minutes between attempts\n\n"
+                "**Commands:**\n"
+                "`$cbt start` - Begin battle\n"
+                "`$cbt progress` - View progress\n"
+                "`$cbt preview <level>` - Preview level"
+            ),
+            inline=False
+        )
+        
+        # Tower & Rewards - merged for mobile
+        embed.add_field(
+            name="🏗️ Tower & Rewards",
+            value=(
+                "**30 Floors** - Each floor is unique!\n"
+                "• Floors 1-29: Combat + special mechanics\n"
+                "• Floor 30: Divine ceremony (no combat)\n"
+                "• Rewards every 5 floors\n"
+                "• Partners choose rewards together\n"
+                "• Prestige system for multiple completions"
+            ),
+            inline=False
+        )
+        
+        # Important info - more prominent
+        embed.add_field(
+            name="⚠️ IMPORTANT: Pre-Battle Dialogue",
+            value=(
+                "**LAST PAGE shows floor mechanics!**\n"
+                "• Read dialogue pages carefully\n"
+                "• Mechanics are crucial for victory\n"
+                "• Use `$cbt preview <level>` to review"
+            ),
+            inline=False
+        )
+        
+        # Getting Started - compact
+        if not partner_id:
+            getting_started = (
+                "1. Get married first! 💒\n"
+                "2. `$cbt start` to begin\n"
+                "3. Partner joins battle\n"
+                "4. Conquer all floors! 🏆"
+            )
+        else:
+            getting_started = (
+                f"1. `$cbt start` with **{partner_name}** 💕\n"
+                "2. Wait for partner to join\n"
+                "3. Face unique mechanics together\n"
+                "4. Reach divine ceremony! 🌟"
+            )
+        embed.add_field(name="🚀 Quick Start", value=getting_started, inline=False)
+        
+        # Love Quote - shorter
+        if partner_id:
+            embed.add_field(
+                name="💕 Remember",
+                value=f"*\"{ctx.author.display_name} and {partner_name}, your love has already conquered the greatest challenge - finding each other. The tower simply celebrates that bond.\"*",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="💕 Remember", 
+                value="*\"Love is not about finding someone to live with, it's about finding someone you can't live without. Find your partner and face the tower together.\"*",
+                inline=False
+            )
+        
+        embed.set_footer(text="💖 May your love guide you to victory! 💖")
+        
+        await ctx.send(embed=embed)
+    
+    async def handle_couples_default_chest_rewards(self, ctx, level, rewards, author, partner, emotes, choice, chooser):
+        """Handle fixed rewards for non-prestige couples in battle tower."""
+        # Process the reward based on choice
+        newlevel = level + 1
+        if choice == 'left':
+            left_reward = rewards["left"]
+            if left_reward["type"] == "crate":
+                message = f'💕 **{chooser}** chose the left chest! You both find: {emotes[left_reward["value"]]} '
+                if left_reward["amount"] > 1:
+                    message += f'{left_reward["amount"]} {left_reward["value"].capitalize()} Crates!'
+                else:
+                    message += f'A {left_reward["value"].capitalize()} Crate!'
+                
+                await ctx.send(message)
+                await ctx.send(f'💕 You have both advanced to floor: {newlevel}')
+                
+                async with self.bot.pool.acquire() as connection:
+                    await connection.execute(
+                        f'UPDATE profile SET crates_{left_reward["value"]} = crates_{left_reward["value"]} + {left_reward["amount"]} WHERE "user" = $1',
+                        author.id)
+                    await connection.execute(
+                        f'UPDATE profile SET crates_{left_reward["value"]} = crates_{left_reward["value"]} + {left_reward["amount"]} WHERE "user" = $1',
+                        partner.id)
+                    await connection.execute('UPDATE couples_battle_tower SET current_level = current_level + 1 WHERE (partner1_id = $1 AND partner2_id = $2) OR (partner1_id = $2 AND partner2_id = $1)', author.id, partner.id)
+            elif left_reward["type"] == "money":
+                extra_msg = f" {left_reward.get('message', '')}" if "message" in left_reward else ""
+                await ctx.send(f'💕 **{chooser}** chose the left chest! You both find: **${left_reward["value"]}**!{extra_msg}')
+                await ctx.send(f'💕 You have both advanced to floor: {newlevel}')
+                
+                async with self.bot.pool.acquire() as connection:
+                    await connection.execute(
+                        f'UPDATE profile SET money = money + {left_reward["value"]} WHERE "user" = $1',
+                        author.id)
+                    await connection.execute(
+                        f'UPDATE profile SET money = money + {left_reward["value"]} WHERE "user" = $1',
+                        partner.id)
+                    await connection.execute('UPDATE couples_battle_tower SET current_level = current_level + 1 WHERE (partner1_id = $1 AND partner2_id = $2) OR (partner1_id = $2 AND partner2_id = $1)', author.id, partner.id)
+            elif left_reward["type"] == "nothing":
+                await ctx.send(f'💔 **{chooser}** chose the left chest! You both find: Nothing, bad luck!')
+                await ctx.send(f'💕 You have both advanced to floor: {newlevel}')
+                
+                async with self.bot.pool.acquire() as connection:
+                    await connection.execute('UPDATE couples_battle_tower SET current_level = current_level + 1 WHERE (partner1_id = $1 AND partner2_id = $2) OR (partner1_id = $2 AND partner2_id = $1)', author.id, partner.id)
+            elif left_reward["type"] == "random":
+                # Handle special random case for level 15
+                legran = random.randint(1, 2)
+                if legran == 1:
+                    await ctx.send(f'💔 **{chooser}** chose the left chest! You both find: Nothing, bad luck!')
+                    await ctx.send(f'💕 You have both advanced to floor: {newlevel}')
+                    async with self.bot.pool.acquire() as connection:
+                        await connection.execute('UPDATE couples_battle_tower SET current_level = current_level + 1 WHERE (partner1_id = $1 AND partner2_id = $2) OR (partner1_id = $2 AND partner2_id = $1)', author.id, partner.id)
+                else:
+                    await ctx.send(f'💕 **{chooser}** chose the left chest! You both find: <:F_Legendary:1139514868400132116> A Legendary Crate!')
+                    await ctx.send(f'💕 You have both advanced to floor: {newlevel}')
+                    async with self.bot.pool.acquire() as connection:
+                        await connection.execute(
+                            'UPDATE profile SET crates_legendary = crates_legendary + 1 WHERE "user" = $1',
+                            author.id)
+                        await connection.execute(
+                            'UPDATE profile SET crates_legendary = crates_legendary + 1 WHERE "user" = $1',
+                            partner.id)
+                        await connection.execute('UPDATE couples_battle_tower SET current_level = current_level + 1 WHERE (partner1_id = $1 AND partner2_id = $2) OR (partner1_id = $2 AND partner2_id = $1)', author.id, partner.id)
+        else:  # right choice
+            right_reward = rewards["right"]
+            if right_reward["type"] == "crate":
+                message = f'💕 **{chooser}** chose the right chest! You both find: {emotes[right_reward["value"]]} '
+                if right_reward["amount"] > 1:
+                    message += f'{right_reward["amount"]} {right_reward["value"].capitalize()} Crates!'
+                else:
+                    message += f'A {right_reward["value"].capitalize()} Crate!'
+                
+                await ctx.send(message)
+                await ctx.send(f'💕 You have both advanced to floor: {newlevel}')
+                
+                async with self.bot.pool.acquire() as connection:
+                    await connection.execute(
+                        f'UPDATE profile SET crates_{right_reward["value"]} = crates_{right_reward["value"]} + {right_reward["amount"]} WHERE "user" = $1',
+                        author.id)
+                    await connection.execute(
+                        f'UPDATE profile SET crates_{right_reward["value"]} = crates_{right_reward["value"]} + {right_reward["amount"]} WHERE "user" = $1',
+                        partner.id)
+                    await connection.execute('UPDATE couples_battle_tower SET current_level = current_level + 1 WHERE (partner1_id = $1 AND partner2_id = $2) OR (partner1_id = $2 AND partner2_id = $1)', author.id, partner.id)
+            elif right_reward["type"] == "money":
+                extra_msg = f" {right_reward.get('message', '')}" if "message" in right_reward else ""
+                await ctx.send(f'💕 **{chooser}** chose the right chest! You both find: **${right_reward["value"]}**!{extra_msg}')
+                await ctx.send(f'💕 You have both advanced to floor: {newlevel}')
+                
+                async with self.bot.pool.acquire() as connection:
+                    await connection.execute(
+                        f'UPDATE profile SET money = money + {right_reward["value"]} WHERE "user" = $1',
+                        author.id)
+                    await connection.execute(
+                        f'UPDATE profile SET money = money + {right_reward["value"]} WHERE "user" = $1',
+                        partner.id)
+                    await connection.execute('UPDATE couples_battle_tower SET current_level = current_level + 1 WHERE (partner1_id = $1 AND partner2_id = $2) OR (partner1_id = $2 AND partner2_id = $1)', author.id, partner.id)
+            elif right_reward["type"] == "nothing":
+                await ctx.send(f'💔 **{chooser}** chose the right chest! You both find: Nothing, bad luck!')
+                await ctx.send(f'💕 You have both advanced to floor: {newlevel}')
+                
+                async with self.bot.pool.acquire() as connection:
+                    await connection.execute('UPDATE couples_battle_tower SET current_level = current_level + 1 WHERE (partner1_id = $1 AND partner2_id = $2) OR (partner1_id = $2 AND partner2_id = $1)', author.id, partner.id)
+            elif right_reward["type"] == "random":
+                # Handle special random case for level 15
+                legran = random.randint(1, 2)
+                if legran == 1:
+                    await ctx.send(f'💔 **{chooser}** chose the right chest! You both find: Nothing, bad luck!')
+                    await ctx.send(f'💕 You have both advanced to floor: {newlevel}')
+                    async with self.bot.pool.acquire() as connection:
+                        await connection.execute('UPDATE couples_battle_tower SET current_level = current_level + 1 WHERE (partner1_id = $1 AND partner2_id = $2) OR (partner1_id = $2 AND partner2_id = $1)', author.id, partner.id)
+                else:
+                    await ctx.send(f'💕 **{chooser}** chose the right chest! You both find: <:F_Legendary:1139514868400132116> A Legendary Crate!')
+                    await ctx.send(f'💕 You have both advanced to floor: {newlevel}')
+                    async with self.bot.pool.acquire() as connection:
+                        await connection.execute(
+                            'UPDATE profile SET crates_legendary = crates_legendary + 1 WHERE "user" = $1',
+                            author.id)
+                        await connection.execute(
+                            'UPDATE profile SET crates_legendary = crates_legendary + 1 WHERE "user" = $1',
+                            partner.id)
+                        await connection.execute('UPDATE couples_battle_tower SET current_level = current_level + 1 WHERE (partner1_id = $1 AND partner2_id = $2) OR (partner1_id = $2 AND partner2_id = $1)', author.id, partner.id)
+
+    async def handle_couples_finale_rewards(self, ctx, level, author, partner):
+        """Handle finale rewards for couples battle tower completion."""
+        async with self.bot.pool.acquire() as connection:
+            # Get prestige level
+            prestige_level = await connection.fetchval('SELECT prestige FROM couples_battle_tower WHERE (user_id = $1 AND partner_id = $2) OR (user_id = $2 AND partner_id = $1)', author.id, partner.id)
+            
+            # Get reward configuration
+            victory_data = self.couples_battle_tower_data["victories"][str(level)]
+            rewards = victory_data["rewards"]
+            
+            if prestige_level and prestige_level >= 1:
+                # Prestige rewards
+                if rewards["prestige"]["type"] == "random_premium":
+                    chest_options = self.couples_battle_tower_data["chest_options"]["random_premium"]
+                    reward_type = random.choices(chest_options["types"], chest_options["weights"])[0]
+                    reward_amount = 1
+                else:
+                    reward_type = rewards["prestige"]["type"]
+                    reward_amount = rewards["prestige"]["amount"]
+            else:
+                # Default rewards
+                reward_type = rewards["default"]["type"]
+                reward_amount = rewards["default"]["amount"]
+            
+            # Apply rewards to both partners
+            if reward_type == "crate":
+                crate_type = rewards["default"]["value"]
+                await ctx.send(f'💕 **Congratulations!** You both receive {reward_amount} {crate_type.capitalize()} Crate(s)!')
+                await connection.execute(
+                    f'UPDATE profile SET crates_{crate_type} = crates_{crate_type} + {reward_amount} WHERE "user" = $1',
+                    author.id)
+                await connection.execute(
+                    f'UPDATE profile SET crates_{crate_type} = crates_{crate_type} + {reward_amount} WHERE "user" = $1',
+                    partner.id)
+            elif reward_type == "divine":
+                await ctx.send(f'💕 **Congratulations!** You both receive {reward_amount} Divine Crate(s)!')
+                await connection.execute(
+                    f'UPDATE profile SET crates_divine = crates_divine + {reward_amount} WHERE "user" = $1',
+                    author.id)
+                await connection.execute(
+                    f'UPDATE profile SET crates_divine = crates_divine + {reward_amount} WHERE "user" = $1',
+                    partner.id)
+            elif reward_type == "legendary":
+                await ctx.send(f'💕 **Congratulations!** You both receive {reward_amount} Legendary Crate(s)!')
+                await connection.execute(
+                    f'UPDATE profile SET crates_legendary = crates_legendary + {reward_amount} WHERE "user" = $1',
+                    author.id)
+                await connection.execute(
+                    f'UPDATE profile SET crates_legendary = crates_legendary + {reward_amount} WHERE "user" = $1',
+                    partner.id)
+            elif reward_type == "fortune":
+                await ctx.send(f'💕 **Congratulations!** You both receive {reward_amount} Fortune Crate(s)!')
+                await connection.execute(
+                    f'UPDATE profile SET crates_fortune = crates_fortune + {reward_amount} WHERE "user" = $1',
+                    author.id)
+                await connection.execute(
+                    f'UPDATE profile SET crates_fortune = crates_fortune + {reward_amount} WHERE "user" = $1',
+                    partner.id)
+            
+            # Update prestige and reset level
+            await connection.execute('UPDATE couples_battle_tower SET prestige = prestige + 1, current_level = 1 WHERE (partner1_id = $1 AND partner2_id = $2) OR (partner1_id = $2 AND partner2_id = $1)', author.id, partner.id)
+            await ctx.send(f'💕 **You have both achieved Prestige {prestige_level + 1 if prestige_level else 1}!** The tower resets to Floor 1 with increased difficulty.')
 
 async def setup(bot):
+    await bot.add_cog(BattleSettings(bot))
+    
     battles = Battles(bot)
     await battles.battle_factory.initialize()
     await bot.add_cog(battles)

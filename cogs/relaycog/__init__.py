@@ -25,7 +25,7 @@ class RelayCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.SOURCE_CHANNEL_ID = 1140211789573935164
-        self.WEBHOOK_URL = 'https://discord.com/api/webhooks/1158746426105413633/hP5daekIPCbix94WVKrTfgB1HPm10rM4X51zojxyXfTHDj06pSJLxFuRyMUEOzmEKcd7'
+        self.WEBHOOK_URL = ''
         self.messages = []  # List to store messages
 
     @commands.Cog.listener()

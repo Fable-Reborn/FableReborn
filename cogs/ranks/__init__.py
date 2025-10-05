@@ -25,6 +25,7 @@ from classes.context import Context
 from utils import misc as rpgtools
 from utils.i18n import _, locale_doc
 from utils.markdown import escape_markdown
+import datetime
 
 
 class Ranks(commands.Cog):
@@ -216,6 +217,105 @@ class Ranks(commands.Cog):
             title=_("The Top Horde Players (Custom)"), description=result, colour=0xE7CA01
         )
         await ctx.send(embed=embed)
+
+    @commands.hybrid_command(name="totalboard", description="Shows the top 10 dragon slayers and your rank")
+    async def totalboard(self, ctx: commands.Context):
+        async with self.bot.pool.acquire() as conn:
+            # Get top 10
+            top_10 = await conn.fetch('''
+                SELECT user_id, total_defeats, 
+                       RANK() OVER (ORDER BY total_defeats DESC) as rank
+                FROM dragon_contributions 
+                ORDER BY total_defeats DESC 
+                LIMIT 10
+            ''')
+            # Get user's rank if not in top 10
+            user_rank = await conn.fetchrow('''
+                WITH rankings AS (
+                    SELECT user_id, total_defeats,
+                           RANK() OVER (ORDER BY total_defeats DESC) as rank
+                    FROM dragon_contributions
+                )
+                SELECT * FROM rankings WHERE user_id = $1
+            ''', ctx.author.id)
+
+            embed = discord.Embed(title="🏆 Total Dragon Defeats Leaderboard", color=discord.Color.gold())
+            # Format top 10
+            leaderboard_text = ""
+            for entry in top_10:
+                leaderboard_text += f"{entry['rank']}. <@{entry['user_id']}> - {entry['total_defeats']} defeats\n"
+            embed.description = leaderboard_text
+            # Add user's rank if not in top 10
+            if user_rank and not any(entry['user_id'] == ctx.author.id for entry in top_10):
+                embed.add_field(
+                    name="Your Rank",
+                    value=f"#{user_rank['rank']} - {user_rank['total_defeats']} defeats",
+                    inline=False
+                )
+            await ctx.send(embed=embed)
+
+
+    @commands.hybrid_command(name="weeklyboard", description="Shows the top 10 weekly dragon slayers and your rank")
+    async def weeklyboard(self, ctx: commands.Context):
+        try:
+            async with self.bot.pool.acquire() as conn:
+                # Get top 10
+                top_10 = await conn.fetch('''
+                    SELECT user_id, weekly_defeats,
+                        RANK() OVER (ORDER BY weekly_defeats DESC) as rank
+                    FROM dragon_contributions 
+                    ORDER BY weekly_defeats DESC 
+                    LIMIT 10
+                ''')
+                # Get user's rank if not in top 10
+                user_rank = await conn.fetchrow('''
+                    WITH rankings AS (
+                        SELECT user_id, weekly_defeats,
+                            RANK() OVER (ORDER BY weekly_defeats DESC) as rank
+                        FROM dragon_contributions
+                    )
+                    SELECT * FROM rankings WHERE user_id = $1
+                ''', ctx.author.id)
+
+
+                reset_data = await conn.fetchrow('SELECT last_reset FROM dragon_progress WHERE id = 1')
+                footer_text = "Reset time unavailable"
+                if reset_data:
+                    last_reset = reset_data['last_reset']
+                    next_reset = last_reset + datetime.timedelta(days=7)
+                    now = datetime.datetime.utcnow()
+                    remaining = next_reset - now
+                    
+                    # Handle negative time (reset overdue)
+                    if remaining < datetime.timedelta(0):
+                        remaining = datetime.timedelta(0)
+                    
+                    days = remaining.days
+                    seconds = remaining.seconds
+                    hours = seconds // 3600
+                    minutes = (seconds % 3600) // 60
+                    footer_text = f"Time until next reset: {days}d {hours}h {minutes}m"
+
+
+                embed = discord.Embed(title="🐉 Weekly Dragon Defeats Leaderboard", color=discord.Color.green())
+                # Format top 10
+                leaderboard_text = ""
+                for entry in top_10:
+                    leaderboard_text += f"{entry['rank']}. <@{entry['user_id']}> - {entry['weekly_defeats']} defeats\n"
+                embed.description = leaderboard_text
+                # Add user's rank if not in top 10
+                if user_rank and not any(entry['user_id'] == ctx.author.id for entry in top_10):
+                    embed.add_field(
+                        name="Your Rank",
+                        value=f"#{user_rank['rank']} - {user_rank['weekly_defeats']} defeats",
+                        inline=False
+                    )
+                embed.set_footer(text=footer_text)
+                await ctx.send(embed=embed)
+        except Exception as e:
+            await ctx.send(e)
+
+
 
     @commands.command(aliases=["btlb"], brief=_("Show the top players in the Battle Tower"))
     @locale_doc
@@ -506,6 +606,107 @@ class Ranks(commands.Cog):
         )
         await ctx.send(embed=embed)
 
+    @commands.command(aliases=["cbtlb"], brief=_("Show the top couples in the Couples Battle Tower"))
+    @locale_doc
+    async def coupleslb(self, ctx: Context) -> None:
+        _("""Display the leaderboard of couples in the Couples Battle Tower.""")
+        await ctx.typing()
+        
+        try:
+            # Fetch the top 10 couples by prestige and level
+            couples = await self.bot.pool.fetch(
+                'SELECT cbt."partner1_id", cbt."partner2_id", cbt."prestige", cbt."current_level" '
+                'FROM couples_battle_tower AS cbt '
+                'ORDER BY cbt."prestige" DESC, cbt."current_level" DESC LIMIT 10'
+            )
+
+            result = ""
+            top_10_couples = []
+            user_in_top_10 = False
+
+            # Build the leaderboard string
+            for idx, couple in enumerate(couples):
+                partner1_id = couple["partner1_id"]
+                partner2_id = couple["partner2_id"]
+                prestige = couple["prestige"]
+                level = couple["current_level"]
+
+                # Check if current user is in this couple
+                if ctx.author.id in (partner1_id, partner2_id):
+                    user_in_top_10 = True
+                    top_10_couples.append((partner1_id, partner2_id))
+
+                # Get usernames
+                partner1_username = await rpgtools.lookup(self.bot, partner1_id)
+                partner2_username = await rpgtools.lookup(self.bot, partner2_id)
+
+                text = _("**{partner1}** & **{partner2}** - Prestige {prestige}, Level {level}").format(
+                    partner1=escape_markdown(partner1_username),
+                    partner2=escape_markdown(partner2_username),
+                    prestige=prestige,
+                    level=level
+                )
+                
+                # Highlight user's own entry if they are in top 10
+                if ctx.author.id in (partner1_id, partner2_id):
+                    result += f"{idx + 1}. {text}\n"
+                else:
+                    result += f"{idx + 1}. {text}\n"
+
+            # If the user isn't in the top 10, fetch their rank
+            if not user_in_top_10:
+                # Fetch user's couple progress
+                user_couple = await self.bot.pool.fetchrow(
+                    'SELECT cbt."partner1_id", cbt."partner2_id", cbt."prestige", cbt."current_level" '
+                    'FROM couples_battle_tower AS cbt '
+                    'WHERE cbt."partner1_id" = $1 OR cbt."partner2_id" = $1', ctx.author.id
+                )
+                
+                if user_couple:
+                    user_prestige = user_couple["prestige"]
+                    user_level = user_couple["current_level"]
+                    partner1_id = user_couple["partner1_id"]
+                    partner2_id = user_couple["partner2_id"]
+
+                    # Calculate the user's rank
+                    user_rank = await self.bot.pool.fetchval(
+                        'SELECT COUNT(*) FROM couples_battle_tower AS cbt '
+                        'WHERE (cbt."prestige" > $1) '
+                        'OR (cbt."prestige" = $1 AND cbt."current_level" > $2)',
+                        user_prestige, user_level
+                    )
+                    user_rank += 1  # Adjust rank to be 1-based
+
+                    # Get partner information
+                    partner_id = partner2_id if ctx.author.id == partner1_id else partner1_id
+                    partner_username = await rpgtools.lookup(self.bot, partner_id)
+
+
+
+                    text = _("**{partner1}** & **{partner2}** - Prestige {prestige}, Level {level}").format(
+                        partner1=escape_markdown(ctx.author.name),
+                        partner2=escape_markdown(partner_username),
+                        prestige=user_prestige,
+                        level=user_level
+                    )
+                    # Add spacing and indicate user's rank
+                    result += _("\n**Your Rank:**\n")
+                    result += f"{user_rank}. {text}\n"
+                else:
+                    # User is not in the Couples Battle Tower
+                    result += _("\nYou are not currently ranked in the Couples Battle Tower.\n")
+
+            # Send the leaderboard embed
+            embed = discord.Embed(
+                title=_("💕 Couples Battle Tower Leaderboard 💕"), 
+                description=result, 
+                colour=0xFF69B4  # Pink color for couples
+            )
+            await ctx.send(embed=embed)
+        except Exception as e:
+            await ctx.send(f"An error occurred: {str(e)}")
+
 
 async def setup(bot: Bot) -> None:
     await bot.add_cog(Ranks(bot))
+    await bot.tree.sync()

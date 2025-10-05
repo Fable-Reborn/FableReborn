@@ -1,26 +1,10 @@
-"""
-The IdleRPG Discord Bot
-Copyright (C) 2018-2021 Diniboy and Gelbpunkt
-Copyright (C) 2023-2024 Lunar (PrototypeX37)
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU Affero General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU Affero General Public License for more details.
-
-You should have received a copy of the GNU Affero General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""
 import asyncio
 import datetime
 import decimal
+import random
+from typing import Union, Optional
 
-from discord import Embed
+from discord import Embed, Member, Object
 
 import utils.misc as rpgtools
 from collections import deque
@@ -39,22 +23,70 @@ from classes.classes import Ranger, Reaper
 from classes.classes import from_string as class_from_string
 from classes.converters import IntGreaterThan
 from cogs.shard_communication import user_on_cooldown as user_cooldown
-from utils import random
+import random
 from utils.checks import has_char, has_money, is_gm
 from utils.i18n import _, locale_doc
 from utils.joins import SingleJoinView
 
 
-# Assuming you have a database connection pool (self.bot.pool) already set up
+# AI Opponent class to simulate a Discord member
+class AIOpponent:
+    # Class-level counter for unique IDs
+    next_id = -1
+
+    def __init__(self, bot, name=None):
+        # Assign a unique negative ID
+        self.id = AIOpponent.next_id
+        AIOpponent.next_id -= 1  # Decrement for the next AI
+
+        self.bot = bot
+
+        # Generate fantasy name if none provided
+        if name is None:
+            self.name = self.generate_fantasy_name()
+        else:
+            self.name = name
+
+        self.display_name = self.name
+        self.mention = f"**{self.name}**"
+        self.is_ai = True
+
+    def __eq__(self, other):
+        if isinstance(other, AIOpponent):
+            return self.id == other.id
+        return False
+
+    def __hash__(self):
+        # Return a hash based on the id - essential for dictionary keys
+        return hash(self.id)
+
+    def generate_fantasy_name(self):
+        """Generate a fantasy name for the AI opponent."""
+        titles = ["Archmage", "Guardian", "Warlord", "Sentinel", "Oracle", 
+                 "Shadowmaster", "Dragonslayer", "Battlemage", "Runekeeper", "Spellblade"]
+        
+        descriptors = ["Ancient", "Eternal", "Mystic", "Forbidden", "Celestial", 
+                      "Infernal", "Arcane", "Vengeful", "Relentless", "Thunderous"]
+        
+        names = ["Tharion", "Zephyra", "Kaldroth", "Seraphina", "Vexus", 
+                "Malachai", "Drakonir", "Astrael", "Nyx", "Valorian"]
+        
+        # Combine elements to create a unique name
+        if random.random() < 0.5:
+            return f"{random.choice(titles)} {random.choice(names)}"
+        else:
+            return f"{random.choice(descriptors)} {random.choice(titles)}"
+
 
 class Shotgunroulette(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-
+    # Existing help command remains unchanged
     @commands.command(aliases=['srhelp'], help='Displays how to play Shotgun Roulette')
     @locale_doc
     async def shotgunroulettehelp(self, ctx):
+        # Code remains the same as in the original
         _(
             """Display instructions on how to play Shotgun Roulette.
 
@@ -163,124 +195,242 @@ class Shotgunroulette(commands.Cog):
         except Exception as e:
             await ctx.send(e)
 
-    # Example Usage:
-    # To subtract 1 HP from ctx.author
-
-    async def get_action(self, ctx, player_items, attacker: discord.Member, anticuffstunlock, bullet_color,
-                         turncounter, hptracker, maxhp, last_used_cuffs):
-        class UniqueActionSelect(discord.ui.Select):
-            def __init__(self, options, **kwargs):
-                super().__init__(placeholder="Choose an action", min_values=1, max_values=1, options=options, **kwargs)
-
-            async def callback(self, interaction: discord.Interaction):
-                # Check if the user interacting is the attacker
-                if interaction.user.id != attacker.id:
-                    # Directly respond to unauthorized users without deferring since we're immediately responding
-                    await interaction.response.send_message("You're not the attacker!", ephemeral=True)
-                    return
-
-                self.view.result = self.values[0]
-                # Respond to the attacker's interaction
-
-                self.disabled = True  # Optionally disable the select after a choice is made
-                self.view.stop()
-                await interaction.message.delete()
-                # Note: Deleting the message here would remove the entire interaction context, consider this action carefully.
-
-        class ActionView(discord.ui.View):
-            def __init__(self, *args, timeout=60, **kwargs):
-                super().__init__(*args, timeout=timeout, **kwargs)
-                self.result = None
-                self.message = None  # Placeholder for the message reference
-
-            async def on_timeout(self):
-                self.result = "none"
-                for item in self.children:
-                    item.disabled = True
-                self.stop()
-                if self.message:  # Check if the message reference exists
-                    await self.message.delete()  # Attempt to delete the message
-
-        # Prepare the options for the dropdown menu
-        # Prepare the options for the dropdown menu
-        options = [
-            discord.SelectOption(label="Shoot Player", value="shoot_player"),
-            discord.SelectOption(label="Shoot Self", value="shoot_self")
-        ]
-
-        seen_items = set()
-        # Assuming `last_used_cuffs` is a variable that tracks the member object of the last user of cuffs
-        # and `anticuffstunlock` tracks the cooldown
-
+    # AI strategy function
+    async def ai_choose_action(self, ctx, player_items, bullet_color, hptracker, enemy, maxhp, known_bullet=None):
+        """
+        AI decision making logic for choosing an action in the game.
+        Returns the best action based on the current game state.
+        """
+        ai_hp = hptracker.get(enemy, 0)
+        player_hp = hptracker.get(ctx.author, 0)
+        
+        # Initialize weights for actions
+        actions = {
+            "shoot_player": 0,
+            "shoot_self": 0
+        }
+        
+        # Add item actions with 0 weight
         for emote, item in player_items:
-            # Adjust the check to incorporate `last_used_cuffs`
-            # Skip adding "Cuffs" to the options if anticuffstunlock > 0 and the attacker was the last to use cuffs
-            if item.lower() == "cuffs" and anticuffstunlock > 0 and attacker == last_used_cuffs:
-                continue
-            if item not in seen_items:
-                seen_items.add(item)
-                option_label = f"{emote} {item}"
-                # Normalize the item name for the value, replacing spaces with underscores and lowercasing
-                option_value = f"use_{item.replace(' ', '_').lower()}"
-                options.append(discord.SelectOption(label=option_label, value=option_value))
-
-        select = UniqueActionSelect(options=options)
-        view = ActionView(timeout=60)  # No longer passing author_id since we're not using interaction_check
-        view.add_item(select)
-
-        # Send the message with the dropdown menu and wait for interaction
-        message = await ctx.send(f"**{attacker}**, select an action:", view=view)
-        view.message = message  # Store the message reference in the view
-        await view.wait()
-
-        if view.result is None or view.result == "none":
-            # Handle the case where no action was selected or the view timed out
-            await ctx.send(f"**{attacker}** did not select an action in time. Take 1 DMG and skip turn.")
-            anticuffstunlock = 0
-
-            return "none", anticuffstunlock, player_items
+            item_key = f"use_{item.lower().replace(' ', '_')}"
+            actions[item_key] = 0
+        
+        # Base strategy based on bullet color
+        if known_bullet or bullet_color:
+            actual_bullet = known_bullet if known_bullet else bullet_color
+            
+            if actual_bullet == "Red":
+                # With a live round, prefer shooting the player
+                actions["shoot_player"] += 8
+                actions["shoot_self"] -= 5
+            else:  # Blue (blank)
+                # With a blank, prefer shooting self
+                actions["shoot_self"] += 8
+                actions["shoot_player"] -= 5
         else:
+            # Default probabilities if bullet unknown
+            actions["shoot_player"] += 3
+            actions["shoot_self"] += 2
+        
+        # Item usage strategies
+        for emote, item in player_items:
+            item_lower = item.lower()
+            item_key = f"use_{item_lower.replace(' ', '_')}"
+            
+            if item_lower == "magnifying glass" and not known_bullet:
+                # Highly value checking bullet if unknown
+                actions[item_key] += 10
+                
+            elif item_lower == "bloodbag" and ai_hp < maxhp:
+                # Use bloodbag when low on health
+                health_deficit = maxhp - ai_hp
+                actions[item_key] += min(7, health_deficit * 3)
+                
+            elif item_lower == "beer" and bullet_color == "Red":
+                # Use beer to remove a known live round
+                actions[item_key] += 9
+                
+            elif item_lower == "sawn off" and bullet_color == "Red":
+                # Use sawn off with live rounds to maximize damage
+                actions[item_key] += 7
+                
+            elif item_lower == "cuffs" and player_hp <= 2:
+                # Use cuffs when opponent is in a critical state
+                actions[item_key] += 8
+        
+        # Adjust strategy based on health states
+        if ai_hp <= 2:
+            # Desperate measures when low on health
+            actions["shoot_player"] += 3  # Take more risks
+            
+            # Prioritize bloodbag if available
+            for emote, item in player_items:
+                if item.lower() == "bloodbag":
+                    actions[f"use_{item.lower().replace(' ', '_')}"] += 10
+        
+        if player_hp <= 2:
+            # Go for the kill when opponent is low
+            actions["shoot_player"] += 4
+        
+        # Choose the action with the highest weight
+        best_action = max(actions, key=actions.get)
+        
+        # Log the decision process (for debugging)
+        # print(f"AI decision weights: {actions}, chose: {best_action}")
+        
+        return best_action
 
-            selected_action = view.result
-            item_used = None  # Placeholder for the used item's name
-            # Assume this part happens after the action is selected but before the final inventory update
-            if selected_action.startswith("use_"):
-                item_used = selected_action.replace("use_", "").replace("_", " ")
-                # Let's assume add_hp returns False if the action is unsuccessful (like exceeding maxHP)
+    async def get_action(self, ctx, player_items, attacker: Union[discord.Member, AIOpponent], anticuffstunlock, bullet_color,
+                         turncounter, hptracker, maxhp, last_used_cuffs):
+        # Check if the attacker is an AI
+        if hasattr(attacker, 'is_ai') and attacker.is_ai:
+            # Use AI logic to determine the action
+            action = await self.ai_choose_action(
+                ctx, 
+                player_items, 
+                bullet_color, 
+                hptracker, 
+                attacker, 
+                maxhp
+            )
+            
+            # Handle item usage for AI
+            if action.startswith("use_"):
+                item_used = action.replace("use_", "").replace("_", " ")
+                
+                # Handle bloodbag separately
                 if item_used == "bloodbag" and not await self.add_hp(ctx, attacker, hptracker, maxhp):
-                    # If the bloodbag use is unsuccessful, inform the player and do not remove the bloodbag
-                    await ctx.send(
-                        f"**{attacker.display_name}**, using a bloodbag would exceed your max HP. Bloodbag not used.")
+                    await ctx.send(f"**{attacker.display_name}** tried to use a bloodbag but is already at max HP.")
+                    # Choose another action instead
+                    if bullet_color == "Red":
+                        action = "shoot_player"
+                    else:
+                        action = "shoot_self"
                 else:
-                    # If it's not a bloodbag or if the action is successful, proceed to remove the item
-                    item_found = False  # Flag to check if the item was found and removed
+                    # Remove the used item from AI's inventory
                     for i, (emote, item) in enumerate(player_items):
-                        # Ensure the first letter of each word is capitalized for comparison
-                        formatted_item = " ".join(word.capitalize() for word in item.split())
-                        formatted_item_used = " ".join(word.capitalize() for word in item_used.split())
-
-                        if formatted_item == formatted_item_used:
+                        if item.lower() == item_used:
                             del player_items[i]
-                            item_found = True
+                            await ctx.send(f"**{attacker.display_name}** uses {emote} {item}")
                             break
+            
+            # Short delay to make it feel like the AI is thinking
+            await asyncio.sleep(1.5)
+            
+            return action, anticuffstunlock, player_items
+            
+        else:
+            # Human player logic (original code)
+            class UniqueActionSelect(discord.ui.Select):
+                def __init__(self, options, **kwargs):
+                    super().__init__(placeholder="Choose an action", min_values=1, max_values=1, options=options, **kwargs)
 
-                    if not item_found:
+                async def callback(self, interaction: discord.Interaction):
+                    # Check if the user interacting is the attacker
+                    if interaction.user.id != attacker.id:
+                        # Directly respond to unauthorized users without deferring since we're immediately responding
+                        await interaction.response.send_message("You're not the attacker!", ephemeral=True)
+                        return
+
+                    self.view.result = self.values[0]
+                    # Respond to the attacker's interaction
+
+                    self.disabled = True  # Optionally disable the select after a choice is made
+                    self.view.stop()
+                    await interaction.message.delete()
+                    # Note: Deleting the message here would remove the entire interaction context, consider this action carefully.
+
+            class ActionView(discord.ui.View):
+                def __init__(self, *args, timeout=60, **kwargs):
+                    super().__init__(*args, timeout=timeout, **kwargs)
+                    self.result = None
+                    self.message = None  # Placeholder for the message reference
+
+                async def on_timeout(self):
+                    self.result = "none"
+                    for item in self.children:
+                        item.disabled = True
+                    self.stop()
+                    if self.message:  # Check if the message reference exists
+                        await self.message.delete()  # Attempt to delete the message
+
+            # Prepare the options for the dropdown menu
+            options = [
+                discord.SelectOption(label="Shoot Player", value="shoot_player"),
+                discord.SelectOption(label="Shoot Self", value="shoot_self")
+            ]
+
+            seen_items = set()
+            # Assuming `last_used_cuffs` is a variable that tracks the member object of the last user of cuffs
+            # and `anticuffstunlock` tracks the cooldown
+
+            for emote, item in player_items:
+                # Adjust the check to incorporate `last_used_cuffs`
+                # Skip adding "Cuffs" to the options if anticuffstunlock > 0 and the attacker was the last to use cuffs
+                if item.lower() == "cuffs" and anticuffstunlock > 0 and attacker == last_used_cuffs:
+                    continue
+                if item not in seen_items:
+                    seen_items.add(item)
+                    option_label = f"{emote} {item}"
+                    # Normalize the item name for the value, replacing spaces with underscores and lowercasing
+                    option_value = f"use_{item.replace(' ', '_').lower()}"
+                    options.append(discord.SelectOption(label=option_label, value=option_value))
+
+            select = UniqueActionSelect(options=options)
+            view = ActionView(timeout=60)  # No longer passing author_id since we're not using interaction_check
+            view.add_item(select)
+
+            # Send the message with the dropdown menu and wait for interaction
+            message = await ctx.send(f"**{attacker.display_name}**, select an action:", view=view)
+            view.message = message  # Store the message reference in the view
+            await view.wait()
+
+            if view.result is None or view.result == "none":
+                # Handle the case where no action was selected or the view timed out
+                await ctx.send(f"**{attacker.display_name}** did not select an action in time. Take 1 DMG and skip turn.")
+                anticuffstunlock = 0
+
+                return "none", anticuffstunlock, player_items
+            else:
+                selected_action = view.result
+                item_used = None  # Placeholder for the used item's name
+                # Assume this part happens after the action is selected but before the final inventory update
+                if selected_action.startswith("use_"):
+                    item_used = selected_action.replace("use_", "").replace("_", " ")
+                    # Let's assume add_hp returns False if the action is unsuccessful (like exceeding maxHP)
+                    if item_used == "bloodbag" and not await self.add_hp(ctx, attacker, hptracker, maxhp):
+                        # If the bloodbag use is unsuccessful, inform the player and do not remove the bloodbag
                         await ctx.send(
-                            f"Item **{formatted_item_used}** not found in {attacker.display_name}'s inventory or already used.")
+                            f"**{attacker.display_name}**, using a bloodbag would exceed your max HP. Bloodbag not used.")
+                    else:
+                        # If it's not a bloodbag or if the action is successful, proceed to remove the item
+                        item_found = False  # Flag to check if the item was found and removed
+                        for i, (emote, item) in enumerate(player_items):
+                            # Ensure the first letter of each word is capitalized for comparison
+                            formatted_item = " ".join(word.capitalize() for word in item.split())
+                            formatted_item_used = " ".join(word.capitalize() for word in item_used.split())
 
-                    # If the action was a successful use of a bloodbag, send a confirmation message
-                    if item_used == "bloodbag":
-                        # await self.add_hp(ctx, attacker, hptracker, maxhp)
-                        await ctx.send(
-                            f"**{attacker.display_name}** successfully used a bloodbag and now has: {hptracker[attacker]} ❤️")
+                            if formatted_item == formatted_item_used:
+                                del player_items[i]
+                                item_found = True
+                                break
 
-            # After waiting, the select may be disabled and the response collected
-            return view.result, anticuffstunlock, player_items
+                        if not item_found:
+                            await ctx.send(
+                                f"Item **{formatted_item_used}** not found in {attacker.display_name}'s inventory or already used.")
 
-    async def roundsettings(self, ctx, hptracker, enemy_: discord.Member, round):
+                        # If the action was a successful use of a bloodbag, send a confirmation message
+                        if item_used == "bloodbag":
+                            # await self.add_hp(ctx, attacker, hptracker, maxhp)
+                            await ctx.send(
+                                f"**{attacker.display_name}** successfully used a bloodbag and now has: {hptracker[attacker]} ❤️")
+
+                # After waiting, the select may be disabled and the response collected
+                return view.result, anticuffstunlock, player_items
+
+    async def roundsettings(self, ctx, hptracker, enemy_: Union[discord.Member, AIOpponent], round):
         try:
             try:
-
                 await ctx.send("Round Settings")
                 import random
                 player1 = ctx.author  # The command issuer
@@ -288,7 +438,7 @@ class Shotgunroulette(commands.Cog):
                 if round == 1:
                     attacker, defender = random.sample([player1, player2], 2)
 
-                    # Initialize the embed
+                # Initialize the embed
                 embed = discord.Embed(title=f"Round {round}")
 
                 # Define bullet types
@@ -370,8 +520,9 @@ class Shotgunroulette(commands.Cog):
         except Exception as e:
             await ctx.send(e)
 
-    async def gamelogic(self, ctx, random_bullets, attacker: discord.Member, defender: discord.Member,
-                        player_items_dict, hptracker, enemy_: discord.Member, maxhp):
+    async def gamelogic(self, ctx, random_bullets, attacker: Union[discord.Member, AIOpponent], 
+                       defender: Union[discord.Member, AIOpponent], player_items_dict, 
+                       hptracker, enemy_: Union[discord.Member, AIOpponent], maxhp):
         turncounter = 0
         anticuffstunlock = 0
 
@@ -381,35 +532,50 @@ class Shotgunroulette(commands.Cog):
         use_sawn_off = False
         last_used_cuffs = None
         damage = 1
+        known_bullet = None  # For AI to remember magnifying glass results
+        
         while random_bullets:
-
             bullet_color = random_bullets[0]['color']
-            action, anticuffstunlock, updated_items = await self.get_action(ctx, player_items_dict[attacker], attacker,
-                                                                            anticuffstunlock, bullet_color, turncounter,
-                                                                            hptracker, maxhp, last_used_cuffs)
+            
+            # If attacker is AI and has used magnifying glass, remember the bullet
+            if hasattr(attacker, 'is_ai') and attacker.is_ai:
+                action, anticuffstunlock, updated_items = await self.get_action(
+                    ctx, player_items_dict[attacker], attacker,
+                    anticuffstunlock, bullet_color, turncounter,
+                    hptracker, maxhp, last_used_cuffs
+                )
+            else:
+                action, anticuffstunlock, updated_items = await self.get_action(
+                    ctx, player_items_dict[attacker], attacker,
+                    anticuffstunlock, bullet_color, turncounter,
+                    hptracker, maxhp, last_used_cuffs
+                )
+                
             player_items_dict[attacker] = updated_items
-
-            # Display the attacker's inventory after the action
 
             # Determining which action was selected
             if action == "use_magnifying_glass":
                 if bullet_color == "Blue":
-                    await ctx.send(f"{attacker} looks inside the loading port..")
+                    await ctx.send(f"{attacker.display_name} looks inside the loading port..")
                     await ctx.send("<:shotgun_shell_blue:1225730810582405190>")
+                    if hasattr(attacker, 'is_ai') and attacker.is_ai:
+                        known_bullet = "Blue"
                 else:
-                    await ctx.send(f"{attacker} looks inside the loading port..")
+                    await ctx.send(f"{attacker.display_name} looks inside the loading port..")
                     await ctx.send("<:shotgun_shell_red:1225730812826222632>")
-
+                    if hasattr(attacker, 'is_ai') and attacker.is_ai:
+                        known_bullet = "Red"
 
             elif action == "use_beer":
                 if bullet_color == "Blue":
                     await ctx.send(
-                        f"{attacker} cocked the shotgun.. a <:shotgun_shell_blue:1225730810582405190> flew out")
+                        f"{attacker.display_name} cocked the shotgun.. a <:shotgun_shell_blue:1225730810582405190> flew out")
                 else:
                     await ctx.send(
-                        f"{attacker} cocked the shotgun.. a <:shotgun_shell_red:1225730812826222632> flew out")
+                        f"{attacker.display_name} cocked the shotgun.. a <:shotgun_shell_red:1225730812826222632> flew out")
 
                 random_bullets.pop(0)
+                known_bullet = None  # Reset known bullet after beer
 
             elif action == "none":
                 dmg = 1
@@ -417,12 +583,13 @@ class Shotgunroulette(commands.Cog):
                 use_cuffs = False
                 damage = 1
                 attacker, defender = defender, attacker
-
+                known_bullet = None  # Reset known bullet on turn change
 
             elif action == "use_sawn_off":
                 await ctx.send(
-                    f"**{attacker}** sawn the end of the shotgun off! it now will deal **x2** damage until the next turn.")
+                    f"**{attacker.display_name}** sawn the end of the shotgun off! it now will deal **x2** damage until the next turn.")
                 damage = 2
+                
             # Inside your gamelogic or get_action method, when checking the action
             elif action == "use_cuffs":
                 if last_used_cuffs == attacker and anticuffstunlock > 0:
@@ -435,27 +602,18 @@ class Shotgunroulette(commands.Cog):
                     last_used_cuffs = attacker
                     anticuffstunlock = 2  # Starting cooldown
 
-
-
-
-
-            # At the end of each turn, update the cooldown
-            # Ensure it doesn't go below 0
-
-            # This cooldown update logic needs to be placed appropriately in your game loop
-            # so it's executed every turn, possibly in the same place you manage turncounter
-
             elif action == "shoot_self":
                 bullet_color = random_bullets[0]['color']
                 if bullet_color == "Blue":
                     random_bullets.pop(0)
-                    await ctx.send(f"**{attacker}** turns the shotgun to themselves and pulls the trigger..")
+                    await ctx.send(f"**{attacker.display_name}** turns the shotgun to themselves and pulls the trigger..")
                     await asyncio.sleep(2)
-                    await ctx.send(f"‍💨 It was a blank! **{attacker}** gets another turn.")
+                    await ctx.send(f"‍💨 It was a blank! **{attacker.display_name}** gets another turn.")
                     damage = 1
+                    known_bullet = None  # Reset known bullet
                 else:
                     random_bullets.pop(0)
-                    await ctx.send(f"**{attacker}** turns the shotgun to themselves and pulls the trigger..")
+                    await ctx.send(f"**{attacker.display_name}** turns the shotgun to themselves and pulls the trigger..")
                     await asyncio.sleep(2)
                     # To subtract 1 HP from enemy_
                     damage = self.subtract_hp(attacker, hptracker, damage)
@@ -469,32 +627,35 @@ class Shotgunroulette(commands.Cog):
                     if not use_cuffs:
                         await ctx.send("‍💥 You shot yourself! You pass the gun to the next player")
                         attacker, defender = defender, attacker
+                        known_bullet = None  # Reset known bullet on turn change
                     else:
-                        await ctx.send(f"‍💥 You shot yourself! **{defender}** is now free from handcuffs")
+                        await ctx.send(f"‍💥 You shot yourself! **{defender.display_name}** is now free from handcuffs")
                         if attacker == last_used_cuffs and anticuffstunlock > 0:
                             anticuffstunlock -= 1
                         damage = 1
                         use_cuffs = False
+                        known_bullet = None  # Reset known bullet
 
             elif action == "shoot_player":
                 bullet_color = random_bullets[0]['color']
                 if bullet_color == "Blue":
-                    await ctx.send(f"{attacker} turns the shotgun to **{defender}** and pulls the trigger..")
+                    await ctx.send(f"{attacker.display_name} turns the shotgun to **{defender.display_name}** and pulls the trigger..")
                     await asyncio.sleep(2)
                     random_bullets.pop(0)
                     if not use_cuffs:
-                        await ctx.send(f"‍💨 It was a blank! You pass the gun to **{defender}**")
+                        await ctx.send(f"‍💨 It was a blank! You pass the gun to **{defender.display_name}**")
                         attacker, defender = defender, attacker
                         damage = 1
-
+                        known_bullet = None  # Reset known bullet on turn change
                     else:
-                        await ctx.send(f"‍💨 It was a blank! **{defender}** is free from handcuffs")
+                        await ctx.send(f"‍💨 It was a blank! **{defender.display_name}** is free from handcuffs")
                         if attacker == last_used_cuffs and anticuffstunlock > 0:
                             anticuffstunlock -= 1
                         use_cuffs = False
                         damage = 1
+                        known_bullet = None  # Reset known bullet
                 else:
-                    await ctx.send(f"{attacker} turns the shotgun to **{defender}** and pulls the trigger..")
+                    await ctx.send(f"{attacker.display_name} turns the shotgun to **{defender.display_name}** and pulls the trigger..")
                     await asyncio.sleep(2)
                     # To subtract 1 HP from enemy_
                     damage = self.subtract_hp(defender, hptracker, damage)
@@ -506,29 +667,28 @@ class Shotgunroulette(commands.Cog):
 
                     await ctx.send(hp_message)
                     if not use_cuffs:
-                        await ctx.send(f"‍💥 You shot **{defender}**! You pass the gun to **{defender}**")
+                        await ctx.send(f"‍💥 You shot **{defender.display_name}**! You pass the gun to **{defender.display_name}**")
                         random_bullets.pop(0)
                         attacker, defender = defender, attacker
                         damage = 1
+                        known_bullet = None  # Reset known bullet on turn change
                     else:
-                        await ctx.send(f"‍💥 You shot **{defender}**! {defender} is free from handcuffs")
+                        await ctx.send(f"‍💥 You shot **{defender.display_name}**! {defender.display_name} is free from handcuffs")
                         random_bullets.pop(0)
                         if attacker == last_used_cuffs and anticuffstunlock > 0:
                             anticuffstunlock -= 1
                         use_cuffs = False
                         damage = 1
+                        known_bullet = None  # Reset known bullet
 
             if hptracker[ctx.author] > 0 >= hptracker[enemy_]:
-
                 break
             elif hptracker[enemy_] > 0 >= hptracker[ctx.author]:
-
                 break
 
-            # At the end of the gamelogic function
         return attacker, defender
 
-    async def startgame(self, ctx, hptracker, enemy_: discord.Member, round, maxhp, money):
+    async def startgame(self, ctx, hptracker, enemy_: Union[discord.Member, AIOpponent], round, maxhp, money):
         attacker = None
         defender = None
         while hptracker[ctx.author] >= 1 and hptracker[enemy_] >= 1:
@@ -547,6 +707,7 @@ class Shotgunroulette(commands.Cog):
             # Check the outcome of the game or increment the round
             if hptracker[ctx.author] > 0 >= hptracker[enemy_]:
                 await ctx.send(f"{ctx.author.display_name} wins!")
+                # Always reward the player for winning
                 money = money * 2
                 await self.bot.pool.execute(
                     'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
@@ -556,34 +717,37 @@ class Shotgunroulette(commands.Cog):
                 break
             elif hptracker[enemy_] > 0 >= hptracker[ctx.author]:
                 await ctx.send(f"{enemy_.display_name} wins!")
-                money = money * 2
-                await self.bot.pool.execute(
-                    'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
-                    money,
-                    enemy_.id,
-                )
+                if not hasattr(enemy_, 'is_ai'):  # Only pay human opponents (not AI)
+                    money = money * 2
+                    await self.bot.pool.execute(
+                        'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                        money,
+                        enemy_.id,
+                    )
                 break
 
             round += 1
             await ctx.send("Round over! Starting new round")
             await asyncio.sleep(5)
 
-        # Announce the game result (if needed)
-
+    @user_cooldown(240)
     @commands.command(
         aliases=["sr"], hidden=True, brief=_("Shotgun Roulette")
     )
     @has_char()
     @locale_doc
-    async def shotgunroulette(self, ctx, money: IntGreaterThan(-1) = 0, enemy: discord.Member = None):
+    async def shotgunroulette(self, ctx, money: IntGreaterThan(-1) = 0, enemy: Optional[discord.Member] = None, *, ai_name: str = None):
         _(
             """`[money]` - The amount of money to bet; must be 0 or greater.
         `[enemy]` - The member to challenge; optional.
+        `[ai_name]` - Name for the AI opponent (if no enemy specified); optional.
 
-        Start a game of Shotgun Roulette with another player.
+        Start a game of Shotgun Roulette with another player or against an AI opponent.
 
         Usage:
-          `$shotgunroulette 5000 @username`
+          `$shotgunroulette 5000 @username` - Play against a user
+          `$shotgunroulette 5000` - Play against an AI
+          `$shotgunroulette 5000 ai Dragonslayer Zephyra` - Play against AI with a custom name
 
         In Shotgun Roulette, two players take turns with a shotgun, choosing to shoot themselves or their opponent. Each player starts with a random amount of HP and a set of random items that can be used strategically.
 
@@ -596,7 +760,7 @@ class Shotgunroulette(commands.Cog):
         - Players have items like Bloodbag, Cuffs, Magnifying Glass, Beer, and Sawn Off to influence the game.
 
         **Notes:**
-        - If no enemy is specified, an open challenge is issued.
+        - If no enemy is specified, you'll play against an AI opponent.
         - Both players must have enough money to cover the bet.
         - You cannot challenge yourself.
         - This command requires you to have a character."""
@@ -608,6 +772,11 @@ class Shotgunroulette(commands.Cog):
             if enemy == ctx.author:
                 await self.bot.reset_cooldown(ctx)
                 await ctx.send(_("You can't battle yourself."))
+                return
+
+            if money > 50000:
+                return await ctx.send("Max bet is 50000.")
+
 
             try:
                 if ctx.character_data["money"] < money:
@@ -615,76 +784,95 @@ class Shotgunroulette(commands.Cog):
                     return await ctx.send(_("You cannot afford this."))
             except Exception as e:
                 await ctx.send(e)
+                return
 
             await self.bot.pool.execute(
                 'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
                 money,
                 ctx.author.id,
             )
-            if enemy == None:
-                text = _(
-                    "{author} seeks a **Shotgun Roulette** Open Challenge! The price is **${money}**."
-                ).format(author=ctx.author.mention, money=money)
+            
+            # If no enemy specified, create an AI opponent
+            if enemy is None:
+                ai_opponent = AIOpponent(self.bot, ai_name)
+                enemy_ = ai_opponent
+                
+                # Show AI opponent information
+                await ctx.send(f"**{ctx.author.display_name}** will face **{ai_opponent.name}** in Shotgun Roulette!")
+                
+                # Initialize the game
+                hptracker, maxhp = await self.initilise(ctx, enemy_)
+                round = 1
+                
+                # Start the game against AI
+                await self.startgame(ctx, hptracker, enemy_, round, maxhp, money)
+                return
+                
             else:
-                text = _(
-                    "{author} challenges {enemy} to a game of **Shotgun Roulette!** The price is **${money}**."
-                ).format(author=ctx.author.mention, enemy=enemy.mention, money=money)
+                # Existing human opponent logic
+                if enemy == None:
+                    text = _(
+                        "{author} seeks a **Shotgun Roulette** Open Challenge! The price is **${money}**."
+                    ).format(author=ctx.author.mention, money=money)
+                else:
+                    text = _(
+                        "{author} challenges {enemy} to a game of **Shotgun Roulette!** The price is **${money}**."
+                    ).format(author=ctx.author.mention, enemy=enemy.mention, money=money)
 
-            async def check(user: discord.User) -> bool:
-                return await has_money(self.bot, user.id, money)
+                async def check(user: discord.User) -> bool:
+                    return await has_money(self.bot, user.id, money)
 
-            future = asyncio.Future()  # Properly assign `future`
-            view = SingleJoinView(
-                future,
-                Button(
-                    style=ButtonStyle.primary,
-                    label=_("Join the roulette!"),
-                    emoji="\U0001f52b",
-                ),
+                future = asyncio.Future()  # Properly assign `future`
+                view = SingleJoinView(
+                    future,
+                    Button(
+                        style=ButtonStyle.primary,
+                        label=_("Join the roulette!"),
+                        emoji="\U0001f52b",
+                    ),
 
-                allowed=enemy,
-                prohibited=ctx.author,
-                timeout=60,
-                check=check,
-                check_fail_message=_("You don't have enough money to join."),
-            )
+                    allowed=enemy,
+                    prohibited=ctx.author,
+                    timeout=60,
+                    check=check,
+                    check_fail_message=_("You don't have enough money to join."),
+                )
 
-            await ctx.send(text, view=view)
+                await ctx.send(text, view=view)
 
-            if future:  # Check if `future` has been assigned
-                try:
-                    enemy_ = await future
-                    await self.bot.pool.execute(
-                        'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
-                        money,
-                        enemy_.id,
-                    )
-
-                    hptracker, maxhp = await self.initilise(ctx,
-                                                            enemy_)  # Call initilise function and capture hp_tracker
-                except asyncio.TimeoutError:
-                    await self.bot.reset_cooldown(ctx)
-                    await self.bot.pool.execute(
-                        'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
-                        money,
-                        ctx.author.id,
-                    )
-                    if enemy is not None:
-                        return await ctx.send(
-                            _("{enemy_} did not want to join your shotgun roulette, {author}!").format(
-                                enemy_=enemy,
-                                author=ctx.author.mention
-                            )
+                if future:  # Check if `future` has been assigned
+                    try:
+                        enemy_ = await future
+                        await self.bot.pool.execute(
+                            'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
+                            money,
+                            enemy_.id,
                         )
-                    else:
-                        if enemy is None:
+
+                        hptracker, maxhp = await self.initilise(ctx, enemy_)  # Call initilise function and capture hp_tracker
+                    except asyncio.TimeoutError:
+                        await self.bot.reset_cooldown(ctx)
+                        await self.bot.pool.execute(
+                            'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                            money,
+                            ctx.author.id,
+                        )
+                        if enemy is not None:
                             return await ctx.send(
-                                _("Nobody wanted to join your shotgun roulette, {author}!").format(
-                                    author=ctx.author.mention,
+                                _("{enemy_} did not want to join your shotgun roulette, {author}!").format(
+                                    enemy_=enemy,
+                                    author=ctx.author.mention
                                 )
                             )
-                round = 1
-                await self.startgame(ctx, hptracker, enemy_, round, maxhp, money)
+                        else:
+                            if enemy is None:
+                                return await ctx.send(
+                                    _("Nobody wanted to join your shotgun roulette, {author}!").format(
+                                        author=ctx.author.mention,
+                                    )
+                                )
+                    round = 1
+                    await self.startgame(ctx, hptracker, enemy_, round, maxhp, money)
 
         except Exception as e:
             await ctx.send(f"An error occurred: {e}")

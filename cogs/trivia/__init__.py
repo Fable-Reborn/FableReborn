@@ -54,7 +54,7 @@ class Trivia(commands.Cog):
                 f"Difficulty: {question['difficulty']} | Category:"
                 f" {question['category']}"
             ),
-            timeout=15,
+            timeout=20,
         ).paginate(ctx)
         return answer == question["correct_answer"]
 

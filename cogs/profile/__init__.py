@@ -1296,17 +1296,115 @@ class Profile(commands.Cog):
         )
         return result
 
-    def invembedd(self, ctx, reset_potions_chunk, current_page, max_page):
+    def invembedd(self, ctx, reset_potions_chunk, amulets, level_candies, premium_consumables, current_page, max_page):
         result = discord.Embed(
             title=_("{user}'s Inventory").format(user=ctx.author.display_name),
             colour=discord.Colour.blurple(),
         )
+
+        # Display equipped amulets first
+        if current_page == 0:  # Only show on first page
+            equipped_amulets = [a for a in amulets if a['equipped']]
+            for amulet in equipped_amulets:
+                name = ""
+                value = ""
+                if amulet['type'] == 'health':
+                    name = f"<:balancedamulet:1403792085324267683> HP Amulet (ID: {amulet['id']}) (Equipped)"
+                    value = f"Health: **+{amulet.get('hp', 0)}**, Defense: **+{amulet.get('defense', 0)}**, Attack: **+{amulet.get('attack', 0)}**\n"
+                elif amulet['type'] == 'defense':
+                    name = f"<:defenseamulet:1403791376432496836> Defense Amulet (ID: {amulet['id']}) (Equipped)"
+                    value = f"Health: **+{amulet.get('hp', 0)}**, Defense: **+{amulet.get('defense', 0)}**, Attack: **+{amulet.get('attack', 0)}**\n"
+                elif amulet['type'] == 'attack':
+                    name = f"<:attackamulet:1403791304055591092> Attack Amulet (ID: {amulet['id']}) (Equipped)"
+                    value = f"Health: **+{amulet.get('hp', 0)}**, Defense: **+{amulet.get('defense', 0)}**, Attack: **+{amulet.get('attack', 0)}**\n"
+                elif amulet['type'] == 'balanced':
+                    name = f"<:balancedamulet:1403791341376372886> Balanced Amulet (ID: {amulet['id']}) (Equipped)"
+                    value = f"Health: **+{amulet.get('hp', 0)}**, Defense: **+{amulet.get('defense', 0)}**, Attack: **+{amulet.get('attack', 0)}**\n"
+                value += f"Tier: {amulet.get('tier', 0)} Value: ${amulet.get('value', 0):,}"
+                result.add_field(
+                    name=name,
+                    value=value,
+                    inline=False
+                )
+
+        # Display unequipped amulets
+        if current_page == 0:  # Only show on first page
+            unequipped_amulets = [a for a in amulets if not a['equipped']]
+            for amulet in unequipped_amulets:
+                name = ""
+                value = ""
+                if amulet['type'] == 'health':
+                    name = f"<:hp_amulet_red_glow:1403792085324267683> HP Amulet (ID: {amulet['id']})"
+                    value = f"Health: **+{amulet.get('hp', 0)}**, Defense: **+{amulet.get('defense', 0)}**, Attack: **+{amulet.get('attack', 0)}**\n"
+                elif amulet['type'] == 'defense':
+                    name = f"<:def_amulet_blue_glow:1403791376432496836> Defense Amulet (ID: {amulet['id']})"
+                    value = f"Health: **+{amulet.get('hp', 0)}**, Defense: **+{amulet.get('defense', 0)}**, Attack: **+{amulet.get('attack', 0)}**\n"
+                elif amulet['type'] == 'attack':
+                    name = f"<:atk_amulet_fixed_glow:1403791304055591092> Attack Amulet (ID: {amulet['id']})"
+                    value = f"Health: **+{amulet.get('hp', 0)}**, Defense: **+{amulet.get('defense', 0)}**, Attack: **+{amulet.get('attack', 0)}**\n"
+                elif amulet['type'] == 'balanced':
+                    name = f"<:balancedamulet:1403791341376372886> Balanced Amulet (ID: {amulet['id']})"
+                    value = f"Health: **+{amulet.get('hp', 0)}**, Defense: **+{amulet.get('defense', 0)}**, Attack: **+{amulet.get('attack', 0)}**\n"
+                value += f"Tier: {amulet.get('tier', 0)} Value: ${amulet.get('value', 0):,}"
+                result.add_field(
+                    name=name,
+                    value=value,
+                    inline=False
+                )
+
+        # Display level candies if they exist
+        for candy in level_candies:
+            if candy['levelcandy'] > 0:
+                result.add_field(
+                    name="🍬 Level Candy",
+                    value=f"Quantity: {candy['levelcandy']}\nGrants one level on use (`$consume candy`)",
+                    inline=False
+                )
+            if candy.get('highqualitylevelcandy', 0) > 0:
+                result.add_field(
+                    name="🍬 Super Level Candy",
+                    value=f"Quantity: {candy['highqualitylevelcandy']}\nGrants two levels on use (`$consume highcandy`)",
+                    inline=False
+                )
+
+        # Display reset potions
         for reset_potion in reset_potions_chunk:
             result.add_field(
-                name="<:Resetpotion2:1245040954382090270> - Reset Potion",
+                name="<:Resetpotion2:1403792708279206001> Reset Potion",
                 value=f"Quantity: {reset_potion}",
                 inline=False
             )
+
+        # Display premium consumables
+        for consumable in premium_consumables:
+            consumable_type = consumable['consumable_type']
+            quantity = consumable['quantity']
+            
+            if consumable_type == 'pet_age_potion':
+                result.add_field(
+                    name="<:ageup:1403791288548982935> Pet Age Potion",
+                    value=f"Quantity: {quantity}\nInstantly age your pet to the next growth stage (`$consume petage <pet_id>` or `$consume \"pet age potion\" <pet_id>`)",
+                    inline=False
+                )
+            elif consumable_type == 'pet_speed_growth_potion':
+                result.add_field(
+                    name="<:finalpotion:1403792029653405809> Pet Speed Growth Potion",
+                    value=f"Quantity: {quantity}\nDoubles growth speed for a specific pet (`$consume petspeed <pet_id>` or `$consume \"pet speed growth potion\" <pet_id>`)",
+                    inline=False
+                )
+            elif consumable_type == 'pet_xp_potion':
+                result.add_field(
+                    name="<:splicepotion:1403792828064338011> Pet XP Potion",
+                    value=f"Quantity: {quantity}\nGives a pet permanent x2 XP multiplier (`$consume petxp <pet_id>` or `$consume \"pet xp potion\" <pet_id>`)",
+                    inline=False
+                )
+            elif consumable_type == 'splice_final_potion':
+                result.add_field(
+                    name="🔮 Splice Final Potion",
+                    value=f"Quantity: {quantity}\n15% chance for [FINAL] result on next splice (`$consume splicefinal`)",
+                    inline=False
+                )
+
         result.set_footer(
             text=_("Page {page} of {maxpages}").format(
                 page=current_page + 1, maxpages=max_page + 1
@@ -1317,52 +1415,63 @@ class Profile(commands.Cog):
     @checks.has_char()
     @commands.command(aliases=["i", "inv"], brief=_("Show your gear items"))
     @locale_doc
-    async def inventory(
-            self,
-            ctx,
-    ):
+    async def inventory(self, ctx):
         try:
             await ctx.send(
-                "weapons has moved to `$armory` with aliases `$ar` and `$arm` to make room for a future update.")
-
-            await ctx.send(
-                "Related commands `$consume <type>`")
-            #<:resetpotion: 1245034461960081409>
-
-            _(
-                """`[itemtype]` - The type of item to show; defaults to all items
-                `[lowest]` - The lower boundary of items to show; defaults to 0
-                `[highest]` - The upper boundary of items to show; defaults to 101
-    
-                Show your gear items. Items that are in the market will not be shown.
-    
-                Gear items can be equipped, sold and given away, or upgraded and merged to make them stronger.
-                You can gain gear items by completing adventures, opening crates, or having your pet hunt for them, if you are a ranger.
-    
-                To sell unused items for their value, use `{prefix}merch`. To put them up on the global player market, use `{prefix}sell`."""
+                "weapons has moved to `$armory` with aliases `$ar` and `$arm` to make room for a future update."
             )
-            itemtype = 'All'
+            await ctx.send("Related commands `$consume <type>`")
 
-            if itemtype == "All":
-                async with self.bot.pool.acquire() as conn:
-                    ret = await conn.fetch(
-                        'SELECT * FROM profile WHERE "user" = $1;',
-                        ctx.author.id,
-                    )
+            async with self.bot.pool.acquire() as conn:
+                # Fetch reset potions and level candies
+                ret = await conn.fetch(
+                    'SELECT resetpotion, levelcandy, highqualitylevelcandy FROM profile WHERE "user" = $1;',
+                    ctx.author.id,
+                )
 
-            if not ret or ret[0]['resetpotion'] == 0:
+                # Fetch amulets
+                amulets = await conn.fetch(
+                    'SELECT * FROM amulets WHERE user_id = $1 ORDER BY equipped DESC;',
+                    ctx.author.id,
+                )
+                
+                # Fetch premium consumables
+                premium_consumables = await conn.fetch(
+                    'SELECT consumable_type, quantity FROM user_consumables WHERE user_id = $1 AND quantity > 0;',
+                    ctx.author.id,
+                )
+
+            # Check if inventory is empty
+            has_reset_potions = ret and ret[0]['resetpotion'] > 0
+            has_level_candy = ret and ret[0]['levelcandy'] > 0
+            has_high_candy = ret and ret[0]['highqualitylevelcandy'] > 0
+            has_amulets = bool(amulets)
+            has_premium = bool(premium_consumables)
+            
+            if not (has_reset_potions or has_amulets or has_level_candy or has_high_candy or has_premium):
                 return await ctx.send(_("Your inventory is empty."))
 
-            reset_potions = [item['resetpotion'] for item in ret]
-            chunks_size = 5
-            reset_potions_chunks = [reset_potions[i:i + chunks_size] for i in range(0, len(reset_potions), chunks_size)]
-            max_page = len(reset_potions_chunks) - 1
+            # Handle reset potions pagination
+            if has_reset_potions:
+                reset_potions = [item['resetpotion'] for item in ret]
+                chunks_size = 5
+                reset_potions_chunks = [
+                    reset_potions[i:i + chunks_size]
+                    for i in range(0, len(reset_potions), chunks_size)
+                ]
+                max_page = len(reset_potions_chunks) - 1
+            else:
+                # If no reset potions, create a single empty chunk
+                reset_potions_chunks = [[]]
+                max_page = 0
+
             embeds = [
-                self.invembedd(ctx, chunk, idx, max_page)
+                self.invembedd(ctx, chunk, amulets, ret, premium_consumables, idx, max_page)
                 for idx, chunk in enumerate(reset_potions_chunks)
             ]
 
             await self.bot.paginator.Paginator(extras=embeds).paginate(ctx)
+
         except Exception as e:
             import traceback
             error_message = f"Error occurred: {e}\n"
@@ -1387,8 +1496,6 @@ class Profile(commands.Cog):
             )
 
         return result
-
-    from discord import Embed
 
     @checks.has_char()
     @commands.command(aliases=["sp"], brief=_("Show your gear items"))

@@ -1,7 +1,6 @@
 """
 The IdleRPG Discord Bot
 Copyright (C) 2018-2021 Diniboy and Gelbpunkt
-Copyright (C) 2024 Lunar (discord itslunar.)
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as published by
@@ -16,8 +15,6 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
-
-
 from __future__ import annotations
 
 from enum import Enum
@@ -63,7 +60,7 @@ class ItemType(Enum):
 ALL_ITEM_TYPES = list(ItemType)
 TWO_HANDED_ITEM_TYPES = (ItemType.Bow, ItemType.Scythe, ItemType.Mace)
 LEFT_HANDED_ITEM_TYPES = (ItemType.Shield,)
-RIGHT_HANDED_ITEM_TYPES = (ItemType.Spear, ItemType.Wand)
+RIGHT_HANDED_ITEM_TYPES = (ItemType.Spear,)
 ANY_HANDED_ITEM_TYPES = (
     ItemType.Sword,
     ItemType.Axe,

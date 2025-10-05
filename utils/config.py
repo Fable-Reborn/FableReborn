@@ -1,7 +1,6 @@
 """
 The IdleRPG Discord Bot
 Copyright (C) 2018-2021 Diniboy and Gelbpunkt
-Copyright (C) 2024 Lunar (discord itslunar.)
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as published by
@@ -16,8 +15,6 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
-
-
 from typing import Any
 
 import tomli
@@ -94,7 +91,7 @@ class DatabaseSection:
 
     def __init__(self, data: dict[str, Any]) -> None:
         self.postgres_name = data.get("postgres_name", "idlerpg")
-        self.postgres_user = data.get("postgres_user", "")
+        self.postgres_user = data.get("postgres_user", "lunar")
         self.postgres_port = data.get("postgres_port", 5432)
         self.postgres_host = data.get("postgres_host", "127.0.0.1")
         self.postgres_password = data.get("postgres_password", "")
@@ -104,6 +101,22 @@ class DatabaseSection:
         self.redis_shard_announce_channel = data.get(
             "redis_shard_announce_channel", "guild_channel"
         )
+
+class Second_DatabaseSection:
+    __slots__ = {
+        "postgres_name",
+        "postgres_user",
+        "postgres_port",
+        "postgres_host",
+        "postgres_password",
+    }
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.postgres_name = data.get("postgres_name", "OG-IdleRPG")
+        self.postgres_user = data.get("postgres_user", "lunar")
+        self.postgres_port = data.get("postgres_port", 5432)
+        self.postgres_host = data.get("postgres_host", "127.0.0.1")
+        self.postgres_password = data.get("postgres_password", "")
 
 
 class StatisticsSection:
@@ -174,6 +187,7 @@ class ConfigLoader:
         "bot",
         "external",
         "database",
+        "second_database",
         "statistics",
         "launcher",
         "game",
@@ -200,6 +214,7 @@ class ConfigLoader:
         self.bot = BotSection(self.values["bot"])
         self.external = ExternalSection(self.values.get("external", {}))
         self.database = DatabaseSection(self.values.get("database", {}))
+        self.second_database = Second_DatabaseSection(self.values.get("second_database", {}))
         self.statistics = StatisticsSection(self.values.get("statistics", {}))
         self.launcher = LauncherSection(self.values.get("launcher", {}))
         self.game = GameSection(self.values.get("game", {}))

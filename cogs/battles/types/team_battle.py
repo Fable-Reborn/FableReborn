@@ -25,6 +25,9 @@ class TeamBattle(Battle):
         self.started = True
         self.start_time = datetime.datetime.utcnow()
         
+        # Save initial battle data to database for replay
+        await self.save_battle_to_database()
+        
         # Build turn order with all combatants
         self.turn_order = []
         for team in self.teams:
@@ -92,7 +95,11 @@ class TeamBattle(Battle):
         # Process attack based on luck
         luck_roll = random.randint(1, 100)
         
-        if luck_roll <= current_combatant.luck:
+        # Check for perfect accuracy from Night Vision skill
+        has_perfect_accuracy = getattr(current_combatant, 'perfect_accuracy', False)
+        hit_success = has_perfect_accuracy or (luck_roll <= current_combatant.luck)
+        
+        if hit_success:
             # Attack hits
             
             # Special case for mage fireball
@@ -134,17 +141,104 @@ class TeamBattle(Battle):
                         current_combatant.element, 
                         target.element
                     )
+                    
+                    # Apply void affinity protection to target
+                    if hasattr(self.ctx.bot.cogs["Battles"], "battle_factory"):
+                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
+                        element_mod = pet_ext.apply_void_affinity_protection(target, element_mod)
+                    
                     if element_mod != 0:
                         raw_damage = raw_damage * (1 + Decimal(str(element_mod)))
                 
                 # Add variance and apply armor
                 raw_damage += Decimal(damage_variance)
-                blocked_damage = min(raw_damage, target.armor)
-                damage = max(raw_damage - target.armor, Decimal('10'))
+                
+                            # PROCESS PET SKILL EFFECTS ON ATTACK
+            skill_messages = []
+            if (current_combatant.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
+                pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
+                raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(current_combatant, target, raw_damage)
+                # Set flag for turn processing (damage will be set after final calculation)
+                setattr(current_combatant, 'attacked_this_turn', True)
+                
+                # Check for special damage types
+                ignore_armor = getattr(target, 'ignore_armor_this_hit', False)
+                true_damage = getattr(target, 'true_damage', False)
+                bypass_defenses = getattr(target, 'bypass_defenses', False)
+                ignore_all = getattr(target, 'ignore_all_defenses', False)
+                partial_true_damage = getattr(target, 'partial_true_damage', 0)
+                
+                if ignore_all or true_damage or ignore_armor or bypass_defenses:
+                    damage = raw_damage  # No armor reduction
+                    blocked_damage = Decimal('0')
+                elif partial_true_damage > 0:
+                    # Handle partial true damage: some bypasses armor, some doesn't
+                    normal_damage_after_armor = max(raw_damage - target.armor, Decimal('10'))
+                    damage = normal_damage_after_armor + Decimal(str(partial_true_damage))
+                    blocked_damage = min(raw_damage, target.armor)
+                else:
+                    blocked_damage = min(raw_damage, target.armor)
+                    damage = max(raw_damage - target.armor, Decimal('10'))
+                
+                # Clear special damage flags
+                for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses', 'partial_true_damage']:
+                    if hasattr(target, flag):
+                        delattr(target, flag)
+                
+                                        # PROCESS PET SKILL EFFECTS ON DAMAGE TAKEN
+                defender_messages = []
+                if (target.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
+                    pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
+                    damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(target, current_combatant, damage)
+                
+                # Store the actual final damage dealt (for skills like Soul Drain)
+                if current_combatant.is_pet:
+                    setattr(current_combatant, 'last_damage_dealt', damage)
                 
                 target.take_damage(damage)
                 
                 message = f"{current_combatant.name} attacks! {target.name} takes **{self.format_number(damage)} HP** damage."
+                
+                # Add skill effect messages
+                if skill_messages:
+                    message += "\n" + "\n".join(skill_messages)
+                if defender_messages:
+                    message += "\n" + "\n".join(defender_messages)
+                
+                # Check for skeleton summoning after skill processing
+                if hasattr(current_combatant, 'summon_skeleton'):
+                    skeleton_data = current_combatant.summon_skeleton
+                    
+                    # Create skeleton combatant
+                    from cogs.battles.core.combatant import Combatant
+                    skeleton = Combatant(
+                        user=f"Skeleton Warrior #{current_combatant.skeleton_count}",  # User/name
+                        hp=skeleton_data['hp'],
+                        max_hp=skeleton_data['hp'],  # Same as current HP
+                        damage=skeleton_data['damage'],
+                        armor=skeleton_data['armor'],
+                        element=skeleton_data['element'],
+                        luck=50,  # Base luck
+                        is_pet=True,
+                        name=f"Skeleton Warrior #{current_combatant.skeleton_count}"
+                    )
+                    skeleton.is_summoned = True
+                    skeleton.summoner = current_combatant
+                    
+                    # Add skeleton to the same team as the summoner
+                    if current_combatant in self.team_a.combatants:
+                        self.team_a.combatants.append(skeleton)
+                        # Add to turn order as well
+                        self.turn_order.append(skeleton)
+                        message += f"\n💀 A skeleton warrior joins Team A!"
+                    else:
+                        self.team_b.combatants.append(skeleton)
+                        # Add to turn order as well
+                        self.turn_order.append(skeleton)
+                        message += f"\n💀 A skeleton warrior joins Team B!"
+                    
+                    # Clear the summon flag
+                    delattr(current_combatant, 'summon_skeleton')
             
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 
@@ -210,15 +304,39 @@ class TeamBattle(Battle):
             if self.config.get("tripping", False):
                 damage = Decimal('10')
                 current_combatant.take_damage(damage)
-                message = f"{current_combatant.name} tripped and took **{damage} HP** damage. Bad luck!"
+                message = f"{current_combatant.name} tripped and took **{self.format_number(damage)} HP** damage. Bad luck!"
             else:
                 message = f"{current_combatant.name}'s attack missed!"
         
         # Add message to battle log
         await self.add_to_log(message)
         
+        # PROCESS PET SKILL EFFECTS PER TURN
+        if hasattr(self.ctx.bot.cogs["Battles"], "battle_factory"):
+            pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
+            for team in self.teams:
+                for combatant in team.combatants:
+                    if combatant.is_pet and combatant.is_alive():
+                        # Set team references for skills that need them
+                        setattr(combatant, 'team', team)
+                        enemy_team = self.teams[1] if team == self.teams[0] else self.teams[0]
+                        setattr(combatant, 'enemy_team', enemy_team)
+                        
+                        # Process per-turn effects
+                        turn_messages = pet_ext.process_skill_effects_per_turn(combatant)
+                        if turn_messages:
+                            for turn_msg in turn_messages:
+                                await self.add_to_log(turn_msg)
+        
+        # Check for death from turn effects
+        if hasattr(target, 'is_alive') and not target.is_alive():
+            # Mark if pet killed an enemy for Soul Harvest
+            if current_combatant.is_pet:
+                setattr(current_combatant, 'killed_enemy_this_turn', True)
+        
         # Update the battle display
         await self.update_display()
+        await asyncio.sleep(1)
         
         return True
     
@@ -287,6 +405,9 @@ class TeamBattle(Battle):
         # Add battle log
         log_text = "\n\n".join([f"**Action #{i}**\n{msg}" for i, msg in self.log])
         embed.add_field(name="Battle Log", value=log_text or "Battle starting...", inline=False)
+        
+        # Add battle ID to footer for GM replay functionality
+        embed.set_footer(text=f"Battle ID: {self.battle_id}")
         
         return embed
     
@@ -363,20 +484,29 @@ class TeamBattle(Battle):
                 winning_team = self.teams[1]
                 losing_team = self.teams[0]
         
-        # Award money and PvP wins to winners
+        # Collect valid winner and loser IDs (only including real players, not pets)
+        winner_ids = []
+        loser_ids = []
+        
+        for combatant in winning_team.combatants:
+            if hasattr(combatant.user, "id") and not combatant.is_pet:
+                winner_ids.append(combatant.user.id)
+        
+        for combatant in losing_team.combatants:
+            if hasattr(combatant.user, "id") and not combatant.is_pet:
+                loser_ids.append(combatant.user.id)
+        
+        # Award PvP wins to winners (regardless of money)
+        if winner_ids:
+            async with self.ctx.bot.pool.acquire() as conn:
+                for winner_id in winner_ids:
+                    await conn.execute(
+                        'UPDATE profile SET "pvpwins"="pvpwins"+1 WHERE "user"=$1;',
+                        winner_id
+                    )
+        
+        # Handle money rewards if there's money involved
         if self.money > 0:
-            # Collect valid winner and loser IDs (only including real players, not pets)
-            winner_ids = []
-            loser_ids = []
-            
-            for combatant in winning_team.combatants:
-                if hasattr(combatant.user, "id") and not combatant.is_pet:
-                    winner_ids.append(combatant.user.id)
-            
-            for combatant in losing_team.combatants:
-                if hasattr(combatant.user, "id") and not combatant.is_pet:
-                    loser_ids.append(combatant.user.id)
-            
             total_winners = len(winner_ids) or 1  # Avoid division by zero
             total_losers = len(loser_ids) or 1    # Avoid division by zero
             
@@ -402,10 +532,10 @@ class TeamBattle(Battle):
                 if verified_payments > 0:
                     individual_winnings = (self.money * 2 * verified_payments) / total_winners
                     
-                    # Award winnings to winners with proper logging
+                    # Award money to winners with proper logging
                     for winner_id in winner_ids:
                         await conn.execute(
-                            'UPDATE profile SET "pvpwins"="pvpwins"+1, "money"="money"+$1 WHERE "user"=$2;',
+                            'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
                             individual_winnings,
                             winner_id
                         )

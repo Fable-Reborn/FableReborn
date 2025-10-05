@@ -467,6 +467,21 @@ def update_pet() -> "_CheckDecorator":
 
 
 def is_god() -> "_CheckDecorator":
+    async def predicate(ctx: Context) -> bool:
+        try:
+            async with ctx.bot.pool.acquire() as conn:
+                result = await conn.fetchrow(
+                    "SELECT 1 FROM gods WHERE user_id = $1",
+                    ctx.author.id
+                )
+            return result is not None
+        except Exception as e:
+            await ctx.send(f"God Check Error: {str(e)}")
+            return False
+
+    return commands.check(predicate)
+
+def is_god_old() -> "_CheckDecorator":
     """Checks for a user to be a god."""
 
     def predicate(ctx: Context) -> bool:
@@ -514,6 +529,18 @@ async def has_money(bot: "Bot", userid: int, money: int, conn=None) -> bool:
         await bot.pool.release(conn)
     return res
 
+def is_patreon(min_tier: int = 1) -> "_CheckDecorator":
+    async def predicate(ctx: Context) -> bool:
+        # Fetch the Patreon tier from the database
+        tier = await ctx.bot.pool.fetchval(
+            'SELECT tier FROM profile WHERE "user" = $1;', ctx.author.id
+        )
+        # Check if the tier is greater than or equal to the required minimum tier
+        return tier is not None and tier >= min_tier
+
+    return commands.check(predicate)
+
+
 
 async def guild_has_money(bot: "Bot", guildid: int, money: int) -> bool:
     res = await bot.pool.fetchval('SELECT money FROM guild WHERE "id"=$1;', guildid)
@@ -522,9 +549,16 @@ async def guild_has_money(bot: "Bot", guildid: int, money: int) -> bool:
 
 def is_gm() -> "_CheckDecorator":
     async def predicate(ctx: Context) -> bool:
-        return (
-                ctx.author.id in ctx.bot.config.game.game_masters
-        )
+        try:
+            async with ctx.bot.pool.acquire() as conn:
+                result = await conn.fetchrow(
+                    "SELECT 1 FROM game_masters WHERE user_id = $1", 
+                    ctx.author.id
+                )
+            return result is not None
+        except Exception as e:
+            await ctx.send(f"GM Check Error: {str(e)}")
+            return False
 
     return commands.check(predicate)
 

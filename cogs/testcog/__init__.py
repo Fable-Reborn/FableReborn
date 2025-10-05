@@ -408,7 +408,7 @@ class TestCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.active_adventures = {}  # user_id: AdventureState
-        self.error_recipient_id = 295173706496475136  # Replace with your error recipient's ID
+        self.error_recipient_id = 0  # Replace with your error recipient's ID
 
         # Create a directory for maze images if it doesn't exist.
         self.image_dir = "maze_images"
@@ -457,6 +457,8 @@ A hidden ladder lets you exit early (with partial rewards).
 When you reach the exit, you will be asked to confirm if you want to exit.
 (This command has a 30-minute cooldown)"""
         )
+
+
 
         if not self.is_night_time():
             tres = 5
@@ -782,25 +784,41 @@ When you reach the exit, you will be asked to confirm if you want to exit.
         # NEW: Check for ladder prompt (only if not on the exit)
         if current_cell.ladder and not state.ladder_prompt_shown and (x, y) != (maze.width - 1, maze.height - 1):
             state.ladder_prompt_shown = True
+            # Disable all buttons on the current (AdventureView) so the player can’t do other actions.
+            current_view = interaction.message.view  # This is the view currently attached to the maze message.
+            for child in current_view.children:
+                child.disabled = True
+            # Update the message with the disabled view.
+            await interaction.message.edit(view=current_view)
+
+            # Create and remember the ladder confirm view.
             ladder_view = LadderConfirmView(self, state)
-            ladder_view.original_view = AdventureView(self, state)
+            # Pass along a reference to the currently disabled view
+            ladder_view.original_view = current_view
             ladder_view.original_message = interaction.message
             await interaction.response.send_message(
-                "You have discovered a mysterious ladder that can lead you out early (with partial rewards). Do you want to exit now?",
+                "You have discovered a mysterious ladder that can lead you out early (with partial rewards).\nDo you want to exit now?",
                 view=ladder_view,
                 ephemeral=True
             )
             return
 
-        # NEW: If the new cell is the exit, instead of auto-exiting, prompt for confirmation.
         if (x, y) == (maze.width - 1, maze.height - 1):
+            # Create a new instance of AdventureView and disable all buttons.
+            disabled_view = AdventureView(self, state)
+            for child in disabled_view.children:
+                child.disabled = True
+              # Update the original maze message with the disabled view.
+            await interaction.message.edit(view=disabled_view)
+
+              # Create the exit confirm view and pass the disabled view along.
             exit_view = ConfirmExitView(self, state)
-            exit_view.original_view = AdventureView(self, state)
+            exit_view.original_view = disabled_view
             exit_view.original_message = interaction.message
             await interaction.response.send_message(
-                "You have reached the exit. Do you want to exit now and claim your reward, or keep exploring?",
-                view=exit_view,
-                ephemeral=True
+            "You have reached the exit. Do you want to exit now and claim your reward, or keep exploring?",
+            view = exit_view,
+            ephemeral = True
             )
             return
 
@@ -810,6 +828,24 @@ When you reach the exit, you will be asked to confirm if you want to exit.
             state.hp -= damage
             event_messages.append(f"💥 You stepped on a trap and lost {damage} HP!")
             current_cell.trap = False
+            if state.hp <= 0:
+                event_messages.append("😵 You have been defeated by a trap!")
+                # End the adventure immediately
+                embed, file = await self.create_maze_embed(state)
+                view = AdventureView(self, state)
+                await interaction.response.edit_message(
+                    content="\n".join(event_messages),
+                    embed=embed,
+                    view=view,
+                    attachments=[file]
+                )
+                await self.end_adventure(
+                    interaction,
+                    state,
+                    success=False,
+                    message="😵 You have been defeated by a trap!"
+                )
+                return
         if current_cell.enemy:
             state.in_combat = True
             state.current_enemy = current_cell.enemy

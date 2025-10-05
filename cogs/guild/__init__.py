@@ -20,6 +20,7 @@ import asyncio
 
 from contextlib import suppress
 from datetime import timedelta, datetime
+from typing import Union
 
 import discord
 from discord import Embed
@@ -1461,20 +1462,42 @@ class Guild(commands.Cog):
                     f"**{guild1['name']}** and **{guild2['name']}** tied."
                 )
 
+    @has_char()
     @is_gm()
     @guild.command()
-    async def adventurereset(self, ctx):
-
-
-        guild_id = ctx.character_data["guild"]
-        keys_to_delete = await self.bot.redis.keys(f"guildcd:{guild_id}:*")
-
+    async def adventurereset(self, ctx, profile: Union[discord.Member, int] = None):
+        try:
+            # If no profile provided, use the command author
+            if profile is None:
+                profile_id = ctx.author.id
+            elif isinstance(profile, discord.Member):
+                profile_id = profile.id
+            else:
+                profile_id = profile
+            
+            # Query the database to get the guild for this profile
+            async with self.bot.pool.acquire() as conn:
+                guild_id = await conn.fetchval(
+                    "SELECT guild FROM profile WHERE user = $1", 
+                    profile_id
+                )
+            
+            if guild_id is None:
+                await ctx.send(f"No profile found for user ID {profile_id}.")
+                return
+            
+            # Get all cooldown keys for this guild
+            keys_to_delete = await self.bot.redis.keys(f"guildcd:{guild_id}:*")
+            
             # Delete each matching key
-        if keys_to_delete:
-            await ctx.bot.redis.delete(*keys_to_delete)
-            await ctx.send(f"All cooldown entries for guild ID {guild_id} have been deleted.")
-        else:
-            await ctx.send(f"No cooldown entries found for guild ID {guild_id}.")
+            if keys_to_delete:
+                await self.bot.redis.delete(*keys_to_delete)
+                await ctx.send(f"All cooldown entries for guild ID {guild_id} have been deleted.")
+            else:
+                await ctx.send(f"No cooldown entries found for guild ID {guild_id}.")
+                
+        except Exception as e:
+            await ctx.send(f"An error occurred: {e}")
 
     @is_guild_officer()
     @guild_cooldown(86400)
@@ -1519,15 +1542,28 @@ class Guild(commands.Cog):
                 timeout=timer,
             )
 
-            mins = timer / 60
+            # Convert seconds to hours, minutes, seconds
+            hours, remainder = divmod(timer, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            
+            # Create human-readable time string
+            time_parts = []
+            if hours > 0:
+                time_parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+            if minutes > 0 or hours > 0:  # Show minutes if there are any, or if we're showing hours
+                time_parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
+            if seconds > 0 and hours == 0:  # Only show seconds if we're not showing hours
+                time_parts.append(f"{seconds} second{'s' if seconds != 1 else ''}")
+                
+            time_str = " ".join(time_parts)
 
             # Send the join message
             await ctx.send(
                 _(
                     "{author} seeks a guild adventure for **{guild}**! Click the button to"
-                    " join! Unlimited players can join in the next {mins} minutes. The minimum"
+                    " join! Unlimited players can join in the next {time}. The minimum"
                     " of players required is 3."
-                ).format(author=ctx.author.mention, guild=guild["name"]),
+                ).format(author=ctx.author.mention, guild=guild["name"], time=time_str),
                 view=view,
             )
 
@@ -1589,7 +1625,7 @@ class Guild(commands.Cog):
                         'A bridge collapses, but the guild engineers a solution.',
                         'They encounter a rival guild seeking the same dragon.',
                         'An old hermit gives cryptic advice about the dragon.',
-                        'They find tracks leading directly to the dragon’s lair.',
+                        'They find tracks leading directly to the dragon\'s lair.',
                         'The guild navigates through a labyrinthine forest.',
                         'They are haunted by illusions created by mischievous spirits.',
                         'A member\'s courage inspires the others during a tough challenge.',
@@ -1856,8 +1892,6 @@ class Guild(commands.Cog):
                         'They discover an island that appears only once every century.',
                     ],
                 },
-                # Include all other adventure types and their events here
-                # (As in previous messages)
             ]
 
             # Select a random adventure type
@@ -1865,6 +1899,28 @@ class Guild(commands.Cog):
 
             # Calculate adventure time based on difficulty
             time = timedelta(hours=difficulty * 0.05)
+
+            # Format time for display - handle days properly
+            def format_timedelta(td):
+                total_seconds = int(td.total_seconds())
+                days = total_seconds // 86400
+                hours = (total_seconds % 86400) // 3600
+                minutes = (total_seconds % 3600) // 60
+                seconds = total_seconds % 60
+                
+                parts = []
+                if days > 0:
+                    parts.append(f"{days}d")
+                if hours > 0 or days > 0:  # Show hours if there are any, or if showing days
+                    parts.append(f"{hours}h")
+                if minutes > 0 or hours > 0 or days > 0:  # Show minutes if there are any, or if showing hours/days
+                    parts.append(f"{minutes}m")
+                if seconds > 0 and days == 0:  # Only show seconds if not showing days
+                    parts.append(f"{seconds}s")
+                
+                return " ".join(parts) if parts else "0s"
+
+            formatted_time = format_timedelta(time)
 
             # Start the guild adventure with the selected adventure type
             await self.bot.start_guild_adventure(guild["id"], difficulty, time, adventure_type)
@@ -1896,7 +1952,7 @@ class Guild(commands.Cog):
             )
             embed.add_field(
                 name="Estimated Time",
-                value=f"**{time}**",
+                value=f"**{formatted_time}**",
                 inline=True
             )
             embed.set_footer(text="Good luck, adventurers!")
@@ -1934,8 +1990,6 @@ class Guild(commands.Cog):
             error_message += traceback.format_exc()
             await ctx.send(error_message)
             print(error_message)
-
-
 
     @has_guild()
     @guild.command(brief=_("View your guild adventure's status"))
@@ -2102,9 +2156,29 @@ class Guild(commands.Cog):
 
                     # Ensure each field has 1024 or fewer characters
                     if xp_summary:
-                        # Split into chunks to ensure no field exceeds 1024 characters
-                        chunk_size = 1024
-                        chunks = [xp_summary[i:i + chunk_size] for i in range(0, len(xp_summary), chunk_size)]
+                        # Join the XP summary into a single string
+                        xp_text = "\n".join(xp_summary)
+                        
+                        # Split into chunks to ensure no field exceeds 900 characters (safe limit)
+                        chunk_size = 900
+                        chunks = []
+                        current_chunk = ""
+                        
+                        for line in xp_summary:
+                            # If adding this line would exceed the limit, start a new chunk
+                            # This ensures we don't break in the middle of a user's XP entry
+                            if len(current_chunk) + len(line) + 1 > chunk_size:
+                                if current_chunk:
+                                    chunks.append(current_chunk.strip())
+                                current_chunk = line
+                            else:
+                                current_chunk += "\n" + line if current_chunk else line
+                        
+                        # Add the last chunk if it exists
+                        if current_chunk:
+                            chunks.append(current_chunk.strip())
+                        
+                        # Add fields for each chunk
                         for i, chunk in enumerate(chunks, 1):
                             xp_embed.add_field(
                                 name=f"XP Gains (Part {i})",
@@ -2161,13 +2235,35 @@ class Guild(commands.Cog):
 
 
             else:
+                # Format time for display - handle timedelta properly
+                def format_timedelta_display(td):
+                    total_seconds = int(td.total_seconds())
+                    days = total_seconds // 86400
+                    hours = (total_seconds % 86400) // 3600
+                    minutes = (total_seconds % 3600) // 60
+                    seconds = total_seconds % 60
+                    
+                    parts = []
+                    if days > 0:
+                        parts.append(f"{days}d")
+                    if hours > 0 or days > 0:  # Show hours if there are any, or if showing days
+                        parts.append(f"{hours}h")
+                    if minutes > 0 or hours > 0 or days > 0:  # Show minutes if there are any, or if showing hours/days
+                        parts.append(f"{minutes}m")
+                    if seconds > 0 and days == 0:  # Only show seconds if not showing days
+                        parts.append(f"{seconds}s")
+                    
+                    return " ".join(parts) if parts else "0s"
+
+                formatted_remain = format_timedelta_display(remain_time)
+                
                 await ctx.send(
                     _(
                         "Your guild is currently on an adventure: **{adventure_name}**.\n"
                         "Time remaining: `{remain}`"
                     ).format(
                         adventure_name=adventure_type['name'],
-                        remain=str(remain_time).split(".")[0],
+                        remain=formatted_remain,
                     )
                 )
         except Exception as e:
@@ -2175,7 +2271,7 @@ class Guild(commands.Cog):
             error_message = f"Error occurred: {e}\n"
             error_message += traceback.format_exc()
 
-            print(error_message)
+            await ctx.send(error_message)
 
     @has_guild()
     @guild.command(
@@ -2204,8 +2300,33 @@ class Guild(commands.Cog):
             )
             timers = f"{timers}\n{text}"
         if adv and not adv[2]:
+            # Format the time to make it more readable
+            remain_time = adv[1]
+            
+            # Format timedelta properly
+            def format_timedelta_display(td):
+                total_seconds = int(td.total_seconds())
+                days = total_seconds // 86400
+                hours = (total_seconds % 86400) // 3600
+                minutes = (total_seconds % 3600) // 60
+                seconds = total_seconds % 60
+                
+                parts = []
+                if days > 0:
+                    parts.append(f"{days}d")
+                if hours > 0 or days > 0:  # Show hours if there are any, or if showing days
+                    parts.append(f"{hours}h")
+                if minutes > 0 or hours > 0 or days > 0:  # Show minutes if there are any, or if showing hours/days
+                    parts.append(f"{minutes}m")
+                if seconds > 0 and days == 0:  # Only show seconds if not showing days
+                    parts.append(f"{seconds}s")
+                
+                return " ".join(parts) if parts else "0s"
+            
+            formatted_time = format_timedelta_display(remain_time)
+            
             text = _("Guild adventure is running and will be done after {time}").format(
-                time=adv[1]
+                time=formatted_time
             )
             timers = f"{timers}\n{text}"
         await ctx.send(f"```{timers}```")

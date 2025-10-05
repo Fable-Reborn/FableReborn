@@ -71,7 +71,7 @@ class Lottery(commands.Cog):
                 f"Lottery settings updated. Ticket cost: **${amount}**, Max tickets per player: **{tickets}**")
 
             # Send a message to the specified channel
-            lottery_channel_id = 1140207396459925596  # Replace with your desired channel ID
+            lottery_channel_id = 1408144167632371845  # Replace with your desired channel ID
             lottery_channel = self.bot.get_channel(lottery_channel_id)
 
             if lottery_channel:
@@ -83,7 +83,7 @@ class Lottery(commands.Cog):
                 await lottery_channel.send(embed=embed)
 
                 # Tag the specified role after sending the embed
-                role_id = 1147199558766567559  # Replace with your desired role ID
+                role_id = 1411806405299671232  # Replace with your desired role ID
                 role = ctx.guild.get_role(role_id)  # Retrieve the role object using role ID
                 if role:  # Check if role exists
                     role_mention = role.mention  # Get the mention string of the role

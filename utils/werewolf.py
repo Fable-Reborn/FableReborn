@@ -342,15 +342,25 @@ class Game:
     def get_player_with_role(self, role: Role) -> Player | None:
         return discord.utils.get(self.alive_players, role=role)
 
+    @property
     def winner(self) -> Player | None:
-        objective_reached = discord.utils.get(self.alive_players, has_won=True)
-        if objective_reached:
-            return objective_reached
-        if len(self.alive_players) < 2:
-            try:
+        # Check if any player reached their objective
+        try:
+            objective_reached = discord.utils.get(self.alive_players, has_won=True)
+            if objective_reached:
+                return objective_reached
+                
+            # Check if there's only one player left
+            if len(self.alive_players) == 1:
                 return self.alive_players[0]
-            except IndexError:
+            elif len(self.alive_players) == 0:
                 return _("No one")
+                
+            return None
+        except Exception as e:
+            # If any unexpected error occurs, log it and return a safe value
+            print(f"Error in winner property: {str(e)}")
+            return _("No one")
 
     @property
     def new_afk_players(self) -> list[Player]:
@@ -1333,41 +1343,33 @@ class Game:
         if self.task:
             self.task.cancel()
         results_pretext = _("Werewolf {mode} results:").format(mode=self.mode)
-        if isinstance(winner, Player):
-            if not self.winning_side:
-                self.winning_side = winner.role_name
-            paginator = commands.Paginator(prefix="", suffix="")
-            paginator.add_line(
-                _(
-                    "{results_pretext} **The {winning_side} won!** 🎉 Congratulations:"
-                ).format(
-                    results_pretext=results_pretext, winning_side=self.winning_side
+
+        try:
+            if isinstance(winner, Player):
+                if not self.winning_side:
+                    self.winning_side = winner.role_name
+                paginator = commands.Paginator(prefix="", suffix="")
+                paginator.add_line(
+                    _(
+                        "{results_pretext} **The {winning_side} won!** 🎉 Congratulations:"
+                    ).format(
+                        results_pretext=results_pretext, winning_side=self.winning_side
+                    )
                 )
-            )
-            winners = self.get_players_roles(has_won=True)
-            for player in winners:
-                paginator.add_line(player)
-            for page in paginator.pages:
-                await self.ctx.send(page)
-            await self.reveal_others()
+                await self.reveal_others()
+            else:
+                # Display winner information
+                await self.ctx.send(
+                    _("{results_pretext} **{winner} won!**").format(
+                        results_pretext=results_pretext, winner=winner
+                    )
+                )
+        except Exception as e:
+            # If an error occurs during winner determination, provide a fallback
+            print(f"Error determining winner: {str(e)}")
+            await self.ctx.send(_("The game has ended due to an unexpected error."))
             if self.task:
                 self.task.cancel()
-        elif winner is None:
-            await self.ctx.send(
-                _("{results_pretext} **No one won!**").format(
-                    results_pretext=results_pretext
-                )
-            )
-            await self.reveal_others()
-        else:
-            if self.task:
-                self.task.cancel()
-            # Due to IndexError, no need to reveal players
-            await self.ctx.send(
-                _("{results_pretext} **{winner} won!**").format(
-                    results_pretext=results_pretext, winner=winner
-                )
-            )
 
     def get_players_roles(self, has_won: bool = False) -> list[str]:
         if len(self.alive_players) < 1:
@@ -1807,6 +1809,43 @@ class Player:
             )
             return
         else:
+            if not targets:
+                await self.ctx.send(embed=discord.Embed(
+                    title=_("Skipped Wolves Night"),
+                    description=_("No one was killed during the night."),
+                    color=discord.Color.blue(),
+                ))
+                return None
+                
+            try:
+                if len(targets) >= 2:
+                    # Check the vote counts
+                    if nominated.get(targets[0], 0) > nominated.get(targets[1], 0):
+                        target = targets[0]
+                    else:
+                        # It is a tie
+                        target = random.choice([targets[0], targets[1]])
+                else:
+                    # Only one target
+                    target = list(nominated.keys())[0] if nominated else None
+                    
+                if not target:
+                    await self.ctx.send(embed=discord.Embed(
+                        title=_("Wolves Confused"),
+                        description=_("The wolves couldn't decide on a target."),
+                        color=discord.Color.blue(),
+                    ))
+                    return None
+            except (IndexError, KeyError) as e:
+                # Log the error and return no target
+                print(f"Error during wolf voting: {str(e)}")
+                await self.ctx.send(embed=discord.Embed(
+                    title=_("Wolves Confused"),
+                    description=_("An error occurred during the werewolf vote."),
+                    color=discord.Color.blue(),
+                ))
+                return None
+                
             try:
                 target = await self.choose_users(
                     _("Choose a Villager to kill."),
@@ -2234,19 +2273,38 @@ class Player:
                 _("You've ran out of time, slowpoke. Lovers will be chosen randomly.")
             )
             lovers = random.sample(self.game.alive_players, 2)
-        await self.send(
-            _("You've made **{lover1}** and **{lover2}** lovers\n{game_link}").format(
-                lover1=lovers[0].user,
-                lover2=lovers[1].user,
-                game_link=self.game.game_link,
+        # Check if lovers list is valid before proceeding
+        if not lovers or len(lovers) < 2:
+            await self.send(_("Error selecting lovers. Using random selection."))
+            lovers = random.sample(self.game.alive_players, 2)
+            
+        # Ensure each lover has a valid user attribute
+        try:
+            await self.send(
+                _("You've made **{lover1}** and **{lover2}** lovers\n{game_link}").format(
+                    lover1=lovers[0].user if hasattr(lovers[0], 'user') else "Unknown Player",
+                    lover2=lovers[1].user if hasattr(lovers[1], 'user') else "Unknown Player",
+                    game_link=self.game.game_link,
+                )
             )
-        )
-        if lovers[0] not in lovers[1].own_lovers:
-            self.game.lovers.append(
-                set(lovers)
-            )  # Add if they're not yet already lovers.
-        await lovers[0].send_love_msg(lovers[1])
-        await lovers[1].send_love_msg(lovers[0])
+        except (IndexError, AttributeError) as e:
+            await self.send(f"Error displaying lovers: {str(e)}. Please report this bug.")
+            # Safely continue the game
+        try:
+            # Safely add lovers to the game if they are not already lovers
+            if len(lovers) >= 2 and hasattr(lovers[0], 'own_lovers') and hasattr(lovers[1], 'own_lovers'):
+                if lovers[0] not in lovers[1].own_lovers:
+                    self.game.lovers.append(
+                        set(lovers)
+                    )  # Add if they're not yet already lovers.
+                
+                # Send love messages to both lovers
+                await lovers[0].send_love_msg(lovers[1])
+                await lovers[1].send_love_msg(lovers[0])
+            else:
+                await self.send(_("Failed to set up lovers properly. The game will continue."))
+        except (IndexError, AttributeError) as e:
+            await self.send(f"Error creating lovers: {str(e)}. The game will continue.")
 
     async def choose_to_raid(self) -> None:
         self.game.recent_deaths = list(
@@ -2460,14 +2518,36 @@ class Player:
             )
             return
         ex_pure_soul = discord.utils.get(exchanged, role=Role.PURE_SOUL)
-        role = exchanged[0].role
-        if exchanged[0].initial_roles[-1] != exchanged[0].role:
-            exchanged[0].initial_roles.append(exchanged[0].role)
-        exchanged[0].role = exchanged[1].role
-        if exchanged[1].initial_roles[-1] != exchanged[1].role:
-            exchanged[1].initial_roles.append(exchanged[1].role)
-        exchanged[1].role = role
-        exchanged[0].lives, exchanged[1].lives = exchanged[1].lives, exchanged[0].lives
+        try:
+            # Ensure we have valid players to exchange
+            if len(exchanged) < 2 or not hasattr(exchanged[0], 'role') or not hasattr(exchanged[1], 'role'):
+                await self.send(_("Failed to exchange roles. The game will continue."))
+                return
+                
+            role = exchanged[0].role
+            # Safely handle initial_roles access
+            if hasattr(exchanged[0], 'initial_roles') and len(exchanged[0].initial_roles) > 0:
+                if exchanged[0].initial_roles[-1] != exchanged[0].role:
+                    exchanged[0].initial_roles.append(exchanged[0].role)
+            else:
+                # Initialize if missing
+                exchanged[0].initial_roles = [exchanged[0].role]
+                
+            exchanged[0].role = exchanged[1].role
+            
+            # Safely handle initial_roles access for second player
+            if hasattr(exchanged[1], 'initial_roles') and len(exchanged[1].initial_roles) > 0:
+                if exchanged[1].initial_roles[-1] != exchanged[1].role:
+                    exchanged[1].initial_roles.append(exchanged[1].role)
+            else:
+                # Initialize if missing
+                exchanged[1].initial_roles = [exchanged[1].role]
+                
+            exchanged[1].role = role
+            exchanged[0].lives, exchanged[1].lives = exchanged[1].lives, exchanged[0].lives
+        except (IndexError, AttributeError) as e:
+            await self.send(f"Error exchanging roles: {str(e)}. The game will continue.")
+            return
         await self.send(
             _(
                 "You've exchanged **{exchange1}'s** and **{exchange2}'s** roles with"

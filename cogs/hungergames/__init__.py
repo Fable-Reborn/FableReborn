@@ -28,7 +28,6 @@ from discord.ui.button import Button
 
 from cogs.help import chunks
 from utils import random
-import random as randomm
 from utils.checks import is_gm
 from utils.i18n import _, locale_doc
 from utils.joins import JoinView
@@ -258,7 +257,7 @@ class GameBase:
 
     async def send_cast(self):
         cast = copy.copy(self.players)
-        randomm.shuffle(cast)  # note: shuffle works in-place, no need to assign back to cast
+        random.shuffle(cast)  # note: shuffle works in-place, no need to assign back to cast
         cast = list(chunks(cast, 2))
         self.cast = cast
 
@@ -302,28 +301,6 @@ class HungerGames(commands.Cog):
         self.bot = bot
         self.games = {}
 
-    @commands.command(aliases=["fhk"], brief=_("Force Kill hunger games"))
-    @locale_doc
-    @is_gm()
-    async def forcehgkill(self, ctx):
-        if ctx.author.id != 295173706496475136:
-            return await ctx.send("Access Denied")
-
-        file_path = '/home/lunar/Fable/IdleRPG/HungerGames.mp4'
-
-        try:
-            await ctx.send("GIF/MP4 Debug - Selecting Video Format - MP4")
-            await ctx.send("**itslunar.** of **District 12** was killed by a mysterious force.")
-            # Open the file in binary mode and send it as an attachment
-            with open(file_path, 'rb') as file:
-                file_content = discord.File(file)
-                await ctx.send(file=file_content)
-
-
-        except FileNotFoundError:
-            await ctx.send(f"File '{file_path}' not found.")
-        except discord.HTTPException as e:
-            await ctx.send(f"An error occurred while sending the file: {e}")
 
     @commands.command(aliases=["hg"], brief=_("Play the hunger games"))
     @locale_doc

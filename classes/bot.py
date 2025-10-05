@@ -17,6 +17,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import asyncio
 import datetime
+import json
 import logging
 import os
 import sys
@@ -38,7 +39,7 @@ from json import JSONDecoder, JSONEncoder
 from redis import asyncio as aioredis
 
 from classes.bucket_cooldown import Cooldown, CooldownMapping
-from classes.classes import Mage, Paragon, Raider, Ranger, Ritualist, Thief, Warrior, Paladin, Reaper
+from classes.classes import Mage, Paragon, Raider, Ranger, Ritualist, Thief, Warrior, Paladin, Reaper, Tank
 from classes.classes import from_string as class_from_string
 from classes.context import Context
 from classes.enums import DonatorRank
@@ -320,6 +321,17 @@ class Bot(commands.AutoShardedBot):
                 #defmultiply = defmultiply + Decimal("0.1") * grade
         dmg = damage * atkmultiply
         deff = armor * defmultiply
+        print(f"[DEBUG] Pre-Amulet Stats - Damage: {dmg}, Defense: {deff}")
+
+        # Apply equipped amulet stats as a flat bonus
+        amulet = await conn.fetchrow('SELECT attack, defense FROM amulets WHERE user_id=$1 AND equipped=true', v)
+        if amulet:
+            print(f"[DEBUG] Amulet Bonus - Attack: {amulet['attack']}, Defense: {amulet['defense']}")
+            dmg += amulet['attack']
+            deff += amulet['defense']
+        print(f"[DEBUG] Final Stats - Damage: {dmg}, Defense: {deff}")
+
+
         if local:
             await self.pool.release(conn)
         return dmg, deff
@@ -577,24 +589,54 @@ class Bot(commands.AutoShardedBot):
                 'SELECT * FROM allitems WHERE "owner"=$1 AND "id"=$2;', user, item
             )
 
-    async def start_guild_adventure(self, guild, difficulty, time):
-        await self.redis.execute_command(
-            "SET",
+    import json
+    from datetime import datetime
+
+    async def start_guild_adventure(self, guild, difficulty, time, adventure_type):
+        # Prepare the adventure data
+        adventure_data = {
+            'difficulty': difficulty,
+            'end_time': (datetime.datetime.utcnow() + time).isoformat(),
+            'is_completed': False,
+            'adventure_type': adventure_type  # Ensure adventure_type is serializable
+        }
+
+        # Serialize the data to JSON
+        adventure_json = json.dumps(adventure_data)
+
+        # Store the data in Redis with an expiration time
+        await self.redis.set(
             f"guildadv:{guild}",
-            difficulty,
-            "EX",
-            int(time.total_seconds()) + 259_200,
-        )  # +3 days
+            adventure_json,
+            ex=int(time.total_seconds()) + 259200  # Adds 3 days as buffer
+        )
+
+    import json
+    from datetime import datetime
 
     async def get_guild_adventure(self, guild):
-        ttl = await self.redis.execute_command("TTL", f"guildadv:{guild}")
-        if ttl == -2:
-            return
-        num = await self.redis.execute_command("GET", f"guildadv:{guild}")
-        ttl = ttl - 259_200
-        done = ttl <= 0
-        time = datetime.timedelta(seconds=ttl)
-        return int(num.decode("ascii")), time, done
+        adventure_json = await self.redis.get(f"guildadv:{guild}")
+        if adventure_json is None:
+            return None
+
+        # Deserialize the JSON string back into a dictionary
+        adventure_data = json.loads(adventure_json)
+
+        # Parse the end_time back into a datetime object
+        end_time = datetime.datetime.fromisoformat(adventure_data['end_time'])
+
+        # Calculate the remaining time
+        remain_time = end_time - datetime.datetime.utcnow()
+
+        # Determine if the adventure is completed
+        is_completed = remain_time.total_seconds() <= 0
+
+        return (
+            adventure_data['difficulty'],
+            remain_time,
+            is_completed,
+            adventure_data['adventure_type']
+        )
 
     async def delete_guild_adventure(self, guild):
         await self.redis.execute_command("DEL", f"guildadv:{guild}")
@@ -774,12 +816,141 @@ class Bot(commands.AutoShardedBot):
         if local:
             await self.pool.release(conn)
 
-        await ctx.send(
-            _(
-                "You reached a new level: **{new_level}** :star:! You received {reward} "
-                "as a reward :tada:! {additional}"
-            ).format(new_level=new_level, reward=reward_text, additional=additional)
+        if reward == "item":
+            type = item["type_"]
+            if item["armor"] >= 1:
+                stat = item["armor"]
+                user = await self.fetch_user(ctx.author.id)
+                await ctx.send(
+                    _(
+                        f"{user.mention} reached a new level: **{new_level}** :star:! You received {reward}! A memorial **{type}** with **{stat}** armor "
+                        f"as a reward :tada:! {additional}"
+                    )
+                )
+            else:
+                stat = item["damage"]
+                user = await self.fetch_user(ctx.author.id)
+                await ctx.send(
+                    _(
+                        f"{user.mention} reached a new level: **{new_level}** :star:! You received {reward}! A memorial **{type}** with **{stat}** damage "
+                        f"as a reward :tada:! {additional}"
+                    )
+                )
+
+
+        else:
+            user = await self.fetch_user(ctx.author.id)
+            await ctx.send(
+                _(
+                    f"{user} reached a new level: **{new_level}** :star:! You received {reward} "
+                    "as a reward :tada:! {additional}"
+                ).format(user=user.mention, new_level=new_level, reward=reward_text, additional=additional)
+            )
+
+    async def process_guildlevelup(self, ctx, user_id, new_level, old_level, conn=None):
+        if conn is None:
+            conn = await self.pool.acquire()
+            local = True
+        else:
+            local = False
+        reward_text = ""
+        stat_point_received = False
+        if new_level % 2 == 0 and new_level > 0:
+            # Increment statpoints directly in the database and fetch the updated value
+            update_query = 'UPDATE profile SET "statpoints" = "statpoints" + 1 WHERE "user" = $1 RETURNING "statpoints";'
+            new_statpoints = await conn.fetchval(update_query, user_id)
+            
+            reward_text += f"You also received **1 stat point** (total: {new_statpoints}). "
+            stat_point_received = True
+
+        if (reward := random.choice(["crates", "money", "item"])) == "crates":
+            if new_level < 6:
+                column = "crates_common"
+                amount = new_level
+                reward_text = f"**{amount}** {self.cogs['Crates'].emotes.common}"
+            elif new_level < 10:
+                column = "crates_uncommon"
+                amount = round(new_level / 2)
+                reward_text = f"**{amount}** {self.cogs['Crates'].emotes.uncommon}"
+            elif new_level < 18:
+                column = "crates_rare"
+                amount = 2
+                reward_text = f"**2** {self.cogs['Crates'].emotes.rare}"
+            elif new_level < 27:
+                column = "crates_rare"
+                amount = 3
+                reward_text = f"**3** {self.cogs['Crates'].emotes.rare}"
+            else:
+                column = "crates_magic"
+                amount = 1
+                reward_text = f"**1** {self.cogs['Crates'].emotes.magic}"
+            await self.pool.execute(
+                f'UPDATE profile SET {column}={column}+$1 WHERE "user"=$2;',
+                amount,
+                user_id,
+            )
+        elif reward == "item":
+            stat = min(round(new_level * 1.5), 75)
+            item = await self.create_random_item(
+                minstat=stat,
+                maxstat=stat,
+                minvalue=1000,
+                maxvalue=1000,
+                owner=user_id,
+                insert=False,
+                conn=conn,
+            )
+
+            item["name"] = _("Level {new_level} Memorial").format(new_level=new_level)
+            reward_text = _("a special weapon")
+            await self.create_item(**item)
+        elif reward == "money":
+            money = new_level * 1000
+            await conn.execute(
+                'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                money,
+                user_id,
+            )
+            reward_text = f"**${money}**"
+
+        additional = (
+            _("You can now choose your second class using `{prefix}class`!").format(
+                prefix=ctx.clean_prefix
+            )
+            if old_level < 12 and new_level >= 12
+            else ""
         )
+
+        if local:
+            await self.pool.release(conn)
+
+        if reward == "item":
+            type = item["type_"]
+            if item["armor"] >= 1:
+                stat = item["armor"]
+                await ctx.send(
+                    _(
+                        f"<@{user_id}> reached a new level: **{new_level}** :star:! You received {reward}! A memorial **{type}** with **{stat}** armor "
+                        f"as a reward :tada:! {additional}"
+                    )
+                )
+            else:
+                stat = item["damage"]
+                await ctx.send(
+                    _(
+                        f"<@{user_id}> reached a new level: **{new_level}** :star:! You received {reward}! A memorial **{type}** with **{stat}** damage "
+                        f"as a reward :tada:! {additional}"
+                    )
+                )
+
+
+        else:
+            await ctx.send(
+                _(
+                    f"<@{user_id}> reached a new level: **{new_level}** :star:! You received {reward} "
+                    f"as a reward :tada:! {additional}"
+                )
+            )
 
     async def clear_donator_cache(self, user):
         user = user if isinstance(user, int) else user.id
@@ -842,6 +1013,7 @@ class Bot(commands.AutoShardedBot):
         is_raider = any(c.in_class_line(Raider) for c in classes)
         is_paladin = any(c.in_class_line(Paladin) for c in classes)
         is_reaper = any(c.in_class_line(Reaper) for c in classes)
+        is_tank = any(c.in_class_line(Tank) for c in classes)
         is_caster = any(
             c.in_class_line(Mage) or c.in_class_line(Ritualist) for c in classes
         )
@@ -867,15 +1039,13 @@ class Bot(commands.AutoShardedBot):
                 damage += 5
             elif type_ == ItemType.Scythe and is_reaper:
                 damage += 10
+            elif type_ == ItemType.Shield and is_tank:
+                armor += 7
 
         lines = [class_.get_class_line() for class_ in classes]
         grades = [class_.class_grade() for class_ in classes]
         for line, grade in zip(lines, grades):
-            if line == Mage:
-                damage += grade
-            elif line == Warrior:
-                armor += grade
-            elif line == Paragon:
+            if line == Paragon:
                 damage += grade
                 armor += grade
         if race == "Human":

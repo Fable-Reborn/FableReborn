@@ -3,9 +3,229 @@ import discord
 from discord.ext import commands
 from discord.ui import Button, View
 import asyncio
+from typing import Optional, List, Dict, Tuple, Union
+from discord import ButtonStyle, SelectOption, ui
+from discord.ui import Button, View, Select
+import firebase_admin
+from firebase_admin import credentials, storage
 import random
+import json
+import aiohttp
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils.checks import has_char, is_gm, is_patreon
+
+class SpliceStatusPaginator(discord.ui.View):
+    """A paginator for splice status entries using a dropdown menu for navigation"""
+    
+    def __init__(self, ctx, splices, splices_per_page=8):
+        super().__init__(timeout=60)
+        self.ctx = ctx
+        self.splices = splices
+        self.splices_per_page = splices_per_page
+        self.current_page = 0
+        self.total_pages = max(1, (len(splices) + splices_per_page - 1) // splices_per_page)
+        self.message = None
+        
+        # Add page select dropdown if multiple pages
+        if self.total_pages > 1:
+            self.add_page_selector()
+            
+    def add_page_selector(self):
+        """Add a dropdown menu for page selection"""
+        select = discord.ui.Select(placeholder=f"Page Selection (1-{self.total_pages})")
+        
+        for i in range(self.total_pages):
+            page_num = i + 1
+            start_idx = i * self.splices_per_page
+            end_idx = min((i + 1) * self.splices_per_page - 1, len(self.splices) - 1)
+            select.add_option(
+                label=f"Page {page_num}", 
+                value=str(i),
+                description=f"Splices {start_idx + 1}-{end_idx + 1}"
+            )
+            
+        async def select_callback(interaction):
+            if interaction.user.id != self.ctx.author.id:
+                return await interaction.response.send_message("This isn't your splice status menu.", ephemeral=True)
+            
+            self.current_page = int(interaction.data["values"][0])
+            await interaction.response.defer()
+            await self.update_page()
+            
+        select.callback = select_callback
+        self.add_item(select)
+    
+    def get_current_page_embed(self):
+        """Generate the embed for the current page"""
+        start_idx = self.current_page * self.splices_per_page
+        end_idx = min((self.current_page + 1) * self.splices_per_page, len(self.splices))
+        current_splices = self.splices[start_idx:end_idx]
+        
+        embed = discord.Embed(
+            title="Your Splice Requests",
+            description="Here are your recent splice requests:",
+            color=0x00ff00
+        )
+        
+        if self.total_pages > 1:
+            embed.set_footer(text=f"Page {self.current_page + 1}/{self.total_pages}")
+            
+        for splice in current_splices:
+            status_emoji = "🕒" if splice["status"] == "pending" else "✅"
+            embed.add_field(
+                name=f"ID: {splice['id']} {status_emoji}",
+                value=f"{splice['pet1_name']} + {splice['pet2_name']}\nStatus: {splice['status'].capitalize()}\nRequested: {splice['created_at'].strftime('%Y-%m-%d %H:%M')}\n",
+                inline=False
+            )
+            
+        return embed
+    
+    async def start(self):
+        """Send the initial paginator message"""
+        self.message = await self.ctx.send(embed=self.get_current_page_embed(), view=self)
+        return self.message
+    
+    async def update_page(self):
+        """Update the message with the current page"""
+        await self.message.edit(embed=self.get_current_page_embed(), view=self)
+    
+    async def interaction_check(self, interaction):
+        """Ensure only the command author can interact with the paginator"""
+        return interaction.user.id == self.ctx.author.id
+    
+    async def on_timeout(self):
+        """When the view times out, remove all interactable components"""
+        if self.message:
+            for child in self.children:
+                child.disabled = True
+            await self.message.edit(view=self)
+
+
+class SpliceRequestPaginator(View):
+    """A paginator for viewing pending splice requests"""
+    def __init__(self, ctx, splices, per_page=8):
+        super().__init__(timeout=180)
+        self.ctx = ctx
+        self.splices = splices
+        self.per_page = per_page
+        self.current_page = 0
+        self.total_pages = (len(splices) + per_page - 1) // per_page
+        self.message = None
+        self.current_time = datetime.datetime.now(datetime.timezone.utc)
+        
+        # Add navigation buttons
+        self.add_buttons()
+    
+    def add_buttons(self):
+        """Add navigation buttons to the view"""
+        # Previous button
+        prev_button = Button(style=ButtonStyle.primary, emoji="⬅️", disabled=self.current_page == 0)
+        prev_button.callback = self.previous_page
+        self.add_item(prev_button)
+        
+        # Next button
+        next_button = Button(style=ButtonStyle.primary, emoji="➡️", disabled=self.current_page == self.total_pages - 1)
+        next_button.callback = self.next_page
+        self.add_item(next_button)
+        
+        # Close button
+        close_button = Button(style=ButtonStyle.danger, emoji="❌")
+        close_button.callback = self.close_view
+        self.add_item(close_button)
+    
+    def get_current_page_embed(self):
+        """Generate the embed for the current page"""
+        start_idx = self.current_page * self.per_page
+        end_idx = start_idx + self.per_page
+        current_splices = self.splices[start_idx:end_idx]
+        
+        embed = discord.Embed(
+            title="🧬 Pending Splice Requests",
+            description=(
+                f"Page {self.current_page + 1}/{self.total_pages} • "
+                f"{len(self.splices)} total request{'s' if len(self.splices) != 1 else ''}"
+            ),
+            color=0x9C44DC
+        )
+        
+        for splice in current_splices:
+            user = self.ctx.bot.get_user(splice["user_id"]) or f"Unknown User ({splice['user_id']})"
+            
+            # Handle time difference
+            created_at = splice["created_at"]
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=datetime.timezone.utc)
+                
+            time_diff = self.current_time - created_at
+            hours_ago = time_diff.total_seconds() / 3600
+            
+            if hours_ago < 1:
+                time_str = f"{int(hours_ago * 60)}m ago"
+            elif hours_ago < 24:
+                time_str = f"{int(hours_ago)}h ago"
+            else:
+                days = int(hours_ago / 24)
+                time_str = f"{days}d ago"
+            
+            embed.add_field(
+                name=f"#{splice['id']} • {user} • {time_str}",
+                value=(
+                    f"🐾 **{splice['pet1_name']}** (`{splice['pet1_default']}`) + "
+                    f"**{splice['pet2_name']}** (`{splice['pet2_default']}`)\n"
+                    f"🔗 [Pet 1]({splice['pet1_url']}) • [Pet 2]({splice['pet2_url']})"
+                ),
+                inline=False
+            )
+        
+        # Add a field with all suggested names for the current page if they exist
+        suggested_names = [
+            s['temp_name']
+            for s in current_splices 
+            if s.get('temp_name')
+        ]
+        
+        if suggested_names:
+            embed.add_field(
+                name="Suggested Names",
+                value=", ".join(suggested_names),
+                inline=False
+            )
+        
+        return embed
+    
+    async def update_message(self):
+        """Update the message with current page"""
+        for child in self.children:
+            if child.emoji == "⬅️":
+                child.disabled = self.current_page == 0
+            elif child.emoji == "➡️":
+                child.disabled = self.current_page == self.total_pages - 1
+        
+        await self.message.edit(embed=self.get_current_page_embed(), view=self)
+    
+    async def previous_page(self, interaction):
+        """Go to the previous page"""
+        if self.current_page > 0:
+            self.current_page -= 1
+            await self.update_message()
+        await interaction.response.defer()
+    
+    async def next_page(self, interaction):
+        """Go to the next page"""
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            await self.update_message()
+        await interaction.response.defer()
+    
+    async def close_view(self, interaction):
+        """Close the paginator"""
+        await interaction.message.delete()
+        self.stop()
+    
+    async def start(self):
+        """Start the paginator"""
+        self.message = await self.ctx.send(embed=self.get_current_page_embed(), view=self)
+        return self.message
 
 
 class LoreView(View):
@@ -154,7 +374,6 @@ class Soulforge(commands.Cog):
                 "forge_built": quest_data["crucible_built"]
             }
 
-    @is_patreon(min_tier=1)
     @commands.command()
     @user_cooldown(30)
     async def soulforge(self, ctx):
@@ -166,7 +385,7 @@ class Soulforge(commands.Cog):
                 return await ctx.send("You must create a character first!")
             
             player_name = player_data["name"]
-            player_god = player_data["god"]
+            player_god = player_data.get("god") or "mysterious god"  # Fixed to handle None values
             
             if not player_data["quest_started"]:
                 # First encounter with the mysterious Raven
@@ -192,7 +411,11 @@ class Soulforge(commands.Cog):
             await self.display_quest_status(ctx, player_data)
 
         except Exception as e:
-            await ctx.send(f"An error occurred: {e}")
+            import traceback
+            error_message = f"Error occurred: {e}\n"
+            error_message += traceback.format_exc()
+            await ctx.send(error_message)
+            print(error_message)
 
     async def display_quest_status(self, ctx, player_data):
         """Shows current quest progress and offers to speak with Morrigan"""
@@ -446,7 +669,7 @@ class Soulforge(commands.Cog):
     async def display_active_forge(self, ctx, player_data):
         """Displays interface for players who have built the Soulforge"""
         name = player_data["name"]
-        god = player_data["god"]
+        god = player_data.get("god") or "mysterious god"  # Fixed to handle None values
         
         # Divine commentary based on player's god
         if "drakath" in god.lower() or "chaos" in god.lower():
@@ -470,7 +693,7 @@ class Soulforge(commands.Cog):
         )
         embed.add_field(
             name="Available Commands",
-            value="• `$splice [pet1] [pet2]` - Combine two of your pets into a new form\n• `$soullorebook` - Review the ancient knowledge of soul manipulation\n• `$speaktomorrigan` - Learn deeper secrets of Fable's past\n•",
+            value="• `$splice [pet1] [pet2]` - Combine two of your pets into a new form\n• `$soullorebook` - Review the ancient knowledge of soul manipulation\n• `$speaktomorrigan` - Learn deeper secrets of Fable's past\n",
             inline=False
         )
         await ctx.send(embed=embed)
@@ -1140,7 +1363,7 @@ class Soulforge(commands.Cog):
 
 
     @commands.command()
-    @user_cooldown(86400)
+    @user_cooldown(108000)
     async def splice(self, ctx, pet1_id: int = None, pet2_id: int = None):
         try:
             """Splice two pets together to create a new being"""
@@ -1185,21 +1408,22 @@ class Soulforge(commands.Cog):
                     pet2_id, ctx.author.id
                 )
 
-            unspliceable_pets = ["Sepulchure", "Astraea", "Drakath", "Ultra Sepulchure", "Ultra Astraea", "Ultra Drakath"]
+            unspliceable_pets = ["Sepulchure", "Astraea", "Drakath", "Ultra Sepulchure", "Ultra Astraea",
+                                 "Ultra Drakath"]
 
             if not pet1_data:
                 await self.bot.reset_cooldown(ctx)
                 return await ctx.send(f"You don't own a pet with ID {pet1_id}.")
-            
+
             if not pet2_data:
                 await self.bot.reset_cooldown(ctx)
                 return await ctx.send(f"You don't own a pet with ID {pet2_id}.")
 
-            if pet1_data["default_name"] in unspliceable_pets:
+            if pet1_data["default_name"] in unspliceable_pets or "[FINAL]" in pet1_data["default_name"]:
                 await self.bot.reset_cooldown(ctx)
                 return await ctx.send(f"**{pet1_data['default_name']}** cannot be spliced due to its mythical nature.")
-            
-            if pet2_data["default_name"] in unspliceable_pets:
+
+            if pet2_data["default_name"] in unspliceable_pets or "[FINAL]" in pet2_data["default_name"]:
                 await self.bot.reset_cooldown(ctx)
                 return await ctx.send(f"**{pet2_data['default_name']}** cannot be spliced due to its mythical nature.")
 
@@ -1278,6 +1502,20 @@ class Soulforge(commands.Cog):
                     WHERE (pet1_default = $1 AND pet2_default = $2) OR (pet1_default = $2 AND pet2_default = $1)
                     """,
                     pet1_data["default_name"], pet2_data["default_name"]
+                )
+            if existing_splice and "[FINAL]" in existing_splice["result_name"]:
+                self.bot.reset_cooldown(ctx)
+                return await ctx.send(
+                    "The Crucible shudders violently, its mercurial surface hardening into impenetrable obsidian. "
+                    "Morrigan's voice echoes with finality: \"This union has already birthed a [FINAL] form. "
+                    "The forge refuses to reweave what has been perfected.\""
+                )
+            if existing_splice and "[Event]" in existing_splice["result_name"]:
+                self.bot.reset_cooldown(ctx)
+                return await ctx.send(
+                    "The Crucible shudders violently, its mercurial surface hardening into impenetrable obsidian. "
+                    "Morrigan's voice echoes with finality: \"This union has already birthed a [Event] form. "
+                    "The forge refuses to reweave what has been perfected.\""
                 )
             
             # Ask for confirmation
@@ -1618,6 +1856,8 @@ class Soulforge(commands.Cog):
                     f"Check your creation's progress: `$splicestatus {splice_id}`\n\n"
                     f"*Note: This splicing has reduced your forge's condition to {new_condition}% and increased divine scrutiny to {new_divine_attention}%.*"
                 )
+
+                await ctx.send("Splicing might take up to 2 days currently as we await support from the provider. ETA Monday")
         
         except Exception as e:
             await ctx.send(e)
@@ -1627,6 +1867,7 @@ class Soulforge(commands.Cog):
     @user_cooldown(30)
     async def splicestatus(self, ctx, splice_id: int = None):
         """Check the status of your splice request"""
+        await ctx.send("Splicing might take up to 2 days currently as we await support from the provider. ETA Monday")
         if not splice_id:
             # If no ID provided, list all pending splices for the user
             async with self.bot.pool.acquire() as conn:
@@ -1638,21 +1879,10 @@ class Soulforge(commands.Cog):
             if not splices:
                 return await ctx.send("You don't have any splice requests.")
             
-            embed = discord.Embed(
-                title="Your Splice Requests",
-                description="Here are your recent splice requests:",
-                color=0x00ff00
-            )
-            
-            for splice in splices:
-                status_emoji = "🕒" if splice["status"] == "pending" else "✅"
-                embed.add_field(
-                    name=f"ID: {splice['id']} {status_emoji}",
-                    value=f"{splice['pet1_name']} + {splice['pet2_name']}\nStatus: {splice['status'].capitalize()}\nRequested: {splice['created_at'].strftime('%Y-%m-%d %H:%M')}\n",
-                    inline=False
-                )
-            
-            return await ctx.send(embed=embed)
+            # Use the paginator when there are splices to display
+            paginator = SpliceStatusPaginator(ctx, splices)
+            await paginator.start()
+            return
         
         # Check specific splice status
         async with self.bot.pool.acquire() as conn:
@@ -1686,11 +1916,75 @@ class Soulforge(commands.Cog):
                 value="*\"Your creation has stabilized and emerged from the Soulforge. It awaits your guidance in this new existence. Every such being represents a unique pattern in the tapestry of life - nurture it well.\"*",
                 inline=False
             )
-        
+
         await ctx.send(embed=embed)
 
 
+    async def suggest_element(self, element1, element2):
+        """Suggest an element for the spliced pet based on parent elements"""
+        # Normalize elements to consistent case
+        e1 = element1.title() if element1 else "Unknown"
+        e2 = element2.title() if element2 else "Unknown"
         
+        # List of standard elements
+        standard_elements = [
+            "Fire", "Water", "Wind", "Earth", "Nature", 
+            "Electric", "Corrupted", "Dark", "Light", "Ice"
+        ]
+        
+        # If both parents have valid elements, just pick one of them
+        if e1 != "Unknown" and e2 != "Unknown":
+            # If both have the same element, always keep it
+            if e1 == e2:
+                return e1
+            # Otherwise randomly choose one of the parent elements
+            return random.choice([e1, e2])
+        
+        # If one parent has an unknown element, use the known one
+        if e1 != "Unknown":
+            return e1
+        if e2 != "Unknown":
+            return e2
+        
+        # If both are unknown, pick a random standard element
+        return random.choice(standard_elements)
+    
+    async def allocate_iv_points(self, total_points):
+        """Distribute IV points between HP, Attack, and Defense
+        
+        Args:
+            total_points: Total IV points to distribute
+            
+        Returns:
+            Tuple of (hp_iv, attack_iv, defense_iv)
+        """
+        # Get three random values that sum to total_points
+        # Use a weighted approach to avoid extremely unbalanced stats
+        
+        # First get 3 random values between 0 and 1
+        r1 = random.random()
+        r2 = random.random()
+        r3 = random.random()
+        
+        # Normalize so they sum to 1
+        total = r1 + r2 + r3
+        if total == 0:  # Avoid division by zero
+            r1, r2, r3 = 0.33, 0.33, 0.34
+        else:
+            r1, r2, r3 = r1/total, r2/total, r3/total
+        
+        # Distribute points according to normalized values
+        hp_iv = int(r1 * total_points)
+        attack_iv = int(r2 * total_points)
+        defense_iv = int(r3 * total_points)
+        
+        # Ensure all points are allocated by assigning any remainder to HP
+        remainder = total_points - (hp_iv + attack_iv + defense_iv)
+        hp_iv += remainder
+        
+        return hp_iv, attack_iv, defense_iv
+    
+            
     def get_shard_discovery_dialogue(self, player_name, shard_count, crucible_built):
         """Returns varied dialogue for shard discovery based on progress"""
         dialogue_data = {}
@@ -1909,27 +2203,6 @@ class Soulforge(commands.Cog):
         if not player_data or not player_data["quest_started"] or player_data["forge_built"] or player_data["primer"]:
             return
             
-        # 5% chance to find the Primer during a raid
-        if ctx.author.id == 700801066593419335:
-            async with self.bot.pool.acquire() as conn:
-                await conn.execute(
-                    'UPDATE splicing_quest SET primer_found = TRUE WHERE user_id = $1',
-                    participant
-                )
-
-            primer_dialogue = self.get_primer_discovery_dialogue(player_data["name"])
-
-            embed = discord.Embed(
-                title=primer_dialogue["title"],
-                description=primer_dialogue["description"],
-                color=0xc77dff
-            )
-            embed.add_field(
-                name="Morrigan's Revelation",
-                value=primer_dialogue["dialogue"],
-                inline=False
-            )
-            await ctx.send(embed=embed)
 
         elif random.random() < 0.05:
             async with self.bot.pool.acquire() as conn:
@@ -2179,5 +2452,6 @@ class Soulforge(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(Soulforge(bot))
+    await bot.load_extension("cogs.soulforge.test_bg_removal")
 
     

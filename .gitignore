@@ -1,13 +1,18 @@
-application.yml
-commands.txt
-/config.toml
-/config.json
-__pycache__
-*.pyc
-nohup.out
-.vs
-.vscode
-cogs/__pycache__
-venv
-.mypy_cache
-application.yml
+# Configs
+config.toml
+config.json
+patreon_config.json
+acc.json
+macro_detection_backup
+
+# Logs
+*.log
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*/__pycache__/
+*.py[cod]
+
+# Dev tools
+.vscode/
+.idea/

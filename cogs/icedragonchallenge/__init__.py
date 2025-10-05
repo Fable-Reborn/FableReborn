@@ -191,7 +191,7 @@ class IceDragonChallenge(commands.Cog):
                 ''')
 
                 # Send reset message
-                reset_channel = self.bot.get_channel(1161393340575666359)
+                reset_channel = self.bot.get_channel(1408144167632371845)
                 if reset_channel:
                     await reset_channel.send("❄️ **Weekly reset!** The Ice Dragon has been reset to level 1.")
                 return True
@@ -273,14 +273,14 @@ class IceDragonChallenge(commands.Cog):
     async def channel(self, ctx, *members: discord.Member):
         """Creates a private channel for the specified members (1-3) and self-destructs after 20 minutes."""
         # Check guild ID
-        if ctx.guild.id != 1199287508794626078:
+        if ctx.guild.id != 1402911850802315336:
             await ctx.send("This command can only be used in the specified guild.")
             self.bot.reset_cooldown(ctx)
             return
 
 
         # Define category and channel details
-        category_id = 1317000860173336627
+        category_id = 1415825180030271644
         deny_role_id = 1199287508857540701
 
         # Fetch category
@@ -374,7 +374,7 @@ class IceDragonChallenge(commands.Cog):
             return await ctx.send("This command is not ready yet.")
 
         try:
-            if isinstance(ctx.channel, discord.DMChannel) or ctx.guild.id != 1199287508794626078:
+            if isinstance(ctx.channel, discord.DMChannel) or ctx.guild.id != 1402911850802315336:
                 #await self.bot.reset_cooldown(ctx)
                 return await ctx.send("Dragon battles can only be started in the Fable server!")
 
@@ -726,7 +726,7 @@ class IceDragonChallenge(commands.Cog):
                         Luck = min(Luck, 100.0)
 
                     # Get base health and stat HP
-                    base_health = 250.0
+                    base_health = 200.0
                     health = float(result['health']) + base_health
                     stathp = float(result['stathp']) * 50.0
 
@@ -745,7 +745,7 @@ class IceDragonChallenge(commands.Cog):
                     # Get raid stats
                     dmg, deff = await self.bot.get_raidstats(member, conn=conn)
 
-                    total_health = health + level * 5.0 + stathp + float(amulet_bonus)
+                    total_health = health + level * 15.0 + stathp + float(amulet_bonus)
 
 
 
@@ -1561,6 +1561,26 @@ class IceDragonChallenge(commands.Cog):
                 SELECT * FROM rankings WHERE user_id = $1
             ''', ctx.author.id)
 
+
+            reset_data = await conn.fetchrow('SELECT last_reset FROM dragon_progress WHERE id = 1')
+            footer_text = "Reset time unavailable"
+            if reset_data:
+                last_reset = reset_data['last_reset']
+                next_reset = last_reset + timedelta(days=7)
+                now = datetime.utcnow()
+                remaining = next_reset - now
+                
+                # Handle negative time (reset overdue)
+                if remaining < timedelta(0):
+                    remaining = timedelta(0)
+                
+                days = remaining.days
+                seconds = remaining.seconds
+                hours = seconds // 3600
+                minutes = (seconds % 3600) // 60
+                footer_text = f"Time until next reset: {days}d {hours}h {minutes}m"
+
+
             embed = discord.Embed(title="🐉 Weekly Dragon Defeats Leaderboard", color=discord.Color.green())
             # Format top 10
             leaderboard_text = ""
@@ -1574,6 +1594,7 @@ class IceDragonChallenge(commands.Cog):
                     value=f"#{user_rank['rank']} - {user_rank['weekly_defeats']} defeats",
                     inline=False
                 )
+            embed.set_footer(text=footer_text)
             await ctx.send(embed=embed)
 
     async def handle_victory(self, ctx, party_members, dragon, old_level, weekly_defeats):

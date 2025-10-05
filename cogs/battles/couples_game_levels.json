@@ -1,0 +1,310 @@
+{
+  "levels": [
+    {
+      "level": 1,
+      "title": "First Steps Together",
+      "story": "You and your beloved stand at the base of the crystalline tower, its walls shimmering with an otherworldly light. As you take your first steps inside, hand in hand, the tower recognizes your bond. The walls pulse with a warm, golden glow - your love literally lights the way forward.",
+      "dialogue_start": "Guardian Sprites emerge from the walls - playful but fierce creatures that test new couples. They dart between you, trying to trip you up and break your coordination. These aren't malicious enemies, but rather the tower's way of seeing if you can work together under pressure.",
+      "enemies": [
+        {"name": "Gleaming Pixie", "hp": 800, "attack": 80, "defense": 80},
+        {"name": "Crystal Wisp", "hp": 800, "attack": 80, "defense": 80},
+        {"name": "Harmony Tester", "hp": 800, "attack": 80, "defense": 80}
+      ]
+    },
+    {
+      "level": 2,
+      "title": "Trust in the Darkness",
+      "story": "The second floor plunges you into complete darkness. You can't see your hand in front of your face, but you can hear your partner's breathing, feel their presence. The tower whispers, 'In darkness, love is the only light.'",
+      "dialogue_start": "Shadow Stalkers hunt you in the pitch black - creatures that can only be seen in brief flashes when they attack. You must protect each other from enemies you can barely perceive, relying entirely on sound, instinct, and trust.",
+      "enemies": [
+        {"name": "Void Prowler", "hp": 1114, "attack": 97, "defense": 97},
+        {"name": "Night Phantom", "hp": 1114, "attack": 97, "defense": 97}
+      ]
+    },
+    {
+      "level": 3,
+      "title": "The Jealous Mirrors",
+      "story": "This floor is lined with mirrors, but they don't show your reflection - they show twisted versions of your marriage. In one mirror, you see yourself arguing bitterly. In another, you're growing old alone. The reflections hurt to look at, but they're not real.",
+      "dialogue_start": "Mirror Demons emerge from the false reflections, shouting lies about your relationship. 'They don't really love you!' 'You're better off alone!' 'They'll leave you eventually!' The demons try to turn you against each other with poisonous words.",
+      "enemies": [
+        {"name": "Reflection Deceiver", "hp": 1429, "attack": 114, "defense": 114},
+        {"name": "Glass Whisperer", "hp": 1429, "attack": 114, "defense": 114}
+      ]
+    },
+    {
+      "level": 4,
+      "title": "The Storm of Doubt",
+      "story": "You emerge onto a platform battered by howling winds and driving rain. The storm represents every doubt that ever threatened your marriage - financial stress, family problems, moments of uncertainty. Lightning crashes around you as you hold each other close.",
+      "dialogue_start": "Storm Elementals attack from the wind and rain itself, trying to knock you off the platform. The wind pushes you apart while the rain makes the ground slippery. You must anchor each other against the storm's fury.",
+      "enemies": [
+        {"name": "Tempest Harbinger", "hp": 1743, "attack": 131, "defense": 131, "special": "Wind attacks push players apart"}
+      ]
+    },
+    {
+      "level": 5,
+      "title": "Protecting What Matters",
+      "story": "This floor contains everything precious to you both - phantom images of your home, your families, your shared dreams. But they're under attack by Void Spawn, creatures that want to devour everything you hold dear.",
+      "dialogue_start": "You must split up to protect multiple targets simultaneously. This is terrifying - you've grown used to fighting side by side, but now you must trust that your partner can handle themselves while you handle your own battles.",
+      "enemies": [
+        {"name": "Home Devourer", "hp": 2057, "attack": 149, "defense": 149},
+        {"name": "Dream Eater", "hp": 2057, "attack": 149, "defense": 149}
+      ]
+    },
+    {
+      "level": 6,
+      "title": "The Bridge of Sacrifice",
+      "story": "You stand before a mystical bridge that spans a deep chasm. As you step onto it together, the bridge begins to glow with an ancient magic. You realize this isn't just any bridge - it's the Bridge of Shared Hearts, where your emotional bond becomes a physical reality.",
+      "dialogue_start": "The moment you're attacked, you feel each other's pain as if it were your own. Every blow struck against one partner sends waves of empathetic anguish through the other. The tower tests whether your love is strong enough to willingly share each other's suffering, knowing that together you can endure what would break you apart.",
+      "enemies": [
+        {"name": "Bridge Sentinel", "hp": 2371, "attack": 166, "defense": 166},
+        {"name": "Chasm Warden", "hp": 2371, "attack": 166, "defense": 166},
+        {"name": "Void Guardian", "hp": 2371, "attack": 166, "defense": 166}
+      ]
+    },
+    {
+      "level": 7,
+      "title": "The Memory Garden",
+      "story": "This floor is a beautiful garden where crystal flowers bloom, each one containing a precious memory from your relationship - your first date, your wedding day, quiet moments at home. But Memory Thieves are trying to steal these precious moments.",
+      "dialogue_start": "The thieves move to destroy your memory flowers. You must protect your shared history while fighting enemies that become stronger as they consume your memories. Losing memories weakens you both.",
+      "enemies": [
+        {"name": "Nostalgia Bandit", "hp": 2686, "attack": 183, "defense": 183, "special": "Grow stronger by consuming memories"},
+        {"name": "Recollection Wraith", "hp": 2686, "attack": 183, "defense": 183, "special": "Grow stronger by consuming memories"},
+        {"name": "History Hollow", "hp": 2686, "attack": 183, "defense": 183, "special": "Grow stronger by consuming memories"}
+      ]
+    },
+    {
+      "level": 8,
+      "title": "The Crucible of Anger",
+      "story": "This floor burns with intense heat, and the Fire Wraiths that attack you seem to know exactly how to make you angry - at the enemies, at the situation, and dangerously, at each other. The heat makes you irritable and quick to snap.",
+      "dialogue_start": "The wraiths try to turn your anger against each other. They whisper about past arguments, magnify small annoyances, and try to make you blame your partner for your struggles. Fighting while angry makes you sloppy and vulnerable.",
+      "enemies": [
+        {"name": "Fury Incarnate", "hp": 3000, "attack": 200, "defense": 200, "special": "Incite anger between partners"}
+      ]
+    },
+    {
+      "level": 9,
+      "title": "The Test of Patience",
+      "story": "This floor moves incredibly slowly. Everything takes forever - your attacks are sluggish, your movements are like walking through molasses, and the Sloth Demons you face seem to take an eternity to defeat. It's maddening.",
+      "dialogue_start": "The demons drain your energy and enthusiasm, making everything feel pointless and endless. They whisper that you'll never reach the top, that this is taking too long, that you should just give up. Impatience becomes your greatest enemy.",
+      "enemies": [
+        {"name": "Lethargy Lord", "hp": 3314, "attack": 217, "defense": 217, "special": "Slow all actions"},
+        {"name": "Indolence Imp", "hp": 3314, "attack": 217, "defense": 217, "special": "Slow all actions"}
+      ]
+    },
+    {
+      "level": 10,
+      "title": "The Milestone of Commitment",
+      "story": "You've reached the first major milestone - floor 10. This chamber is beautiful, filled with golden light and the sound of distant music. But guarding the way forward is the Tower's First Guardian, a majestic being that wants to test if you're truly ready for the greater challenges ahead.",
+      "dialogue_start": "The Guardian of Commitment doesn't just test your combat skills - it tests your resolve. It shows you visions of how much harder the battles will become, how much more your love will be tested. It offers you a chance to leave now with honor, or commit to seeing this through to the end.",
+      "enemies": [
+        {"name": "Guardian of Commitment", "hp": 3629, "attack": 234, "defense": 234, "special": "Tests resolve and commitment"}
+      ]
+    },
+    {
+      "level": 11,
+      "title": "The Haunted Ballroom",
+      "story": "You enter an elegant ballroom where ghostly couples dance to silent music. But these aren't happy spirits - they're the echoes of couples who tried the tower and failed, their love having died somewhere in these walls. They want to drag you into their eternal, loveless dance.",
+      "dialogue_start": "The Heartbreak Phantoms attack with weapons of despair and regret. They show you visions of failed relationships, of love that withered and died. They whisper that all love eventually ends, that you're fooling yourselves to think you're different.",
+      "enemies": [
+        {"name": "Sorrow Dancer", "hp": 3943, "attack": 251, "defense": 251},
+        {"name": "Lost Love Specter", "hp": 3943, "attack": 251, "defense": 251},
+        {"name": "Broken Vow Spirit", "hp": 3943, "attack": 251, "defense": 251},
+        {"name": "Withered Romance", "hp": 3943, "attack": 251, "defense": 251}
+      ]
+    },
+    {
+      "level": 12,
+      "title": "The Frozen Wastes",
+      "story": "This floor is bitter cold, so cold that your breath freezes and ice forms on your weapons. The Frost Giants that attack you embody the cold indifference that can creep into any relationship if you're not careful.",
+      "dialogue_start": "The cold makes you sluggish and want to conserve energy for yourself. The giants try to freeze you solid, but more dangerously, they try to freeze your hearts - making you cold and distant from each other.",
+      "enemies": [
+        {"name": "Glacier Behemoth", "hp": 4257, "attack": 269, "defense": 269, "special": "Freezing attacks"},
+        {"name": "Icicle Colossus", "hp": 4257, "attack": 269, "defense": 269, "special": "Freezing attacks"}
+      ]
+    },
+    {
+      "level": 13,
+      "title": "The Maze of Misunderstanding",
+      "story": "This floor is a complex maze where every corridor looks the same, and worse, you can't hear each other clearly. The Confusion Sprites that inhabit the maze cast spells that make you misunderstand each other's words.",
+      "dialogue_start": "You must navigate the maze together while the sprites make you mishear and misinterpret everything your partner says. 'Turn left' becomes 'Turn right,' 'I love you' becomes 'I doubt you.' Miscommunication becomes deadly.",
+      "enemies": [
+        {"name": "Twisted Tongue", "hp": 4571, "attack": 286, "defense": 286, "special": "Cause miscommunication"},
+        {"name": "Babel Imp", "hp": 4571, "attack": 286, "defense": 286, "special": "Cause miscommunication"},
+        {"name": "Word Scrambler", "hp": 4571, "attack": 286, "defense": 286, "special": "Cause miscommunication"},
+        {"name": "Echo Distorter", "hp": 4571, "attack": 286, "defense": 286, "special": "Cause miscommunication"},
+        {"name": "Meaning Mudder", "hp": 4571, "attack": 286, "defense": 286, "special": "Cause miscommunication"}
+      ]
+    },
+    {
+      "level": 14,
+      "title": "The Mountain of Pride",
+      "story": "This floor is a steep mountain climb where Pride Demons try to convince each of you that you're doing more work than your partner, that you're the better fighter, that you deserve more credit for your victories.",
+      "dialogue_start": "The demons try to make you competitive with each other instead of cooperative. They whisper that you're carrying your partner, that you'd be better off alone, that you deserve recognition for your individual achievements.",
+      "enemies": [
+        {"name": "Ego Inflator", "hp": 4886, "attack": 303, "defense": 303, "special": "Incite competition between partners"},
+        {"name": "Arrogance Avatar", "hp": 4886, "attack": 303, "defense": 303, "special": "Incite competition between partners"},
+        {"name": "Vanity Viper", "hp": 4886, "attack": 303, "defense": 303, "special": "Incite competition between partners"}
+      ]
+    },
+    {
+      "level": 15,
+      "title": "The Battlefield of Loyalty",
+      "story": "This floor is a war zone where Betrayal Wraiths try to convince you that your partner will abandon you when things get tough. They show you illusions of your spouse leaving you behind, giving up on you, choosing someone else.",
+      "dialogue_start": "The wraiths attack with weapons of doubt and insecurity. They create false images of your partner betraying you, and try to make you believe that your love isn't real or lasting. The worst part is that the illusions look so real.",
+      "enemies": [
+        {"name": "Trust Breaker", "hp": 5200, "attack": 320, "defense": 320, "special": "Create illusions of betrayal"},
+        {"name": "Loyalty Leech", "hp": 5200, "attack": 320, "defense": 320, "special": "Create illusions of betrayal"}
+      ]
+    },
+    {
+      "level": 16,
+      "title": "The Cavern of Forgiveness",
+      "story": "This dark cavern is filled with Grudge Monsters - creatures born from every unforgiving thought, every held resentment, every refusal to let go of past hurts. They're ugly, twisted things that want to make you hold onto anger forever.",
+      "dialogue_start": "The monsters attack with weapons forged from old arguments and past mistakes. They try to remind you of every time your partner has hurt you, every flaw they have, every reason you might have to be unforgiving.",
+      "enemies": [
+        {"name": "Resentment Reaper", "hp": 5514, "attack": 337, "defense": 337, "special": "Powered by unforgiveness"},
+        {"name": "Bitter Burden", "hp": 5514, "attack": 337, "defense": 337, "special": "Powered by unforgiveness"},
+        {"name": "Vengeance Vessel", "hp": 5514, "attack": 337, "defense": 337, "special": "Powered by unforgiveness"}
+      ]
+    },
+    {
+      "level": 17,
+      "title": "The Library of Secrets",
+      "story": "This floor is a vast library where Secret Keepers try to convince you to hide things from each other. They offer you power if you'll keep dangerous secrets, lie to protect your partner's feelings, or hide your own struggles.",
+      "dialogue_start": "The Secret Keepers attack with hidden weapons and concealed tactics. They try to make you fight alone, keeping your struggles secret from your partner. They whisper that some truths are too painful to share.",
+      "enemies": [
+        {"name": "Whisper Warden", "hp": 5829, "attack": 354, "defense": 354, "special": "Powered by secrets"},
+        {"name": "Hidden Truth", "hp": 5829, "attack": 354, "defense": 354, "special": "Powered by secrets"},
+        {"name": "Silence Sage", "hp": 5829, "attack": 354, "defense": 354, "special": "Powered by secrets"}
+      ]
+    },
+    {
+      "level": 18,
+      "title": "The Garden of Temptation",
+      "story": "This beautiful garden is filled with Temptation Sprites who try to lure you away from each other with offers of easier paths, more attractive partners, or freedom from the responsibilities of marriage.",
+      "dialogue_start": "The sprites attack by trying to separate you, each offering one partner a way to escape the tower's challenges. They create illusions of easier lives, more compatible partners, or freedom from commitment.",
+      "enemies": [
+        {"name": "Siren Seducer", "hp": 6143, "attack": 371, "defense": 371, "special": "Try to separate partners"},
+        {"name": "Escape Artist", "hp": 6143, "attack": 371, "defense": 371, "special": "Try to separate partners"},
+        {"name": "Freedom Phantom", "hp": 6143, "attack": 371, "defense": 371, "special": "Try to separate partners"},
+        {"name": "Alternative Allure", "hp": 6143, "attack": 371, "defense": 371, "special": "Try to separate partners"}
+      ]
+    },
+    {
+      "level": 19,
+      "title": "The Chamber of Vulnerability",
+      "story": "This floor strips away all pretense and forces you to fight while completely vulnerable - your fears, insecurities, and weaknesses are laid bare. The Shame Demons attack these exposed vulnerabilities mercilessly.",
+      "dialogue_start": "The demons know your deepest insecurities and attack them directly. They try to make you hide your vulnerabilities from your partner, to fight alone rather than admit weakness. They whisper that your partner will love you less if they see who you really are.",
+      "enemies": [
+        {"name": "Insecurity Incarnate", "hp": 6457, "attack": 389, "defense": 389, "special": "Target insecurities"},
+        {"name": "Weakness Whisperer", "hp": 6457, "attack": 389, "defense": 389, "special": "Target insecurities"}
+      ]
+    },
+    {
+      "level": 20,
+      "title": "The Threshold Guardian",
+      "story": "At the halfway point of the tower stands the Threshold Guardian, a massive being that represents the decision point of every marriage - the moment when love stops being easy and starts requiring real commitment.",
+      "dialogue_start": "The Guardian doesn't just test your combat skills - it tests whether you're truly committed to facing the deeper challenges ahead. It shows you visions of what the final floors will demand of you, and offers one last chance to turn back.",
+      "enemies": [
+        {"name": "Threshold Guardian", "hp": 6771, "attack": 406, "defense": 406, "special": "Tests true unity"}
+      ]
+    },
+    {
+      "level": 21,
+      "title": "The Forge of Sacrifice",
+      "story": "This floor is a blazing forge where Greed Demons try to make you prioritize your own survival over your partner's. The heat is intense, and there's only limited protection available.",
+      "dialogue_start": "The demons attack with weapons of selfishness and self-preservation. They try to make you use all the protection for yourself, to save your own energy while your partner struggles. They whisper that you can't help anyone if you don't help yourself first.",
+      "enemies": [
+        {"name": "Selfishness Serpent", "hp": 7086, "attack": 423, "defense": 423, "special": "Limited resources create pressure"},
+        {"name": "Hoarding Horror", "hp": 7086, "attack": 423, "defense": 423, "special": "Limited resources create pressure"},
+        {"name": "Avarice Automaton", "hp": 7086, "attack": 423, "defense": 423, "special": "Limited resources create pressure"}
+      ]
+    },
+    {
+      "level": 22,
+      "title": "The Valley of Despair",
+      "story": "This floor plunges you into deep depression, where Despair Wraiths try to convince you that you'll never reach the top, that all your efforts are meaningless, that love isn't worth the struggle.",
+      "dialogue_start": "The wraiths attack with weapons of hopelessness and futility. They make every step feel impossible, every victory feel hollow. They whisper that you're just going through the motions, that your love is already dead.",
+      "enemies": [
+        {"name": "Hopelessness Herald", "hp": 7400, "attack": 440, "defense": 440, "special": "Cause hopelessness"},
+        {"name": "Futility Fiend", "hp": 7400, "attack": 440, "defense": 440, "special": "Cause hopelessness"}
+      ]
+    },
+    {
+      "level": 23,
+      "title": "The Mirror of Truth",
+      "story": "This floor is lined with mirrors that reflect the darkest truth of love - that sometimes the person you love most can hurt you the deepest. A malevolent Truth Demon emerges from the mirrors and possesses one of you randomly, turning beloved against beloved in the cruelest test yet.",
+      "dialogue_start": "The possessed partner's body moves against their will, forced to attack their beloved while their true self fights desperately for control. The defending partner must survive for 20 turns without killing their possessed love. **Strategy Tip:** Consider unequipping weapons to reduce damage - your goal is survival, not victory through violence. Only by enduring this ultimate trial of patience and restraint can your love prove itself worthy.",
+      "enemies": [
+        {"name": "Soul Puppeteer", "hp": 7714, "attack": 457, "defense": 457, "special": "Possesses one partner randomly"}
+      ]
+    },
+    {
+      "level": 24,
+      "title": "The Storm of Chaos",
+      "story": "This floor is pure chaos incarnate - walls shift violently, floors crack and split, the ceiling spins like a mad kaleidoscope. Reality itself bends and warps unpredictably. Gravity reverses, time stutters, and dimensions merge in a maddening display of disorder. The storm grows stronger each moment, threatening to tear apart everything you know.",
+      "dialogue_start": "Chaos Elementals attack with completely unpredictable force - sometimes devastating, sometimes laughably weak, as the storm warps all attacks randomly. Your coordination is constantly scrambled, turn order shifts chaotically every few rounds. But in this maelstrom of madness, you discover love's greatest power: **Partner Anchoring**. When you anchor each other (25% chance each turn), you become each other's fixed point of stability, immune to chaos effects. In a world where nothing is constant, your love becomes the only reliable truth.",
+      "enemies": [
+        {"name": "Reality Ripper", "hp": 8029, "attack": 474, "defense": 474, "special": "Reality warping attacks, dimensional strikes, chaos vortexes"},
+        {"name": "Entropy Embodiment", "hp": 8029, "attack": 474, "defense": 474, "special": "Reality warping attacks, dimensional strikes, chaos vortexes"}
+      ]
+    },
+    {
+      "level": 25,
+      "title": "The Abyss of Fear",
+      "story": "This floor is an endless abyss where your deepest fears take physical form. Fear Incarnates emerge from the darkness - every terror you've ever had about losing your partner, about not being good enough, about your relationship failing.",
+      "dialogue_start": "The Fear Incarnates know exactly what scares you most about love and relationships. They attack with weapons forged from your specific terrors, trying to paralyze you with fear.",
+      "enemies": [
+        {"name": "Terror Titan", "hp": 8343, "attack": 491, "defense": 491, "special": "Tailored to specific fears"},
+        {"name": "Nightmare Nemesis", "hp": 8343, "attack": 491, "defense": 491, "special": "Tailored to specific fears"}
+      ]
+    },
+    {
+      "level": 26,
+      "title": "The Crucible of Pain",
+      "story": "This floor subjects you to intense physical and emotional pain while Pain Demons try to make you blame each other for your suffering. They want to turn your shared struggle into mutual resentment.",
+      "dialogue_start": "The demons attack with weapons that cause real anguish, both physical and emotional. They try to make you see your partner as the cause of your pain rather than your companion in suffering.",
+      "enemies": [
+        {"name": "Agony Architect", "hp": 8657, "attack": 509, "defense": 509, "special": "Cause intense suffering"},
+        {"name": "Torment Tyrant", "hp": 8657, "attack": 509, "defense": 509, "special": "Cause intense suffering"}
+      ]
+    },
+    {
+      "level": 27,
+      "title": "The Test of Time",
+      "story": "This floor ages you rapidly while Time Wraiths try to convince you that love fades, that passion dies, that you'll grow apart as you grow older.",
+      "dialogue_start": "The wraiths show you visions of your relationship growing stale, of falling out of love, of becoming strangers. They attack with weapons of boredom and familiarity, trying to make your love feel routine and meaningless.",
+      "enemies": [
+        {"name": "Decay Dealer", "hp": 6406, "attack": 480, "defense": 440, "special": "Show visions of aging relationship"},
+        {"name": "Erosion Entity", "hp": 6406, "attack": 480, "defense": 440, "special": "Show visions of aging relationship"}
+      ]
+    },
+    {
+      "level": 28,
+      "title": "The Garden of Renewal",
+      "story": "This floor is a beautiful garden where you tend flowers that represent your relationship's growth. But Stagnation Spirits try to convince you that you've already achieved everything you can together, that there's no point in continuing to grow.",
+      "dialogue_start": "The spirits attack with weapons of complacency and satisfaction. They try to make you believe that your love is complete as it is, that you don't need to keep working on it or climbing higher.",
+      "enemies": [
+        {"name": "Complacency Crawler", "hp": 9286, "attack": 543, "defense": 543, "special": "Cause complacency"},
+        {"name": "Satisfaction Snare", "hp": 9286, "attack": 543, "defense": 543, "special": "Cause complacency"},
+        {"name": "Status Quo Shade", "hp": 9286, "attack": 543, "defense": 543, "special": "Cause complacency"}
+      ]
+    },
+    {
+      "level": 29,
+      "title": "The Threshold of Eternity",
+      "story": "At the penultimate floor, you face the Eternal Guardian - a being that represents the weight of 'forever.' It asks if you're truly ready to commit to each other for all eternity, through every possible future.",
+      "dialogue_start": "The Guardian doesn't just test your current love, but your commitment to love each other through every possible future - sickness, health, wealth, poverty, joy, sorrow, and everything in between. It shows you visions of difficult futures and asks if you'd still choose each other.",
+      "enemies": [
+        {"name": "Eternal Guardian", "hp": 9600, "attack": 560, "defense": 560, "special": "Tests eternal commitment"}
+      ]
+    },
+    {
+      "level": 30,
+      "title": "The Apex of Love",
+      "story": "At the tower's peak, you find not an enemy, but a crystal altar surrounded by pure light. This is the Sanctum of Eternal Bonds, where couples who have proven their love can receive the ultimate blessing.",
+      "dialogue_start": "A voice speaks from the light: 'You have proven your love through every test. Now choose your reward. You may receive great power, immense wealth, or eternal youth. But know this - the greatest treasure is what you already possess.'",
+      "type": "reward"
+    }
+  ]
+}

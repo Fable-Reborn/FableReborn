@@ -52,6 +52,26 @@ class DragonExtension:
                 },
                 "passives": ["Aspect of death"],
                 "base_multiplier": 1.5
+            },
+            "Void Tyrant": {
+                "level_range": (21, 25),
+                "moves": {
+                    "Reality Shatter": {"dmg": 1500, "effect": "dimension_tear", "chance": 0.3},
+                    "Soul Harvest": {"dmg": 1200, "effect": "soul_drain", "chance": 0.3},
+                    "Void Storm": {"dmg": 1000, "effect": "void_explosion", "chance": 0.4}
+                },
+                "passives": ["Void Corruption", "Soul Devourer"],
+                "base_multiplier": 2.0
+            },
+            "Eternal Frost": {
+                "level_range": (26, 30),
+                "moves": {
+                    "Time Freeze": {"dmg": 2000, "effect": "time_stop", "chance": 0.3},
+                    "Eternal Damnation": {"dmg": 1500, "effect": "eternal_curse", "chance": 0.3},
+                    "Apocalypse": {"dmg": 1200, "effect": "world_ender", "chance": 0.4}
+                },
+                "passives": ["Eternal Winter", "Death's Embrace", "Reality Bender"],
+                "base_multiplier": 3.0
             }
         }
     
@@ -67,8 +87,8 @@ class DragonExtension:
         
         # Default to the highest stage if level exceeds all ranges
         return {
-            "name": "Absolute Zero",
-            "info": self.dragon_stages["Absolute Zero"]
+            "name": "Eternal Frost",
+            "info": self.dragon_stages["Eternal Frost"]
         }
     
     async def calculate_dragon_stats(self, level: int) -> Dict[str, Any]:
@@ -115,7 +135,7 @@ class DragonExtension:
             max_hp=dragon_stats["hp"],
             damage=dragon_stats["damage"],
             armor=dragon_stats["armor"],
-            element="Ice",  # Default element for ice dragon
+            element="Water",  # Dragon element is Water (matches emoji)
             name=dragon_stats["name"],
             is_dragon=True,
             passives=dragon_stats["passives"],

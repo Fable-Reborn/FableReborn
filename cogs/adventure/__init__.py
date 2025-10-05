@@ -1710,15 +1710,15 @@ class Adventure(commands.Cog):
 
             luck_booster = await self.bot.get_booster(ctx.author, "luck")
             # Change: Subtract 1 from the current level to make it zero-indexed
-            current_level = int(rpgtools.xptolevel(ctx.character_data["xp"])) - 1
+            current_level = int(rpgtools.xptolevel(ctx.character_data["xp"]))
             luck_multiply = ctx.character_data["luck"]
             if buildings := await self.bot.get_city_buildings(ctx.character_data["guild"]):
                 bonus = buildings["adventure_building"]
             else:
                 bonus = 0
 
-            # Change: Level 29 is the new level 30 (since we're zero-indexed)
-            if current_level > 29:
+
+            if current_level > 30:
                 bonus = 5
 
             success = rpgtools.calcchance(
@@ -1790,7 +1790,7 @@ class Adventure(commands.Cog):
                     storage_type = "armory"
 
                 else:
-                    item = items.get_item()
+                    item = items.get_item(adventure_level=num)
                     await conn.execute(
                         'INSERT INTO loot ("name", "value", "user") VALUES ($1, $2, $3);',
                         item["name"],
@@ -1879,12 +1879,12 @@ class Adventure(commands.Cog):
                     )
                 )
 
-                if current_level > 15:
+                if current_level >= 15:
                     iscompleted = True
                     self.bot.dispatch("adventure_completion", ctx, iscompleted)
                     self.bot.dispatch("raid_completion", ctx, iscompleted, ctx.author.id)
 
-                new_level = int(rpgtools.xptolevel(ctx.character_data["xp"] + xp)) - 1
+                new_level = int(rpgtools.xptolevel(ctx.character_data["xp"] + xp))
 
                 if current_level != new_level:
                     await self.bot.process_levelup(ctx, new_level, current_level)

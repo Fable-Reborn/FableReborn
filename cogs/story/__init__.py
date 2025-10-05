@@ -39,6 +39,7 @@ from utils.checks import has_char, is_gm, is_god
 from utils import misc as rpgtools
 from utils.i18n import _, locale_doc
 
+"""This is ancient and never ended up being used"""
 
 class Story(commands.Cog):
     def __init__(self, bot: Bot) -> None:
@@ -47,8 +48,7 @@ class Story(commands.Cog):
     @is_gm()
     @commands.command(hidden=True)
     async def startstory(self, ctx):
-        if ctx.author.id != 295173706496475136:
-            return await ctx.send("This is not available to the public yet!")
+
 
         embed = discord.Embed(title="The War of Eldoria", color=0x2f3136)
         embed.description = ("In the realm of Eldoria, three gods have awoken from their slumber. "

@@ -22,7 +22,6 @@ class SoulforgeExtension(commands.Cog):
         
         async with self.bot.pool.acquire() as conn:
             # Create columns if they don't exist
-            await self.ensure_columns_exist()
             
             # Natural degradation of soulforge condition (1% per day)
             await conn.execute("""
@@ -30,35 +29,18 @@ class SoulforgeExtension(commands.Cog):
                 SET forge_condition = GREATEST(0, forge_condition - 1)
                 WHERE crucible_built = TRUE AND forge_condition > 0
             """)
-    
-    async def ensure_columns_exist(self):
-        """Make sure the necessary columns exist in the database"""
-        async with self.bot.pool.acquire() as conn:
-            # Check if columns exist and add them if they don't
-            try:
-                await conn.execute("""
-                    ALTER TABLE splicing_quest 
-                    ADD COLUMN IF NOT EXISTS forge_condition INTEGER DEFAULT 100,
-                    ADD COLUMN IF NOT EXISTS divine_attention INTEGER DEFAULT 0,
-                    ADD COLUMN IF NOT EXISTS last_repair_date TIMESTAMP,
-                    ADD COLUMN IF NOT EXISTS last_ritual_date TIMESTAMP
-                """)
-            except Exception as e:
-                print(f"Error ensuring columns exist: {e}")
-    
+
+
     async def get_soulforge_data(self, user_id):
         """Get detailed data about a player's soulforge"""
         async with self.bot.pool.acquire() as conn:
-            # Ensure columns exist before querying
-            await self.ensure_columns_exist()
-            
             data = await conn.fetchrow("""
                 SELECT sq.*, p.name, p.god, p.money
                 FROM splicing_quest sq
                 JOIN profile p ON sq.user_id = p.user
                 WHERE sq.user_id = $1
             """, user_id)
-            
+
             if data:
                 return {
                     "quest_started": True,
@@ -71,9 +53,9 @@ class SoulforgeExtension(commands.Cog):
                     "last_repair": data.get("last_repair_date"),
                     "last_ritual": data.get("last_ritual_date")
                 }
-            
+
             return None
-    
+
     def create_status_bar(self, current, maximum, length=20, fill_char='█', empty_char='░'):
         """Create a visual bar representation"""
         ratio = current / maximum if maximum > 0 else 0
@@ -81,73 +63,78 @@ class SoulforgeExtension(commands.Cog):
         filled_length = int(length * ratio)
         bar = fill_char * filled_length + empty_char * (length - filled_length)
         return bar
-    
+
     @commands.command()
     @user_cooldown(10)
     async def forgestatus(self, ctx):
         """View the status of your soulforge"""
-        soulforge_data = await self.get_soulforge_data(ctx.author.id)
-        
-        if not soulforge_data or not soulforge_data["quest_started"]:
-            return await ctx.send("You have not begun the Wyrdweaver's path. Use `$soulforge` to start your journey.")
-        
-        if not soulforge_data["forge_built"]:
-            return await ctx.send("You have not yet constructed a Soulforge. Continue gathering the required materials.")
-        
-        # Get status values
-        condition = soulforge_data["condition"]
-        divine_attention = soulforge_data["divine_attention"]
-        name = soulforge_data["name"]
-        god = soulforge_data["god"]
-        
-        # Create status bars
-        condition_bar = self.create_status_bar(condition, 100)
-        attention_bar = self.create_status_bar(divine_attention, 100)
-        
-        # Generate descriptions based on status
-        condition_desc = self.get_condition_description(condition)
-        attention_desc = self.get_divine_attention_description(divine_attention, god)
-        
-        # Create embed
-        embed = discord.Embed(
-            title="🧪 Soulforge Status 🧪",
-            description=f"*Morrigan circles your soulforge, her keen eyes assessing its state.*",
-            color=0x4cc9f0
-        )
-        
-        embed.add_field(
-            name="Arcane Integrity",
-            value=f"**{condition}%** [{condition_bar}]\n{condition_desc}",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="Divine Scrutiny",
-            value=f"**{divine_attention}%** [{attention_bar}]\n{attention_desc}",
-            inline=False
-        )
-        
-        # Add maintenance options
-        maintenance_text = []
-        
-        # Check if repair is needed and available
-        if condition < 100:
-            repair_cost = self.calculate_repair_cost(condition)
-            maintenance_text.append(f"• `$repairforge` - Restore the forge's integrity ({repair_cost:,} gold)")
-        
-        # Check if ritual is needed and available
-        if divine_attention > 0:
-            # For Eidolith mask, we don't show gold cost but rather shard requirement
-            maintenance_text.append(f"• `$eidolithmask [shards]` - Create a masking fog to reduce divine scrutiny (requires Eidolith Shards)")
-        
-        if maintenance_text:
+        try:
+            soulforge_data = await self.get_soulforge_data(ctx.author.id)
+
+            if not soulforge_data or not soulforge_data["quest_started"]:
+                return await ctx.send("You have not begun the Wyrdweaver's path. Use `$soulforge` to start your journey.")
+
+            if not soulforge_data["forge_built"]:
+                return await ctx.send(
+                    "You have not yet constructed a Soulforge. Continue gathering the required materials.")
+
+            # Get status values
+            condition = soulforge_data["condition"]
+            divine_attention = soulforge_data["divine_attention"]
+            name = soulforge_data["name"]
+            god = soulforge_data.get("god") or "no god"
+
+            # Create status bars
+            condition_bar = self.create_status_bar(condition, 100)
+            attention_bar = self.create_status_bar(divine_attention, 100)
+
+            # Generate descriptions based on status
+            condition_desc = self.get_condition_description(condition)
+            attention_desc = self.get_divine_attention_description(divine_attention, god)
+
+            # Create embed
+            embed = discord.Embed(
+                title="🧪 Soulforge Status 🧪",
+                description=f"*Morrigan circles your soulforge, her keen eyes assessing its state.*",
+                color=0x4cc9f0
+            )
+
             embed.add_field(
-                name="Maintenance Options",
-                value="\n".join(maintenance_text),
+                name="Arcane Integrity",
+                value=f"**{condition}%** [{condition_bar}]\n{condition_desc}",
                 inline=False
             )
-        
-        await ctx.send(embed=embed)
+
+            embed.add_field(
+                name="Divine Scrutiny",
+                value=f"**{divine_attention}%** [{attention_bar}]\n{attention_desc}",
+                inline=False
+            )
+
+            # Add maintenance options
+            maintenance_text = []
+
+            # Check if repair is needed and available
+            if condition < 100:
+                repair_cost = self.calculate_repair_cost(condition)
+                maintenance_text.append(f"• `$repairforge` - Restore the forge's integrity ({repair_cost:,} gold)")
+
+            # Check if ritual is needed and available
+            if divine_attention > 0:
+                # For Eidolith mask, we don't show gold cost but rather shard requirement
+                maintenance_text.append(
+                    f"• `$eidolithmask [shards]` - Create a masking fog to reduce divine scrutiny (requires Eidolith Shards)")
+
+            if maintenance_text:
+                embed.add_field(
+                    name="Maintenance Options",
+                    value="\n".join(maintenance_text),
+                    inline=False
+                )
+
+            await ctx.send(embed=embed)
+        except Exception as e:
+            await ctx.send(e)
 
     def get_condition_description(self, condition):
         """Get description based on forge condition"""
@@ -176,7 +163,7 @@ class SoulforgeExtension(commands.Cog):
             return "*\"I sense definite divine scrutiny. The boundary between realms thins when you work. You should proceed with caution and consider creating a masking fog to obscure your activities.\"*"
         elif attention < 90:
             base = "*\"The eyes of the gods are upon you! Your forge's energies penetrate multiple realms, and divine servants likely observe your work. Significant intervention may be imminent without protective measures.\"*"
-            
+
             if "drakath" in god.lower() or "chaos" in god.lower():
                 return base + " *\"Drakath's chaotic nature provides some protection, but even he has limits to what he'll permit.\"*"
             elif "asterea" in god.lower() or "light" in god.lower():
@@ -187,7 +174,7 @@ class SoulforgeExtension(commands.Cog):
                 return base
         else:
             base = "*\"DIVINE INTERVENTION IS IMMINENT! The barrier between realms has worn perilously thin. I sense immortal presences gathering, drawn to the disturbance your forge creates. Act quickly to avert their wrath!\"*"
-            
+
             if "drakath" in god.lower() or "chaos" in god.lower():
                 return base + " *\"Even Drakath's chaotic nature cannot shield you from such blatant metaphysical disturbance. His curiosity battles with his jealousy of your power.\"*"
             elif "asterea" in god.lower() or "light" in god.lower():
@@ -298,7 +285,8 @@ class SoulforgeExtension(commands.Cog):
             return await ctx.send("You don't have a Soulforge to protect.")
         
         divine_attention = soulforge_data["divine_attention"]
-        god = soulforge_data["god"].lower()
+        god = soulforge_data["god"].lower() if soulforge_data["god"] is not None else ""
+
         
         if divine_attention <= 0:
             await self.bot.reset_cooldown(ctx)
@@ -408,8 +396,6 @@ class SoulforgeExtension(commands.Cog):
         attention_increase = random.rantint(7, 17)
         
         async with self.bot.pool.acquire() as conn:
-            # Ensure columns exist
-            await self.ensure_columns_exist()
             
             # Update the values
             await conn.execute("""

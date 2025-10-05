@@ -283,9 +283,9 @@ class Help(commands.Cog):
         _("""Sends a link to the official documentation.""")
         await ctx.send(
             _(
-                "<:blackcheck:441826948919066625> **Check {url} for a list of"
+                "**Check {url} for a list of"
                 " commands**"
-            ).format(url=f"{self.bot.BASE_URL}/commands")
+            ).format(url=f"{self.bot.BASE_URL}")
         )
 
     @commands.command(aliases=["faq"], brief=_("View the tutorial"))
@@ -294,9 +294,8 @@ class Help(commands.Cog):
         _("""Link to the bot tutorial and FAQ.""")
         await ctx.send(
             _(
-                "<:blackcheck:441826948919066625> **Check {url} for a tutorial and"
-                " FAQ**"
-            ).format(url=f"{self.bot.BASE_URL}/tutorial")
+                "**Check {url} for a tutorial**"
+            ).format(url=f"{self.bot.BASE_URL}")
         )
 
     @is_supporter()
@@ -596,7 +595,7 @@ class IdleHelp(commands.HelpCommand):
                 "Fable Help {version}",
             ).format(version=self.context.bot.version),
             color=self.context.bot.config.game.primary_colour,
-            url="https://idlerpg.xyz/",
+            url="https://wiki.fablerpg.xyz/",
         )
         e.set_author(
             name=self.context.bot.user,
@@ -604,7 +603,7 @@ class IdleHelp(commands.HelpCommand):
         )
         e.description = _(
             "**Welcome to the Fable help.**\nCheck out our tutorial!\n-"
-            " coming soon"
+
         ).format(prefix=self.context.clean_prefix)
 
         allowed = []

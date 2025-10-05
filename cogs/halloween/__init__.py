@@ -554,10 +554,8 @@ class Halloween(commands.Cog):
             bones_count = record['bones']
         else:
             bones_count = 0
-        if ctx.author.id == 708435868842459169:
-            await ctx.send(f"You currently have **{bones_count}** Boners, {ctx.author.mention}!")
-        else:
-            await ctx.send(f"You currently have **{bones_count}** Bones, {ctx.author.mention}!")
+
+        await ctx.send(f"You currently have **{bones_count}** Bones, {ctx.author.mention}!")
 
     @checks.has_char()
     @commands.command(brief=_("Open a trick or treat bag"))

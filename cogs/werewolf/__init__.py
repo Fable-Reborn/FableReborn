@@ -31,7 +31,7 @@ from utils.joins import JoinView
 from utils.werewolf import DESCRIPTIONS as ROLE_DESC
 from utils.werewolf import Game
 from utils.werewolf import Role as ROLES
-
+from utils.werewolf_single import SPGame
 
 class Werewolf(commands.Cog):
     def __init__(self, bot):
@@ -245,6 +245,26 @@ class Werewolf(commands.Cog):
             del self.games[ctx.channel.id]
         except KeyError:  # got stuck in between
             pass
+
+    @werewolf.command(name="single", aliases=["sp", "solo"], brief=_("Starts a single-player Werewolf game against AI players"))
+    async def werewolf_single(self, ctx, players: int = 5):
+        """Single-player Werewolf.
+
+        `[players]` – total seats (3-9). One is you, the rest are AI.
+        """
+        if self.games.get(ctx.channel.id):
+            return await ctx.send(_("There is already a game in here!"))
+        if not 3 <= players <= 9:
+            return await ctx.send(_("Number of players must be between 3 and 9."))
+
+        # Mark channel as busy
+        self.games[ctx.channel.id] = "single"
+        try:
+            game = SPGame(ctx, total_players=players)
+            await game.run()
+        finally:
+            # Clean up regardless of victory/exception
+            self.games.pop(ctx.channel.id, None)
 
     @werewolf.command(brief=_("See available werewolf game modes"))
     @locale_doc

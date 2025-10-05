@@ -26,6 +26,8 @@ from discord.ext import commands
 
 from classes.converters import CrateRarity, IntGreaterThan, MemberWithCharacter
 from utils.i18n import _, locale_doc
+# Add this import for deep copy
+import copy
 
 
 def has_no_transaction():
@@ -63,7 +65,7 @@ class Transaction(commands.Cog):
                 _(
                     """\
 > {user} gives:
-{money}{crates}{items}"""
+{money}{crates}{items}{resources}{consumables}"""
                 ).format(
                     user=user.mention,
                     money=f"- **${m}**\n" if (m := cont["money"]) else "",
@@ -79,6 +81,18 @@ class Transaction(commands.Cog):
                             for i in cont["items"]
                         ]
                     ),
+                    resources="".join(
+                        [
+                            f"- **{amount}x** {resource.replace('_', ' ').title()}\n"
+                            for resource, amount in cont["resources"].items()
+                        ]
+                    ),
+                    consumables="".join(
+                        [
+                            f"- **{amount}x** {ctype.replace('_', ' ').title()} (Premium)\n"
+                            for ctype, amount in cont.get("consumables", {}).items() if amount > 0
+                        ]
+                    ),
                 )
                 for user, cont in self.transactions[id_]["content"].items()
             ]
@@ -87,8 +101,8 @@ class Transaction(commands.Cog):
             content
             + "\n\n"
             + _(
-                "Use `{prefix}trade [add/set/remove] [money/crates/item]"
-                " [amount/itemid] [crate rarity]`"
+                "Use `{prefix}trade [add/set/remove] [money/crates/item/resources/consumable]"
+                " [amount/itemid/resource_name/consumable_type] [crate rarity]`"
             ).format(prefix=ctx.clean_prefix)
         )
         if (base := self.transactions[id_]["base"]) is not None:
@@ -187,6 +201,7 @@ class Transaction(commands.Cog):
                     "mystery": 0,
                     "fortune": 0,
                     "divine": 0,
+                    "materials": 0,
                 }
                 normalized_crates_user1 = all_crate_rarities | user1_gives["crates"]
                 normalized_crates_user2 = all_crate_rarities | user2_gives["crates"]
@@ -258,6 +273,47 @@ class Transaction(commands.Cog):
                             )
                         )
 
+                # Validate crafting resources
+                user1_resources = await self.get_player_resources(user1.id)
+                user2_resources = await self.get_player_resources(user2.id)
+                
+                # Check if users have enough resources to trade
+                for resource, amount in user1_gives.get("resources", {}).items():
+                    if user1_resources.get(resource, 0) < amount:
+                        return await chan.send(
+                            f"Trade cancelled. {user1.display_name} doesn't have enough {resource.replace('_', ' ').title()}."
+                        )
+                
+                for resource, amount in user2_gives.get("resources", {}).items():
+                    if user2_resources.get(resource, 0) < amount:
+                        return await chan.send(
+                            f"Trade cancelled. {user2.display_name} doesn't have enough {resource.replace('_', ' ').title()}."
+                        )
+
+                # Double-check validation: Lock and verify resources again to prevent exploitation
+                # This prevents race conditions where users might craft/sell/trade simultaneously
+                for resource, amount in user1_gives.get("resources", {}).items():
+                    current_amount = await conn.fetchval(
+                        'SELECT amount FROM crafting_resources WHERE user_id=$1 AND resource_type=$2 FOR UPDATE',
+                        user1.id, resource
+                    )
+                    if not current_amount or current_amount < amount:
+                        return await chan.send(
+                            f"Trade cancelled. {user1.display_name} no longer has enough {resource.replace('_', ' ').title()} "
+                            f"(has {current_amount or 0}, needs {amount})."
+                        )
+                
+                for resource, amount in user2_gives.get("resources", {}).items():
+                    current_amount = await conn.fetchval(
+                        'SELECT amount FROM crafting_resources WHERE user_id=$1 AND resource_type=$2 FOR UPDATE',
+                        user2.id, resource
+                    )
+                    if not current_amount or current_amount < amount:
+                        return await chan.send(
+                            f"Trade cancelled. {user2.display_name} no longer has enough {resource.replace('_', ' ').title()} "
+                            f"(has {current_amount or 0}, needs {amount})."
+                        )
+
                 # Everything OK, do transaction
                 if user1_items:
                     await conn.execute(
@@ -325,6 +381,36 @@ class Transaction(commands.Cog):
                         *query_args_user_2,
                     )
 
+                # Handle crafting resources transfer
+                await self.transfer_crafting_resources(conn, user1, user2, user1_gives.get("resources", {}), user2_gives.get("resources", {}))
+
+                # Transfer premium consumables
+                for ctype in ["pet_age_potion", "pet_speed_growth_potion", "splice_final_potion"]:
+                    qty1 = user1_gives.get("consumables", {}).get(ctype, 0)
+                    qty2 = user2_gives.get("consumables", {}).get(ctype, 0)
+                    if qty1 > 0:
+                        # Remove from user1, add to user2
+                        row = await conn.fetchrow('SELECT id, quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;', user1.id, ctype)
+                        if row and row["quantity"] >= qty1:
+                            await conn.execute('UPDATE user_consumables SET quantity = quantity - $1 WHERE id = $2;', qty1, row["id"])
+                            # Add to user2
+                            row2 = await conn.fetchrow('SELECT id FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;', user2.id, ctype)
+                            if row2:
+                                await conn.execute('UPDATE user_consumables SET quantity = quantity + $1 WHERE id = $2;', qty1, row2["id"])
+                            else:
+                                await conn.execute('INSERT INTO user_consumables (user_id, consumable_type, quantity) VALUES ($1, $2, $3);', user2.id, ctype, qty1)
+                    if qty2 > 0:
+                        # Remove from user2, add to user1
+                        row = await conn.fetchrow('SELECT id, quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;', user2.id, ctype)
+                        if row and row["quantity"] >= qty2:
+                            await conn.execute('UPDATE user_consumables SET quantity = quantity - $1 WHERE id = $2;', qty2, row["id"])
+                            # Add to user1
+                            row1 = await conn.fetchrow('SELECT id FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;', user1.id, ctype)
+                            if row1:
+                                await conn.execute('UPDATE user_consumables SET quantity = quantity + $1 WHERE id = $2;', qty2, row1["id"])
+                            else:
+                                await conn.execute('INSERT INTO user_consumables (user_id, consumable_type, quantity) VALUES ($1, $2, $3);', user1.id, ctype, qty2)
+
             await chan.send(_("Trade successful."))
 
     @has_no_transaction()
@@ -337,19 +423,27 @@ class Transaction(commands.Cog):
             """Opens a trading session for you and another player.
             Using `{prefix}trade <user>`, then the user accepting the checkbox will start the trading session.
 
-            While the trading session is open, you and the other player can add or remove items, money and crates as you choose.
+            While the trading session is open, you and the other player can add or remove items, money, crates, and crafting resources as you choose.
 
             Here are some examples to familiarize you with the concept:
              - {prefix}trade add crates 10 common
              - {prefix}trade set money 1000
              - {prefix}trade remove item 13377331 (this only works if you added this item before)
              - {prefix}trade add items 1234 2345 3456
+             - {prefix}trade add resources dragon_scales 5
+             - {prefix}trade add resources fire gems 3
+             - {prefix}trade set resources mystic_dust 10
+
+            **Crafting Resources Trading:**
+            - Resource names can use underscores (dragon_scales, fire_gems) or spaces (fire gems, dragon scale)
+            - Level restrictions apply: higher-level players cannot trade resources that lower-level players cannot obtain
+            - Use `{prefix}amulet resources` to see your available resources
 
             To accept the trade, both players need to react with the ✅ emoji.
             Accepting the trade will transfer all items in the trade session to the other player.
 
             You cannot trade with yourself, or have more than one trade session open at once.
-            Giving away any items, crates or money during the trade will render it invalid and it will not complete."""
+            Giving away any items, crates, money, or resources during the trade will render it invalid and it will not complete."""
         )
         if user == ctx.author:
             return await ctx.send(_("You cannot trade with yourself."))
@@ -367,8 +461,8 @@ class Transaction(commands.Cog):
         identifier = f"{ctx.author.id}-{user.id}"
         self.transactions[identifier] = {
             "content": {
-                ctx.author: {"crates": defaultdict(lambda: 0), "money": 0, "items": []},
-                user: {"crates": defaultdict(lambda: 0), "money": 0, "items": []},
+                ctx.author: {"crates": defaultdict(lambda: 0), "money": 0, "items": [], "resources": defaultdict(lambda: 0), "consumables": defaultdict(lambda: 0)},
+                user: {"crates": defaultdict(lambda: 0), "money": 0, "items": [], "resources": defaultdict(lambda: 0), "consumables": defaultdict(lambda: 0)},
             },
             "base": None,
             "task": None,
@@ -388,7 +482,7 @@ class Transaction(commands.Cog):
         await ctx.send(
             _(
                 "Please select something to add. Example: `{prefix}trade add money"
-                " 1337`"
+                " 1337`\nYou can also use `consumable` for premium potions."
             ).format(prefix=ctx.clean_prefix)
         )
 
@@ -492,6 +586,140 @@ class Transaction(commands.Cog):
         await ctx.message.add_reaction(":blackcheck:441826948919066625")
 
     @has_transaction()
+    @add.command(name="resources", brief=_("Adds crafting resources to a trade."))
+    @locale_doc
+    async def add_resources(self, ctx, *args):
+        _(
+            """`<resource_name>` - The name of the crafting resource to add (e.g., dragon_scales, mystic_dust, "fire gem")
+            `<amount>` - The amount of resources to add, must be greater than 0
+
+            Adds crafting resources to the trading session. You cannot add more resources than you have.
+            Resource names can use underscores (e.g., dragon_scales, fire_gems) or spaces (e.g., "fire gem", "dragon scale").
+            To remove resources, consider `{prefix}trade remove resources`.
+
+            You need to have an open trading session to use this command."""
+        )
+        if len(args) < 2:
+            return await ctx.send(f"❌ **Usage**: `{ctx.clean_prefix}trade add resources <resource_name> <amount>`\n\nExamples:\n- `{ctx.clean_prefix}trade add resources fire_gems 5`\n- `{ctx.clean_prefix}trade add resources \"fire gem\" 3`")
+        
+        # Parse the arguments - last argument is amount, everything else is resource name
+        amount = args[-1]
+        resource_name_parts = args[:-1]
+        
+        try:
+            amount = int(amount)
+            if amount <= 0:
+                return await ctx.send("❌ **Error**: Amount must be greater than 0.")
+        except ValueError:
+            return await ctx.send("❌ **Error**: Amount must be a valid number.")
+        
+        # Join the resource name parts back together
+        resource_name = " ".join(resource_name_parts)
+        
+        # Normalize the resource name
+        normalized_resource = self.normalize_resource_name(resource_name)
+        
+        # Validate that this is a known resource
+        amulet_cog = self.bot.get_cog("AmuletCrafting")
+        if amulet_cog and normalized_resource not in amulet_cog.ALL_RESOURCES:
+            # Try to suggest similar resources
+            suggestions = []
+            for resource in amulet_cog.ALL_RESOURCES.keys():
+                if resource_name.lower() in resource.lower() or resource.lower() in resource_name.lower():
+                    suggestions.append(resource.replace('_', ' ').title())
+            
+            if suggestions:
+                suggestion_text = ", ".join(suggestions[:3])  # Limit to 3 suggestions
+                return await ctx.send(f"❌ **Unknown Resource**: '{resource_name}' is not a valid crafting resource.\n\nDid you mean: {suggestion_text}?")
+            else:
+                return await ctx.send(f"❌ **Unknown Resource**: '{resource_name}' is not a valid crafting resource.\n\nUse `{ctx.clean_prefix}amulet resources` to see your available resources.")
+        
+        # Check if the other player can receive this resource based on level restrictions
+        other_user = None
+        for user in self.transactions[self.get_transaction(ctx.author, return_id=True)]["content"].keys():
+            if user != ctx.author:
+                other_user = user
+                break
+        
+        if other_user:
+            # Get other player's level
+            other_level = await self.get_player_level(other_user.id)
+            if other_level:
+                # Check if resource is available for their level
+                if amulet_cog:
+                    available_resources = amulet_cog.get_available_resources_for_level(other_level)
+                    if normalized_resource not in available_resources:
+                        return await ctx.send(
+                            f"❌ **Level Restriction**: {other_user.display_name} (Level {other_level}) cannot receive {normalized_resource.replace('_', ' ').title()} "
+                            f"as it requires a higher level. They need to be level {amulet_cog.get_minimum_level_for_resource(normalized_resource)}+ to trade this resource."
+                        )
+        
+        # Check if user has enough resources
+        current_amount = ctx.transaction["resources"].get(normalized_resource, 0)
+        user_resources = await self.get_player_resources(ctx.author.id)
+        user_amount = user_resources.get(normalized_resource, 0)
+        
+        if user_amount >= current_amount + amount:
+            ctx.transaction["resources"][normalized_resource] = current_amount + amount
+            await ctx.message.add_reaction(":blackcheck:441826948919066625")
+            await self.update(ctx)  # Update the trade display
+        else:
+            await ctx.send(f"You don't have enough {normalized_resource.replace('_', ' ').title()}. You have {user_amount}.")
+
+    @has_transaction()
+    @add.command(name="consumable", brief=_("Adds premium consumables to a trade."))
+    @locale_doc
+    async def add_consumable(self, ctx, ctype: str, amount: IntGreaterThan(0)):
+        """
+        `<ctype>` - The type of premium consumable (pet_age_potion, pet_speed_growth_potion, splice_final_potion)
+        `<amount>` - The amount to add
+        """
+        valid_types = ["pet_age_potion", "pet_speed_growth_potion", "splice_final_potion"]
+        ctype = ctype.lower()
+        if ctype not in valid_types:
+            return await ctx.send(f"❌ Invalid consumable type. Valid types: {', '.join(valid_types)}")
+        # Check user inventory
+        async with self.bot.pool.acquire() as conn:
+            row = await conn.fetchrow('SELECT quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;', ctx.author.id, ctype)
+            owned = row["quantity"] if row else 0
+        in_trade = ctx.transaction["consumables"].get(ctype, 0)
+        if owned < in_trade + amount:
+            return await ctx.send(f"❌ You do not have enough {ctype.replace('_', ' ').title()}. You have {owned}.")
+        ctx.transaction["consumables"][ctype] = in_trade + amount
+        await ctx.message.add_reaction(":blackcheck:441826948919066625")
+        await self.update(ctx)
+
+    @has_transaction()
+    @add.command(name="consumables", brief=_("Adds multiple premium consumables to a trade."))
+    @locale_doc
+    async def add_consumables(self, ctx, *args):
+        """
+        `<ctype> <amount>` pairs, e.g. `pet_age_potion 2 petspeed 1`
+        """
+        valid_types = ["pet_age_potion", "pet_speed_growth_potion", "splice_final_potion"]
+        if len(args) % 2 != 0:
+            return await ctx.send("❌ Usage: trade add consumables <type> <amount> ...")
+        async with self.bot.pool.acquire() as conn:
+            for i in range(0, len(args), 2):
+                ctype = args[i].lower()
+                if ctype not in valid_types:
+                    return await ctx.send(f"❌ Invalid consumable type: {ctype}")
+                try:
+                    amount = int(args[i+1])
+                except Exception:
+                    return await ctx.send(f"❌ Invalid amount for {ctype}.")
+                if amount <= 0:
+                    return await ctx.send(f"❌ Amount must be positive for {ctype}.")
+                row = await conn.fetchrow('SELECT quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;', ctx.author.id, ctype)
+                owned = row["quantity"] if row else 0
+                in_trade = ctx.transaction["consumables"].get(ctype, 0)
+                if owned < in_trade + amount:
+                    return await ctx.send(f"❌ You do not have enough {ctype.replace('_', ' ').title()}. You have {owned}.")
+                ctx.transaction["consumables"][ctype] = in_trade + amount
+        await ctx.message.add_reaction(":blackcheck:441826948919066625")
+        await self.update(ctx)
+
+    @has_transaction()
     @trade.group(
         invoke_without_command=True,
         name="set",
@@ -508,7 +736,7 @@ class Transaction(commands.Cog):
         await ctx.send(
             _(
                 "Please select something to set. Example: `{prefix}trade set money"
-                " 1337`"
+                " 1337`\nYou can also use `consumable` for premium potions."
             ).format(prefix=ctx.clean_prefix)
         )
 
@@ -550,6 +778,103 @@ class Transaction(commands.Cog):
             await ctx.send(_("You do not have enough crates."))
 
     @has_transaction()
+    @set_.command(name="resources", brief=_("Sets crafting resources in a trade."))
+    @locale_doc
+    async def set_resources(self, ctx, *args):
+        _(
+            """`<resource_name>` - The name of the crafting resource to set (e.g., dragon_scales, mystic_dust, "fire gem")
+            `<amount>` - The amount of resources to set, must be greater than -1
+
+            Sets an amount of crafting resources in the trading session. You cannot set more resources than you have.
+            Resource names can use underscores (e.g., dragon_scales, fire_gems) or spaces (e.g., "fire gem", "dragon scale").
+            To add or remove resources, consider `{prefix}trade add/remove resources`.
+
+            You need to have an open trading session to use this command."""
+        )
+        if len(args) < 2:
+            return await ctx.send(f"❌ **Usage**: `{ctx.clean_prefix}trade set resources <resource_name> <amount>`\n\nExamples:\n- `{ctx.clean_prefix}trade set resources fire_gems 5`\n- `{ctx.clean_prefix}trade set resources \"fire gem\" 3`")
+        
+        # Parse the arguments - last argument is amount, everything else is resource name
+        amount = args[-1]
+        resource_name_parts = args[:-1]
+        
+        try:
+            amount = int(amount)
+            if amount < 0:
+                return await ctx.send("❌ **Error**: Amount must be 0 or greater.")
+        except ValueError:
+            return await ctx.send("❌ **Error**: Amount must be a valid number.")
+        
+        # Join the resource name parts back together
+        resource_name = " ".join(resource_name_parts)
+        
+        # Normalize the resource name
+        normalized_resource = self.normalize_resource_name(resource_name)
+        
+        # Validate that this is a known resource
+        amulet_cog = self.bot.get_cog("AmuletCrafting")
+        if amulet_cog and normalized_resource not in amulet_cog.ALL_RESOURCES:
+            # Try to suggest similar resources
+            suggestions = []
+            for resource in amulet_cog.ALL_RESOURCES.keys():
+                if resource_name.lower() in resource.lower() or resource.lower() in resource_name.lower():
+                    suggestions.append(resource.replace('_', ' ').title())
+            
+            if suggestions:
+                suggestion_text = ", ".join(suggestions[:3])  # Limit to 3 suggestions
+                return await ctx.send(f"❌ **Unknown Resource**: '{resource_name}' is not a valid crafting resource.\n\nDid you mean: {suggestion_text}?")
+            else:
+                return await ctx.send(f"❌ **Unknown Resource**: '{resource_name}' is not a valid crafting resource.\n\nUse `{ctx.clean_prefix}amulet resources` to see your available resources.")
+        
+        # Check if the other player can receive this resource based on level restrictions
+        other_user = None
+        for user in self.transactions[self.get_transaction(ctx.author, return_id=True)]["content"].keys():
+            if user != ctx.author:
+                other_user = user
+                break
+        
+        if other_user and amount > 0:
+            # Get other player's level
+            other_level = await self.get_player_level(other_user.id)
+            if other_level:
+                # Check if resource is available for their level
+                if amulet_cog:
+                    available_resources = amulet_cog.get_available_resources_for_level(other_level)
+                    if normalized_resource not in available_resources:
+                        return await ctx.send(
+                            f"❌ **Level Restriction**: {other_user.display_name} (Level {other_level}) cannot receive {normalized_resource.replace('_', ' ').title()} "
+                            f"as it requires a higher level. They need to be level {amulet_cog.get_minimum_level_for_resource(normalized_resource)}+ to trade this resource."
+                        )
+        
+        # Check if user has enough resources
+        user_resources = await self.get_player_resources(ctx.author.id)
+        user_amount = user_resources.get(normalized_resource, 0)
+        
+        if user_amount >= amount:
+            ctx.transaction["resources"][normalized_resource] = amount
+            await ctx.message.add_reaction(":blackcheck:441826948919066625")
+            await self.update(ctx)  # Update the trade display
+        else:
+            await ctx.send(f"You don't have enough {normalized_resource.replace('_', ' ').title()}. You have {user_amount}.")
+
+    @has_transaction()
+    @set_.command(name="consumable", brief=_("Sets premium consumables in a trade."))
+    @locale_doc
+    async def set_consumable(self, ctx, ctype: str, amount: IntGreaterThan(0)):
+        valid_types = ["pet_age_potion", "pet_speed_growth_potion", "splice_final_potion"]
+        ctype = ctype.lower()
+        if ctype not in valid_types:
+            return await ctx.send(f"❌ Invalid consumable type. Valid types: {', '.join(valid_types)}")
+        async with self.bot.pool.acquire() as conn:
+            row = await conn.fetchrow('SELECT quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;', ctx.author.id, ctype)
+            owned = row["quantity"] if row else 0
+        if owned < amount:
+            return await ctx.send(f"❌ You do not have enough {ctype.replace('_', ' ').title()}. You have {owned}.")
+        ctx.transaction["consumables"][ctype] = amount
+        await ctx.message.add_reaction(":blackcheck:441826948919066625")
+        await self.update(ctx)
+
+    @has_transaction()
     @trade.group(
         invoke_without_command=True,
         aliases=["del", "rem", "delete"],
@@ -566,7 +891,7 @@ class Transaction(commands.Cog):
         await ctx.send(
             _(
                 "Please select something to remove. Example: `{prefix}trade remove"
-                " money 1337`"
+                " money 1337`\nYou can also use `consumable` for premium potions."
             ).format(prefix=ctx.clean_prefix)
         )
 
@@ -649,6 +974,231 @@ class Transaction(commands.Cog):
             if item:
                 ctx.transaction["items"].remove(item)
         await ctx.message.add_reaction(":blackcheck:441826948919066625")
+
+    @has_transaction()
+    @remove.command(name="resources", brief=_("Removes crafting resources from a trade."))
+    @locale_doc
+    async def remove_resources(self, ctx, *args):
+        _(
+            """`<resource_name>` - The name of the crafting resource to remove (e.g., dragon_scales, mystic_dust, "fire gem")
+            `<amount>` - The amount of resources to remove, must be greater than 0
+
+            Removes crafting resources from the trading session. You cannot remove more resources than you added.
+            Resource names can use underscores (e.g., dragon_scales, fire_gems) or spaces (e.g., "fire gem", "dragon scale").
+            To add resources, consider `{prefix}trade add resources`.
+
+            You need to have an open trading session to use this command."""
+        )
+        if len(args) < 2:
+            return await ctx.send(f"❌ **Usage**: `{ctx.clean_prefix}trade remove resources <resource_name> <amount>`\n\nExamples:\n- `{ctx.clean_prefix}trade remove resources fire_gems 5`\n- `{ctx.clean_prefix}trade remove resources \"fire gem\" 3`")
+        
+        # Parse the arguments - last argument is amount, everything else is resource name
+        amount = args[-1]
+        resource_name_parts = args[:-1]
+        
+        try:
+            amount = int(amount)
+            if amount <= 0:
+                return await ctx.send("❌ **Error**: Amount must be greater than 0.")
+        except ValueError:
+            return await ctx.send("❌ **Error**: Amount must be a valid number.")
+        
+        # Join the resource name parts back together
+        resource_name = " ".join(resource_name_parts)
+        
+        # Normalize the resource name
+        normalized_resource = self.normalize_resource_name(resource_name)
+        
+        current_amount = ctx.transaction["resources"].get(normalized_resource, 0)
+        if current_amount - amount >= 0:
+            if current_amount - amount == 0:
+                del ctx.transaction["resources"][normalized_resource]
+            else:
+                ctx.transaction["resources"][normalized_resource] = current_amount - amount
+            await ctx.message.add_reaction(":blackcheck:441826948919066625")
+            await self.update(ctx)  # Update the trade display
+        else:
+            await ctx.send(f"You only have {current_amount} {normalized_resource.replace('_', ' ').title()} in the trade.")
+
+    @has_transaction()
+    @remove.command(name="consumable", brief=_("Removes premium consumables from a trade."))
+    @locale_doc
+    async def remove_consumable(self, ctx, ctype: str, amount: IntGreaterThan(0)):
+        valid_types = ["pet_age_potion", "pet_speed_growth_potion", "splice_final_potion"]
+        ctype = ctype.lower()
+        if ctype not in valid_types:
+            return await ctx.send(f"❌ Invalid consumable type. Valid types: {', '.join(valid_types)}")
+        in_trade = ctx.transaction["consumables"].get(ctype, 0)
+        if in_trade < amount:
+            return await ctx.send(f"❌ You only have {in_trade} {ctype.replace('_', ' ').title()} in the trade.")
+        if in_trade - amount == 0:
+            del ctx.transaction["consumables"][ctype]
+        else:
+            ctx.transaction["consumables"][ctype] = in_trade - amount
+        await ctx.message.add_reaction(":blackcheck:441826948919066625")
+        await self.update(ctx)
+
+    async def transfer_crafting_resources(self, conn, user1, user2, user1_resources, user2_resources):
+        """Transfer crafting resources between users during a trade."""
+        # Calculate the net transfer for each user
+        all_resources = set(user1_resources.keys()) | set(user2_resources.keys())
+        
+        for resource in all_resources:
+            user1_amount = user1_resources.get(resource, 0)
+            user2_amount = user2_resources.get(resource, 0)
+            
+            # Net transfer: positive means user1 gives to user2, negative means user2 gives to user1
+            net_transfer = user1_amount - user2_amount
+            
+            if net_transfer > 0:
+                # User1 gives to user2
+                await self.transfer_resource(conn, user1.id, user2.id, resource, net_transfer)
+            elif net_transfer < 0:
+                # User2 gives to user1
+                await self.transfer_resource(conn, user2.id, user1.id, resource, abs(net_transfer))
+
+    async def transfer_resource(self, conn, from_user_id, to_user_id, resource_name, amount):
+        """Transfer a specific resource from one user to another."""
+        # Remove from sender
+        await conn.execute(
+            'UPDATE crafting_resources SET amount = amount - $1 WHERE user_id=$2 AND resource_type=$3',
+            amount, from_user_id, resource_name
+        )
+        
+        # Add to receiver
+        existing = await conn.fetchrow(
+            'SELECT amount FROM crafting_resources WHERE user_id=$1 AND resource_type=$2',
+            to_user_id, resource_name
+        )
+        
+        if existing:
+            await conn.execute(
+                'UPDATE crafting_resources SET amount = amount + $1 WHERE user_id=$2 AND resource_type=$3',
+                amount, to_user_id, resource_name
+            )
+        else:
+            await conn.execute(
+                'INSERT INTO crafting_resources (user_id, resource_type, amount) VALUES ($1, $2, $3)',
+                to_user_id, resource_name, amount
+            )
+
+    async def get_player_resources(self, user_id: int):
+        """Get all crafting resources for a player."""
+        try:
+            async with self.bot.pool.acquire() as conn:
+                resources = await conn.fetch(
+                    'SELECT resource_type, amount FROM crafting_resources WHERE user_id=$1 AND amount > 0',
+                    user_id
+                )
+                return {r['resource_type']: r['amount'] for r in resources}
+        except Exception:
+            return {}
+
+    async def get_player_level(self, user_id: int):
+        """Get the player's level from their XP."""
+        try:
+            async with self.bot.pool.acquire() as conn:
+                player = await conn.fetchrow('SELECT xp FROM profile WHERE "user"=$1;', user_id)
+                if player:
+                    from utils import misc as rpgtools
+                    return rpgtools.xptolevel(player['xp'])
+                return 0
+        except Exception:
+            return 0
+
+    def normalize_resource_name(self, resource_name: str):
+        """
+        Normalize resource names to handle various input formats.
+        Converts "fire gem" -> "fire_gems", "dragon scale" -> "dragon_scales", etc.
+        """
+        # Remove quotes and extra whitespace
+        resource_name = resource_name.strip().strip('"\'')
+        
+        # Common mappings for user-friendly names to database names
+        resource_mappings = {
+            # Attack resources
+            "demon claw": "demon_claws",
+            "demon claws": "demon_claws",
+            "fire gem": "fire_gems",
+            "fire gems": "fire_gems",
+            "warrior essence": "warrior_essence",
+            "blood crystal": "blood_crystals",
+            "blood crystals": "blood_crystals",
+            "storm shard": "storm_shards",
+            "storm shards": "storm_shards",
+            "berserker tear": "berserker_tears",
+            "berserker tears": "berserker_tears",
+            "phoenix feather": "phoenix_feathers",
+            "phoenix feathers": "phoenix_feathers",
+            
+            # Defense resources
+            "steel ingot": "steel_ingots",
+            "steel ingots": "steel_ingots",
+            "guardian stone": "guardian_stones",
+            "guardian stones": "guardian_stones",
+            "protective rune": "protective_runes",
+            "protective runes": "protective_runes",
+            "mountain heart": "mountain_hearts",
+            "mountain hearts": "mountain_hearts",
+            "titan shell": "titan_shells",
+            "titan shells": "titan_shells",
+            "ward crystal": "ward_crystals",
+            "ward crystals": "ward_crystals",
+            "sentinel core": "sentinel_cores",
+            "sentinel cores": "sentinel_cores",
+            
+            # Health resources
+            "life crystal": "life_crystals",
+            "life crystals": "life_crystals",
+            "healing herb": "healing_herbs",
+            "healing herbs": "healing_herbs",
+            "vitality essence": "vitality_essence",
+            "phoenix blood": "phoenix_blood",
+            "world tree sap": "world_tree_sap",
+            "unicorn tear": "unicorn_tears",
+            "unicorn tears": "unicorn_tears",
+            "rejuvenation orb": "rejuvenation_orbs",
+            "rejuvenation orbs": "rejuvenation_orbs",
+            
+            # Balance resources
+            "harmony stone": "harmony_stones",
+            "harmony stones": "harmony_stones",
+            "balance orb": "balance_orbs",
+            "balance orbs": "balance_orbs",
+            "equilibrium dust": "equilibrium_dust",
+            "yin yang crystal": "yin_yang_crystals",
+            "yin yang crystals": "yin_yang_crystals",
+            "neutral essence": "neutral_essence",
+            "cosmic fragment": "cosmic_fragments",
+            "cosmic fragments": "cosmic_fragments",
+            "void pearl": "void_pearls",
+            "void pearls": "void_pearls",
+            
+            # Shared resources
+            "dragon scale": "dragon_scales",
+            "dragon scales": "dragon_scales",
+            "mystic dust": "mystic_dust",
+            "refined ore": "refined_ore",
+        }
+        
+        # Check if it's already in the correct format
+        if resource_name in resource_mappings:
+            return resource_mappings[resource_name]
+        
+        # If it's already in underscore format, return as is
+        if '_' in resource_name:
+            return resource_name
+        
+        # Try to convert space-separated to underscore format
+        normalized = resource_name.replace(' ', '_')
+        
+        # Check if the normalized version exists in our mappings
+        for key, value in resource_mappings.items():
+            if key.replace(' ', '_') == normalized:
+                return value
+        
+        # If all else fails, return the original (might be a valid underscore format)
+        return resource_name
 
     async def cog_after_invoke(self, ctx):
         if hasattr(ctx, "transaction"):

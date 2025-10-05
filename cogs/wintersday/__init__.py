@@ -30,30 +30,30 @@ from utils.checks import has_char, is_gm
 from utils.i18n import _, locale_doc
 
 rewards = {
-    1: {"crates": 0, "puzzle": False, "money": 10000},
+    1: {"crates": 1, "puzzle": False, "money": 0},
     2: {"crates": 0, "puzzle": True, "money": 0},
-    3: {"crates": 0, "puzzle": False, "money": 15000},
+    3: {"crates": 0, "puzzle": False, "money": 55000},
     4: {"crates": 1, "puzzle": False, "money": 0},
-    5: {"crates": 0, "puzzle": False, "money": 8000},
-    6: {"crates": 0, "puzzle": True, "money": 0},
-    7: {"crates": 1, "puzzle": False, "money": 0},
-    8: {"crates": 0, "puzzle": False, "money": 10000},
-    9: {"crates": 0, "puzzle": False, "money": 15000},
-    10: {"crates": 1, "puzzle": False, "money": 0},
-    11: {"crates": 0, "puzzle": False, "money": 16000},
-    12: {"crates": 0, "puzzle": False, "money": 19000},
+    25: {"crates": 0, "puzzle": False, "money": 75000},
+    26: {"crates": 0, "puzzle": True, "money": 0},
+    27: {"crates": 1, "puzzle": False, "money": 0},
+    28: {"crates": 0, "puzzle": False, "money": 10000},
+    29: {"crates": 0, "puzzle": False, "money": 35000},
+    30: {"crates": 1, "puzzle": False, "money": 0},
+    11: {"crates": 0, "puzzle": False, "money": 33000},
+    31: {"crates": 0, "puzzle": False, "money": 19000},
     13: {"crates": 0, "puzzle": True, "money": 0},
     14: {"crates": 1, "puzzle": False, "money": 0},
-    15: {"crates": 0, "puzzle": False, "money": 22000},
+    15: {"crates": 0, "puzzle": False, "money": 10000},
     16: {"crates": 0, "puzzle": False, "money": 25500},
     17: {"crates": 0, "puzzle": True, "money": 0},
-    18: {"crates": 0, "puzzle": False, "money": 27000},
+    18: {"crates": 0, "puzzle": False, "money": 55000},
     19: {"crates": 1, "puzzle": False, "money": 0},
     20: {"crates": 0, "puzzle": True, "money": 0},
     21: {"crates": 1, "puzzle": False, "money": 0},
-    22: {"crates": 0, "puzzle": False, "money": 29000},
+    22: {"crates": 0, "puzzle": False, "money": 30000},
     23: {"crates": 0, "puzzle": True, "money": 0},
-    24: {"crates": 1, "puzzle": False, "money": 50000},
+    24: {"crates": 1, "puzzle": False, "money": 150000},
 }
 
 
@@ -67,10 +67,10 @@ class Christmas(commands.Cog):
         _("""Look at your Winter Calendar""")
         try:
             today = datetime.datetime.now().day
-            if today > 25 or today < 1:
-                return await ctx.send(_("No calendar to show!"))
-            await ctx.send("Dodgy Calendar:")
-            await ctx.send(file=discord.File("assets/calendar/24 days of Fable.webp"))
+            #if today > 25 or today < 1:
+                #return await ctx.send(_("No calendar to show!"))
+            #await ctx.send("Dodgy Calendar:")
+            #await ctx.send(file=discord.File("assets/calendar/24 days of Fable.webp"))
         except Exception as e:
             await ctx.send(f"Error {e}")
 
@@ -99,32 +99,22 @@ class Christmas(commands.Cog):
                     ("<:F_Magic:1139514865174720532> Magic Crate", 2000),
                     ("<:F_Legendary:1139514868400132116> Legendary Crate", 5700),
                     ("<:f_divine:1169412814612471869> Divine Crate", 8000),
-                    ("🖼️ Seasonal Background", 1500),
-                    ("🟡 Weapon Type Token", 2000),
+                    ("<:F_mystspark:1139521536320094358> Mystery Crate", 1500),
+                    ("<:Resetpotion2:1245040954382090270> Reset Potion Token", 2000),
                     ("🧩 Puzzle Piece", 2750),
                 ]
 
                 for idx, (name, cost) in enumerate(items, 1):
-                    if ctx.author.id == 708435868842459169:
-                        embed.add_field(name=f"{idx}:  {name}",
-                                        value=_("Cost: {} Pee Snowcones <:f_snowflake:1183619497412804660>").format(
-                                            cost, ""),
-                                        inline=False)
 
-                    else:
-                        embed.add_field(name=f"{idx}:  {name}",
-                                        value=_("Cost: {} Snowflakes <:f_snowflake:1183619497412804660>").format(cost,
-                                                                                                                 ""),
-                                        inline=False)
+                    embed.add_field(name=f"{idx}:  {name}",
+                                    value=_("Cost: {} Snowflakes <:f_snowflake:1183619497412804660>").format(cost,
+                                                                                                             ""),
+                                    inline=False)
 
-                if ctx.author.id == 708435868842459169:
-                    embed.set_footer(
-                        text=_("You have {} Pee Snowcones - $cs buy <ID> to buy.").format(snowflake_count),
-                        icon_url="https://gcdnb.pbrd.co/images/Nnp2NQ4fPJ0h.png")
-                else:
-                    embed.set_footer(
-                        text=_("You have {} Snowflakes - $cs buy <ID> to buy.").format(snowflake_count),
-                        icon_url="https://gcdnb.pbrd.co/images/Nnp2NQ4fPJ0h.png")
+
+                embed.set_footer(
+                    text=_("You have {} Snowflakes - $cs buy <ID> to buy.").format(snowflake_count),
+                    icon_url="https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_f6cb3576-8519-41a9-84e2-8f0d6f1ec618.webp")
 
                 await ctx.send(embed=embed)
 
@@ -230,23 +220,13 @@ class Christmas(commands.Cog):
                 ctx.author.id
             )
 
-            backgrounds = [
-                "https://cdn.discordapp.com/attachments/1145483687568363692/1185805642729009152/Csbg.png",
-            ]
-            async with self.bot.pool.acquire() as conn:
-                background = random.choice(backgrounds)
-                current_backgrounds = await conn.fetchval(
-                    'SELECT "backgrounds" FROM profile WHERE "user"=$1;', ctx.author.id
-                )
-                if current_backgrounds is None or background not in current_backgrounds:
-                    await conn.execute(
-                        'UPDATE profile SET "backgrounds"=array_append("backgrounds", $1) WHERE "user"=$2;',
-                        background,
-                        ctx.author.id,
-                    )
+            await self.bot.pool.execute(
+                'UPDATE profile SET crates_mystery = crates_mystery + 1 WHERE "user"=$1;',
+                ctx.author.id
+            )
+            await ctx.send(
+                "You have successfully purchased a <:F_mystspark:1139521536320094358> for 1500 Snowflakes!")
 
-            await ctx.send("You have successfully purchased a Seasonal Background for 1500 Snowflakes!")
-            await ctx.send("You can find it in $eventbackgrounds")
 
         if item == 5:
             if snowflakes_count < 8000:
@@ -275,10 +255,10 @@ class Christmas(commands.Cog):
             )
 
             await self.bot.pool.execute(
-                'UPDATE profile SET weapontoken = weapontoken + 1 WHERE "user"=$1;',
+                'UPDATE profile SET resetpotion = resetpotion + 1 WHERE "user"=$1;',
                 ctx.author.id
             )
-            await ctx.send("You have successfully purchased a Weapon Type token for 2000 Snowflakes!")
+            await ctx.send("You have successfully purchased a Reset Potion for 2000 Snowflakes!")
 
         if item == 8:
             if snowflakes_count < 2750:
@@ -332,8 +312,8 @@ class Christmas(commands.Cog):
     async def _open(self, ctx):
         _("""Open the Winter Calendar once every day.""")
         today = datetime.datetime.utcnow().date()
-        christmas_too_late = datetime.date(2023, 12, 25)
-        first_dec = datetime.date(2023, 12, 1)
+        christmas_too_late = datetime.date(2025, 1, 3)
+        first_dec = datetime.date(2024, 12, 8)
         if today >= christmas_too_late or today < first_dec:
             return await ctx.send(_("It's not calendar time yet..."))
         reward = rewards[today.day]
@@ -348,7 +328,10 @@ class Christmas(commands.Cog):
                 reward_text = f"{reward_text}\n- {text}"
             if reward["crates"]:
                 rarity = random.choice(
-                    ["legendary"]
+                    ["divine"]
+                    + ["fortune"] * 2
+                    + ["legendary"] * 3
+                    + ["mystery"] * 7
                     + ["magic"] * 2
                     + ["rare"] * 5
                     + ["uncommon"] * 10
@@ -393,28 +376,48 @@ class Christmas(commands.Cog):
     @commands.command()
     @locale_doc
     async def combine(self, ctx):
-
         _("""Combine the mysterious puzzle pieces.""")
-        if ctx.character_data["puzzles"] < 6:
+        if ctx.character_data["puzzles"] < 4:
             return await ctx.send(
                 _(
                     "The mysterious puzzles don't fit together... Maybe some are"
                     " missing?"
                 )
             )
-        await self.bot.pool.fetchval(
-            'UPDATE profile SET "chrissy2023"=true, "puzzles"=0 WHERE "user"=$1 RETURNING "chrissy2023";',
-            ctx.author.id
-        )
 
-        await ctx.send(
-            _(
-                "Congratulations on solving the holiday puzzles! A jolly voice in your mind cheers: *Well done, festive friend!* "
-                "Now, embrace the holiday spirit and unlock a special event class with `$class`. Experience the magic of Christmas in a whole new way! "
-                "Spread joy and merriment throughout your journey. Happy holidays <3!"
+        async with self.bot.pool.acquire() as conn:
+            # Check if they already have chrissy2023
+            has_class = await conn.fetchval(
+                'SELECT chrissy2023 FROM profile WHERE "user"=$1;',
+                ctx.author.id
+            )
 
-            ).format(prefix=ctx.clean_prefix)
-        )
+            if has_class:
+                # They already have the class, give them a high quality candy
+                await conn.execute(
+                    'UPDATE profile SET "puzzles"=0, "highqualitylevelcandy"="highqualitylevelcandy"+1 WHERE "user"=$1;',
+                    ctx.author.id
+                )
+                await ctx.send(
+                    _(
+                        "Congratulations on solving the holiday puzzles again! A jolly voice in your mind cheers: *Well done, festive friend!* "
+                        "Since you already have the Christmas class unlocked, Santa's Experimental Candy Factory has gifted you 1 high quality level candy! `$i` "
+                        "Spread joy and merriment throughout your journey. Happy holidays <3!"
+                    )
+                )
+            else:
+                # First time - unlock class and give regular candy
+                await conn.execute(
+                    'UPDATE profile SET "chrissy2023"=true, "puzzles"=0, "levelcandy"="levelcandy"+1 WHERE "user"=$1;',
+                    ctx.author.id
+                )
+                await ctx.send(
+                    _(
+                        "Congratulations on solving the holiday puzzles! A jolly voice in your mind cheers: *Well done, festive friend!* "
+                        "Now, embrace the holiday spirit and unlock a special event class with `$class` This will be the final year for this class to be obtained. You also received 1 level candy from Santa's Experimental Candy Factory `$i`. Experience the magic of Christmas in a whole new way! "
+                        "Spread joy and merriment throughout your journey. Happy holidays <3!"
+                    ).format(prefix=ctx.clean_prefix)
+                )
 
     @has_char()
     @is_gm()

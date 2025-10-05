@@ -232,12 +232,10 @@ class WarMap(commands.Cog):
     @is_gm()
     @commands.command()
     async def gmstartwar(self, ctx):
-        if ctx.author.id == 295173706496475136:
-            await ctx.send("Initializing war data...")
-            await self.set_default_values()
-            await ctx.send("War data initialized with default values!")
-        else:
-            return
+        await ctx.send("Initializing war data...")
+        await self.set_default_values()
+        await ctx.send("War data initialized with default values!")
+
 
     @is_gm()
     @commands.command()
@@ -412,8 +410,6 @@ class WarMap(commands.Cog):
     async def battletest(self, ctx, force1_name: str, force2_name: str):
         try:
             """Simulate a battle between two forces."""
-            if ctx.author.id != 295173706496475136:
-                await ctx.send("Access Denied")
             force1 = {'name': force1_name, 'strength': random.randint(100000, 120000), 'min_damage': 10, 'max_damage': 60,
                       'critical_chance': 0.2, 'morale': random.uniform(1, 1)}
             force2 = {'name': force2_name, 'strength': random.randint(100000, 110000), 'min_damage': 10, 'max_damage': 50,

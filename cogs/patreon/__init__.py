@@ -188,6 +188,7 @@ class Patreon(commands.Cog):
 
         try:
             # Fetch the user from Discord's servers
+
             user = await self.bot.fetch_user(user_id)
 
             # Send a direct message to the user
@@ -229,7 +230,7 @@ class Patreon(commands.Cog):
 
             if new_type == "Shield":
                 hand = "left"
-            elif new_type in ("Spear", "Wand"):
+            elif new_type in "Spear":
                 hand = "right"
             elif new_type in ("Bow", "Mace", "Scythe"):
                 hand = "both"
@@ -427,9 +428,9 @@ class Patreon(commands.Cog):
     @is_patron("gold")
     @has_char()
     @next_day_cooldown()
-    @commands.command(brief=_("[gold] Receive a daily booster"))
+    @commands.command(brief=_("[gold] Receive a daily booster"), aliases=["donatordaily"])
     @locale_doc
-    async def donatordaily(self, ctx):
+    async def boosterdaily(self, ctx):
         _(
             """Receive a daily booster. The booster can be a time, money or luck booster.
 

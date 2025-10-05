@@ -39,11 +39,11 @@ class SoulforgeDefender(commands.Cog):
                 # Scale intervention chance based on divine attention
                 base_chance = 0
                 if player['divine_attention'] >= 95:
-                    base_chance = 0.40  # 40% chance at very high scrutiny
+                    base_chance = 1  # 40% chance at very high scrutiny
                 elif player['divine_attention'] >= 90:
-                    base_chance = 0.25  # 25% chance at high scrutiny
+                    base_chance = 0.75  # 25% chance at high scrutiny
                 elif player['divine_attention'] >= 80:
-                    base_chance = 0.15  # 15% chance at moderate scrutiny
+                    base_chance = 0.50  # 15% chance at moderate scrutiny
                 
                 if random.random() < base_chance:
                     user = self.bot.get_user(player['user_id'])
@@ -243,7 +243,8 @@ class SoulforgeDefender(commands.Cog):
                 """, ctx.author.id)
                 
                 # Create the divine force based on player's god
-                god = forge_data['god'].lower()
+                
+                god = forge_data.get("god") or "no god"
                 divine_attention = forge_data.get('divine_attention', 100)
                 divine_force = self.create_divine_force(god, divine_attention)
                 
@@ -412,7 +413,7 @@ class SoulforgeDefender(commands.Cog):
                         Luck += Luck * 0.25
                         Luck = min(Luck, 100.0)
 
-                    base_health = 250.0
+                    base_health = 200.0
                     health = float(result['health']) + base_health
                     stathp = float(result['stathp']) * 50.0
                     player_classes = result['class']
@@ -424,7 +425,7 @@ class SoulforgeDefender(commands.Cog):
 
                     # For Soulforge battles, we'll use level 100 as default
                     level = 100
-                    total_health = health + level * 5.0 + stathp
+                    total_health = health + level * 15.0 + stathp
 
                     # Get tank evolution level from player classes
                     tank_evolution = None
@@ -631,6 +632,7 @@ class SoulforgeDefender(commands.Cog):
             
             # Battle initialization
             battle_round = 1
+            action = 1  # Initialize action counter starting at 1
             battle_start_time = datetime.datetime.utcnow()
             battle_timeout = battle_start_time + datetime.timedelta(minutes=10)
             
@@ -730,7 +732,31 @@ class SoulforgeDefender(commands.Cog):
                 # Skip if this combatant is defeated
                 if current_combatant["hp"] <= 0:
                     current_turn_index = (current_turn_index + 1) % len(all_combatants)
+                    action += 1  # Increment action counter
                     continue
+                
+                # Check if all defenders except forge are defeated
+                living_defenders = [c for c in player_team if c["hp"] > 0 and not c.get("is_forge", False)]
+                if len(living_defenders) == 0 and forge_combatant["hp"] > 0:
+                    # All defenders are defeated, only forge remains
+                    forge_combatant["hp"] = 0
+                    battle_log.append((battle_round, f"*With no defenders remaining, the divine attackers focus all their power on the Soulforge... It crumbles under the assault!*"))
+                    
+                    # Update the battle display
+                    self.update_combatant_hp(player_team, divine_force, embed)
+                    
+                    # Update the battle log
+                    battle_log_text = ""
+                    visible_logs = list(battle_log)[-5:]  # Show only the most recent 5 log entries
+                    for line in visible_logs:
+                        battle_log_text += f"**Round {line[0]}**\n{line[1]}\n\n"
+                        
+                    embed.set_field_at(2, name="Battle Log", value=battle_log_text, inline=False)
+                    await battle_message.edit(embed=embed)
+                    await asyncio.sleep(2)
+                    
+                    await self.handle_battle_defeat(ctx, forge_data, battle_message)
+                    return
                 
                 # Process the combatant's action based on their team
                 if team == "player":
@@ -875,6 +901,7 @@ class SoulforgeDefender(commands.Cog):
                 
                 # Move to the next combatant's turn
                 current_turn_index = (current_turn_index + 1) % len(all_combatants)
+                action += 1  # Increment action counter
                 
                 # If we've gone through all combatants, increment the round number
                 if current_turn_index == 0:
@@ -938,11 +965,12 @@ class SoulforgeDefender(commands.Cog):
     async def handle_battle_victory(self, ctx, forge_data, player_team, battle_message):
         """Handle victory outcome"""
         forge_combatant = next(c for c in player_team if c.get("is_forge", False))
-        forge_damage_percent = 1 - (forge_combatant["hp"] / forge_combatant["max_hp"])
+        # Calculate new forge condition based on remaining HP percentage
+        forge_hp_percent = int((forge_combatant["hp"] / forge_combatant["max_hp"]) * 100)
         forge_condition = forge_data.get('forge_condition', 100)
-        condition_damage = int(forge_condition * forge_damage_percent * 0.3)
         
-        new_condition = max(0, forge_condition - condition_damage)
+        # Set the new condition based on HP percentage
+        new_condition = forge_hp_percent
         
         # Update the database
         async with self.bot.pool.acquire() as conn:
@@ -1064,7 +1092,8 @@ class SoulforgeDefender(commands.Cog):
         """Handle defeat outcome"""
         # Get the forge combatant details from the battle_message embed
         forge_condition = forge_data.get('forge_condition', 100)
-        new_condition = max(10, forge_condition - 50)
+        # Set to 0 for complete defeat
+        new_condition = 0
         
         # Update the database
         async with self.bot.pool.acquire() as conn:

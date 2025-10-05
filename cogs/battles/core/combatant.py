@@ -39,7 +39,7 @@ class Combatant:
         return self.hp > 0
     
     def take_damage(self, amount):
-        """Apply damage to the combatant, accounting for shields"""
+        """Apply damage to the combatant, accounting for shields and immortality"""
         damage = Decimal(str(amount))
         
         # Check if combatant has shield attribute
@@ -56,7 +56,11 @@ class Combatant:
         # Apply remaining damage to HP
         if damage > 0:
             self.hp -= damage
-            if self.hp < 0:
+            
+            # Check for water immortality before setting HP to 0
+            if self.hp <= 0 and getattr(self, 'water_immortality', False):
+                self.hp = Decimal('1')  # Stay at 1 HP when immortal
+            elif self.hp < 0:
                 self.hp = Decimal('0')
                 
         return self.hp
