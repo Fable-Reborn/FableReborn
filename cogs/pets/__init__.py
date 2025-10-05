@@ -2871,7 +2871,7 @@ class Pets(commands.Cog):
                         )
         except Exception as e:
             print(f"Error in check_egg_hatches: {e}")
-            user = self.bot.get_user(295173706496475136)
+            user = self.bot.get_user(171645746993561600)
             if user:
                 await user.send(f"Error in check_egg_hatches: {e}")
 

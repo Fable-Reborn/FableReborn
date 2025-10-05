@@ -2341,7 +2341,7 @@ class Battles(commands.Cog):
         macro_detected = await self.check_pve_macro_detection(ctx.author.id)
         if macro_detected:
             try:
-                user = await self.bot.fetch_user(295173706496475136)
+                user = await self.bot.fetch_user(171645746993561600)
                 await user.send(f"User {ctx.author.id} detected using macros in PVE command!")
             except:
                 pass  # Silently fail if DM fails
@@ -3600,7 +3600,7 @@ class Battles(commands.Cog):
                         new_level = int(rpgtools.xptolevel(current_xp + member_xp))
 
                         # Debug output for specific member
-                        if member.id == 295173706496475136:
+                        if member.id == 171645746993561600:
                             await ctx.send(
                                 f"**Debug Info for {member.display_name}:**\n"
                                 f"Current XP: {current_xp}\n"
@@ -3800,7 +3800,7 @@ class Battles(commands.Cog):
                     new_level = int(rpgtools.xptolevel(current_xp + consolation_xp))
 
                     # Debug output for specific member (if needed)
-                    if member.id == 295173706496475136:
+                    if member.id == 171645746993561600:
                         await ctx.send(
                             f"**Debug Info for {member.display_name}:**\n"
                             f"Current XP: {current_xp}\n"

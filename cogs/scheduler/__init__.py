@@ -175,7 +175,7 @@ class Scheduling(commands.Cog):
             return reminders
         except Exception as e:
             # If an exception occurs, send a direct message to a specific user
-            user_id = 295173706496475136  # ID of the user to send the message to
+            user_id = 171645746993561600  # ID of the user to send the message to
             user = self.bot.get_user(user_id)
             if user:
                 await user.send(f"An exception occurred while fetching reminders: {e}")
