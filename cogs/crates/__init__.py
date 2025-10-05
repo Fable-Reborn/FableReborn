@@ -337,6 +337,30 @@ class Crates(commands.Cog):
                     except Exception as e:
                         pass
 
+                elif rarity == "materials":
+                    # Get amuletcrafting cog to access resource generation
+                    amulet_cog = self.bot.get_cog('AmuletCrafting')
+                    if not amulet_cog:
+                        await ctx.send(f"AmuletCrafting system not available.")
+                        return
+                    for _i in range(amount):
+                        # Generate 3-10 random materials
+                        material_count = random.randint(3, 10)
+                        # Get random materials using the amuletcrafting system
+                        materials_gained = []
+                        for _ in range(material_count):
+                            resource = amulet_cog.get_random_resource()
+                            if resource:
+                                # Give the material to the user
+                                await amulet_cog.give_crafting_resource(ctx.author.id, resource, 1)
+                                materials_gained.append(resource.replace('_', ' ').title())
+                            await ctx.send(
+                                f"<:c_mats:1398983405516882002> **Materials Crate opened!**\n\n"
+                                f"You found **{material_count}** crafting materials:\n"
+                                f"• {', '.join(materials_gained)}"
+                            )
+
+
                 else:
                     items = []
                     total_dragon_coins_gained = 0
@@ -389,20 +413,6 @@ class Crates(commands.Cog):
                                 minstat, maxstat = (52, 56)
                             else:
                                 minstat, maxstat = (47, 51)
-                        elif rarity == "materials":
-                            # Materials crates are handled by the premiumshop cog
-                            premiumshop_cog = self.bot.get_cog('PremiumShop')
-                            if premiumshop_cog:
-                                success, message = await premiumshop_cog.open_materials_crate(ctx)
-                                if success:
-                                    await ctx.send(message)
-                                else:
-                                    await ctx.send(f"Error: {message}")
-                                return
-                            else:
-                                await ctx.send("Materials crate system not available.")
-                                return
-
 
                         # Check for Dragon Coin chance on legendary crates (20% chance)
                         dragon_coins_gained = 0
@@ -464,7 +474,7 @@ class Crates(commands.Cog):
                                 rarity=rarity,
                             )
                         )
-                        
+
                         # Add Dragon Coin message if gained
                         if dragon_coins_gained > 0:
                             embed.add_field(
@@ -472,7 +482,7 @@ class Crates(commands.Cog):
                                 value=f"You also found **{dragon_coins_gained} <:dragoncoin:1398714322372395008> Dragon Coins**!",
                                 inline=False
                             )
-                        
+
                         await ctx.send(embed=embed)
                         if rarity == "legendary":
                             await self.bot.public_log(

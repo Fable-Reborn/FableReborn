@@ -597,8 +597,7 @@ class PremiumShop(commands.Cog):
                     # Give the material to the user
                     await amulet_cog.give_crafting_resource(ctx.author.id, resource, 1)
                     materials_gained.append(resource.replace('_', ' ').title())
-            
-        
+
         success_message = (
             f"<:c_mats:1398983405516882002> **Materials Crate opened!**\n\n"
             f"You found **{material_count}** crafting materials:\n"
