@@ -214,19 +214,19 @@ class Crates(commands.Cog):
                     for _i in range(amount):
                         rng = random.randint(0, 10000)
 
-                        if rng < 3:
+                        if rng < 5:
                             new_rarity = "divine"
-                        elif rng < 8:
+                        elif rng < 10:
                             new_rarity = "fortune"
-                        elif rng < 15:
+                        elif rng < 20:
                             new_rarity = "legendary"
-                        elif rng < 25:
+                        elif rng < 50:
                             new_rarity = "materials"
                         elif rng < 200:
                             new_rarity = "magic"
-                        elif rng < 1000:
+                        elif rng < 2500:
                             new_rarity = "rare"
-                        elif rng < 2000:
+                        elif rng < 5000:
                             new_rarity = "uncommon"
                         else:
                             new_rarity = "common"
