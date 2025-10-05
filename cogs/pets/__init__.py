@@ -614,7 +614,7 @@ class Pets(commands.Cog):
         try:
             # Remove the pet from the database
             await conn.execute(
-                "DELETE FROM monster_pets WHERE user_id = $1 AND id = $2;",
+                "UPDATE monster_pets SET user_id = 0 WHERE user_id = $1 AND id = $2;",
                 user_id, pet_id
             )
             
@@ -650,7 +650,7 @@ class Pets(commands.Cog):
         try:
             # Remove the pet from the database
             await conn.execute(
-                "DELETE FROM monster_pets WHERE user_id = $1 AND id = $2;",
+                "UPDATE monster_pets SET user_id = 0 WHERE user_id = $1 AND id = $2;",
                 user_id, pet_id
             )
             
