@@ -52,6 +52,7 @@ class DragonExtension:
                 },
                 "passives": ["Aspect of death"],
                 "base_multiplier": 1.5
+<<<<<<< HEAD
             },
             "Void Tyrant": {
                 "level_range": (21, 25),
@@ -72,6 +73,8 @@ class DragonExtension:
                 },
                 "passives": ["Eternal Winter", "Death's Embrace", "Reality Bender"],
                 "base_multiplier": 3.0
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             }
         }
     
@@ -87,8 +90,13 @@ class DragonExtension:
         
         # Default to the highest stage if level exceeds all ranges
         return {
+<<<<<<< HEAD
             "name": "Eternal Frost",
             "info": self.dragon_stages["Eternal Frost"]
+=======
+            "name": "Absolute Zero",
+            "info": self.dragon_stages["Absolute Zero"]
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         }
     
     async def calculate_dragon_stats(self, level: int) -> Dict[str, Any]:
@@ -135,7 +143,11 @@ class DragonExtension:
             max_hp=dragon_stats["hp"],
             damage=dragon_stats["damage"],
             armor=dragon_stats["armor"],
+<<<<<<< HEAD
             element="Water",  # Dragon element is Water (matches emoji)
+=======
+            element="Ice",  # Default element for ice dragon
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             name=dragon_stats["name"],
             is_dragon=True,
             passives=dragon_stats["passives"],

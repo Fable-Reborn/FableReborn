@@ -1,12 +1,16 @@
 # battles/extensions/pets.py
 from ..core.combatant import Combatant
 from decimal import Decimal
+<<<<<<< HEAD
 import random
 import datetime
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
 
 class PetExtension:
     """Extension for pet integration in battles"""
     
+<<<<<<< HEAD
     def find_owner_combatant(self, pet_combatant):
         """Find the owner combatant object from the same team as the pet"""
         if not hasattr(pet_combatant, 'owner') or not hasattr(pet_combatant, 'team'):
@@ -2493,6 +2497,8 @@ class PetExtension:
         
         return messages
     
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
     async def get_pet_combatant(self, ctx, user, include_element=True):
         """Create a combatant object for a player's pet if they have one equipped"""
         if not user:
@@ -2528,6 +2534,7 @@ class PetExtension:
             pet_luck = round(pet_luck, 2)
             pet_luck = min(pet_luck, 100.0)  # Cap at 100% like owner
             
+<<<<<<< HEAD
             # Calculate trust bonus
             trust_level = pet.get('trust_level', 0)
             trust_bonus = self.get_trust_bonus(trust_level)
@@ -2555,10 +2562,20 @@ class PetExtension:
                 max_hp=final_hp,
                 armor=final_armor,
                 damage=final_damage,
+=======
+            # Create pet combatant
+            return Combatant(
+                user=user,  # Reference to owner
+                hp=float(pet["hp"]),
+                max_hp=float(pet["hp"]),
+                armor=float(pet["defense"]),
+                damage=float(pet["attack"]),
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                 luck=pet_luck,  # Use owner's luck instead of fixed value
                 element=pet_element,
                 is_pet=True,
                 owner=user,
+<<<<<<< HEAD
                 name=pet["name"],
                 pet_id=pet["id"]
             )
@@ -2624,3 +2641,13 @@ class PetExtension:
         except Exception as e:
             print(f"Error awarding battle experience to pet {pet_id}: {e}")
             return None
+=======
+                name=pet["name"],  # Changed from pet_name to name to ensure pet has correct name
+                pet_id=pet["id"]
+            )
+    
+    def apply_pet_bonuses(self, pet_combatant, owner_combatant):
+        """Apply any special bonuses between pet and owner"""
+        # Currently no extra bonuses, but can be added here
+        return
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e

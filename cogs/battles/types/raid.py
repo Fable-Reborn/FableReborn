@@ -52,9 +52,12 @@ class RaidBattle(Battle):
         self.started = True
         self.start_time = datetime.datetime.utcnow()
         
+<<<<<<< HEAD
         # Save initial battle data to database for replay
         await self.save_battle_to_database()
         
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         # Create team lists for easier access
         self.team_a = self.teams[0]
         self.team_b = self.teams[1]
@@ -71,7 +74,10 @@ class RaidBattle(Battle):
         # Create battle log
         await self.add_to_log(f"Raidbattle started between Team A and Team B!")
         
+<<<<<<< HEAD
 
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         # Create and send initial embed
         embed = await self.create_battle_embed()
         self.battle_message = await self.ctx.send(embed=embed)
@@ -153,11 +159,15 @@ class RaidBattle(Battle):
         # Process attack based on luck
         luck_roll = random.randint(1, 100)
         
+<<<<<<< HEAD
         # Check for perfect accuracy from Night Vision skill
         has_perfect_accuracy = getattr(current_combatant, 'perfect_accuracy', False)
         hit_success = has_perfect_accuracy or (luck_roll <= current_combatant.luck)
         
         if hit_success:
+=======
+        if luck_roll <= current_combatant.luck:
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             # Attack hits
             
             # Special case for mage fireball
@@ -204,6 +214,7 @@ class RaidBattle(Battle):
                 
                 # Add variance and apply armor
                 raw_damage += Decimal(damage_variance)
+<<<<<<< HEAD
                 
                 # PROCESS PET SKILL EFFECTS ON ATTACK
                 skill_messages = []
@@ -240,10 +251,15 @@ class RaidBattle(Battle):
                 # Store the actual final damage dealt (for skills like Soul Drain)
                 if current_combatant.is_pet:
                     setattr(current_combatant, 'last_damage_dealt', damage)
+=======
+                blocked_damage = min(raw_damage, target.armor)
+                damage = max(raw_damage - target.armor, Decimal('10'))
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                 
                 target.take_damage(damage)
                 
                 message = f"{current_combatant.name} attacks! {target.name} takes **{self.format_number(damage)} HP** damage."
+<<<<<<< HEAD
                 
                 # Add skill effect messages
                 if skill_messages:
@@ -285,6 +301,8 @@ class RaidBattle(Battle):
                     
                     # Clear the summon flag
                     delattr(current_combatant, 'summon_skeleton')
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 
@@ -359,6 +377,7 @@ class RaidBattle(Battle):
         # Add message to battle log
         await self.add_to_log(message)
         
+<<<<<<< HEAD
         # PROCESS PET SKILL EFFECTS PER TURN
         if hasattr(self.ctx.bot.cogs["Battles"], "battle_factory"):
             pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
@@ -385,6 +404,10 @@ class RaidBattle(Battle):
         # Update the battle display
         await self.update_display()
         await asyncio.sleep(1)
+=======
+        # Update the battle display
+        await self.update_display()
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         
         return True
     
@@ -462,9 +485,12 @@ class RaidBattle(Battle):
         log_text = "\n\n".join([f"**Action #{i}**\n{msg}" for i, msg in self.log])
         embed.add_field(name="Battle Log", value=log_text or "Battle starting...", inline=False)
         
+<<<<<<< HEAD
         # Add battle ID to footer for GM replay functionality
         embed.set_footer(text=f"Battle ID: {self.battle_id}")
         
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         return embed
     
     async def update_display(self):
@@ -480,9 +506,12 @@ class RaidBattle(Battle):
         """End the battle and determine rewards"""
         self.finished = True
         
+<<<<<<< HEAD
         # Save final battle data to database for replay
         await self.save_battle_to_database()
         
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         # Check if it's a timeout/tie
         if await self.is_timed_out():
             # It's a tie, refund money
@@ -545,13 +574,19 @@ class RaidBattle(Battle):
                 break
         
         # Handle rewards
+<<<<<<< HEAD
         if winner and loser:
             # Award PvP wins to winners (regardless of money)
+=======
+        if self.money > 0 and winner and loser:
+            # Award money and PvP wins to winner
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             winner_ids = [c.user.id for c in winning_team.combatants if not c.is_pet and hasattr(c.user, "id")]
             
             # Skip rewards if no valid winners
             if winner_ids:
                 async with self.ctx.bot.pool.acquire() as conn:
+<<<<<<< HEAD
                     # Award PvP wins to all winners
                     for winner_id in winner_ids:
                         await conn.execute(
@@ -577,6 +612,25 @@ class RaidBattle(Battle):
                             data={"Gold": self.money},
                             conn=conn,
                         )
+=======
+                    for winner_id in winner_ids:
+                        await conn.execute(
+                            'UPDATE profile SET "pvpwins"="pvpwins"+1, "money"="money"+$1 WHERE'
+                            ' "user"=$2;',
+                            self.money * 2 / len(winner_ids),  # Split the money among winners
+                            winner_id,
+                        )
+                    
+                    # Log the transaction for first player only (for simplicity)
+                    await self.ctx.bot.log_transaction(
+                        self.ctx,
+                        from_=loser.id,
+                        to=winner.id,
+                        subject="RaidBattle Bet",
+                        data={"Gold": self.money},
+                        conn=conn,
+                    )
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         
         return winner, loser
     

@@ -26,6 +26,7 @@ from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils.checks import has_char, has_money, is_gm
 from utils.i18n import _, locale_doc
 from utils.joins import JoinView, SingleJoinView
+<<<<<<< HEAD
 from classes.errors import NoChoice
 
 class PetEggSelect(Select):
@@ -49,11 +50,28 @@ class PetEggSelect(Select):
         
         super().__init__(
             placeholder=f"Select a pet/egg to release... (Page {self.current_page + 1}/{self.total_pages})",
+=======
+
+class PetEggSelect(Select):
+    def __init__(self, items):
+        self.items = items
+        options = [
+            discord.SelectOption(
+                label=f"{i+1}. {item['type'].title()}",
+                description=item['display_name'][:50],  # Limit description length
+                value=str(i)
+            ) for i, item in enumerate(items)
+        ]
+        
+        super().__init__(
+            placeholder="Select a pet/egg to release...",
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             min_values=1,
             max_values=1,
             options=options
         )
     
+<<<<<<< HEAD
     def _safe_description(self, item):
         """Create a safe description that won't cause Discord API issues"""
         try:
@@ -70,6 +88,8 @@ class PetEggSelect(Select):
             print(f"Error creating description: {e}")
             return "Unknown"
     
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
     async def callback(self, interaction: discord.Interaction):
         # Update the view with the selected item's details
         view = self.view
@@ -246,6 +266,7 @@ class PetEggReleaseView(View):
         self.items = items
         self.value = None
         self.message = None  # Store the message reference
+<<<<<<< HEAD
         self.current_page = 0
         self.total_pages = max(1, (len(items) + 24) // 25)  # Calculate total pages (25 items per page)
         
@@ -400,6 +421,97 @@ class PetEggReleaseView(View):
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, row=1, emoji="❌")
     async def cancel(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.author.id:
+=======
+        
+        # Add the select dropdown
+        self.select = PetEggSelect(items)
+        self.add_item(self.select)
+        
+    @discord.ui.button(label="Release", style=discord.ButtonStyle.danger, row=1, emoji="🗑️")
+    async def confirm_release(self, interaction: discord.Interaction, button: Button):
+        try:
+            if interaction.user.id != self.author.id:
+                return await interaction.response.send_message("This is not your selection.", ephemeral=True)
+                
+            if not hasattr(self.select, 'values') or not self.select.values:
+                return await interaction.response.send_message("Please select a pet/egg to release first.", ephemeral=True)
+                
+            # Get the selected item for the confirmation message
+            try:
+                selected_index = int(self.select.values[0])
+                if selected_index < 0 or selected_index >= len(self.items):
+                    return await interaction.response.send_message("Invalid selection. Please try again.", ephemeral=True)
+                    
+                selected_item = self.items[selected_index]
+                
+                # Get the appropriate name based on item type
+                if selected_item.get('type') == 'egg':
+                    item_name = selected_item.get('egg_type', selected_item.get('display_name', 'Unknown Egg'))
+                    item_type = 'Egg'
+                else:
+                    item_name = selected_item.get('name', selected_item.get('display_name', 'Unknown Pet'))
+                    item_type = selected_item.get('type', 'item').capitalize()
+                
+                # Show confirmation dialog with item details
+                confirm_embed = discord.Embed(
+                    title=f"⚠️ Release {item_type}",
+                    description=f"Are you sure you want to release **{item_name}**?\n\nThis action cannot be undone!",
+                    color=discord.Color.orange()
+                )
+                
+                # Add item details to the confirmation
+                if selected_item['type'] == 'pet':
+                    confirm_embed.add_field(
+                        name="Pet Details",
+                        value=f"**Level:** {selected_item.get('growth_stage', 'Unknown')}\n"
+                              f"**IV:** {selected_item.get('IV', '?')}%",
+                        inline=False
+                    )
+                else:  # egg
+                    confirm_embed.add_field(
+                        name="Egg Details",
+                        value=f"**Type:** {selected_item.get('egg_type', 'Unknown')}\n"
+                              f"**IV:** {selected_item.get('IV', '?')}%",
+                        inline=False
+                    )
+                
+                confirm_view = ConfirmView(self.author)
+                
+                # Send the confirmation message
+                await interaction.response.send_message(
+                    embed=confirm_embed,
+                    view=confirm_view,
+                    ephemeral=True
+                )
+                
+                # Wait for confirmation
+                await confirm_view.wait()
+                
+                if confirm_view.value is None:
+                    # Timeout
+                    await interaction.followup.send("Release timed out. No action taken.", ephemeral=True)
+                    return
+                    
+                if confirm_view.value:  # Confirmed
+                    self.value = selected_index
+                    self.stop()
+                else:  # Cancelled
+                    await interaction.followup.send("Release cancelled.", ephemeral=True)
+                    
+            except Exception as e:
+                print(f"Error in confirm_release: {e}")
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
+                
+        except Exception as e:
+            print(f"Error in confirm_release: {e}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("An error occurred while processing your request. Please try again.", ephemeral=True)
+    
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, row=1, emoji="❌")
+    async def cancel(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.author.id:
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             await interaction.response.send_message("This is not your selection.", ephemeral=True)
             return
             
@@ -491,6 +603,7 @@ class DialogueView(discord.ui.View):
         await interaction.response.defer()
         self.stop()
 
+<<<<<<< HEAD
 class CouplesDialogueView(discord.ui.View):
     def __init__(self, pages: list[discord.Embed], author: discord.User, partner: discord.User):
         super().__init__(timeout=300)  # 5 minute timeout
@@ -677,12 +790,15 @@ class CouplesTowerView(discord.ui.View):
             if self.on_cancel:
                 await self.on_cancel()
 
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
 class Battles(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.forceleg = False
         self.battle_factory = BattleFactory(bot)
         self.fighting_players = {}
+<<<<<<< HEAD
         
         self.dragon_party_views = []  # Track active dragon party views
         self.battle_settings = BattleSettings(bot)
@@ -694,6 +810,8 @@ class Battles(commands.Cog):
         self.pve_macro_detection = {}  # {user_id: {"count": int, "timestamp": float}}
         
         self.load_data_files()
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
 
         # Element mappings
         self.emoji_to_element = {
@@ -709,6 +827,7 @@ class Battles(commands.Cog):
 
         # Load data files
         self.load_data_files()
+<<<<<<< HEAD
         
         # Initialize database tables
         asyncio.create_task(self.initialize_tables())
@@ -815,13 +934,63 @@ class Battles(commands.Cog):
         
         await ctx.send(f"Set macro detection count for user {user_id} to {count}")
     
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
 
+    def load_data_files(self):
+        """Load all necessary data files for battles"""
+        # Load battle tower data
+        with open(os.path.join(os.path.dirname(__file__), 'battle_tower_data.json'), 'r') as f:
+            self.battle_data = json.load(f)
 
+<<<<<<< HEAD
     
     async def is_player_in_fight(self, player_id):
         """Check if the player is in a fight based on the dictionary"""
         return player_id in self.fighting_players
 
+=======
+        # Load game levels
+        with open(os.path.join(os.path.dirname(__file__), 'game_levels.json'), 'r') as f:
+            data = json.load(f)
+            self.levels = data['levels']
+
+        # Load dialogue data
+        with open(os.path.join(os.path.dirname(__file__), 'battle_tower_dialogues.json'), 'r') as f:
+            self.dialogue_data = json.load(f)
+
+        # Load monsters if file exists
+        try:
+            with open("monsters.json", "r") as f:
+                self.monsters_data = json.load(f)
+        except FileNotFoundError:
+            self.monsters_data = {}
+            
+        # Initialize element extension
+        from .extensions.elements import ElementExtension
+        self.element_ext = ElementExtension()
+
+    @commands.command()
+    @commands.is_owner()
+    async def element_debug(self, ctx):
+        """View element debug information (Owner only)"""
+        try:
+            debug_info = self.element_ext.get_debug_info()
+            if not debug_info:
+                return await ctx.send("No debug information available yet. Try running a battle first.")
+                
+            # Split into chunks that fit in Discord messages
+            for i in range(0, len(debug_info), 1900):
+                chunk = debug_info[i:i+1900]
+                await ctx.send(f"```\n{chunk}\n```")
+        except Exception as e:
+            await ctx.send(f"Error getting debug info: {str(e)}")
+    
+    async def is_player_in_fight(self, player_id):
+        """Check if the player is in a fight based on the dictionary"""
+        return player_id in self.fighting_players
+
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
     async def add_player_to_fight(self, player_id):
         """Add the player to the fight dictionary with a lock"""
         self.fighting_players[player_id] = asyncio.Lock()
@@ -832,6 +1001,7 @@ class Battles(commands.Cog):
         if player_id in self.fighting_players:
             self.fighting_players[player_id].release()
             del self.fighting_players[player_id]
+<<<<<<< HEAD
 
     async def check_pve_macro_detection(self, user_id):
         """
@@ -885,6 +1055,8 @@ class Battles(commands.Cog):
         
         user_data = self.pve_macro_detection[user_id]
         return user_data["count"] if user_data["count"] >= 48 else 0
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
     
     async def display_dialogue(self, ctx, level, name_value, dialoguetoggle=False):
         """Display dialogue for battle tower levels"""
@@ -1067,6 +1239,7 @@ class Battles(commands.Cog):
         async with self.bot.pool.acquire() as conn:
             # Award PvP wins regardless of money
             await conn.execute(
+<<<<<<< HEAD
                 'UPDATE profile SET "pvpwins"="pvpwins"+1 WHERE "user"=$1;',
                 winner.id,
             )
@@ -1086,6 +1259,20 @@ class Battles(commands.Cog):
                     data={"Gold": money},
                     conn=conn,
                 )
+=======
+                'UPDATE profile SET "pvpwins"="pvpwins"+1, "money"="money"+$1 WHERE "user"=$2;',
+                money * 2,
+                winner.id,
+            )
+            await self.bot.log_transaction(
+                ctx,
+                from_=looser.id,
+                to=winner.id,
+                subject="Battle Bet",
+                data={"Gold": money},
+                conn=conn,
+            )
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         
         await ctx.send(
             _("{winner} won the battle vs {looser}! Congratulations!").format(
@@ -1320,7 +1507,10 @@ class Battles(commands.Cog):
     
     async def handle_chest_rewards(self, ctx, level, name_value, emotes):
         """Handle chest rewards for battle tower victories."""
+<<<<<<< HEAD
 
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         level_str = str(level)
         victory_data = self.battle_data["victories"][level_str]
         chest_rewards = victory_data["chest_rewards"]
@@ -1351,7 +1541,10 @@ class Battles(commands.Cog):
             await self.handle_prestige_chest_rewards(ctx, level, emotes)
         else:
             await self.handle_default_chest_rewards(ctx, level, chest_rewards["default"], emotes)
+<<<<<<< HEAD
 
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
     
     async def handle_prestige_chest_rewards(self, ctx, level, emotes):
         """Handle randomized rewards for prestige players in battle tower."""
@@ -1600,6 +1793,7 @@ class Battles(commands.Cog):
                     
             # Get emoji mapping for display
             emotes = {
+<<<<<<< HEAD
                 "common": "<:c_common:1403797578197368923>",
                 "uncommon": "<:c_uncommon:1403797597532983387>",
                 "rare": "<:c_rare:1403797594827657247>",
@@ -1608,6 +1802,16 @@ class Battles(commands.Cog):
                 "mystery": "<:c_mystspark:1403797593129222235>",
                 "fortune": "<:c_money:1403797585411575971>",
                 "divine": "<:c_divine:1403797579635884202>",
+=======
+                "common": "<:F_common:1139514874016309260>",
+                "uncommon": "<:F_uncommon:1139514875828252702>",
+                "rare": "<:F_rare:1139514880517484666>",
+                "magic": "<:F_Magic:1139514865174720532>",
+                "legendary": "<:F_Legendary:1139514868400132116>",
+                "mystery": "<:F_mystspark:1139521536320094358>",
+                "fortune": "<:f_money:1146593710516224090>",
+                "divine": "<:f_divine:1169412814612471869>"
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             }
                     
             await ctx.send(f"You have received 1 {emotes[selected_crate]} crate for completing the battletower on prestige level: {prestige_level}. Congratulations!")
@@ -1645,12 +1849,16 @@ class Battles(commands.Cog):
                     return
 
                 # Get user's level and other data
+<<<<<<< HEAD
 
                 level = await connection.fetchval('SELECT level FROM battletower WHERE id = $1', ctx.author.id)
                 if level == 0:
                     await connection.execute('UPDATE battletower SET level = 1 WHERE id = $1', ctx.author.id)
                     level = 1
 
+=======
+                level = await connection.fetchval('SELECT level FROM battletower WHERE id = $1', ctx.author.id)
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                 player_balance = await connection.fetchval('SELECT money FROM profile WHERE "user" = $1', ctx.author.id)
                 god_value = await connection.fetchval('SELECT god FROM profile WHERE "user" = $1', ctx.author.id)
                 name_value = await connection.fetchval('SELECT name FROM profile WHERE "user" = $1', ctx.author.id)
@@ -1678,6 +1886,7 @@ class Battles(commands.Cog):
                     await ctx.send("Prestige canceled due to timeout.")
                     await self.bot.reset_cooldown(ctx)
                     return
+<<<<<<< HEAD
                 except NoChoice:
                     await ctx.send("Prestige canceled - no choice was made.")
                     await self.bot.reset_cooldown(ctx)
@@ -1836,6 +2045,98 @@ class Battles(commands.Cog):
                     # It was a defeat
                     await ctx.send(f"**{ctx.author.mention}**, you have been defeated. Better luck next time!")
 
+=======
+
+            # Display dialogue for the current level
+            await self.display_dialogue(ctx, level, name_value, dialoguetoggle)
+
+            # Check if player is already in a fight
+            if await self.is_player_in_fight(ctx.author.id):
+                await ctx.send("You are already in a battle!")
+                await self.bot.reset_cooldown(ctx)
+                return
+
+            # Add player to fight
+            await self.add_player_to_fight(ctx.author.id)
+
+            # Get level data
+            try:
+                level_data = self.levels[str(level)]
+            except KeyError:
+                await ctx.send(f"No data found for level {level}. Please contact an administrator.")
+                await self.remove_player_from_fight(ctx.author.id)
+                await self.bot.reset_cooldown(ctx)
+                return
+
+            # Create and start the battle
+            battle = await self.battle_factory.create_battle(
+                "tower",
+                ctx,
+                player=ctx.author,
+                level=level,
+                level_data=level_data
+            )
+
+            # Start the battle
+            await battle.start_battle()
+
+            # Run the battle until completion
+            while not await battle.is_battle_over():
+                await battle.process_turn()
+                await asyncio.sleep(2)  # 2 second delay between turns for battle tower
+
+            # Get the result (winner team)
+            result = await battle.end_battle()
+            
+            # Check for explicit timeout (new attribute)
+            battle_timed_out = hasattr(battle, 'battle_timed_out') and battle.battle_timed_out
+
+            # Define emoji map for rewards
+            emotes = {
+                "common": "<:F_common:1139514874016309260>",
+                "uncommon": "<:F_uncommon:1139514875828252702>",
+                "rare": "<:F_rare:1139514880517484666>",
+                "magic": "<:F_Magic:1139514865174720532>",
+                "legendary": "<:F_Legendary:1139514868400132116>",
+                "mystery": "<:F_mystspark:1139521536320094358>",
+                "fortune": "<:f_money:1146593710516224090>",
+                "divine": "<:f_divine:1169412814612471869>"
+            }
+
+            # Handle victory or defeat
+            if result:
+                winner_team_id = result.name
+                
+                # Check if the player team won AND the character (not just pets) is still alive
+                player_alive = any(not c.is_pet and c.is_alive() for c in battle.player_team.combatants)
+                if winner_team_id == "Player" and (player_alive or battle.config.get("pets_continue_battle", False)):
+                    # Get minion names for victory message
+                    minion1_name = level_data.get("minion1_name", "Minion")
+                    minion2_name = level_data.get("minion2_name", "Minion")
+
+                    # Handle victory rewards
+                    await self.handle_victory(
+                        ctx=ctx,
+                        level=level,
+                        name_value=name_value,
+                        dialoguetoggle=dialoguetoggle,
+                        minion1_name=minion1_name,
+                        minion2_name=minion2_name,
+                        emotes=emotes,
+                        player_balance=player_balance
+                    )
+                else:
+                    await ctx.send(f"**{ctx.author.mention}**, you have been defeated. Better luck next time!")
+            else:
+                # Check if it was a timeout or defeat
+                if battle_timed_out:
+                    # It was a timeout
+                    await ctx.send("The battle timed out. Try again later.")
+                else:
+                    # It was a defeat
+                    await ctx.send(f"**{ctx.author.mention}**, you have been defeated. Better luck next time!")
+
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             # Remove player from fight tracking
             await self.remove_player_from_fight(ctx.author.id)
 
@@ -2337,6 +2638,7 @@ class Battles(commands.Cog):
     @locale_doc
     async def pve(self, ctx):
         """Battle against a monster and gain experience points."""
+<<<<<<< HEAD
         # Check for macro detection
         macro_detected = await self.check_pve_macro_detection(ctx.author.id)
         if macro_detected:
@@ -2352,6 +2654,8 @@ class Battles(commands.Cog):
             print(f"Macro debug - User {ctx.author.id}: count={user_data['count']}, macro_detected={macro_detected}")
 
         
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         # Check for monster override from scout command
         monster_override = getattr(ctx, 'monster_override', None)
         levelchoice_override = getattr(ctx, 'levelchoice_override', None)
@@ -2399,6 +2703,11 @@ class Battles(commands.Cog):
                 if random.random() < legendary_spawn_chance:
                     spawn_legendary = True
 
+<<<<<<< HEAD
+=======
+            if ctx.author.id == 295173706496475136 and self.forceleg:
+                spawn_legendary = True
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
 
             if spawn_legendary:
                 # Select legendary monster
@@ -2432,6 +2741,7 @@ class Battles(commands.Cog):
                 elif player_level <= 35:
                     levelchoice = random.randint(1, 9)
                 elif player_level <= 40:
+<<<<<<< HEAD
                     # For levels 1-10, level 10 has half chance
                     level_weights = [10] * 10  # 10 weights for levels 1-10
                     level_weights[9] = 5  # Level 10 (index 9) gets half weight
@@ -2441,6 +2751,16 @@ class Battles(commands.Cog):
                     level_weights = [10] * 11  # 11 weights for levels 1-11
                     level_weights[9] = 5  # Level 10 (index 9) gets half weight
                     level_weights[10] = 1  # Level 11 (index 10) gets much lower weight
+=======
+                    # For levels 1-40, levels 1-9 have normal chance, level 10 has half chance
+                    level_weights = [10] * 10  # Default weight of 10 for all levels
+                    level_weights[9] = 5  # Level 10 (index 9) gets half weight (5/10)
+                    levelchoice = random.choices(range(1, 11), weights=level_weights, k=1)[0]
+                else:  # player_level > 40
+                    # For level 41+, levels 1-9 and 11 have normal chance, level 10 has half chance
+                    level_weights = [10] * 11  # Default weight of 10 for all levels
+                    level_weights[9] = 5  # Level 10 (index 9) gets half weight (5/10)
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                     levelchoice = random.choices(range(1, 12), weights=level_weights, k=1)[0]
 
                 monster = random.choice(monsters[levelchoice])
@@ -2460,9 +2780,12 @@ class Battles(commands.Cog):
         await searching_message.edit(embed=found_embed)
         await asyncio.sleep(4)
 
+<<<<<<< HEAD
         # Check for macro penalty
         macro_penalty_level = self.get_pve_macro_penalty_level(ctx.author.id)
         
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         # Create and start the battle
         try:
             battle = await self.battle_factory.create_battle(
@@ -2470,8 +2793,12 @@ class Battles(commands.Cog):
                 ctx,
                 player=ctx.author,
                 monster_data=monster,
+<<<<<<< HEAD
                 monster_level=levelchoice,
                 macro_penalty_level=macro_penalty_level
+=======
+                monster_level=levelchoice
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             )
             
             # Start the battle
@@ -2488,8 +2815,12 @@ class Battles(commands.Cog):
             # Handle egg drops and other PvE-specific outcomes
             if result and result.name == "Player":
                 # Player won - check for egg drops based on level
+<<<<<<< HEAD
                 # Skip egg drops if macro penalty is active (count >= 12)
                 if levelchoice < 12 and macro_penalty_level == 0:
+=======
+                if levelchoice < 12:
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                     # Calculate base egg chance
                     base_egg_chance = 0.50 - ((levelchoice - 1) / 9) * 0.45
                     final_egg_chance = base_egg_chance
@@ -2663,6 +2994,7 @@ class Battles(commands.Cog):
                 
                 # Remove the chosen pet/egg from its table
                 try:
+<<<<<<< HEAD
                     # Check if the item exists in the user's collection
                     table = "monster_pets" if record_to_remove["type"] == "pet" else "monster_eggs"
                     item = await conn.fetchrow(f"SELECT * FROM {table} WHERE user_id = $1 AND id = $2;",
@@ -2679,6 +3011,16 @@ class Battles(commands.Cog):
                     await ctx.send(
                         _(f"Released {record_to_remove['type']} '{record_to_remove['display_name']}' to make room."))
 
+=======
+                    if record_to_remove["type"] == "pet":
+                        await conn.execute("DELETE FROM monster_pets WHERE id = $1;",
+                                          record_to_remove["id"])
+                    else:
+                        await conn.execute("DELETE FROM monster_eggs WHERE id = $1;",
+                                          record_to_remove["id"])
+                    await ctx.send(
+                        _(f"Released {record_to_remove['type']} '{record_to_remove['display_name']}' to make room."))
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                 except Exception as e:
                     await ctx.send(_("An error occurred while releasing the pet/egg: ") + str(e))
                     return
@@ -2980,6 +3322,7 @@ class Battles(commands.Cog):
                     elif player_level <= 35:
                         levelchoice = random.randint(1, 9)
                     elif player_level <= 40:
+<<<<<<< HEAD
                         # For levels 1-10, level 10 has half chance
                         level_weights = [10] * 10  # 10 weights for levels 1-10
                         level_weights[9] = 5  # Level 10 (index 9) gets half weight
@@ -2989,6 +3332,16 @@ class Battles(commands.Cog):
                         level_weights = [10] * 11  # 11 weights for levels 1-11
                         level_weights[9] = 5  # Level 10 (index 9) gets half weight
                         level_weights[10] = 1  # Level 11 (index 10) gets much lower weight
+=======
+                        # For levels 1-40, levels 1-9 have normal chance, level 10 has half chance
+                        level_weights = [10] * 10  # Default weight of 10 for all levels
+                        level_weights[9] = 5  # Level 10 (index 9) gets half weight (5/10)
+                        levelchoice = random.choices(range(1, 11), weights=level_weights, k=1)[0]
+                    else:  # player_level > 40
+                        # For level 41+, levels 1-9 and 11 have normal chance, level 10 has half chance
+                        level_weights = [10] * 11  # Default weight of 10 for all levels
+                        level_weights[9] = 5  # Level 10 (index 9) gets half weight (5/10)
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                         levelchoice = random.choices(range(1, 12), weights=level_weights, k=1)[0]
                     
                     # Select and display monster
@@ -3044,6 +3397,7 @@ class Battles(commands.Cog):
         except Exception as e:
             await ctx.send(f"An error occurred: {e}")
             await self.bot.reset_cooldown(ctx)
+<<<<<<< HEAD
 
     @commands.command()
     @is_gm()
@@ -3136,6 +3490,100 @@ class Battles(commands.Cog):
         if ctx.invoked_subcommand is None:
             await ctx.send("Please specify a subcommand. Use `help battlesettings` for more information.")
 
+=======
+
+    @commands.command()
+    @is_gm()
+    @has_char()
+    async def custom_battle(self, ctx, battle_type: str = "pve", *, options: str = ""):
+        """Create a custom battle with specified options.
+        
+        Available battle types: pvp, pve, raid, tower, team
+        Options format: key1=value1 key2=value2
+        Example: $custom_battle pve pets=true elements=true
+        """
+        # Parse options from string (format: key1=value1 key2=value2)
+        options_dict = {}
+        if options:
+            for option in options.split():
+                if "=" in option:
+                    key, value = option.split("=", 1)
+                    options_dict[key] = value
+        
+        # Convert string values to appropriate types
+        if "money" in options_dict:
+            try:
+                money_value = int(options_dict["money"])
+                # Prevent negative money values
+                if money_value < 0:
+                    return await ctx.send("Money cannot be negative.")
+                options_dict["money"] = money_value
+            except ValueError:
+                return await ctx.send("Money must be a number.")
+            
+            # Check if player has enough money
+            if money_value > 0 and ctx.character_data["money"] < money_value:
+                return await ctx.send(_("You don't have enough money for this battle."))
+
+        if "level" in options_dict:
+            try:
+                options_dict["level"] = int(options_dict["level"])
+            except ValueError:
+                return await ctx.send("Level must be a number.")
+        
+        # Convert boolean options
+        for bool_option in ["allow_pets", "class_buffs", "element_effects", "luck_effects", "reflection_damage"]:
+            if bool_option in options_dict:
+                options_dict[bool_option] = options_dict[bool_option].lower() == "true"
+        
+        # Add player to battle options
+        options_dict["player"] = ctx.author
+        
+        # Try to create and start the battle
+        try:
+            battle = await self.battle_factory.create_battle(
+                battle_type.lower(),
+                ctx,
+                **options_dict
+            )
+            
+            # Start the battle
+            success = await battle.start_battle()
+            if not success:
+                return await ctx.send(f"Failed to start {battle_type} battle.")
+            
+            # Process turns until battle is over
+            while not await battle.is_battle_over():
+                await battle.process_turn()
+                await asyncio.sleep(1)  # 1 second delay between turns
+            
+            # End the battle and handle result
+            result = await battle.end_battle()
+            
+            if result:
+                await ctx.send(f"Battle ended with result: {result}")
+            else:
+                await ctx.send("The battle ended in a draw.")
+        
+        except ValueError as e:
+            await ctx.send(f"Error creating battle: {e}")
+        except Exception as e:
+            import traceback
+            error_message = f"An unexpected error occurred: {e}\n{traceback.format_exc()}"
+            await ctx.send(error_message[:1900] + "..." if len(error_message) > 1900 else error_message)
+
+    @commands.group(name="battlesettings", aliases=["battleconfig", "bconfig"])
+    @is_gm()
+    async def battle_settings(self, ctx):
+        """Manage battle system settings
+        
+        This command group allows you to configure various aspects of the battle system.
+        Use subcommands to view and modify settings.
+        """
+        if ctx.invoked_subcommand is None:
+            await ctx.send("Please specify a subcommand. Use `help battlesettings` for more information.")
+
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
     @battle_settings.command(name="view")
     async def view_settings(self, ctx, battle_type: str = None):
         """View current battle settings
@@ -3149,6 +3597,7 @@ class Battles(commands.Cog):
             title="Battle System Settings",
             color=discord.Color.blue(),
             description="Current configuration for the battle system."
+<<<<<<< HEAD
         )
         
         if battle_type:
@@ -3768,8 +4217,630 @@ class Battles(commands.Cog):
         embed.add_field(
             name="Consolation",
             value="Each party member receives a small amount of XP for their efforts.",
+=======
+        )
+        
+        if battle_type:
+            settings_dict = {battle_type: settings}
+        else:
+            settings_dict = settings
+        
+        for bt, config in settings_dict.items():
+            field_value = "\n".join([f"**{k}**: {v}" for k, v in config.items()])
+            embed.add_field(name=f"{bt.upper()} Battle Settings", value=field_value or "Using defaults", inline=False)
+        
+        await ctx.send(embed=embed)
+
+    @battle_settings.command(name="set")
+    async def set_setting(self, ctx, battle_type: str, setting: str, *, value: str):
+        """Set a battle setting
+        
+        battle_type: The type of battle (pve, pvp, raid, tower, team, global)
+        setting: The setting to change (allow_pets, class_buffs, element_effects, etc.)
+        value: The new value (true/false for boolean settings, numbers for numeric settings)
+        """
+        # Validate battle type
+        valid_battle_types = ["pve", "pvp", "raid", "tower", "team", "global", "dragon"]
+        if battle_type.lower() not in valid_battle_types:
+            return await ctx.send(f"Invalid battle type. Must be one of: {', '.join(valid_battle_types)}")
+        
+        # Validate setting
+        valid_settings = self.battle_factory.settings.get_configurable_settings()
+        if setting not in valid_settings:
+            return await ctx.send(f"Invalid setting. Must be one of: {', '.join(valid_settings)}")
+        
+        # Parse value based on setting type
+        parsed_value = value.lower()
+        if parsed_value in ["true", "yes", "on", "1"]:
+            parsed_value = True
+        elif parsed_value in ["false", "no", "off", "0"]:
+            parsed_value = False
+        elif setting == "fireball_chance":
+            try:
+                parsed_value = float(value)
+            except ValueError:
+                return await ctx.send("Fireball chance must be a number between 0 and 1.")
+        
+        # Set the setting
+        success = await self.battle_factory.settings.set_setting(battle_type.lower(), setting, parsed_value)
+        
+        if success:
+            # Force a refresh of the settings cache to ensure changes take effect immediately
+            await self.battle_factory.settings.force_refresh()
+            await ctx.send(f"✅ Successfully set **{setting}** to **{parsed_value}** for **{battle_type}** battles.")
+        else:
+            await ctx.send("❌ Failed to update setting. Please check your inputs and try again.")
+
+    @battle_settings.command(name="reset")
+    async def reset_setting(self, ctx, battle_type: str, setting: str):
+        """Reset a battle setting to its default value
+        
+        battle_type: The type of battle (pve, pvp, raid, tower, team, global)
+        setting: The setting to reset (allow_pets, class_buffs, element_effects, etc.)
+        """
+        # Validate battle type
+        valid_battle_types = ["pve", "pvp", "raid", "tower", "team", "dragon", "global"]
+        if battle_type.lower() not in valid_battle_types:
+            return await ctx.send(f"Invalid battle type. Must be one of: {', '.join(valid_battle_types)}")
+        
+        # Reset the setting
+        success = await self.battle_factory.settings.reset_setting(battle_type.lower(), setting)
+        
+        if success:
+            # Force a refresh of the settings cache to ensure changes take effect immediately
+            await self.battle_factory.settings.force_refresh()
+            
+            # Get the new value (which will be the default)
+            new_value = await self.battle_factory.settings.get_setting(battle_type.lower(), setting)
+            await ctx.send(f"✅ Reset **{setting}** to default value **{new_value}** for **{battle_type}** battles.")
+        else:
+            await ctx.send("❌ Failed to reset setting. Please check your inputs and try again.")
+            
+    @commands.group(name="dragonchallenge", aliases=["dragon", "idc", "d"])
+    @has_char()
+    async def dragon_challenge(self, ctx):
+        """Ice Dragon Challenge - a powerful boss battle where players can team up
+        
+        The Ice Dragon grows stronger over time as players defeat it, with each evolution
+        introducing new powerful abilities and passives. Form a party and challenge
+        this formidable foe!
+        """
+        if ctx.invoked_subcommand is None:
+            await self._show_dragon_status(ctx)
+    
+    async def _show_dragon_status(self, ctx):
+        """Show the current status of the Ice Dragon Challenge"""
+        # Get current dragon stats
+        dragon_stats = await self.battle_factory.dragon_ext.get_dragon_stats_from_database(self.bot)
+        dragon_level = dragon_stats.get("level", 1)
+        weekly_defeats = dragon_stats.get("weekly_defeats", 0)
+        
+        # Get dragon stage information
+        stage = await self.battle_factory.dragon_ext.get_dragon_stage(dragon_level)
+        stage_name = stage["name"]
+        stage_info = stage["info"]
+        
+        # Create status embed
+        embed = discord.Embed(
+            title="Ice Dragon Challenge",
+            description=f"The **{stage_name}** awaits challengers...",
+            color=discord.Color.blue()
+        )
+        
+        # Add dragon information
+        embed.add_field(
+            name="Dragon Level",
+            value=f"Level {dragon_level}",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Weekly Defeats",
+            value=f"{weekly_defeats}",
+            inline=True
+        )
+        
+        # Add passive effects
+        passives = stage_info.get("passives", [])
+        if passives:
+            passive_text = "\n".join([f"• {passive}" for passive in passives])
+            embed.add_field(
+                name="Passive Effects",
+                value=passive_text,
+                inline=False
+            )
+        
+        # Add available moves
+        moves = stage_info.get("moves", {})
+        if moves:
+            move_text = "\n".join([f"• {move}" for move in moves.keys()])
+            embed.add_field(
+                name="Special Moves",
+                value=move_text,
+                inline=False
+            )
+        
+        # Add call to action
+        embed.add_field(
+            name="Challenge the Dragon",
+            value="Use `$dragonchallenge party` to create a party and challenge the dragon!",
             inline=False
         )
+        
+        await ctx.send(embed=embed)
+    
+    @dragon_challenge.command(name="party", aliases=["p"])
+    @has_char()
+    @user_cooldown(7200)
+    async def dragon_party(self, ctx):
+        """Start forming a party to challenge the Ice Dragon
+        
+        **Aliases**: `p`
+        """
+        # Check if the user is already in a party
+        if any(view.is_complete is False and ctx.author in view.party_members 
+               for view in self.dragon_party_views):
+            return await ctx.send("You are already in a party formation!")
+            
+        # Create party formation view
+        class DragonPartyView(discord.ui.View):
+            def __init__(self, bot):
+                super().__init__(timeout=60)  # Full 60-second timeout
+                self.bot = bot
+                self.party_members = [ctx.author]  # Author automatically joins
+                self.is_complete = False
+                self._warning_task = None
+                self._warning_sent = False
+                self.message = None  # Will be set after view is sent
+                self.ctx = ctx  # Store context for sending warning message
+                
+            async def update_embed(self):
+                embed = discord.Embed(
+                    title="Ice Dragon Challenge - Party Formation",
+                    description="Form a party to challenge the Ice Dragon!",
+                    color=discord.Color.blue()
+                )
+                
+                # List party members
+                member_list = "\n".join([f"• {member.mention}" for member in self.party_members])
+                embed.add_field(
+                    name=f"Party Members ({len(self.party_members)}/4)",
+                    value=member_list or "No members yet",
+                    inline=False
+                )
+                
+                return embed
+                
+            @discord.ui.button(label="Join Party", style=discord.ButtonStyle.primary, emoji="⚔️")
+            async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+                # Check if user has a character
+                if not await self.bot.pool.fetchrow('SELECT 1 FROM profile WHERE "user"=$1', interaction.user.id):
+                    return await interaction.response.send_message("You don't have a character to join the party!", ephemeral=True)
+                    
+                # Check if user is already in the party
+                if interaction.user in self.party_members:
+                    return await interaction.response.send_message("You are already in the party!", ephemeral=True)
+                    
+                # Add user to party
+                if len(self.party_members) < 4:
+                    self.party_members.append(interaction.user)
+                    await interaction.response.send_message("You have joined the party!", ephemeral=True)
+                    
+                    # Update the embed
+                    await interaction.message.edit(embed=await self.update_embed())
+                else:
+                    await interaction.response.send_message("The party is already full!", ephemeral=True)
+            
+            @discord.ui.button(label="Leave Party", style=discord.ButtonStyle.danger, emoji="🚪")
+            async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
+                # Check if user is in the party
+                if interaction.user not in self.party_members:
+                    return await interaction.response.send_message("You are not in the party!", ephemeral=True)
+                    
+                # Don't allow the party leader to leave
+                if interaction.user == ctx.author:
+                    return await interaction.response.send_message("As the party leader, you cannot leave the party!", ephemeral=True)
+                    
+                # Remove user from party
+                self.party_members.remove(interaction.user)
+                await interaction.response.send_message("You have left the party!", ephemeral=True)
+                
+                # Update the embed
+                await interaction.message.edit(embed=await self.update_embed())
+            
+            @discord.ui.button(label="Start Challenge", style=discord.ButtonStyle.success, emoji="🐉")
+            async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
+                # Only the party leader can start the challenge
+                if interaction.user != ctx.author:
+                    return await interaction.response.send_message("Only the party leader can start the challenge!", ephemeral=True)
+                    
+                # At least one member needed to start
+                if not self.party_members:
+                    return await interaction.response.send_message("You need at least one member to start the challenge!", ephemeral=True)
+                
+                # Acknowledge the interaction
+                await interaction.response.defer()
+                
+                # Mark as complete to start the challenge
+                self.is_complete = True
+                self.stop()
+            
+            async def on_timeout(self):
+                # This runs after the full 60 seconds
+                if not self.is_complete:
+                    self.is_complete = False
+                    self.stop()
+            
+            async def start_warning_timer(self):
+                # Schedule the warning for 50 seconds in
+                await asyncio.sleep(50)
+                if not self.is_complete and not self.is_finished():
+                    self._warning_sent = True
+                    warning_embed = discord.Embed(
+                        title="⚠️ Party Formation Expiring Soon",
+                        description="The party formation will time out in 10 seconds. Start the challenge now or the party will be disbanded.",
+                        color=discord.Color.orange()
+                    )
+                    try:
+                        await self.ctx.send(embed=warning_embed, delete_after=10)
+                    except Exception as e:
+                        print(f"Error sending warning message: {e}")
+            
+            async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item):
+                if self._timeout_task:
+                    self._timeout_task.cancel()
+                    self._timeout_task = None
+                await super().on_error(interaction, error, item)
+            
+            def stop(self):
+                # Cancel any pending warning task
+                if hasattr(self, '_warning_task') and self._warning_task:
+                    self._warning_task.cancel()
+                super().stop()
+            
+            async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item):
+                # Cancel warning task on error
+                if hasattr(self, '_warning_task') and self._warning_task:
+                    self._warning_task.cancel()
+                await super().on_error(interaction, error, item)
+        
+        # Create and send the party view
+        view = DragonPartyView(self.bot)
+        message = await ctx.send(embed=await view.update_embed(), view=view)
+        view.message = message  # Store message reference
+        # Start the warning timer
+        view._warning_task = asyncio.create_task(view.start_warning_timer())
+        
+        # Wait for the view to complete
+        await view.wait()
+        
+        # Check if party formation was successful
+        if view.is_complete:
+            await message.edit(content="Party formed! Starting the challenge...", embed=None, view=None)
+            
+            # Add all party members to the fighting players
+            for member in view.party_members:
+                await self.add_player_to_fight(member.id)
+                
+            try:
+                # Create and start the dragon battle
+                try:
+                    battle = await self.battle_factory.create_battle(
+                        "dragon",
+                        ctx,
+                        party_members=view.party_members
+                    )
+                    
+                    # Start the battle
+                    success = await battle.start_battle()
+                    if not success:
+                        # Remove players from fighting
+                        for member in view.party_members:
+                            await self.remove_player_from_fight(member.id)
+                        return await ctx.send("Failed to start the dragon challenge!")
+                    
+                    # Process battle turns
+                    turn_count = 0
+                    battle_msg = await ctx.send("⚔️ Battle started! Dragons and adventurers clash...")
+                    
+                    while not await battle.is_battle_over():
+                        try:
+                            turn_count += 1
+                            result = await battle.process_turn()
+                            
+                            # Only update message every 5 turns to reduce spam
+                            if turn_count % 5 == 0:
+                                await battle_msg.edit(content=f"⚔️ Battle in progress - Turn {turn_count} - The dragon and party continue to battle...")
+                            
+                            await asyncio.sleep(1)  # 1 second delay between turns for faster battles
+                        except Exception as e:
+                            await ctx.send(f"⚠️ Error in turn {turn_count}: {str(e)}\n```{traceback.format_exc()}```")
+                            break
+                    
+                    # Get the battle result
+                    await ctx.send("Battle completed. Processing result...")
+                    victory = await battle.end_battle()
+                    
+                except Exception as e:
+                    await ctx.send(f"⚠️ Error in dragon battle: {str(e)}\n```{traceback.format_exc()}```")
+                    return
+                
+                # Handle rewards
+                if victory is True:  # Players won
+                    await self._handle_dragon_victory(ctx, view.party_members)
+                elif victory is False:  # Players lost
+                    await self._handle_dragon_defeat(ctx, view.party_members)
+                else:  # Draw
+                    await ctx.send("The battle ended in a draw!")
+                    
+            finally:
+                # Always remove players from fighting status
+                for member in view.party_members:
+                    await self.remove_player_from_fight(member.id)
+                    
+        else:
+            await message.edit(content="Party formation timed out!", embed=None, view=None)
+            await self.bot.reset_cooldown(ctx)
+    
+    async def _handle_dragon_victory(self, ctx, party_members):
+        """Handle rewards for defeating the dragon"""
+        # Get current dragon level
+        dragon_stats = await self.battle_factory.dragon_ext.get_dragon_stats_from_database(self.bot)
+        old_level = dragon_stats.get("level", 1)
+        weekly_defeats = dragon_stats.get("weekly_defeats", 0)
+        
+        # Update dragon progress in database
+        level_up = False
+        try:
+            updated_stats = await self.battle_factory.dragon_ext.update_dragon_progress(
+                self.bot,
+                old_level,
+                weekly_defeats,
+                victory=True
+            )
+            # Check if dragon actually leveled up
+            new_level = updated_stats.get("level", old_level)
+            level_up = new_level > old_level
+        except Exception:
+            # Continue with rewards even if update fails
+            pass
+        
+        # Calculate rewards
+        base_money = 1000 * old_level
+        base_xp = 500 * old_level
+        
+        # Create reward embed
+        embed = discord.Embed(
+            title="Dragon Challenge Victory!",
+            description=f"Your party has defeated the Level {old_level} Dragon!",
+            color=discord.Color.green()
+        )
+        
+        # Add level up information only if the dragon actually leveled up
+        if level_up:
+            embed.add_field(
+                name="Dragon Level Up",
+                value=f"The Dragon has grown stronger and is now Level {old_level + 1}!",
+                inline=False
+            )
+        else:
+            # Show progress information instead
+            # Always 40 defeats needed per level
+            next_level_threshold = 40
+            current_progress = weekly_defeats + 1  # Add this victory
+            remaining = next_level_threshold - current_progress
+            embed.add_field(
+                name="Dragon Progress",
+                value=f"Dragon remains at Level {old_level}. Progress: {current_progress}/40 defeats (need {remaining} more for level up).",
+                inline=False
+            )
+        
+        # Give rewards to each party member
+        reward_text = ""
+        try:
+            async with self.bot.pool.acquire() as conn:
+                for idx, member in enumerate(party_members):
+                    try:
+                        # Calculate individual rewards with diminishing returns
+                        member_money = base_money // (idx + 1)
+                        member_xp = base_xp // (idx + 1)
+                        
+                        current_data = await conn.fetchrow(
+                            'SELECT "xp" FROM profile WHERE "user"=$1',
+                            member.id
+                        )
+                        current_xp = current_data["xp"]
+                        current_level = int(rpgtools.xptolevel(current_xp))
+
+                        # Award money and XP
+                        await conn.execute(
+                            'UPDATE profile SET "money"="money"+$1, "xp"="xp"+$2 WHERE "user"=$3;',
+                            member_money, member_xp, member.id
+                        )
+
+                        # Calculate new level and check for level-up
+                        new_level = int(rpgtools.xptolevel(current_xp + member_xp))
+                        if current_level != new_level:
+                            await self.bot.process_levelup(ctx, new_level, current_level)
+                        
+                        # Record in reward text
+                        reward_text += f"• {member.mention}: {member_money} 💰, {member_xp} XP\n"
+                        
+                        # Update dragon_contributions for this player
+                        player_count = await conn.fetchval(
+                            'SELECT COUNT(*) FROM dragon_contributions WHERE "user_id"=$1',
+                            member.id
+                        )
+                        
+                        if player_count > 0:
+                            # Update existing record
+                            await conn.execute(
+                                'UPDATE dragon_contributions SET total_defeats=total_defeats+1, weekly_defeats=weekly_defeats+1, last_defeat=NOW() WHERE "user_id"=$1',
+                                member.id
+                            )
+                        else:
+                            # Insert new record
+                            await conn.execute(
+                                'INSERT INTO dragon_contributions ("user_id", total_defeats, weekly_defeats, last_defeat) VALUES ($1, 1, 1, NOW())',
+                                member.id
+                            )
+                    except Exception:
+                        # Continue with next member even if this one fails
+                        continue
+        except Exception:
+            # Try to continue with embed even if rewards failed
+            reward_text = "Error processing rewards."
+        
+        # Add rewards to embed
+        try:
+            embed.add_field(
+                name="Rewards",
+                value=reward_text,
+                inline=False
+            )
+            
+            await ctx.send(embed=embed)
+        except Exception:
+            # Try a simple text message as fallback
+            await ctx.send("Victory! The dragon has been defeated and rewards have been distributed.")
+            pass
+
+    
+    async def _handle_dragon_defeat(self, ctx, party_members):
+        """Handle the case where the party is defeated by the dragon"""
+        # Create defeat embed
+        embed = discord.Embed(
+            title="Dragon Challenge Defeat",
+            description="Your party has been defeated by the Dragon!",
+            color=discord.Color.red()
+        )
+        
+        # Add consolation rewards
+        embed.add_field(
+            name="Consolation",
+            value="Each party member receives a small amount of XP for their efforts.",
+            inline=False
+        )
+        
+        # Get current dragon level
+        dragon_stats = await self.battle_factory.dragon_ext.get_dragon_stats_from_database(self.bot)
+        dragon_level = dragon_stats.get("level", 1)
+        
+        # Give small XP reward for trying
+        async with self.bot.pool.acquire() as conn:
+            for member in party_members:
+                # Small XP consolation
+                consolation_xp = 50 * dragon_level
+                
+                await conn.execute(
+                    'UPDATE profile SET "xp"="xp"+$1 WHERE "user"=$2;',
+                    consolation_xp, member.id
+                )
+        
+        await ctx.send(embed=embed)
+    
+    
+    @dragon_challenge.command(name="leaderboard", aliases=["lb"])
+    async def dragon_leaderboard(self, ctx):
+        """View the Ice Dragon Challenge leaderboard"""
+        embed = discord.Embed(
+            title="Ice Dragon Challenge Leaderboard",
+            color=discord.Color.blue()
+        )
+        
+        # Get top dragon killers
+        async with self.bot.pool.acquire() as conn:
+            result = await conn.fetch(
+                'SELECT "user", "dragon_kills" FROM profile ORDER BY "dragon_kills" DESC LIMIT 10'
+            )
+        
+        if result:
+            leaderboard_text = ""
+            for idx, row in enumerate(result, start=1):
+                user_id = row["user"]
+                kills = row["dragon_kills"]
+                
+                # Skip users with 0 kills
+                if kills <= 0:
+                    continue
+                    
+                # Try to get username
+                try:
+                    user = await self.bot.fetch_user(user_id)
+                    username = user.name
+                except:
+                    username = f"Unknown User ({user_id})"
+                    
+                leaderboard_text += f"**{idx}.** {username} - {kills} dragon kills\n"
+                
+            if leaderboard_text:
+                embed.add_field(
+                    name="Top Dragon Slayers",
+                    value=leaderboard_text,
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name="No Data",
+                    value="No one has defeated the dragon yet!",
+                    inline=False
+                )
+        else:
+            embed.add_field(
+                name="No Data",
+                value="No one has defeated the dragon yet!",
+                inline=False
+            )
+            
+        # Add current dragon level
+        dragon_stats = await self.battle_factory.dragon_ext.get_dragon_stats_from_database(self.bot)
+        dragon_level = dragon_stats.get("level", 1)
+        weekly_defeats = dragon_stats.get("weekly_defeats", 0)
+        
+        embed.add_field(
+            name="Current Dragon Stats",
+            value=f"Level: {dragon_level}\nWeekly Defeats: {weekly_defeats}",
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
+    
+    @dragon_challenge.command(name="reset")
+    @is_gm()
+    async def reset_dragon(self, ctx, level: int = 1):
+        """[GM] Reset the Ice Dragon Challenge progress"""
+        async with self.bot.pool.acquire() as conn:
+            # Check if record exists
+            exists = await conn.fetchval(
+                'SELECT 1 FROM dragon_progress WHERE id = 1'
+            )
+            
+            if exists:
+                # Reset to specified level
+                await conn.execute(
+                    'UPDATE dragon_progress SET current_level = $1, weekly_defeats = 0, last_reset = NOW() WHERE id = 1',
+                    level
+                )
+            else:
+                # Create new record
+                await conn.execute(
+                    'INSERT INTO dragon_progress (id, current_level, weekly_defeats, last_reset, last_update) VALUES (1, $1, 0, NOW(), NOW())',
+                    level
+                )
+                
+        await ctx.send(f"✅ Ice Dragon Challenge reset to level {level}!")
+    
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Check for weekly reset when bot starts"""
+        # Check for weekly dragon reset
+        try:
+            reset_happened = await self.battle_factory.dragon_ext.check_and_perform_weekly_reset(self.bot)
+            if reset_happened:
+                print("[INFO] Ice Dragon Challenge weekly reset performed")
+        except Exception as e:
+            print(f"[ERROR] Failed to check dragon weekly reset: {e}")
 
         # Get current dragon level
         dragon_stats = await self.battle_factory.dragon_ext.get_dragon_stats_from_database(self.bot)
@@ -5022,8 +6093,14 @@ class Battles(commands.Cog):
             await ctx.send(f'💕 **You have both achieved Prestige {prestige_level + 1 if prestige_level else 1}!** The tower resets to Floor 1 with increased difficulty.')
 
 async def setup(bot):
+<<<<<<< HEAD
     await bot.add_cog(BattleSettings(bot))
     
     battles = Battles(bot)
     await battles.battle_factory.initialize()
     await bot.add_cog(battles)
+=======
+    battles = Battles(bot)
+    await battles.battle_factory.initialize()
+    await bot.add_cog(battles)
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e

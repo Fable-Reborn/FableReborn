@@ -25,9 +25,12 @@ class TeamBattle(Battle):
         self.started = True
         self.start_time = datetime.datetime.utcnow()
         
+<<<<<<< HEAD
         # Save initial battle data to database for replay
         await self.save_battle_to_database()
         
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         # Build turn order with all combatants
         self.turn_order = []
         for team in self.teams:
@@ -95,11 +98,15 @@ class TeamBattle(Battle):
         # Process attack based on luck
         luck_roll = random.randint(1, 100)
         
+<<<<<<< HEAD
         # Check for perfect accuracy from Night Vision skill
         has_perfect_accuracy = getattr(current_combatant, 'perfect_accuracy', False)
         hit_success = has_perfect_accuracy or (luck_roll <= current_combatant.luck)
         
         if hit_success:
+=======
+        if luck_roll <= current_combatant.luck:
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             # Attack hits
             
             # Special case for mage fireball
@@ -141,17 +148,21 @@ class TeamBattle(Battle):
                         current_combatant.element, 
                         target.element
                     )
+<<<<<<< HEAD
                     
                     # Apply void affinity protection to target
                     if hasattr(self.ctx.bot.cogs["Battles"], "battle_factory"):
                         pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
                         element_mod = pet_ext.apply_void_affinity_protection(target, element_mod)
                     
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                     if element_mod != 0:
                         raw_damage = raw_damage * (1 + Decimal(str(element_mod)))
                 
                 # Add variance and apply armor
                 raw_damage += Decimal(damage_variance)
+<<<<<<< HEAD
                 
                             # PROCESS PET SKILL EFFECTS ON ATTACK
             skill_messages = []
@@ -194,10 +205,15 @@ class TeamBattle(Battle):
                 # Store the actual final damage dealt (for skills like Soul Drain)
                 if current_combatant.is_pet:
                     setattr(current_combatant, 'last_damage_dealt', damage)
+=======
+                blocked_damage = min(raw_damage, target.armor)
+                damage = max(raw_damage - target.armor, Decimal('10'))
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                 
                 target.take_damage(damage)
                 
                 message = f"{current_combatant.name} attacks! {target.name} takes **{self.format_number(damage)} HP** damage."
+<<<<<<< HEAD
                 
                 # Add skill effect messages
                 if skill_messages:
@@ -239,6 +255,8 @@ class TeamBattle(Battle):
                     
                     # Clear the summon flag
                     delattr(current_combatant, 'summon_skeleton')
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 
@@ -304,13 +322,18 @@ class TeamBattle(Battle):
             if self.config.get("tripping", False):
                 damage = Decimal('10')
                 current_combatant.take_damage(damage)
+<<<<<<< HEAD
                 message = f"{current_combatant.name} tripped and took **{self.format_number(damage)} HP** damage. Bad luck!"
+=======
+                message = f"{current_combatant.name} tripped and took **{damage} HP** damage. Bad luck!"
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             else:
                 message = f"{current_combatant.name}'s attack missed!"
         
         # Add message to battle log
         await self.add_to_log(message)
         
+<<<<<<< HEAD
         # PROCESS PET SKILL EFFECTS PER TURN
         if hasattr(self.ctx.bot.cogs["Battles"], "battle_factory"):
             pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
@@ -337,6 +360,10 @@ class TeamBattle(Battle):
         # Update the battle display
         await self.update_display()
         await asyncio.sleep(1)
+=======
+        # Update the battle display
+        await self.update_display()
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         
         return True
     
@@ -406,9 +433,12 @@ class TeamBattle(Battle):
         log_text = "\n\n".join([f"**Action #{i}**\n{msg}" for i, msg in self.log])
         embed.add_field(name="Battle Log", value=log_text or "Battle starting...", inline=False)
         
+<<<<<<< HEAD
         # Add battle ID to footer for GM replay functionality
         embed.set_footer(text=f"Battle ID: {self.battle_id}")
         
+=======
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
         return embed
     
     async def update_display(self):
@@ -484,6 +514,7 @@ class TeamBattle(Battle):
                 winning_team = self.teams[1]
                 losing_team = self.teams[0]
         
+<<<<<<< HEAD
         # Collect valid winner and loser IDs (only including real players, not pets)
         winner_ids = []
         loser_ids = []
@@ -507,6 +538,22 @@ class TeamBattle(Battle):
         
         # Handle money rewards if there's money involved
         if self.money > 0:
+=======
+        # Award money and PvP wins to winners
+        if self.money > 0:
+            # Collect valid winner and loser IDs (only including real players, not pets)
+            winner_ids = []
+            loser_ids = []
+            
+            for combatant in winning_team.combatants:
+                if hasattr(combatant.user, "id") and not combatant.is_pet:
+                    winner_ids.append(combatant.user.id)
+            
+            for combatant in losing_team.combatants:
+                if hasattr(combatant.user, "id") and not combatant.is_pet:
+                    loser_ids.append(combatant.user.id)
+            
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
             total_winners = len(winner_ids) or 1  # Avoid division by zero
             total_losers = len(loser_ids) or 1    # Avoid division by zero
             
@@ -532,10 +579,17 @@ class TeamBattle(Battle):
                 if verified_payments > 0:
                     individual_winnings = (self.money * 2 * verified_payments) / total_winners
                     
+<<<<<<< HEAD
                     # Award money to winners with proper logging
                     for winner_id in winner_ids:
                         await conn.execute(
                             'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+=======
+                    # Award winnings to winners with proper logging
+                    for winner_id in winner_ids:
+                        await conn.execute(
+                            'UPDATE profile SET "pvpwins"="pvpwins"+1, "money"="money"+$1 WHERE "user"=$2;',
+>>>>>>> 377581b229c4fa257ab84dcbe98be88cf6bd930e
                             individual_winnings,
                             winner_id
                         )
