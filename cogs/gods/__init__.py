@@ -143,7 +143,8 @@ class Gods(commands.Cog):
         god_roles = {
             'Drakath': 1406639168070615040,
             'Sepulchure': 1406639315240489061,
-            'Astraea': 1406639398795219126
+            'Astraea': 1406639398795219126,
+            'Godless': 1424665788362784851
         }
 
         # Check if the user already has a god and handle reset points
