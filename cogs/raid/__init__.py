@@ -443,7 +443,7 @@ class Raid(commands.Cog):
             await self.bot.wait_until_ready()
             
             # Debug channel for logging
-            channeldebug = self.bot.get_channel(1406295336313557124)
+            channeldebug = self.bot.get_channel(1444392570280087755)
             if channeldebug:
                 await channeldebug.send("Auto raid check starting...")
             
@@ -474,7 +474,7 @@ class Raid(commands.Cog):
             from discord.utils import utcnow
             current_time = utcnow()
 
-            channeldebug = self.bot.get_channel(1406295336313557124)
+            channeldebug = self.bot.get_channel(1444392570280087755)
             if channeldebug:
                 await channeldebug.send(f"Auto raid check: Checking Channel (last spawn: {last_spawn_time})")
             
@@ -498,7 +498,7 @@ class Raid(commands.Cog):
                 if channeldebug:
                     await channeldebug.send(f"Auto raid check: Raid was spawned {time_diff:.1f} hours ago, waiting until at least 8 hours have passed")
         except Exception as e:
-            channeldebug = self.bot.get_channel(1406295336313557124)
+            channeldebug = self.bot.get_channel(1444392570280087755)
             await channeldebug.send(e)
 
     async def auto_spawn_raid(self, channel, hp, rarity="magic", raid_hp=17776):
@@ -506,7 +506,7 @@ class Raid(commands.Cog):
         try:
             if rarity not in ["magic", "legendary", "rare", "uncommon", "common", "mystery", "fortune", "divine"]:
                 raise ValueError("Invalid rarity specified.")
-            channeldebug = self.bot.get_channel(1406295336313557124)
+            channeldebug = self.bot.get_channel(1444392570280087755)
             channeldebug.send(f"Auto-spawning Ragnarok raid with {hp:,} HP and {rarity} crate")
             
             # Get guild from channel
@@ -558,10 +558,10 @@ class Raid(commands.Cog):
                             sent_msg = await current_channel.send(embed=em, file=fi, view=view)
                             message_ids.append(sent_msg.id)
                         else:
-                            channeldebug = self.bot.get_channel(1406295336313557124)
+                            channeldebug = self.bot.get_channel(1444392570280087755)
                             channeldebug.send(f"Channel with ID {channel_id} not found.")
                     except Exception as e:
-                        channeldebug = self.bot.get_channel(1406295336313557124)
+                        channeldebug = self.bot.get_channel(1444392570280087755)
                         error_message = f"Error in channel with ID {channel_id}: {e}. continuing.."
                         channeldebug.send(error_message)
                         continue
@@ -1114,7 +1114,7 @@ class Raid(commands.Cog):
             self.boss = None
         except Exception as e:
             import traceback
-            current_channel = self.bot.get_channel(1406295336313557124)
+            current_channel = self.bot.get_channel(1444392570280087755)
             error_message = f"Error in auto_spawn_raid: {e}\n"
             error_message += traceback.format_exc()
             await current_channel.send(error_message)
