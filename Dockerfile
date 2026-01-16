@@ -5,7 +5,8 @@ ARG IS_CUSTOM=false
 LABEL maintainer="adrian@travitia.xyz" \
     description="docker image to run latest IdleRPG"
 
-CMD ["python", "-OO", "/idlerpg/launcher.py"]
+ENV PYTHONPATH=/idlerpg/src
+CMD ["python", "-OO", "-m", "fable.launcher"]
 
 RUN mkdir /idlerpg && \
     adduser -h /idlerpg -s /bin/false -D -H idle && \
