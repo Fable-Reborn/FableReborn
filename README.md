@@ -24,9 +24,9 @@ Note: This requires you to have Podman and Git working. Development instances wi
 ```sh
 git clone https://git.travitia.xyz/Kenvyra/IdleRPG.git
 cd IdleRPG
-./scripts/beta.sh
+./scripts/dev/beta.sh
 podman build -t idlerpg:latest .
-podman run --rm -it --name idlerpg --pod idlerpgbeta -v $(pwd)/config.py:/idlerpg/config.py:Z idlerpg:latest
+podman run --rm -it --name idlerpg --pod idlerpgbeta -v $(pwd)/config/examples/config.py:/idlerpg/config.py:Z idlerpg:latest
 ```
 
 ### For hosting permanently
@@ -36,12 +36,12 @@ This is fully unsupported and we only provide basic tools. The setup script migh
 ```sh
 git clone https://git.travitia.xyz/Kenvyra/IdleRPG.git
 cd IdleRPG
-./scripts/setup.sh
+./scripts/ops/setup.sh
 systemctl start "podman-*"
 ```
 
 ## Utility
 
-IdleRPG uses [black](https://github.com/ambv/black), [flake8](https://github.com/PyCQA/flake8) and [isort](https://github.com/timothycrosley/isort) for code style. Please always run `./scripts/format.sh` before submitting a pull request and fix any problems.
+IdleRPG uses [black](https://github.com/ambv/black), [flake8](https://github.com/PyCQA/flake8) and [isort](https://github.com/timothycrosley/isort) for code style. Please always run `./scripts/dev/format.sh` before submitting a pull request and fix any problems.
 
-`./scripts/dumpdb.sh db_name` will update the database scheme from the postgres container.
+`./scripts/ops/dumpdb.sh db_name` will update the database scheme from the postgres container.
