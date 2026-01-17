@@ -424,12 +424,12 @@ class TestCog(commands.Cog):
     def load_assets(self):
         assets = {}
         asset_paths = {
-            "floor": "assets/images/testcog/floor.png",
-            "player": "assets/images/testcog/player.png",
-            "treasure": "assets/images/testcog/treasure.png",
-            "trap": "assets/images/testcog/trap.png",
-            "exit": "assets/images/testcog/exit.png",
-            "enemy": "assets/images/testcog/enemy.png",
+            "floor": "assets/images/ui/floor.png",
+            "player": "assets/images/ui/player.png",
+            "treasure": "assets/images/ui/treasure.png",
+            "trap": "assets/images/ui/trap.png",
+            "exit": "assets/images/ui/exit.png",
+            "enemy": "assets/images/enemies/enemy.png",
             "enemy_goblin": "assets/images/enemies/enemy_goblin.png",
             "enemy_skeleton": "assets/images/enemies/enemy_skeleton.png",
             "enemy_orc": "assets/images/enemies/enemy_orc.png",
