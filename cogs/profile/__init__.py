@@ -429,7 +429,7 @@ class Profile(commands.Cog):
                 if targetid == 295173706496475131:
 
                     async with self.bot.trusted_session.post(
-                            f"{self.bot.config.external.okapi_url}/api/genprofile",
+                            f"http://127.0.0.1:3000/api/genprofile",
                             json={
                                 "name": profile["name"],
                                 "color": color,
@@ -454,10 +454,20 @@ class Profile(commands.Cog):
                             headers={"Authorization": self.bot.config.external.okapi_token},
                     ) as req:
                         if req.status == 200:
-
-                            img = await req.text()
-
-
+                            raw = await req.read()
+                            if raw[:4] == b"\x89PNG" or raw[:2] == b"\xff\xd8":
+                                bytebuffer = raw
+                            else:
+                                try:
+                                    img = raw.decode("utf-8").strip()
+                                except UnicodeDecodeError:
+                                    return await ctx.send(
+                                        _("Unexpected internal error when generating image.")
+                                    )
+                                async with self.bot.trusted_session.get(img) as resp:
+                                    bytebuffer = await resp.read()
+                                    if resp.status != 200:
+                                        return await ctx.send("Error failed to fetch image")
 
                         else:
                             # Error, means try reading the response JSON error
@@ -482,14 +492,9 @@ class Profile(commands.Cog):
                             except Exception:
                                 return await ctx.send(_("Unexpected error when generating image."))
 
-                        async with self.bot.trusted_session.get(img) as resp:
-                            bytebuffer = await resp.read()
-                            if resp.status != 200:
-                                return await ctx.send("Error failed to fetch image")
-
                 else:
                     async with self.bot.trusted_session.post(
-                            f"{self.bot.config.external.okapi_url}/api/genprofile",
+                            f"http://127.0.0.1:3000/api/genprofile",
                             json={
                                 "name": profile["name"],
                                 "color": color,
@@ -514,10 +519,20 @@ class Profile(commands.Cog):
                             headers={"Authorization": self.bot.config.external.okapi_token},
                     ) as req:
                         if req.status == 200:
-
-                            img = await req.text()
-
-
+                            raw = await req.read()
+                            if raw[:4] == b"\x89PNG" or raw[:2] == b"\xff\xd8":
+                                bytebuffer = raw
+                            else:
+                                try:
+                                    img = raw.decode("utf-8").strip()
+                                except UnicodeDecodeError:
+                                    return await ctx.send(
+                                        _("Unexpected internal error when generating image.")
+                                    )
+                                async with self.bot.trusted_session.get(img) as resp:
+                                    bytebuffer = await resp.read()
+                                    if resp.status != 200:
+                                        return await ctx.send("Error failed to fetch image")
 
                         else:
                             # Error, means try reading the response JSON error
@@ -541,11 +556,6 @@ class Profile(commands.Cog):
                                 )
                             except Exception:
                                 return await ctx.send(_("Unexpected error when generating image."))
-
-                        async with self.bot.trusted_session.get(img) as resp:
-                            bytebuffer = await resp.read()
-                            if resp.status != 200:
-                                return await ctx.send("Error failed to fetch image")
 
                 await ctx.send(
                     _("Your Profile:"),
@@ -717,7 +727,7 @@ class Profile(commands.Cog):
 
 
                 async with self.bot.trusted_session.post(
-                        f"ttp://127.0.0.1:3010/api/genprofile",
+                        f"http://127.0.0.1:3000/api/genprofile",
                         json={
                             "name": profile['name'],
                             "color": color,
@@ -1824,6 +1834,255 @@ class Profile(commands.Cog):
                 await self.bot.process_levelup(ctx, new_level, old_level)
 
         await self.bot.reset_cooldown(ctx)
+
+    @commands.group(name="preset", invoke_without_command=True)
+    async def preset_cmd(self, ctx):
+        """
+        Base command group for preset operations.
+        Usage:
+          $preset create <preset_name>
+          $preset use <preset_name>
+          $preset list
+          $preset delete <preset_name>
+        """
+        await ctx.send("Use `$preset create|use|list|delete` ...")
+
+    @preset_cmd.command(name="create")
+    async def preset_create(self, ctx, preset_id: str):
+        """
+        Creates or overwrites a preset using your currently equipped items.
+        Enforces a maximum of 5 total presets per user.
+        Usage:
+            $preset create raid_loadout
+        """
+        async with self.bot.pool.acquire() as conn:
+            # 1) Grab currently equipped items
+            rows = await conn.fetch(
+                """
+                SELECT i.item
+                  FROM profile p
+                  JOIN allitems ai ON (p.user = ai.owner)
+                  JOIN inventory i ON (ai.id = i.item)
+                 WHERE i.equipped = TRUE
+                   AND p.user = $1
+                """,
+                ctx.author.id
+            )
+            if not rows:
+                return await ctx.send("You have no currently equipped items to save.")
+
+            item_ids = [r["item"] for r in rows]
+
+            # 2) Check how many presets the user currently has
+            preset_count = await conn.fetchval(
+                """
+                SELECT COUNT(*) 
+                  FROM presets
+                 WHERE user_id = $1
+                """,
+                ctx.author.id
+            )
+
+            # 3) See if this preset already exists (overwrite scenario)
+            existing_preset = await conn.fetchrow(
+                """
+                SELECT preset_id
+                  FROM presets
+                 WHERE user_id = $1
+                   AND preset_id = $2
+                """,
+                ctx.author.id,
+                preset_id
+            )
+
+            # If user is at max (5) and we are not overwriting an existing preset, block
+            if preset_count >= 5 and not existing_preset:
+                return await ctx.send(
+                    "You already have 5 presets. Please delete one first or use the same name to overwrite."
+                )
+
+            # 4) Insert or update the preset in the DB
+            await conn.execute(
+                """
+                INSERT INTO presets (user_id, preset_id, item_ids)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (user_id, preset_id)
+                DO UPDATE SET item_ids = EXCLUDED.item_ids;
+                """,
+                ctx.author.id,
+                preset_id,
+                item_ids
+            )
+
+        await ctx.send(
+            f"Preset **{preset_id}** saved with these equipped item IDs: {', '.join(map(str, item_ids))}"
+        )
+
+    @preset_cmd.command(name="use")
+    async def preset_use(self, ctx, preset_id: str):
+        """
+        Equips all items saved in the specified preset.
+        Automatically unequips currently equipped items.
+        Usage: $preset use sword_shield
+        """
+        # 1) Fetch preset
+        async with self.bot.pool.acquire() as conn:
+            # Get the preset
+            record = await conn.fetchrow(
+                """
+                SELECT item_ids
+                  FROM presets
+                 WHERE user_id = $1
+                   AND preset_id = $2
+                """,
+                ctx.author.id,
+                preset_id
+            )
+            if not record:
+                return await ctx.send(f"You have no preset **{preset_id}** defined.")
+
+            # 2) Get currently equipped items to unequip them later
+            equipped = await conn.fetch(
+                """
+                SELECT ai.id, ai.type
+                  FROM allitems ai
+                  JOIN inventory i ON (ai.id = i.item)
+                 WHERE i.equipped IS TRUE
+                   AND ai.owner = $1;
+                """,
+                ctx.author.id
+            )
+
+            item_ids = record["item_ids"]
+            if not item_ids:
+                return await ctx.send(f"Preset **{preset_id}** has no items stored.")
+
+            # 3) Check ownership of new items
+            owned_rows = await conn.fetch(
+                """
+                SELECT i.item, ai.type
+                  FROM inventory i
+                  JOIN allitems ai ON (i.item = ai.id)
+                 WHERE ai.owner = $1
+                   AND i.item = ANY($2::bigint[]);
+                """,
+                ctx.author.id,
+                item_ids
+            )
+            owned_items = {r["item"]: r["type"] for r in owned_rows}
+            missing = set(item_ids) - set(owned_items.keys())
+            if missing:
+                return await ctx.send(
+                    f"You no longer own these item(s): {', '.join(map(str, missing))}"
+                )
+
+            # 4) Begin transaction
+            async with conn.transaction():
+                # 5) Unequip currently equipped items
+                for item in equipped:
+                    await conn.execute(
+                        """
+                        UPDATE inventory
+                           SET equipped = FALSE
+                         WHERE item = $1;
+                        """,
+                        item["id"]
+                    )
+
+                # 6) Equip new items
+                for item_id in item_ids:
+                    item_type = owned_items[item_id]
+                    # First ensure no other item of same type is equipped
+                    await conn.execute(
+                        """
+                        UPDATE inventory
+                           SET equipped = FALSE
+                         WHERE item IN (
+                             SELECT i.item
+                               FROM inventory i
+                               JOIN allitems ai ON (i.item = ai.id)
+                              WHERE ai.owner = $1
+                                AND ai.type = $2
+                                AND i.equipped = TRUE
+                         );
+                        """,
+                        ctx.author.id,
+                        item_type
+                    )
+                    # Then equip the new item
+                    await conn.execute(
+                        """
+                        UPDATE inventory
+                           SET equipped = TRUE
+                         WHERE item = $1;
+                        """,
+                        item_id
+                    )
+
+        # 7) Send success message with item details
+        item_details = []
+        for item_id in item_ids:
+            item = await self.bot.pool.fetchrow(
+                "SELECT name, type FROM allitems WHERE id = $1", item_id
+            )
+            if item:
+                item_details.append(f"- {item['name']} ({item['type']})")
+
+        await ctx.send(
+            f"✅ **Equipped preset {preset_id}:**\n" + "\n".join(item_details)[:1900]
+        )
+
+    @preset_cmd.command(name="list")
+    async def preset_list(self, ctx):
+        """
+        Lists all of your saved presets.
+        Usage: $preset list
+        """
+        async with self.bot.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT preset_id, item_ids
+                  FROM presets
+                 WHERE user_id = $1
+                 ORDER BY preset_id
+                """,
+                ctx.author.id
+            )
+
+        if not rows:
+            return await ctx.send("You have no presets saved.")
+
+        lines = []
+        for r in rows:
+            pid = r["preset_id"]
+            items = r["item_ids"]
+            items_str = ", ".join(map(str, items)) if items else "(none)"
+            lines.append(f"**Preset {pid}:** {items_str}")
+
+        await ctx.send("\n".join(lines))
+
+    @preset_cmd.command(name="delete", aliases=["remove"])
+    async def preset_delete(self, ctx, preset_id: str):
+        """
+        Deletes a preset from your list.
+        Usage: $preset delete sword_shield
+        """
+        async with self.bot.pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                DELETE FROM presets
+                      WHERE user_id = $1
+                        AND preset_id = $2
+                """,
+                ctx.author.id,
+                preset_id
+            )
+
+        if "DELETE 0" in result:
+            return await ctx.send(f"No preset **{preset_id}** existed.")
+        else:
+            await ctx.send(f"Preset **{preset_id}** has been deleted.")
+
 
     @user_cooldown(180)
     @checks.has_char()
