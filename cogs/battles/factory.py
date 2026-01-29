@@ -300,7 +300,7 @@ class BattleFactory:
             kwargs["weekly_defeats"] = weekly_defeats
         
         # Create dragon team
-        dragon_team = await self.dragon_ext.create_dragon_team(dragon_level)
+        dragon_team = await self.dragon_ext.create_dragon_team(self.bot, dragon_level)
         
         # Create player team
         player_combatants = []

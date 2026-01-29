@@ -27,6 +27,7 @@ import aiohttp
 import discord
 import discord
 from discord.ext import commands
+from discord.ui import View, Button
 from utils import misc as rpgtools
 
 from discord import Object, HTTPException
@@ -40,6 +41,7 @@ import json
 
 from classes.converters import CrateRarity, IntFromTo, IntGreaterThan, UserWithCharacter
 from classes.items import ItemType
+from cogs.battles.extensions.elements import ElementExtension
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils import random
 from utils.checks import has_char, is_gm
@@ -4252,8 +4254,721 @@ class GameMaster(commands.Cog):
         
         return embed
 
+    # New functions for Ice Dragon Settings
 
 
+    def _get_element_choices(self):
+        elements = [e for e in ElementExtension.element_to_emoji.keys() if e != "Unknown"]
+        return sorted(set(elements))
+
+    async def _gm_prompt(self, ctx, prompt, timeout=180, allow_blank=False):
+        await ctx.send(prompt)
+
+        def check(msg):
+            return msg.author == ctx.author and msg.channel == ctx.channel
+
+        try:
+            msg = await self.bot.wait_for("message", timeout=timeout, check=check)
+        except asyncio.TimeoutError:
+            await ctx.send("⏱️ Timed out waiting for a response.")
+            return None
+
+        content = msg.content.strip()
+        if not content and not allow_blank:
+            await ctx.send("❌ Empty response. Cancelled.")
+            return None
+        if content.lower() in ("cancel", "stop", "exit"):
+            await ctx.send("✅ Cancelled.")
+            return None
+        return content
+
+    async def _gm_confirm(self, ctx, prompt):
+        response = await self._gm_prompt(ctx, prompt)
+        if response is None:
+            return False
+        if response.strip().lower() in ("yes", "y"):
+            return True
+        await ctx.send("❌ Cancelled.")
+        return False
+
+    async def _gm_confirm_twice(self, ctx, prompt_one, prompt_two):
+        if not await self._gm_confirm(ctx, prompt_one):
+            return False
+        return await self._gm_confirm(ctx, prompt_two)
+
+    def _format_percent(self, value):
+        if value is None:
+            return "-"
+        try:
+            return f"{float(value) * 100:.2f}%"
+        except (TypeError, ValueError):
+            return str(value)
+
+    def _parse_percent(self, raw):
+        if raw is None:
+            return None
+        text = str(raw).strip()
+        if not text:
+            return None
+        if text.endswith("%"):
+            text = text[:-1].strip()
+        try:
+            value = float(text)
+        except ValueError:
+            return None
+        if value < 0 or value > 100:
+            return None
+        return value / 100.0
+
+    async def _send_menu_embed(self, ctx, title, lines, footer=None):
+        embed = discord.Embed(title=title, description="\n".join(lines), color=discord.Color.blurple())
+        if footer:
+            embed.set_footer(text=footer)
+        await ctx.send(embed=embed)
+
+    async def _fetch_dragon_abilities(self, ability_type: str):
+        async with self.bot.pool.acquire() as conn:
+            return await conn.fetch(
+                "SELECT name, description, dmg, effect, chance FROM ice_dragon_abilities WHERE ability_type = $1 ORDER BY name ASC",
+                ability_type,
+            )
+
+    async def _fetch_dragon_stages(self):
+        async with self.bot.pool.acquire() as conn:
+            return await conn.fetch(
+                "SELECT id, name, min_level, max_level, base_multiplier, enabled, element, move_names, passive_names "
+                "FROM ice_dragon_stages ORDER BY min_level ASC, max_level ASC, id ASC"
+            )
+
+    async def _fetch_dragon_drops(self):
+        async with self.bot.pool.acquire() as conn:
+            return await conn.fetch(
+                "SELECT id, name, item_type, min_stat, max_stat, base_chance, max_chance, is_global, dragon_stage_id, "
+                "element, min_level, max_level "
+                "FROM ice_dragon_drops ORDER BY id ASC"
+            )
+
+    async def _choose_abilities(self, ctx, ability_type: str, max_count: int | None = None):
+        abilities = await self._fetch_dragon_abilities(ability_type)
+        if not abilities:
+            return []
+
+        lines = []
+        for idx, row in enumerate(abilities, start=1):
+            desc = row["description"] or ""
+            if len(desc) > 80:
+                desc = desc[:77] + "..."
+            lines.append(f"{idx}) {row['name']} - {desc}")
+
+        await self._send_menu_embed(
+            ctx,
+            title=f"Select {ability_type.title()}s",
+            lines=lines,
+            footer="Reply with numbers (comma-separated). Example: 1,3"
+        )
+        raw = await self._gm_prompt(ctx, f"Select {ability_type}s by number:", allow_blank=True)
+        if raw is None:
+            return None
+        if raw.strip().lower() in ("", "none", "0"):
+            return []
+
+        selected = []
+        try:
+            for part in raw.split(","):
+                idx = int(part.strip())
+                if 1 <= idx <= len(abilities):
+                    selected.append(abilities[idx - 1]["name"])
+        except ValueError:
+            await ctx.send("❌ Invalid selection. Use numbers only.")
+            return None
+
+        if max_count is not None and len(selected) > max_count:
+            await ctx.send(f"❌ Too many selected (max {max_count}).")
+            return None
+
+        return list(dict.fromkeys(selected))
+
+    @is_gm()
+    @commands.command(name="gmicedragonsettings", aliases=["gmicedragon", "gmids"])
+    async def gm_ice_dragon_settings(self, ctx):
+        """GM UI to manage Ice Dragon stages and drops."""
+
+        class IceDragonSettingsView(View):
+            def __init__(self, cog, ctx):
+                super().__init__(timeout=300)
+                self.cog = cog
+                self.ctx = ctx
+
+            async def _guard(self, interaction: discord.Interaction):
+                if interaction.user.id != self.ctx.author.id:
+                    await interaction.response.send_message("❌ This menu is not for you.", ephemeral=True)
+                    return False
+                return True
+
+            @discord.ui.button(label="Create Dragon", style=discord.ButtonStyle.green)
+            async def create_dragon(self, interaction: discord.Interaction, button: discord.ui.Button):
+                if not await self._guard(interaction):
+                    return
+                await interaction.response.send_message("Starting dragon creation...", ephemeral=True)
+                await self.cog._gm_create_dragon(self.ctx)
+
+            @discord.ui.button(label="List Dragons", style=discord.ButtonStyle.blurple)
+            async def list_dragons(self, interaction: discord.Interaction, button: discord.ui.Button):
+                if not await self._guard(interaction):
+                    return
+                await interaction.response.send_message("Listing dragons...", ephemeral=True)
+                await self.cog._gm_list_dragons(self.ctx)
+
+            @discord.ui.button(label="Edit Current List", style=discord.ButtonStyle.gray)
+            async def edit_dragons(self, interaction: discord.Interaction, button: discord.ui.Button):
+                if not await self._guard(interaction):
+                    return
+                await interaction.response.send_message("Editing dragon list...", ephemeral=True)
+                await self.cog._gm_edit_dragons(self.ctx)
+
+            @discord.ui.button(label="Create Drops", style=discord.ButtonStyle.green)
+            async def create_drops(self, interaction: discord.Interaction, button: discord.ui.Button):
+                if not await self._guard(interaction):
+                    return
+                await interaction.response.send_message("Starting drop creation...", ephemeral=True)
+                await self.cog._gm_create_drop(self.ctx)
+
+            @discord.ui.button(label="Edit Drops", style=discord.ButtonStyle.gray)
+            async def edit_drops(self, interaction: discord.Interaction, button: discord.ui.Button):
+                if not await self._guard(interaction):
+                    return
+                await interaction.response.send_message("Editing drops...", ephemeral=True)
+                await self.cog._gm_edit_drops(self.ctx)
+
+            @discord.ui.button(label="Reset Dragons", style=discord.ButtonStyle.red)
+            async def reset_dragons(self, interaction: discord.Interaction, button: discord.ui.Button):
+                if not await self._guard(interaction):
+                    return
+                await interaction.response.send_message("Resetting dragon stages...", ephemeral=True)
+                await self.cog._gm_reset_dragons(self.ctx)
+
+            @discord.ui.button(label="Reset Drops", style=discord.ButtonStyle.red)
+            async def reset_drops(self, interaction: discord.Interaction, button: discord.ui.Button):
+                if not await self._guard(interaction):
+                    return
+                await interaction.response.send_message("Resetting dragon drops...", ephemeral=True)
+                await self.cog._gm_reset_drops(self.ctx)
+
+        embed = discord.Embed(
+            title="GM Ice Dragon Settings",
+            description="Manage Ice Dragon stages, abilities, and weapon drops.",
+            color=discord.Color.blue(),
+        )
+        await ctx.send(embed=embed, view=IceDragonSettingsView(self, ctx))
+
+    async def _gm_list_dragons(self, ctx):
+        rows = await self._fetch_dragon_stages()
+        if not rows:
+            return await ctx.send("No dragon stages found.")
+        embed = discord.Embed(
+            title="Ice Dragon Stages",
+            description="Enabled stages are eligible to spawn for matching levels.",
+            color=discord.Color.blue(),
+        )
+        for row in rows:
+            moves = ", ".join(row["move_names"] or [])
+            passives = ", ".join(row["passive_names"] or [])
+            status = "✅ Enabled" if row["enabled"] else "❌ Disabled"
+            value = (
+                f"{status}\n"
+                f"Level Range: **{row['min_level']}–{row['max_level']}**\n"
+                f"Multiplier: **x{row['base_multiplier']}**\n"
+                f"Element: **{row['element']}**\n"
+                f"Moves: {moves or 'None'}\n"
+                f"Passives: {passives or 'None'}"
+            )
+            embed.add_field(name=row["name"], value=value, inline=False)
+        await ctx.send(embed=embed)
+
+    async def _gm_reset_dragons(self, ctx):
+        confirmed = await self._gm_confirm_twice(
+            ctx,
+            "⚠️ This will delete ALL ice dragon stages and abilities and restore defaults. Type YES to continue.",
+            "⚠️ Final confirmation. Type YES to reset dragon stages and abilities to defaults."
+        )
+        if not confirmed:
+            return
+
+        battles_cog = self.bot.get_cog("Battles")
+        if not battles_cog:
+            return await ctx.send("❌ Battles cog not found.")
+
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute("DELETE FROM ice_dragon_stages")
+            await conn.execute("DELETE FROM ice_dragon_abilities")
+
+        await battles_cog.initialize_tables()
+        await ctx.send("✅ Dragon stages and abilities reset to defaults.")
+
+    async def _gm_reset_drops(self, ctx):
+        confirmed = await self._gm_confirm_twice(
+            ctx,
+            "⚠️ This will delete ALL ice dragon drops and restore defaults. Type YES to continue.",
+            "⚠️ Final confirmation. Type YES to reset dragon drops to defaults."
+        )
+        if not confirmed:
+            return
+
+        battles_cog = self.bot.get_cog("Battles")
+        if not battles_cog:
+            return await ctx.send("❌ Battles cog not found.")
+
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute("DELETE FROM ice_dragon_drops")
+
+        await battles_cog.initialize_tables()
+        await ctx.send("✅ Dragon drops reset to defaults.")
+
+    async def _gm_create_dragon(self, ctx):
+        name = await self._gm_prompt(ctx, "Dragon name?")
+        if not name:
+            return
+        min_level_raw = await self._gm_prompt(ctx, "Min level?")
+        max_level_raw = await self._gm_prompt(ctx, "Max level?")
+        mult_raw = await self._gm_prompt(ctx, "Base multiplier? (e.g. 1.5)")
+        if not min_level_raw or not max_level_raw or not mult_raw:
+            return
+        try:
+            min_level = int(min_level_raw)
+            max_level = int(max_level_raw)
+            base_multiplier = float(mult_raw)
+        except ValueError:
+            return await ctx.send("❌ Invalid number input.")
+
+        elements = self._get_element_choices()
+        elem_raw = await self._gm_prompt(
+            ctx,
+            f"Element? (default Water)\nAvailable: {', '.join(elements)}",
+            allow_blank=True,
+        )
+        element = "Water"
+        if elem_raw:
+            if elem_raw.capitalize() not in elements:
+                return await ctx.send("❌ Invalid element.")
+            element = elem_raw.capitalize()
+
+        moves = await self._choose_abilities(ctx, "move")
+        if moves is None or not moves:
+            return await ctx.send("❌ You must select at least one move.")
+
+        passives = await self._choose_abilities(ctx, "passive", max_count=5)
+        if passives is None:
+            return
+
+        enabled_raw = await self._gm_prompt(ctx, "Enable this stage? (yes/no, default yes)", allow_blank=True)
+        enabled = True
+        if enabled_raw:
+            enabled = enabled_raw.strip().lower() in ("yes", "y", "true", "1")
+
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO ice_dragon_stages (name, min_level, max_level, base_multiplier, enabled, element, move_names, passive_names) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                name,
+                min_level,
+                max_level,
+                base_multiplier,
+                enabled,
+                element,
+                moves,
+                passives,
+            )
+        await ctx.send(f"✅ Dragon stage **{name}** created.")
+
+    async def _gm_edit_dragons(self, ctx):
+        rows = await self._fetch_dragon_stages()
+        if not rows:
+            return await ctx.send("No dragon stages found.")
+        lines = [f"{idx}) {row['name']} (Lv {row['min_level']}-{row['max_level']})" for idx, row in enumerate(rows, start=1)]
+        await self._send_menu_embed(ctx, "Select a Dragon Stage to Edit", lines)
+        sel_raw = await self._gm_prompt(ctx, "Enter the number of the stage to edit:")
+        if not sel_raw:
+            return
+        try:
+            sel_idx = int(sel_raw) - 1
+            if sel_idx < 0 or sel_idx >= len(rows):
+                raise ValueError
+        except ValueError:
+            return await ctx.send("❌ Invalid selection.")
+
+        stage = dict(rows[sel_idx])
+        await self._send_menu_embed(
+            ctx,
+            f"Editing: {stage['name']}",
+            [
+                f"Status: {'Enabled' if stage['enabled'] else 'Disabled'}",
+                f"Level Range: {stage['min_level']}–{stage['max_level']}",
+                f"Multiplier: x{stage['base_multiplier']}",
+                f"Element: {stage['element']}",
+                f"Moves: {', '.join(stage['move_names'] or []) or 'None'}",
+                f"Passives: {', '.join(stage['passive_names'] or []) or 'None'}",
+            ],
+            footer="Type: name, level_range, multiplier, element, moves, passives, toggle, delete, done",
+        )
+        menu = (
+            "What do you want to edit?\n"
+            "Options: name, level_range, multiplier, element, moves, passives, toggle, delete, done"
+        )
+        while True:
+            choice = await self._gm_prompt(ctx, menu)
+            if not choice:
+                return
+            choice = choice.lower()
+            if choice == "done":
+                break
+            if choice == "delete":
+                if not await self._gm_confirm(ctx, f"⚠️ Delete stage **{stage['name']}**? Type YES to confirm."):
+                    continue
+                async with self.bot.pool.acquire() as conn:
+                    await conn.execute("DELETE FROM ice_dragon_stages WHERE id = $1", stage["id"])
+                await ctx.send("✅ Stage deleted.")
+                return
+            if choice == "toggle":
+                new_enabled = not stage["enabled"]
+                action = "enable" if new_enabled else "disable"
+                if not await ctx.confirm(f"Confirm: {action} **{stage['name']}**?"):
+                    await ctx.send("❌ Toggle cancelled.")
+                    continue
+                async with self.bot.pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE ice_dragon_stages SET enabled = $1 WHERE id = $2",
+                        new_enabled, stage["id"]
+                    )
+                stage["enabled"] = new_enabled
+                await ctx.send(f"✅ Stage {'enabled' if new_enabled else 'disabled'}.")
+                continue
+            if choice == "name":
+                new_name = await self._gm_prompt(ctx, "New name?")
+                if not new_name:
+                    continue
+                async with self.bot.pool.acquire() as conn:
+                    await conn.execute("UPDATE ice_dragon_stages SET name = $1 WHERE id = $2", new_name, stage["id"])
+                stage["name"] = new_name
+            elif choice == "level_range":
+                min_raw = await self._gm_prompt(ctx, "New min level?")
+                max_raw = await self._gm_prompt(ctx, "New max level?")
+                if not min_raw or not max_raw:
+                    continue
+                try:
+                    min_level = int(min_raw)
+                    max_level = int(max_raw)
+                except ValueError:
+                    await ctx.send("❌ Invalid number.")
+                    continue
+                async with self.bot.pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE ice_dragon_stages SET min_level = $1, max_level = $2 WHERE id = $3",
+                        min_level, max_level, stage["id"]
+                    )
+                stage["min_level"] = min_level
+                stage["max_level"] = max_level
+            elif choice == "multiplier":
+                mult_raw = await self._gm_prompt(ctx, "New base multiplier?")
+                if not mult_raw:
+                    continue
+                try:
+                    base_multiplier = float(mult_raw)
+                except ValueError:
+                    await ctx.send("❌ Invalid number.")
+                    continue
+                async with self.bot.pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE ice_dragon_stages SET base_multiplier = $1 WHERE id = $2",
+                        base_multiplier, stage["id"]
+                    )
+                stage["base_multiplier"] = base_multiplier
+            elif choice == "element":
+                elements = self._get_element_choices()
+                elem_raw = await self._gm_prompt(ctx, f"Element?\nAvailable: {', '.join(elements)}")
+                if not elem_raw:
+                    continue
+                if elem_raw.capitalize() not in elements:
+                    await ctx.send("❌ Invalid element.")
+                    continue
+                async with self.bot.pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE ice_dragon_stages SET element = $1 WHERE id = $2",
+                        elem_raw.capitalize(), stage["id"]
+                    )
+                stage["element"] = elem_raw.capitalize()
+            elif choice == "moves":
+                moves = await self._choose_abilities(ctx, "move")
+                if moves is None or not moves:
+                    continue
+                async with self.bot.pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE ice_dragon_stages SET move_names = $1 WHERE id = $2",
+                        moves, stage["id"]
+                    )
+                stage["move_names"] = moves
+            elif choice == "passives":
+                passives = await self._choose_abilities(ctx, "passive", max_count=5)
+                if passives is None:
+                    continue
+                async with self.bot.pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE ice_dragon_stages SET passive_names = $1 WHERE id = $2",
+                        passives, stage["id"]
+                    )
+                stage["passive_names"] = passives
+            else:
+                await ctx.send("❌ Unknown option.")
+        await ctx.send("✅ Stage updated.")
+
+    async def _gm_create_drop(self, ctx):
+        name = await self._gm_prompt(ctx, "Drop name?")
+        if not name:
+            return
+        item_type_raw = await self._gm_prompt(
+            ctx,
+            f"Item type? Options: {', '.join([i.value for i in ItemType])}"
+        )
+        if not item_type_raw:
+            return
+        item_type_raw = item_type_raw.strip().capitalize()
+        if item_type_raw not in [i.value for i in ItemType]:
+            return await ctx.send("❌ Invalid item type.")
+        min_stat_raw = await self._gm_prompt(ctx, "Min stat?")
+        max_stat_raw = await self._gm_prompt(ctx, "Max stat?")
+        base_chance_raw = await self._gm_prompt(ctx, "Base chance? (percent, e.g. 0.1 or 1.5%)")
+        max_chance_raw = await self._gm_prompt(ctx, "Max chance? (percent, e.g. 0.5 or 2%)")
+        if not min_stat_raw or not max_stat_raw or not base_chance_raw or not max_chance_raw:
+            return
+        try:
+            min_stat = int(min_stat_raw)
+            max_stat = int(max_stat_raw)
+            base_chance = self._parse_percent(base_chance_raw)
+            max_chance = self._parse_percent(max_chance_raw)
+        except ValueError:
+            return await ctx.send("❌ Invalid number input.")
+        if base_chance is None or max_chance is None:
+            return await ctx.send("❌ Invalid chance. Use a percent between 0 and 100.")
+        if base_chance > max_chance:
+            return await ctx.send("❌ Base chance cannot exceed max chance.")
+
+        elements = self._get_element_choices()
+        elem_raw = await self._gm_prompt(
+            ctx,
+            f"Element? (default Water)\nAvailable: {', '.join(elements)}",
+            allow_blank=True,
+        )
+        element = "Water"
+        if elem_raw:
+            if elem_raw.capitalize() not in elements:
+                return await ctx.send("❌ Invalid element.")
+            element = elem_raw.capitalize()
+
+        scope_raw = await self._gm_prompt(ctx, "Drop scope? (global/specific, default global)", allow_blank=True)
+        is_global = True
+        dragon_stage_id = None
+        if scope_raw and scope_raw.strip().lower() in ("specific", "stage", "dragon"):
+            stages = await self._fetch_dragon_stages()
+            if not stages:
+                return await ctx.send("❌ No dragon stages available to bind this drop.")
+            lines = [f"{idx}) {row['name']} (Lv {row['min_level']}-{row['max_level']})" for idx, row in enumerate(stages, start=1)]
+            sel_raw = await self._gm_prompt(ctx, "Select a stage for this drop:\n" + "\n".join(lines))
+            if not sel_raw:
+                return
+            try:
+                sel_idx = int(sel_raw) - 1
+                if sel_idx < 0 or sel_idx >= len(stages):
+                    raise ValueError
+            except ValueError:
+                return await ctx.send("❌ Invalid selection.")
+            is_global = False
+            dragon_stage_id = stages[sel_idx]["id"]
+
+        min_level_raw = await self._gm_prompt(ctx, "Min level filter? (blank for none)", allow_blank=True)
+        max_level_raw = await self._gm_prompt(ctx, "Max level filter? (blank for none)", allow_blank=True)
+        min_level = int(min_level_raw) if min_level_raw else None
+        max_level = int(max_level_raw) if max_level_raw else None
+
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO ice_dragon_drops (name, item_type, min_stat, max_stat, base_chance, max_chance, is_global, dragon_stage_id, element, min_level, max_level) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                name, item_type_raw, min_stat, max_stat, base_chance, max_chance, is_global, dragon_stage_id, element, min_level, max_level
+            )
+        await ctx.send(f"✅ Drop **{name}** created.")
+
+    async def _gm_edit_drops(self, ctx):
+        rows = await self._fetch_dragon_drops()
+        if not rows:
+            return await ctx.send("No drops found.")
+        lines = [f"{idx}) {row['name']} ({row['item_type']})" for idx, row in enumerate(rows, start=1)]
+        await self._send_menu_embed(ctx, "Select a Drop to Edit", lines)
+        sel_raw = await self._gm_prompt(ctx, "Enter the number of the drop to edit:")
+        if not sel_raw:
+            return
+        try:
+            sel_idx = int(sel_raw) - 1
+            if sel_idx < 0 or sel_idx >= len(rows):
+                raise ValueError
+        except ValueError:
+            return await ctx.send("❌ Invalid selection.")
+
+        drop = dict(rows[sel_idx])
+        scope_text = "Global" if drop["is_global"] else f"Stage ID {drop['dragon_stage_id']}"
+        await self._send_menu_embed(
+            ctx,
+            f"Editing Drop: {drop['name']}",
+            [
+                f"Type: {drop['item_type']}",
+                f"Stats: {drop['min_stat']}–{drop['max_stat']}",
+                f"Chance: {self._format_percent(drop['base_chance'])}–{self._format_percent(drop['max_chance'])}",
+                f"Element: {drop['element']}",
+                f"Scope: {scope_text}",
+                f"Level Filter: {drop['min_level'] or '-'} to {drop['max_level'] or '-'}",
+            ],
+            footer="Type: name, item_type, stats, chance, element, level_range, scope, delete, done",
+        )
+        menu = "Options: name, item_type, stats, chance, element, level_range, scope, delete, done"
+        while True:
+            choice = await self._gm_prompt(ctx, menu)
+            if not choice:
+                return
+            choice = choice.lower()
+            if choice == "done":
+                break
+            if choice == "delete":
+                if not await self._gm_confirm(ctx, f"⚠️ Delete drop **{drop['name']}**? Type YES to confirm."):
+                    continue
+                async with self.bot.pool.acquire() as conn:
+                    await conn.execute("DELETE FROM ice_dragon_drops WHERE id = $1", drop["id"])
+                await ctx.send("✅ Drop deleted.")
+                return
+            if choice == "name":
+                new_name = await self._gm_prompt(ctx, "New name?")
+                if not new_name:
+                    continue
+                async with self.bot.pool.acquire() as conn:
+                    await conn.execute("UPDATE ice_dragon_drops SET name = $1 WHERE id = $2", new_name, drop["id"])
+                drop["name"] = new_name
+            elif choice == "item_type":
+                item_type_raw = await self._gm_prompt(ctx, f"Item type? Options: {', '.join([i.value for i in ItemType])}")
+                if not item_type_raw:
+                    continue
+                item_type_raw = item_type_raw.strip().capitalize()
+                if item_type_raw not in [i.value for i in ItemType]:
+                    await ctx.send("❌ Invalid item type.")
+                    continue
+                async with self.bot.pool.acquire() as conn:
+                    await conn.execute("UPDATE ice_dragon_drops SET item_type = $1 WHERE id = $2", item_type_raw, drop["id"])
+                drop["item_type"] = item_type_raw
+            elif choice == "stats":
+                min_stat_raw = await self._gm_prompt(ctx, "Min stat?")
+                max_stat_raw = await self._gm_prompt(ctx, "Max stat?")
+                if not min_stat_raw or not max_stat_raw:
+                    continue
+                try:
+                    min_stat = int(min_stat_raw)
+                    max_stat = int(max_stat_raw)
+                except ValueError:
+                    await ctx.send("❌ Invalid number.")
+                    continue
+                async with self.bot.pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE ice_dragon_drops SET min_stat = $1, max_stat = $2 WHERE id = $3",
+                        min_stat, max_stat, drop["id"]
+                    )
+                drop["min_stat"] = min_stat
+                drop["max_stat"] = max_stat
+            elif choice == "chance":
+                base_raw = await self._gm_prompt(ctx, "Base chance? (percent)")
+                max_raw = await self._gm_prompt(ctx, "Max chance? (percent)")
+                if not base_raw or not max_raw:
+                    continue
+                try:
+                    base_chance = self._parse_percent(base_raw)
+                    max_chance = self._parse_percent(max_raw)
+                except ValueError:
+                    await ctx.send("❌ Invalid number.")
+                    continue
+                if base_chance is None or max_chance is None:
+                    await ctx.send("❌ Invalid chance. Use a percent between 0 and 100.")
+                    continue
+                if base_chance > max_chance:
+                    await ctx.send("❌ Base chance cannot exceed max chance.")
+                    continue
+                async with self.bot.pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE ice_dragon_drops SET base_chance = $1, max_chance = $2 WHERE id = $3",
+                        base_chance, max_chance, drop["id"]
+                    )
+                drop["base_chance"] = base_chance
+                drop["max_chance"] = max_chance
+            elif choice == "element":
+                elements = self._get_element_choices()
+                elem_raw = await self._gm_prompt(ctx, f"Element?\nAvailable: {', '.join(elements)}")
+                if not elem_raw:
+                    continue
+                if elem_raw.capitalize() not in elements:
+                    await ctx.send("❌ Invalid element.")
+                    continue
+                async with self.bot.pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE ice_dragon_drops SET element = $1 WHERE id = $2",
+                        elem_raw.capitalize(), drop["id"]
+                    )
+                drop["element"] = elem_raw.capitalize()
+            elif choice == "level_range":
+                min_raw = await self._gm_prompt(ctx, "Min level filter? (blank for none)", allow_blank=True)
+                max_raw = await self._gm_prompt(ctx, "Max level filter? (blank for none)", allow_blank=True)
+                min_level = int(min_raw) if min_raw else None
+                max_level = int(max_raw) if max_raw else None
+                async with self.bot.pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE ice_dragon_drops SET min_level = $1, max_level = $2 WHERE id = $3",
+                        min_level, max_level, drop["id"]
+                    )
+                drop["min_level"] = min_level
+                drop["max_level"] = max_level
+            elif choice == "scope":
+                scope_raw = await self._gm_prompt(ctx, "Drop scope? (global/specific)")
+                if not scope_raw:
+                    continue
+                if scope_raw.strip().lower() in ("global", "all"):
+                    async with self.bot.pool.acquire() as conn:
+                        await conn.execute(
+                            "UPDATE ice_dragon_drops SET is_global = TRUE, dragon_stage_id = NULL WHERE id = $1",
+                            drop["id"]
+                        )
+                    drop["is_global"] = True
+                    drop["dragon_stage_id"] = None
+                elif scope_raw.strip().lower() in ("specific", "stage", "dragon"):
+                    stages = await self._fetch_dragon_stages()
+                    if not stages:
+                        await ctx.send("❌ No dragon stages available.")
+                        continue
+                    lines = [f"{idx}) {row['name']} (Lv {row['min_level']}-{row['max_level']})" for idx, row in enumerate(stages, start=1)]
+                    sel_raw = await self._gm_prompt(ctx, "Select a stage for this drop:\n" + "\n".join(lines))
+                    if not sel_raw:
+                        continue
+                    try:
+                        sel_idx = int(sel_raw) - 1
+                        if sel_idx < 0 or sel_idx >= len(stages):
+                            raise ValueError
+                    except ValueError:
+                        await ctx.send("❌ Invalid selection.")
+                        continue
+                    stage_id = stages[sel_idx]["id"]
+                    async with self.bot.pool.acquire() as conn:
+                        await conn.execute(
+                            "UPDATE ice_dragon_drops SET is_global = FALSE, dragon_stage_id = $1 WHERE id = $2",
+                            stage_id, drop["id"]
+                        )
+                    drop["is_global"] = False
+                    drop["dragon_stage_id"] = stage_id
+                else:
+                    await ctx.send("❌ Invalid scope.")
+            else:
+                await ctx.send("❌ Unknown option.")
+        await ctx.send("✅ Drop updated.")
 
 
 class GMInviteView(discord.ui.View):

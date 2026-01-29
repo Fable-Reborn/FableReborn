@@ -11,8 +11,8 @@ class DragonExtension:
     """Extension for handling Ice Dragon mechanics and abilities"""
     
     def __init__(self):
-        # Dragon evolution stages with abilities and stats scaling
-        self.dragon_stages = {
+        # Fallback defaults if DB tables are empty/unavailable
+        self.default_dragon_stages = {
             "Frostbite Wyrm": {
                 "level_range": (1, 5),
                 "moves": {
@@ -74,27 +74,112 @@ class DragonExtension:
                 "base_multiplier": 3.0
             }
         }
-    
-    async def get_dragon_stage(self, level: int) -> Dict[str, Any]:
-        """Determine the appropriate dragon stage based on level"""
-        for stage_name, stage_info in self.dragon_stages.items():
-            min_level, max_level = stage_info["level_range"]
-            if min_level <= level <= max_level:
-                return {
-                    "name": stage_name,
-                    "info": stage_info
-                }
-        
-        # Default to the highest stage if level exceeds all ranges
-        return {
-            "name": "Eternal Frost",
-            "info": self.dragon_stages["Eternal Frost"]
+        self.default_passive_descriptions = {
+            "Ice Armor": "Reduces all damage by 20%.",
+            "Corruption": "Reduces shields/armor by 20%.",
+            "Void Fear": "Reduces attack power by 20%.",
+            "Aspect of death": "Reduces attack and defense by 30%.",
+            "Void Corruption": "Reduces all stats by 25% and inflicts void damage.",
+            "Soul Devourer": "Steals 15% of damage dealt as health.",
+            "Eternal Winter": "Freezes all healing and reduces damage by 40%.",
+            "Death's Embrace": "10% chance to instantly kill on any hit.",
+            "Reality Bender": "Randomly negates 50% of attacks and reflects damage."
         }
     
-    async def calculate_dragon_stats(self, level: int) -> Dict[str, Any]:
+    async def _get_abilities_map(self, bot, ability_type: str) -> Dict[str, Dict[str, Any]]:
+        """Return a mapping of ability name -> ability data from DB (or fallback)."""
+        try:
+            async with bot.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT name, description, dmg, effect, chance FROM ice_dragon_abilities WHERE ability_type = $1",
+                    ability_type,
+                )
+            if not rows:
+                raise RuntimeError("No abilities in DB")
+            ability_map = {}
+            for row in rows:
+                ability_map[row["name"]] = {
+                    "description": row["description"],
+                    "dmg": row["dmg"],
+                    "effect": row["effect"],
+                    "chance": row["chance"],
+                }
+            return ability_map
+        except Exception:
+            ability_map = {}
+            for stage_info in self.default_dragon_stages.values():
+                for move_name, move_info in stage_info.get("moves", {}).items():
+                    ability_map[move_name] = {
+                        "description": f"Effect: {move_info['effect']}, Damage: {move_info['dmg']}, Chance: {int(move_info['chance'] * 100)}%",
+                        "dmg": move_info["dmg"],
+                        "effect": move_info["effect"],
+                        "chance": move_info["chance"],
+                    }
+            return ability_map
+
+    async def get_passive_descriptions(self, bot, passive_names: List[str]) -> Dict[str, str]:
+        """Get passive descriptions for the provided names."""
+        descriptions = {}
+        try:
+            async with bot.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT name, description FROM ice_dragon_abilities WHERE ability_type = 'passive' AND name = ANY($1::text[])",
+                    passive_names,
+                )
+            for row in rows:
+                descriptions[row["name"]] = row["description"] or ""
+        except Exception:
+            pass
+        for name in passive_names:
+            descriptions.setdefault(name, self.default_passive_descriptions.get(name, ""))
+        return descriptions
+
+    async def get_dragon_stage(self, bot, level: int) -> Dict[str, Any]:
+        """Determine the appropriate dragon stage based on level using DB stages."""
+        try:
+            async with bot.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT id, name, min_level, max_level, base_multiplier, enabled, element, move_names, passive_names "
+                    "FROM ice_dragon_stages WHERE enabled IS TRUE ORDER BY min_level ASC, max_level ASC, id ASC"
+                )
+            if not rows:
+                raise RuntimeError("No stages in DB")
+            move_map = await self._get_abilities_map(bot, "move")
+            eligible = [row for row in rows if row["min_level"] <= level <= row["max_level"]]
+            if not eligible:
+                raise RuntimeError("No stages for level")
+            import random
+            row = random.choice(eligible)
+            moves = {}
+            for move_name in row["move_names"] or []:
+                if move_name in move_map:
+                    moves[move_name] = {
+                        "dmg": move_map[move_name]["dmg"],
+                        "effect": move_map[move_name]["effect"],
+                        "chance": move_map[move_name]["chance"],
+                    }
+            return {
+                "id": row["id"],
+                "name": row["name"],
+                "info": {
+                    "level_range": (row["min_level"], row["max_level"]),
+                    "moves": moves,
+                    "passives": row["passive_names"] or [],
+                    "base_multiplier": row["base_multiplier"],
+                    "element": row["element"] or "Water",
+                },
+            }
+        except Exception:
+            for stage_name, stage_info in self.default_dragon_stages.items():
+                min_level, max_level = stage_info["level_range"]
+                if min_level <= level <= max_level:
+                    return {"name": stage_name, "info": stage_info | {"element": "Water"}}
+        return {"name": "Eternal Frost", "info": self.default_dragon_stages["Eternal Frost"] | {"element": "Water"}}
+    
+    async def calculate_dragon_stats(self, bot, level: int) -> Dict[str, Any]:
         """Calculate dragon stats based on level"""
         # Get the appropriate stage for the level
-        stage = await self.get_dragon_stage(level)
+        stage = await self.get_dragon_stage(bot, level)
         stage_name = stage["name"]
         stage_info = stage["info"]
         
@@ -120,13 +205,14 @@ class DragonExtension:
             "armor": armor,
             "moves": moves,
             "passives": passives,
-            "passive_effects": passives
+            "passive_effects": passives,
+            "element": stage_info.get("element", "Water"),
         }
     
-    async def create_dragon_combatant(self, level: int) -> Combatant:
+    async def create_dragon_combatant(self, bot, level: int) -> Combatant:
         """Create a combatant object for the dragon at the specified level"""
         # Calculate dragon stats
-        dragon_stats = await self.calculate_dragon_stats(level)
+        dragon_stats = await self.calculate_dragon_stats(bot, level)
         
         # Create combatant
         dragon = Combatant(
@@ -135,7 +221,7 @@ class DragonExtension:
             max_hp=dragon_stats["hp"],
             damage=dragon_stats["damage"],
             armor=dragon_stats["armor"],
-            element="Water",  # Dragon element is Water (matches emoji)
+            element=dragon_stats.get("element", "Water"),
             name=dragon_stats["name"],
             is_dragon=True,
             passives=dragon_stats["passives"],
@@ -242,7 +328,7 @@ class DragonExtension:
                 
         return False
         
-    async def create_dragon_team(self, level: int) -> Team:
+    async def create_dragon_team(self, bot, level: int) -> Team:
         """Create a team with just the dragon"""
-        dragon = await self.create_dragon_combatant(level)
+        dragon = await self.create_dragon_combatant(bot, level)
         return Team("Dragon", [dragon])

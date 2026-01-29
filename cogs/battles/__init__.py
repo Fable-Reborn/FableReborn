@@ -10,7 +10,7 @@ from collections import deque
 
 import discord
 from utils import misc as rpgtools
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord.ui import View, Button, Select, select
 from discord.enums import ButtonStyle
 
@@ -26,7 +26,6 @@ from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils.checks import has_char, has_money, is_gm
 from utils.i18n import _, locale_doc
 from utils.joins import JoinView, SingleJoinView
-from classes.errors import NoChoice
 
 class PetEggSelect(Select):
     def __init__(self, items, page=0):
@@ -727,6 +726,131 @@ class Battles(commands.Cog):
                     dialoguetoggle BOOLEAN DEFAULT FALSE
                 )
             """)
+
+            # Ice Dragon tables
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ice_dragon_abilities (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    ability_type TEXT NOT NULL,
+                    description TEXT,
+                    dmg INTEGER,
+                    effect TEXT,
+                    chance DOUBLE PRECISION,
+                    UNIQUE (name, ability_type)
+                );
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ice_dragon_stages (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    min_level INTEGER NOT NULL,
+                    max_level INTEGER NOT NULL,
+                    base_multiplier DOUBLE PRECISION NOT NULL,
+                    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    element TEXT NOT NULL DEFAULT 'Water',
+                    move_names TEXT[] NOT NULL DEFAULT '{}',
+                    passive_names TEXT[] NOT NULL DEFAULT '{}'
+                );
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ice_dragon_drops (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    item_type TEXT NOT NULL,
+                    min_stat INTEGER NOT NULL,
+                    max_stat INTEGER NOT NULL,
+                    base_chance DOUBLE PRECISION NOT NULL,
+                    max_chance DOUBLE PRECISION NOT NULL,
+                    is_global BOOLEAN NOT NULL DEFAULT TRUE,
+                    dragon_stage_id INTEGER,
+                    element TEXT NOT NULL DEFAULT 'Water',
+                    min_level INTEGER,
+                    max_level INTEGER
+                );
+                """
+            )
+            await conn.execute("ALTER TABLE ice_dragon_stages ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;")
+            await conn.execute("ALTER TABLE ice_dragon_drops ADD COLUMN IF NOT EXISTS is_global BOOLEAN NOT NULL DEFAULT TRUE;")
+            await conn.execute("ALTER TABLE ice_dragon_drops ADD COLUMN IF NOT EXISTS dragon_stage_id INTEGER;")
+
+            abilities_count = await conn.fetchval("SELECT COUNT(*) FROM ice_dragon_abilities")
+            if abilities_count == 0:
+                ability_seed = [
+                    ("Ice Breath", "move", "Effect: freeze. Damage: 600. Chance: 30%", 600, "freeze", 0.3),
+                    ("Tail Sweep", "move", "Effect: aoe. Damage: 400. Chance: 40%", 400, "aoe", 0.4),
+                    ("Frost Bite", "move", "Effect: dot. Damage: 300. Chance: 30%", 300, "dot", 0.3),
+                    ("Frosty Ice Burst", "move", "Effect: random_debuff. Damage: 800. Chance: 30%", 800, "random_debuff", 0.3),
+                    ("Minion Army", "move", "Effect: summon_adds. Damage: 200. Chance: 30%", 200, "summon_adds", 0.3),
+                    ("Frost Spears", "move", "Effect: dot. Damage: 500. Chance: 40%", 500, "dot", 0.4),
+                    ("Soul Reaver", "move", "Effect: stun. Damage: 1000. Chance: 30%", 1000, "stun", 0.3),
+                    ("Death Note", "move", "Effect: curse. Damage: 700. Chance: 30%", 700, "curse", 0.3),
+                    ("Dark Shadows", "move", "Effect: aoe_dot. Damage: 900. Chance: 40%", 900, "aoe_dot", 0.4),
+                    ("Void Blast", "move", "Effect: aoe_stun. Damage: 1200. Chance: 30%", 1200, "aoe_stun", 0.3),
+                    ("Soul Crusher", "move", "Effect: death_mark. Damage: 1000. Chance: 30%", 1000, "death_mark", 0.3),
+                    ("Armageddon", "move", "Effect: global_dot. Damage: 800. Chance: 40%", 800, "global_dot", 0.4),
+                    ("Reality Shatter", "move", "Effect: dimension_tear. Damage: 1500. Chance: 30%", 1500, "dimension_tear", 0.3),
+                    ("Soul Harvest", "move", "Effect: soul_drain. Damage: 1200. Chance: 30%", 1200, "soul_drain", 0.3),
+                    ("Void Storm", "move", "Effect: void_explosion. Damage: 1000. Chance: 40%", 1000, "void_explosion", 0.4),
+                    ("Time Freeze", "move", "Effect: time_stop. Damage: 2000. Chance: 30%", 2000, "time_stop", 0.3),
+                    ("Eternal Damnation", "move", "Effect: eternal_curse. Damage: 1500. Chance: 30%", 1500, "eternal_curse", 0.3),
+                    ("Apocalypse", "move", "Effect: world_ender. Damage: 1200. Chance: 40%", 1200, "world_ender", 0.4),
+                    ("Ice Armor", "passive", "Reduces all damage by 20%.", None, None, None),
+                    ("Corruption", "passive", "Reduces shields/armor by 20%.", None, None, None),
+                    ("Void Fear", "passive", "Reduces attack power by 20%.", None, None, None),
+                    ("Aspect of death", "passive", "Reduces attack and defense by 30%.", None, None, None),
+                    ("Void Corruption", "passive", "Reduces all stats by 25% and inflicts void damage.", None, None, None),
+                    ("Soul Devourer", "passive", "Steals 15% of damage dealt as health.", None, None, None),
+                    ("Eternal Winter", "passive", "Freezes all healing and reduces damage by 40%.", None, None, None),
+                    ("Death's Embrace", "passive", "10% chance to instantly kill on any hit.", None, None, None),
+                    ("Reality Bender", "passive", "Randomly negates 50% of attacks and reflects damage.", None, None, None),
+                ]
+                await conn.executemany(
+                    "INSERT INTO ice_dragon_abilities (name, ability_type, description, dmg, effect, chance) "
+                    "VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (name, ability_type) DO NOTHING",
+                    ability_seed,
+                )
+
+            stages_count = await conn.fetchval("SELECT COUNT(*) FROM ice_dragon_stages")
+            if stages_count == 0:
+                stage_seed = [
+                    ("Frostbite Wyrm", 1, 5, 1.0, "Water", ["Ice Breath", "Tail Sweep", "Frost Bite"], ["Ice Armor"]),
+                    ("Corrupted Ice Dragon", 6, 10, 1.15, "Water", ["Frosty Ice Burst", "Minion Army", "Frost Spears"], ["Corruption"]),
+                    ("Permafrost", 11, 15, 1.25, "Water", ["Soul Reaver", "Death Note", "Dark Shadows"], ["Void Fear"]),
+                    ("Absolute Zero", 16, 20, 1.5, "Water", ["Void Blast", "Soul Crusher", "Armageddon"], ["Aspect of death"]),
+                    ("Void Tyrant", 21, 25, 2.0, "Water", ["Reality Shatter", "Soul Harvest", "Void Storm"], ["Void Corruption", "Soul Devourer"]),
+                    ("Eternal Frost", 26, 30, 3.0, "Water", ["Time Freeze", "Eternal Damnation", "Apocalypse"], ["Eternal Winter", "Death's Embrace", "Reality Bender"]),
+                ]
+                await conn.executemany(
+                    "INSERT INTO ice_dragon_stages (name, min_level, max_level, base_multiplier, element, move_names, passive_names) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (name) DO NOTHING",
+                    stage_seed,
+                )
+
+            drops_count = await conn.fetchval("SELECT COUNT(*) FROM ice_dragon_drops")
+            if drops_count == 0:
+                drops_seed = [
+                    ("Frostbite Blade", "Sword", 20, 70, 0.001, 0.005, "Water"),
+                    ("Ice Shard Dagger", "Dagger", 20, 70, 0.001, 0.005, "Water"),
+                    ("Glacial Axe", "Axe", 20, 70, 0.001, 0.005, "Water"),
+                    ("Frozen Spear", "Spear", 20, 70, 0.001, 0.005, "Water"),
+                    ("Permafrost Hammer", "Hammer", 20, 70, 0.001, 0.005, "Water"),
+                    ("Crystal Wand", "Wand", 20, 70, 0.001, 0.005, "Water"),
+                    ("Arctic Shield", "Shield", 20, 70, 0.001, 0.005, "Water"),
+                    ("Dragon's Breath Bow", "Bow", 40, 150, 0.0005, 0.0025, "Water"),
+                    ("Frost Giant's Scythe", "Scythe", 40, 150, 0.0005, 0.0025, "Water"),
+                    ("Absolute Zero Mace", "Mace", 40, 150, 0.0005, 0.0025, "Water"),
+                ]
+                await conn.executemany(
+                    "INSERT INTO ice_dragon_drops (name, item_type, min_stat, max_stat, base_chance, max_chance, element) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (name) DO NOTHING",
+                    drops_seed,
+                )
 
     def load_data_files(self):
         """Load all necessary data files for battles"""
@@ -1676,10 +1800,6 @@ class Battles(commands.Cog):
                         return
                 except asyncio.TimeoutError:
                     await ctx.send("Prestige canceled due to timeout.")
-                    await self.bot.reset_cooldown(ctx)
-                    return
-                except NoChoice:
-                    await ctx.send("Prestige canceled - no choice was made.")
                     await self.bot.reset_cooldown(ctx)
                     return
 
@@ -3250,7 +3370,7 @@ class Battles(commands.Cog):
         weekly_defeats = dragon_stats.get("weekly_defeats", 0)
         
         # Get dragon stage information
-        stage = await self.battle_factory.dragon_ext.get_dragon_stage(dragon_level)
+        stage = await self.battle_factory.dragon_ext.get_dragon_stage(self.bot, dragon_level)
         stage_name = stage["name"]
         stage_info = stage["info"]
         
@@ -3502,7 +3622,8 @@ class Battles(commands.Cog):
                     
                     # Handle rewards
                     if victory is True:  # Players won
-                        await self._handle_dragon_victory(ctx, view.party_members)
+                        stage_id = getattr(battle, "dragon_stage_id", None)
+                        await self._handle_dragon_victory(ctx, view.party_members, stage_id=stage_id)
                     elif victory is False:  # Players lost
                         await self._handle_dragon_defeat(ctx, view.party_members)
                     else:  # Draw
@@ -3519,7 +3640,15 @@ class Battles(commands.Cog):
         except Exception as e:
             await ctx.send(e)
     
-    async def _handle_dragon_victory(self, ctx, party_members):
+    async def _get_ice_dragon_drops(self):
+        async with self.bot.pool.acquire() as conn:
+            return await conn.fetch(
+                "SELECT id, name, item_type, min_stat, max_stat, base_chance, max_chance, is_global, dragon_stage_id, "
+                "element, min_level, max_level "
+                "FROM ice_dragon_drops ORDER BY id ASC"
+            )
+
+    async def _handle_dragon_victory(self, ctx, party_members, stage_id=None):
         """Handle rewards for defeating the dragon"""
         # Get current dragon level
         dragon_stats = await self.battle_factory.dragon_ext.get_dragon_stats_from_database(self.bot)
@@ -3575,6 +3704,30 @@ class Battles(commands.Cog):
         # Give rewards to each party member
         reward_text = ""
         weapon_rewards_text = ""
+        level_bonus = min(0.08, (old_level - 1) * 0.003)  # 0.3% bonus per level, max 8%
+        if stage_id is None:
+            try:
+                stage = await self.battle_factory.dragon_ext.get_dragon_stage(self.bot, old_level)
+                stage_id = stage.get("id")
+            except Exception:
+                stage_id = None
+        try:
+            all_drops = await self._get_ice_dragon_drops()
+        except Exception:
+            all_drops = []
+        eligible_drops = []
+        for drop in all_drops:
+            if not drop["is_global"] and stage_id is not None and drop["dragon_stage_id"] != stage_id:
+                continue
+            if not drop["is_global"] and stage_id is None:
+                continue
+            min_level = drop["min_level"]
+            max_level = drop["max_level"]
+            if min_level is not None and old_level < min_level:
+                continue
+            if max_level is not None and old_level > max_level:
+                continue
+            eligible_drops.append(drop)
         try:
             async with self.bot.pool.acquire() as conn:
                 for idx, member in enumerate(party_members):
@@ -3600,7 +3753,7 @@ class Battles(commands.Cog):
                         new_level = int(rpgtools.xptolevel(current_xp + member_xp))
 
                         # Debug output for specific member
-                        if member.id == 171645746993561600:
+                        if member.id == 295173706496475136:
                             await ctx.send(
                                 f"**Debug Info for {member.display_name}:**\n"
                                 f"Current XP: {current_xp}\n"
@@ -3618,61 +3771,36 @@ class Battles(commands.Cog):
                         # Record in reward text
                         reward_text += f"• {member.mention}: {member_money} 💰, {member_xp} XP\n"
                         
-                        # ICE DRAGON WEAPON REWARDS
-                        # Roll for weapon rewards for each player
-                        
-                        # Define ice dragon themed weapon names and types
-                        # Drop rates increase slightly with dragon level (max +8% at level 30+)
-                        level_bonus = min(0.08, (old_level - 1) * 0.003)  # 0.3% bonus per level, max 8%
-                        
-                        ice_dragon_weapons = [
-                            # 1-handed weapons (90-100 stats) - 1% chance each + level bonus (max 5% total)
-                            {"name": "Frostbite Blade", "type": ItemType.Sword, "min_stat": 20, "max_stat": 70, "chance": min(0.005, 0.001 + level_bonus)},
-                            {"name": "Ice Shard Dagger", "type": ItemType.Dagger, "min_stat": 20, "max_stat": 70, "chance": min(0.005, 0.001 + level_bonus)},
-                            {"name": "Glacial Axe", "type": ItemType.Axe, "min_stat": 20, "max_stat": 70, "chance": min(0.005, 0.001 + level_bonus)},
-                            {"name": "Frozen Spear", "type": ItemType.Spear, "min_stat": 20, "max_stat": 70, "chance": min(0.005, 0.001 + level_bonus)},
-                            {"name": "Permafrost Hammer", "type": ItemType.Hammer, "min_stat": 20, "max_stat": 70, "chance": min(0.005, 0.001 + level_bonus)},
-                            {"name": "Crystal Wand", "type": ItemType.Wand, "min_stat": 20, "max_stat": 70, "chance": min(0.005, 0.001 + level_bonus)},
-                            {"name": "Arctic Shield", "type": ItemType.Shield, "min_stat": 20, "max_stat": 70, "chance": min(0.005, 0.001 + level_bonus)},
-                            
-                            # 2-handed weapons (100-200 stats) - 0.5% chance each + level bonus (max 2.5% total)
-                            {"name": "Dragon's Breath Bow", "type": ItemType.Bow, "min_stat": 40, "max_stat": 150, "chance": min(0.0025, 0.0005 + level_bonus)},
-                            {"name": "Frost Giant's Scythe", "type": ItemType.Scythe, "min_stat": 40, "max_stat": 150, "chance": min(0.0025, 0.0005 + level_bonus)},
-                            {"name": "Absolute Zero Mace", "type": ItemType.Mace, "min_stat": 40, "max_stat": 150, "chance": min(0.0025, 0.0005 + level_bonus)},
-                        ]
-                        
-                        # Calculate total drop chance for display
-                        total_chance_1h = min(0.05, 0.01 + level_bonus) * 7
-                        total_chance_2h = min(0.025, 0.005 + level_bonus) * 3
-                        total_chance = total_chance_1h + total_chance_2h
+                        # ICE DRAGON WEAPON REWARDS (DB-driven)
                         try:
-                        # Roll for each weapon type
-                            for weapon in ice_dragon_weapons:
-                                if random.random() < weapon["chance"]:
+                            for drop in eligible_drops:
+                                effective_chance = min(drop["max_chance"], drop["base_chance"] + level_bonus)
+                                if random.random() < effective_chance:
                                     try:
-                                        # Player won this weapon!
-                                        stat = random.randint(weapon["min_stat"], weapon["max_stat"])
-                                        hand = weapon["type"].get_hand().value
+                                        stat = random.randint(drop["min_stat"], drop["max_stat"])
+                                        item_type = ItemType.from_string(drop["item_type"])
+                                        if not item_type:
+                                            continue
+                                        hand = item_type.get_hand().value
+                                        element = drop["element"] or "Water"
                                         
                                         # Create the weapon
-                                        item = await self.bot.create_item(
-                                            name=weapon["name"],
-                                            value=10000,  # Value based on stat
-                                            type_=weapon["type"].value,
-                                            damage=stat if weapon["type"] != ItemType.Shield else 0,
-                                            armor=stat if weapon["type"] == ItemType.Shield else 0,
+                                        await self.bot.create_item(
+                                            name=drop["name"],
+                                            value=10000,
+                                            type_=item_type.value,
+                                            damage=stat if item_type != ItemType.Shield else 0,
+                                            armor=stat if item_type == ItemType.Shield else 0,
                                             hand=hand,
                                             owner=member,
-                                            element="Water",  # Ice dragon weapons are Water element
+                                            element=element,
                                             conn=conn
                                         )
                                         
-                                        # Add to weapon rewards text with rarity indicator
                                         weapon_type_display = "2H" if hand == "both" else "1H"
-                                        rarity_emoji = "🌟" if hand == "both" else "⭐"  # 2H weapons are rarer
-                                        weapon_rewards_text += f"{rarity_emoji} **{member.mention}** found **{weapon['name']}** ({weapon_type_display}) with {stat} stats!\n"
+                                        rarity_emoji = "🌟" if hand == "both" else "⭐"
+                                        weapon_rewards_text += f"{rarity_emoji} **{member.mention}** found **{drop['name']}** ({weapon_type_display}) with {stat} stats!\n"
                                     except Exception as e:
-                                        # Log error but continue with other rewards
                                         print(f"Error creating ice dragon weapon for {member.display_name}: {e}")
                                         continue
                         except Exception as e:
@@ -3721,13 +3849,20 @@ class Battles(commands.Cog):
                 )
             else:
                 # Add a note about the weapon drop system with drop rate info
-                level_bonus = min(0.08, (old_level - 1) * 0.003)
-                base_chance_1h = min(0.09, 0.01 + level_bonus)
-                base_chance_2h = min(0.045, 0.005 + level_bonus)
-                total_chance = base_chance_1h * 7 + base_chance_2h * 3
+                total_chance_1h = 0.0
+                total_chance_2h = 0.0
+                for drop in eligible_drops:
+                    item_type = ItemType.from_string(drop["item_type"])
+                    if not item_type:
+                        continue
+                    effective_chance = min(drop["max_chance"], drop["base_chance"] + level_bonus)
+                    if item_type.get_hand().value == "both":
+                        total_chance_2h += effective_chance
+                    else:
+                        total_chance_1h += effective_chance
                 embed.add_field(
                     name="❄️ Ice Dragon Loot",
-                    value=f"No legendary weapons were found this time. Keep challenging the dragon for a chance at rare ice-themed weapons!\n\n**Drop Rates:**\n• 1H Weapons: {base_chance_1h:.1%} each (7 types, 90-100 stats)\n• 2H Weapons: {base_chance_2h:.1%} each (3 types, 100-200 stats)",
+                    value=f"No legendary weapons were found this time. Keep challenging the dragon for a chance at rare ice-themed weapons!\n\n**Drop Rates:**\n• 1H Total: {total_chance_1h:.1%}\n• 2H Total: {total_chance_2h:.1%}",
                     inline=False
                 )
             
@@ -3800,7 +3935,7 @@ class Battles(commands.Cog):
                     new_level = int(rpgtools.xptolevel(current_xp + consolation_xp))
 
                     # Debug output for specific member (if needed)
-                    if member.id == 171645746993561600:
+                    if member.id == 295173706496475136:
                         await ctx.send(
                             f"**Debug Info for {member.display_name}:**\n"
                             f"Current XP: {current_xp}\n"

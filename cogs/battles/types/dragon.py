@@ -52,68 +52,10 @@ class DragonBattle(Battle):
                 "pets_continue_battle": False
             }
         self.current_turn = 0  # Track turns separately from action numbers
-        self.dragon_stages = {
-            "Frostbite Wyrm": {
-                "level_range": (1, 5),
-                "moves": {
-                    "Ice Breath": {"dmg": 600, "effect": "freeze", "chance": 0.3},
-                    "Tail Sweep": {"dmg": 400, "effect": "aoe", "chance": 0.4},
-                    "Frost Bite": {"dmg": 300, "effect": "dot", "chance": 0.3}
-                },
-                "passives": ["Ice Armor"],
-                "base_multiplier": 1.0
-            },
-            "Corrupted Ice Dragon": {
-                "level_range": (6, 10),
-                "moves": {
-                    "Frosty Ice Burst": {"dmg": 800, "effect": "random_debuff", "chance": 0.3},
-                    "Minion Army": {"dmg": 200, "effect": "summon_adds", "chance": 0.3},
-                    "Frost Spears": {"dmg": 500, "effect": "dot", "chance": 0.4}
-                },
-                "passives": ["Corruption"],
-                "base_multiplier": 1.15
-            },
-            "Permafrost": {
-                "level_range": (11, 15),
-                "moves": {
-                    "Soul Reaver": {"dmg": 1000, "effect": "stun", "chance": 0.3},
-                    "Death Note": {"dmg": 700, "effect": "curse", "chance": 0.3},
-                    "Dark Shadows": {"dmg": 900, "effect": "aoe_dot", "chance": 0.4}
-                },
-                "passives": ["Void Fear"],
-                "base_multiplier": 1.25
-            },
-            "Absolute Zero": {
-                "level_range": (16, 20),
-                "moves": {
-                    "Void Blast": {"dmg": 1200, "effect": "aoe_stun", "chance": 0.3},
-                    "Soul Crusher": {"dmg": 1000, "effect": "death_mark", "chance": 0.3},
-                    "Armageddon": {"dmg": 800, "effect": "global_dot", "chance": 0.4}
-                },
-                "passives": ["Aspect of death"],
-                "base_multiplier": 1.5
-            },
-            "Void Tyrant": {
-                "level_range": (21, 25),
-                "moves": {
-                    "Reality Shatter": {"dmg": 1500, "effect": "dimension_tear", "chance": 0.3},
-                    "Soul Harvest": {"dmg": 1200, "effect": "soul_drain", "chance": 0.3},
-                    "Void Storm": {"dmg": 1000, "effect": "void_explosion", "chance": 0.4}
-                },
-                "passives": ["Void Corruption", "Soul Devourer"],
-                "base_multiplier": 2.0
-            },
-            "Eternal Frost": {
-                "level_range": (26, 30),
-                "moves": {
-                    "Time Freeze": {"dmg": 2000, "effect": "time_stop", "chance": 0.3},
-                    "Eternal Damnation": {"dmg": 1500, "effect": "eternal_curse", "chance": 0.3},
-                    "Apocalypse": {"dmg": 1200, "effect": "world_ender", "chance": 0.4}
-                },
-                "passives": ["Eternal Winter", "Death's Embrace", "Reality Bender"],
-                "base_multiplier": 3.0
-            }
-        }
+        self.dragon_stage_info = None
+        self.dragon_moves = {}
+        self.dragon_passives = []
+        self.dragon_element = "Water"
         
         # Get the dragon team and player team
         self.dragon_team = teams[0]  # Dragon is always the first team
@@ -154,35 +96,39 @@ class DragonBattle(Battle):
         self.current_turn = 0
         
         # Determine which dragon stage we're fighting based on level
-        stage_name = self.get_dragon_stage_name()
+        dragon_ext = None
+        battles_cog = self.ctx.bot.cogs.get("Battles")
+        if battles_cog:
+            dragon_ext = battles_cog.battle_factory.dragon_ext
+        stage = None
+        if dragon_ext:
+            stage = await dragon_ext.get_dragon_stage(self.ctx.bot, self.dragon_level)
+        if not stage:
+            stage = {"name": "Eternal Frost", "info": {"moves": {}, "passives": [], "element": "Water"}}
+        self.dragon_stage_id = stage.get("id")
+        stage_name = stage["name"]
+        self.dragon_stage_info = stage["info"]
+        self.dragon_moves = self.dragon_stage_info.get("moves", {})
+        self.dragon_passives = self.dragon_stage_info.get("passives", [])
+        self.dragon_element = self.dragon_stage_info.get("element", "Water")
         self.dragon.stage = stage_name
         self.dragon.name = f"{stage_name} (Level {self.dragon_level})"
-        self.dragon.passives = self.dragon_stages[stage_name]["passives"]
+        self.dragon.passives = self.dragon_passives
         
         # Add the initial message to the battle log
         await self.add_to_log(f"The battle against {self.dragon.name} has begun! 🐉")
         
         # Add passive effect descriptions
         passive_descriptions = []
-        for passive in self.dragon.passives:
-            if passive == "Ice Armor":
-                passive_descriptions.append("❄️ Ice Armor reduces all damage by 20%")
-            elif passive == "Corruption":
-                passive_descriptions.append("🖤 Corruption reduces shields/armor by 20%")
-            elif passive == "Void Fear":
-                passive_descriptions.append("😱 Void Fear reduces attack power by 20%")
-            elif passive == "Aspect of death":
-                passive_descriptions.append("💀 Aspect of death reduces attack and defense by 30%")
-            elif passive == "Void Corruption":
-                passive_descriptions.append("🌌 Void Corruption reduces all stats by 25% and inflicts void damage")
-            elif passive == "Soul Devourer":
-                passive_descriptions.append("👻 Soul Devourer steals 15% of damage dealt as health")
-            elif passive == "Eternal Winter":
-                passive_descriptions.append("❄️ Eternal Winter freezes all healing and reduces damage by 40%")
-            elif passive == "Death's Embrace":
-                passive_descriptions.append("💀 Death's Embrace has a 10% chance to instantly kill on any hit")
-            elif passive == "Reality Bender":
-                passive_descriptions.append("🌀 Reality Bender randomly negates 50% of attacks and reflects damage")
+        passive_desc_map = {}
+        if dragon_ext and self.dragon_passives:
+            passive_desc_map = await dragon_ext.get_passive_descriptions(self.ctx.bot, self.dragon_passives)
+        for passive in self.dragon_passives:
+            desc = passive_desc_map.get(passive, "")
+            if desc:
+                passive_descriptions.append(f"• **{passive}**: {desc}")
+            else:
+                passive_descriptions.append(f"• **{passive}**")
 
         if passive_descriptions:
             await self.add_to_log("**Dragon's Passive Effects:**\n" + "\n".join(passive_descriptions))
@@ -250,11 +196,12 @@ class DragonBattle(Battle):
     async def process_dragon_turn(self, dragon):
         """Process the dragon's turn"""
         # Get dragon stage and available moves
-        stage_name = dragon.stage
-        stage_info = self.dragon_stages.get(stage_name, self.dragon_stages["Frostbite Wyrm"])
-        available_moves = stage_info["moves"]
+        available_moves = self.dragon_moves or {}
         
         # Select a random move
+        if not available_moves:
+            await self.add_to_log(f"{dragon.name} hesitates, unable to find a move!")
+            return
         move_name = random.choice(list(available_moves.keys()))
         move_info = available_moves[move_name]
         
@@ -285,8 +232,7 @@ class DragonBattle(Battle):
             element_modifier = 1.0
             element_message = ""
             if self.config.get("element_effects", True) and hasattr(self.ctx.bot.cogs["Battles"], "element_ext"):
-                # Dragon is always Water element
-                dragon_element = "Water"
+                dragon_element = self.dragon_element or "Water"
                 target_element = getattr(target, "element", None)
                 
                 if target_element:
@@ -545,8 +491,8 @@ class DragonBattle(Battle):
         # Apply element effects if enabled
         element_message = ""
         if self.config.get("element_effects", True) and hasattr(self.ctx.bot.cogs["Battles"], "element_ext"):
-            # Dragon is always Water element
-            dragon_element = "Water"
+            # Use configured dragon element for elemental modifiers
+            dragon_element = self.dragon_element or "Water"
             player_element = getattr(player, "element", None)
             
             if player_element:
@@ -799,8 +745,9 @@ class DragonBattle(Battle):
         dragon_hp_percent = (dragon_hp / dragon_max_hp) * 100 if dragon_max_hp > 0 else 0
         dragon_hp_bar = self.create_hp_bar(dragon_hp, dragon_max_hp, length=20)
         
-        # Get dragon element emoji (always Water)
-        dragon_element_emoji = element_to_emoji.get("Water", "❓")
+        # Get dragon element emoji from current stage element
+        dragon_element_key = self.dragon_element or "Water"
+        dragon_element_emoji = element_to_emoji.get(dragon_element_key, "❓")
         
         embed.add_field(
             name=f"🐉 {self.dragon.name} {dragon_element_emoji}",
@@ -951,12 +898,8 @@ class DragonBattle(Battle):
         
     def get_dragon_stage_name(self):
         """Determine which dragon stage to use based on level"""
-        for stage_name, stage_info in self.dragon_stages.items():
-            level_range = stage_info.get("level_range", (1, 5))
-            if level_range[0] <= self.dragon_level <= level_range[1]:
-                return stage_name
-        
-        # Default to highest stage if no match found
+        if self.dragon_stage_info and hasattr(self.dragon, "stage"):
+            return self.dragon.stage
         return "Eternal Frost"
     
     async def process_status_effects(self, combatant):
