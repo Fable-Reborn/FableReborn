@@ -937,8 +937,8 @@ class Profile(commands.Cog):
                     return
 
                 if not await ctx.confirm(_(f"You are about to consume a level candy. Proceed?")):
-                    await ctx.send(_("Candy consumption cancelled."))
-                    return await self.bot.reset_cooldown(ctx)
+                    await self.bot.reset_cooldown(ctx)
+                    return await ctx.send(_("Candy consumption cancelled."))
 
                 current_level = rpgtools.xptolevel(profile['xp'])
                 current_xp = profile['xp']
@@ -972,8 +972,8 @@ class Profile(commands.Cog):
                     return
 
                 if not await ctx.confirm(_(f"You are about to consume a high quality level candy. Proceed?")):
-                    await ctx.send(_("Candy consumption cancelled."))
-                    return await self.bot.reset_cooldown(ctx)
+                    await self.bot.reset_cooldown(ctx)
+                    return await ctx.send(_("Candy consumption cancelled."))
 
                 current_level = rpgtools.xptolevel(profile['xp'])
                 current_xp = profile['xp']
