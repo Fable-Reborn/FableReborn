@@ -2829,7 +2829,7 @@ class GameMaster(commands.Cog):
     async def _eval(self, ctx: Context, *, body: str) -> None:
         """Evaluates a code"""
 
-        if ctx.author.id != [171645746993561600, 273652235588599808]:
+        if ctx.author.id not in [171645746993561600, 273652235588599808]:
             return
 
         env = {
