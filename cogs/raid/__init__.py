@@ -488,7 +488,7 @@ class Raid(commands.Cog):
                 
                 # Generate random parameters
                 random_hp = random.randint(1000000, 2500000)
-                crate_choices = ["divine", "fortune", "legendary", "mystery"]
+                crate_choices = ["divine", "fortune", "legendary", "materials"]
                 random_crate = random.choice(crate_choices)
                 
                 # Auto-spawn the raid
@@ -2840,7 +2840,7 @@ class Raid(commands.Cog):
                 rounded_weightdivine = round(weightdivine, 3)
 
                 # Define weights for crate selection
-                options = ['legendary', 'fortune', 'divine']
+                options = ['legendary', 'fortune', 'divine', 'materials']
                 weights = [0.40, 0.40, rounded_weightdivine]
 
                 # Select a crate based on weights
@@ -3162,7 +3162,7 @@ class Raid(commands.Cog):
                     rounded_weightdivine = round(weightdivine, 3)
 
                     # Define weights for crate selection
-                    options = ['legendary', 'fortune', 'divine']
+                    options = ['legendary', 'fortune', 'divine', 'materials']
                     weights = [0.40, 0.40, rounded_weightdivine]
 
                     # Select a crate based on weights
