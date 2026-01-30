@@ -2840,8 +2840,8 @@ class Raid(commands.Cog):
                 rounded_weightdivine = round(weightdivine, 3)
 
                 # Define weights for crate selection
-                options = ['legendary', 'fortune', 'divine', 'materials']
-                weights = [0.40, 0.40, rounded_weightdivine]
+                options = ['legendary', 'fortune', 'materials', 'divine']
+                weights = [0.30, 0.30, 0.20, rounded_weightdivine]
 
                 # Select a crate based on weights
                 crate = randomm.choices(options, weights=weights)[0]
@@ -3162,8 +3162,8 @@ class Raid(commands.Cog):
                     rounded_weightdivine = round(weightdivine, 3)
 
                     # Define weights for crate selection
-                    options = ['legendary', 'fortune', 'divine', 'materials']
-                    weights = [0.40, 0.40, rounded_weightdivine]
+                    options = ['legendary', 'fortune', 'materials', 'divine']
+                    weights = [0.30, 0.30, 0.20, rounded_weightdivine]
 
                     # Select a crate based on weights
                     crate = randomm.choices(options, weights=weights)[0]
