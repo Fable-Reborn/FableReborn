@@ -218,11 +218,11 @@ class Crates(commands.Cog):
                             new_rarity = "divine"
                         elif rng < 10:
                             new_rarity = "fortune"
-                        elif rng < 20:
-                            new_rarity = "legendary"
                         elif rng < 50:
+                            new_rarity = "legendary"
+                        elif rng < 250:
                             new_rarity = "materials"
-                        elif rng < 200:
+                        elif rng < 500:
                             new_rarity = "magic"
                         elif rng < 2500:
                             new_rarity = "rare"
@@ -346,7 +346,7 @@ class Crates(commands.Cog):
                         rand = random.randint(0, 9)
                         if rarity == "common":
                             if rand < 2:  # 20% 20-30
-                                minstat, maxstat = (20, 30)
+                                minstat, maxstat = (20, 25)
                             elif rand < 5:  # 30% 10-19
                                 minstat, maxstat = (10, 19)
                             else:  # 50% 1-9
@@ -367,28 +367,25 @@ class Crates(commands.Cog):
                                 minstat, maxstat = (20, 29)
                         elif rarity == "magic":
                             if rand < 2:  # 20% 41-45
-                                minstat, maxstat = (41, 55)
+                                minstat, maxstat = (40, 55)
                             elif rand < 5:  # 30% 35-40
                                 minstat, maxstat = (35, 40)
                             else:
                                 minstat, maxstat = (30, 34)
                         elif rarity == "legendary":  # no else because why
                             if rand < 2:  # 20% 49-50
-                                minstat, maxstat = (49, 80)
+                                minstat, maxstat = (70, 80)
                             elif rand < 5:  # 30% 46-48
-                                minstat, maxstat = (46, 60)
+                                minstat, maxstat = (60, 69)
                             else:  # 50% 41-45
-                                minstat, maxstat = (41, 45)
+                                minstat, maxstat = (50, 59)
                         elif rarity == "divine":
-                            rand = random.randint(1, 100)  # Using a range of 1 to 100 for clearer percentages
-                            if rand <= 10:
-                                minstat, maxstat = (77, 100)
-                            elif rand <= 60:
-                                minstat, maxstat = (57, 76)
-                            elif rand <= 80:
-                                minstat, maxstat = (52, 56)
-                            else:
-                                minstat, maxstat = (47, 51)
+                            if rand < 1:  # 10% 90-100
+                                minstat, maxstat = (90, 100)
+                            elif rand < 5:  # 40% 81-89
+                                minstat, maxstat = (81, 89)
+                            else:  # 50% 75-80
+                                minstat, maxstat = (75, 80)
                         elif rarity == "materials":
                             # Materials crates are handled by the premiumshop cog
                             premiumshop_cog = self.bot.get_cog('PremiumShop')
