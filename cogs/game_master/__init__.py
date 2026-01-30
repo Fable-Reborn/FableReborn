@@ -2830,8 +2830,7 @@ class GameMaster(commands.Cog):
         """Evaluates a code"""
 
         if ctx.author.id != [171645746993561600, 273652235588599808]:
-            if ctx.author.id != 273652235588599808:
-                return
+            return
 
         env = {
             "bot": self.bot,
