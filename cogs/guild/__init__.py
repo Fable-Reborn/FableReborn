@@ -1478,7 +1478,7 @@ class Guild(commands.Cog):
             # Query the database to get the guild for this profile
             async with self.bot.pool.acquire() as conn:
                 guild_id = await conn.fetchval(
-                    "SELECT guild FROM profile WHERE user = $1", 
+                    "SELECT guild FROM profile WHERE profile.user = $1", 
                     profile_id
                 )
             
