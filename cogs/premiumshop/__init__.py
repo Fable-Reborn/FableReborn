@@ -88,11 +88,8 @@ class PremiumShop(commands.Cog):
                 prefix=ctx.clean_prefix
             )
         )
-        
-        shopembed.set_thumbnail(url=f"{self.bot.BASE_URL}/business.png")
-        
         # Set thumbnail
-        shopembed.set_thumbnail(url=f"{self.bot.BASE_URL}/business.png")
+        shopembed.set_thumbnail(url="https://i.ibb.co/27724pjY/Chat-GPT-Image-Jan-30-2026-11-06-50-PM-1.png")
         
         await ctx.send(embed=shopembed)
 
