@@ -571,15 +571,7 @@ class PremiumShop(commands.Cog):
         Called by the open command in crates cog.
         """
         # Check if user has materials crates
-        async with self.bot.pool.acquire() as conn:
-            crates = await conn.fetchval(
-                'SELECT crates_materials FROM profile WHERE "user" = $1;',
-                ctx.author.id
-            )
-            
-            if not crates or crates < 1:
-                return False, "You don't have any Materials Crates."
-            
+        async with self.bot.pool.acquire() as conn:         
             # Get amuletcrafting cog to access resource generation
             amulet_cog = self.bot.get_cog('AmuletCrafting')
             if not amulet_cog:
