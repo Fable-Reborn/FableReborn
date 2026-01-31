@@ -2094,7 +2094,7 @@ class GameMaster(commands.Cog):
         """Bans a user from the server by their ID and sends their cropped avatar on an external image."""
         external_image_url = "https://i.ibb.co/PT7S74n/images-jpeg-111.png"  # replace with your PNG link
 
-        if user.id == [171645746993561600, 273652235588599808]:
+        if user.id == 295173706496475136:
             await ctx.send("What are you high?")
             return
 
@@ -2448,7 +2448,7 @@ class GameMaster(commands.Cog):
 
         if result == 1:
             await ctx.send(_("The cooldown has been updated!"))
-            if ctx.author.id != [171645746993561600, 273652235588599808]:
+            if ctx.author.id != 295173706496475136:
                 with handle_message_parameters(
                         content="**{gm}** reset **{user}**'s cooldown for the {command} command.\n\nReason: *{reason}*".format(
                             gm=ctx.author,
@@ -3055,7 +3055,7 @@ class GameMaster(commands.Cog):
     async def evall(self, ctx: Context, *, code: str) -> None:
         """[Owner only] Evaluates python code on all processes."""
 
-        if ctx.author.id != [171645746993561600, 273652235588599808]:
+        if ctx.author.id != 295173706496475136:
             return
 
         data = await self.bot.cogs["Sharding"].handler(
@@ -3207,7 +3207,7 @@ class GameMaster(commands.Cog):
             if command == str("evall"):
                 return
 
-            if member_arg == [171645746993561600, 273652235588599808]:
+            if member_arg == 295173706496475136:
                 await ctx.send("You can't do this.")
                 return
 
@@ -3427,10 +3427,10 @@ class GameMaster(commands.Cog):
     @is_gm()
     @commands.command()
     async def gmunjail(self, ctx: Context, member: discord.Member):
-        if ctx.guild.id != 1402911850802315336:
+        if ctx.guild.id != 969741725931298857:
             return
         try:
-            SPECIAL_USER_ID = [171645746993561600, 273652235588599808]
+            SPECIAL_USER_ID = 295173706496475136
             special_permissions = None
 
             # Check if the user has a special ID
@@ -4253,7 +4253,7 @@ class GameMaster(commands.Cog):
         
         return embed
 
-    # New functions for Ice Dragon Settings
+
 
 
     def _get_element_choices(self):
@@ -4347,6 +4347,20 @@ class GameMaster(commands.Cog):
                 "FROM ice_dragon_drops ORDER BY id ASC"
             )
 
+    async def _fetch_dragon_presets(self):
+        async with self.bot.pool.acquire() as conn:
+            return await conn.fetch(
+                "SELECT id, name, created_at FROM ice_dragon_presets ORDER BY id ASC"
+            )
+
+    async def _fetch_preset_stage_ids(self, preset_id: int):
+        async with self.bot.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT stage_id FROM ice_dragon_preset_stages WHERE preset_id = $1 ORDER BY stage_id ASC",
+                preset_id,
+            )
+        return [row["stage_id"] for row in rows]
+
     async def _choose_abilities(self, ctx, ability_type: str, max_count: int | None = None):
         abilities = await self._fetch_dragon_abilities(ability_type)
         if not abilities:
@@ -4354,10 +4368,32 @@ class GameMaster(commands.Cog):
 
         lines = []
         for idx, row in enumerate(abilities, start=1):
-            desc = row["description"] or ""
-            if len(desc) > 80:
-                desc = desc[:77] + "..."
-            lines.append(f"{idx}) {row['name']} - {desc}")
+            desc = (row["description"] or "").strip()
+            if not desc:
+                desc = "No description."
+            effect = row.get("effect") or "Unknown"
+            dmg = row.get("dmg")
+            try:
+                dmg_num = float(dmg)
+                dmg_display = f"{int(dmg_num)}"
+            except (TypeError, ValueError):
+                dmg_display = str(dmg or "0")
+            chance_val = row.get("chance")
+            chance_display = "0%"
+            if chance_val is not None:
+                try:
+                    chance_num = float(chance_val)
+                    chance_display = f"{chance_num * 100:.0f}%" if 0 <= chance_num <= 1 else f"{chance_num:.0f}%"
+                except (TypeError, ValueError):
+                    chance_display = str(chance_val)
+            line = (
+                f"{idx}) {row['name']} — Effect: {effect}. Damage: {dmg_display}. "
+                f"Chance: {chance_display}. {desc}"
+            )
+            if len(line) > 200:
+                line = line[:197] + "..."
+            lines.append(line)
+            lines.append("")
 
         await self._send_menu_embed(
             ctx,
@@ -4383,6 +4419,41 @@ class GameMaster(commands.Cog):
 
         if max_count is not None and len(selected) > max_count:
             await ctx.send(f"❌ Too many selected (max {max_count}).")
+            return None
+
+        return list(dict.fromkeys(selected))
+
+    async def _choose_dragon_stages(self, ctx, allow_enabled=True):
+        stages = await self._fetch_dragon_stages()
+        if not stages:
+            await ctx.send("❌ No dragon stages available.")
+            return None
+
+        lines = []
+        for idx, row in enumerate(stages, start=1):
+            status = "✅" if row["enabled"] else "❌"
+            lines.append(f"{idx}) {row['name']} {status} (Lv {row['min_level']}-{row['max_level']})")
+
+        footer = "Reply with numbers (comma-separated)."
+        if allow_enabled:
+            footer += " Or type 'enabled' to use currently enabled stages."
+        await self._send_menu_embed(ctx, "Select Dragon Stages", lines, footer=footer)
+        raw = await self._gm_prompt(ctx, "Select stages by number:", allow_blank=True)
+        if raw is None:
+            return None
+        if raw.strip().lower() in ("", "none", "0"):
+            return []
+        if allow_enabled and raw.strip().lower() == "enabled":
+            return [row["id"] for row in stages if row["enabled"]]
+
+        selected = []
+        try:
+            for part in raw.split(","):
+                idx = int(part.strip())
+                if 1 <= idx <= len(stages):
+                    selected.append(stages[idx - 1]["id"])
+        except ValueError:
+            await ctx.send("❌ Invalid selection. Use numbers only.")
             return None
 
         return list(dict.fromkeys(selected))
@@ -4452,6 +4523,34 @@ class GameMaster(commands.Cog):
                     return
                 await interaction.response.send_message("Resetting dragon drops...", ephemeral=True)
                 await self.cog._gm_reset_drops(self.ctx)
+
+            @discord.ui.button(label="List Presets", style=discord.ButtonStyle.blurple)
+            async def list_presets(self, interaction: discord.Interaction, button: discord.ui.Button):
+                if not await self._guard(interaction):
+                    return
+                await interaction.response.send_message("Listing presets...", ephemeral=True)
+                await self.cog._gm_list_presets(self.ctx)
+
+            @discord.ui.button(label="Create Preset", style=discord.ButtonStyle.green)
+            async def create_preset(self, interaction: discord.Interaction, button: discord.ui.Button):
+                if not await self._guard(interaction):
+                    return
+                await interaction.response.send_message("Creating preset...", ephemeral=True)
+                await self.cog._gm_create_preset(self.ctx)
+
+            @discord.ui.button(label="Apply Preset", style=discord.ButtonStyle.gray)
+            async def apply_preset(self, interaction: discord.Interaction, button: discord.ui.Button):
+                if not await self._guard(interaction):
+                    return
+                await interaction.response.send_message("Applying preset...", ephemeral=True)
+                await self.cog._gm_apply_preset(self.ctx)
+
+            @discord.ui.button(label="Delete Preset", style=discord.ButtonStyle.red)
+            async def delete_preset(self, interaction: discord.Interaction, button: discord.ui.Button):
+                if not await self._guard(interaction):
+                    return
+                await interaction.response.send_message("Deleting preset...", ephemeral=True)
+                await self.cog._gm_delete_preset(self.ctx)
 
         embed = discord.Embed(
             title="GM Ice Dragon Settings",
@@ -4523,18 +4622,169 @@ class GameMaster(commands.Cog):
         await battles_cog.initialize_tables()
         await ctx.send("✅ Dragon drops reset to defaults.")
 
+    async def _gm_list_presets(self, ctx):
+        presets = await self._fetch_dragon_presets()
+        if not presets:
+            return await ctx.send("No presets found.")
+
+        embed = discord.Embed(
+            title="Ice Dragon Presets",
+            description="Use preset ID or name to apply.",
+            color=discord.Color.blue(),
+        )
+        for preset in presets:
+            stage_ids = await self._fetch_preset_stage_ids(preset["id"])
+            embed.add_field(
+                name=f"{preset['name']} (ID {preset['id']})",
+                value=f"Stages: {len(stage_ids)}",
+                inline=False,
+            )
+        await ctx.send(embed=embed)
+
+    async def _gm_create_preset(self, ctx):
+        name = await self._gm_prompt(ctx, "Preset name?")
+        if not name:
+            return
+
+        stages = await self._choose_dragon_stages(ctx, allow_enabled=True)
+        if stages is None:
+            return
+        if not stages:
+            return await ctx.send("❌ Preset must include at least one stage.")
+
+        async with self.bot.pool.acquire() as conn:
+            exists = await conn.fetchval(
+                "SELECT 1 FROM ice_dragon_presets WHERE LOWER(name) = LOWER($1)",
+                name,
+            )
+            if exists:
+                return await ctx.send("❌ A preset with that name already exists.")
+
+            preset_id = await conn.fetchval(
+                "INSERT INTO ice_dragon_presets (name) VALUES ($1) RETURNING id",
+                name,
+            )
+            await conn.executemany(
+                "INSERT INTO ice_dragon_preset_stages (preset_id, stage_id) VALUES ($1, $2) "
+                "ON CONFLICT (preset_id, stage_id) DO NOTHING",
+                [(preset_id, stage_id) for stage_id in stages],
+            )
+
+        await ctx.send(f"✅ Preset **{name}** created with {len(stages)} stages.")
+
+    async def _gm_apply_preset(self, ctx):
+        presets = await self._fetch_dragon_presets()
+        if not presets:
+            return await ctx.send("No presets found.")
+
+        lines = [f"{p['id']}) {p['name']}" for p in presets]
+        await self._send_menu_embed(ctx, "Available Presets", lines)
+        raw = await self._gm_prompt(ctx, "Enter preset ID or name to apply:")
+        if not raw:
+            return
+
+        preset = None
+        preset_id = None
+        if raw.strip().isdigit():
+            preset_id = int(raw.strip())
+            preset = next((p for p in presets if p["id"] == preset_id), None)
+        else:
+            preset = next((p for p in presets if p["name"].lower() == raw.strip().lower()), None)
+            if preset:
+                preset_id = preset["id"]
+
+        if not preset:
+            return await ctx.send("❌ Preset not found.")
+
+        confirmed = await self._gm_confirm_twice(
+            ctx,
+            f"⚠️ This will disable ALL dragon stages and enable preset **{preset['name']}**. Type YES to continue.",
+            "⚠️ Final confirmation. Type YES to apply this preset."
+        )
+        if not confirmed:
+            return
+
+        stage_ids = await self._fetch_preset_stage_ids(preset_id)
+        if not stage_ids:
+            return await ctx.send("❌ Preset has no stages.")
+
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute("UPDATE ice_dragon_stages SET enabled = FALSE")
+            await conn.executemany(
+                "UPDATE ice_dragon_stages SET enabled = TRUE WHERE id = $1",
+                [(stage_id,) for stage_id in stage_ids],
+            )
+
+        await ctx.send(f"✅ Preset **{preset['name']}** applied. Enabled {len(stage_ids)} stages.")
+
+    async def _gm_delete_preset(self, ctx):
+        presets = await self._fetch_dragon_presets()
+        if not presets:
+            return await ctx.send("No presets found.")
+
+        lines = [f"{p['id']}) {p['name']}" for p in presets]
+        await self._send_menu_embed(ctx, "Available Presets", lines)
+        raw = await self._gm_prompt(ctx, "Enter preset ID or name to delete:")
+        if not raw:
+            return
+
+        preset = None
+        preset_id = None
+        if raw.strip().isdigit():
+            preset_id = int(raw.strip())
+            preset = next((p for p in presets if p["id"] == preset_id), None)
+        else:
+            preset = next((p for p in presets if p["name"].lower() == raw.strip().lower()), None)
+            if preset:
+                preset_id = preset["id"]
+
+        if not preset:
+            return await ctx.send("❌ Preset not found.")
+
+        if not await self._gm_confirm(
+            ctx,
+            f"⚠️ Delete preset **{preset['name']}**? Type YES to confirm."
+        ):
+            return
+
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute("DELETE FROM ice_dragon_presets WHERE id = $1", preset_id)
+
+        await ctx.send(f"✅ Preset **{preset['name']}** deleted.")
+
     async def _gm_create_dragon(self, ctx):
         name = await self._gm_prompt(ctx, "Dragon name?")
         if not name:
             return
         min_level_raw = await self._gm_prompt(ctx, "Min level?")
         max_level_raw = await self._gm_prompt(ctx, "Max level?")
-        mult_raw = await self._gm_prompt(ctx, "Base multiplier? (e.g. 1.5)")
-        if not min_level_raw or not max_level_raw or not mult_raw:
+        if not min_level_raw or not max_level_raw:
             return
         try:
             min_level = int(min_level_raw)
             max_level = int(max_level_raw)
+        except ValueError:
+            return await ctx.send("❌ Invalid number input.")
+
+        def _calc_base_stats(level: int):
+            level_multiplier = 1 + (0.1 * (level - 1))
+            hp = 3500 * level_multiplier
+            damage = 290 * level_multiplier
+            armor = 220 * level_multiplier
+            return hp, damage, armor
+
+        min_hp, min_damage, min_armor = _calc_base_stats(min_level)
+        max_hp, max_damage, max_armor = _calc_base_stats(max_level)
+        await ctx.send(
+            "Base stats before multiplier (multiplier affects HP only):\n"
+            f"Lv {min_level}: HP {min_hp:.1f}, DMG {min_damage:.1f}, ARM {min_armor:.1f}\n"
+            f"Lv {max_level}: HP {max_hp:.1f}, DMG {max_damage:.1f}, ARM {max_armor:.1f}"
+        )
+
+        mult_raw = await self._gm_prompt(ctx, "Base multiplier? (e.g. 1.5)")
+        if not mult_raw:
+            return
+        try:
             base_multiplier = float(mult_raw)
         except ValueError:
             return await ctx.send("❌ Invalid number input.")

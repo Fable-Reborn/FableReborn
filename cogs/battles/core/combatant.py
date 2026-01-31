@@ -16,6 +16,7 @@ class Combatant:
         self.owner = kwargs.get("owner", None)  # For pets
         self.luck = Decimal(str(kwargs.get("luck", 50)))
         self.name = kwargs.get("name", getattr(user, "display_name", str(user)))
+        self.passives = kwargs.get("passives", [])
         
         # Class-specific abilities
         self.lifesteal_percent = Decimal(str(kwargs.get("lifesteal_percent", 0)))

@@ -56,6 +56,7 @@ class DragonBattle(Battle):
         self.dragon_moves = {}
         self.dragon_passives = []
         self.dragon_element = "Water"
+        self._move_cooldowns = {}
         
         # Get the dragon team and player team
         self.dragon_team = teams[0]  # Dragon is always the first team
@@ -67,9 +68,14 @@ class DragonBattle(Battle):
         
         # Track status effects
         self.status_effects = {}
-        
+
         # Track which players have already used cheat death in this battle
         self.cheat_death_used = set()
+        self._extra_dragon_turns = 0
+        self._dominion_used = False
+        self._possession_used = False
+        self._damage_link_guard = False
+        self._player_turn_queue = deque()
         
     def get_participants(self):
         """Get list of participant user IDs for replay storage (dragon-specific)"""
@@ -132,10 +138,11 @@ class DragonBattle(Battle):
 
         if passive_descriptions:
             await self.add_to_log("**Dragon's Passive Effects:**\n" + "\n".join(passive_descriptions))
-            # Ensure action number continues incrementing after passives
-            self.current_turn = 1  # Set to 1 to start with dragon's turn
+            # Keep dragon as the first actor after passive log
+            self.current_turn = 0
             
         # Create initial battle display
+        self._refresh_player_turn_queue()
         await self.update_display()
         
         return True
@@ -151,13 +158,28 @@ class DragonBattle(Battle):
         
         # Process status effects on the current combatant
         await self.process_status_effects(current_combatant)
+        if not current_combatant.is_alive():
+            await self.add_to_log(f"{current_combatant.name} is defeated and cannot act!")
+            self._decrement_status_effects(current_combatant)
+            await self.update_display()
+            return True
         
         # Skip turn if stunned
         if self.is_stunned(current_combatant):
             await self.add_to_log(f"{current_combatant.name} is stunned and cannot act!")
+            self._decrement_status_effects(current_combatant)
             await self.update_display()
-            self.action_number += 1 # Increment action number even for skipped turns
             return True
+
+        # Skip turn if affected by terror panic
+        panic_effect = self._get_effect(current_combatant, "turn_skip_chance")
+        if panic_effect:
+            chance = panic_effect.get("value", 0.5)
+            if random.random() < chance:
+                await self.add_to_log(f"{current_combatant.name} is overwhelmed by terror and loses their turn!")
+                self._decrement_status_effects(current_combatant)
+                await self.update_display()
+                return True
             
         # Process turn based on combatant type
         if current_combatant == self.dragon:
@@ -177,8 +199,12 @@ class DragonBattle(Battle):
             for player in self.player_team.combatants:
                 if player.is_pet and player.is_alive():
                     # Set team references for skills that need them
-                    setattr(player, 'team', self.player_team)
-                    setattr(player, 'enemy_team', self.dragon_team)
+                    if self._has_effect(player, "possessed"):
+                        setattr(player, 'team', self.dragon_team)
+                        setattr(player, 'enemy_team', self.player_team)
+                    else:
+                        setattr(player, 'team', self.player_team)
+                        setattr(player, 'enemy_team', self.dragon_team)
                     
                     # Process per-turn effects
                     turn_messages = pet_ext.process_skill_effects_per_turn(player)
@@ -186,6 +212,7 @@ class DragonBattle(Battle):
                         for turn_msg in turn_messages:
                             await self.add_to_log(turn_msg)
         
+        self._decrement_status_effects(current_combatant)
         # Update display after turn is processed
         await self.update_display()
         await asyncio.sleep(2)  # Delay between turns for readability
@@ -195,22 +222,205 @@ class DragonBattle(Battle):
         
     async def process_dragon_turn(self, dragon):
         """Process the dragon's turn"""
+        # Tick down move cooldowns
+        if self._move_cooldowns:
+            for effect_key in list(self._move_cooldowns.keys()):
+                self._move_cooldowns[effect_key] -= 1
+                if self._move_cooldowns[effect_key] <= 0:
+                    del self._move_cooldowns[effect_key]
+
         # Get dragon stage and available moves
         available_moves = self.dragon_moves or {}
-        
+
+        alive_allies = self._alive_party_combatants()
+        def has_ally_target(combatant):
+            return any(c is not combatant and c.is_alive() for c in alive_allies)
+        def _normalize_chance(value):
+            try:
+                chance = float(value)
+            except (TypeError, ValueError):
+                return 0.0
+            if chance > 1:
+                chance = chance / 100.0
+            return max(0.0, min(1.0, chance))
+
         # Select a random move
         if not available_moves:
             await self.add_to_log(f"{dragon.name} hesitates, unable to find a move!")
             return
-        move_name = random.choice(list(available_moves.keys()))
-        move_info = available_moves[move_name]
+        move_pool = list(available_moves.items())
+        random.shuffle(move_pool)
+        move_name = None
+        move_info = None
+        if not self._possession_used:
+            for candidate_name, candidate_info in move_pool:
+                effect = candidate_info.get("effect")
+                if effect not in ("possess_player", "possess_pet", "possess_player_and_pet_permanent"):
+                    continue
+                if effect in self._move_cooldowns:
+                    continue
+                if effect == "possess_player_and_pet_permanent" and self._dominion_used:
+                    continue
+                if effect == "possess_pet":
+                    pet_targets = [c for c in alive_allies if c.is_pet and has_ally_target(c)]
+                    if not pet_targets:
+                        continue
+                elif effect == "possess_player":
+                    player_targets = [c for c in alive_allies if not c.is_pet and has_ally_target(c)]
+                    if not player_targets:
+                        continue
+                elif effect == "possess_player_and_pet_permanent":
+                    if len(alive_allies) <= 2:
+                        continue
+                    player_targets = [c for c in alive_allies if not c.is_pet and has_ally_target(c)]
+                    pet_targets = [c for c in alive_allies if c.is_pet and has_ally_target(c)]
+                    if not player_targets or not pet_targets:
+                        continue
+                move_name = candidate_name
+                move_info = candidate_info
+                break
+
+        if not move_name:
+            for candidate_name, candidate_info in move_pool:
+                effect = candidate_info.get("effect")
+                if self._possession_used and effect in ("possess_player", "possess_pet", "possess_player_and_pet_permanent"):
+                    continue
+                if effect in self._move_cooldowns:
+                    continue
+                if effect == "possess_player_and_pet_permanent" and self._dominion_used:
+                    continue
+                if effect == "possess_pet":
+                    pet_targets = [c for c in alive_allies if c.is_pet and has_ally_target(c)]
+                    if not pet_targets:
+                        continue
+                elif effect == "possess_player":
+                    player_targets = [c for c in alive_allies if not c.is_pet and has_ally_target(c)]
+                    if not player_targets:
+                        continue
+                elif effect == "possess_player_and_pet_permanent":
+                    if len(alive_allies) <= 2:
+                        continue
+                    player_targets = [c for c in alive_allies if not c.is_pet and has_ally_target(c)]
+                    pet_targets = [c for c in alive_allies if c.is_pet and has_ally_target(c)]
+                    if not player_targets or not pet_targets:
+                        continue
+                move_name = candidate_name
+                move_info = candidate_info
+                break
+
+        if not move_name:
+            if not alive_allies:
+                await self.add_to_log(f"{dragon.name} has no valid targets!")
+                return
+            target = random.choice(alive_allies)
+            base_damage = 300 * (1 + (0.1 * (self.dragon_level - 1)))
+            base_damage = Decimal(str(base_damage))
+            target_armor = target.armor if isinstance(target.armor, Decimal) else Decimal(str(target.armor))
+            damage = max(base_damage - target_armor, Decimal("10"))
+            target.take_damage(damage)
+            element_key = str(self.dragon_element or "Unknown").capitalize()
+            element_flavor = {
+                "Water": [
+                    "surges forward in a crashing tide",
+                    "lashes out with a freezing current",
+                    "slams a wave into its foe",
+                    "rends the air with glacial spray",
+                    "strikes with a scalding torrent",
+                ],
+                "Fire": [
+                    "erupts in a searing burst",
+                    "swipes with ember-clad claws",
+                    "breathes a blistering flare",
+                    "scorches the air with a flame lash",
+                    "lunges with a molten bite",
+                ],
+                "Earth": [
+                    "slams the ground with crushing force",
+                    "hammers forward with stonebound might",
+                    "shatters the air with a rocky strike",
+                    "surges with an earthen charge",
+                    "drives a jagged blow into its foe",
+                ],
+                "Wind": [
+                    "dives in on a razor gale",
+                    "slashes with slicing air",
+                    "strikes in a whirling gust",
+                    "rips forward with a cyclone lash",
+                    "surges with a cutting draft",
+                ],
+                "Electric": [
+                    "crackles forward with a charged swipe",
+                    "strikes with a thunderous lash",
+                    "surges in a flash of static",
+                    "rips the air with a sparking blow",
+                    "lunges with a shock-laced bite",
+                ],
+                "Light": [
+                    "flares in a blinding arc",
+                    "strikes with a radiant lash",
+                    "surges with a searing burst",
+                    "rends the air with a holy glare",
+                    "slashes with a prismed strike",
+                ],
+                "Dark": [
+                    "strikes from a shadowed lunge",
+                    "lashes out with a voided swipe",
+                    "rips the air with a grim surge",
+                    "slams down in a murky arc",
+                    "lunges with a night-black bite",
+                ],
+                "Nature": [
+                    "lashes out with thorned fury",
+                    "surges forward in a wild rush",
+                    "rends the air with a vine-laced strike",
+                    "slams down with primal force",
+                    "lunges with a feral snap",
+                ],
+                "Corrupted": [
+                    "erupts in a warped surge",
+                    "lashes out with a tainted swipe",
+                    "rips the air with corrupt force",
+                    "slams down in a twisted arc",
+                    "lunges with a blighted bite",
+                ],
+                "Unknown": [
+                    "lashes out with a savage strike",
+                    "surges forward with brutal force",
+                    "rends the air with a vicious swipe",
+                    "slams its foe with crushing might",
+                    "lunges with a feral bite",
+                ],
+            }
+            fallback_flavor = element_flavor["Unknown"]
+            flavor = element_flavor.get(element_key, fallback_flavor)
+            attack_text = random.choice(flavor)
+            await self.add_to_log(
+                f"{dragon.name} {attack_text}! {target.name} takes **{self.format_number(damage)} HP** damage."
+            )
+            return
+
+        # Enforce one-time ultimate use
+        if move_info.get("effect") == "possess_player_and_pet_permanent" and self._dominion_used:
+            alternate_moves = [
+                name for name, info in available_moves.items()
+                if info.get("effect") != "possess_player_and_pet_permanent"
+            ]
+            if alternate_moves:
+                move_name = random.choice(alternate_moves)
+                move_info = available_moves[move_name]
         
         # Determine targets based on move type
-        if move_info["effect"] in ["aoe", "aoe_stun", "aoe_dot", "global_dot"]:
-            targets = self.get_alive_players()
+        if move_info["effect"] == "possess_pet":
+            pet_targets = [c for c in alive_allies if c.is_pet and has_ally_target(c)]
+            targets = [random.choice(pet_targets)] if pet_targets else []
+        elif move_info["effect"] in ["possess_player", "possess_player_and_pet_permanent"]:
+            player_targets = [c for c in alive_allies if not c.is_pet and has_ally_target(c)]
+            targets = [random.choice(player_targets)] if player_targets else []
+        elif move_info["effect"] in ["aoe", "aoe_stun", "aoe_dot", "global_dot"]:
+            targets = alive_allies
         else:
             # Single target
-            alive_players = self.get_alive_players()
+            alive_players = alive_allies
             if alive_players:
                 target = random.choice(alive_players)
                 targets = [target]
@@ -225,7 +435,10 @@ class DragonBattle(Battle):
         # Apply the move to targets
         base_damage = move_info["dmg"] * (1 + (0.1 * (self.dragon_level - 1)))
         effect = move_info["effect"]
-        effect_chance = move_info["chance"]
+        effect_chance = move_info.get("chance", 0) or 0
+        effect_chance = _normalize_chance(effect_chance)
+        if effect in ("possess_player", "possess_pet", "possess_player_and_pet_permanent") and not self._possession_used:
+            effect_chance = 1.0
         
         for target in targets:
             # Apply element effects if enabled
@@ -269,6 +482,10 @@ class DragonBattle(Battle):
             ignore_all = getattr(target, 'ignore_all_defenses', False)
             partial_true_damage = getattr(target, 'partial_true_damage', 0)
 
+            # True damage window from terror effects
+            if self._has_effect(target, "true_damage_window"):
+                ignore_all = True
+
             if ignore_all or true_damage or ignore_armor or bypass_defenses:
                 damage = modified_base_damage  # No armor reduction
                 blocked_damage = Decimal('0')
@@ -307,6 +524,9 @@ class DragonBattle(Battle):
                         damage *= (1.0 - damage_reduction)
                         
                 damage = round(damage, 2)
+
+            # Apply damage taken modifiers (e.g. Death Mark)
+            damage = self._apply_damage_taken_modifiers(target, damage)
             
             # Track damage taken for reflection calculations
             if hasattr(target, 'damage_taken_this_turn'):
@@ -373,6 +593,10 @@ class DragonBattle(Battle):
                         stolen_health = float(damage) * 0.15
                     dragon.heal(stolen_health)
             
+            # Apply damage link mirroring
+            if not death_embrace_triggered:
+                await self._apply_damage_link(target, damage)
+
             # Log the action
             if death_embrace_triggered:
                 message = f"{dragon.name} uses **{move_name}** on {target.name}! "
@@ -428,37 +652,54 @@ class DragonBattle(Battle):
                 effect_desc = await self.apply_effect(target, effect, damage)
                 if effect_desc:
                     message += f" {effect_desc}"
+                    if effect in ("possess_player", "possess_pet", "possess_player_and_pet_permanent"):
+                        self._move_cooldowns[effect] = 2
                     
             await self.add_to_log(message)
             
     async def process_player_turn(self, player):
         """Process a player's turn"""
-        # Get the dragon as target
-        dragon = self.dragon
+        possessed = self._has_effect(player, "possessed")
+        if possessed:
+            party_targets = [c for c in self._alive_party_combatants() if c is not player]
+            if not party_targets:
+                await self.add_to_log(f"{player.name} is possessed but has no valid targets!")
+                return
+            target = random.choice(party_targets)
+        else:
+            enemy_targets = []
+            if self.dragon.is_alive():
+                enemy_targets.append(self.dragon)
+            enemy_targets.extend(self._alive_possessed())
+            if not enemy_targets:
+                await self.add_to_log(f"{player.name} has no valid targets!")
+                return
+            target = random.choice(enemy_targets)
+        is_dragon_target = target is self.dragon or getattr(target, "is_dragon", False)
         
         # Calculate damage based on player's damage stat
         base_damage = player.damage
         
         # Apply passive effects that reduce player damage
-        if "Corruption" in dragon.passives:
+        if is_dragon_target and "Corruption" in target.passives:
             if isinstance(base_damage, Decimal):
                 base_damage = base_damage * Decimal('0.8')  # 20% damage reduction
             else:
                 base_damage *= 0.8
                 
-        if "Aspect of death" in dragon.passives:
+        if is_dragon_target and "Aspect of death" in target.passives:
             if isinstance(base_damage, Decimal):
                 base_damage = base_damage * Decimal('0.7')  # 30% damage reduction
             else:
                 base_damage *= 0.7
                 
-        if "Void Corruption" in dragon.passives:
+        if is_dragon_target and "Void Corruption" in target.passives:
             if isinstance(base_damage, Decimal):
                 base_damage = base_damage * Decimal('0.75')  # 25% damage reduction
             else:
                 base_damage *= 0.75
                 
-        if "Eternal Winter" in dragon.passives:
+        if is_dragon_target and "Eternal Winter" in target.passives:
             if isinstance(base_damage, Decimal):
                 base_damage = base_damage * Decimal('0.6')  # 40% damage reduction
             else:
@@ -491,16 +732,17 @@ class DragonBattle(Battle):
         # Apply element effects if enabled
         element_message = ""
         if self.config.get("element_effects", True) and hasattr(self.ctx.bot.cogs["Battles"], "element_ext"):
-            # Use configured dragon element for elemental modifiers
+            # Use configured dragon element for elemental modifiers (or target element if not dragon)
             dragon_element = self.dragon_element or "Water"
+            defender_element = dragon_element if is_dragon_target else getattr(target, "element", None)
             player_element = getattr(player, "element", None)
             
-            if player_element:
+            if player_element and defender_element:
                 # Get element multiplier from element extension
                 element_mod = self.ctx.bot.cogs["Battles"].element_ext.calculate_damage_modifier(
                     self.ctx,
                     player_element,
-                    dragon_element
+                    defender_element
                 )
                 element_multiplier = 1.0 + element_mod  # Convert from -0.3/0.3 to 0.7/1.3
                 
@@ -512,34 +754,35 @@ class DragonBattle(Battle):
                         damage *= element_multiplier
                         
                     if element_multiplier > 1.0:
-                        element_message = f" ({player_element} is strong against {dragon_element}!)"
+                        element_message = f" ({player_element} is strong against {defender_element}!)"
                     else:
-                        element_message = f" ({player_element} is weak against {dragon_element}!)"
+                        element_message = f" ({player_element} is weak against {defender_element}!)"
         
         # Use standard damage calculation system
         # Check for special damage types
-        ignore_armor = getattr(dragon, 'ignore_armor_this_hit', False)
-        true_damage = getattr(dragon, 'true_damage', False)
-        bypass_defenses = getattr(dragon, 'bypass_defenses', False)
-        ignore_all = getattr(dragon, 'ignore_all_defenses', False)
+        ignore_armor = getattr(target, 'ignore_armor_this_hit', False) if is_dragon_target else False
+        true_damage = getattr(target, 'true_damage', False) if is_dragon_target else False
+        bypass_defenses = getattr(target, 'bypass_defenses', False) if is_dragon_target else False
+        ignore_all = getattr(target, 'ignore_all_defenses', False) if is_dragon_target else False
         
         if ignore_all or true_damage or ignore_armor or bypass_defenses:
             final_damage = damage  # No armor reduction
             blocked_damage = Decimal('0')
         else:
-            blocked_damage = min(damage, dragon.armor)
-            final_damage = max(damage - dragon.armor, Decimal('10'))
+            blocked_damage = min(damage, target.armor)
+            final_damage = max(damage - target.armor, Decimal('10'))
         
         # Clear special damage flags
-        for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses']:
-            if hasattr(dragon, flag):
-                delattr(dragon, flag)
+        if is_dragon_target:
+            for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses']:
+                if hasattr(target, flag):
+                    delattr(target, flag)
         
         # Apply damage reduction from passive effects AFTER standard damage calculation
         damage_reduction = Decimal('0.0')
         
         # Apply passive effects
-        if "Ice Armor" in dragon.passives:
+        if is_dragon_target and "Ice Armor" in target.passives:
             damage_reduction += Decimal('0.2')  # 20% damage reduction from Ice Armor
         
         if damage_reduction > 0:
@@ -548,12 +791,15 @@ class DragonBattle(Battle):
             else:
                 final_damage = float(final_damage) * (1 - float(damage_reduction))
             final_damage = round(final_damage, 2)
+
+        # Apply damage taken modifiers (e.g. Death Mark)
+        final_damage = self._apply_damage_taken_modifiers(target, final_damage)
         
         # PROCESS PET SKILL EFFECTS ON ATTACK  
         skill_messages = []
         if (player.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
             pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-            final_damage, skill_messages = pet_ext.process_skill_effects_on_attack(player, dragon, final_damage)
+            final_damage, skill_messages = pet_ext.process_skill_effects_on_attack(player, target, final_damage)
             # Set flag for turn processing (damage will be set after final calculation)
             setattr(player, 'attacked_this_turn', True)
         
@@ -563,7 +809,7 @@ class DragonBattle(Battle):
         
         # Apply Reality Bender passive effect (50% chance to negate attack)
         reality_bender_negated = False
-        if "Reality Bender" in dragon.passives and random.random() < 0.5:
+        if is_dragon_target and "Reality Bender" in target.passives and random.random() < 0.5:
             reality_bender_negated = True
             # Reflect some damage back to the player
             if isinstance(final_damage, Decimal):
@@ -574,8 +820,14 @@ class DragonBattle(Battle):
             message = f"{player.name} attacks!{crit_message} 🌀 **REALITY BENDER** negates the attack! {player.name} takes **{self.format_number(reflected_damage)} HP** reflected damage!"
         else:
             # Apply damage to dragon normally
-            dragon.take_damage(final_damage)
-            message = f"{player.name} attacks!{crit_message} {dragon.name} takes **{self.format_number(final_damage)} HP** damage.{element_message}"
+            target.take_damage(final_damage)
+            if possessed:
+                message = f"{player.name} attacks under possession!{crit_message} {target.name} takes **{self.format_number(final_damage)} HP** damage.{element_message}"
+            else:
+                message = f"{player.name} attacks!{crit_message} {target.name} takes **{self.format_number(final_damage)} HP** damage.{element_message}"
+
+        # Apply damage link mirroring
+        await self._apply_damage_link(target, final_damage)
         
         # Add skill effect messages
         if skill_messages:
@@ -591,7 +843,7 @@ class DragonBattle(Battle):
                 lifesteal_amount = (final_damage * Decimal(str(player.lifesteal_percent)) / Decimal('100'))
             else:
                 lifesteal_amount = (float(final_damage) * float(player.lifesteal_percent) / 100.0)
-            player.heal(lifesteal_amount)
+            await self._apply_heal(player, lifesteal_amount, source="lifesteal")
             message += f" Lifesteals: **{self.format_number(lifesteal_amount)} HP**"
             
         # Handle mage fireball chance if class_buffs and fireball_chance are enabled
@@ -613,11 +865,11 @@ class DragonBattle(Battle):
                     fireball_damage = round(final_damage * Decimal(str(damage_multiplier)), 2)
                 else:
                     fireball_damage = round(float(final_damage) * float(damage_multiplier), 2)
-                dragon.take_damage(fireball_damage)
+                target.take_damage(fireball_damage)
                 message += f"\n🔥 **FIREBALL!** {player.name} casts a fireball for **{self.format_number(fireball_damage)} HP** additional damage!"
             
         # Handle dragon's reflection damage if reflection_damage is enabled
-        if self.config.get("reflection_damage", True) and "Reflective Scales" in dragon.passives:
+        if is_dragon_target and self.config.get("reflection_damage", True) and "Reflective Scales" in target.passives:
             reflection_percent = Decimal('15')  # 15% reflection damage
             if isinstance(final_damage, Decimal):
                 reflection_damage = final_damage * (reflection_percent / Decimal('100'))
@@ -627,7 +879,7 @@ class DragonBattle(Battle):
             
             if reflection_damage > 0:
                 player.take_damage(reflection_damage)
-                message += f"\n{dragon.name}'s reflective scales return **{self.format_number(reflection_damage)} HP** damage!"
+                message += f"\n{target.name}'s reflective scales return **{self.format_number(reflection_damage)} HP** damage!"
                 
         # Handle PLAYER'S reflection damage if class_buffs and reflection_damage are enabled
         if (self.config.get("class_buffs", True) and 
@@ -652,7 +904,7 @@ class DragonBattle(Battle):
                 reflection_damage = round(reflection_damage, 2)
                 
                 if reflection_damage > 0:
-                    dragon.take_damage(reflection_damage)
+                    target.take_damage(reflection_damage)
                     message += f"\n🛡️ **SHIELD REFLECTION!** {player.name}'s shield reflects **{self.format_number(reflection_damage)} HP** damage!"
         
         # Check for skeleton summoning after skill processing
@@ -678,6 +930,7 @@ class DragonBattle(Battle):
             # Add skeleton to player team (dragon battles use player_team and dragon_team)
             if player in self.player_team.combatants:
                 self.player_team.combatants.append(skeleton)
+                self._player_turn_queue.append(skeleton)
                 message += f"\n💀 A skeleton warrior joins your side!"
             else:
                 self.dragon_team.combatants.append(skeleton)
@@ -687,6 +940,76 @@ class DragonBattle(Battle):
             delattr(player, 'summon_skeleton')
         
         await self.add_to_log(message)
+
+    def _get_effects(self, combatant):
+        return self.status_effects.get(combatant.name, [])
+
+    def _get_effect(self, combatant, effect_type):
+        for effect in self._get_effects(combatant):
+            if effect.get("type") == effect_type:
+                return effect
+        return None
+
+    def _has_effect(self, combatant, effect_type):
+        return self._get_effect(combatant, effect_type) is not None
+
+    async def _apply_damage_link(self, target, damage):
+        if self._damage_link_guard:
+            return
+        effect = self._get_effect(target, "damage_link")
+        if not effect:
+            return
+        linked_name = effect.get("linked")
+        if not linked_name:
+            return
+        linked_target = None
+        for combatant in self.player_team.combatants:
+            if combatant.name == linked_name and combatant.is_alive():
+                linked_target = combatant
+                break
+        if not linked_target:
+            return
+        if isinstance(damage, Decimal):
+            mirrored = damage * Decimal("0.5")
+        else:
+            mirrored = float(damage) * 0.5
+        self._damage_link_guard = True
+        try:
+            linked_target.take_damage(mirrored)
+            await self.add_to_log(
+                f"🔗 **Terror Link**: {linked_target.name} takes **{self.format_number(mirrored)} HP** mirrored damage!"
+            )
+        finally:
+            self._damage_link_guard = False
+
+    async def _apply_heal(self, combatant, amount, source="heal"):
+        if self._has_effect(combatant, "invert_healing"):
+            if isinstance(amount, Decimal):
+                dmg = amount
+            else:
+                dmg = float(amount)
+            combatant.take_damage(dmg)
+            await self.add_to_log(
+                f"🩸 **Inverted Healing**: {combatant.name} takes **{self.format_number(dmg)} HP** instead!"
+            )
+            return
+        curse = self._get_effect(combatant, "curse")
+        if curse:
+            reduction = curse.get("value", 0.5)
+            if isinstance(amount, Decimal):
+                amount = amount * (Decimal("1") - Decimal(str(reduction)))
+            else:
+                amount = float(amount) * (1.0 - float(reduction))
+        combatant.heal(amount)
+
+    def _apply_damage_taken_modifiers(self, target, damage):
+        death_mark = self._get_effect(target, "death_mark")
+        if not death_mark:
+            return damage
+        multiplier = death_mark.get("value", 1.3)
+        if isinstance(damage, Decimal):
+            return damage * Decimal(str(multiplier))
+        return float(damage) * float(multiplier)
         
     async def initialize_player(self, player, player_data):
         """Initialize a player combatant"""
@@ -761,17 +1084,18 @@ class DragonBattle(Battle):
             player_max_hp = float(player.max_hp)
             player_hp_percent = (player_hp / player_max_hp) * 100 if player_max_hp > 0 else 0
             player_hp_bar = self.create_hp_bar(player_hp, player_max_hp, length=15)
-            
+
             # Get player element emoji
             player_element_emoji = "❓"
             if hasattr(player, 'element') and player.element and player.element in element_to_emoji:
                 player_element_emoji = element_to_emoji[player.element]
+            possession_marker = " 🌀" if self._has_effect(player, "possessed") else ""
             
             # Set name based on player type with element emoji
             if hasattr(player, 'is_pet') and player.is_pet:
-                field_name = f"{player.name} {player_element_emoji}"
+                field_name = f"{player.name} {player_element_emoji}{possession_marker}"
             else:
-                field_name = f"{player.name} {player_element_emoji}"
+                field_name = f"{player.name} {player_element_emoji}{possession_marker}"
                 
             embed.add_field(
                 name=field_name,
@@ -824,19 +1148,21 @@ class DragonBattle(Battle):
         # Save final battle data to database for replay
         await self.save_battle_to_database()
         
-        # Check if dragon is defeated
-        if self.dragon.hp <= 0:
-            # Players win
-            await self.add_to_log(f"**Victory!** The {self.dragon.name} has been defeated!")
-            await self.update_display()
-            return True
-        
-        # Check if all players are defeated
-        if all(player.hp <= 0 for player in self.players):
-            # Dragon wins
+        party_players_alive = [c for c in self._alive_party_combatants() if not c.is_pet]
+        party_pets_alive = [c for c in self._alive_party_combatants() if c.is_pet]
+        party_defeated = not party_players_alive
+        if party_defeated and self.config.get("pets_continue_battle", False) and self.config.get("allow_pets", True):
+            party_defeated = not party_pets_alive
+
+        if party_defeated:
             await self.add_to_log(f"**Defeat!** The party has been wiped out by the {self.dragon.name}!")
             await self.update_display()
             return False
+
+        if self.dragon.hp <= 0 and not self._alive_possessed():
+            await self.add_to_log(f"**Victory!** The {self.dragon.name} has been defeated!")
+            await self.update_display()
+            return True
             
         # Check for timeout
         if await self.is_timed_out():
@@ -852,27 +1178,22 @@ class DragonBattle(Battle):
         if self.finished:
             return True
             
-        # Check if dragon is defeated
-        if self.dragon.hp <= 0:
+        # Check if dragon and any possessed enemies are defeated
+        if self.dragon.hp <= 0 and not self._alive_possessed():
             return True
             
         # Check for timeout
         if await self.is_timed_out():
             return True
             
-        # Check if all players (non-pets) are defeated
-        player_chars_defeated = all(player.hp <= 0 for player in self.players)
+        party_players_alive = [c for c in self._alive_party_combatants() if not c.is_pet]
+        party_pets_alive = [c for c in self._alive_party_combatants() if c.is_pet]
+        party_defeated = not party_players_alive
         
-        if player_chars_defeated:
-            # If pets should continue battling after player defeat
+        if party_defeated:
             if self.config.get("pets_continue_battle", False) and self.config.get("allow_pets", True):
-                # Check if there are alive pets
-                pet_combatants = [c for c in self.player_team.combatants if c.is_pet and c.is_alive()]
-                if pet_combatants:
-                    # Pets can continue fighting
+                if party_pets_alive:
                     return False
-                    
-            # Either pets_continue_battle is off, or no pets are alive
             return True
             
         # Otherwise battle continues
@@ -882,19 +1203,51 @@ class DragonBattle(Battle):
         """Get the next combatant in turn order"""
         # Simplified turn system - alternate between dragon and a random player
         # Use current_turn instead of action_number to determine whose turn it is
+        if self._extra_dragon_turns > 0:
+            self._extra_dragon_turns -= 1
+            self.current_turn += 1
+            return self.dragon
         if self.current_turn % 2 == 0:  # Dragon on even turns (0, 2, 4, etc.)
             self.current_turn += 1
             return self.dragon
         else:  # Players on odd turns (1, 3, 5, etc.)
             self.current_turn += 1
-            alive_players = self.get_alive_players()
-            if alive_players:
-                return random.choice(alive_players)
+            if not self._player_turn_queue:
+                self._refresh_player_turn_queue()
+            for _ in range(len(self._player_turn_queue)):
+                combatant = self._player_turn_queue[0]
+                self._player_turn_queue.rotate(-1)
+                if combatant.is_alive():
+                    return combatant
+            self._refresh_player_turn_queue()
+            if self._player_turn_queue:
+                combatant = self._player_turn_queue[0]
+                self._player_turn_queue.rotate(-1)
+                return combatant
             return self.dragon  # Fallback
     
     def get_alive_players(self):
         """Get all alive players"""
         return [player for player in self.players if player.hp > 0]
+
+    def _refresh_player_turn_queue(self):
+        alive = [c for c in self.player_team.combatants if c.is_alive()]
+        self._player_turn_queue = deque(alive)
+
+    def _is_possessed(self, combatant):
+        return self._has_effect(combatant, "possessed")
+
+    def _alive_party_combatants(self):
+        return [
+            c for c in self.player_team.combatants
+            if c.is_alive() and not self._is_possessed(c)
+        ]
+
+    def _alive_possessed(self):
+        return [
+            c for c in self.player_team.combatants
+            if c.is_alive() and self._is_possessed(c)
+        ]
         
     def get_dragon_stage_name(self):
         """Determine which dragon stage to use based on level"""
@@ -908,29 +1261,33 @@ class DragonBattle(Battle):
         if combatant.name not in self.status_effects:
             return
             
-        effects_to_remove = []
-        
         for effect in self.status_effects[combatant.name]:
-            # Decrement duration
-            effect["duration"] -= 1
-            
             # Apply effect
             if effect["type"] == "dot":
                 # Damage over time
                 damage = effect["value"]
                 combatant.take_damage(damage)
                 await self.add_to_log(f"{combatant.name} takes **{self.format_number(damage)} HP** from {effect['name']}!")
-                
-            # Check if effect expired
-            if effect["duration"] <= 0:
+
+    def _decrement_status_effects(self, combatant):
+        if combatant.name not in self.status_effects:
+            return
+        effects_to_remove = []
+        for effect in self.status_effects[combatant.name]:
+            if effect.get("duration", 0) < 0:
+                continue
+            effect["duration"] -= 1
+            if effect.get("duration", 0) <= 0:
+                if effect["type"] == "shatter_armor":
+                    restore = effect.get("value", None)
+                    if restore is not None:
+                        combatant.armor = restore
                 effects_to_remove.append(effect)
-                
-        # Remove expired effects
         for effect in effects_to_remove:
             self.status_effects[combatant.name].remove(effect)
-            await self.add_to_log(f"{effect['name']} on {combatant.name} has worn off.")
-            
-        # Clean up empty effect lists
+            self.ctx.bot.loop.create_task(
+                self.add_to_log(f"{effect['name']} on {combatant.name} has worn off.")
+            )
         if combatant.name in self.status_effects and not self.status_effects[combatant.name]:
             del self.status_effects[combatant.name]
     
@@ -954,6 +1311,20 @@ class DragonBattle(Battle):
         if target.name not in self.status_effects:
             self.status_effects[target.name] = []
             
+        # Map legacy/unused effects to supported ones
+        effect_aliases = {
+            "summon_adds": "extra_dragon_turn",
+            "dimension_tear": "true_damage_window",
+            "time_stop": "aoe_stun",
+            "eternal_curse": "curse",
+            "world_ender": "global_dot",
+            "soul_drain": "drain_max_hp",
+            "void_explosion": "aoe_dot",
+        }
+        alias = effect_aliases.get(effect_type)
+        if alias:
+            return await self.apply_effect(target, alias, damage)
+
         # Define effect details
         effect_desc = ""
         
@@ -1056,5 +1427,141 @@ class DragonBattle(Battle):
             selected_debuff = random.choice(debuffs)
             # Recursively apply the selected debuff
             return await self.apply_effect(target, selected_debuff, damage)
+
+        elif effect_type == "possess_player":
+            alive_allies = self._alive_party_combatants()
+            if not any(c is not target for c in alive_allies):
+                return ""
+            self.status_effects[target.name].append({
+                "type": "possessed",
+                "name": "Possessed",
+                "duration": -1,
+                "value": None
+            })
+            effect_desc = "🌀 **Possessed** for the entire battle!"
+            self._possession_used = True
+
+        elif effect_type == "possess_pet":
+            pet_target = target if getattr(target, "is_pet", False) else None
+            if not pet_target:
+                pet_targets = [c for c in self._alive_party_combatants() if c.is_pet]
+                pet_target = random.choice(pet_targets) if pet_targets else None
+            if pet_target:
+                alive_allies = self._alive_party_combatants()
+                if not any(c is not pet_target for c in alive_allies):
+                    return ""
+                if pet_target.name not in self.status_effects:
+                    self.status_effects[pet_target.name] = []
+                self.status_effects[pet_target.name].append({
+                    "type": "possessed",
+                    "name": "Beastmind Override",
+                    "duration": -1,
+                    "value": None
+                })
+                effect_desc = f"🐾 **{pet_target.name}** is possessed for the entire battle!"
+                self._possession_used = True
+
+        elif effect_type == "possess_player_and_pet_permanent":
+            player_target = target
+            if getattr(target, "is_pet", False):
+                player_candidates = [c for c in self._alive_party_combatants() if not c.is_pet]
+                if player_candidates:
+                    player_target = random.choice(player_candidates)
+
+            # Possess player permanently (battle duration)
+            alive_allies = self._alive_party_combatants()
+            if len(alive_allies) <= 2:
+                return ""
+            if not any(c is not player_target for c in alive_allies):
+                return ""
+            self.status_effects[player_target.name].append({
+                "type": "possessed",
+                "name": "Dominion",
+                "duration": -1,
+                "value": None
+            })
+            # Possess a pet if available
+            pet_targets = [c for c in self._alive_party_combatants() if c.is_pet]
+            if pet_targets:
+                pet_target = random.choice(pet_targets)
+                if not any(c is not pet_target for c in alive_allies):
+                    return ""
+                if pet_target.name not in self.status_effects:
+                    self.status_effects[pet_target.name] = []
+                self.status_effects[pet_target.name].append({
+                    "type": "possessed",
+                    "name": "Dominion",
+                    "duration": -1,
+                    "value": None
+                })
+                effect_desc = f"🧿 **Dominion!** {player_target.name} and {pet_target.name} are possessed for the entire battle!"
+            else:
+                effect_desc = f"🧿 **Dominion!** {player_target.name} is possessed for the entire battle!"
+            self._dominion_used = True
+            self._possession_used = True
+
+        elif effect_type == "shatter_armor":
+            self.status_effects[target.name].append({
+                "type": "shatter_armor",
+                "name": "Armor Shatter",
+                "duration": 2,
+                "value": float(target.armor) if isinstance(target.armor, Decimal) else target.armor
+            })
+            target.armor = 0
+            effect_desc = "🧊 **Armor Shattered** for 2 turns!"
+
+        elif effect_type == "drain_max_hp":
+            drain = float(target.max_hp) * 0.10
+            target.max_hp = max(1, target.max_hp - drain)
+            if target.hp > target.max_hp:
+                target.hp = target.max_hp
+            effect_desc = "💀 **Soul Tax** reduces max HP by 10%!"
+
+        elif effect_type == "invert_healing":
+            self.status_effects[target.name].append({
+                "type": "invert_healing",
+                "name": "Dread Inversion",
+                "duration": 2,
+                "value": None
+            })
+            effect_desc = "🩸 **Healing Inverted** for 2 turns!"
+
+        elif effect_type == "damage_link":
+            ally_targets = [
+                c for c in self.player_team.combatants
+                if c.is_alive() and c is not target
+            ]
+            if ally_targets:
+                linked = random.choice(ally_targets)
+                self.status_effects[target.name].append({
+                    "type": "damage_link",
+                    "name": "Terror Link",
+                    "duration": 2,
+                    "value": 0.5,
+                    "linked": linked.name
+                })
+                effect_desc = f"🔗 **Terror Link** with {linked.name} for 2 turns!"
+
+        elif effect_type == "turn_skip_chance":
+            self.status_effects[target.name].append({
+                "type": "turn_skip_chance",
+                "name": "Panic",
+                "duration": 3,
+                "value": 0.5
+            })
+            effect_desc = "😱 **Panic**: 50% chance to lose turns!"
+
+        elif effect_type == "true_damage_window":
+            self.status_effects[target.name].append({
+                "type": "true_damage_window",
+                "name": "Null Phase",
+                "duration": 1,
+                "value": None
+            })
+            effect_desc = "🕳️ **Null Phase**: damage ignores armor for 1 turn!"
+
+        elif effect_type == "extra_dragon_turn":
+            self._extra_dragon_turns += 1
+            effect_desc = "⏳ **Riftstep**: Dragon takes an extra action!"
             
         return effect_desc

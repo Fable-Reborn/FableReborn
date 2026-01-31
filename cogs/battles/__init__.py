@@ -775,13 +775,29 @@ class Battles(commands.Cog):
                 );
                 """
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ice_dragon_presets (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ice_dragon_preset_stages (
+                    preset_id INTEGER NOT NULL REFERENCES ice_dragon_presets(id) ON DELETE CASCADE,
+                    stage_id INTEGER NOT NULL REFERENCES ice_dragon_stages(id) ON DELETE CASCADE,
+                    UNIQUE (preset_id, stage_id)
+                );
+                """
+            )
             await conn.execute("ALTER TABLE ice_dragon_stages ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;")
             await conn.execute("ALTER TABLE ice_dragon_drops ADD COLUMN IF NOT EXISTS is_global BOOLEAN NOT NULL DEFAULT TRUE;")
             await conn.execute("ALTER TABLE ice_dragon_drops ADD COLUMN IF NOT EXISTS dragon_stage_id INTEGER;")
 
-            abilities_count = await conn.fetchval("SELECT COUNT(*) FROM ice_dragon_abilities")
-            if abilities_count == 0:
-                ability_seed = [
+            ability_seed = [
                     ("Ice Breath", "move", "Effect: freeze. Damage: 600. Chance: 30%", 600, "freeze", 0.3),
                     ("Tail Sweep", "move", "Effect: aoe. Damage: 400. Chance: 40%", 400, "aoe", 0.4),
                     ("Frost Bite", "move", "Effect: dot. Damage: 300. Chance: 30%", 300, "dot", 0.3),
@@ -809,12 +825,22 @@ class Battles(commands.Cog):
                     ("Eternal Winter", "passive", "Freezes all healing and reduces damage by 40%.", None, None, None),
                     ("Death's Embrace", "passive", "10% chance to instantly kill on any hit.", None, None, None),
                     ("Reality Bender", "passive", "Randomly negates 50% of attacks and reflects damage.", None, None, None),
+                    ("Puppet Strings", "move", "Effect: possess_player. Damage: 400. Chance: 25%", 400, "possess_player", 0.25),
+                    ("Beastmind Override", "move", "Effect: possess_pet. Damage: 600. Chance: 20%", 600, "possess_pet", 0.2),
+                    ("Dominion of the Void", "move", "Effect: possess_player_and_pet_permanent. Damage: 1200. Chance: 10%", 1200, "possess_player_and_pet_permanent", 0.1),
+                    ("Fractured Will", "move", "Effect: shatter_armor. Damage: 650. Chance: 30%", 650, "shatter_armor", 0.3),
+                    ("Soul Tax", "move", "Effect: drain_max_hp. Damage: 250. Chance: 30%", 250, "drain_max_hp", 0.3),
+                    ("Dread Inversion", "move", "Effect: invert_healing. Damage: 300. Chance: 30%", 300, "invert_healing", 0.3),
+                    ("Terror Link", "move", "Effect: damage_link. Damage: 500. Chance: 30%", 500, "damage_link", 0.3),
+                    ("Panic Cascade", "move", "Effect: turn_skip_chance. Damage: 300. Chance: 35%", 300, "turn_skip_chance", 0.35),
+                    ("Null Phase", "move", "Effect: true_damage_window. Damage: 500. Chance: 20%", 500, "true_damage_window", 0.2),
+                    ("Riftstep", "move", "Effect: extra_dragon_turn. Damage: 350. Chance: 25%", 350, "extra_dragon_turn", 0.25),
                 ]
-                await conn.executemany(
-                    "INSERT INTO ice_dragon_abilities (name, ability_type, description, dmg, effect, chance) "
-                    "VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (name, ability_type) DO NOTHING",
-                    ability_seed,
-                )
+            await conn.executemany(
+                "INSERT INTO ice_dragon_abilities (name, ability_type, description, dmg, effect, chance) "
+                "VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (name, ability_type) DO NOTHING",
+                ability_seed,
+            )
 
             stages_count = await conn.fetchval("SELECT COUNT(*) FROM ice_dragon_stages")
             if stages_count == 0:
