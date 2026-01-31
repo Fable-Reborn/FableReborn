@@ -2275,10 +2275,7 @@ class GameMaster(commands.Cog):
             return await ctx.send(_("There's still an auction running."))
 
         # Get the auctions channel
-        channel = discord.utils.get(
-            self.bot.get_guild(self.bot.config.game.support_server_id).channels,
-            name="「🎩」auctions",
-        )
+        channel = self.bot.get_channel(1408182582360936580)
 
         if not channel:
             return await ctx.send(_("Auctions channel wasn't found."))
@@ -2405,10 +2402,7 @@ class GameMaster(commands.Cog):
         # Send bid notifications
         await ctx.send(_("Bid submitted."))
 
-        channel = discord.utils.get(
-            self.bot.get_guild(self.bot.config.game.support_server_id).channels,
-            name="『🧾』auctions",
-        )
+        channel = self.bot.get_channel(1408182582360936580)
 
         if channel:
             await channel.send(
