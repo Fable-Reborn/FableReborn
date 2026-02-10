@@ -2022,18 +2022,38 @@ class Pets(commands.Cog):
 
     @user_cooldown(300)
     @pets.command(brief=_("Play with your pet for significant happiness and trust gains"))
-    async def play(self, ctx, pet_id: int):
+    async def play(self, ctx, pet_id: int | None = None):
         """Play with your pet for significant happiness and trust gains"""
         async with self.bot.pool.acquire() as conn:
-            pet = await conn.fetchrow(
-                "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
-                ctx.author.id, pet_id
-            )
-            
-            if not pet:
-                await ctx.send(f"❌ You don't have a pet with ID {pet_id}.")
-                await self.bot.reset_cooldown(ctx)
-                return
+            pet = None
+            if pet_id is not None:
+                pet = await conn.fetchrow(
+                    "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
+                    ctx.author.id, pet_id
+                )
+                if not pet:
+                    await ctx.send(f"❌ You don't have a pet with ID {pet_id}.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
+            else:
+                pet = await conn.fetchrow(
+                    "SELECT * FROM monster_pets WHERE user_id = $1 AND equipped = TRUE;",
+                    ctx.author.id
+                )
+                if not pet:
+                    pets = await conn.fetch(
+                        "SELECT id FROM monster_pets WHERE user_id = $1;",
+                        ctx.author.id
+                    )
+                    if len(pets) == 1:
+                        pet = await conn.fetchrow(
+                            "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
+                            ctx.author.id, pets[0]["id"]
+                        )
+                    else:
+                        await ctx.send("❌ You don't have an equipped pet. Equip one or use `$pets play <id>`.")
+                        await self.bot.reset_cooldown(ctx)
+                        return
 
             # Play gives significant boosts
             happiness_boost = 25
@@ -2046,10 +2066,10 @@ class Pets(commands.Cog):
                 UPDATE monster_pets 
                 SET happiness = $1, last_update = $2
                 WHERE id = $3
-            """, new_happiness, datetime.datetime.utcnow(), pet_id)
+            """, new_happiness, datetime.datetime.utcnow(), pet["id"])
             
             # Award experience and trust
-            level_result = await self.gain_experience(pet_id, xp_gain, trust_gain)
+            level_result = await self.gain_experience(pet["id"], xp_gain, trust_gain)
 
         # Play response messages
         responses = [
@@ -3062,7 +3082,7 @@ class Pets(commands.Cog):
                 value=_(
                     "• `$pets feed <id> <food_type>` - Feed with different food types (use `$pets feedhelp` for details)\n"
                     "• `$pets pet <id>` - Pet for happiness (+1 trust, 1min cooldown)\n"
-                    "• `$pets play <id>` - Play for bonuses (+3 trust, +15 XP, 5min cooldown)\n"
+                    "• `$pets play [id]` - Play for bonuses (+1 trust, +10 XP, 5min cooldown; defaults to equipped/only pet)\n"
                     "• `$pets treat <id>` - Give treats (+5 trust, +25 XP, 10min cooldown)\n"
                     "• `$pets train <id>` - Train for experience and trust (+50 XP, +2 trust, 30min cooldown)"
                 ),
