@@ -3296,6 +3296,47 @@ class GameMaster(commands.Cog):
         await ctx.send("No alt link found for that user.")
 
     @is_gm()
+    @commands.command(hidden=True, aliases=["gmaltunlink"], brief=_("Remove an alt link"))
+    @locale_doc
+    async def gmunlinkalt(self, ctx, user: discord.User | int, *, reason: str = None):
+        """Remove a linked main/alt pair."""
+        user_id = user if isinstance(user, int) else user.id
+
+        async with self.bot.pool.acquire() as conn:
+            link = await conn.fetchrow(
+                "SELECT main, alt FROM alt_links WHERE main = $1 OR alt = $1;",
+                user_id,
+            )
+            if not link:
+                return await ctx.send("No alt link found for that user.")
+
+            await conn.execute(
+                "DELETE FROM alt_links WHERE main = $1 AND alt = $2;",
+                link["main"],
+                link["alt"],
+            )
+
+        main_user = await self.bot.get_user_global(int(link["main"]))
+        alt_user = await self.bot.get_user_global(int(link["alt"]))
+        main_name = main_user.name if main_user else str(link["main"])
+        alt_name = alt_user.name if alt_user else str(link["alt"])
+
+        await ctx.send(f"Removed alt link: **{main_name}** (main) ↔ **{alt_name}** (alt)")
+
+        with handle_message_parameters(
+                content="**{gm}** removed alt link: **{main}** ↔ **{alt}**.\n\nReason: *{reason}*".format(
+                    gm=ctx.author,
+                    main=main_name,
+                    alt=alt_name,
+                    reason=reason or f"<{ctx.message.jump_url}>",
+                )
+        ) as params:
+            await self.bot.http.send_message(
+                self.bot.config.game.gm_log_channel,
+                params=params,
+            )
+
+    @is_gm()
     @commands.command(hidden=True)
     async def bash(self, ctx: Context, *, command_to_run: str) -> None:
         """[Owner Only] Run shell commands."""
