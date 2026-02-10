@@ -67,13 +67,30 @@ class Confirmation(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if self.allowed_user.id == interaction.user.id:
             return True
-        else:
-            asyncio.create_task(
-                interaction.response.send_message(
-                    _("This command was not initiated by you."), ephemeral=True
+
+        # Allow linked main/alt to confirm on each other's behalf.
+        try:
+            async with self.ctx.bot.pool.acquire() as conn:
+                linked = await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM alt_links
+                    WHERE (main = $1 AND alt = $2) OR (main = $2 AND alt = $1)
+                    """,
+                    self.allowed_user.id,
+                    interaction.user.id,
                 )
+            if linked:
+                return True
+        except Exception:
+            pass
+
+        asyncio.create_task(
+            interaction.response.send_message(
+                _("This command was not initiated by you."), ephemeral=True
             )
-            return False
+        )
+        return False
 
     async def on_timeout(self) -> None:
         self.cleanup()
