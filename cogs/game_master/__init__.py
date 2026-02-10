@@ -3084,8 +3084,8 @@ class GameMaster(commands.Cog):
 
                 data = await conn.fetch(query)
 
+                guild = ctx.guild
                 if data:
-                    guild = ctx.guild
                     for row in data:
                         discord_user_id = int(row['user'])
                         god = row['god']
@@ -3122,38 +3122,38 @@ class GameMaster(commands.Cog):
                             else:
                                 await ctx.send(
                                     f"Skipping {member.display_name} (Profile ID: {discord_user_id}) as their god '{god}' is not in the configured list.")
-
-                    # Assign godless role to Godless users
-                    godless_query = '''
-                        SELECT "user"
-                        FROM profile
-                        WHERE god IS NULL AND reset_points < 0
-                    '''
-                    godless_data = await conn.fetch(godless_query)
-                    if godless_data:
-                        for row in godless_data:
-                            discord_user_id = int(row['user'])
-                            member = guild.get_member(discord_user_id)
-                            if member:
-                                # Remove any god roles in case they linger
-                                for god_role_id in god_roles.values():
-                                    role = guild.get_role(god_role_id)
-                                    if role and role in member.roles:
-                                        await member.remove_roles(role)
-
-                                godless_role = guild.get_role(godless_role_id)
-                                if godless_role and godless_role not in member.roles:
-                                    try:
-                                        await member.add_roles(godless_role)
-                                        await ctx.send(
-                                            f"Assigned the role {godless_role.name} to {member.display_name} (Profile ID: {discord_user_id}) for Godless.")
-                                    except discord.Forbidden:
-                                        await ctx.send(
-                                            f"Cannot assign the role {godless_role.name} to {member.display_name} due to role hierarchy.")
-
-                    await ctx.send("Roles updated based on gods.")
                 else:
-                    await ctx.send("No data found in the profile table.")
+                    await ctx.send("No god followers found in the profile table.")
+
+                # Assign godless role to Godless users
+                godless_query = '''
+                    SELECT "user"
+                    FROM profile
+                    WHERE god IS NULL AND reset_points < 0
+                '''
+                godless_data = await conn.fetch(godless_query)
+                if godless_data:
+                    for row in godless_data:
+                        discord_user_id = int(row['user'])
+                        member = guild.get_member(discord_user_id)
+                        if member:
+                            # Remove any god roles in case they linger
+                            for god_role_id in god_roles.values():
+                                role = guild.get_role(god_role_id)
+                                if role and role in member.roles:
+                                    await member.remove_roles(role)
+
+                            godless_role = guild.get_role(godless_role_id)
+                            if godless_role and godless_role not in member.roles:
+                                try:
+                                    await member.add_roles(godless_role)
+                                    await ctx.send(
+                                        f"Assigned the role {godless_role.name} to {member.display_name} (Profile ID: {discord_user_id}) for Godless.")
+                                except discord.Forbidden:
+                                    await ctx.send(
+                                        f"Cannot assign the role {godless_role.name} to {member.display_name} due to role hierarchy.")
+
+                await ctx.send("Roles updated based on gods.")
 
         except Exception as e:
             await ctx.send(f"An error occurred: {str(e)}")
@@ -3178,8 +3178,8 @@ class GameMaster(commands.Cog):
 
                 data = await conn.fetch(query)
 
+                guild = ctx.guild
                 if data:
-                    guild = ctx.guild
                     for row in data:
                         discord_user_id = int(row['user'])
                         god = row['god']
@@ -3216,38 +3216,38 @@ class GameMaster(commands.Cog):
                             else:
                                 await ctx.send(
                                     f"Skipping {member.display_name} (Profile ID: {discord_user_id}) as their god '{god}' is not in the configured list.")
-
-                    # Assign godless role to Godless users
-                    godless_query = '''
-                            SELECT "user"
-                            FROM profile
-                            WHERE god IS NULL AND reset_points < 0
-                        '''
-                    godless_data = await conn.fetch(godless_query)
-                    if godless_data:
-                        for row in godless_data:
-                            discord_user_id = int(row['user'])
-                            member = guild.get_member(discord_user_id)
-                            if member:
-                                # Remove any god roles in case they linger
-                                for god_role_id in god_roles.values():
-                                    role = guild.get_role(god_role_id)
-                                    if role and role in member.roles:
-                                        await member.remove_roles(role)
-
-                                godless_role = guild.get_role(godless_role_id)
-                                if godless_role and godless_role not in member.roles:
-                                    try:
-                                        await member.add_roles(godless_role)
-                                        await ctx.send(
-                                            f"Assigned the role {godless_role.name} to {member.display_name} (Profile ID: {discord_user_id}) for Godless.")
-                                    except discord.Forbidden:
-                                        await ctx.send(
-                                            f"Cannot assign the role {godless_role.name} to {member.display_name} due to role hierarchy.")
-
-                    await ctx.send("Roles updated based on gods.")
                 else:
-                    await ctx.send("No data found in the profile table.")
+                    await ctx.send("No god followers found in the profile table.")
+
+                # Assign godless role to Godless users
+                godless_query = '''
+                        SELECT "user"
+                        FROM profile
+                        WHERE god IS NULL AND reset_points < 0
+                    '''
+                godless_data = await conn.fetch(godless_query)
+                if godless_data:
+                    for row in godless_data:
+                        discord_user_id = int(row['user'])
+                        member = guild.get_member(discord_user_id)
+                        if member:
+                            # Remove any god roles in case they linger
+                            for god_role_id in god_roles.values():
+                                role = guild.get_role(god_role_id)
+                                if role and role in member.roles:
+                                    await member.remove_roles(role)
+
+                            godless_role = guild.get_role(godless_role_id)
+                            if godless_role and godless_role not in member.roles:
+                                try:
+                                    await member.add_roles(godless_role)
+                                    await ctx.send(
+                                        f"Assigned the role {godless_role.name} to {member.display_name} (Profile ID: {discord_user_id}) for Godless.")
+                                except discord.Forbidden:
+                                    await ctx.send(
+                                        f"Cannot assign the role {godless_role.name} to {member.display_name} due to role hierarchy.")
+
+                await ctx.send("Roles updated based on gods.")
 
         except Exception as e:
             await ctx.send(f"An error occurred: {str(e)}")
