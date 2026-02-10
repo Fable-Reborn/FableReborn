@@ -2813,67 +2813,66 @@ class Pets(commands.Cog):
             4: {"stage": "adult", "growth_time": None, "stat_multiplier": 1.0, "hunger_modifier": 0.0},
         }
 
-        try:
-            async with self.bot.pool.acquire() as conn:
-                # Fetch eggs that are ready to hatch
-                eggs = await conn.fetch(
-                    "SELECT * FROM monster_eggs WHERE hatched = FALSE AND hatch_time <= NOW();"
+
+        async with self.bot.pool.acquire() as conn:
+            # Fetch eggs that are ready to hatch
+            eggs = await conn.fetch(
+                "SELECT * FROM monster_eggs WHERE hatched = FALSE AND hatch_time <= NOW();"
+            )
+            for egg in eggs:
+                # Mark the egg as hatched
+                await conn.execute(
+                    "UPDATE monster_eggs SET hatched = TRUE WHERE id = $1;", egg["id"]
                 )
-                for egg in eggs:
-                    # Mark the egg as hatched
-                    await conn.execute(
-                        "UPDATE monster_eggs SET hatched = TRUE WHERE id = $1;", egg["id"]
+
+                # Get the baby stage data
+                baby_stage = growth_stages[1]
+                stat_multiplier = baby_stage["stat_multiplier"]
+                growth_time_interval = datetime.timedelta(days=baby_stage["growth_time"])
+                growth_time = datetime.datetime.utcnow() + growth_time_interval
+
+                # Adjust the stats
+                hp = round(egg["hp"] * stat_multiplier)
+                attack = round(egg["attack"] * stat_multiplier)
+                defense = round(egg["defense"] * stat_multiplier)
+
+                iv_value = egg.get("IV") or egg.get("iv")
+                if iv_value is None:
+                    iv_value = 0  # Set a default value or handle as needed
+
+                # Insert the hatched egg into monster_pets
+                await conn.execute(
+                    """
+                    INSERT INTO monster_pets (
+                        user_id, name, default_name, hp, attack, defense, element, url,
+                        growth_stage, growth_index, growth_time, "IV"
                     )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
+                    """,
+                    egg["user_id"],
+                    egg["egg_type"],  # Set initial pet name to the default name
+                    egg["egg_type"],  # Store the default species name
+                    hp,
+                    attack,
+                    defense,
+                    egg["element"],
+                    egg["url"],
+                    baby_stage["stage"],  # 'baby'
+                    1,  # growth_index
+                    growth_time,
+                    iv_value,
+                )
 
-                    # Get the baby stage data
-                    baby_stage = growth_stages[1]
-                    stat_multiplier = baby_stage["stat_multiplier"]
-                    growth_time_interval = datetime.timedelta(days=baby_stage["growth_time"])
-                    growth_time = datetime.datetime.utcnow() + growth_time_interval
-
-                    # Adjust the stats
-                    hp = round(egg["hp"] * stat_multiplier)
-                    attack = round(egg["attack"] * stat_multiplier)
-                    defense = round(egg["defense"] * stat_multiplier)
-
-                    iv_value = egg.get("IV") or egg.get("iv")
-                    if iv_value is None:
-                        iv_value = 0  # Set a default value or handle as needed
-
-                    # Insert the hatched egg into monster_pets
-                    await conn.execute(
-                        """
-                        INSERT INTO monster_pets (
-                            user_id, name, default_name, hp, attack, defense, element, url,
-                            growth_stage, growth_index, growth_time, "IV"
-                        )
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
-                        """,
-                        egg["user_id"],
-                        egg["egg_type"],  # Set initial pet name to the default name
-                        egg["egg_type"],  # Store the default species name
-                        hp,
-                        attack,
-                        defense,
-                        egg["element"],
-                        egg["url"],
-                        baby_stage["stage"],  # 'baby'
-                        1,  # growth_index
-                        growth_time,
-                        iv_value,
-                    )
-
-                    # Notify the user
+                # Notify the user 
+                try:
                     user = self.bot.get_user(egg["user_id"])
                     if user:
                         await user.send(
                             f"Your **Egg** has hatched into a pet named **{egg['egg_type']}**! Check your pet menu to see it."
                         )
-        except Exception as e:
-            print(f"Error in check_egg_hatches: {e}")
-            user = self.bot.get_user(171645746993561600)
-            if user:
-                await user.send(f"Error in check_egg_hatches: {e}")
+                except:
+                    pass
+
 
 
     @is_gm()
