@@ -1827,8 +1827,19 @@ class Pets(commands.Cog):
 
     @user_cooldown(3600)
     @pets.command(brief=_("Feed your pet with specific food types"))
-    async def feed(self, ctx, pet_id: int, *, food_type: str = "basic food"):
+    async def feed(self, ctx, pet_id_or_food: str | None = None, *, food_type: str = "basic food"):
         """Feed a specific pet with different food types for various effects"""
+        pet_id = None
+        if pet_id_or_food is not None:
+            if pet_id_or_food.isdigit():
+                pet_id = int(pet_id_or_food)
+            else:
+                # Treat first argument as food type when no pet ID is provided
+                if food_type == "basic food":
+                    food_type = pet_id_or_food
+                else:
+                    food_type = f"{pet_id_or_food} {food_type}".strip()
+
         # Normalize food type input (allow spaces and case insensitive)
         food_type_lower = food_type.lower().strip()
         
@@ -1870,15 +1881,35 @@ class Pets(commands.Cog):
                 return
 
             # Get the pet
-            pet = await conn.fetchrow(
-                "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
-                ctx.author.id, pet_id
-            )
-            
-            if not pet:
-                await ctx.send(f"❌ You don't have a pet with ID {pet_id}.")
-                await self.bot.reset_cooldown(ctx)
-                return
+            pet = None
+            if pet_id is not None:
+                pet = await conn.fetchrow(
+                    "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
+                    ctx.author.id, pet_id
+                )
+                if not pet:
+                    await ctx.send(f"❌ You don't have a pet with ID {pet_id}.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
+            else:
+                pet = await conn.fetchrow(
+                    "SELECT * FROM monster_pets WHERE user_id = $1 AND equipped = TRUE;",
+                    ctx.author.id
+                )
+                if not pet:
+                    pets = await conn.fetch(
+                        "SELECT id FROM monster_pets WHERE user_id = $1;",
+                        ctx.author.id
+                    )
+                    if len(pets) == 1:
+                        pet = await conn.fetchrow(
+                            "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
+                            ctx.author.id, pets[0]["id"]
+                        )
+                    else:
+                        await ctx.send("❌ You don't have an equipped pet. Equip one or use `$pets feed <id> [food_type]`.")
+                        await self.bot.reset_cooldown(ctx)
+                        return
 
             # Calculate new values
             new_hunger = min(100, pet['hunger'] + food_data["hunger"])
@@ -1892,11 +1923,11 @@ class Pets(commands.Cog):
                 UPDATE monster_pets
                 SET hunger = $1, happiness = $2, last_update = $3
                 WHERE id = $4
-            """, new_hunger, new_happiness, datetime.datetime.utcnow(), pet_id)
+            """, new_hunger, new_happiness, datetime.datetime.utcnow(), pet["id"])
             
             # Award experience and trust
             xp_gain = food_data["cost"] // 75  # XP based on food cost (further reduced for meaningful progression)
-            level_result = await self.gain_experience(pet_id, xp_gain, trust_gain)
+            level_result = await self.gain_experience(pet["id"], xp_gain, trust_gain)
             
             # Deduct money
             await conn.execute(
@@ -1948,18 +1979,38 @@ class Pets(commands.Cog):
 
     @user_cooldown(300)
     @pets.command(brief=_("Pet your pet to increase happiness and trust"))
-    async def pet(self, ctx, pet_id: int):
+    async def pet(self, ctx, pet_id: int | None = None):
         """Pet your pet to increase happiness and build trust"""
         async with self.bot.pool.acquire() as conn:
-            pet = await conn.fetchrow(
-                "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
-                ctx.author.id, pet_id
-            )
-            
-            if not pet:
-                await ctx.send(f"❌ You don't have a pet with ID {pet_id}.")
-                await self.bot.reset_cooldown(ctx)
-                return
+            pet = None
+            if pet_id is not None:
+                pet = await conn.fetchrow(
+                    "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
+                    ctx.author.id, pet_id
+                )
+                if not pet:
+                    await ctx.send(f"❌ You don't have a pet with ID {pet_id}.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
+            else:
+                pet = await conn.fetchrow(
+                    "SELECT * FROM monster_pets WHERE user_id = $1 AND equipped = TRUE;",
+                    ctx.author.id
+                )
+                if not pet:
+                    pets = await conn.fetch(
+                        "SELECT id FROM monster_pets WHERE user_id = $1;",
+                        ctx.author.id
+                    )
+                    if len(pets) == 1:
+                        pet = await conn.fetchrow(
+                            "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
+                            ctx.author.id, pets[0]["id"]
+                        )
+                    else:
+                        await ctx.send("❌ You don't have an equipped pet. Equip one or use `$pets pet <id>`.")
+                        await self.bot.reset_cooldown(ctx)
+                        return
 
             # Calculate happiness increase (more if pet is happy)
             happiness_boost = 10 if pet['happiness'] > 50 else 5
@@ -1972,10 +2023,10 @@ class Pets(commands.Cog):
                 UPDATE monster_pets 
                 SET happiness = $1, last_update = $2
                 WHERE id = $3
-            """, new_happiness, datetime.datetime.utcnow(), pet_id)
+            """, new_happiness, datetime.datetime.utcnow(), pet["id"])
             
             # Award experience and trust
-            level_result = await self.gain_experience(pet_id, 5, trust_gain)
+            level_result = await self.gain_experience(pet["id"], 5, trust_gain)
 
         # Pet response messages based on happiness
         responses = [
@@ -2122,18 +2173,38 @@ class Pets(commands.Cog):
 
     @user_cooldown(600)
     @pets.command(brief=_("Give your pet a special treat for massive boosts"))
-    async def treat(self, ctx, pet_id: int):
+    async def treat(self, ctx, pet_id: int | None = None):
         """Give your pet a special treat for massive happiness and trust gains"""
         async with self.bot.pool.acquire() as conn:
-            pet = await conn.fetchrow(
-                "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
-                ctx.author.id, pet_id
-            )
-            
-            if not pet:
-                await ctx.send(f"❌ You don't have a pet with ID {pet_id}.")
-                await self.bot.reset_cooldown(ctx)
-                return
+            pet = None
+            if pet_id is not None:
+                pet = await conn.fetchrow(
+                    "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
+                    ctx.author.id, pet_id
+                )
+                if not pet:
+                    await ctx.send(f"❌ You don't have a pet with ID {pet_id}.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
+            else:
+                pet = await conn.fetchrow(
+                    "SELECT * FROM monster_pets WHERE user_id = $1 AND equipped = TRUE;",
+                    ctx.author.id
+                )
+                if not pet:
+                    pets = await conn.fetch(
+                        "SELECT id FROM monster_pets WHERE user_id = $1;",
+                        ctx.author.id
+                    )
+                    if len(pets) == 1:
+                        pet = await conn.fetchrow(
+                            "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
+                            ctx.author.id, pets[0]["id"]
+                        )
+                    else:
+                        await ctx.send("❌ You don't have an equipped pet. Equip one or use `$pets treat [id]`.")
+                        await self.bot.reset_cooldown(ctx)
+                        return
 
             # Treats give massive boosts
             happiness_boost = 50
@@ -2146,10 +2217,10 @@ class Pets(commands.Cog):
                 UPDATE monster_pets 
                 SET happiness = $1, last_update = $2
                 WHERE id = $3
-            """, new_happiness, datetime.datetime.utcnow(), pet_id)
+            """, new_happiness, datetime.datetime.utcnow(), pet["id"])
             
             # Award experience and trust
-            level_result = await self.gain_experience(pet_id, xp_gain, trust_gain)
+            level_result = await self.gain_experience(pet["id"], xp_gain, trust_gain)
 
         # Treat response messages
         responses = [
@@ -2202,18 +2273,38 @@ class Pets(commands.Cog):
 
     @user_cooldown(1800)
     @pets.command(brief=_("Train your pet to gain experience and trust"))
-    async def train(self, ctx, pet_id: int):
+    async def train(self, ctx, pet_id: int | None = None):
         """Train your pet to gain experience and trust"""
         async with self.bot.pool.acquire() as conn:
-            pet = await conn.fetchrow(
-                "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
-                ctx.author.id, pet_id
-            )
-            
-            if not pet:
-                await ctx.send(f"❌ You don't have a pet with ID {pet_id}.")
-                await self.bot.reset_cooldown(ctx)
-                return
+            pet = None
+            if pet_id is not None:
+                pet = await conn.fetchrow(
+                    "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
+                    ctx.author.id, pet_id
+                )
+                if not pet:
+                    await ctx.send(f"❌ You don't have a pet with ID {pet_id}.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
+            else:
+                pet = await conn.fetchrow(
+                    "SELECT * FROM monster_pets WHERE user_id = $1 AND equipped = TRUE;",
+                    ctx.author.id
+                )
+                if not pet:
+                    pets = await conn.fetch(
+                        "SELECT id FROM monster_pets WHERE user_id = $1;",
+                        ctx.author.id
+                    )
+                    if len(pets) == 1:
+                        pet = await conn.fetchrow(
+                            "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
+                            ctx.author.id, pets[0]["id"]
+                        )
+                    else:
+                        await ctx.send("❌ You don't have an equipped pet. Equip one or use `$pets train <id>`.")
+                        await self.bot.reset_cooldown(ctx)
+                        return
 
             # Training gives significant XP and some trust
             xp_gain = 50
@@ -2225,10 +2316,10 @@ class Pets(commands.Cog):
                 UPDATE monster_pets 
                 SET last_update = $1
                 WHERE id = $2
-            """, datetime.datetime.utcnow(), pet_id)
+            """, datetime.datetime.utcnow(), pet["id"])
             
             # Award experience and trust
-            level_result = await self.gain_experience(pet_id, xp_gain, trust_gain)
+            level_result = await self.gain_experience(pet["id"], xp_gain, trust_gain)
 
         # Training response messages
         responses = [
@@ -3080,11 +3171,11 @@ class Pets(commands.Cog):
             embed.add_field(
                 name=_("🍖 Care & Bonding Commands"),
                 value=_(
-                    "• `$pets feed <id> <food_type>` - Feed with different food types (use `$pets feedhelp` for details)\n"
-                    "• `$pets pet <id>` - Pet for happiness (+1 trust, 1min cooldown)\n"
+                    "• `$pets feed [id] [food_type]` - Feed with different food types (defaults to equipped/only pet; use `$pets feedhelp` for details)\n"
+                    "• `$pets pet [id]` - Pet for happiness (+0-1 trust, 1min cooldown; defaults to equipped/only pet)\n"
                     "• `$pets play [id]` - Play for bonuses (+1 trust, +10 XP, 5min cooldown; defaults to equipped/only pet)\n"
-                    "• `$pets treat <id>` - Give treats (+5 trust, +25 XP, 10min cooldown)\n"
-                    "• `$pets train <id>` - Train for experience and trust (+50 XP, +2 trust, 30min cooldown)"
+                    "• `$pets treat [id]` - Give treats (+5 trust, +25 XP, 10min cooldown; defaults to equipped/only pet)\n"
+                    "• `$pets train [id]` - Train for experience and trust (+50 XP, +2 trust, 30min cooldown; defaults to equipped/only pet)"
                 ),
                 inline=False,
             )
@@ -3233,7 +3324,7 @@ class Pets(commands.Cog):
             inline=False
         )
 
-        embed.set_footer(text="Use $pets feed <pet_id> <food_type> to start feeding! | Use $pets status <id> to track progress")
+        embed.set_footer(text="Use $pets feed [id] [food_type] to start feeding! | Defaults to equipped/only pet")
         await ctx.send(embed=embed)
 
     @pets.command(brief=_("View detailed information about a specific skill"))
