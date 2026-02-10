@@ -27,6 +27,8 @@ from utils.i18n import _
 
 
 class Alt(commands.Cog):
+    ALT_ROLE_ID = 1470792499789430917
+
     def __init__(self, bot):
         self.bot = bot
         self.bot.loop.create_task(self.initialize_tables())
@@ -88,6 +90,66 @@ class Alt(commands.Cog):
                 END $$;
                 """
             )
+        await self.sync_alt_roles()
+
+    async def _get_support_guild(self) -> discord.Guild | None:
+        support_server_id = self.bot.config.game.support_server_id
+        if support_server_id is None:
+            return None
+        return self.bot.get_guild(support_server_id)
+
+    async def assign_alt_role(self, member: discord.Member) -> None:
+        if member is None:
+            return
+        alt_role = member.guild.get_role(self.ALT_ROLE_ID)
+        if not alt_role or alt_role in member.roles:
+            return
+        try:
+            await member.add_roles(alt_role, reason="Alt link role assignment")
+        except discord.Forbidden:
+            pass
+
+    async def assign_alt_role_by_id(self, alt_id: int) -> None:
+        guild = await self._get_support_guild()
+        if guild is None:
+            return
+        alt_role = guild.get_role(self.ALT_ROLE_ID)
+        if not alt_role:
+            return
+        member = guild.get_member(alt_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(alt_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                return
+        await self.assign_alt_role(member)
+
+    async def sync_alt_roles(self) -> None:
+        """Assign alt role to any linked alts in the support server."""
+        await self.bot.wait_until_ready()
+        guild = await self._get_support_guild()
+        if guild is None:
+            return
+        alt_role = guild.get_role(self.ALT_ROLE_ID)
+        if not alt_role:
+            return
+
+        async with self.bot.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT alt FROM alt_links;")
+
+        for row in rows:
+            alt_id = int(row["alt"])
+            member = guild.get_member(alt_id)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(alt_id)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    continue
+            if alt_role not in member.roles:
+                try:
+                    await member.add_roles(alt_role, reason="Alt link role sync")
+                except discord.Forbidden:
+                    pass
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
@@ -95,8 +157,6 @@ class Alt(commands.Cog):
         support_server_id = self.bot.config.game.support_server_id
         if support_server_id is None or member.guild.id != support_server_id:
             return
-
-        alt_role_id = 1470792499789430917
 
         async with self.bot.pool.acquire() as conn:
             is_alt = await conn.fetchval(
@@ -107,12 +167,7 @@ class Alt(commands.Cog):
         if not is_alt:
             return
 
-        alt_role = member.guild.get_role(alt_role_id)
-        if alt_role and alt_role not in member.roles:
-            try:
-                await member.add_roles(alt_role)
-            except discord.Forbidden:
-                pass
+        await self.assign_alt_role(member)
 
     @commands.group(invoke_without_command=True, brief=_("Run commands as your linked alt"))
     @has_char()
@@ -279,6 +334,10 @@ class AltConfirmView(discord.ui.View):
                     "✅ Alt link confirmed. This link is permanent.",
                     ephemeral=True,
                 )
+
+                alt_cog = self.bot.get_cog("Alt")
+                if alt_cog:
+                    await alt_cog.assign_alt_role_by_id(self.alt_id)
 
                 main_user = await self.bot.get_user_global(self.main_id)
                 if main_user:
