@@ -85,34 +85,40 @@ def use_current_gettext(*args: Any, **kwargs: Any) -> str:
 
 
 def i18n_docstring(func: Callable[[Any], Any]) -> Callable[[Any], Any]:
-    src = inspect.getsource(func)
-    # We heavily rely on the content of the function to be correct
     try:
-        parsed_tree = ast.parse(src)
-    except IndentationError:
-        parsed_tree = ast.parse("class Foo:\n" + src)
-        assert isinstance(parsed_tree.body[0], ast.ClassDef)
-        function_body: ast.ClassDef = parsed_tree.body[0]
-        assert isinstance(function_body.body[0], ast.AsyncFunctionDef)
-        tree: ast.AsyncFunctionDef = function_body.body[0]
-    else:
-        assert isinstance(parsed_tree.body[0], ast.AsyncFunctionDef)
-        tree = parsed_tree.body[0]
+        src = inspect.getsource(func)
+        # We heavily rely on the content of the function to be correct
+        try:
+            parsed_tree = ast.parse(src)
+        except IndentationError:
+            parsed_tree = ast.parse("class Foo:\n" + src)
+            if not parsed_tree.body or not isinstance(parsed_tree.body[0], ast.ClassDef):
+                return func
+            function_body: ast.ClassDef = parsed_tree.body[0]
+            if not function_body.body or not isinstance(function_body.body[0], ast.AsyncFunctionDef):
+                return func
+            tree: ast.AsyncFunctionDef = function_body.body[0]
+        else:
+            if not parsed_tree.body or not isinstance(parsed_tree.body[0], ast.AsyncFunctionDef):
+                return func
+            tree = parsed_tree.body[0]
 
-    if not isinstance(tree.body[0], ast.Expr):
+        if not tree.body or not isinstance(tree.body[0], ast.Expr):
+            return func
+
+        gettext_call = tree.body[0].value
+        if not isinstance(gettext_call, ast.Call):
+            return func
+
+        if not isinstance(gettext_call.func, ast.Name) or gettext_call.func.id != "_":
+            return func
+
+        if len(gettext_call.args) != 1 or not isinstance(gettext_call.args[0], ast.Str):
+            return func
+
+        func.__doc__ = gettext_call.args[0].s
+    except Exception:
         return func
-
-    gettext_call = tree.body[0].value
-    if not isinstance(gettext_call, ast.Call):
-        return func
-
-    if not isinstance(gettext_call.func, ast.Name) or gettext_call.func.id != "_":
-        return func
-
-    assert len(gettext_call.args) == 1
-    assert isinstance(gettext_call.args[0], ast.Str)
-
-    func.__doc__ = gettext_call.args[0].s
     return func
 
 
