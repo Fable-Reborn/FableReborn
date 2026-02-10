@@ -1525,6 +1525,12 @@ class Adventure(commands.Cog):
 
         await ActiveAdventure(ctx, int(attack), int(defense), width=12, height=12).run()
 
+    def _is_event_enabled(self, event_key: str) -> bool:
+        event_flags = getattr(self.bot, "event_flags", None)
+        if event_flags is None:
+            return False
+        return bool(event_flags.get(event_key, False))
+
     async def get_blessed_value(self, user_id):
         """Retrieve the blessed value from Redis or use default of 1."""
         value = await self.bot.redis.get(str(user_id))
@@ -1775,6 +1781,8 @@ class Adventure(commands.Cog):
                 chance_of_loot *= 2  # can be 100 in a 30
 
             async with self.bot.pool.acquire() as conn:
+                bones = 0
+                snowflakes = 0
                 if (random.randint(1, 1000)) > chance_of_loot * 10:
                     minstat = round(num * luck_multiply)
                     maxstat = round(5 + int(num * 1.5) * luck_multiply)
@@ -1806,14 +1814,24 @@ class Adventure(commands.Cog):
                         guild,
                     )
 
-                # EASTER
-                # ---------------
-                #eggs = int(num ** 1.2 * random.randint(3, 6))
+                if self._is_event_enabled("halloween"):
+                    bones = int(num ** 1.2 * random.randint(1, 8))
+                    if bones > 0:
+                        await conn.execute(
+                            'UPDATE profile SET bones = COALESCE(bones, 0) + $1 WHERE "user"=$2;',
+                            bones,
+                            ctx.author.id,
+                        )
 
-
-                # Halloween
-                # ---------------
-                #bones = int(num ** 1.2 * random.randint(1, 8))
+                if self._is_event_enabled("wintersday"):
+                    float_snowflakes = randomm.uniform(num * 20, num * 30)
+                    snowflakes = round(float_snowflakes)
+                    if snowflakes > 0:
+                        await conn.execute(
+                            'UPDATE profile SET snowflakes = COALESCE(snowflakes, 0) + $1 WHERE "user"=$2;',
+                            snowflakes,
+                            ctx.author.id,
+                        )
 
                 await conn.execute(
                     'UPDATE profile SET "money"="money"+$1, "xp"="xp"+$2,'
@@ -1844,8 +1862,11 @@ class Adventure(commands.Cog):
                     conn=conn,
                 )
 
-                #float_snowflakes = randomm.uniform(num * 20, num * 30)
-                #snowflakes = round(float_snowflakes)
+                event_rewards = ""
+                if bones:
+                    event_rewards += f"💀 Bones: **{bones}**\n"
+                if snowflakes:
+                    event_rewards += f"❄️ Snowflakes: **{snowflakes}**\n"
 
                 await ctx.send(
                     embed=discord.Embed(
@@ -1859,6 +1880,7 @@ class Adventure(commands.Cog):
                             "✧ Type: **{type}**\n"
                             "{stat}"
                             "💎 Value: **{value}**\n"
+                            "{event_rewards}"
                             "⭐ Experience: **{xp}**\n"
                         ).format(
                             narrative=self.get_adventure_narrative(num, ADVENTURE_NAMES[num], True),
@@ -1871,6 +1893,7 @@ class Adventure(commands.Cog):
                             if item["damage"]
                             else _("🛡️ Armor: **{armor}**\n").format(armor=item["armor"]),
                             value=item["value"],
+                            event_rewards=event_rewards,
                             prefix=ctx.clean_prefix,
                             storage_type=storage_type,
                             xp=xp,

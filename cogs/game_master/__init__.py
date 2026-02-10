@@ -73,6 +73,68 @@ CATEGORY_NAME = '╰• ☣ | ☣ FABLE RPG ☣ | ☣ •╯'
 
 
 class GameMaster(commands.Cog):
+    EVENT_DISPLAY_NAMES = {
+        "halloween": "Halloween",
+        "wintersday": "Wintersday",
+        "lunar_new_year": "Lunar New Year",
+        "valentine": "Valentine",
+        "snowballfight": "Snowball Fight",
+    }
+    EVENT_DEFAULTS = {
+        "halloween": False,
+        "wintersday": False,
+        "lunar_new_year": False,
+        "valentine": False,
+        "snowballfight": False,
+    }
+    EVENT_ALIASES = {
+        "halloween": "halloween",
+        "spooky": "halloween",
+        "spookyshop": "halloween",
+        "ss": "halloween",
+        "wintersday": "wintersday",
+        "winter": "wintersday",
+        "christmas": "wintersday",
+        "xmas": "wintersday",
+        "cs": "wintersday",
+        "lunar": "lunar_new_year",
+        "lny": "lunar_new_year",
+        "lunar_new_year": "lunar_new_year",
+        "lunarnewyear": "lunar_new_year",
+        "lunar new year": "lunar_new_year",
+        "valentine": "valentine",
+        "valentines": "valentine",
+        "snowballfight": "snowballfight",
+        "snowball": "snowballfight",
+        "snowball_fight": "snowballfight",
+        "snowball fight": "snowballfight",
+        "snowball-fight": "snowballfight",
+    }
+    EVENT_SHOP_DEFAULTS = {
+        "halloween": {
+            "ssuncommon": 10,
+            "ssrare": 5,
+            "ssmagic": 3,
+            "sslegendary": 2,
+            "ssfortune": 1,
+            "ssdivine": 1,
+            "ssbg": 1,
+            "ssclass": 1,
+            "sstoken": 5,
+            "sstot": 10,
+        },
+        "lunar_new_year": {
+            "lnyuncommon": 10,
+            "lnyrare": 5,
+            "lnymagic": 3,
+            "lnylegendary": 2,
+            "lnyfortune": 1,
+            "lnydivine": 1,
+            "lnytoken": 5,
+            "lnybag": 10,
+        },
+    }
+
     def __init__(self, bot):
         self.bot = bot
         self.top_auction = None
@@ -80,6 +142,7 @@ class GameMaster(commands.Cog):
         self.auction_entry = None
         #self.patron_ids = self.load_patron_ids()
         self.isbid = False
+        self.event_flags = {}
 
     @is_gm()
     @commands.command(brief=_("Publish an announcement"))
@@ -5386,6 +5449,135 @@ class GameMaster(commands.Cog):
             else:
                 await ctx.send("❌ Unknown option.")
         await ctx.send("✅ Drop updated.")
+
+
+    async def cog_load(self):
+        await self._init_event_settings()
+
+    async def _init_event_settings(self):
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS event_settings (
+                    event_key TEXT PRIMARY KEY,
+                    enabled BOOLEAN NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            for key, default in self.EVENT_DEFAULTS.items():
+                await conn.execute(
+                    """
+                    INSERT INTO event_settings (event_key, enabled)
+                    VALUES ($1, $2)
+                    ON CONFLICT (event_key) DO NOTHING
+                    """,
+                    key,
+                    default,
+                )
+            rows = await conn.fetch("SELECT event_key, enabled FROM event_settings")
+
+        self.event_flags = {row["event_key"]: bool(row["enabled"]) for row in rows}
+        for key, default in self.EVENT_DEFAULTS.items():
+            self.event_flags.setdefault(key, default)
+        self.bot.event_flags = self.event_flags
+
+    def _normalize_event_key(self, raw: str | None) -> str | None:
+        if not raw:
+            return None
+        return self.EVENT_ALIASES.get(raw.strip().lower())
+
+    def _parse_bool(self, raw: str | None) -> bool | None:
+        if raw is None:
+            return None
+        value = raw.strip().lower()
+        if value in ("on", "true", "enable", "enabled", "1", "yes", "y"):
+            return True
+        if value in ("off", "false", "disable", "disabled", "0", "no", "n"):
+            return False
+        return None
+
+    def get_event_enabled(self, event_key: str) -> bool:
+        if not self.event_flags:
+            return self.EVENT_DEFAULTS.get(event_key, False)
+        return bool(self.event_flags.get(event_key, self.EVENT_DEFAULTS.get(event_key, False)))
+
+    async def set_event_enabled(self, event_key: str, enabled: bool) -> None:
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO event_settings (event_key, enabled)
+                VALUES ($1, $2)
+                ON CONFLICT (event_key)
+                DO UPDATE SET enabled = $2, updated_at = NOW()
+                """,
+                event_key,
+                enabled,
+            )
+
+        self.event_flags[event_key] = enabled
+        self.bot.event_flags = self.event_flags
+
+        lny_cog = self.bot.get_cog("LunarNewYear")
+        if lny_cog and hasattr(lny_cog, "enabled"):
+            lny_cog.enabled = enabled if event_key == "lunar_new_year" else lny_cog.enabled
+
+    def _event_status_lines(self) -> list[str]:
+        lines = []
+        for key, name in self.EVENT_DISPLAY_NAMES.items():
+            status = "enabled" if self.get_event_enabled(key) else "disabled"
+            lines.append(f"{name}: {status}")
+        return lines
+
+    @is_gm()
+    @commands.group(name="gmevent", aliases=["gmevents"], invoke_without_command=True)
+    async def gmevent(self, ctx, event: str | None = None, enabled: str | None = None):
+        if event is None:
+            lines = self._event_status_lines()
+            return await ctx.send("Event status:\n" + "\n".join(lines))
+
+        event_key = self._normalize_event_key(event)
+        if not event_key:
+            available = ", ".join(sorted(self.EVENT_DISPLAY_NAMES.values()))
+            return await ctx.send(f"Unknown event. Available: {available}")
+
+        parsed = self._parse_bool(enabled)
+        if parsed is None:
+            parsed = not self.get_event_enabled(event_key)
+
+        await self.set_event_enabled(event_key, parsed)
+        status = "enabled" if parsed else "disabled"
+        await ctx.send(f"{self.EVENT_DISPLAY_NAMES[event_key]} event is now **{status}**.")
+
+    @gmevent.command(name="list", aliases=["status"])
+    async def gmevent_list(self, ctx):
+        lines = self._event_status_lines()
+        await ctx.send("Event status:\n" + "\n".join(lines))
+
+    @gmevent.command(name="resetshops", aliases=["resetshop"])
+    async def gmevent_resetshops(self, ctx, event: str | None = "all"):
+        if event is None or event.strip().lower() == "all":
+            targets = list(self.EVENT_SHOP_DEFAULTS.keys())
+        else:
+            event_key = self._normalize_event_key(event)
+            if not event_key or event_key not in self.EVENT_SHOP_DEFAULTS:
+                available = ", ".join(
+                    self.EVENT_DISPLAY_NAMES[key]
+                    for key in self.EVENT_SHOP_DEFAULTS.keys()
+                )
+                return await ctx.send(
+                    f"Unknown event or no shop quantities. Available: {available}"
+                )
+            targets = [event_key]
+
+        async with self.bot.pool.acquire() as conn:
+            for key in targets:
+                defaults = self.EVENT_SHOP_DEFAULTS[key]
+                set_clause = ", ".join(f"{col} = {val}" for col, val in defaults.items())
+                await conn.execute(f"UPDATE profile SET {set_clause};")
+
+        names = ", ".join(self.EVENT_DISPLAY_NAMES[key] for key in targets)
+        await ctx.send(f"Shop quantities reset for: {names}.")
 
 
 class GMInviteView(discord.ui.View):

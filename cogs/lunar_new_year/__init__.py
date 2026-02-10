@@ -34,7 +34,22 @@ from utils.i18n import _, locale_doc
 class LunarNewYear(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.enabled = True  # Set to False to disable the event
+        self.enabled = False  # Controlled by GM event settings
+
+    def is_enabled(self) -> bool:
+        event_flags = getattr(self.bot, "event_flags", None)
+        if event_flags is None:
+            return bool(self.enabled)
+        return bool(event_flags.get("lunar_new_year", self.enabled))
+
+    async def set_enabled(self, enabled: bool) -> None:
+        self.enabled = enabled
+        event_flags = getattr(self.bot, "event_flags", None)
+        if event_flags is not None:
+            event_flags["lunar_new_year"] = enabled
+        gm_cog = self.bot.get_cog("GameMaster")
+        if gm_cog and hasattr(gm_cog, "set_event_enabled"):
+            await gm_cog.set_event_enabled("lunar_new_year", enabled)
 
     @commands.Cog.listener()
     async def on_adventure_completion(self, ctx, iscompleted):
@@ -42,7 +57,7 @@ class LunarNewYear(commands.Cog):
         Listens for adventure completion events and awards lanterns (currency)
         when adventures are completed.
         """
-        if not self.enabled:
+        if not self.is_enabled():
             return
 
         if not iscompleted:
@@ -159,7 +174,7 @@ class LunarNewYear(commands.Cog):
         Spend your hard-earned Lunar Lanterns on festive treasures and rewards.
         """
 
-        if not self.enabled:
+        if not self.is_enabled():
             await ctx.send(_("The Lunar New Year event is currently disabled."))
             return
 
@@ -240,7 +255,7 @@ class LunarNewYear(commands.Cog):
         :param quantity: The quantity of the item the user wants to buy. Defaults to 1.
         """)
 
-        if not self.enabled:
+        if not self.is_enabled():
             await ctx.send(_("The Lunar New Year event is currently disabled."))
             return
 
@@ -494,7 +509,7 @@ class LunarNewYear(commands.Cog):
     @lunarnewyear.command(name="bal", aliases=["balance"])
     async def _bal(self, ctx):
         """Check your Lunar Lantern balance."""
-        if not self.enabled:
+        if not self.is_enabled():
             await ctx.send(_("The Lunar New Year event is currently disabled."))
             return
 
@@ -523,7 +538,7 @@ class LunarNewYear(commands.Cog):
             Their value will be between 1 and 200."""
         )
         
-        if not self.enabled:
+        if not self.is_enabled():
             await ctx.send(_("The Lunar New Year event is currently disabled."))
             return
 
@@ -647,7 +662,7 @@ class LunarNewYear(commands.Cog):
             """Shows the amount of Lunar New Year bags you have. You can get more from the shop."""
         )
         
-        if not self.enabled:
+        if not self.is_enabled():
             await ctx.send(_("The Lunar New Year event is currently disabled."))
             return
 
@@ -670,11 +685,9 @@ class LunarNewYear(commands.Cog):
     async def toggle_event(self, ctx, enabled: bool = None):
         """Toggle the Lunar New Year event on or off."""
         if enabled is None:
-            self.enabled = not self.enabled
-        else:
-            self.enabled = enabled
-
-        status = "enabled" if self.enabled else "disabled"
+            enabled = not self.is_enabled()
+        await self.set_enabled(enabled)
+        status = "enabled" if enabled else "disabled"
         await ctx.send(_("Lunar New Year event is now **{status}**.").format(status=status))
 
 

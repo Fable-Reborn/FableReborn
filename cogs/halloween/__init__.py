@@ -36,6 +36,18 @@ class Halloween(commands.Cog):
         self.bot = bot
         self.waiting = None
 
+    def _is_event_enabled(self) -> bool:
+        event_flags = getattr(self.bot, "event_flags", None)
+        if event_flags is None:
+            return False
+        return bool(event_flags.get("halloween", False))
+
+    async def _ensure_event_enabled(self, ctx) -> bool:
+        if self._is_event_enabled():
+            return True
+        await ctx.send(_("The Halloween event is currently disabled."))
+        return False
+
     @checks.has_char()
     @user_cooldown(3600)
     @commands.command(aliases=["tot"], brief=_("Trick or treat!"))
@@ -52,6 +64,9 @@ class Halloween(commands.Cog):
 
             (This command has a cooldown of 3h)"""
         )
+        if not await self._ensure_event_enabled(ctx):
+            return
+
         waiting = self.waiting
         if not waiting:
             self.waiting = ctx.author
@@ -127,6 +142,9 @@ class Halloween(commands.Cog):
         Dive into the spectral realm with our limited-time Spooky Season Shop.
         Unearth rare treasures using bones you've collected from various eerie events.
         """
+
+        if not await self._ensure_event_enabled(ctx):
+            return
 
         try:
             if ctx.invoked_subcommand is None:
@@ -204,6 +222,9 @@ class Halloween(commands.Cog):
         :param item_name: The name of the item the user wants to buy.
         :param quantity: The quantity of the item the user wants to buy. Defaults to 1.
         """)
+
+        if not await self._ensure_event_enabled(ctx):
+            return
 
         if item < 0 and item > 10:
             await ctx.send("Invalid choice")
@@ -546,6 +567,9 @@ class Halloween(commands.Cog):
     @spookyshop.command(name="bal")
     async def _bal(self, ctx):
 
+        if not await self._ensure_event_enabled(ctx):
+            return
+
         record = await self.bot.pool.fetchrow(
             'SELECT bones FROM profile WHERE "user"=$1;',
             ctx.author.id
@@ -567,6 +591,9 @@ class Halloween(commands.Cog):
             Trick or treat bags contain halloween-themed items, ranging from 1 to 50 base stat.
             Their value will be between 1 and 200."""
         )
+        if not await self._ensure_event_enabled(ctx):
+            return
+
         # better name?
         if ctx.character_data["trickortreat"] < 1:
             return await ctx.send(
@@ -682,6 +709,8 @@ class Halloween(commands.Cog):
         _(
             """Shows the amount of trick or treat bags you have. You can get more by using `{prefix}trickortreat`."""
         )
+        if not await self._ensure_event_enabled(ctx):
+            return
         await ctx.send(
             _(
                 "You currently have **{trickortreat}** Trick or Treat Bags, {author}!"

@@ -3482,6 +3482,22 @@ class Battles(commands.Cog):
                     self._warning_sent = False
                     self.message = None  # Will be set after view is sent
                     self.ctx = ctx  # Store context for sending warning message
+
+                async def _is_linked_to_leader(self, user_id: int) -> bool:
+                    leader_id = self.ctx.author.id
+                    if user_id == leader_id:
+                        return True
+                    async with self.bot.pool.acquire() as conn:
+                        linked = await conn.fetchval(
+                            """
+                            SELECT 1
+                            FROM alt_links
+                            WHERE (main = $1 AND alt = $2) OR (main = $2 AND alt = $1)
+                            """,
+                            user_id,
+                            leader_id,
+                        )
+                    return bool(linked)
                     
                 async def update_embed(self):
                     embed = discord.Embed(
@@ -3540,8 +3556,11 @@ class Battles(commands.Cog):
                 @discord.ui.button(label="Start Challenge", style=discord.ButtonStyle.success, emoji="🐉")
                 async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
                     # Only the party leader can start the challenge
-                    if interaction.user != ctx.author:
-                        return await interaction.response.send_message("Only the party leader can start the challenge!", ephemeral=True)
+                    if not await self._is_linked_to_leader(interaction.user.id):
+                        return await interaction.response.send_message(
+                            "Only the party leader (or their linked main/alt) can start the challenge!",
+                            ephemeral=True,
+                        )
                         
                     # At least one member needed to start
                     if not self.party_members:

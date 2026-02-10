@@ -61,10 +61,24 @@ class Christmas(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    def _is_event_enabled(self) -> bool:
+        event_flags = getattr(self.bot, "event_flags", None)
+        if event_flags is None:
+            return False
+        return bool(event_flags.get("wintersday", False))
+
+    async def _ensure_event_enabled(self, ctx) -> bool:
+        if self._is_event_enabled():
+            return True
+        await ctx.send(_("The Wintersday event is currently disabled."))
+        return False
+
     @commands.group(invoke_without_command=True)
     @locale_doc
     async def calendar(self, ctx):
         _("""Look at your Winter Calendar""")
+        if not await self._ensure_event_enabled(ctx):
+            return
         try:
             today = datetime.datetime.now().day
             #if today > 25 or today < 1:
@@ -82,6 +96,8 @@ class Christmas(commands.Cog):
         Dive into the spectral realm with our limited-time Spooky Season Shop.
         Unearth rare treasures using bones you've collected from various eerie events.
         """
+        if not await self._ensure_event_enabled(ctx):
+            return
         if ctx.invoked_subcommand is None:
             try:
                 # Fetch the user's bone count
@@ -133,6 +149,9 @@ class Christmas(commands.Cog):
         :param item_name: The name of the item the user wants to buy.
         :param quantity: The quantity of the item the user wants to buy. Defaults to 1.
         """)
+
+        if not await self._ensure_event_enabled(ctx):
+            return
 
         if item < 0 and item > 7:
             await ctx.send("Invalid choice")
@@ -291,6 +310,8 @@ class Christmas(commands.Cog):
     @locale_doc
     async def snowflakes(self, ctx):
         _("""Displays the current amount of snowflakes you have.""")
+        if not await self._ensure_event_enabled(ctx):
+            return
         try:
             select_query = 'SELECT "snowflakes" FROM profile WHERE "user"=$1'
 
@@ -311,6 +332,8 @@ class Christmas(commands.Cog):
     @locale_doc
     async def _open(self, ctx):
         _("""Open the Winter Calendar once every day.""")
+        if not await self._ensure_event_enabled(ctx):
+            return
         today = datetime.datetime.utcnow().date()
         christmas_too_late = datetime.date(2025, 1, 3)
         first_dec = datetime.date(2024, 12, 8)
@@ -377,6 +400,8 @@ class Christmas(commands.Cog):
     @locale_doc
     async def combine(self, ctx):
         _("""Combine the mysterious puzzle pieces.""")
+        if not await self._ensure_event_enabled(ctx):
+            return
         if ctx.character_data["puzzles"] < 4:
             return await ctx.send(
                 _(
@@ -424,6 +449,9 @@ class Christmas(commands.Cog):
     @commands.command()
     @locale_doc
     async def fixpuzzle(self, ctx, target: discord.Member):
+
+        if not await self._ensure_event_enabled(ctx):
+            return
 
         try:
 

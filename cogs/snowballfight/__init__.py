@@ -34,12 +34,26 @@ class SnowballFight(commands.Cog):
         with open("assets/data/hangman.txt") as f:
             self.words = f.readlines()
 
+    def _is_event_enabled(self) -> bool:
+        event_flags = getattr(self.bot, "event_flags", None)
+        if event_flags is None:
+            return False
+        return bool(event_flags.get("snowballfight", False))
+
+    async def _ensure_event_enabled(self, ctx) -> bool:
+        if self._is_event_enabled():
+            return True
+        await ctx.send(_("The Snowball Fight event is currently disabled."))
+        return False
+
     @commands.command()
     @locale_doc
     async def snowballfight(
         self, ctx, enemy: discord.Member, players: IntFromTo(2, 10) = 10
     ):
         _("""Make a snowball fights against another guild.""")
+        if not await self._ensure_event_enabled(ctx):
+            return
         if enemy is ctx.author:
             return await ctx.send(_("You may not fight yourself."))
 

@@ -46,6 +46,18 @@ class Valentine(commands.Cog):
             "Hammer": ["Affectionate Anvil", "Blissful Bludgeon", "Crushing Crush", "Infatuation Impact"],
         }
 
+    def _is_event_enabled(self) -> bool:
+        event_flags = getattr(self.bot, "event_flags", None)
+        if event_flags is None:
+            return False
+        return bool(event_flags.get("valentine", False))
+
+    async def _ensure_event_enabled(self, ctx) -> bool:
+        if self._is_event_enabled():
+            return True
+        await ctx.send(_("The Valentine event is currently disabled."))
+        return False
+
     def get_valentine_name(self, type_):
         return random.choice(self.valentine_items[type_])
 
@@ -63,6 +75,8 @@ class Valentine(commands.Cog):
             This command may only be used from the 13th to the 15th February.
             (This command has a cooldown until 12am UTC.)"""
         )
+        if not await self._ensure_event_enabled(ctx):
+            return
         today = datetime.datetime.now().day
         if not 13 <= today <= 15:
             return await ctx.send(_("It's not time for that yet!"))
@@ -90,6 +104,8 @@ class Valentine(commands.Cog):
             """Opens one of your chocolate boxes.
             These boxes have a 1/4 chance of containing money, a 1/4 chance for an item and a 2/4 chance for lovescore."""
         )
+        if not await self._ensure_event_enabled(ctx):
+            return
         if ctx.character_data["chocolates"] <= 0:
             return await ctx.send(_("You have no chocolate boxes left."))
         await self.bot.pool.execute(
