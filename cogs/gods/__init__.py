@@ -58,7 +58,7 @@ class Gods(commands.Cog):
                 god_roles = {
                     'Drakath': 1406639168070615040,
                     'Sepulchure': 1406639315240489061,
-                    'Astraea': 1406639398795219126
+                    'Elysia': 1406639398795219126
                 }
 
                 # Remove any god roles in the support server
@@ -180,7 +180,7 @@ class Gods(commands.Cog):
         god_roles = {
             'Drakath': 1406639168070615040,
             'Sepulchure': 1406639315240489061,
-            'Astraea': 1406639398795219126
+            'Elysia': 1406639398795219126
         }
         godless_role_id = 1470772063001120880
         old_god = ctx.character_data["god"]
@@ -299,12 +299,12 @@ class Gods(commands.Cog):
         god_roles = {
             'Drakath': 1199302687083204649,
             'Sepulchure': 1199303145306726410,
-            'Astraea': 1199303066227331163
+            'Elysia': 1199303066227331163
         }
         support_god_roles = {
             'Drakath': 1406639168070615040,
             'Sepulchure': 1406639315240489061,
-            'Astraea': 1406639398795219126
+            'Elysia': 1406639398795219126
         }
         godless_role_id = 1470772063001120880
 

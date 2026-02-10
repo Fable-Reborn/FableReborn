@@ -53,7 +53,7 @@ class Story(commands.Cog):
         embed = discord.Embed(title="The War of Eldoria", color=0x2f3136)
         embed.description = ("In the realm of Eldoria, three gods have awoken from their slumber. "
                              "A clash of beliefs and desires ignites a fierce war. "
-                             "Drakath, Astraea, and Sepulchure, each commanding their legions, "
+                             "Drakath, Elysia, and Sepulchure, each commanding their legions, "
                              "seek the Eldoria Nexus - a relic of power that can tip the balance. "
                              "You, as one of the chosen, embark on this quest to determine the fate of Eldoria.\n"
                              "\n"
@@ -80,10 +80,10 @@ class Story(commands.Cog):
                 god_specific_embed.description = (
                     "Champion of Chaos, Drakath has sensed your loyalty. As the winds of unpredictability howl, "
                     "you are called upon to harness the chaos and claim the Nexus for a world without rules.")
-            elif god == "Astraea":
+            elif god == "Elysia":
                 god_specific_embed.color = 0xf1c40f
                 god_specific_embed.description = (
-                    "Disciple of Justice, Astraea beckons you. The celestial call resonates, urging you to seek "
+                    "Disciple of Justice, Elysia beckons you. The celestial call resonates, urging you to seek "
                     "the Nexus and establish a harmonious Eldoria, pure and just.")
             elif god == "Sepulchure":
                 god_specific_embed.color = 0xe74c3c
@@ -112,7 +112,7 @@ class Story(commands.Cog):
         # Here you'd place the logic for the beginning of the actual journey tailored to each god
         if god == "Drakath":
             await ctx.send("The winds of chaos guide your path as you embark on a journey full of unpredictability...")
-        elif god == "Astraea":
+        elif god == "Elysia":
             await ctx.send("With the blessings of the stars, you set forth to bring justice and harmony to Eldoria...")
         elif god == "Sepulchure":
             await ctx.send("The shadows whisper tales of power and conquest as you start your dark quest...")

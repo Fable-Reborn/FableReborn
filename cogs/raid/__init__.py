@@ -1802,15 +1802,15 @@ class Raid(commands.Cog):
 
             if random_number == 2:
                 embed = Embed(
-                    title="Astraea's Grace...",
+                    title="Elysia's Grace...",
                     description=(
-                        "As the benevolent aura of Goddess Astraea permeates the air, a radiant light bathes the battlefield. "
+                        "As the benevolent aura of Goddess Elysia permeates the air, a radiant light bathes the battlefield. "
                         f"From the celestial realm, {quantity} champions descended. "
-                        "Ragnarok's challenges now face the divine intervention of Astraea."),
+                        "Ragnarok's challenges now face the divine intervention of Elysia."),
                     color=0xffd700  # Setting the color to gold to match the theme for a benevolent goddess
                 )
                 embed.set_thumbnail(
-                    url="https://i.ibb.co/TTh7rZJ/image.png")  # Replace with an image URL representing Astraea's grace
+                    url="https://i.ibb.co/TTh7rZJ/image.png")  # Replace with an image URL representing Elysia's grace
 
                 await ctx.send(embed=embed)
 
@@ -2816,12 +2816,12 @@ class Raid(commands.Cog):
 
                 # Define gods with their boundaries
                 gods = {
-                    "Astraea": {"boundary_low": 0.9, "boundary_high": 1.1},
+                    "Elysia": {"boundary_low": 0.9, "boundary_high": 1.1},
                     "Sepulchure": {"boundary_low": 0.75, "boundary_high": 1.5},
                     "Drakath": {"boundary_low": 0.3, "boundary_high": 2.0},
                 }
 
-                # Replace 'selected_god' with the actual selected god name (e.g., "Astraea")
+                # Replace 'selected_god' with the actual selected god name (e.g., "Elysia")
                 selected_god = "Sepulchure"  # Example, replace dynamically
                 god_data = gods.get(selected_god)
 
@@ -3138,12 +3138,12 @@ class Raid(commands.Cog):
 
                     # Define gods with their boundaries
                     gods = {
-                        "Astraea": {"boundary_low": 0.9, "boundary_high": 1.1},
+                        "Elysia": {"boundary_low": 0.9, "boundary_high": 1.1},
                         "Sepulchure": {"boundary_low": 0.75, "boundary_high": 1.5},
                         "Drakath": {"boundary_low": 0.3, "boundary_high": 2.0},
                     }
 
-                    # Replace 'selected_god' with the actual selected god name (e.g., "Astraea")
+                    # Replace 'selected_god' with the actual selected god name (e.g., "Elysia")
                     selected_god = "Drakath"  # Example, replace dynamically
                     god_data = gods.get(selected_god)
 

@@ -472,7 +472,7 @@ and will breach our realm in **15 Minutes**
                         luck_query = await conn.fetchval('SELECT luck FROM profile WHERE "user" = $1;', winner.id)
                     luck_query_float = float(luck_query)
                     gods = {
-                        "Astraea": {"boundary_low": 0.9, "boundary_high": 1.1},
+                        "Elysia": {"boundary_low": 0.9, "boundary_high": 1.1},
                         "Sepulchure": {"boundary_low": 0.75, "boundary_high": 1.5},
                         "Drakath": {"boundary_low": 0.3, "boundary_high": 2.0},
                     }

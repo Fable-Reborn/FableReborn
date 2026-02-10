@@ -1408,7 +1408,7 @@ class Soulforge(commands.Cog):
                     pet2_id, ctx.author.id
                 )
 
-            unspliceable_pets = ["Sepulchure", "Astraea", "Drakath", "Ultra Sepulchure", "Ultra Astraea",
+            unspliceable_pets = ["Sepulchure", "Elysia", "Drakath", "Ultra Sepulchure", "Ultra Elysia",
                                  "Ultra Drakath"]
 
             if not pet1_data:

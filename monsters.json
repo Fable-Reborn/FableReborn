@@ -1349,7 +1349,7 @@
             "ispublic": true
         },
         {
-            "name": "Astraea's Engineer",
+            "name": "Elysia's Engineer",
             "hp": 820,
             "attack": 790,
             "defense": 775,
@@ -1488,7 +1488,7 @@
             "ispublic": true
         },
         {
-            "name": "Astraea",
+            "name": "Elysia",
             "hp": 18000,
             "attack": 3500,
             "defense": 2500,

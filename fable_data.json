@@ -156,7 +156,7 @@
       "VariableLuck": false,
       "Description": "Not following a god has constant luck of 1.0"
     },
-    "Astraea": {
+    "Elysia": {
       "LuckRange": [
         0.9,
         1.1
@@ -503,7 +503,7 @@
         "Money Reward"
       ],
       "Raids": {
-        "Astraea": {
+        "Elysia": {
           "Name": "Champions of Compassion",
           "Mechanics": "Followers try to heal or help others; continues until one remains"
         },
@@ -1761,7 +1761,7 @@
       "element": "Dark",
       "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Mech-a-knight-removebg-preview-transformed.png"
     },
-    "Astraea's Engineer": {
+    "Elysia's Engineer": {
       "level": 9,
       "hp": 820,
       "attack": 790,
@@ -1801,7 +1801,7 @@
       "element": "Corrupted",
       "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Pngtreelightning_source_lightning_effect_purple_3916970.png"
     },
-    "Astraea": {
+    "Elysia": {
       "level": 11,
       "hp": 17000,
       "attack": 3500,

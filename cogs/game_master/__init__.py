@@ -3070,7 +3070,7 @@ class GameMaster(commands.Cog):
         god_roles = {
             'Drakath': 1406639168070615040,
             'Sepulchure': 1406639315240489061,
-            'Astraea': 1406639398795219126
+            'Elysia': 1406639398795219126
         }
         godless_role_id = 1470772063001120880
 
@@ -3129,7 +3129,7 @@ class GameMaster(commands.Cog):
                 godless_query = '''
                     SELECT "user"
                     FROM profile
-                    WHERE god IS NULL AND reset_points < 0
+                    WHERE god IS NULL
                 '''
                 godless_data = await conn.fetch(godless_query)
                 if godless_data:
@@ -3164,7 +3164,7 @@ class GameMaster(commands.Cog):
         god_roles = {
             'Drakath': 1406639168070615040,
             'Sepulchure': 1406639315240489061,
-            'Astraea': 1406639398795219126
+            'Elysia': 1406639398795219126
         }
         godless_role_id = 1470772063001120880
 
@@ -3223,7 +3223,7 @@ class GameMaster(commands.Cog):
                 godless_query = '''
                         SELECT "user"
                         FROM profile
-                        WHERE god IS NULL AND reset_points < 0
+                        WHERE god IS NULL
                     '''
                 godless_data = await conn.fetch(godless_query)
                 if godless_data:

@@ -157,25 +157,25 @@ class SimpleBattle(discord.ext.commands.Cog):
                 "Reality itself seems to bend as {attacker}'s {weapon} traces the patterns of the legendary '{move}'!"
             ],
             "godly_interventions": [
-                "The sky brightens as Astraea, Goddess of Light, favors {player} with her blessing!",
+                "The sky brightens as Elysia, Goddess of Light, favors {player} with her blessing!",
                 "Shadows writhe at {player}'s feet! Sepulchure, God of Darkness, grants his cruel power!",
                 "Reality itself warps around {player} as Drakath, God of Chaos, intervenes capriciously!",
-                "A beam of pure light empowers {player}'s {weapon}, Astraea's divine favor made manifest!",
+                "A beam of pure light empowers {player}'s {weapon}, Elysia's divine favor made manifest!",
                 "The crowd falls silent as Sepulchure's dark energy courses through {player}'s veins!",
                 "Drakath's chaotic will sends unpredictable power surging through {player}'s {weapon}!",
-                "Astraea's radiance blinds {player}'s opponent, creating an opening!",
+                "Elysia's radiance blinds {player}'s opponent, creating an opening!",
                 "Sepulchure's deathly chill emanates from {player}, weakening all who stand nearby!",
                 "The very rules of combat seem to bend around {player} as Drakath's chaos manifests!",
-                "Astraea's holy light forms protective wings around {player}, deflecting a lethal blow!",
+                "Elysia's holy light forms protective wings around {player}, deflecting a lethal blow!",
                 "The blood spilled on the arena sand bubbles and writhes at Sepulchure's dark command, aiding {player}!",
                 "Drakath's laughter echoes as probability itself shifts in {player}'s favor!",
-                "Golden tears fall from the statue of Astraea, landing on {player}'s wounds and healing them instantly!",
+                "Golden tears fall from the statue of Elysia, landing on {player}'s wounds and healing them instantly!",
                 "Sepulchure's shadow elongates, becoming a second weapon in {player}'s arsenal!",
                 "The laws of physics briefly suspend as Drakath allows {player} to defy gravity!",
-                "Astraea's blessing makes {player}'s movements fluid and perfect, like a celestial dance!",
+                "Elysia's blessing makes {player}'s movements fluid and perfect, like a celestial dance!",
                 "Sepulchure grants {player} the ability to see their opponent's next move, painted in shadows!",
                 "Drakath's chaos transforms {player}'s minor wound into unexpected strength!",
-                "The very air around {player} shimmers with Astraea's divine protection!",
+                "The very air around {player} shimmers with Elysia's divine protection!",
                 "Sepulchure's darkness devours the light around {player}, making their strikes impossible to predict!",
                 "Drakath's influence causes {player}'s weapon to briefly transform into something impossible!"
             ],
@@ -552,7 +552,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                 "The Emperor confers with his advisors, considering the entertainment value of the combat...",
                 "Gold changes hands in the royal box as nobles place last bets on the Emperor's decision...",
                 "The fallen gladiator looks up with desperate hope as the Emperor stands to signal their fate...",
-                "Priestesses of Astraea burn incense, hoping to influence the Emperor toward mercy...",
+                "Priestesses of Elysia burn incense, hoping to influence the Emperor toward mercy...",
                 "The sand grows dark with blood as the Emperor contemplates his verdict...",
                 "The Emperor's face remains impassive as he considers whether the defeated has earned life..."
             ],
@@ -754,7 +754,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                 "The crowd chants ancient battle hymns that echo the glory days of Fablelands' warrior past!",
                 "Wealthy merchants toss gold coins into the arena to show their appreciation for particularly fine moves!",
                 "Even the hardened arena slaves pause in their grim duties to witness an exchange of legendary quality!",
-                "The crowd parts respectfully as the High Priestess of Astraea moves to the railing for a better view!",
+                "The crowd parts respectfully as the High Priestess of Elysia moves to the railing for a better view!",
                 "Battle scholars furiously scribble notes, documenting techniques to teach the next generation!",
                 "The arena's magical amplification crystals pulse with energy, feeding off the crowd's wild emotions!",
                 "Spectators from the distant Frost Marches ululate in their traditional appreciation of spilled blood!",
@@ -894,7 +894,7 @@ class SimpleBattle(discord.ext.commands.Cog):
             "a spiked gauntlet", "a flask of burning oil", "a war horn that disorients opponents",
             "an ancestral charm that grants temporary strength", "a vial of basilisk blood",
             "a talisman that slows bleeding", "enchanted dust that blinds when thrown",
-            "a ceremonial blade from the Temple of Astraea", "a whip lined with razor edges",
+            "a ceremonial blade from the Temple of Elysia", "a whip lined with razor edges",
             "a grappling hook", "a vial of berserker's rage potion", "weighted bolas",
             "a smoke bomb", "a shield boss that can be used as a weapon", "a handful of flash powder",
             "a magically preserved heart that grants second wind when consumed"
@@ -1272,7 +1272,7 @@ class SimpleBattle(discord.ext.commands.Cog):
             Weapons have strengths and weaknesses against other types.
             Two-handed weapons (bow, scythe, mace) have their own advantages.
 
-            The gods (Astraea, Sepulchure, or Drakath) may intervene in battle.
+            The gods (Elysia, Sepulchure, or Drakath) may intervene in battle.
 
             The victorious gladiator earns glory, gold, and a PvP win on their profile.
             (This command has a cooldown of 90 seconds.)"""
@@ -1402,7 +1402,7 @@ class SimpleBattle(discord.ext.commands.Cog):
             p2_weapon_info = await self.get_weapon_info(ctx, enemy_.id)
 
             # Choose gods if not already set
-            gods = ["Astraea", "Sepulchure", "Drakath", None]
+            gods = ["Elysia", "Sepulchure", "Drakath", None]
             p1_god = p1_weapon_info.get("god") or random.choice(gods)
             p2_god = p2_weapon_info.get("god") or random.choice(gods)
 
@@ -1486,7 +1486,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                 f"Vendors hawk their wares through the crowd as the arena floor is raked smooth for battle!",
                 f"Betting masters hurry to collect final wagers before the competitors make their entrance!",
                 f"The ancient arena stones seem to pulse with the energy of countless battles fought before!",
-                f"Priests of Astraea bless the sands while acolytes of Sepulchure whisper dark omens at the gates!",
+                f"Priests of Elysia bless the sands while acolytes of Sepulchure whisper dark omens at the gates!",
                 f"The Arena Master raises his staff, commanding silence before the grand introduction!",
             ]
             
@@ -2204,7 +2204,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                     f"The crowd's bloodlust sated, they cheer {winner.display_name}'s name as attendants prepare the arena for the next combat.",
                     f"Another soul joins the countless warriors who have fallen upon the sacred sands of Fablelands.",
                     f"{winner.display_name} raises their bloodied {player_info[winner_idx]['name']} high, accepting the adulation of the spectators.",
-                    f"The priests of Astraea intone the final rites as {loser.display_name}'s journey in the arena comes to its end."
+                    f"The priests of Elysia intone the final rites as {loser.display_name}'s journey in the arena comes to its end."
                 ]
                 aftermath = random.choice(death_aftermath)
                 await asyncio.sleep(4)

@@ -24,7 +24,7 @@ from utils.checks import AlreadyRaiding, has_char, is_gm, is_god
 from utils.i18n import _, locale_doc
 from utils.joins import JoinView
 
-class AstraeaTrials(commands.Cog):
+class ElysiaTrials(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.raid_active = False
@@ -36,9 +36,9 @@ class AstraeaTrials(commands.Cog):
         self.raid_active = False
 
     @is_god()
-    @commands.command(hidden=True, brief=_("Starts Astraea's trial"))
+    @commands.command(hidden=True, brief=_("Starts Elysia's trial"))
     async def goodspawn(self, ctx):
-        """[Astraea only] Starts a Trial."""
+        """[Elysia only] Starts a Trial."""
         await self.set_raid_timer()
 
         try:
@@ -74,7 +74,7 @@ class AstraeaTrials(commands.Cog):
             """
 
             message_note = """
-            **Only followers of Astraea may join.**
+            **Only followers of Elysia may join.**
             """
 
             # Create the embed with structured fields
@@ -115,34 +115,34 @@ class AstraeaTrials(commands.Cog):
 
             if not self.bot.config.bot.is_beta:
                 await asyncio.sleep(300)
-                await send_to_channels(content="**Astraea and her Ouroboros will be visible in 10 minutes**")
+                await send_to_channels(content="**Elysia and her Ouroboros will be visible in 10 minutes**")
                 await asyncio.sleep(300)
-                await send_to_channels(content="**Astraea and her Ouroboros will be visible in 5 minutes**")
+                await send_to_channels(content="**Elysia and her Ouroboros will be visible in 5 minutes**")
                 await asyncio.sleep(180)
-                await send_to_channels(content="**Astraea and her Ouroboros will be visible in 2 minutes**")
+                await send_to_channels(content="**Elysia and her Ouroboros will be visible in 2 minutes**")
                 await asyncio.sleep(60)
-                await send_to_channels(content="**Astraea and her Ouroboros will be visible in 1 minute**")
+                await send_to_channels(content="**Elysia and her Ouroboros will be visible in 1 minute**")
                 await asyncio.sleep(30)
-                await send_to_channels(content="**Astraea and her Ouroboros will be visible in 30 seconds**")
+                await send_to_channels(content="**Elysia and her Ouroboros will be visible in 30 seconds**")
                 await asyncio.sleep(20)
-                await send_to_channels(content="**Astraea and her Ouroboros will be visible in 10 seconds**")
+                await send_to_channels(content="**Elysia and her Ouroboros will be visible in 10 seconds**")
             else:
                 await asyncio.sleep(300)
-                await send_to_channels(content="**Astraea's trial will commence in 10 minutes**")
+                await send_to_channels(content="**Elysia's trial will commence in 10 minutes**")
                 await asyncio.sleep(300)
-                await send_to_channels(content="**Astraea's trial will commence in 5 minutes**")
+                await send_to_channels(content="**Elysia's trial will commence in 5 minutes**")
                 await asyncio.sleep(180)
-                await send_to_channels(content="**Astraea's trial will commence in 2 minutes**")
+                await send_to_channels(content="**Elysia's trial will commence in 2 minutes**")
                 await asyncio.sleep(60)
-                await send_to_channels(content="**Astraea's trial will commence in 1 minute**")
+                await send_to_channels(content="**Elysia's trial will commence in 1 minute**")
                 await asyncio.sleep(30)
-                await send_to_channels(content="**Astraea's trial will commence in 30 seconds**")
+                await send_to_channels(content="**Elysia's trial will commence in 30 seconds**")
                 await asyncio.sleep(20)
-                await send_to_channels(content="**Astraea's trial will commence in 10 seconds**")
+                await send_to_channels(content="**Elysia's trial will commence in 10 seconds**")
 
             view.stop()
 
-            await send_to_channels(content="**Astraea's trial will commence! Fetch participant data... Hang on!**")
+            await send_to_channels(content="**Elysia's trial will commence! Fetch participant data... Hang on!**")
 
             async with self.bot.pool.acquire() as conn:
                 raid = []
@@ -154,7 +154,7 @@ class AstraeaTrials(commands.Cog):
                                         'SELECT * FROM profile WHERE "user"=$1;', u.id
                                     )
                             )
-                            or profile["god"] != "Astraea"
+                            or profile["god"] != "Elysia"
                     ):
                         continue
                     HowMany = HowMany + 1
@@ -190,25 +190,25 @@ class AstraeaTrials(commands.Cog):
                             {
                                 "text": "Extend a Healing Hand",
                                 "win": 80,
-                                "win_text": "Your compassionate efforts have brought healing and solace. Astraea smiles "
+                                "win_text": "Your compassionate efforts have brought healing and solace. Elysia smiles "
                                             "upon you.",
-                                "lose_text": "Despite your intentions, your healing touch falters. Astraea's grace eludes "
+                                "lose_text": "Despite your intentions, your healing touch falters. Elysia's grace eludes "
                                              "you.",
                             },
                             {
                                 "text": "Ease Emotional Burdens",
                                 "win": 50,
-                                "win_text": "Through your empathetic words, you mend fractured souls. Astraea's favor "
+                                "win_text": "Through your empathetic words, you mend fractured souls. Elysia's favor "
                                             "shines on you.",
-                                "lose_text": "Your words fall short, unable to mend the hearts before you. Astraea's "
+                                "lose_text": "Your words fall short, unable to mend the hearts before you. Elysia's "
                                              "blessing slips away.",
                             },
                             {
                                 "text": "Kindness in Action",
                                 "win": 60,
-                                "win_text": "Your selfless actions spread ripples of kindness. Astraea's radiant gaze "
+                                "win_text": "Your selfless actions spread ripples of kindness. Elysia's radiant gaze "
                                             "embraces you.",
-                                "lose_text": "Your attempts at kindness don't fully resonate. Astraea's warmth remains "
+                                "lose_text": "Your attempts at kindness don't fully resonate. Elysia's warmth remains "
                                              "distant.",
                             },
                         ]
@@ -220,34 +220,34 @@ class AstraeaTrials(commands.Cog):
                                 "text": "Guiding Light of Compassion",
                                 "win": 30,
                                 "win_text": "Amidst the tranquil night, your compassion brings light to dark corners. "
-                                            "Astraea's approval graces you.",
-                                "lose_text": "Your efforts to bring solace in the night are met with challenges. Astraea's "
+                                            "Elysia's approval graces you.",
+                                "lose_text": "Your efforts to bring solace in the night are met with challenges. Elysia's "
                                              "light evades you.",
                             },
                             {
                                 "text": "Healing Moon's Embrace",
                                 "win": 45,
-                                "win_text": "Under the moon's serenity, your healing touch is magnified. Astraea's "
+                                "win_text": "Under the moon's serenity, your healing touch is magnified. Elysia's "
                                             "presence envelops you.",
-                                "lose_text": "Your attempts to heal are hindered by unseen forces. Astraea's touch remains "
+                                "lose_text": "Your attempts to heal are hindered by unseen forces. Elysia's touch remains "
                                              "elusive.",
                             },
                             {
                                 "text": "Celestial Blessing of Serenity",
                                 "win": 20,
-                                "win_text": "As the stars align in your favor, Astraea's serene blessings envelop you. A "
+                                "win_text": "As the stars align in your favor, Elysia's serene blessings envelop you. A "
                                             "tranquil aura emanates from your being, soothing all around.",
-                                "lose_text": "Despite your efforts to channel the cosmos, Astraea's tranquility eludes "
+                                "lose_text": "Despite your efforts to channel the cosmos, Elysia's tranquility eludes "
                                              "you, leaving only fleeting traces of its presence.",
                             },
                             {
                                 "text": "Stellar Harmonies of Renewal",
                                 "win": 20,
-                                "win_text": "In harmony with the celestial melodies, your actions resonate with Astraea's "
+                                "win_text": "In harmony with the celestial melodies, your actions resonate with Elysia's "
                                             "essence. The stars themselves seem to sing your praises, infusing the air "
                                             "with renewal.",
                                 "lose_text": "The cosmic harmonies remain elusive, and your attempts to align with "
-                                             "Astraea's melody falter, leaving a sense of missed opportunity in the "
+                                             "Elysia's melody falter, leaving a sense of missed opportunity in the "
                                              "night's chorus.",
                             }
                         ]
@@ -282,13 +282,13 @@ class AstraeaTrials(commands.Cog):
 
             # Define gods with their boundaries
             gods = {
-                "Astraea": {"boundary_low": 0.9, "boundary_high": 1.1},
+                "Elysia": {"boundary_low": 0.9, "boundary_high": 1.1},
                 "Sepulchure": {"boundary_low": 0.75, "boundary_high": 1.5},
                 "Drakath": {"boundary_low": 0.3, "boundary_high": 2.0},
             }
 
-            # Replace 'selected_god' with the actual selected god name (e.g., "Astraea")
-            selected_god = "Astraea"  # Example, replace dynamically
+            # Replace 'selected_god' with the actual selected god name (e.g., "Elysia")
+            selected_god = "Elysia"  # Example, replace dynamically
             god_data = gods.get(selected_god)
 
             if not god_data:
@@ -313,7 +313,7 @@ class AstraeaTrials(commands.Cog):
             crate = randomm.choices(options, weights=weights)[0]
 
             await send_to_channels(
-                content=f"In the divine radiance of Astraea, {winner.mention} ascends to the cosmic realm. Guided by the "
+                content=f"In the divine radiance of Elysia, {winner.mention} ascends to the cosmic realm. Guided by the "
                         f"goddess's embrace, they uncover a celestial treasure—an enigmatic, {crate} crate adorned with "
                         f"stardust among the constellations."
             )
@@ -334,4 +334,4 @@ class AstraeaTrials(commands.Cog):
             print(error_message)
 
 async def setup(bot):
-    await bot.add_cog(AstraeaTrials(bot))
+    await bot.add_cog(ElysiaTrials(bot))
