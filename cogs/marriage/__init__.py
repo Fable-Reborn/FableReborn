@@ -157,28 +157,37 @@ class Marriage(commands.Cog):
         if not await ctx.confirm(
             _(
                 "Are you sure you want to divorce your partner? Some of your children"
-                " may be given to your partner and your lovescore will be reset."
+                " may be given to your partner, your lovescore will be reset, and your Couples Battle Tower progress will be reset."
             )
         ):
             return await ctx.send(
                 _("Cancelled the divorce. I guess the marriage is safe for now?")
             )
+        partner_id = ctx.character_data["marriage"]
         async with self.bot.pool.acquire() as conn:
-            await conn.execute(
-                'UPDATE profile SET "marriage"=0, "lovescore"=0 WHERE "user"=$1;',
-                ctx.author.id,
-            )
-            await conn.execute(
-                'UPDATE profile SET "marriage"=0, "lovescore"=0 WHERE "user"=$1;',
-                ctx.character_data["marriage"],
-            )
-            await conn.execute(
-                'UPDATE children SET "father"=0 WHERE "mother"=$1;', ctx.author.id
-            )
-            await conn.execute(
-                'UPDATE children SET "father"=0 WHERE "mother"=$1;',
-                ctx.character_data["marriage"],
-            )
+            async with conn.transaction():
+                await conn.execute(
+                    'UPDATE profile SET "marriage"=0, "lovescore"=0 WHERE "user"=$1;',
+                    ctx.author.id,
+                )
+                await conn.execute(
+                    'UPDATE profile SET "marriage"=0, "lovescore"=0 WHERE "user"=$1;',
+                    partner_id,
+                )
+                await conn.execute(
+                    'UPDATE children SET "father"=0 WHERE "mother"=$1;', ctx.author.id
+                )
+                await conn.execute(
+                    'UPDATE children SET "father"=0 WHERE "mother"=$1;',
+                    partner_id,
+                )
+                await conn.execute(
+                    'DELETE FROM couples_battle_tower '
+                    'WHERE (partner1_id = $1 AND partner2_id = $2) '
+                    'OR (partner1_id = $2 AND partner2_id = $1);',
+                    ctx.author.id,
+                    partner_id,
+                )
         await ctx.send(_("You are now divorced."))
 
     @has_char()

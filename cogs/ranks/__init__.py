@@ -617,6 +617,9 @@ class Ranks(commands.Cog):
             couples = await self.bot.pool.fetch(
                 'SELECT cbt."partner1_id", cbt."partner2_id", cbt."prestige", cbt."current_level" '
                 'FROM couples_battle_tower AS cbt '
+                'INNER JOIN profile AS p1 ON p1."user" = cbt."partner1_id" '
+                'INNER JOIN profile AS p2 ON p2."user" = cbt."partner2_id" '
+                'WHERE p1."marriage" = cbt."partner2_id" AND p2."marriage" = cbt."partner1_id" '
                 'ORDER BY cbt."prestige" DESC, cbt."current_level" DESC LIMIT 10'
             )
 
@@ -659,7 +662,11 @@ class Ranks(commands.Cog):
                 user_couple = await self.bot.pool.fetchrow(
                     'SELECT cbt."partner1_id", cbt."partner2_id", cbt."prestige", cbt."current_level" '
                     'FROM couples_battle_tower AS cbt '
-                    'WHERE cbt."partner1_id" = $1 OR cbt."partner2_id" = $1', ctx.author.id
+                    'INNER JOIN profile AS p1 ON p1."user" = cbt."partner1_id" '
+                    'INNER JOIN profile AS p2 ON p2."user" = cbt."partner2_id" '
+                    'WHERE (cbt."partner1_id" = $1 OR cbt."partner2_id" = $1) '
+                    'AND p1."marriage" = cbt."partner2_id" AND p2."marriage" = cbt."partner1_id"',
+                    ctx.author.id
                 )
                 
                 if user_couple:
@@ -671,8 +678,12 @@ class Ranks(commands.Cog):
                     # Calculate the user's rank
                     user_rank = await self.bot.pool.fetchval(
                         'SELECT COUNT(*) FROM couples_battle_tower AS cbt '
-                        'WHERE (cbt."prestige" > $1) '
-                        'OR (cbt."prestige" = $1 AND cbt."current_level" > $2)',
+                        'INNER JOIN profile AS p1 ON p1."user" = cbt."partner1_id" '
+                        'INNER JOIN profile AS p2 ON p2."user" = cbt."partner2_id" '
+                        'WHERE p1."marriage" = cbt."partner2_id" '
+                        'AND p2."marriage" = cbt."partner1_id" '
+                        'AND ((cbt."prestige" > $1) '
+                        'OR (cbt."prestige" = $1 AND cbt."current_level" > $2))',
                         user_prestige, user_level
                     )
                     user_rank += 1  # Adjust rank to be 1-based
