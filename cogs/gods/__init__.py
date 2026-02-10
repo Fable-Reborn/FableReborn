@@ -145,11 +145,12 @@ class Gods(commands.Cog):
             'Sepulchure': 1406639315240489061,
             'Astraea': 1406639398795219126
         }
+        godless_role_id = 1470772063001120880
+        old_god = ctx.character_data["god"]
 
         # Check if the user already has a god and handle reset points
         if not has_no_god(ctx):
             try:
-                old_god = ctx.character_data["god"]
                 old_role_id = god_roles.get(old_god)
                 if old_role_id:
                     old_role = ctx.guild.get_role(old_role_id)
@@ -203,12 +204,23 @@ class Gods(commands.Cog):
             )
 
         # Get the target guild and check if the user is a member
-        guild_id = 1402911850802315336
-        target_guild = self.bot.get_guild(guild_id)
+        target_guild = self.bot.get_guild(self.bot.config.game.support_server_id)
 
         if target_guild:
             member = target_guild.get_member(ctx.author.id)
             if member:
+                # Remove godless role if present
+                godless_role = target_guild.get_role(godless_role_id)
+                if godless_role and godless_role in member.roles:
+                    await member.remove_roles(godless_role)
+
+                # Remove old god role in the support server if present
+                old_role_id = god_roles.get(old_god)
+                if old_role_id:
+                    old_role = target_guild.get_role(old_role_id)
+                    if old_role and old_role in member.roles:
+                        await member.remove_roles(old_role)
+
                 # Assign the god's role in the target guild if the user is a member
                 role_id = god_roles.get(god)
                 if role_id:
@@ -252,6 +264,12 @@ class Gods(commands.Cog):
             'Sepulchure': 1199303145306726410,
             'Astraea': 1199303066227331163
         }
+        support_god_roles = {
+            'Drakath': 1406639168070615040,
+            'Sepulchure': 1406639315240489061,
+            'Astraea': 1406639398795219126
+        }
+        godless_role_id = 1470772063001120880
 
 
         if not await ctx.confirm(
@@ -281,6 +299,21 @@ class Gods(commands.Cog):
             old_role = ctx.guild.get_role(old_role_id)
             if old_role and old_role in ctx.author.roles:
                 await ctx.author.remove_roles(old_role)
+
+        # Assign godless role in support server if the user is a member
+        support_guild = self.bot.get_guild(self.bot.config.game.support_server_id)
+        if support_guild:
+            member = support_guild.get_member(ctx.author.id)
+            if member:
+                # Remove any god roles in the support server
+                for role_id in support_god_roles.values():
+                    role = support_guild.get_role(role_id)
+                    if role and role in member.roles:
+                        await member.remove_roles(role)
+
+                godless_role = support_guild.get_role(godless_role_id)
+                if godless_role and godless_role not in member.roles:
+                    await member.add_roles(godless_role)
 
         await ctx.send(_("You are now Godless."))
 
