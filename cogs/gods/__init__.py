@@ -37,6 +37,43 @@ class Gods(commands.Cog):
         self.bot = bot
         self.bot.gods = {god["user"]: god for god in self.bot.config.gods}
 
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        """Assign Godless role in support server if the user is Godless."""
+        support_server_id = self.bot.config.game.support_server_id
+        if support_server_id is None or member.guild.id != support_server_id:
+            return
+
+        try:
+            profile = await self.bot.pool.fetchrow(
+                'SELECT god, reset_points FROM profile WHERE "user"=$1;',
+                member.id,
+            )
+            if not profile:
+                return
+
+            # Godless users are those with no god and reset_points < 0 (see unfollow)
+            if profile["god"] is None and profile["reset_points"] is not None and profile["reset_points"] < 0:
+                godless_role_id = 1470772063001120880
+                god_roles = {
+                    'Drakath': 1406639168070615040,
+                    'Sepulchure': 1406639315240489061,
+                    'Astraea': 1406639398795219126
+                }
+
+                # Remove any god roles in the support server
+                for role_id in god_roles.values():
+                    role = member.guild.get_role(role_id)
+                    if role and role in member.roles:
+                        await member.remove_roles(role)
+
+                godless_role = member.guild.get_role(godless_role_id)
+                if godless_role and godless_role not in member.roles:
+                    await member.add_roles(godless_role)
+        except Exception:
+            # Avoid breaking joins due to role or DB issues
+            return
+
     @has_god()
     @has_char()
     @user_cooldown(180)
