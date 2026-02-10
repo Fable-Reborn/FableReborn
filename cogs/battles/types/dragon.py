@@ -1511,8 +1511,12 @@ class DragonBattle(Battle):
             effect_desc = "🧊 **Armor Shattered** for 2 turns!"
 
         elif effect_type == "drain_max_hp":
-            drain = float(target.max_hp) * 0.10
-            target.max_hp = max(1, target.max_hp - drain)
+            if isinstance(target.max_hp, Decimal):
+                drain = target.max_hp * Decimal("0.10")
+                target.max_hp = max(Decimal("1"), target.max_hp - drain)
+            else:
+                drain = float(target.max_hp) * 0.10
+                target.max_hp = max(1, target.max_hp - drain)
             if target.hp > target.max_hp:
                 target.hp = target.max_hp
             effect_desc = "💀 **Soul Tax** reduces max HP by 10%!"

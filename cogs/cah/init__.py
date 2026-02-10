@@ -29,7 +29,7 @@ from typing import Optional
 
 import discord
 from discord.ext import commands
-from discord.ui import Button, View, Modal, TextInput
+from discord.ui import Button, View
 
 from utils.checks import is_gm
 
@@ -41,7 +41,6 @@ SETTINGS_FILE = CARDS_DIR / "cah_settings.json"
 PICK_RE = re.compile(r"\b[Pp]ick\s*(\d)\b")
 BLANK_RE = re.compile(r"_+")
 BLANK_TOKEN = "────"
-BLANK_CARD_TEXT = "[BLANK CARD]"  # Special token for blank cards
 ALLOWED_USER_MENTIONS = discord.AllowedMentions(users=True)
 PHASE_LABELS = {
     "idle": "Idle",
@@ -63,7 +62,6 @@ class GameSettings:
     max_skips: int = 2
     auto_pick_on_timeout: bool = True
     allow_late_join: bool = False
-    blank_card_chance: float = 0.1  # Probability (0.0-1.0) of drawing a blank card
 
 
 @dataclass
@@ -106,37 +104,8 @@ def read_card_file(path: Path) -> list[str]:
             continue
         if line.startswith("#"):
             continue
-        cards.append(unescape_card_text(line))
+        cards.append(line)
     return cards
-
-
-def unescape_card_text(text: str) -> str:
-    """Allow literal escape sequences in card files (e.g. \\n for new lines)."""
-    result: list[str] = []
-    i = 0
-    while i < len(text):
-        ch = text[i]
-        if ch == "\\" and i + 1 < len(text):
-            nxt = text[i + 1]
-            if nxt == "n":
-                result.append("\n")
-                i += 2
-                continue
-            if nxt == "r":
-                result.append("\r")
-                i += 2
-                continue
-            if nxt == "t":
-                result.append("\t")
-                i += 2
-                continue
-            if nxt == "\\":
-                result.append("\\")
-                i += 2
-                continue
-        result.append(ch)
-        i += 1
-    return "".join(result)
 
 
 def black_likeness(cards: list[str]) -> float:
@@ -197,82 +166,6 @@ def format_phase(phase: str) -> str:
     return PHASE_LABELS.get(phase, phase.replace("_", " ").title())
 
 
-class BlankCardModal(Modal):
-    """Modal for entering custom text for a blank card."""
-    def __init__(self, view: CardSelectView):
-        super().__init__(title="Write Your Answer")
-        self.view = view
-        self.custom_text = TextInput(
-            label="Your answer",
-            placeholder="Enter your custom response...",
-            max_length=200,
-            style=discord.TextStyle.paragraph,
-        )
-        self.add_item(self.custom_text)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        custom_answer = self.custom_text.value.strip()
-        if not custom_answer:
-            await interaction.response.send_message("You must enter some text.", ephemeral=True)
-            return
-
-        game = self.view.cog.games.get(self.view.guild_id)
-        if not game or not game.active or game.phase != "submitting":
-            await interaction.response.send_message("That round is already over.", ephemeral=True)
-            return
-        if game.round_token != self.view.round_token:
-            await interaction.response.send_message("That round is already over.", ephemeral=True)
-            return
-
-        async with game.lock:
-            hand = game.hands.get(self.view.player_id, [])
-            if BLANK_CARD_TEXT not in hand:
-                await interaction.response.send_message("You no longer have a blank card.", ephemeral=True)
-                return
-
-            submission = game.submissions.setdefault(self.view.player_id, [])
-            if len(submission) >= game.pick_count:
-                await interaction.response.send_message("You already submitted your cards.", ephemeral=True)
-                return
-
-            submission.append(custom_answer)
-            hand.remove(BLANK_CARD_TEXT)
-            self.view.selected.append(custom_answer)
-
-            # Disable the blank card button
-            for item in self.view.children:
-                if isinstance(item, BlankCardButton):
-                    item.disabled = True
-                    break
-
-            if len(submission) >= game.pick_count:
-                for item in self.view.children:
-                    item.disabled = True
-
-        await interaction.response.edit_message(view=self.view)
-
-        links: list[str] = []
-        if self.view.message:
-            links.append(f"[Open hand]({self.view.message.jump_url})")
-        if self.view.channel_id:
-            game_link = f"https://discord.com/channels/{self.view.guild_id}/{self.view.channel_id}"
-            links.append(f"[Back to stage]({game_link})")
-        link_text = f"\n{' | '.join(links)}" if links else ""
-
-        if len(self.view.selected) >= self.view.pick_count:
-            await interaction.followup.send(
-                f"Locked in ({len(self.view.selected)}/{self.view.pick_count}).{link_text}",
-                ephemeral=True,
-            )
-            if self.view.cog.all_players_submitted(game):
-                game.round_event.set()
-        else:
-            await interaction.followup.send(
-                f"Selection saved ({len(self.view.selected)}/{self.view.pick_count}).{link_text}",
-                ephemeral=True,
-            )
-
-
 class CardButton(Button):
     def __init__(self, index: int, card_text: str):
         super().__init__(style=discord.ButtonStyle.primary, label=str(index))
@@ -280,17 +173,6 @@ class CardButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         await self.view.handle_selection(interaction, self)
-
-
-class BlankCardButton(Button):
-    """Special button for blank cards that opens a modal."""
-    def __init__(self, index: int):
-        super().__init__(style=discord.ButtonStyle.secondary, label=f"{index} ✏️", emoji="📝")
-        self.index = index
-
-    async def callback(self, interaction: discord.Interaction):
-        modal = BlankCardModal(self.view)
-        await interaction.response.send_modal(modal)
 
 
 class CardSelectView(View):
@@ -305,12 +187,8 @@ class CardSelectView(View):
         self.pick_count = pick_count
         self.selected: list[str] = []
         self.message: Optional[discord.Message] = None
-        # Add buttons for each card - blank cards get special button
         for index, card in enumerate(hand, 1):
-            if card == BLANK_CARD_TEXT:
-                self.add_item(BlankCardButton(index))
-            else:
-                self.add_item(CardButton(index, card))
+            self.add_item(CardButton(index, card))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.player_id:
@@ -663,10 +541,6 @@ class CardsAgainstHumanity(commands.Cog):
         return game.turn_order[game.judge_index]
 
     def draw_white(self, game: GameState) -> Optional[str]:
-        # Check if we should draw a blank card based on configured chance
-        if random.random() < game.settings.blank_card_chance:
-            return BLANK_CARD_TEXT
-        
         if not game.white_deck:
             if game.white_discard:
                 random.shuffle(game.white_discard)
@@ -732,17 +606,9 @@ class CardsAgainstHumanity(commands.Cog):
         return True
 
     def build_hand_embed(self, member: discord.Member, hand: list[str], pick_count: int) -> discord.Embed:
-        # Display blank cards differently in hand
-        display_hand = []
-        for i, card in enumerate(hand, 1):
-            if card == BLANK_CARD_TEXT:
-                display_hand.append(f"**{i}.** ✏️ Write your own (blank card)")
-            else:
-                display_hand.append(f"**{i}.** {card}")
-        
         embed = discord.Embed(
             title="Contestant Hand",
-            description="\n".join(display_hand) or "(empty)",
+            description="\n".join(f"**{i}.** {card}" for i, card in enumerate(hand, 1)) or "(empty)",
             color=0x3498DB,
         )
         embed.set_footer(text=f"Pick {pick_count} card(s) and lock them in.")
@@ -1009,10 +875,7 @@ class CardsAgainstHumanity(commands.Cog):
             await channel.send(embed=self.build_scores_embed(game))
 
         for _, cards in submissions:
-            # Don't discard blank card tokens back into the deck
-            for card in cards:
-                if card != BLANK_CARD_TEXT:
-                    game.white_discard.append(card)
+            game.white_discard.extend(cards)
 
         await self.finish_round(game)
 
@@ -1234,7 +1097,6 @@ class CardsAgainstHumanity(commands.Cog):
         embed.add_field(name="Max skips", value=str(settings.max_skips), inline=False)
         embed.add_field(name="Auto pick", value=str(settings.auto_pick_on_timeout), inline=False)
         embed.add_field(name="Late join", value=str(settings.allow_late_join), inline=False)
-        embed.add_field(name="Blank card chance", value=f"{settings.blank_card_chance * 100:.0f}%", inline=False)
         await ctx.send(embed=embed)
 
     @cah.command(name="set")
@@ -1285,14 +1147,8 @@ class CardsAgainstHumanity(commands.Cog):
                     await ctx.send("late_join must be true/false.")
                     return
                 settings.allow_late_join = parsed
-            elif setting == "blank_card_chance":
-                chance = float(value)
-                if chance < 0 or chance > 1:
-                    await ctx.send("blank_card_chance must be between 0.0 and 1.0 (e.g., 0.1 for 10%).")
-                    return
-                settings.blank_card_chance = chance
             else:
-                await ctx.send("Unknown setting. Try: hand_size, points_to_win, min_players, lobby_timeout, play_timeout, judge_timeout, max_skips, auto_pick, late_join, blank_card_chance")
+                await ctx.send("Unknown setting. Try: hand_size, points_to_win, min_players, lobby_timeout, play_timeout, judge_timeout, max_skips, auto_pick, late_join")
                 return
         except ValueError:
             await ctx.send("That setting requires a numeric value.")
@@ -1333,7 +1189,7 @@ class CardsAgainstHumanity(commands.Cog):
         )
         embed.add_field(
             name="Play",
-            value="Contestants pick cards in DMs. The blanks on the prompt tell you how many to choose. You can also write custom answers using blank cards (marked with ✏️)!",
+            value="Contestants pick cards in DMs. The blanks on the prompt tell you how many to choose.",
             inline=False,
         )
         embed.add_field(

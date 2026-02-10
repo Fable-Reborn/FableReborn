@@ -66,17 +66,20 @@ class Errorhandler(commands.Cog):
         self.bot = bot
         bot.on_command_error = self._on_command_error
         sentry_url = self.bot.config.statistics.sentry_url
-        self.SENTRY_SUPPORT = SENTRY_AVAILABLE and sentry_url is not None
+        self.SENTRY_SUPPORT = SENTRY_AVAILABLE and bool(sentry_url)
         if self.SENTRY_SUPPORT:
-            sentry_sdk.init(sentry_url, before_send=before_send)
+            try:
+                sentry_sdk.init(sentry_url, before_send=before_send)
+            except Exception:
+                # Invalid DSN or misconfig; disable Sentry rather than failing the cog load.
+                self.SENTRY_SUPPORT = False
 
     async def _on_command_error(
         self, ctx: Context, error: Exception, bypass: bool = False
     ) -> None:
-        if (
-            hasattr(ctx.command, "on_error")
-            or (ctx.command and hasattr(ctx.cog, f"_{ctx.command.cog_name}__error"))
-            and not bypass
+        if not bypass and (
+            (ctx.command and ctx.command.has_error_handler())
+            or (ctx.cog and hasattr(ctx.cog, f"_{ctx.command.cog_name}__error"))
         ):
             # Do nothing if the command/cog has its own error handler
             return

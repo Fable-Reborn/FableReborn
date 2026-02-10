@@ -2674,7 +2674,15 @@ class Battles(commands.Cog):
             
                 # Dispatch PVE completion event
                 success = True
-                self.bot.dispatch("PVE_completion", ctx, success)
+                self.bot.dispatch(
+                    "PVE_completion",
+                    ctx,
+                    success,
+                    monster["name"],
+                    monster.get("element", "Unknown"),
+                    levelchoice,
+                    getattr(battle, "battle_id", None),
+                )
             
         except Exception as e:
             import traceback
@@ -4179,6 +4187,10 @@ class Battles(commands.Cog):
             )
             embed.add_field(name="💑 Your Partner", value=f"{partner.display_name}, please join the battle!", inline=False)
             embed.set_footer(text=f"Your love will be tested on this floor...")
+            try:
+                await ctx.send(partner.mention)
+            except:
+                pass
 
             original_message = await ctx.send(embed=embed)
 
@@ -4487,6 +4499,10 @@ class Battles(commands.Cog):
             )
             embed.add_field(name="💑 Your Partner", value=f"{partner.display_name}, please join the battle!", inline=False)
             embed.set_footer(text=f"Your love will be tested on this floor...")
+            try: 
+                await ctx.send(partner.mention)
+            except:
+                pass
 
             original_message = await ctx.send(embed=embed)
 

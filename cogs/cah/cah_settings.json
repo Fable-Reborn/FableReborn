@@ -1,0 +1,12 @@
+{
+  "allow_late_join": true,
+  "auto_pick_on_timeout": true,
+  "blank_card_chance": 0.04,
+  "hand_size": 7,
+  "judge_timeout": 90,
+  "lobby_timeout": 120,
+  "max_skips": 2,
+  "min_players": 3,
+  "play_timeout": 120,
+  "points_to_win": 10
+}

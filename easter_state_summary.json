@@ -1,0 +1,18 @@
+{
+  "teams": [
+    "Dawn Protectors",
+    "Twilight Keepers",
+    "Bloom Wardens"
+  ],
+  "participants": 50,
+  "phases": {
+    "join_phase": false,
+    "customization_phase": false,
+    "event_active": true
+  },
+  "battle_keys": [
+    "Twilight Keepers_Bloom Wardens",
+    "Bloom Wardens_Dawn Protectors"
+  ],
+  "current_timestamp": "2025-04-28T13:36:33.315465"
+}

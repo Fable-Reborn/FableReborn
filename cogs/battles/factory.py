@@ -13,6 +13,7 @@ from .types.tower import TowerBattle
 from .types.team_battle import TeamBattle
 from .types.dragon import DragonBattle
 from .types.couples_tower import CouplesTowerBattle
+from .types.brawl import BrawlBattle
 from .extensions.elements import ElementExtension
 from .extensions.classes import ClassBuffExtension
 from .extensions.pets import PetExtension
@@ -53,6 +54,8 @@ class BattleFactory:
             return await self.create_dragon_battle(ctx, **settings_kwargs)
         elif battle_type == "couples_tower":
             return await self.create_couples_tower_battle(ctx, **settings_kwargs)
+        elif battle_type == "brawl":
+            return await self.create_brawl_battle(ctx, **settings_kwargs)
         else:
             raise ValueError(f"Unknown battle type: {battle_type}")
     
@@ -378,6 +381,48 @@ class BattleFactory:
             error_msg = f"🚨 **FACTORY ERROR for Level {level}**:\n```\n{traceback.format_exc()}\n```"
             await ctx.send(error_msg[:2000])  # Discord limit
             raise e
+
+    async def create_brawl_battle(self, ctx, **kwargs):
+        """Create a 1v1 bar brawl battle with fixed stats and flavor weapons."""
+        player1 = kwargs.get("player1")
+        player2 = kwargs.get("player2")
+        if not player1 or not player2:
+            raise ValueError("Brawl battle requires two players")
+
+        hp = int(kwargs.get("hp", 500))
+        armor = int(kwargs.get("armor", 100))
+        p1_weapon = kwargs.get("player1_weapon", "bar stool")
+        p2_weapon = kwargs.get("player2_weapon", "pool cue")
+        p1_damage = int(kwargs.get("player1_damage", 200))
+        p2_damage = int(kwargs.get("player2_damage", 200))
+        luck = int(kwargs.get("luck", 75))
+
+        p1_combatant = Combatant(
+            user=player1,
+            hp=hp,
+            max_hp=hp,
+            damage=p1_damage,
+            armor=armor,
+            element="None",
+            luck=luck,
+            name=player1.display_name,
+            weapon_name=p1_weapon,
+        )
+        p2_combatant = Combatant(
+            user=player2,
+            hp=hp,
+            max_hp=hp,
+            damage=p2_damage,
+            armor=armor,
+            element="None",
+            luck=luck,
+            name=player2.display_name,
+            weapon_name=p2_weapon,
+        )
+
+        team1 = Team("A", [p1_combatant])
+        team2 = Team("B", [p2_combatant])
+        return BrawlBattle(ctx, [team1, team2], **kwargs)
 
     async def create_player_combatant(self, ctx, player, include_pet=False):
         """Create a combatant object for a player with full stats"""
