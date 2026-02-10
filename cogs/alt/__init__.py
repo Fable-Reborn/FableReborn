@@ -89,6 +89,31 @@ class Alt(commands.Cog):
                 """
             )
 
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        """Assign alt role in support server if the user is a linked alt."""
+        support_server_id = self.bot.config.game.support_server_id
+        if support_server_id is None or member.guild.id != support_server_id:
+            return
+
+        alt_role_id = 1470792499789430917
+
+        async with self.bot.pool.acquire() as conn:
+            is_alt = await conn.fetchval(
+                "SELECT 1 FROM alt_links WHERE alt = $1;",
+                member.id,
+            )
+
+        if not is_alt:
+            return
+
+        alt_role = member.guild.get_role(alt_role_id)
+        if alt_role and alt_role not in member.roles:
+            try:
+                await member.add_roles(alt_role)
+            except discord.Forbidden:
+                pass
+
     @commands.group(invoke_without_command=True, brief=_("Run commands as your linked alt"))
     @has_char()
     async def alt(self, ctx, *, command: str | None = None):

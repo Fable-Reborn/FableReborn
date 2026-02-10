@@ -54,7 +54,7 @@ class Gods(commands.Cog):
 
             # Godless users are those with no god and reset_points < 0 (see unfollow)
             if profile["god"] is None and profile["reset_points"] is not None and profile["reset_points"] < 0:
-                godless_role_id = 1470772063001120880
+                godless_role_id = 1424665788362784851
                 god_roles = {
                     'Drakath': 1406639168070615040,
                     'Sepulchure': 1406639315240489061,
@@ -182,7 +182,7 @@ class Gods(commands.Cog):
             'Sepulchure': 1406639315240489061,
             'Elysia': 1406639398795219126
         }
-        godless_role_id = 1470772063001120880
+        godless_role_id = 1424665788362784851
         old_god = ctx.character_data["god"]
 
         # Check if the user already has a god and handle reset points
@@ -306,7 +306,7 @@ class Gods(commands.Cog):
             'Sepulchure': 1406639315240489061,
             'Elysia': 1406639398795219126
         }
-        godless_role_id = 1470772063001120880
+        godless_role_id = 1424665788362784851
 
 
         if not await ctx.confirm(

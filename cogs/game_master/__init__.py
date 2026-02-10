@@ -3072,7 +3072,7 @@ class GameMaster(commands.Cog):
             'Sepulchure': 1406639315240489061,
             'Elysia': 1406639398795219126
         }
-        godless_role_id = 1470772063001120880
+        godless_role_id = 1424665788362784851
 
         try:
             async with self.bot.pool.acquire() as conn:
@@ -3084,13 +3084,18 @@ class GameMaster(commands.Cog):
 
                 data = await conn.fetch(query)
 
-                guild = ctx.guild
+                guild = self.bot.get_guild(self.bot.config.game.support_server_id) or ctx.guild
                 if data:
                     for row in data:
                         discord_user_id = int(row['user'])
                         god = row['god']
 
                         member = guild.get_member(discord_user_id)
+                        if member is None:
+                            try:
+                                member = await guild.fetch_member(discord_user_id)
+                            except (discord.NotFound, discord.Forbidden):
+                                member = None
 
                         if member:
                             if god in god_roles:
@@ -3136,6 +3141,11 @@ class GameMaster(commands.Cog):
                     for row in godless_data:
                         discord_user_id = int(row['user'])
                         member = guild.get_member(discord_user_id)
+                        if member is None:
+                            try:
+                                member = await guild.fetch_member(discord_user_id)
+                            except (discord.NotFound, discord.Forbidden):
+                                member = None
                         if member:
                             # Remove any god roles in case they linger
                             for god_role_id in god_roles.values():
@@ -3166,7 +3176,7 @@ class GameMaster(commands.Cog):
             'Sepulchure': 1406639315240489061,
             'Elysia': 1406639398795219126
         }
-        godless_role_id = 1470772063001120880
+        godless_role_id = 1424665788362784851
 
         try:
             async with self.bot.pool.acquire() as conn:
@@ -3178,13 +3188,18 @@ class GameMaster(commands.Cog):
 
                 data = await conn.fetch(query)
 
-                guild = ctx.guild
+                guild = self.bot.get_guild(self.bot.config.game.support_server_id) or ctx.guild
                 if data:
                     for row in data:
                         discord_user_id = int(row['user'])
                         god = row['god']
 
                         member = guild.get_member(discord_user_id)
+                        if member is None:
+                            try:
+                                member = await guild.fetch_member(discord_user_id)
+                            except (discord.NotFound, discord.Forbidden):
+                                member = None
 
                         if member:
                             if god in god_roles:
@@ -3230,6 +3245,11 @@ class GameMaster(commands.Cog):
                     for row in godless_data:
                         discord_user_id = int(row['user'])
                         member = guild.get_member(discord_user_id)
+                        if member is None:
+                            try:
+                                member = await guild.fetch_member(discord_user_id)
+                            except (discord.NotFound, discord.Forbidden):
+                                member = None
                         if member:
                             # Remove any god roles in case they linger
                             for god_role_id in god_roles.values():
