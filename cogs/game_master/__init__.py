@@ -3253,6 +3253,49 @@ class GameMaster(commands.Cog):
             await ctx.send(f"An error occurred: {str(e)}")
 
     @is_gm()
+    @commands.command(hidden=True, brief=_("Look up alt links for a user"))
+    @locale_doc
+    async def gmalt(self, ctx, user: discord.User | int):
+        """Look up whether a user is a main or alt and show the link."""
+        user_id = user if isinstance(user, int) else user.id
+
+        async with self.bot.pool.acquire() as conn:
+            link = await conn.fetchrow(
+                "SELECT main, alt, declared_at FROM alt_links WHERE main = $1 OR alt = $1;",
+                user_id,
+            )
+            pending = await conn.fetchrow(
+                "SELECT main, alt, requested_at FROM alt_link_requests WHERE main = $1 OR alt = $1;",
+                user_id,
+            )
+
+        if link:
+            main_user = await self.bot.get_user_global(int(link["main"]))
+            alt_user = await self.bot.get_user_global(int(link["alt"]))
+            main_name = main_user.name if main_user else str(link["main"])
+            alt_name = alt_user.name if alt_user else str(link["alt"])
+
+            role = "main" if user_id == link["main"] else "alt"
+            await ctx.send(
+                f"Link found: **{main_name}** (main) ↔ **{alt_name}** (alt)\n"
+                f"Queried user is the **{role}**. Declared at: {link['declared_at']}"
+            )
+            return
+
+        if pending:
+            main_user = await self.bot.get_user_global(int(pending["main"]))
+            alt_user = await self.bot.get_user_global(int(pending["alt"]))
+            main_name = main_user.name if main_user else str(pending["main"])
+            alt_name = alt_user.name if alt_user else str(pending["alt"])
+            await ctx.send(
+                f"Pending link: **{main_name}** (main) ↔ **{alt_name}** (alt)\n"
+                f"Requested at: {pending['requested_at']}"
+            )
+            return
+
+        await ctx.send("No alt link found for that user.")
+
+    @is_gm()
     @commands.command(hidden=True)
     async def bash(self, ctx: Context, *, command_to_run: str) -> None:
         """[Owner Only] Run shell commands."""
