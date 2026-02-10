@@ -20,6 +20,7 @@ import asyncio
 import datetime
 import json
 import random as randomm
+import re
 
 import asyncpg
 import discord
@@ -51,10 +52,16 @@ class PetSelect(discord.ui.Select):
             else:
                 stage_emoji = "🦁"
                 
+            description_parts = [
+                f"{pet['element']} | IV: {pet['IV']}% | {pet['growth_stage'].capitalize()}"
+            ]
+            if pet.get("alt_name"):
+                description_parts.append(f"Alias: {pet['alt_name']}")
+
             options.append(
                 discord.SelectOption(
                     label=f"{pet['name']} (ID: {pet['id']})",
-                    description=f"{pet['element']} | IV: {pet['IV']}% | {pet['growth_stage'].capitalize()}",
+                    description=" | ".join(description_parts),
                     value=str(i),  # Store the index in the pets list as value
                     emoji=stage_emoji
                 )
@@ -175,13 +182,17 @@ class PetPaginator(discord.ui.View):
             inline=False,
         )
         
+        details_value = (
+            f"**Element:** {pet['element']}\n"
+            f"**Happiness:** {pet['happiness']}%\n"
+            f"**Hunger:** {pet['hunger']}%"
+        )
+        if pet.get("alt_name"):
+            details_value += f"\n**Alias:** {pet['alt_name']}"
+
         embed.add_field(
             name="🌟 **Details**",
-            value=(
-                f"**Element:** {pet['element']}\n"
-                f"**Happiness:** {pet['happiness']}%\n"
-                f"**Hunger:** {pet['hunger']}%"
-            ),
+            value=details_value,
             inline=False,
         )
         if growth_time_left:
@@ -282,6 +293,9 @@ class TradeConfirmationView(discord.ui.View):
 
 
 class Pets(commands.Cog):
+    ALIAS_MAX_LENGTH = 20
+    ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+
     def __init__(self, bot):
         self.bot = bot
         if not self.check_egg_hatches.is_running():
@@ -535,12 +549,53 @@ class Pets(commands.Cog):
                     ADD COLUMN IF NOT EXISTS skill_points INTEGER DEFAULT 0,
                     ADD COLUMN IF NOT EXISTS learned_skills JSONB DEFAULT '[]',
                     ADD COLUMN IF NOT EXISTS skill_tree_progress JSONB DEFAULT '{}',
-                    ADD COLUMN IF NOT EXISTS xp_multiplier DECIMAL(3,1) DEFAULT 1.0
+                    ADD COLUMN IF NOT EXISTS xp_multiplier DECIMAL(3,1) DEFAULT 1.0,
+                    ADD COLUMN IF NOT EXISTS alt_name TEXT
+                """)
+
+                await conn.execute("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS monster_pets_user_alt_name_uniq
+                    ON monster_pets (user_id, lower(alt_name))
+                    WHERE alt_name IS NOT NULL;
                 """)
                 
                 print("Enhanced pet system database tables initialized successfully!")
         except Exception as e:
             print(f"Error initializing enhanced pet tables: {e}")
+
+    async def resolve_pet_id(self, conn, user_id: int, pet_ref):
+        """Resolve a pet reference (ID or alias) to a pet ID."""
+        if pet_ref is None:
+            return None
+
+        if isinstance(pet_ref, int):
+            return pet_ref
+
+        pet_ref_str = str(pet_ref).strip()
+        if not pet_ref_str:
+            return None
+
+        if pet_ref_str.isdigit():
+            return int(pet_ref_str)
+
+        return await conn.fetchval(
+            "SELECT id FROM monster_pets WHERE user_id = $1 AND lower(alt_name) = lower($2);",
+            user_id,
+            pet_ref_str
+        )
+
+    async def fetch_pet_for_user(self, conn, user_id: int, pet_ref):
+        """Fetch a pet by ID or alias for a specific user."""
+        pet_id = await self.resolve_pet_id(conn, user_id, pet_ref)
+        if pet_id is None:
+            return None, None
+
+        pet = await conn.fetchrow(
+            "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
+            user_id,
+            pet_id
+        )
+        return pet, pet_id
 
     def get_trust_level_info(self, trust_level):
         """Get trust level information based on trust points"""
@@ -776,7 +831,7 @@ class Pets(commands.Cog):
 
     @user_cooldown(120)
     @pets.command(brief=_("Rename your pet or reset its name to the default"))
-    async def rename(self, ctx, id: int, *, nickname: str = None):
+    async def rename(self, ctx, pet_ref: str, *, nickname: str = None):
         """
         Rename a pet or reset its name to the default.
         - If `nickname` is provided, sets the pet's name to the given nickname.
@@ -785,10 +840,10 @@ class Pets(commands.Cog):
         try:
             async with self.bot.pool.acquire() as conn:
                 # Fetch the pet from the database
-                pet = await conn.fetchrow("SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;", ctx.author.id, id)
+                pet, pet_id = await self.fetch_pet_for_user(conn, ctx.author.id, pet_ref)
 
                 if not pet:
-                    await ctx.send(_("❌ No pet with ID `{id}` found in your collection.").format(id=id))
+                    await ctx.send(_("❌ No pet with ID or alias `{ref}` found in your collection.").format(ref=pet_ref))
                     return
 
                 # Check if resetting or renaming
@@ -798,14 +853,80 @@ class Pets(commands.Cog):
                         return
 
                     # Update the pet's nickname in the database
-                    await conn.execute("UPDATE monster_pets SET name = $1 WHERE id = $2;", nickname, id)
+                    await conn.execute("UPDATE monster_pets SET name = $1 WHERE id = $2;", nickname, pet_id)
                     await ctx.send(_("✅ Successfully renamed your pet to **{nickname}**!").format(nickname=nickname))
                 else:
                     # Reset the pet's nickname to the default name
                     default_name = pet['default_name']
-                    await conn.execute("UPDATE monster_pets SET name = $1 WHERE id = $2;", default_name, id)
+                    await conn.execute("UPDATE monster_pets SET name = $1 WHERE id = $2;", default_name, pet_id)
                     await ctx.send(_("✅ Pet's name has been reset to its default: **{default_name}**.").format(
                         default_name=default_name))
+        except Exception as e:
+            await ctx.send(e)
+
+    @user_cooldown(60)
+    @pets.command(brief=_("Set or clear a short alias for your pet"))
+    async def alias(self, ctx, pet_ref: str, *, alias: str = None):
+        """
+        Set or clear a short alias for a pet.
+        Usage: $pets alias <id|alias> <new_alias> OR $pets alias <id|alias> clear
+        """
+        try:
+            async with self.bot.pool.acquire() as conn:
+                pet, pet_id = await self.fetch_pet_for_user(conn, ctx.author.id, pet_ref)
+                if not pet:
+                    await ctx.send(_("❌ No pet with ID or alias `{ref}` found in your collection.").format(ref=pet_ref))
+                    return
+
+                if alias is None:
+                    await ctx.send(_("❌ Please provide an alias to set, or use `clear` to remove it."))
+                    return
+
+                alias = alias.strip()
+                alias_lower = alias.lower()
+
+                if not alias:
+                    await ctx.send(_("❌ Alias cannot be empty."))
+                    return
+
+                if alias_lower in {"clear", "reset", "remove", "none"}:
+                    await conn.execute("UPDATE monster_pets SET alt_name = NULL WHERE id = $1;", pet_id)
+                    await ctx.send(_("✅ Cleared alias for **{name}**.").format(name=pet['name']))
+                    return
+
+                if len(alias) > self.ALIAS_MAX_LENGTH:
+                    await ctx.send(_("❌ Alias cannot exceed {max_len} characters.").format(max_len=self.ALIAS_MAX_LENGTH))
+                    return
+
+                if alias.isdigit():
+                    await ctx.send(_("❌ Alias cannot be only numbers."))
+                    return
+
+                if not self.ALIAS_PATTERN.fullmatch(alias):
+                    await ctx.send(_("❌ Alias can only contain letters, numbers, `_` or `-` (no spaces)."))
+                    return
+
+                current_alias = pet.get("alt_name")
+                if current_alias and current_alias.lower() == alias_lower:
+                    await ctx.send(_("✅ Alias for **{name}** is already set to **{alias}**.").format(
+                        name=pet['name'], alias=alias
+                    ))
+                    return
+
+                existing = await conn.fetchval(
+                    "SELECT id FROM monster_pets WHERE user_id = $1 AND lower(alt_name) = lower($2) AND id != $3;",
+                    ctx.author.id,
+                    alias,
+                    pet_id
+                )
+                if existing:
+                    await ctx.send(_("❌ You already have a pet with that alias."))
+                    return
+
+                await conn.execute("UPDATE monster_pets SET alt_name = $1 WHERE id = $2;", alias, pet_id)
+                await ctx.send(_("✅ Alias for **{name}** set to **{alias}**.").format(
+                    name=pet['name'], alias=alias
+                ))
         except Exception as e:
             await ctx.send(e)
 
@@ -813,7 +934,7 @@ class Pets(commands.Cog):
     @pets.command(brief="Trade your pet or egg with another user's pet or egg")
     @has_char()  # Assuming this is a custom check
     async def trade(self, ctx,
-                    your_type: str, your_item_id: int,
+                    your_type: str, your_item_ref: str,
                     their_type: str, their_item_id: int):
         # Normalize type inputs
         your_type = your_type.lower()
@@ -828,6 +949,11 @@ class Pets(commands.Cog):
         async with self.bot.pool.acquire() as conn:
             # Fetch your item
             if your_type == 'pet':
+                your_item_id = await self.resolve_pet_id(conn, ctx.author.id, your_item_ref)
+                if your_item_id is None:
+                    await ctx.send(f"❌ You don't have a pet with ID or alias `{your_item_ref}`.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
                 your_item = await conn.fetchrow(
                     "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
                     ctx.author.id,
@@ -835,6 +961,11 @@ class Pets(commands.Cog):
                 )
                 your_table = 'monster_pets'
             else:  # egg
+                if not str(your_item_ref).isdigit():
+                    await ctx.send("❌ Invalid egg ID.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
+                your_item_id = int(your_item_ref)
                 your_item = await conn.fetchrow(
                     "SELECT * FROM monster_eggs WHERE user_id = $1 AND id = $2 AND hatched = FALSE;",
                     ctx.author.id,
@@ -846,7 +977,7 @@ class Pets(commands.Cog):
                 if your_type == 'egg':
                     await ctx.send(f"❌ You don't have an unhatched {your_type} with ID `{your_item_id}`.")
                 else:
-                    await ctx.send(f"❌ You don't have a {your_type} with ID `{your_item_id}`.")
+                    await ctx.send(f"❌ You don't have a {your_type} with ID or alias `{your_item_ref}`.")
                 await self.bot.reset_cooldown(ctx)
                 return
 
@@ -1192,7 +1323,7 @@ class Pets(commands.Cog):
     @pets.command(brief="Sell your pet or egg to another user for in-game money")
     @has_char()
     async def sell(self, ctx,
-                   item_type: str, your_item_id: int,
+                   item_type: str, your_item_ref: str,
                    buyer: discord.Member, price: int):
         """
         Sell your pet or egg to another user for in-game money.
@@ -1219,6 +1350,11 @@ class Pets(commands.Cog):
         async with self.bot.pool.acquire() as conn:
             # Fetch your item
             if item_type == 'pet':
+                your_item_id = await self.resolve_pet_id(conn, ctx.author.id, your_item_ref)
+                if your_item_id is None:
+                    await ctx.send(f"❌ You don't have a pet with ID or alias `{your_item_ref}`.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
                 your_item = await conn.fetchrow(
                     "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
                     ctx.author.id,
@@ -1226,6 +1362,11 @@ class Pets(commands.Cog):
                 )
                 your_table = 'monster_pets'
             else:  # egg
+                if not str(your_item_ref).isdigit():
+                    await ctx.send("❌ Invalid egg ID.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
+                your_item_id = int(your_item_ref)
                 your_item = await conn.fetchrow(
                     "SELECT * FROM monster_eggs WHERE user_id = $1 AND id = $2;",
                     ctx.author.id,
@@ -1234,7 +1375,10 @@ class Pets(commands.Cog):
                 your_table = 'monster_eggs'
 
             if not your_item:
-                await ctx.send(f"❌ You don't have a {item_type} with ID `{your_item_id}`.")
+                if item_type == "egg":
+                    await ctx.send(f"❌ You don't have a {item_type} with ID `{your_item_id}`.")
+                else:
+                    await ctx.send(f"❌ You don't have a {item_type} with ID or alias `{your_item_ref}`.")
                 await self.bot.reset_cooldown(ctx)
                 return
 
@@ -1416,7 +1560,7 @@ class Pets(commands.Cog):
                 await self.bot.reset_cooldown(ctx)
 
     @pets.command(brief=_("Release a pet or an egg with a sad farewell"))
-    async def release(self, ctx, id: int):
+    async def release(self, ctx, item_ref: str):
         """
         Release a pet or an egg with a sad farewell story.
         """
@@ -1579,15 +1723,43 @@ class Pets(commands.Cog):
                     egg_stories_darkest * 4
             )
 
+            item_id = None
+            if str(item_ref).isdigit():
+                item_id = int(item_ref)
+
             async with self.bot.pool.acquire() as conn:
                 # Check if the ID corresponds to a pet or an egg
-                pet = await conn.fetchrow("SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;", ctx.author.id,
-                                          id)
-                egg = await conn.fetchrow("SELECT * FROM monster_eggs WHERE user_id = $1 AND id = $2;", ctx.author.id,
-                                          id)
+                pet = None
+                egg = None
+
+                if item_id is not None:
+                    pet = await conn.fetchrow(
+                        "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
+                        ctx.author.id,
+                        item_id
+                    )
+                    egg = await conn.fetchrow(
+                        "SELECT * FROM monster_eggs WHERE user_id = $1 AND id = $2;",
+                        ctx.author.id,
+                        item_id
+                    )
+                else:
+                    pet_id = await self.resolve_pet_id(conn, ctx.author.id, item_ref)
+                    if pet_id is not None:
+                        item_id = pet_id
+                        pet = await conn.fetchrow(
+                            "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
+                            ctx.author.id,
+                            item_id
+                        )
 
                 if not pet and not egg:
-                    await ctx.send(_("❌ No pet or egg with ID `{id}` found in your collection.").format(id=id))
+                    if item_id is None:
+                        await ctx.send(_("❌ No pet with ID or alias `{ref}` found in your collection.").format(
+                            ref=item_ref
+                        ))
+                    else:
+                        await ctx.send(_("❌ No pet or egg with ID `{id}` found in your collection.").format(id=item_id))
                     return
 
                 # Determine the name and type (pet or egg)
@@ -1617,21 +1789,27 @@ class Pets(commands.Cog):
                         await interaction.response.defer()  # Acknowledge interaction to prevent timeout
                         async with self.bot.pool.acquire() as conn:
                             # Check if the ID corresponds to a pet or an egg
-                            pet = await conn.fetchrow("SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
-                                                      ctx.author.id, id)
-                            egg = await conn.fetchrow("SELECT * FROM monster_eggs WHERE user_id = $1 AND id = $2;",
-                                                      ctx.author.id, id)
+                            pet = await conn.fetchrow(
+                                "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
+                                ctx.author.id,
+                                item_id
+                            )
+                            egg = await conn.fetchrow(
+                                "SELECT * FROM monster_eggs WHERE user_id = $1 AND id = $2;",
+                                ctx.author.id,
+                                item_id
+                            )
 
                             if not pet and not egg:
                                 await ctx.send(
-                                    _("❌ No pet or egg with ID `{id}` found in your collection.").format(id=id))
+                                    _("❌ No pet or egg with ID `{id}` found in your collection.").format(id=item_id))
                                 return
                         async with self.bot.pool.acquire() as conn:
                             if pet:
-                                await conn.execute("DELETE FROM monster_pets WHERE id = $1 AND user_id = $2;", id,
+                                await conn.execute("DELETE FROM monster_pets WHERE id = $1 AND user_id = $2;", item_id,
                                                    ctx.author.id)
                             elif egg:
-                                await conn.execute("DELETE FROM monster_eggs WHERE id = $1 AND user_id = $2;", id,
+                                await conn.execute("DELETE FROM monster_eggs WHERE id = $1 AND user_id = $2;", item_id,
                                                    ctx.author.id)
 
                         farewell_message = story.format(name=item_name)
@@ -1830,33 +2008,41 @@ class Pets(commands.Cog):
     async def feed(self, ctx, pet_id_or_food: str | None = None, *, food_type: str = "basic food"):
         """Feed a specific pet with different food types for various effects"""
         pet_id = None
+        pet_ref = None
         if pet_id_or_food is not None:
             if pet_id_or_food.isdigit():
                 pet_id = int(pet_id_or_food)
             else:
-                # Treat first argument as food type when no pet ID is provided
-                if food_type == "basic food":
-                    food_type = pet_id_or_food
-                else:
-                    food_type = f"{pet_id_or_food} {food_type}".strip()
-
-        # Normalize food type input (allow spaces and case insensitive)
-        food_type_lower = food_type.lower().strip()
-        
-        # Check if it's an alias or direct key
-        if food_type_lower in self.FOOD_ALIASES:
-            food_key = self.FOOD_ALIASES[food_type_lower]
-        elif food_type in self.FOOD_TYPES:
-            food_key = food_type
-        else:
-            valid_foods = list(self.FOOD_ALIASES.keys())
-            await ctx.send(f"❌ Invalid food type. Valid types: {', '.join(valid_foods)}")
-            await self.bot.reset_cooldown(ctx)
-            return
-
-        food_data = self.FOOD_TYPES[food_key]
+                pet_ref = pet_id_or_food
 
         async with self.bot.pool.acquire() as conn:
+            if pet_ref is not None:
+                resolved_id = await self.resolve_pet_id(conn, ctx.author.id, pet_ref)
+                if resolved_id is not None:
+                    pet_id = resolved_id
+                else:
+                    # Treat first argument as food type when no pet ID or alias is provided
+                    if food_type == "basic food":
+                        food_type = pet_ref
+                    else:
+                        food_type = f"{pet_ref} {food_type}".strip()
+
+            # Normalize food type input (allow spaces and case insensitive)
+            food_type_lower = food_type.lower().strip()
+
+            # Check if it's an alias or direct key
+            if food_type_lower in self.FOOD_ALIASES:
+                food_key = self.FOOD_ALIASES[food_type_lower]
+            elif food_type in self.FOOD_TYPES:
+                food_key = food_type
+            else:
+                valid_foods = list(self.FOOD_ALIASES.keys())
+                await ctx.send(f"❌ Invalid food type. Valid types: {', '.join(valid_foods)}")
+                await self.bot.reset_cooldown(ctx)
+                return
+
+            food_data = self.FOOD_TYPES[food_key]
+
             # Check tier requirement for elemental food
             if food_data.get("tier_required"):
                 user_tier = await conn.fetchval(
@@ -1888,7 +2074,7 @@ class Pets(commands.Cog):
                     ctx.author.id, pet_id
                 )
                 if not pet:
-                    await ctx.send(f"❌ You don't have a pet with ID {pet_id}.")
+                    await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_id_or_food}`.")
                     await self.bot.reset_cooldown(ctx)
                     return
             else:
@@ -1907,7 +2093,7 @@ class Pets(commands.Cog):
                             ctx.author.id, pets[0]["id"]
                         )
                     else:
-                        await ctx.send("❌ You don't have an equipped pet. Equip one or use `$pets feed <id> [food_type]`.")
+                        await ctx.send("❌ You don't have an equipped pet. Equip one or use `$pets feed <id|alias> [food_type]`.")
                         await self.bot.reset_cooldown(ctx)
                         return
 
@@ -1979,17 +2165,22 @@ class Pets(commands.Cog):
 
     @user_cooldown(300)
     @pets.command(brief=_("Pet your pet to increase happiness and trust"))
-    async def pet(self, ctx, pet_id: int | None = None):
+    async def pet(self, ctx, pet_ref: str | None = None):
         """Pet your pet to increase happiness and build trust"""
         async with self.bot.pool.acquire() as conn:
             pet = None
-            if pet_id is not None:
+            if pet_ref is not None:
+                pet_id = await self.resolve_pet_id(conn, ctx.author.id, pet_ref)
+                if pet_id is None:
+                    await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
                 pet = await conn.fetchrow(
                     "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
                     ctx.author.id, pet_id
                 )
                 if not pet:
-                    await ctx.send(f"❌ You don't have a pet with ID {pet_id}.")
+                    await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
                     await self.bot.reset_cooldown(ctx)
                     return
             else:
@@ -2008,7 +2199,7 @@ class Pets(commands.Cog):
                             ctx.author.id, pets[0]["id"]
                         )
                     else:
-                        await ctx.send("❌ You don't have an equipped pet. Equip one or use `$pets pet <id>`.")
+                        await ctx.send("❌ You don't have an equipped pet. Equip one or use `$pets pet <id|alias>`.")
                         await self.bot.reset_cooldown(ctx)
                         return
 
@@ -2073,17 +2264,22 @@ class Pets(commands.Cog):
 
     @user_cooldown(300)
     @pets.command(brief=_("Play with your pet for significant happiness and trust gains"))
-    async def play(self, ctx, pet_id: int | None = None):
+    async def play(self, ctx, pet_ref: str | None = None):
         """Play with your pet for significant happiness and trust gains"""
         async with self.bot.pool.acquire() as conn:
             pet = None
-            if pet_id is not None:
+            if pet_ref is not None:
+                pet_id = await self.resolve_pet_id(conn, ctx.author.id, pet_ref)
+                if pet_id is None:
+                    await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
                 pet = await conn.fetchrow(
                     "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
                     ctx.author.id, pet_id
                 )
                 if not pet:
-                    await ctx.send(f"❌ You don't have a pet with ID {pet_id}.")
+                    await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
                     await self.bot.reset_cooldown(ctx)
                     return
             else:
@@ -2102,7 +2298,7 @@ class Pets(commands.Cog):
                             ctx.author.id, pets[0]["id"]
                         )
                     else:
-                        await ctx.send("❌ You don't have an equipped pet. Equip one or use `$pets play <id>`.")
+                        await ctx.send("❌ You don't have an equipped pet. Equip one or use `$pets play <id|alias>`.")
                         await self.bot.reset_cooldown(ctx)
                         return
 
@@ -2173,17 +2369,22 @@ class Pets(commands.Cog):
 
     @user_cooldown(600)
     @pets.command(brief=_("Give your pet a special treat for massive boosts"))
-    async def treat(self, ctx, pet_id: int | None = None):
+    async def treat(self, ctx, pet_ref: str | None = None):
         """Give your pet a special treat for massive happiness and trust gains"""
         async with self.bot.pool.acquire() as conn:
             pet = None
-            if pet_id is not None:
+            if pet_ref is not None:
+                pet_id = await self.resolve_pet_id(conn, ctx.author.id, pet_ref)
+                if pet_id is None:
+                    await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
                 pet = await conn.fetchrow(
                     "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
                     ctx.author.id, pet_id
                 )
                 if not pet:
-                    await ctx.send(f"❌ You don't have a pet with ID {pet_id}.")
+                    await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
                     await self.bot.reset_cooldown(ctx)
                     return
             else:
@@ -2202,7 +2403,7 @@ class Pets(commands.Cog):
                             ctx.author.id, pets[0]["id"]
                         )
                     else:
-                        await ctx.send("❌ You don't have an equipped pet. Equip one or use `$pets treat [id]`.")
+                        await ctx.send("❌ You don't have an equipped pet. Equip one or use `$pets treat [id|alias]`.")
                         await self.bot.reset_cooldown(ctx)
                         return
 
@@ -2273,17 +2474,22 @@ class Pets(commands.Cog):
 
     @user_cooldown(1800)
     @pets.command(brief=_("Train your pet to gain experience and trust"))
-    async def train(self, ctx, pet_id: int | None = None):
+    async def train(self, ctx, pet_ref: str | None = None):
         """Train your pet to gain experience and trust"""
         async with self.bot.pool.acquire() as conn:
             pet = None
-            if pet_id is not None:
+            if pet_ref is not None:
+                pet_id = await self.resolve_pet_id(conn, ctx.author.id, pet_ref)
+                if pet_id is None:
+                    await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
                 pet = await conn.fetchrow(
                     "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
                     ctx.author.id, pet_id
                 )
                 if not pet:
-                    await ctx.send(f"❌ You don't have a pet with ID {pet_id}.")
+                    await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
                     await self.bot.reset_cooldown(ctx)
                     return
             else:
@@ -2302,7 +2508,7 @@ class Pets(commands.Cog):
                             ctx.author.id, pets[0]["id"]
                         )
                     else:
-                        await ctx.send("❌ You don't have an equipped pet. Equip one or use `$pets train <id>`.")
+                        await ctx.send("❌ You don't have an equipped pet. Equip one or use `$pets train <id|alias>`.")
                         await self.bot.reset_cooldown(ctx)
                         return
 
@@ -2370,16 +2576,13 @@ class Pets(commands.Cog):
         await ctx.send(embed=embed)
 
     @pets.command(brief=_("View your pet's skill tree and progress"))
-    async def skills(self, ctx, pet_id: int):
+    async def skills(self, ctx, pet_ref: str):
         """View your pet's skill tree and current progress"""
         async with self.bot.pool.acquire() as conn:
-            pet = await conn.fetchrow(
-                "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
-                ctx.author.id, pet_id
-            )
+            pet, pet_id = await self.fetch_pet_for_user(conn, ctx.author.id, pet_ref)
             
             if not pet:
-                await ctx.send(f"❌ You don't have a pet with ID {pet_id}.")
+                await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
                 return
 
         element = pet['element']
@@ -2503,17 +2706,14 @@ class Pets(commands.Cog):
             return max(1, skill_cost - 1)  # Reduce by 1, minimum 1
 
     @pets.command(brief=_("Learn a skill for your pet"))
-    async def learn(self, ctx, pet_id: int, *, skill_name: str):
+    async def learn(self, ctx, pet_ref: str, *, skill_name: str):
         """Learn a skill for your pet using skill points"""
         try:
             async with self.bot.pool.acquire() as conn:
-                pet = await conn.fetchrow(
-                    "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
-                    ctx.author.id, pet_id
-                )
+                pet, pet_id = await self.fetch_pet_for_user(conn, ctx.author.id, pet_ref)
 
                 if not pet:
-                    await ctx.send(f"❌ You don't have a pet with ID {pet_id}.")
+                    await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
                     return
 
             element = pet['element']
@@ -2602,16 +2802,13 @@ class Pets(commands.Cog):
             await ctx.send(f"❌ An error occurred while learning the skill: {e}")
 
     @pets.command(brief=_("View your pet's detailed status"))
-    async def status(self, ctx, pet_id: int):
+    async def status(self, ctx, pet_ref: str):
         """View your pet's detailed status including trust, level, and skills"""
         async with self.bot.pool.acquire() as conn:
-            pet = await conn.fetchrow(
-                "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
-                ctx.author.id, pet_id
-            )
+            pet, pet_id = await self.fetch_pet_for_user(conn, ctx.author.id, pet_ref)
             
             if not pet:
-                await ctx.send(f"❌ You don't have a pet with ID {pet_id}.")
+                await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
                 return
 
         trust_info = self.get_trust_level_info(pet['trust_level'])
@@ -2640,11 +2837,14 @@ class Pets(commands.Cog):
             color=discord.Color.blue()
         )
 
+        alias_text = f"\n**Alias:** {pet['alt_name']}" if pet.get("alt_name") else ""
+
         embed.add_field(
             name="🌟 Basic Info",
             value=f"**Element:** {pet['element']}\n"
                   f"**Growth Stage:** {pet['growth_stage'].capitalize()}\n"
-                  f"**Equipped:** {'✅' if pet['equipped'] else '❌'}",
+                  f"**Equipped:** {'✅' if pet['equipped'] else '❌'}"
+                  f"{alias_text}",
             inline=True
         )
 
@@ -2711,22 +2911,20 @@ class Pets(commands.Cog):
                 inline=False
             )
 
-        embed.set_footer(text=f"Use $pets skills {pet_id} to view skill tree | $pets train {pet_id} to gain XP")
+        footer_ref = pet.get("alt_name") or pet_id
+        embed.set_footer(text=f"Use $pets skills {footer_ref} to view skill tree | $pets train {footer_ref} to gain XP")
         await ctx.send(embed=embed)
 
     @pets.command(brief=_("Equip a pet to fight alongside you in battles"))
-    async def equip(self, ctx, pet_id: int):
+    async def equip(self, ctx, pet_ref: str):
         """Equip a pet to fight alongside you in battles and raids"""
         try:
             async with self.bot.pool.acquire() as conn:
                 # Fetch the specified pet
-                pet = await conn.fetchrow(
-                    "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
-                    ctx.author.id, pet_id
-                )
+                pet, pet_id = await self.fetch_pet_for_user(conn, ctx.author.id, pet_ref)
                 
                 if not pet:
-                    await ctx.send(f"❌ You don't have a pet with ID {pet_id}.")
+                    await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
                     return
                     
                 # Check if the pet is at least "young"
@@ -3163,7 +3361,7 @@ class Pets(commands.Cog):
                     "**Basic Commands:**\n"
                     "• `$pets` - View all your pets (paginated list)\n"
                     "• `$pets eggs` - Check unhatched eggs and timers\n"
-                    "• `$pets status <id>` - Detailed pet information"
+                    "• `$pets status <id|alias>` - Detailed pet information"
                 ),
                 inline=False,
             )
@@ -3171,11 +3369,11 @@ class Pets(commands.Cog):
             embed.add_field(
                 name=_("🍖 Care & Bonding Commands"),
                 value=_(
-                    "• `$pets feed [id] [food_type]` - Feed with different food types (defaults to equipped/only pet; use `$pets feedhelp` for details)\n"
-                    "• `$pets pet [id]` - Pet for happiness (+0-1 trust, 1min cooldown; defaults to equipped/only pet)\n"
-                    "• `$pets play [id]` - Play for bonuses (+1 trust, +10 XP, 5min cooldown; defaults to equipped/only pet)\n"
-                    "• `$pets treat [id]` - Give treats (+5 trust, +25 XP, 10min cooldown; defaults to equipped/only pet)\n"
-                    "• `$pets train [id]` - Train for experience and trust (+50 XP, +2 trust, 30min cooldown; defaults to equipped/only pet)"
+                    "• `$pets feed [id|alias] [food_type]` - Feed with different food types (defaults to equipped/only pet; use `$pets feedhelp` for details)\n"
+                    "• `$pets pet [id|alias]` - Pet for happiness (+0-1 trust, 1min cooldown; defaults to equipped/only pet)\n"
+                    "• `$pets play [id|alias]` - Play for bonuses (+1 trust, +10 XP, 5min cooldown; defaults to equipped/only pet)\n"
+                    "• `$pets treat [id|alias]` - Give treats (+5 trust, +25 XP, 10min cooldown; defaults to equipped/only pet)\n"
+                    "• `$pets train [id|alias]` - Train for experience and trust (+50 XP, +2 trust, 30min cooldown; defaults to equipped/only pet)"
                 ),
                 inline=False,
             )
@@ -3183,10 +3381,10 @@ class Pets(commands.Cog):
             embed.add_field(
                 name=_("🌳 Skill System Commands"),
                 value=_(
-                    "• `$pets skills <id>` - View pet's skill tree and progress\n"
+                    "• `$pets skills <id|alias>` - View pet's skill tree and progress\n"
                     "• `$pets skilllist [element]` - Browse all skills by element\n"
                     "• `$pets skillinfo <skill_name>` - Detailed skill information\n"
-                    "• `$pets learn <id> <skill_name>` - Learn skills using skill points\n"
+                    "• `$pets learn <id|alias> <skill_name>` - Learn skills using skill points\n"
                     "• `$pets feedhelp` - Complete feeding guide and strategy"
                 ),
                 inline=False,
@@ -3195,10 +3393,11 @@ class Pets(commands.Cog):
             embed.add_field(
                 name=_("⚔️ Battle & Management"),
                 value=_(
-                    "• `$pets equip <id>` - Equip pet for battles (Young stage+ only)\n"
+                    "• `$pets equip <id|alias>` - Equip pet for battles (Young stage+ only)\n"
                     "• `$pets unequip` - Unequip current battle pet\n"
-                    "• `$pets rename <id> <name>` - Rename your pet\n"
-                    "• `$pets release <id>` - Release pet permanently (⚠️ irreversible)"
+                    "• `$pets rename <id|alias> <name>` - Rename your pet\n"
+                    "• `$pets alias <id|alias> <alias|clear>` - Set or clear a pet alias\n"
+                    "• `$pets release <id|alias>` - Release pet permanently (⚠️ irreversible)"
                 ),
                 inline=False,
             )
@@ -3206,8 +3405,8 @@ class Pets(commands.Cog):
             embed.add_field(
                 name=_("💰 Trading Commands"),
                 value=_(
-                    "• `$pets trade <type> <your_id> <type> <their_id>` - Trade pets with others\n"
-                    "• `$pets sell <type> <id> <@user> <amount>` - Sell pets for money\n"
+                    "• `$pets trade <type> <your_id|alias> <type> <their_id>` - Trade pets with others\n"
+                    "• `$pets sell <type> <id|alias> <@user> <amount>` - Sell pets for money\n"
                     "*All trades/sales require both parties to accept within 2 minutes*"
                 ),
                 inline=False,
@@ -3324,7 +3523,7 @@ class Pets(commands.Cog):
             inline=False
         )
 
-        embed.set_footer(text="Use $pets feed [id] [food_type] to start feeding! | Defaults to equipped/only pet")
+        embed.set_footer(text="Use $pets feed [id|alias] [food_type] to start feeding! | Defaults to equipped/only pet")
         await ctx.send(embed=embed)
 
     @pets.command(brief=_("View detailed information about a specific skill"))
@@ -4281,17 +4480,14 @@ class Pets(commands.Cog):
 
     @is_gm()
     @pets.command(brief=_("Test Battery Life cost reduction"))
-    async def testbatterylife(self, ctx, pet_id: int):
+    async def testbatterylife(self, ctx, pet_ref: str):
         """Test Battery Life cost reduction functionality"""
         try:
             async with self.bot.pool.acquire() as conn:
-                pet = await conn.fetchrow(
-                    "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
-                    ctx.author.id, pet_id
-                )
+                pet, pet_id = await self.fetch_pet_for_user(conn, ctx.author.id, pet_ref)
 
                 if not pet:
-                    await ctx.send(f"❌ You don't have a pet with ID {pet_id}.")
+                    await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
                     return
 
             # Check if pet has Battery Life
