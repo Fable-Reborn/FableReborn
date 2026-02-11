@@ -343,14 +343,6 @@ class Crates(commands.Cog):
                         await ctx.send("Materials crate system not available.")
                         return
 
-                    if amount == 1:
-                        success, message = await premiumshop_cog.open_materials_crate(ctx)
-                        if success:
-                            await ctx.send(message)
-                        else:
-                            await ctx.send(f"Error: {message}")
-                        return
-
                     all_materials = []
                     for _i in range(amount):
                         success, message, materials = await premiumshop_cog.open_materials_crate(
@@ -362,25 +354,124 @@ class Crates(commands.Cog):
                             return
                         all_materials.extend(materials)
 
-                    if all_materials:
-                        materials_counts = Counter(all_materials)
-                        materials_list = ", ".join(
-                            f"{name} x{count}" if count > 1 else name
-                            for name, count in materials_counts.most_common()
-                        )
-                        total_materials = len(all_materials)
-                        message = (
-                            f"<:c_mats:1398983405516882002> **Materials Crates opened!**\n\n"
-                            f"You opened **{amount}** materials crates and found **{total_materials}** crafting materials:\n"
-                            f"• {materials_list}"
+                    amulet_cog = self.bot.get_cog('AmuletCrafting')
+                    rarity_emojis = {
+                        "common": "🟤",
+                        "uncommon": "🥈",
+                        "rare": "🟡",
+                        "epic": "🟣",
+                        "legendary": "🥇",
+                    }
+                    rarity_art = {
+                        "legendary": (
+                            "<:legendary_0_0:1471117612854280402><:legendary_1_0:1471117618961453157>"
+                            "<:legendary_2_0:1471117626141970585><:legendary_3_0:1471117632978550814>"
+                            "<:legendary_4_0:1471117639295307796>\n"
+                            "<:legendary_0_1:1471117616650256434><:legendary_1_1:1471117621641609216>"
+                            "<:legendary_2_1:1471117629820370945><:legendary_3_1:1471117636170547383>"
+                            "<:legendary_4_1:1471117642755739688>"
+                        ),
+                        "epic": (
+                            "<:epic_0_0:1471117653379645582><:epic_1_0:1471117660250177732>"
+                            "<:epic_2_0:1471117667933880414><:epic_3_0:1471117672853934173>"
+                            "<:epic_4_0:1471117681242673295><:epic_5_0:1471117687215226884>\n"
+                            "<:epic_0_1:1471117656613716137><:epic_1_1:1471117663785713735>"
+                            "<:epic_2_1:1471117670454661322><:epic_3_1:1471117676968673498>"
+                            "<:epic_4_1:1471117685193572526><:epic_5_1:1471117689626824831>"
+                        ),
+                        "rare": (
+                            "<:rare_0_0:1471117692168835213><:rare_1_0:1471117697264652450>"
+                            "<:rare_2_0:1471117705888399580><:rare_3_0:1471117710669647883>"
+                            "<:rare_4_0:1471117715845681338>\n"
+                            "<:rare_0_1:1471117694207135886><:rare_1_1:1471117701354098698>"
+                            "<:rare_2_1:1471117708014649447><:rare_3_1:1471117713530421319>"
+                            "<:rare_4_1:1471117719972741140>"
+                        ),
+                        "uncommon": (
+                            "<:uncommon_0_0:1471117727170301984><:uncommon_1_0:1471117731930701919>"
+                            "<:uncommon_2_0:1471117737739682047><:uncommon_3_0:1471117743951577170>"
+                            "<:uncommon_4_0:1471117749529874569>\n"
+                            "<:uncommon_0_1:1471117729950859395><:uncommon_1_1:1471117735546327040>"
+                            "<:uncommon_2_1:1471117740457590867><:uncommon_3_1:1471117746602508289>"
+                            "<:uncommon_4_1:1471117751689937027>"
+                        ),
+                        "common": (
+                            "<:common_0_0:1471119197970108526><:common_1_0:1471119203779088586>"
+                            "<:common_2_0:1471119209101787206><:common_3_0:1471119171268903108>"
+                            "<:common_4_0:1471119174989512736><:common_5_0:1471119179972083753>"
+                            "<:common_6_0:1471119184413982730>\n"
+                            "<:common_0_1:1471117756861513780><:common_1_1:1471119206312448124>"
+                            "<:common_2_1:1471117610337960135><:common_3_1:1471119173277978727>"
+                            "<:common_4_1:1471119177111568540><:common_5_1:1471119182291664938>"
+                            "<:common_6_1:1471119186754408540><:common_7_1:1471119194178195708>"
+                        ),
+                    }
+                    rarity_order = ["common", "uncommon", "rare", "epic", "legendary"]
+
+                    def _truncate_entries(entries, max_len):
+                        if not entries:
+                            return ""
+                        selected = []
+                        for i, entry in enumerate(entries):
+                            candidate = ", ".join(selected + [entry]) if selected else entry
+                            if len(candidate) > max_len:
+                                remaining = len(entries) - i
+                                if remaining > 0:
+                                    suffix = f"+{remaining} more"
+                                    candidate_suffix = ", ".join(selected + [suffix]) if selected else suffix
+                                    if len(candidate_suffix) <= max_len:
+                                        selected.append(suffix)
+                                break
+                            selected.append(entry)
+                        return ", ".join(selected)
+
+                    resources_by_rarity = {rarity: Counter() for rarity in rarity_order}
+                    for resource in all_materials:
+                        rarity_name = amulet_cog.get_resource_rarity(resource) if amulet_cog else None
+                        if not rarity_name:
+                            rarity_name = "common"
+                        resources_by_rarity.setdefault(rarity_name, Counter())
+                        resources_by_rarity[rarity_name][resource] += 1
+
+                    blocks = []
+                    for rarity_name in rarity_order:
+                        counter = resources_by_rarity.get(rarity_name)
+                        if not counter:
+                            continue
+                        entries = [
+                            f"{res.replace('_', ' ').title()} x{count}" if count > 1 else res.replace('_', ' ').title()
+                            for res, count in counter.most_common()
+                        ]
+                        entries_text = _truncate_entries(entries, 700)
+                        if entries_text:
+                            emoji = rarity_emojis.get(rarity_name, "❓")
+                            art = rarity_art.get(rarity_name)
+                            if art:
+                                blocks.append(f"{emoji} **{rarity_name.title()}**\n{art}\n{entries_text}")
+                            else:
+                                blocks.append(f"{emoji} **{rarity_name.title()}**\n{entries_text}")
+
+                    total_materials = len(all_materials)
+                    crate_label = "crate" if amount == 1 else "crates"
+                    title = "Materials Crate Opened!" if amount == 1 else "Materials Crates Opened!"
+
+                    if blocks:
+                        description = (
+                            f"You opened **{amount}** materials {crate_label} and found **{total_materials}** crafting materials:\n\n"
+                            + "\n\n".join(blocks)
                         )
                     else:
-                        message = (
-                            f"<:c_mats:1398983405516882002> **Materials Crates opened!**\n\n"
-                            f"You opened **{amount}** materials crates but found no materials."
+                        description = (
+                            f"You opened **{amount}** materials {crate_label} but found no materials."
                         )
 
-                    await ctx.send(message)
+                    embed = discord.Embed(
+                        title=title,
+                        description=description,
+                        color=discord.Color.green(),
+                    )
+                    embed.set_thumbnail(url=ctx.author.display_avatar.url)
+                    await ctx.send(embed=embed)
                     return
 
                 else:
