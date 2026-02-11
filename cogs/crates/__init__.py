@@ -337,6 +337,52 @@ class Crates(commands.Cog):
                     except Exception as e:
                         pass
 
+                elif rarity == "materials":
+                    premiumshop_cog = self.bot.get_cog('PremiumShop')
+                    if not premiumshop_cog:
+                        await ctx.send("Materials crate system not available.")
+                        return
+
+                    if amount == 1:
+                        success, message = await premiumshop_cog.open_materials_crate(ctx)
+                        if success:
+                            await ctx.send(message)
+                        else:
+                            await ctx.send(f"Error: {message}")
+                        return
+
+                    all_materials = []
+                    for _i in range(amount):
+                        success, message, materials = await premiumshop_cog.open_materials_crate(
+                            ctx,
+                            return_details=True,
+                        )
+                        if not success:
+                            await ctx.send(f"Error: {message}")
+                            return
+                        all_materials.extend(materials)
+
+                    if all_materials:
+                        materials_counts = Counter(all_materials)
+                        materials_list = ", ".join(
+                            f"{name} x{count}" if count > 1 else name
+                            for name, count in materials_counts.most_common()
+                        )
+                        total_materials = len(all_materials)
+                        message = (
+                            f"<:c_mats:1398983405516882002> **Materials Crates opened!**\n\n"
+                            f"You opened **{amount}** materials crates and found **{total_materials}** crafting materials:\n"
+                            f"• {materials_list}"
+                        )
+                    else:
+                        message = (
+                            f"<:c_mats:1398983405516882002> **Materials Crates opened!**\n\n"
+                            f"You opened **{amount}** materials crates but found no materials."
+                        )
+
+                    await ctx.send(message)
+                    return
+
                 else:
                     items = []
                     total_dragon_coins_gained = 0
@@ -386,21 +432,6 @@ class Crates(commands.Cog):
                                 minstat, maxstat = (81, 89)
                             else:  # 50% 75-80
                                 minstat, maxstat = (75, 80)
-                        elif rarity == "materials":
-                            # Materials crates are handled by the premiumshop cog
-                            premiumshop_cog = self.bot.get_cog('PremiumShop')
-                            if premiumshop_cog:
-                                success, message = await premiumshop_cog.open_materials_crate(ctx)
-                                if success:
-                                    await ctx.send(message)
-                                else:
-                                    await ctx.send(f"Error: {message}")
-                                return
-                            else:
-                                await ctx.send("Materials crate system not available.")
-                                return
-
-
                         # Check for Dragon Coin chance on legendary crates (20% chance)
                         dragon_coins_gained = 0
                         if rarity == "legendary" and random.randint(1, 100) <= 20:

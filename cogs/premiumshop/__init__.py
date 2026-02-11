@@ -562,7 +562,7 @@ class PremiumShop(commands.Cog):
         
         await ctx.send(embed=embed)
 
-    async def open_materials_crate(self, ctx):
+    async def open_materials_crate(self, ctx, return_details: bool = False):
         """
         Function to handle materials crate opening.
         Called by the open command in crates cog.
@@ -572,6 +572,8 @@ class PremiumShop(commands.Cog):
             # Get amuletcrafting cog to access resource generation
             amulet_cog = self.bot.get_cog('AmuletCrafting')
             if not amulet_cog:
+                if return_details:
+                    return False, "AmuletCrafting system not available.", []
                 return False, "AmuletCrafting system not available."
             
             # Generate 3-10 random materials
@@ -587,13 +589,16 @@ class PremiumShop(commands.Cog):
                     await amulet_cog.give_crafting_resource(ctx.author.id, resource, 1)
                     materials_gained.append(resource.replace('_', ' ').title())
             
+        material_count = len(materials_gained)
         
         success_message = (
             f"<:c_mats:1398983405516882002> **Materials Crate opened!**\n\n"
             f"You found **{material_count}** crafting materials:\n"
             f"• {', '.join(materials_gained)}"
         )
-        
+
+        if return_details:
+            return True, success_message, materials_gained
         return True, success_message
 
 
