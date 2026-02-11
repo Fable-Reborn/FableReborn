@@ -5280,7 +5280,13 @@ class GameMaster(commands.Cog):
         rows = await self._fetch_dragon_drops()
         if not rows:
             return await ctx.send("No drops found.")
-        lines = [f"{idx}) {row['name']} ({row['item_type']})" for idx, row in enumerate(rows, start=1)]
+        lines = []
+        for idx, row in enumerate(rows, start=1):
+            item_type = ItemType.from_string(row["item_type"])
+            stat_label = "Defense" if item_type == ItemType.Shield else "Damage"
+            lines.append(
+                f"{idx}) {row['name']} ({row['item_type']}) - {stat_label}: {row['min_stat']}–{row['max_stat']}"
+            )
         await self._send_menu_embed(ctx, "Select a Drop to Edit", lines)
         sel_raw = await self._gm_prompt(ctx, "Enter the number of the drop to edit:")
         if not sel_raw:

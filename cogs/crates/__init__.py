@@ -292,11 +292,16 @@ class Crates(commands.Cog):
                     await ctx.send(text)
 
                 elif rarity == "fortune":
+                    level = rpgtools.xptolevel(ctx.character_data["xp"])
+                    current_xp = ctx.character_data["xp"]
+                    total_xp = 0
+                    total_money = 0
+                    xp_crates = 0
+                    money_crates = 0
+
                     for _i in range(amount):
-                        level = rpgtools.xptolevel(ctx.character_data["xp"])
                         random_number = random.randint(1, 100)
                         if random_number <= 50:  # Lower half, reward with XP
-                            min_value, max_value = 100, 500  # Adjust the XP range as needed
                             reward_type = "xp"
                         else:  # Upper half, reward with money
                             if random.randint(1, 100) <= 75:  # Simulating 70% chance
@@ -304,38 +309,76 @@ class Crates(commands.Cog):
                             else:
                                 min_value, max_value = 470001, 850000
                             reward_type = "money"
-                        value = random.randint(min_value, max_value)
-                        async with self.bot.pool.acquire() as conn:
-                            user_id = ctx.author.id
-                            if reward_type == "xp":
-                                nurflevel = level
-                                if level > 50:
-                                    nurflevel = 50
-                                xpvar = 2000 * level + 1500
-                                random_xp = random.randint(1000 * nurflevel, xpvar)
-                                await conn.execute('UPDATE profile SET "xp" = "xp" + $1 WHERE "user" = $2', random_xp,
-                                                   user_id)
-                                name = ctx.character_data["name"]
-                                await ctx.send(
-                                    f"{name} opened a Fortune crate and gained **{random_xp}XP!**")
-                                await self.bot.public_log(
-                                    f"**{ctx.author}** opened a fortune crate and gained **{random_xp} XP!**"
-                                )
-                                new_level = int(rpgtools.xptolevel(ctx.character_data["xp"] + random_xp))
-                            else:
-                                reward = round(value, -2)
-                                await conn.execute('UPDATE profile SET "money" = "money" + $1 WHERE "user" = $2', reward,
-                                                   user_id)
-                                name = ctx.character_data["name"]
-                                await ctx.send(f"{name} opened a Fortune crate and found **${reward}!**")
-                                await self.bot.public_log(
-                                    f"**{ctx.author}** opened a fortune crate and received **${reward}!**"
-                                )
-                    try:
-                        if level != new_level:
-                            await self.bot.process_levelup(ctx, new_level, level)
-                    except Exception as e:
-                        pass
+
+                        if reward_type == "xp":
+                            nurflevel = level
+                            if level > 50:
+                                nurflevel = 50
+                            xpvar = 2000 * level + 1500
+                            random_xp = random.randint(1000 * nurflevel, xpvar)
+                            total_xp += random_xp
+                            xp_crates += 1
+                        else:
+                            reward = round(random.randint(min_value, max_value), -2)
+                            total_money += reward
+                            money_crates += 1
+
+                    async with self.bot.pool.acquire() as conn:
+                        user_id = ctx.author.id
+                        if total_xp > 0:
+                            await conn.execute(
+                                'UPDATE profile SET "xp" = "xp" + $1 WHERE "user" = $2',
+                                total_xp,
+                                user_id,
+                            )
+                        if total_money > 0:
+                            await conn.execute(
+                                'UPDATE profile SET "money" = "money" + $1 WHERE "user" = $2',
+                                total_money,
+                                user_id,
+                            )
+
+                    name = ctx.character_data["name"]
+                    crate_label = "crate" if amount == 1 else "crates"
+                    title = f"{name} opened {amount} Fortune {crate_label}!"
+                    summary_lines = []
+                    if total_xp > 0:
+                        summary_lines.append(f"**XP gained:** {total_xp:,}")
+                    if total_money > 0:
+                        summary_lines.append(f"**Money gained:** ${total_money:,}")
+                    if xp_crates and money_crates:
+                        summary_lines.append(f"**Rolls:** {xp_crates} XP, {money_crates} money")
+                    elif xp_crates:
+                        summary_lines.append(f"**Rolls:** {xp_crates} XP")
+                    elif money_crates:
+                        summary_lines.append(f"**Rolls:** {money_crates} money")
+
+                    embed = discord.Embed(
+                        title=title,
+                        description="\n".join(summary_lines) if summary_lines else None,
+                        color=discord.Color.gold(),
+                    )
+                    embed.set_thumbnail(url=ctx.author.display_avatar.url)
+                    await ctx.send(embed=embed)
+
+                    log_parts = []
+                    if total_xp > 0:
+                        log_parts.append(f"**{total_xp:,} XP**")
+                    if total_money > 0:
+                        log_parts.append(f"**${total_money:,}**")
+                    if log_parts:
+                        log_text = " and ".join(log_parts)
+                        await self.bot.public_log(
+                            f"**{ctx.author}** opened {amount} fortune {crate_label} and received {log_text}."
+                        )
+
+                    if total_xp > 0:
+                        try:
+                            new_level = int(rpgtools.xptolevel(current_xp + total_xp))
+                            if level != new_level:
+                                await self.bot.process_levelup(ctx, new_level, level)
+                        except Exception:
+                            pass
 
                 elif rarity == "materials":
                     premiumshop_cog = self.bot.get_cog('PremiumShop')
