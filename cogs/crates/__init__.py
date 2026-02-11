@@ -446,10 +446,16 @@ class Crates(commands.Cog):
                         if entries_text:
                             emoji = rarity_emojis.get(rarity_name, "❓")
                             art = rarity_art.get(rarity_name)
-                            if art:
-                                blocks.append(f"{emoji} **{rarity_name.title()}**\n{art}\n{entries_text}")
+                            if rarity_name == "common":
+                                if art:
+                                    blocks.append(f"{art}\n{entries_text}")
+                                else:
+                                    blocks.append(f"{entries_text}")
                             else:
-                                blocks.append(f"{emoji} **{rarity_name.title()}**\n{entries_text}")
+                                if art:
+                                    blocks.append(f"{emoji} **{rarity_name.title()}**\n{art}\n{entries_text}")
+                                else:
+                                    blocks.append(f"{emoji} **{rarity_name.title()}**\n{entries_text}")
 
                     total_materials = len(all_materials)
                     crate_label = "crate" if amount == 1 else "crates"
