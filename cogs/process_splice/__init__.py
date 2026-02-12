@@ -679,40 +679,47 @@ class ProcessSplice(commands.Cog):
 
             return max(p1_gen, p2_gen) + 1, p1_gen, p2_gen
 
-        completed_gen0 = 0
-        completed_gen1 = 0
-        completed_gen1_default_plus_gen0 = 0
-        completed_gen1_gen0_plus_gen0 = 0
+        def add_gen_count(gen_counts, generation):
+            gen_counts[generation] = gen_counts.get(generation, 0) + 1
+
+        completed_gen_counts = {}
+        pending_gen_counts = {}
         completed_unresolved = 0
+        pending_unresolved = 0
 
         for row in completed_rows:
-            row_gen, p1_gen, p2_gen = classify_generation(row["pet1_default"], row["pet2_default"])
+            row_gen, _, _ = classify_generation(row["pet1_default"], row["pet2_default"])
             if row_gen is None:
                 completed_unresolved += 1
                 continue
-
-            if row_gen == 0:
-                completed_gen0 += 1
-            elif row_gen == 1:
-                completed_gen1 += 1
-                if (p1_gen == -1 and p2_gen == 0) or (p1_gen == 0 and p2_gen == -1):
-                    completed_gen1_default_plus_gen0 += 1
-                elif p1_gen == 0 and p2_gen == 0:
-                    completed_gen1_gen0_plus_gen0 += 1
-
-        pending_gen0 = 0
-        pending_gen1 = 0
-        pending_unresolved = 0
+            add_gen_count(completed_gen_counts, row_gen)
 
         for row in pending_rows:
             row_gen, _, _ = classify_generation(row["pet1_default"], row["pet2_default"])
             if row_gen is None:
                 pending_unresolved += 1
                 continue
-            if row_gen == 0:
-                pending_gen0 += 1
-            elif row_gen == 1:
-                pending_gen1 += 1
+            add_gen_count(pending_gen_counts, row_gen)
+
+        all_gen_counts = dict(completed_gen_counts)
+        for gen, count in pending_gen_counts.items():
+            all_gen_counts[gen] = all_gen_counts.get(gen, 0) + count
+
+        completed_total_resolved = sum(completed_gen_counts.values())
+        pending_total_resolved = sum(pending_gen_counts.values())
+        all_total_resolved = completed_total_resolved + pending_total_resolved
+        all_total_unresolved = completed_unresolved + pending_unresolved
+
+        beyond_30_count = sum(count for gen, count in all_gen_counts.items() if gen > 30)
+        furthest_generation = max(all_gen_counts.keys()) if all_gen_counts else None
+        furthest_generation_count = (
+            all_gen_counts.get(furthest_generation, 0) if furthest_generation is not None else 0
+        )
+
+        generation_lines = []
+        for gen in range(0, 31):
+            generation_lines.append(f"Gen {gen}: **{all_gen_counts.get(gen, 0)}**")
+        generation_text = "\n".join(generation_lines)
 
         embed = discord.Embed(
             title="🧬 Splice Generation Stats",
@@ -720,22 +727,20 @@ class ProcessSplice(commands.Cog):
             color=discord.Color.teal(),
         )
         embed.add_field(
-            name="Completed (`splice_combinations`)",
-            value=(
-                f"Gen 0 (`default + default`): **{completed_gen0}**\n"
-                f"Gen 1 (total): **{completed_gen1}**\n"
-                f"Gen 1 (`default + gen0`): **{completed_gen1_default_plus_gen0}**\n"
-                f"Gen 1 (`gen0 + gen0`): **{completed_gen1_gen0_plus_gen0}**\n"
-                f"Unresolved: **{completed_unresolved}**"
-            ),
+            name="Generation Counts 0-30 (`completed + pending`)",
+            value=generation_text,
             inline=False,
         )
         embed.add_field(
-            name="Pending (`splice_requests`)",
+            name="Totals",
             value=(
-                f"Gen 0: **{pending_gen0}**\n"
-                f"Gen 1: **{pending_gen1}**\n"
-                f"Unresolved: **{pending_unresolved}**"
+                f"Completed resolved: **{completed_total_resolved}**\n"
+                f"Pending resolved: **{pending_total_resolved}**\n"
+                f"All resolved: **{all_total_resolved}**\n"
+                f"All unresolved: **{all_total_unresolved}**\n"
+                f"Beyond Gen 30: **{beyond_30_count}**\n"
+                f"Furthest generation: **Gen {furthest_generation if furthest_generation is not None else 'N/A'}** "
+                f"(**{furthest_generation_count}** combo(s))"
             ),
             inline=False,
         )
