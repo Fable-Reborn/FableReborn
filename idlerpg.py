@@ -18,13 +18,16 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 
+import asyncio
+import json
 import logging
+import os
 import sys
 
-
-import json
-import asyncio
-import os
+try:
+    from setproctitle import setproctitle
+except ImportError:
+    setproctitle = None
 
 import discord
 import uvloop
@@ -48,6 +51,9 @@ shard_count = int(sys.argv[2])
 cluster_id = int(sys.argv[3])
 cluster_count = int(sys.argv[4])
 cluster_name = sys.argv[5]
+
+if setproctitle is not None:
+    setproctitle("Fable")
 
 # Configure intents
 intents = discord.Intents.all()

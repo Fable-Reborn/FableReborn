@@ -4,6 +4,7 @@ config.json
 patreon_config.json
 acc.json
 macro_detection_backup
+tools/heartbeat_watchdog_config.json
 
 # Logs
 *.log
