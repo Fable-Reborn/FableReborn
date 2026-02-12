@@ -484,18 +484,13 @@ class Profile(commands.Cog):
             elif id_pattern.match(person):
                 person = await self.bot.fetch_user(int(person))
             else:
-                # Try to fetch by discordtag from our database
                 async with self.bot.pool.acquire() as conn:
                     query = 'SELECT "user" FROM profile WHERE discordtag = $1'
                     user_id = await conn.fetchval(query, person)
                 person = await self.bot.fetch_user(int(user_id))
 
             targetid = person.id
-            discordtag = "none"
-            try:
-                discordtag = person.display_name
-            except Exception as e:
-                pass
+            discordtag = person.display_name
 
             async with self.bot.pool.acquire() as conn:
                 # Fetch the profilestyle column for the given user by either discordtag or userid
@@ -536,16 +531,16 @@ class Profile(commands.Cog):
                 for i in items:
                     stat = f"{int(i['damage'] + i['armor'])}"
                     if i["hand"] == "both":
-                        right_hand = left_hand = i
+                        right_hand = (i["type"], i["name"], stat)
                     elif i["hand"] == "left":
-                        left_hand = i
+                        left_hand = (i["type"], i["name"], stat)
                     elif i["hand"] == "right":
-                        right_hand = i
+                        right_hand = (i["type"], i["name"], stat)
                     elif i["hand"] == "any":
                         if right_hand is None:
-                            right_hand = i
+                            right_hand = (i["type"], i["name"], stat)
                         else:
-                            left_hand = i
+                            left_hand = (i["type"], i["name"], stat)
 
                 color = profile["colour"]
                 color = [color["red"], color["green"], color["blue"], color["alpha"]]
@@ -574,83 +569,136 @@ class Profile(commands.Cog):
                 else:
                     badges = []
 
-                async with self.bot.pool.acquire() as conn:
-                # Get custom positions for this user  
-                    custom_positions_json = await conn.fetchval(
-                        'SELECT custom_positions FROM profile WHERE "user" = $1',
-                        targetid
-                    )
+                if targetid == 295173706496475131:
 
-                
-                # Parse JSON string to dict before passing to get_positions_for_user
-                custom_positions = json.loads(custom_positions_json) if custom_positions_json else None
-                positions = ProfileCustomization.get_positions_for_user(custom_positions)
+                    async with self.bot.trusted_session.post(
+                            f"{self.bot.config.external.okapi_url}/api/genprofile",
+                            json={
+                                "name": profile["name"],
+                                "color": color,
+                                "image": profile["background"],
+                                "race": profile["race"],
+                                "classes": profile["class"],
+                                "profession": "Novice Planter",
+                                "class_icons": icons,
+                                "left_hand_item": left_hand,
+                                "right_hand_item": right_hand,
+                                "level": f"{rpgtools.xptolevel(profile['xp'])}",
+                                "guild_rank": guild_rank,
+                                "guild_name": profile["guild_name"],
+                                "money": f"{profile['money']}",
+                                "pvp_wins": f"{profile['pvpwins']}",
+                                "marriage": marriage,
+                                "god": profile["god"] or _("No God"),
+                                "adventure_name": adventure_name,
+                                "adventure_time": adventure_time,
+                                "badges": badges,
+                            },
+                            headers={"Authorization": self.bot.config.external.okapi_token},
+                    ) as req:
+                        if req.status == 200:
+                            raw = await req.read()
+                            if raw[:4] == b"\x89PNG" or raw[:2] == b"\xff\xd8":
+                                bytebuffer = raw
+                            else:
+                                try:
+                                    img = raw.decode("utf-8").strip()
+                                except UnicodeDecodeError:
+                                    return await ctx.send(
+                                        _("Unexpected internal error when generating image.")
+                                    )
+                                async with self.bot.trusted_session.get(img) as resp:
+                                    bytebuffer = await resp.read()
+                                    if resp.status != 200:
+                                        return await ctx.send("Error failed to fetch image")
 
+                        else:
+                            # Error, means try reading the response JSON error
+                            try:
+                                error_json = await req.json()
+                                async with self.bot.pool.acquire() as conn:
+                                    # Update the background column in the profile table for the target user
+                                    update_query = 'UPDATE profile SET background = 0 WHERE "user" = $1'
+                                    await conn.execute(update_query, targetid)
 
-                # CASCADE: Prepare and debug the dictionary for Okapi JSON payload
-                payload_for_okapi = {
-                    "name": profile['name'],
-                    "color": color,
-                    "image": profile["background"],
-                    "race": profile['race'],
-                    "classes": profile['class'],        # From user's snippet for line 552 json
-                    "profession": "None",
-                    "class_icons": icons,           # From user's snippet
-                    "left_hand_item": (left_hand['type'], left_hand['name'], str(int(left_hand['damage'] if left_hand['damage'] > 0 else left_hand['armor'] if left_hand['armor'] > 0 else 0))) if left_hand else None,
-                    "right_hand_item": (right_hand['type'], right_hand['name'], str(int(right_hand['damage'] if right_hand['damage'] > 0 else right_hand['armor'] if right_hand['armor'] > 0 else 0))) if right_hand else None,
-                    "level": f"{rpgtools.xptolevel(profile['xp'])}",
-                    "guild_rank": guild_rank,
-                    "guild_name": profile["guild_name"], # From user's snippet
-                    "money": f"{profile['money']}",
-                    "pvp_wins": f"{profile['pvpwins']}", # From user's snippet
-                    "marriage": marriage,               # From user's snippet
-                    "god": profile["god"] or _("No God"),
-                    "adventure_name": adventure_name,   # From user's snippet
-                    "adventure_time": adventure_time,
-                    "badges": badges,                   # From user's snippet
-                    "positions": positions
-                }
-                
-
-
-                async with self.bot.trusted_session.post(
-                        f"{self.bot.config.external.okapi_url}/api/genprofile",
-                        json=payload_for_okapi,
-                        headers={"Authorization": self.bot.config.external.okapi_token},
-                ) as req:
-                    if req.status == 200:
-
-                        img = await req.text()
-
-
-
-                    else:
-                        # Error, means try reading the response JSON error
-                        try:
-                            error_json = await req.json()
-                            async with self.bot.pool.acquire() as conn:
-                                # Update the background column in the profile table for the target user
-                                update_query = 'UPDATE profile SET background = 0 WHERE "user" = $1'
-                                await conn.execute(update_query, targetid)
-
-                            return await ctx.send(
-                                _(
-                                    "There was an error processing your image. Reason: {reason} ({detail}). (Due to this, the profile image has been reset)"
-                                ).format(
-                                    reason=error_json["reason"], detail=error_json["detail"]
+                                return await ctx.send(
+                                    _(
+                                        "There was an error processing your image. Reason: {reason} ({detail}). (Due to this, the profile image has been reset)"
+                                    ).format(
+                                        reason=error_json["reason"], detail=error_json["detail"]
+                                    )
                                 )
-                            )
-                        except ContentTypeError:
-                            return await ctx.send(
-                                _("Unexpected internal error when generating image.")
-                            )
-                        except Exception:
-                            return await ctx.send(_("Unexpected error when generating image."))
+                            except ContentTypeError:
+                                return await ctx.send(
+                                    _("Unexpected internal error when generating image.")
+                                )
+                            except Exception:
+                                return await ctx.send(_("Unexpected error when generating image."))
 
-                    async with self.bot.trusted_session.get(img) as resp:
-                        bytebuffer = await resp.read()
-                        if resp.status != 200:
-                            return await ctx.send("Error failed to fetch image")
+                else:
+                    async with self.bot.trusted_session.post(
+                            f"{self.bot.config.external.okapi_url}/api/genprofile",
+                            json={
+                                "name": profile["name"],
+                                "color": color,
+                                "image": profile["background"],
+                                "race": profile["race"],
+                                "classes": profile["class"],
+                                "profession": "None",
+                                "class_icons": icons,
+                                "left_hand_item": left_hand,
+                                "right_hand_item": right_hand,
+                                "level": f"{rpgtools.xptolevel(profile['xp'])}",
+                                "guild_rank": guild_rank,
+                                "guild_name": profile["guild_name"],
+                                "money": f"{profile['money']}",
+                                "pvp_wins": f"{profile['pvpwins']}",
+                                "marriage": marriage,
+                                "god": profile["god"] or _("No God"),
+                                "adventure_name": adventure_name,
+                                "adventure_time": adventure_time,
+                                "badges": badges,
+                            },
+                            headers={"Authorization": self.bot.config.external.okapi_token},
+                    ) as req:
+                        if req.status == 200:
+                            raw = await req.read()
+                            if raw[:4] == b"\x89PNG" or raw[:2] == b"\xff\xd8":
+                                bytebuffer = raw
+                            else:
+                                try:
+                                    img = raw.decode("utf-8").strip()
+                                except UnicodeDecodeError:
+                                    return await ctx.send(
+                                        _("Unexpected internal error when generating image.")
+                                    )
+                                async with self.bot.trusted_session.get(img) as resp:
+                                    bytebuffer = await resp.read()
+                                    if resp.status != 200:
+                                        return await ctx.send("Error failed to fetch image")
+
+                        else:
+                            # Error, means try reading the response JSON error
+                            try:
+                                error_json = await req.json()
+                                async with self.bot.pool.acquire() as conn:
+                                    # Update the background column in the profile table for the target user
+                                    update_query = 'UPDATE profile SET background = 0 WHERE "user" = $1'
+                                    await conn.execute(update_query, targetid)
+
+                                return await ctx.send(
+                                    _(
+                                        "There was an error processing your image. Reason: {reason} ({detail}). (Due to this, the profile image has been reset)"
+                                    ).format(
+                                        reason=error_json["reason"], detail=error_json["detail"]
+                                    )
+                                )
+                            except ContentTypeError:
+                                return await ctx.send(
+                                    _("Unexpected internal error when generating image.")
+                                )
+                            except Exception:
+                                return await ctx.send(_("Unexpected error when generating image."))
 
                 await ctx.send(
                     _("Your Profile:"),
@@ -667,8 +715,7 @@ class Profile(commands.Cog):
                         JOIN guild g ON p.guild = g.ID
                         WHERE p.user = $1
                     """
-                    db_guild_name = await conn.fetchval(query, targetid)
-                    guild_name = str(db_guild_name) if db_guild_name is not None else None
+                    guild_name = await conn.fetchval(query, targetid)
 
                 ret = await self.bot.pool.fetch(
                     "SELECT ai.*, i.equipped FROM profile p JOIN allitems ai ON"
@@ -728,11 +775,8 @@ class Profile(commands.Cog):
                     "reaper": {"Scythe": 10},
                     "paladin": {"Hammer": 5},
                     "thief": {"Knife": 5, "Dagger": 5},
-                    "paragon": {"Spear": 5},
-                    "tank": {"shield": 10}
+                    "paragon": {"Spear": 5}
                 }
-
-
 
                 # Initialize bonus
                 class_bonus = 0
@@ -743,26 +787,6 @@ class Profile(commands.Cog):
                     for item in [item1_type, item2_type]:
                         item_bonus = class_info.get(item, 0)
                         class_bonus += item_bonus
-
-                query_class = 'SELECT "class" FROM profile WHERE "user" = $1;'
-
-                specified_words_values = {
-                    "Novice": 1,
-                    "Proficient": 2,
-                    "Artisan": 3,
-                    "Master": 4,
-                    "Champion": 5,
-                    "Vindicator": 6,
-                    "Paragon": 7,
-                }
-                # Query data for ctx.author.id
-                result_author = await self.bot.pool.fetch(query_class, ctx.author.id)
-                if result_author:
-                    author_classes = result_author[0]["class"]  # Assume it's a list of classes
-                    for class_name in author_classes:
-                        if class_name in specified_words_values:
-                            class_bonus += specified_words_values[class_name]
-
 
                 # Apply the class bonus to the damage total
                 damage_total += class_bonus
@@ -793,7 +817,6 @@ class Profile(commands.Cog):
                 right_hand = None
                 left_hand = None
 
-
                 async with self.bot.pool.acquire() as conn:
                     # Check if the user exists in the battletower table
                     level_query = "SELECT level FROM battletower WHERE id = $1"
@@ -809,16 +832,16 @@ class Profile(commands.Cog):
                 for i in items:
                     stat = f"{int(i['damage'] + i['armor'])}"
                     if i["hand"] == "both":
-                        right_hand = left_hand = i
+                        right_hand = (i["type"], i["name"], stat)
                     elif i["hand"] == "left":
-                        left_hand = i
+                        left_hand = (i["type"], i["name"], stat)
                     elif i["hand"] == "right":
-                        right_hand = i
+                        right_hand = (i["type"], i["name"], stat)
                     elif i["hand"] == "any":
                         if right_hand is None:
-                            right_hand = i
+                            right_hand = (i["type"], i["name"], stat)
                         else:
-                            left_hand = i
+                            left_hand = (i["type"], i["name"], stat)
 
                 color = profile["colour"]
                 color = [color["red"], color["green"], color["blue"], color["alpha"]]
@@ -845,27 +868,15 @@ class Profile(commands.Cog):
                 else:
                     badges = []
 
-                # Prepare class names and icon names as lists of strings
-                processed_classes = []
-                if profile['class']:
-                    for c_raw in profile['class']:
-                        cls_obj = class_from_string(c_raw) # Assumes class_from_string exists and works
-                        if cls_obj:
-                            processed_classes.append(cls_obj)
-                
-                classes_str_list = [c.get_class_line_name() for c in processed_classes if c] if processed_classes else []
-                class_icons_list = [c.get_class_line_name().lower() for c in processed_classes if c] if processed_classes else [] # Assuming icon is lowercase class name
-
-
 
                 async with self.bot.trusted_session.post(
-                        f"http://127.0.0.1:3010/api/genprofile",
+                        f"ttp://127.0.0.1:3010/api/genprofile",
                         json={
                             "name": profile['name'],
                             "color": color,
                             "image": profile["background"],
                             "race": profile['race'],
-                            "classes": classes_str_list,
+                            "classes": profile['class'],
                             "profession": "None",
                             "damage": f"{damage_total}",
                             "defense": f"{armor_total}",
@@ -876,11 +887,11 @@ class Profile(commands.Cog):
                             "guild": guild_name,
                             "money": profile['money'],
                             "pvpWins": f"{profile['pvpwins']}",
-                            "marriage": marriage if marriage else _("None"),
+                            "marriage": marriage or _("None"),
                             "god": profile["god"] or _("No God"),
                             "adventure": adventure_name or _("No Mission"),
                             "adventure_time": adventure_time,
-                            "icons": class_icons_list,
+                            "icons": icons,
                             "BT": f"{level}"
 
                         },
@@ -890,11 +901,7 @@ class Profile(commands.Cog):
                     # await ctx.send(f"{profile['class']}")
                     await ctx.send(file=discord.File(fp=img, filename="Profile.png"))
         except Exception as e:
-            import traceback
-            error_message = f"Error occurred: {e}\n"
-            error_message += traceback.format_exc()
-            await ctx.send(f"An error occurred during the game. {e}")
-            print(error_message)  # Log for debugging
+            await ctx.send(e)
 
     @user_cooldown(300)
     @commands.command(aliases=["drink"], brief=_("Consume a potion or candy"))
