@@ -160,17 +160,19 @@ class Guild(commands.Cog):
 
     async def _attach_guild_adventure_join_view(self, session: dict) -> None:
         try:
+            guild_id = int(session["guild_id"])
+            message_id = int(session["message_id"])
             ends_at = datetime.fromisoformat(session["ends_at"])
-        except (KeyError, ValueError):
+        except (KeyError, ValueError, TypeError):
             return
         view = GuildAdventureJoinView(
             self.bot,
-            int(session["guild_id"]),
+            guild_id,
             ends_at,
-            self._guild_adventure_join_session_key(int(session["guild_id"])),
-            self._guild_adventure_join_members_key(int(session["guild_id"])),
+            self._guild_adventure_join_session_key(guild_id),
+            self._guild_adventure_join_members_key(guild_id),
         )
-        self.bot.add_view(view, message_id=int(session["message_id"]))
+        self.bot.add_view(view, message_id=message_id)
 
     def _schedule_guild_adventure_join_finalize(
         self,
@@ -185,7 +187,6 @@ class Guild(commands.Cog):
         )
 
     async def _resume_guild_adventure_joins(self) -> None:
-        await self.bot.wait_until_ready()
         try:
             keys = await self.bot.redis.keys("guildadv_join:*")
         except Exception:
@@ -207,10 +208,10 @@ class Guild(commands.Cog):
             if not session:
                 continue
 
-            if self.bot.get_guild(guild_id) is None:
+            try:
+                await self._attach_guild_adventure_join_view(session)
+            except Exception:
                 continue
-
-            await self._attach_guild_adventure_join_view(session)
             self._schedule_guild_adventure_join_finalize(guild_id, session=session)
 
     async def _disable_guild_adventure_join_view(
@@ -237,6 +238,8 @@ class Guild(commands.Cog):
                 session = await self._load_guild_adventure_join_session(guild_id)
             if not session:
                 return
+
+            await self.bot.wait_until_ready()
 
             ends_at = datetime.fromisoformat(session["ends_at"])
             now = datetime.utcnow()
