@@ -2692,7 +2692,7 @@ class GameMaster(commands.Cog):
 
         async with self.bot.pool.acquire() as conn:
             rows = await conn.fetch(
-                'SELECT name, xp, statpoints, stathp, statatk, statdef FROM profile ORDER BY xp DESC;')
+                'SELECT profile.user, name, xp, statpoints, stathp, statatk, statdef FROM profile ORDER BY xp DESC;')
             messages = []
 
             for row in rows:
@@ -2709,10 +2709,10 @@ class GameMaster(commands.Cog):
                     if difference > 0:
                         new_statpoints = current_unallocated + difference
                         await conn.execute(
-                            'UPDATE profile SET statpoints = $1 WHERE name = $2;',
-                            new_statpoints, row['name']
+                            'UPDATE profile SET statpoints = $1 WHERE profile.user = $2;',
+                            new_statpoints, row['profile.user']
                         )
-                        messages.append(f"Added {difference} points to {row['name']}'s unallocated stat points. " +
+                        messages.append(f"Added {difference} points to {row['name']}'s ({row['profile.user']}) unallocated stat points. " +
                                         f"Now has {new_statpoints} unallocated (Level {level}).")
 
                     else:
@@ -2748,12 +2748,12 @@ class GameMaster(commands.Cog):
                             stats_modified.append(f"DEF -{deduct_from_def}")
 
                         await conn.execute(
-                            'UPDATE profile SET statpoints = $1, stathp = $2, statatk = $3, statdef = $4 WHERE name = $5;',
-                            new_statpoints, new_stathp, new_statatk, new_statdef, row['name']
+                            'UPDATE profile SET statpoints = $1, stathp = $2, statatk = $3, statdef = $4 WHERE profile.user = $5;',
+                            new_statpoints, new_stathp, new_statatk, new_statdef, row['profile.user']
                         )
 
                         stats_message = ", ".join(stats_modified) if stats_modified else "no allocated stats changed"
-                        messages.append(f"Deducted {abs(difference)} points from {row['name']} " +
+                        messages.append(f"Deducted {abs(difference)} points from {row['name']} ({row['profile.user']}) " +
                                         f"({stats_message}). Now has {new_statpoints} unallocated (Level {level}).")
 
                 if len(messages) >= 5:
