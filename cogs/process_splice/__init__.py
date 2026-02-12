@@ -550,6 +550,203 @@ class ProcessSplice(commands.Cog):
         
         return hp_iv, attack_iv, defense_iv
 
+    def _load_default_pve_monster_names(self):
+        """Load base monster names from monsters.json used by PvE."""
+        with open("monsters.json", "r", encoding="utf-8") as f:
+            monsters_data = json.load(f)
+
+        base_names = set()
+        if isinstance(monsters_data, dict):
+            for monster_list in monsters_data.values():
+                if not isinstance(monster_list, list):
+                    continue
+                for monster in monster_list:
+                    if not isinstance(monster, dict):
+                        continue
+                    name = monster.get("name")
+                    if isinstance(name, str):
+                        cleaned = name.strip()
+                        if cleaned:
+                            base_names.add(cleaned)
+        return base_names
+
+    def _build_splice_generation_map(self, base_monster_names, completed_rows):
+        """
+        Build a generation map where:
+        - Base PvE monsters are treated as generation -1 parents.
+        - Child generation = max(parent_generations) + 1.
+        """
+        generation_by_name = {name: -1 for name in base_monster_names}
+        max_passes = max(1, len(completed_rows) + 1)
+
+        for _ in range(max_passes):
+            changed = False
+            for row in completed_rows:
+                pet1_default = row["pet1_default"]
+                pet2_default = row["pet2_default"]
+                result_name = row["result_name"]
+
+                if not pet1_default or not pet2_default or not result_name:
+                    continue
+
+                if not isinstance(pet1_default, str) or not isinstance(pet2_default, str) or not isinstance(result_name, str):
+                    continue
+
+                pet1_default = pet1_default.strip()
+                pet2_default = pet2_default.strip()
+                result_name = result_name.strip()
+                if not pet1_default or not pet2_default or not result_name:
+                    continue
+
+                parent1_gen = generation_by_name.get(pet1_default)
+                parent2_gen = generation_by_name.get(pet2_default)
+                if parent1_gen is None or parent2_gen is None:
+                    continue
+
+                child_gen = max(parent1_gen, parent2_gen) + 1
+                existing = generation_by_name.get(result_name)
+
+                # Keep canonical base-monster mapping untouched.
+                if existing == -1:
+                    continue
+
+                if existing is None or child_gen < existing:
+                    generation_by_name[result_name] = child_gen
+                    changed = True
+
+            if not changed:
+                break
+
+        return generation_by_name
+
+    @is_gm()
+    @commands.command(
+        name="splicegenstats",
+        aliases=["splicegen", "splicegens", "splicegencount"],
+        hidden=True,
+    )
+    async def splice_generation_stats(self, ctx: commands.Context):
+        """
+        Count splice generation combinations.
+        Gen 0: default PvE + default PvE
+        Gen 1: any combo whose parents resolve to generation 1
+        """
+        try:
+            base_monster_names = self._load_default_pve_monster_names()
+        except FileNotFoundError:
+            return await ctx.send("Could not read `monsters.json` to determine default PvE monsters.")
+        except Exception as e:
+            return await ctx.send(f"Failed to load base monster data: {e}")
+
+        if not base_monster_names:
+            return await ctx.send("No base PvE monster names were found in `monsters.json`.")
+
+        try:
+            async with self.bot.pool.acquire() as conn:
+                completed_rows = await conn.fetch(
+                    """
+                    SELECT id, pet1_default, pet2_default, result_name, created_at
+                    FROM splice_combinations
+                    ORDER BY created_at ASC, id ASC
+                    """
+                )
+                pending_rows = await conn.fetch(
+                    """
+                    SELECT id, pet1_default, pet2_default, created_at
+                    FROM splice_requests
+                    WHERE status = 'pending'
+                    ORDER BY created_at ASC, id ASC
+                    """
+                )
+        except Exception as e:
+            return await ctx.send(f"Failed to query splice tables: {e}")
+
+        generation_by_name = self._build_splice_generation_map(base_monster_names, completed_rows)
+
+        def classify_generation(parent1_name, parent2_name):
+            if not isinstance(parent1_name, str) or not isinstance(parent2_name, str):
+                return None, None, None
+
+            p1 = parent1_name.strip()
+            p2 = parent2_name.strip()
+            if not p1 or not p2:
+                return None, None, None
+
+            p1_gen = generation_by_name.get(p1)
+            p2_gen = generation_by_name.get(p2)
+            if p1_gen is None or p2_gen is None:
+                return None, p1_gen, p2_gen
+
+            return max(p1_gen, p2_gen) + 1, p1_gen, p2_gen
+
+        completed_gen0 = 0
+        completed_gen1 = 0
+        completed_gen1_default_plus_gen0 = 0
+        completed_gen1_gen0_plus_gen0 = 0
+        completed_unresolved = 0
+
+        for row in completed_rows:
+            row_gen, p1_gen, p2_gen = classify_generation(row["pet1_default"], row["pet2_default"])
+            if row_gen is None:
+                completed_unresolved += 1
+                continue
+
+            if row_gen == 0:
+                completed_gen0 += 1
+            elif row_gen == 1:
+                completed_gen1 += 1
+                if (p1_gen == -1 and p2_gen == 0) or (p1_gen == 0 and p2_gen == -1):
+                    completed_gen1_default_plus_gen0 += 1
+                elif p1_gen == 0 and p2_gen == 0:
+                    completed_gen1_gen0_plus_gen0 += 1
+
+        pending_gen0 = 0
+        pending_gen1 = 0
+        pending_unresolved = 0
+
+        for row in pending_rows:
+            row_gen, _, _ = classify_generation(row["pet1_default"], row["pet2_default"])
+            if row_gen is None:
+                pending_unresolved += 1
+                continue
+            if row_gen == 0:
+                pending_gen0 += 1
+            elif row_gen == 1:
+                pending_gen1 += 1
+
+        embed = discord.Embed(
+            title="🧬 Splice Generation Stats",
+            description="Counts based on default PvE monsters from `monsters.json`.",
+            color=discord.Color.teal(),
+        )
+        embed.add_field(
+            name="Completed (`splice_combinations`)",
+            value=(
+                f"Gen 0 (`default + default`): **{completed_gen0}**\n"
+                f"Gen 1 (total): **{completed_gen1}**\n"
+                f"Gen 1 (`default + gen0`): **{completed_gen1_default_plus_gen0}**\n"
+                f"Gen 1 (`gen0 + gen0`): **{completed_gen1_gen0_plus_gen0}**\n"
+                f"Unresolved: **{completed_unresolved}**"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Pending (`splice_requests`)",
+            value=(
+                f"Gen 0: **{pending_gen0}**\n"
+                f"Gen 1: **{pending_gen1}**\n"
+                f"Unresolved: **{pending_unresolved}**"
+            ),
+            inline=False,
+        )
+        embed.set_footer(
+            text=(
+                f"Base monsters: {len(base_monster_names)} | "
+                f"Completed rows: {len(completed_rows)} | Pending rows: {len(pending_rows)}"
+            )
+        )
+        await ctx.send(embed=embed)
+
     # ──────────────────────────────────────────────────────────────────────
     #  AUTO S P L I C E   (automated version of batch splice)
     # ──────────────────────────────────────────────────────────────────────

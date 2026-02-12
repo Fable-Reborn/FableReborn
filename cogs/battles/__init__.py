@@ -2637,7 +2637,10 @@ class Battles(commands.Cog):
                 # Skip egg drops if macro penalty is active (count >= 12)
                 if levelchoice < 12 and macro_penalty_level == 0:
                     # Calculate base egg chance
-                    base_egg_chance = 0.50 - ((levelchoice - 1) / 9) * 0.45
+                    if levelchoice == 11:
+                        base_egg_chance = 0.02
+                    else:
+                        base_egg_chance = 0.50 - ((levelchoice - 1) / 9) * 0.45
                     final_egg_chance = base_egg_chance
                     
                     # Check for Ranger class bonus
