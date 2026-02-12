@@ -1,5 +1,6 @@
 import datetime
 from operator import truediv
+from collections import defaultdict, deque
 import discord
 from discord.ext import commands
 from discord.ui import Button, View
@@ -21,7 +22,7 @@ import tempfile
 from io import BytesIO
 import pathlib
 from openai import OpenAI
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 import secrets
 
 # Constants for auto splice persistence
@@ -751,6 +752,404 @@ class ProcessSplice(commands.Cog):
             )
         )
         await ctx.send(embed=embed)
+
+    @is_gm()
+    @commands.command(
+        name="splicetree",
+        aliases=["splicemap", "splicetreeimg"],
+        hidden=True,
+    )
+    async def splice_tree(self, ctx: commands.Context, *, target: str = ""):
+        """
+        Generate a high-resolution splice ancestry tree image.
+        Usage:
+        - $splicetree
+        - $splicetree <monster name>
+        - $splicetree <size> <monster name>   (size max: 16000)
+        """
+        default_size = 8192
+        min_size = 2048
+        max_size = 16000
+
+        requested = (target or "").strip()
+        size = default_size
+        target_name = "furthest"
+
+        if requested:
+            parts = requested.split()
+            if parts and parts[0].isdigit():
+                size = int(parts[0])
+                remainder = " ".join(parts[1:]).strip()
+                target_name = remainder if remainder else "furthest"
+            else:
+                target_name = requested
+
+        size = max(min_size, min(max_size, size))
+
+        status = await ctx.send(
+            f"Building splice tree at **{size}x{size}** for target: **{target_name}** ..."
+        )
+
+        try:
+            with open("monsters.json", "r", encoding="utf-8") as f:
+                monsters_data = json.load(f)
+        except FileNotFoundError:
+            return await status.edit(content="Could not read `monsters.json`.")
+        except Exception as e:
+            return await status.edit(content=f"Failed to load `monsters.json`: {e}")
+
+        base_url_by_key = {}
+        canonical_by_key = {}
+
+        def norm_name(value):
+            if not isinstance(value, str):
+                return None
+            cleaned = value.strip()
+            if not cleaned:
+                return None
+            return cleaned.casefold()
+
+        def register_name(value):
+            key = norm_name(value)
+            if key is None:
+                return None
+            if key not in canonical_by_key:
+                canonical_by_key[key] = value.strip()
+            return key
+
+        base_monster_names = set()
+        if isinstance(monsters_data, dict):
+            for monster_list in monsters_data.values():
+                if not isinstance(monster_list, list):
+                    continue
+                for monster in monster_list:
+                    if not isinstance(monster, dict):
+                        continue
+                    m_name = monster.get("name")
+                    m_url = monster.get("url")
+                    key = register_name(m_name)
+                    if key is None:
+                        continue
+                    base_monster_names.add(canonical_by_key[key])
+                    if isinstance(m_url, str) and m_url.strip() and key not in base_url_by_key:
+                        base_url_by_key[key] = m_url.strip()
+
+        if not base_monster_names:
+            return await status.edit(content="No base monsters were found in `monsters.json`.")
+
+        try:
+            async with self.bot.pool.acquire() as conn:
+                completed_rows = await conn.fetch(
+                    """
+                    SELECT id, pet1_default, pet2_default, result_name, url, created_at
+                    FROM splice_combinations
+                    ORDER BY created_at ASC, id ASC
+                    """
+                )
+        except Exception as e:
+            return await status.edit(content=f"Failed to query `splice_combinations`: {e}")
+
+        if not completed_rows:
+            return await status.edit(content="No rows in `splice_combinations` to build a tree from.")
+
+        combinations_by_child = defaultdict(list)
+        node_url_by_key = dict(base_url_by_key)
+        generation_edges = []
+
+        for row in completed_rows:
+            p1_key = register_name(row["pet1_default"])
+            p2_key = register_name(row["pet2_default"])
+            child_key = register_name(row["result_name"])
+            if p1_key and p2_key and child_key:
+                combinations_by_child[child_key].append((p1_key, p2_key, row["id"]))
+                generation_edges.append((p1_key, p2_key, child_key))
+
+            row_url = row["url"]
+            if child_key and isinstance(row_url, str) and row_url.strip():
+                node_url_by_key[child_key] = row_url.strip()
+
+        # Generation map using normalized keys:
+        generation_by_key = {norm_name(name): -1 for name in base_monster_names if norm_name(name)}
+        max_passes = max(1, len(generation_edges) + 1)
+        for _ in range(max_passes):
+            changed = False
+            for p1_key, p2_key, child_key in generation_edges:
+                parent1_gen = generation_by_key.get(p1_key)
+                parent2_gen = generation_by_key.get(p2_key)
+                if parent1_gen is None or parent2_gen is None:
+                    continue
+
+                child_gen = max(parent1_gen, parent2_gen) + 1
+                existing = generation_by_key.get(child_key)
+                if existing == -1:
+                    continue
+                if existing is None or child_gen < existing:
+                    generation_by_key[child_key] = child_gen
+                    changed = True
+            if not changed:
+                break
+
+        requested_key = norm_name(target_name)
+        if requested_key in (None, "", "furthest", "highest", "latest", "max"):
+            spliced_nodes = [(k, v) for k, v in generation_by_key.items() if isinstance(v, int) and v >= 0]
+            if not spliced_nodes:
+                return await status.edit(content="No resolved spliced generations were found.")
+            furthest_key, furthest_gen = max(spliced_nodes, key=lambda item: item[1])
+            root_key = furthest_key
+            target_name = canonical_by_key.get(root_key, root_key)
+            target_generation = furthest_gen
+        else:
+            # Exact or partial lookup.
+            if requested_key in canonical_by_key:
+                root_key = requested_key
+            else:
+                matches = [k for k, v in canonical_by_key.items() if requested_key in k]
+                if not matches:
+                    return await status.edit(
+                        content=f"Target `{target_name}` not found in monsters or splice combinations."
+                    )
+                root_key = matches[0]
+            target_generation = generation_by_key.get(root_key)
+            target_name = canonical_by_key.get(root_key, target_name)
+
+        # Build ancestry graph (child -> parents) from root.
+        depth_by_key = {root_key: 0}
+        tree_edges = set()
+        queue = deque([root_key])
+        max_tree_depth = 120
+
+        while queue:
+            child_key = queue.popleft()
+            child_depth = depth_by_key.get(child_key, 0)
+            if child_depth >= max_tree_depth:
+                continue
+
+            for p1_key, p2_key, _ in combinations_by_child.get(child_key, []):
+                for parent_key in (p1_key, p2_key):
+                    if parent_key is None:
+                        continue
+                    tree_edges.add((child_key, parent_key))
+                    new_depth = child_depth + 1
+                    if parent_key not in depth_by_key or new_depth < depth_by_key[parent_key]:
+                        depth_by_key[parent_key] = new_depth
+                        queue.append(parent_key)
+
+        level_to_nodes = defaultdict(list)
+        for key, depth in depth_by_key.items():
+            level_to_nodes[depth].append(key)
+
+        for nodes in level_to_nodes.values():
+            nodes.sort(key=lambda k: canonical_by_key.get(k, k))
+
+        max_level = max(level_to_nodes.keys()) if level_to_nodes else 0
+        max_nodes_in_level = max((len(nodes) for nodes in level_to_nodes.values()), default=1)
+
+        width = size
+        margin_x = max(220, int(width * 0.06))
+        margin_y = max(220, int(width * 0.05))
+
+        if max_level == 0:
+            col_spacing = width - (2 * margin_x)
+        else:
+            col_spacing = (width - (2 * margin_x)) / max_level
+
+        node_diameter = int(col_spacing * 0.55) if max_level else int(width * 0.12)
+        node_diameter = max(70, min(220, node_diameter))
+
+        row_spacing = int(node_diameter * 1.45)
+        raw_height = max(size, max_nodes_in_level * row_spacing + (2 * margin_y))
+        height = max(min_size, min(max_size, raw_height))
+
+        positions = {}
+        for level in range(max_level + 1):
+            nodes = level_to_nodes.get(level, [])
+            if not nodes:
+                continue
+
+            x = int(margin_x + (level * col_spacing)) if max_level else width // 2
+            usable_height = max(1, height - (2 * margin_y))
+
+            if len(nodes) == 1:
+                positions[nodes[0]] = (x, height // 2)
+                continue
+
+            for idx, key in enumerate(nodes):
+                y = int(margin_y + (idx * (usable_height / (len(nodes) - 1))))
+                positions[key] = (x, y)
+
+        await status.edit(
+            content=(
+                f"Rendering splice tree for **{target_name}** "
+                f"(generation: **{target_generation if target_generation is not None else 'Unknown'}**) ..."
+            )
+        )
+
+        # Fetch node thumbnails.
+        thumb_size = max(56, int(node_diameter * 0.78))
+        thumbnails = {}
+        semaphore = asyncio.Semaphore(20)
+
+        async def fetch_thumb(session, node_key):
+            node_url = node_url_by_key.get(node_key)
+            if not node_url:
+                return
+            try:
+                async with semaphore:
+                    timeout = aiohttp.ClientTimeout(total=15)
+                    async with session.get(node_url, timeout=timeout) as response:
+                        if response.status != 200:
+                            return
+                        data = await response.read()
+
+                with Image.open(BytesIO(data)) as source_img:
+                    source_img = source_img.convert("RGBA")
+                    thumb = ImageOps.fit(source_img, (thumb_size, thumb_size), method=Image.LANCZOS)
+                    thumbnails[node_key] = thumb
+            except Exception:
+                return
+
+        image_candidate_nodes = list(depth_by_key.keys())
+        image_limit = 800
+        if len(image_candidate_nodes) > image_limit:
+            # Prefer lower depths first so the core lineage stays visual.
+            image_candidate_nodes.sort(key=lambda k: (depth_by_key.get(k, 9999), canonical_by_key.get(k, k)))
+            image_candidate_nodes = image_candidate_nodes[:image_limit]
+
+        async with aiohttp.ClientSession() as session:
+            await asyncio.gather(
+                *(fetch_thumb(session, node_key) for node_key in image_candidate_nodes),
+                return_exceptions=True,
+            )
+
+        canvas = Image.new("RGBA", (width, height), (12, 16, 24, 255))
+        draw = ImageDraw.Draw(canvas)
+
+        def load_font(size_px, bold=False):
+            font_candidates = [
+                "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            ]
+            for font_path in font_candidates:
+                try:
+                    return ImageFont.truetype(font_path, size_px)
+                except Exception:
+                    continue
+            return ImageFont.load_default()
+
+        title_font = load_font(min(72, max(26, width // 140)), bold=True)
+        label_font = load_font(min(36, max(14, node_diameter // 6)), bold=True)
+        meta_font = load_font(min(28, max(12, node_diameter // 8)), bold=False)
+
+        # Draw edges first.
+        for child_key, parent_key in tree_edges:
+            child_pos = positions.get(child_key)
+            parent_pos = positions.get(parent_key)
+            if not child_pos or not parent_pos:
+                continue
+            draw.line([child_pos, parent_pos], fill=(92, 150, 230, 120), width=max(1, node_diameter // 18))
+
+        palette = [
+            (126, 180, 255),
+            (144, 221, 168),
+            (255, 205, 120),
+            (255, 151, 120),
+            (214, 167, 255),
+            (120, 220, 220),
+        ]
+
+        # Draw nodes.
+        for node_key, (cx, cy) in positions.items():
+            node_gen = generation_by_key.get(node_key)
+            if node_gen == -1:
+                border = (124, 178, 255, 255)
+                fill = (34, 52, 84, 255)
+                gen_text = "BASE"
+            elif isinstance(node_gen, int):
+                border_rgb = palette[node_gen % len(palette)]
+                border = (*border_rgb, 255)
+                fill = (26, 35, 50, 255)
+                gen_text = f"G{node_gen}"
+            else:
+                border = (150, 150, 150, 255)
+                fill = (45, 45, 45, 255)
+                gen_text = "UNK"
+
+            radius = node_diameter // 2
+            left = cx - radius
+            top = cy - radius
+            right = cx + radius
+            bottom = cy + radius
+
+            draw.ellipse([left, top, right, bottom], fill=fill, outline=border, width=max(2, node_diameter // 20))
+
+            thumb = thumbnails.get(node_key)
+            if thumb:
+                inner = int(node_diameter * 0.80)
+                inner_left = cx - (inner // 2)
+                inner_top = cy - (inner // 2)
+                mask = Image.new("L", (inner, inner), 0)
+                mask_draw = ImageDraw.Draw(mask)
+                mask_draw.ellipse([0, 0, inner - 1, inner - 1], fill=255)
+                thumb_resized = ImageOps.fit(thumb, (inner, inner), method=Image.LANCZOS)
+                canvas.paste(thumb_resized, (inner_left, inner_top), mask)
+
+            node_name = canonical_by_key.get(node_key, node_key)
+            if len(node_name) > 26:
+                node_name = node_name[:23] + "..."
+
+            label_bbox = draw.textbbox((0, 0), node_name, font=label_font)
+            label_w = label_bbox[2] - label_bbox[0]
+            label_h = label_bbox[3] - label_bbox[1]
+
+            label_x = cx - (label_w // 2)
+            label_y = cy + radius + 8
+            draw.rectangle(
+                [label_x - 6, label_y - 4, label_x + label_w + 6, label_y + label_h + 4],
+                fill=(0, 0, 0, 150),
+            )
+            draw.text((label_x, label_y), node_name, font=label_font, fill=(245, 248, 255, 255))
+
+            gen_bbox = draw.textbbox((0, 0), gen_text, font=meta_font)
+            gen_w = gen_bbox[2] - gen_bbox[0]
+            gen_h = gen_bbox[3] - gen_bbox[1]
+            gen_x = cx - (gen_w // 2)
+            gen_y = cy - radius - gen_h - 8
+            draw.rectangle(
+                [gen_x - 6, gen_y - 3, gen_x + gen_w + 6, gen_y + gen_h + 3],
+                fill=(0, 0, 0, 150),
+            )
+            draw.text((gen_x, gen_y), gen_text, font=meta_font, fill=(232, 236, 245, 255))
+
+        title_text = f"Splice Tree: {target_name}"
+        subtitle_text = (
+            f"Nodes: {len(depth_by_key)} | Edges: {len(tree_edges)} | "
+            f"Depth: {max_level} | Target Gen: {target_generation if target_generation is not None else 'Unknown'}"
+        )
+        draw.text((margin_x, 40), title_text, font=title_font, fill=(248, 250, 255, 255))
+        draw.text((margin_x, 40 + (title_font.size + 8)), subtitle_text, font=meta_font, fill=(190, 205, 230, 255))
+
+        filename_safe_target = "".join(ch for ch in target_name if ch.isalnum() or ch in ("-", "_", " ")).strip()
+        if not filename_safe_target:
+            filename_safe_target = "splice_tree"
+        filename_safe_target = filename_safe_target.replace(" ", "_")[:80]
+
+        output = BytesIO()
+        try:
+            # JPEG keeps very large outputs upload-friendly.
+            canvas.convert("RGB").save(output, format="JPEG", quality=90, optimize=True)
+            output.seek(0)
+            await ctx.send(file=discord.File(output, filename=f"{filename_safe_target}_tree.jpg"))
+            await status.edit(content="Splice tree generated.")
+        except discord.HTTPException:
+            # Retry with a half-size fallback if upload fails.
+            fallback = canvas.resize((max(1024, width // 2), max(1024, height // 2)), Image.LANCZOS)
+            output = BytesIO()
+            fallback.convert("RGB").save(output, format="JPEG", quality=88, optimize=True)
+            output.seek(0)
+            await ctx.send(file=discord.File(output, filename=f"{filename_safe_target}_tree_fallback.jpg"))
+            await status.edit(content="Splice tree generated (fallback size).")
+        except Exception as e:
+            await status.edit(content=f"Failed to render splice tree: {e}")
 
     # ──────────────────────────────────────────────────────────────────────
     #  AUTO S P L I C E   (automated version of batch splice)
