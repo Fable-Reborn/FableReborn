@@ -64,6 +64,9 @@ def _create_config_interactive(config_path: Path, logger: logging.Logger) -> dic
     host = _prompt("Heartbeat host", "127.0.0.1")
     port = int(_prompt("Heartbeat port", "5555"))
     timeout_seconds = int(_prompt("Timeout seconds before restart", "300"))
+    startup_timeout_seconds = int(
+        _prompt("Startup timeout seconds before restart", "600")
+    )
     python_exe = _prompt("Python executable", "python3.11")
     process_name = _prompt("Process name to kill", "Fable")
 
@@ -72,6 +75,7 @@ def _create_config_interactive(config_path: Path, logger: logging.Logger) -> dic
         "host": host,
         "port": port,
         "timeout_seconds": timeout_seconds,
+        "startup_timeout_seconds": startup_timeout_seconds,
         "python_exe": python_exe,
         "process_name": process_name,
     }
@@ -165,6 +169,7 @@ def _run_watchdog(config: dict[str, Any], logger: logging.Logger) -> None:
     host = str(config.get("host", "127.0.0.1"))
     port = int(config.get("port", 5555))
     timeout_seconds = int(config.get("timeout_seconds", 300))
+    startup_timeout_seconds = int(config.get("startup_timeout_seconds", 600))
     python_exe = str(config.get("python_exe", "python3.11"))
     process_name = str(config.get("process_name", "Fable"))
     bot_dir = Path(str(config.get("bot_dir", "."))).expanduser().resolve()
@@ -176,27 +181,38 @@ def _run_watchdog(config: dict[str, Any], logger: logging.Logger) -> None:
     logger.info("Listening on %s:%s (UDP). Timeout=%ss", host, port, timeout_seconds)
     logger.info("Will kill process name '%s' and restart in %s", process_name, bot_dir)
 
-    started = False
+    waiting_for_first = True
     last_seen: float | None = None
+    last_restart = time.monotonic()
 
     while True:
         now = time.monotonic()
         try:
             data, addr = sock.recvfrom(2048)
             last_seen = time.monotonic()
-            if not started:
-                started = True
+            if waiting_for_first:
+                waiting_for_first = False
                 logger.info("Heartbeat initialized by %s: %s", addr, data.decode("utf-8", "ignore"))
         except socket.timeout:
             pass
 
-        if started and last_seen is not None:
-            if now - last_seen > timeout_seconds:
-                logger.warning("Heartbeat timeout exceeded. Restarting bot.")
+        if waiting_for_first:
+            if now - last_restart > startup_timeout_seconds:
+                logger.warning(
+                    "Startup heartbeat timeout exceeded (%ss). Restarting bot.",
+                    startup_timeout_seconds,
+                )
                 killed = _kill_processes(process_name, logger)
                 logger.info("Killed %s process(es) named %s", killed, process_name)
                 _restart_bot(bot_dir, python_exe, logger)
-                last_seen = time.monotonic()
+                last_restart = time.monotonic()
+        elif last_seen is not None and now - last_seen > timeout_seconds:
+            logger.warning("Heartbeat timeout exceeded. Restarting bot.")
+            killed = _kill_processes(process_name, logger)
+            logger.info("Killed %s process(es) named %s", killed, process_name)
+            _restart_bot(bot_dir, python_exe, logger)
+            waiting_for_first = True
+            last_restart = time.monotonic()
 
 
 def main() -> int:
