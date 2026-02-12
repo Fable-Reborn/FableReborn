@@ -912,70 +912,131 @@ class ProcessSplice(commands.Cog):
             target_generation = generation_by_key.get(root_key)
             target_name = canonical_by_key.get(root_key, target_name)
 
-        # Build ancestry graph (child -> parents) from root.
-        depth_by_key = {root_key: 0}
-        tree_edges = set()
-        queue = deque([root_key])
-        max_tree_depth = 120
-
-        while queue:
-            child_key = queue.popleft()
-            child_depth = depth_by_key.get(child_key, 0)
-            if child_depth >= max_tree_depth:
+        # Build a strict genealogy tree (binary ancestry) for cleaner layout.
+        parent_pair_by_child = {}
+        duplicate_combo_children = 0
+        for child_key, pairs in combinations_by_child.items():
+            if not pairs:
                 continue
+            if len(pairs) > 1:
+                duplicate_combo_children += 1
+            # Use earliest known splice pair for deterministic genealogy view.
+            parent_pair_by_child[child_key] = pairs[0]
 
-            for p1_key, p2_key, _ in combinations_by_child.get(child_key, []):
-                for parent_key in (p1_key, p2_key):
-                    if parent_key is None:
-                        continue
-                    tree_edges.add((child_key, parent_key))
-                    new_depth = child_depth + 1
-                    if parent_key not in depth_by_key or new_depth < depth_by_key[parent_key]:
-                        depth_by_key[parent_key] = new_depth
-                        queue.append(parent_key)
+        max_tree_depth = 80
 
-        level_to_nodes = defaultdict(list)
-        for key, depth in depth_by_key.items():
-            level_to_nodes[depth].append(key)
+        def build_gene_node(node_key, depth=0, lineage=None):
+            if lineage is None:
+                lineage = set()
 
-        for nodes in level_to_nodes.values():
-            nodes.sort(key=lambda k: canonical_by_key.get(k, k))
+            node = {
+                "key": node_key,
+                "depth": depth,
+                "left": None,
+                "right": None,
+                "order": None,
+                "x": 0,
+                "y": 0,
+            }
 
-        max_level = max(level_to_nodes.keys()) if level_to_nodes else 0
-        max_nodes_in_level = max((len(nodes) for nodes in level_to_nodes.values()), default=1)
+            if node_key is None:
+                return node
+            if depth >= max_tree_depth:
+                return node
+            if node_key in lineage:
+                return node
+
+            parent_pair = parent_pair_by_child.get(node_key)
+            if not parent_pair:
+                return node
+
+            p1_key, p2_key, _ = parent_pair
+            next_lineage = set(lineage)
+            next_lineage.add(node_key)
+
+            if p1_key:
+                node["left"] = build_gene_node(p1_key, depth + 1, next_lineage)
+            if p2_key:
+                node["right"] = build_gene_node(p2_key, depth + 1, next_lineage)
+            return node
+
+        root_node = build_gene_node(root_key)
+
+        tree_nodes = []
+
+        def collect_nodes(node):
+            if node is None:
+                return
+            tree_nodes.append(node)
+            collect_nodes(node["left"])
+            collect_nodes(node["right"])
+
+        collect_nodes(root_node)
+        if not tree_nodes:
+            return await status.edit(content="Could not build genealogy tree nodes for this target.")
+
+        leaf_counter = 0
+
+        def assign_inorder(node):
+            nonlocal leaf_counter
+            if node is None:
+                return None
+
+            left_order = assign_inorder(node["left"])
+            right_order = assign_inorder(node["right"])
+
+            if node["left"] is None and node["right"] is None:
+                node["order"] = float(leaf_counter)
+                leaf_counter += 1
+            else:
+                valid = [value for value in (left_order, right_order) if value is not None]
+                if valid:
+                    node["order"] = sum(valid) / len(valid)
+                else:
+                    node["order"] = float(leaf_counter)
+                    leaf_counter += 1
+            return node["order"]
+
+        assign_inorder(root_node)
+
+        leaf_count = max(1, leaf_counter)
+        max_depth = max(node["depth"] for node in tree_nodes)
 
         width = size
-        margin_x = max(220, int(width * 0.06))
-        margin_y = max(220, int(width * 0.05))
+        title_band = max(180, int(size * 0.08))
+        margin_x = max(120, int(width * 0.05))
+        margin_bottom = max(120, int(size * 0.05))
 
-        if max_level == 0:
-            col_spacing = width - (2 * margin_x)
-        else:
-            col_spacing = (width - (2 * margin_x)) / max_level
+        height = int(size * 0.68)
+        if max_depth > 8:
+            height = int(height * (1.0 + min(1.2, (max_depth - 8) * 0.08)))
+        height = max(min_size, min(max_size, height))
 
-        node_diameter = int(col_spacing * 0.55) if max_level else int(width * 0.12)
-        node_diameter = max(70, min(220, node_diameter))
+        # Keep memory in check for very large requests.
+        max_pixels = 110_000_000
+        if width * height > max_pixels:
+            scale = (max_pixels / float(width * height)) ** 0.5
+            width = max(1800, int(width * scale))
+            height = max(1400, int(height * scale))
 
-        row_spacing = int(node_diameter * 1.45)
-        raw_height = max(size, max_nodes_in_level * row_spacing + (2 * margin_y))
-        height = max(min_size, min(max_size, raw_height))
+        usable_width = max(1, width - (2 * margin_x))
+        usable_height = max(1, height - title_band - margin_bottom)
+        spacing_x = usable_width / max(1, leaf_count - 1) if leaf_count > 1 else usable_width
+        level_spacing = usable_height / max(1, max_depth if max_depth > 0 else 1)
 
-        positions = {}
-        for level in range(max_level + 1):
-            nodes = level_to_nodes.get(level, [])
-            if not nodes:
-                continue
+        node_diameter = int(min(
+            spacing_x * 0.62 if leaf_count > 1 else (width * 0.20),
+            level_spacing * 0.58,
+            width * 0.11,
+        ))
+        node_diameter = max(54, node_diameter)
 
-            x = int(margin_x + (level * col_spacing)) if max_level else width // 2
-            usable_height = max(1, height - (2 * margin_y))
-
-            if len(nodes) == 1:
-                positions[nodes[0]] = (x, height // 2)
-                continue
-
-            for idx, key in enumerate(nodes):
-                y = int(margin_y + (idx * (usable_height / (len(nodes) - 1))))
-                positions[key] = (x, y)
+        for node in tree_nodes:
+            if leaf_count > 1:
+                node["x"] = int(margin_x + (node["order"] * spacing_x))
+            else:
+                node["x"] = width // 2
+            node["y"] = int(title_band + (node["depth"] * level_spacing))
 
         await status.edit(
             content=(
@@ -985,7 +1046,7 @@ class ProcessSplice(commands.Cog):
         )
 
         # Fetch node thumbnails.
-        thumb_size = max(56, int(node_diameter * 0.78))
+        thumb_size = max(52, int(node_diameter * 0.84))
         thumbnails = {}
         semaphore = asyncio.Semaphore(20)
 
@@ -1008,11 +1069,18 @@ class ProcessSplice(commands.Cog):
             except Exception:
                 return
 
-        image_candidate_nodes = list(depth_by_key.keys())
+        image_candidate_nodes = list({node["key"] for node in tree_nodes if node.get("key")})
         image_limit = 800
         if len(image_candidate_nodes) > image_limit:
-            # Prefer lower depths first so the core lineage stays visual.
-            image_candidate_nodes.sort(key=lambda k: (depth_by_key.get(k, 9999), canonical_by_key.get(k, k)))
+            node_depth_by_key = {}
+            for node in tree_nodes:
+                key = node.get("key")
+                if not key:
+                    continue
+                existing_depth = node_depth_by_key.get(key)
+                if existing_depth is None or node["depth"] < existing_depth:
+                    node_depth_by_key[key] = node["depth"]
+            image_candidate_nodes.sort(key=lambda k: (node_depth_by_key.get(k, 9999), canonical_by_key.get(k, k)))
             image_candidate_nodes = image_candidate_nodes[:image_limit]
 
         async with aiohttp.ClientSession() as session:
@@ -1021,7 +1089,7 @@ class ProcessSplice(commands.Cog):
                 return_exceptions=True,
             )
 
-        canvas = Image.new("RGBA", (width, height), (12, 16, 24, 255))
+        canvas = Image.new("RGB", (width, height), (12, 16, 24))
         draw = ImageDraw.Draw(canvas)
 
         def load_font(size_px, bold=False):
@@ -1036,17 +1104,61 @@ class ProcessSplice(commands.Cog):
                     continue
             return ImageFont.load_default()
 
-        title_font = load_font(min(72, max(26, width // 140)), bold=True)
-        label_font = load_font(min(36, max(14, node_diameter // 6)), bold=True)
-        meta_font = load_font(min(28, max(12, node_diameter // 8)), bold=False)
+        title_font = load_font(min(110, max(26, width // 96)), bold=True)
+        label_font = load_font(min(58, max(14, node_diameter // 4)), bold=True)
+        meta_font = load_font(min(38, max(12, node_diameter // 6)), bold=False)
 
-        # Draw edges first.
-        for child_key, parent_key in tree_edges:
-            child_pos = positions.get(child_key)
-            parent_pos = positions.get(parent_key)
-            if not child_pos or not parent_pos:
+        edge_color = (90, 165, 245)
+        edge_width = max(2, node_diameter // 14)
+
+        # Draw genealogy connectors first.
+        for node in tree_nodes:
+            child_x = node["x"]
+            child_y = node["y"]
+            parents = [p for p in (node.get("left"), node.get("right")) if p is not None]
+            if not parents:
                 continue
-            draw.line([child_pos, parent_pos], fill=(92, 150, 230, 120), width=max(1, node_diameter // 18))
+
+            if len(parents) == 2:
+                p1 = parents[0]
+                p2 = parents[1]
+                left_parent, right_parent = (p1, p2) if p1["x"] <= p2["x"] else (p2, p1)
+
+                connector_y = int(child_y + (left_parent["y"] - child_y) * 0.42)
+                child_anchor_y = child_y + (node_diameter // 2)
+                left_anchor_y = left_parent["y"] - (node_diameter // 2)
+                right_anchor_y = right_parent["y"] - (node_diameter // 2)
+
+                draw.line(
+                    [(child_x, child_anchor_y), (child_x, connector_y)],
+                    fill=edge_color,
+                    width=edge_width,
+                )
+                draw.line(
+                    [(left_parent["x"], connector_y), (right_parent["x"], connector_y)],
+                    fill=edge_color,
+                    width=edge_width,
+                )
+                draw.line(
+                    [(left_parent["x"], left_anchor_y), (left_parent["x"], connector_y)],
+                    fill=edge_color,
+                    width=edge_width,
+                )
+                draw.line(
+                    [(right_parent["x"], right_anchor_y), (right_parent["x"], connector_y)],
+                    fill=edge_color,
+                    width=edge_width,
+                )
+            else:
+                parent = parents[0]
+                draw.line(
+                    [
+                        (child_x, child_y + (node_diameter // 2)),
+                        (parent["x"], parent["y"] - (node_diameter // 2)),
+                    ],
+                    fill=edge_color,
+                    width=edge_width,
+                )
 
         palette = [
             (126, 180, 255),
@@ -1057,21 +1169,33 @@ class ProcessSplice(commands.Cog):
             (120, 220, 220),
         ]
 
+        def fit_text_to_width(text, font, max_width):
+            if draw.textlength(text, font=font) <= max_width:
+                return text
+            suffix = "..."
+            trimmed = text
+            while trimmed and draw.textlength(trimmed + suffix, font=font) > max_width:
+                trimmed = trimmed[:-1]
+            return (trimmed + suffix) if trimmed else suffix
+
         # Draw nodes.
-        for node_key, (cx, cy) in positions.items():
+        for node in tree_nodes:
+            node_key = node["key"]
+            cx = node["x"]
+            cy = node["y"]
             node_gen = generation_by_key.get(node_key)
             if node_gen == -1:
-                border = (124, 178, 255, 255)
-                fill = (34, 52, 84, 255)
+                border = (124, 178, 255)
+                fill = (34, 52, 84)
                 gen_text = "BASE"
             elif isinstance(node_gen, int):
                 border_rgb = palette[node_gen % len(palette)]
-                border = (*border_rgb, 255)
-                fill = (26, 35, 50, 255)
+                border = border_rgb
+                fill = (26, 35, 50)
                 gen_text = f"G{node_gen}"
             else:
-                border = (150, 150, 150, 255)
-                fill = (45, 45, 45, 255)
+                border = (150, 150, 150)
+                fill = (45, 45, 45)
                 gen_text = "UNK"
 
             radius = node_diameter // 2
@@ -1094,8 +1218,7 @@ class ProcessSplice(commands.Cog):
                 canvas.paste(thumb_resized, (inner_left, inner_top), mask)
 
             node_name = canonical_by_key.get(node_key, node_key)
-            if len(node_name) > 26:
-                node_name = node_name[:23] + "..."
+            node_name = fit_text_to_width(node_name, label_font, int(node_diameter * 1.8))
 
             label_bbox = draw.textbbox((0, 0), node_name, font=label_font)
             label_w = label_bbox[2] - label_bbox[0]
@@ -1105,9 +1228,9 @@ class ProcessSplice(commands.Cog):
             label_y = cy + radius + 8
             draw.rectangle(
                 [label_x - 6, label_y - 4, label_x + label_w + 6, label_y + label_h + 4],
-                fill=(0, 0, 0, 150),
+                fill=(0, 0, 0),
             )
-            draw.text((label_x, label_y), node_name, font=label_font, fill=(245, 248, 255, 255))
+            draw.text((label_x, label_y), node_name, font=label_font, fill=(245, 248, 255))
 
             gen_bbox = draw.textbbox((0, 0), gen_text, font=meta_font)
             gen_w = gen_bbox[2] - gen_bbox[0]
@@ -1116,17 +1239,18 @@ class ProcessSplice(commands.Cog):
             gen_y = cy - radius - gen_h - 8
             draw.rectangle(
                 [gen_x - 6, gen_y - 3, gen_x + gen_w + 6, gen_y + gen_h + 3],
-                fill=(0, 0, 0, 150),
+                fill=(0, 0, 0),
             )
-            draw.text((gen_x, gen_y), gen_text, font=meta_font, fill=(232, 236, 245, 255))
+            draw.text((gen_x, gen_y), gen_text, font=meta_font, fill=(232, 236, 245))
 
         title_text = f"Splice Tree: {target_name}"
         subtitle_text = (
-            f"Nodes: {len(depth_by_key)} | Edges: {len(tree_edges)} | "
-            f"Depth: {max_level} | Target Gen: {target_generation if target_generation is not None else 'Unknown'}"
+            f"Nodes: {len(tree_nodes)} | Levels: {max_depth + 1} | "
+            f"Target Gen: {target_generation if target_generation is not None else 'Unknown'} | "
+            f"Multi-parent rows collapsed: {duplicate_combo_children}"
         )
-        draw.text((margin_x, 40), title_text, font=title_font, fill=(248, 250, 255, 255))
-        draw.text((margin_x, 40 + (title_font.size + 8)), subtitle_text, font=meta_font, fill=(190, 205, 230, 255))
+        draw.text((margin_x, 36), title_text, font=title_font, fill=(248, 250, 255))
+        draw.text((margin_x, 36 + (title_font.size + 12)), subtitle_text, font=meta_font, fill=(190, 205, 230))
 
         filename_safe_target = "".join(ch for ch in target_name if ch.isalnum() or ch in ("-", "_", " ")).strip()
         if not filename_safe_target:
