@@ -153,8 +153,41 @@ class ArmoryPaginatorView(discord.ui.View):
 
 
 class Profile(commands.Cog):
+    _PRESET_AMULET_MARKER_OFFSET = 1_000_000_000
+
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
+
+    @classmethod
+    def _preset_amulet_none_marker(cls) -> int:
+        return -cls._PRESET_AMULET_MARKER_OFFSET
+
+    @classmethod
+    def _preset_amulet_id_to_marker(cls, amulet_id: int) -> int:
+        return -(cls._PRESET_AMULET_MARKER_OFFSET + amulet_id)
+
+    @classmethod
+    def _is_preset_amulet_marker(cls, value: int) -> bool:
+        return value <= cls._preset_amulet_none_marker()
+
+    @classmethod
+    def _preset_marker_to_amulet_id(cls, marker: int) -> Optional[int]:
+        if marker == cls._preset_amulet_none_marker():
+            return None
+        if marker < cls._preset_amulet_none_marker():
+            amulet_id = -marker - cls._PRESET_AMULET_MARKER_OFFSET
+            if amulet_id > 0:
+                return amulet_id
+        return None
+
+    @staticmethod
+    def _preset_amulet_mode_enabled(mode: str) -> Optional[bool]:
+        normalized = (mode or "items").strip().lower()
+        if normalized in {"items", "item", "gear", "weapon", "weapons"}:
+            return False
+        if normalized in {"all", "amulet", "amulets", "full"}:
+            return True
+        return None
 
     @checks.has_no_char()
     @user_cooldown(3600)
@@ -2081,21 +2114,34 @@ class Profile(commands.Cog):
         """
         Base command group for preset operations.
         Usage:
-          $preset create <preset_name>
-          $preset use <preset_name>
+          $preset create <preset_name> [items|all]
+          $preset use <preset_name> [items|all]
           $preset list
           $preset delete <preset_name>
         """
-        await ctx.send("Use `$preset create|use|list|delete` ...")
+        await ctx.send(
+            "Use `$preset create|use|list|delete`.\n"
+            "`items` = gear only, `all` = gear + amulet."
+        )
 
     @preset_cmd.command(name="create")
-    async def preset_create(self, ctx, preset_id: str):
+    async def preset_create(self, ctx, preset_id: str, mode: str = "items"):
         """
         Creates or overwrites a preset using your currently equipped items.
+        Optional mode:
+          - items (default): only equipment from inventory
+          - all: equipment + current amulet state
         Enforces a maximum of 5 total presets per user.
         Usage:
             $preset create raid_loadout
+            $preset create raid_loadout all
         """
+        include_amulet = self._preset_amulet_mode_enabled(mode)
+        if include_amulet is None:
+            return await ctx.send(
+                "Invalid mode. Use `items` (default) or `all`."
+            )
+
         async with self.bot.pool.acquire() as conn:
             # 1) Grab currently equipped items
             rows = await conn.fetch(
@@ -2109,10 +2155,35 @@ class Profile(commands.Cog):
                 """,
                 ctx.author.id
             )
-            if not rows:
-                return await ctx.send("You have no currently equipped items to save.")
 
             item_ids = [r["item"] for r in rows]
+
+            equipped_amulet_id = None
+            if include_amulet:
+                equipped_amulet_id = await conn.fetchval(
+                    """
+                    SELECT id
+                      FROM amulets
+                     WHERE user_id = $1
+                       AND equipped = TRUE;
+                    """,
+                    ctx.author.id,
+                )
+
+            if not item_ids and not include_amulet:
+                return await ctx.send("You have no currently equipped items to save.")
+            if not item_ids and include_amulet and equipped_amulet_id is None:
+                return await ctx.send(
+                    "You have no currently equipped items or amulet to save."
+                )
+
+            if include_amulet:
+                if equipped_amulet_id is None:
+                    item_ids.append(self._preset_amulet_none_marker())
+                else:
+                    item_ids.append(
+                        self._preset_amulet_id_to_marker(equipped_amulet_id)
+                    )
 
             # 2) Check how many presets the user currently has
             preset_count = await conn.fetchval(
@@ -2155,17 +2226,33 @@ class Profile(commands.Cog):
                 item_ids
             )
 
-        await ctx.send(
-            f"Preset **{preset_id}** saved with these equipped item IDs: {', '.join(map(str, item_ids))}"
-        )
+        saved_item_ids = [i for i in item_ids if not self._is_preset_amulet_marker(i)]
+        saved_items_text = ", ".join(map(str, saved_item_ids)) if saved_item_ids else "(none)"
+
+        if include_amulet:
+            amulet_text = str(equipped_amulet_id) if equipped_amulet_id is not None else "none"
+            await ctx.send(
+                f"Preset **{preset_id}** saved with item IDs: {saved_items_text} | amulet: {amulet_text}"
+            )
+        else:
+            await ctx.send(
+                f"Preset **{preset_id}** saved with these equipped item IDs: {saved_items_text}"
+            )
 
     @preset_cmd.command(name="use")
-    async def preset_use(self, ctx, preset_id: str):
+    async def preset_use(self, ctx, preset_id: str, mode: str = "items"):
         """
         Equips all items saved in the specified preset.
-        Automatically unequips currently equipped items.
+        Optional mode:
+          - items (default): only equipment from inventory
+          - all: equipment + amulet state (if preset has it)
         Usage: $preset use sword_shield
+        Usage: $preset use sword_shield all
         """
+        apply_amulet = self._preset_amulet_mode_enabled(mode)
+        if apply_amulet is None:
+            return await ctx.send("Invalid mode. Use `items` (default) or `all`.")
+
         # 1) Fetch preset
         async with self.bot.pool.acquire() as conn:
             # Get the preset
@@ -2182,83 +2269,145 @@ class Profile(commands.Cog):
             if not record:
                 return await ctx.send(f"You have no preset **{preset_id}** defined.")
 
-            # 2) Get currently equipped items to unequip them later
-            equipped = await conn.fetch(
-                """
-                SELECT ai.id, ai.type
-                  FROM allitems ai
-                  JOIN inventory i ON (ai.id = i.item)
-                 WHERE i.equipped IS TRUE
-                   AND ai.owner = $1;
-                """,
-                ctx.author.id
-            )
+            raw_ids = record["item_ids"] or []
+            item_ids: list[int] = []
+            preset_has_amulet_state = False
+            preset_amulet_id: Optional[int] = None
 
-            item_ids = record["item_ids"]
-            if not item_ids:
+            for raw_id in raw_ids:
+                if self._is_preset_amulet_marker(raw_id):
+                    preset_has_amulet_state = True
+                    parsed_amulet_id = self._preset_marker_to_amulet_id(raw_id)
+                    if parsed_amulet_id is not None:
+                        preset_amulet_id = parsed_amulet_id
+                    continue
+                item_ids.append(raw_id)
+
+            if not item_ids and not preset_has_amulet_state:
                 return await ctx.send(f"Preset **{preset_id}** has no items stored.")
+            if not item_ids and preset_has_amulet_state and not apply_amulet:
+                return await ctx.send(
+                    f"Preset **{preset_id}** has no gear items. Use `all` mode to apply the amulet state."
+                )
+
+            # 2) Get currently equipped items to unequip them later
+            equipped = []
+            if item_ids:
+                equipped = await conn.fetch(
+                    """
+                    SELECT ai.id, ai.type
+                      FROM allitems ai
+                      JOIN inventory i ON (ai.id = i.item)
+                     WHERE i.equipped IS TRUE
+                       AND ai.owner = $1;
+                    """,
+                    ctx.author.id
+                )
 
             # 3) Check ownership of new items
-            owned_rows = await conn.fetch(
-                """
-                SELECT i.item, ai.type
-                  FROM inventory i
-                  JOIN allitems ai ON (i.item = ai.id)
-                 WHERE ai.owner = $1
-                   AND i.item = ANY($2::bigint[]);
-                """,
-                ctx.author.id,
-                item_ids
-            )
-            owned_items = {r["item"]: r["type"] for r in owned_rows}
-            missing = set(item_ids) - set(owned_items.keys())
-            if missing:
-                return await ctx.send(
-                    f"You no longer own these item(s): {', '.join(map(str, missing))}"
+            owned_items = {}
+            if item_ids:
+                owned_rows = await conn.fetch(
+                    """
+                    SELECT i.item, ai.type
+                      FROM inventory i
+                      JOIN allitems ai ON (i.item = ai.id)
+                     WHERE ai.owner = $1
+                       AND i.item = ANY($2::bigint[]);
+                    """,
+                    ctx.author.id,
+                    item_ids
                 )
+                owned_items = {r["item"]: r["type"] for r in owned_rows}
+                missing = set(item_ids) - set(owned_items.keys())
+                if missing:
+                    return await ctx.send(
+                        f"You no longer own these item(s): {', '.join(map(str, missing))}"
+                    )
+
+            preset_amulet = None
+            if apply_amulet and preset_has_amulet_state and preset_amulet_id is not None:
+                preset_amulet = await conn.fetchrow(
+                    """
+                    SELECT id, type, tier
+                      FROM amulets
+                     WHERE id = $1
+                       AND user_id = $2;
+                    """,
+                    preset_amulet_id,
+                    ctx.author.id,
+                )
+                if not preset_amulet:
+                    return await ctx.send(
+                        f"You no longer own saved amulet `{preset_amulet_id}` for preset **{preset_id}**."
+                    )
 
             # 4) Begin transaction
             async with conn.transaction():
                 # 5) Unequip currently equipped items
-                for item in equipped:
-                    await conn.execute(
-                        """
-                        UPDATE inventory
-                           SET equipped = FALSE
-                         WHERE item = $1;
-                        """,
-                        item["id"]
-                    )
+                if item_ids:
+                    for item in equipped:
+                        await conn.execute(
+                            """
+                            UPDATE inventory
+                               SET equipped = FALSE
+                             WHERE item = $1;
+                            """,
+                            item["id"]
+                        )
 
                 # 6) Equip new items
-                for item_id in item_ids:
-                    item_type = owned_items[item_id]
-                    # First ensure no other item of same type is equipped
+                if item_ids:
+                    for item_id in item_ids:
+                        item_type = owned_items[item_id]
+                        # First ensure no other item of same type is equipped
+                        await conn.execute(
+                            """
+                            UPDATE inventory
+                               SET equipped = FALSE
+                             WHERE item IN (
+                                 SELECT i.item
+                                   FROM inventory i
+                                   JOIN allitems ai ON (i.item = ai.id)
+                                  WHERE ai.owner = $1
+                                    AND ai.type = $2
+                                    AND i.equipped = TRUE
+                             );
+                            """,
+                            ctx.author.id,
+                            item_type
+                        )
+                        # Then equip the new item
+                        await conn.execute(
+                            """
+                            UPDATE inventory
+                               SET equipped = TRUE
+                             WHERE item = $1;
+                            """,
+                            item_id
+                        )
+
+                if apply_amulet and preset_has_amulet_state:
                     await conn.execute(
                         """
-                        UPDATE inventory
+                        UPDATE amulets
                            SET equipped = FALSE
-                         WHERE item IN (
-                             SELECT i.item
-                               FROM inventory i
-                               JOIN allitems ai ON (i.item = ai.id)
-                              WHERE ai.owner = $1
-                                AND ai.type = $2
-                                AND i.equipped = TRUE
-                         );
+                         WHERE user_id = $1
+                           AND equipped = TRUE;
                         """,
                         ctx.author.id,
-                        item_type
                     )
-                    # Then equip the new item
-                    await conn.execute(
-                        """
-                        UPDATE inventory
-                           SET equipped = TRUE
-                         WHERE item = $1;
-                        """,
-                        item_id
-                    )
+                    if preset_amulet_id is not None:
+                        await conn.execute(
+                            """
+                            UPDATE amulets
+                               SET equipped = TRUE
+                             WHERE id = $1
+                               AND user_id = $2;
+                            """,
+                            preset_amulet_id,
+                            ctx.author.id,
+                        )
 
         # 7) Send success message with item details
         item_details = []
@@ -2268,6 +2417,21 @@ class Profile(commands.Cog):
             )
             if item:
                 item_details.append(f"- {item['name']} ({item['type']})")
+
+        if apply_amulet and preset_has_amulet_state:
+            if preset_amulet_id is None:
+                item_details.append("- Amulet: none (unequipped)")
+            elif preset_amulet:
+                item_details.append(
+                    f"- Amulet: Tier {preset_amulet['tier']} {preset_amulet['type'].upper()} (ID {preset_amulet['id']})"
+                )
+        elif apply_amulet and not preset_has_amulet_state:
+            item_details.append("- Amulet: unchanged (not stored in this preset)")
+        elif not apply_amulet and preset_has_amulet_state:
+            item_details.append("- Amulet state is saved in this preset (use `all` mode to apply)")
+
+        if not item_details:
+            item_details.append("- Nothing changed.")
 
         await ctx.send(
             f"✅ **Equipped preset {preset_id}:**\n" + "\n".join(item_details)[:1900]
@@ -2296,9 +2460,29 @@ class Profile(commands.Cog):
         lines = []
         for r in rows:
             pid = r["preset_id"]
-            items = r["item_ids"]
-            items_str = ", ".join(map(str, items)) if items else "(none)"
-            lines.append(f"**Preset {pid}:** {items_str}")
+            raw_items = r["item_ids"] or []
+            item_ids = []
+            preset_has_amulet_state = False
+            preset_amulet_id = None
+
+            for raw_id in raw_items:
+                if self._is_preset_amulet_marker(raw_id):
+                    preset_has_amulet_state = True
+                    parsed_amulet_id = self._preset_marker_to_amulet_id(raw_id)
+                    if parsed_amulet_id is not None:
+                        preset_amulet_id = parsed_amulet_id
+                    continue
+                item_ids.append(raw_id)
+
+            items_str = ", ".join(map(str, item_ids)) if item_ids else "(none)"
+            if not preset_has_amulet_state:
+                amulet_str = "not saved"
+            elif preset_amulet_id is None:
+                amulet_str = "none"
+            else:
+                amulet_str = str(preset_amulet_id)
+
+            lines.append(f"**Preset {pid}:** items={items_str} | amulet={amulet_str}")
 
         await ctx.send("\n".join(lines))
 
