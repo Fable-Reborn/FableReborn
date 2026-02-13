@@ -773,7 +773,7 @@ class ProcessSplice(commands.Cog):
         - $splicetree <monster name>
         - $splicetree <size> <monster name>   (size max: 16000)
         """
-        default_size = 8192
+        default_size = 4096
         min_size = 2048
         max_size = 16000
 
@@ -1009,9 +1009,9 @@ class ProcessSplice(commands.Cog):
         max_depth = max(node["depth"] for node in tree_nodes)
 
         width = size
-        title_band = max(180, int(size * 0.08))
-        margin_x = max(120, int(width * 0.05))
-        margin_bottom = max(120, int(size * 0.05))
+        title_band = max(260, int(size * 0.11))
+        margin_x = max(140, int(width * 0.06))
+        margin_bottom = max(220, int(size * 0.12))
 
         height = int(size * 0.68)
         if max_depth > 8:
@@ -1097,6 +1097,7 @@ class ProcessSplice(commands.Cog):
 
         canvas = Image.new("RGB", (width, height), (12, 16, 24))
         draw = ImageDraw.Draw(canvas)
+        draw.rectangle([0, 0, width, title_band], fill=(10, 14, 22))
 
         def load_font(size_px, bold=False):
             font_candidates = [
@@ -1110,9 +1111,10 @@ class ProcessSplice(commands.Cog):
                     continue
             return ImageFont.load_default()
 
-        title_font = load_font(min(110, max(26, width // 96)), bold=True)
-        label_font = load_font(min(58, max(14, node_diameter // 4)), bold=True)
-        meta_font = load_font(min(38, max(12, node_diameter // 6)), bold=False)
+        title_font = load_font(min(220, max(48, width // 24)), bold=True)
+        header_font = load_font(min(96, max(24, width // 64)), bold=False)
+        label_font = load_font(min(62, max(15, node_diameter // 4)), bold=True)
+        meta_font = load_font(min(42, max(12, node_diameter // 6)), bold=False)
 
         edge_color = (90, 165, 245)
         edge_width = max(2, node_diameter // 14)
@@ -1175,14 +1177,52 @@ class ProcessSplice(commands.Cog):
             (120, 220, 220),
         ]
 
-        def fit_text_to_width(text, font, max_width):
-            if draw.textlength(text, font=font) <= max_width:
-                return text
-            suffix = "..."
-            trimmed = text
-            while trimmed and draw.textlength(trimmed + suffix, font=font) > max_width:
-                trimmed = trimmed[:-1]
-            return (trimmed + suffix) if trimmed else suffix
+        def split_word_to_width(word, font, max_width):
+            if draw.textlength(word, font=font) <= max_width:
+                return [word]
+            chunks = []
+            current = ""
+            for ch in word:
+                candidate = current + ch
+                if current and draw.textlength(candidate, font=font) > max_width:
+                    chunks.append(current)
+                    current = ch
+                else:
+                    current = candidate
+            if current:
+                chunks.append(current)
+            return chunks
+
+        def wrap_text_to_width(text, font, max_width):
+            if not text:
+                return [""]
+            words = text.split()
+            if not words:
+                return [text]
+
+            lines = []
+            current = ""
+            for word in words:
+                pieces = split_word_to_width(word, font, max_width)
+                for piece in pieces:
+                    if not current:
+                        current = piece
+                        continue
+                    candidate = f"{current} {piece}"
+                    if draw.textlength(candidate, font=font) <= max_width:
+                        current = candidate
+                    else:
+                        lines.append(current)
+                        current = piece
+            if current:
+                lines.append(current)
+            return lines
+
+        inter_node_gap = spacing_x if leaf_count > 1 else (width * 0.40)
+        label_max_width = int(
+            max(node_diameter * 1.9, min(width * 0.32, inter_node_gap * 1.65))
+        )
+        label_max_width = max(140, min(int(width * 0.45), label_max_width))
 
         # Draw nodes.
         for node in tree_nodes:
@@ -1223,20 +1263,34 @@ class ProcessSplice(commands.Cog):
                 thumb_resized = ImageOps.fit(thumb, (inner, inner), method=Image.LANCZOS)
                 canvas.paste(thumb_resized, (inner_left, inner_top), mask)
 
-            node_name = canonical_by_key.get(node_key, node_key)
-            node_name = fit_text_to_width(node_name, label_font, int(node_diameter * 1.8))
+            node_name = canonical_by_key.get(node_key, node_key) or "Unknown"
+            name_lines = wrap_text_to_width(node_name, label_font, label_max_width)
+            line_spacing = max(4, label_font.size // 6)
+            line_metrics = []
+            for line in name_lines:
+                line_bbox = draw.textbbox((0, 0), line, font=label_font)
+                line_w = line_bbox[2] - line_bbox[0]
+                line_h = line_bbox[3] - line_bbox[1]
+                line_metrics.append((line, line_w, line_h))
 
-            label_bbox = draw.textbbox((0, 0), node_name, font=label_font)
-            label_w = label_bbox[2] - label_bbox[0]
-            label_h = label_bbox[3] - label_bbox[1]
+            label_w = max((metric[1] for metric in line_metrics), default=0)
+            label_h = sum(metric[2] for metric in line_metrics)
+            if len(line_metrics) > 1:
+                label_h += line_spacing * (len(line_metrics) - 1)
 
             label_x = cx - (label_w // 2)
-            label_y = cy + radius + 8
+            label_x = max(8, min(label_x, width - label_w - 8))
+            label_y = cy + radius + 10
             draw.rectangle(
-                [label_x - 6, label_y - 4, label_x + label_w + 6, label_y + label_h + 4],
+                [label_x - 8, label_y - 6, label_x + label_w + 8, label_y + label_h + 6],
                 fill=(0, 0, 0),
             )
-            draw.text((label_x, label_y), node_name, font=label_font, fill=(245, 248, 255))
+
+            line_y = label_y
+            for line, line_w, line_h in line_metrics:
+                line_x = label_x + ((label_w - line_w) // 2)
+                draw.text((line_x, line_y), line, font=label_font, fill=(245, 248, 255))
+                line_y += line_h + line_spacing
 
             gen_bbox = draw.textbbox((0, 0), gen_text, font=meta_font)
             gen_w = gen_bbox[2] - gen_bbox[0]
@@ -1255,8 +1309,10 @@ class ProcessSplice(commands.Cog):
             f"Target Gen: {target_generation if target_generation is not None else 'Unknown'} | "
             f"Multi-parent rows collapsed: {duplicate_combo_children}"
         )
-        draw.text((margin_x, 36), title_text, font=title_font, fill=(248, 250, 255))
-        draw.text((margin_x, 36 + (title_font.size + 12)), subtitle_text, font=meta_font, fill=(190, 205, 230))
+        title_y = max(26, int(title_band * 0.12))
+        subtitle_y = title_y + title_font.size + max(12, title_font.size // 4)
+        draw.text((margin_x, title_y), title_text, font=title_font, fill=(248, 250, 255))
+        draw.text((margin_x, subtitle_y), subtitle_text, font=header_font, fill=(190, 205, 230))
 
         filename_safe_target = "".join(ch for ch in target_name if ch.isalnum() or ch in ("-", "_", " ")).strip()
         if not filename_safe_target:
@@ -1265,19 +1321,18 @@ class ProcessSplice(commands.Cog):
 
         output = BytesIO()
         try:
-            # JPEG keeps very large outputs upload-friendly.
-            canvas.convert("RGB").save(output, format="JPEG", quality=90, optimize=True)
+            canvas.save(output, format="PNG", optimize=True, compress_level=6)
             output.seek(0)
-            await ctx.send(file=discord.File(output, filename=f"{filename_safe_target}_tree.jpg"))
+            await ctx.send(file=discord.File(output, filename=f"{filename_safe_target}_tree.png"))
             await status.edit(content="Splice tree generated.")
         except discord.HTTPException:
             # Retry with a half-size fallback if upload fails.
             fallback = canvas.resize((max(1024, width // 2), max(1024, height // 2)), Image.LANCZOS)
             output = BytesIO()
-            fallback.convert("RGB").save(output, format="JPEG", quality=88, optimize=True)
+            fallback.save(output, format="PNG", optimize=True, compress_level=6)
             output.seek(0)
-            await ctx.send(file=discord.File(output, filename=f"{filename_safe_target}_tree_fallback.jpg"))
-            await status.edit(content="Splice tree generated (fallback size).")
+            await ctx.send(file=discord.File(output, filename=f"{filename_safe_target}_tree_fallback.png"))
+            await status.edit(content="Splice tree generated (fallback size, PNG).")
         except Exception as e:
             await status.edit(content=f"Failed to render splice tree: {e}")
 
