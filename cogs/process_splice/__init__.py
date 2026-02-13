@@ -663,12 +663,65 @@ class ProcessSplice(commands.Cog):
                 fallback.save(output, format="PNG", optimize=True, compress_level=6)
             return output.getvalue()
 
-    def _get_splice_tree_background(self, width: int, height: int):
-        cache_key = (int(width), int(height))
+    def _ensure_splice_bg_source_loaded(self):
         background_candidates = [
             "/home/fableadmin/FableRPG-FINAL/FableRPG-FINAL/Fable/cogs/process_splice/Base.png",
             str(pathlib.Path(__file__).with_name("Base.png")),
         ]
+
+        with self._splice_bg_lock:
+            checked = self._splice_bg_checked
+            bg_source = self._splice_bg_source
+
+        if checked:
+            return bg_source
+
+        loaded_source = None
+        for bg_path in background_candidates:
+            try:
+                if not os.path.exists(bg_path):
+                    continue
+                with Image.open(bg_path) as src:
+                    loaded_source = src.convert("RGBA")
+                break
+            except Exception:
+                continue
+
+        with self._splice_bg_lock:
+            self._splice_bg_checked = True
+            self._splice_bg_source = loaded_source
+            return self._splice_bg_source
+
+    def _get_splice_bg_anchor_for_canvas(
+        self,
+        width: int,
+        height: int,
+        source_anchor_x: int,
+        source_anchor_y: int,
+    ):
+        bg_source = self._ensure_splice_bg_source_loaded()
+        if bg_source is None:
+            return int(source_anchor_x), int(source_anchor_y)
+
+        src_w, src_h = bg_source.size
+        if src_w <= 0 or src_h <= 0:
+            return int(source_anchor_x), int(source_anchor_y)
+
+        anchor_x = max(0.0, min(float(source_anchor_x), float(src_w)))
+        anchor_y = max(0.0, min(float(source_anchor_y), float(src_h)))
+
+        scale = max(float(width) / float(src_w), float(height) / float(src_h))
+        scaled_w = float(src_w) * scale
+        scaled_h = float(src_h) * scale
+        crop_left = max(0.0, (scaled_w - float(width)) * 0.5)
+        crop_top = max(0.0, (scaled_h - float(height)) * 0.5)
+
+        out_x = int(round((anchor_x * scale) - crop_left))
+        out_y = int(round((anchor_y * scale) - crop_top))
+        return out_x, out_y
+
+    def _get_splice_tree_background(self, width: int, height: int):
+        cache_key = (int(width), int(height))
 
         with self._splice_bg_lock:
             cached = self._splice_bg_cache.get(cache_key)
@@ -676,25 +729,7 @@ class ProcessSplice(commands.Cog):
                 self._splice_bg_cache.move_to_end(cache_key)
                 return cached.copy()
 
-            checked = self._splice_bg_checked
-            bg_source = self._splice_bg_source
-
-        if not checked:
-            loaded_source = None
-            for bg_path in background_candidates:
-                try:
-                    if not os.path.exists(bg_path):
-                        continue
-                    with Image.open(bg_path) as src:
-                        loaded_source = src.convert("RGBA")
-                    break
-                except Exception:
-                    continue
-
-            with self._splice_bg_lock:
-                self._splice_bg_checked = True
-                self._splice_bg_source = loaded_source
-                bg_source = self._splice_bg_source
+        bg_source = self._ensure_splice_bg_source_loaded()
 
         if bg_source is None:
             return None
@@ -1492,9 +1527,8 @@ class ProcessSplice(commands.Cog):
         margin_bottom = max(280, int(size * 0.16))
         # Slightly larger top padding so the root splice sits lower in the scene.
         tree_top_padding = max(130, int(size * 0.04) + 20)
-        root_anchor_x = 2438
-        min_title_to_splice_gap = 16
-        extra_downward_nudge = 30
+        source_root_anchor_x = 2438
+        source_root_anchor_y = 1272
 
         height = int(size * 0.74)
         if max_depth > 8:
@@ -1509,6 +1543,17 @@ class ProcessSplice(commands.Cog):
             scale = (max_pixels / float(width * height)) ** 0.5
             width = max(1800, int(width * scale))
             height = max(1400, int(height * scale))
+
+        try:
+            root_anchor_x, root_anchor_y = await asyncio.to_thread(
+                self._get_splice_bg_anchor_for_canvas,
+                width,
+                height,
+                source_root_anchor_x,
+                source_root_anchor_y,
+            )
+        except Exception:
+            root_anchor_x, root_anchor_y = source_root_anchor_x, source_root_anchor_y
 
         usable_width = max(1, width - (2 * margin_x))
         usable_height = max(1, height - title_band - tree_top_padding - margin_bottom)
@@ -1529,7 +1574,7 @@ class ProcessSplice(commands.Cog):
                 node["x"] = width // 2
             node["y"] = int(title_band + tree_top_padding + (node["depth"] * level_spacing))
 
-        # Anchor root X and ensure a small visual gap from title area on Y.
+        # Anchor root to the mapped background focal coordinate.
         if tree_nodes:
             min_x = min(node["x"] for node in tree_nodes)
             max_x = max(node["x"] for node in tree_nodes)
@@ -1537,14 +1582,15 @@ class ProcessSplice(commands.Cog):
             max_y = max(node["y"] for node in tree_nodes)
 
             requested_shift_x = root_anchor_x - root_node["x"]
-            min_root_center_y = title_band + (node_diameter // 2) + min_title_to_splice_gap
-            requested_shift_y = max(0, min_root_center_y - root_node["y"]) + extra_downward_nudge
+            requested_shift_y = root_anchor_y - root_node["y"]
 
             min_shift = margin_x - min_x
             max_shift = (width - margin_x) - max_x
             clamped_shift_x = int(max(min_shift, min(max_shift, requested_shift_x)))
 
+            min_visual_center_y = title_band + (node_diameter // 2) + 8
             max_visual_center_y = height - margin_bottom - (node_diameter // 2) - 10
+            min_shift_y = min_visual_center_y - min_y
             max_shift_y = max(0, max_visual_center_y - max_y)
 
             # Grow canvas just enough when necessary so downward shift isn't clamped away.
@@ -1556,7 +1602,7 @@ class ProcessSplice(commands.Cog):
                     max_visual_center_y = height - margin_bottom - (node_diameter // 2) - 10
                     max_shift_y = max(0, max_visual_center_y - max_y)
 
-            clamped_shift_y = int(min(max_shift_y, requested_shift_y))
+            clamped_shift_y = int(max(min_shift_y, min(max_shift_y, requested_shift_y)))
 
             if clamped_shift_x or clamped_shift_y:
                 for node in tree_nodes:
