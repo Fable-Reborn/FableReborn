@@ -360,6 +360,7 @@ class Raid(commands.Cog):
     DRAGON_COIN_DROP_CHANCE_PERCENT = 10
     DRAGON_COIN_DROP_MIN = 2
     DRAGON_COIN_DROP_MAX = 5
+    SPAWN_PARTICIPANT_REWARD_RATIO = 0.30
 
     def __init__(self, bot):
         self.bot = bot
@@ -421,6 +422,43 @@ class Raid(commands.Cog):
             unique_user_ids,
         )
         return True
+
+    async def _distribute_spawn_cash_rewards(self, all_participant_ids, survivor_ids, cash_pool):
+        all_participant_ids = list(dict.fromkeys(all_participant_ids))
+        survivor_ids = list(dict.fromkeys(survivor_ids))
+
+        participant_count = len(all_participant_ids)
+        survivor_count = len(survivor_ids)
+
+        cash_pool_total = int(cash_pool)
+        participant_pool = int(cash_pool_total * self.SPAWN_PARTICIPANT_REWARD_RATIO)
+        survivor_pool = cash_pool_total - participant_pool
+
+        participant_cash = int(participant_pool / participant_count) if participant_count > 0 else 0
+        survivor_bonus_cash = int(survivor_pool / survivor_count) if survivor_count > 0 else 0
+
+        if participant_cash > 0 and participant_count > 0:
+            await self.bot.pool.execute(
+                'UPDATE profile SET "money"="money"+$1 WHERE "user"=ANY($2);',
+                participant_cash,
+                all_participant_ids,
+            )
+
+        if survivor_bonus_cash > 0 and survivor_count > 0:
+            await self.bot.pool.execute(
+                'UPDATE profile SET "money"="money"+$1 WHERE "user"=ANY($2);',
+                survivor_bonus_cash,
+                survivor_ids,
+            )
+
+        return {
+            "cash_pool_total": cash_pool_total,
+            "participant_count": participant_count,
+            "survivor_count": survivor_count,
+            "participant_cash": participant_cash,
+            "survivor_bonus_cash": survivor_bonus_cash,
+            "survivor_total_cash": participant_cash + survivor_bonus_cash,
+        }
 
     @is_gm()
     @commands.command(hidden=True)
@@ -524,7 +562,7 @@ class Raid(commands.Cog):
     async def auto_spawn_raid(self, channel, hp, rarity="magic", raid_hp=17776):
         """Auto-spawn a raid without decorator checks."""
         try:
-            if rarity not in ["magic", "legendary", "rare", "uncommon", "common", "mystery", "fortune", "divine"]:
+            if rarity not in ["magic", "legendary", "rare", "uncommon", "common", "mystery", "fortune", "divine", "materials"]:
                 raise ValueError("Invalid rarity specified.")
             channeldebug = self.bot.get_channel(1444392570280087755)
             channeldebug.send(f"Auto-spawning Ragnarok raid with {hp:,} HP and {rarity} crate")
@@ -710,6 +748,10 @@ class Raid(commands.Cog):
                         raidhp = raid_hp
                     self.raid[(u, "user")] = {"hp": raidhp, "armor": deff, "damage": dmg}
 
+            all_participant_ids = [
+                user.id for (user, participant_type) in self.raid.keys()
+                if participant_type == "user" and not user.bot
+            ]
             raiders_joined = len(self.raid)  # Replace with your actual channel IDs
 
             # Final message with gathered data
@@ -1007,18 +1049,24 @@ class Raid(commands.Cog):
                             await current_channel.send(msg_content)
 
                     cash_pool = hp * 0.9
-                    survivors = len(self.raid)
-                    self.raid = {(user, p_type): data for (user, p_type), data in self.raid.items() if
-                                p_type == "user" and not user.bot}
-                    base_cash = int(cash_pool / survivors)  # This is our base reward
+                    self.raid = {
+                        (user, p_type): data for (user, p_type), data in self.raid.items()
+                        if p_type == "user" and not user.bot
+                    }
 
-                    # Send the base cash to all survivors first
+                    # Survivors stay in self.raid (also used for bidding checks).
                     users = [user.id for user, p_type in self.raid.keys() if p_type == "user"]
-                    await self.bot.pool.execute(
-                        'UPDATE profile SET "money"="money"+$1 WHERE "user"=ANY($2);',
-                        base_cash,
-                        users
+                    reward_split = await self._distribute_spawn_cash_rewards(
+                        all_participant_ids=all_participant_ids,
+                        survivor_ids=users,
+                        cash_pool=cash_pool,
                     )
+                    survivors = reward_split["survivor_count"]
+                    participant_count = reward_split["participant_count"]
+                    participant_cash = reward_split["participant_cash"]
+                    survivor_bonus_cash = reward_split["survivor_bonus_cash"]
+                    base_cash = reward_split["survivor_total_cash"]
+                    cash_pool_total = reward_split["cash_pool_total"]
                     dragon_coin_bonus = self._roll_raid_dragon_coin_bonus()
                     dragon_coins_awarded = await self._award_raid_dragon_coins(
                         users, dragon_coin_bonus
@@ -1070,7 +1118,9 @@ class Raid(commands.Cog):
                         current_channel = self.bot.get_channel(channel_id)
                         if current_channel:
                             await current_channel.send(
-                                f"**Gave ${base_cash:,.0f} of Ragnarok's ${cash_pool:,.0f} drop to all survivors!**")
+                                f"**Distributed Ragnarok's ${cash_pool_total:,.0f} drop (30/70): "
+                                f"${participant_cash:,.0f} to each participant, plus ${survivor_bonus_cash:,.0f} extra to each survivor.**"
+                            )
                             if dragon_coins_awarded:
                                 await current_channel.send(
                                     f"🐉 Bonus drop! All surviving raiders also received **{dragon_coin_bonus} <:dragoncoin:1398714322372395008> Dragon Coins**."
@@ -1079,7 +1129,9 @@ class Raid(commands.Cog):
                         summary_text = (
                             f"Emoji_here Defeated in: **{summary_duration}**\n"
                             f"{summary_crate}\n"
-                            f"Emoji_here Payout per survivor: **${base_cash:,.0f}**\n"
+                            f"Emoji_here Payout per participant: **${participant_cash:,.0f}** ({participant_count} participants)\n"
+                            f"Emoji_here Extra per survivor: **${survivor_bonus_cash:,.0f}**\n"
+                            f"Emoji_here Total per survivor: **${base_cash:,.0f}**\n"
                             f"Emoji_here Survivors: **{survivors} and {bots} of placeholders forces**"
                         )
 
@@ -1159,7 +1211,7 @@ class Raid(commands.Cog):
     @commands.command(hidden=True, brief=_("Start a Ragnorak raid"))
     async def spawn(self, ctx, hp: IntGreaterThan(0), rarity: str = "magic", raid_hp: int = 17776):
         try:
-            if rarity not in ["magic", "legendary", "rare", "uncommon", "common", "mystery", "fortune", "divine"]:
+            if rarity not in ["magic", "legendary", "rare", "uncommon", "common", "mystery", "fortune", "divine", "materials"]:
                 raise ValueError("Invalid rarity specified.")
             # rest of your function
 
@@ -1342,6 +1394,10 @@ class Raid(commands.Cog):
                         raidhp = raid_hp
                     self.raid[(u, "user")] = {"hp": raidhp, "armor": deff, "damage": dmg}
 
+            all_participant_ids = [
+                user.id for (user, participant_type) in self.raid.keys()
+                if participant_type == "user" and not user.bot
+            ]
             raiders_joined = len(self.raid)  # Replace with your actual channel IDs
 
             # Final message with gathered data
@@ -1635,18 +1691,24 @@ class Raid(commands.Cog):
 
 
                     cash_pool = hp * 1.3
-                    survivors = len(self.raid)
-                    self.raid = {(user, p_type): data for (user, p_type), data in self.raid.items() if
-                                 p_type == "user" and not user.bot}
-                    base_cash = int(cash_pool / survivors)  # This is our base reward
+                    self.raid = {
+                        (user, p_type): data for (user, p_type), data in self.raid.items()
+                        if p_type == "user" and not user.bot
+                    }
 
-                    # Send the base cash to all survivors first
+                    # Survivors stay in self.raid (also used for bidding checks).
                     users = [user.id for user, p_type in self.raid.keys() if p_type == "user"]
-                    await self.bot.pool.execute(
-                        'UPDATE profile SET "money"="money"+$1 WHERE "user"=ANY($2);',
-                        base_cash,
-                        users
+                    reward_split = await self._distribute_spawn_cash_rewards(
+                        all_participant_ids=all_participant_ids,
+                        survivor_ids=users,
+                        cash_pool=cash_pool,
                     )
+                    survivors = reward_split["survivor_count"]
+                    participant_count = reward_split["participant_count"]
+                    participant_cash = reward_split["participant_cash"]
+                    survivor_bonus_cash = reward_split["survivor_bonus_cash"]
+                    base_cash = reward_split["survivor_total_cash"]
+                    cash_pool_total = reward_split["cash_pool_total"]
                     dragon_coin_bonus = self._roll_raid_dragon_coin_bonus()
                     dragon_coins_awarded = await self._award_raid_dragon_coins(
                         users, dragon_coin_bonus
@@ -1698,7 +1760,9 @@ class Raid(commands.Cog):
                         channel = self.bot.get_channel(channel_id)
                         if channel:
                             await channel.send(
-                                f"**Gave ${base_cash:,.0f} of Ragnarok's ${cash_pool:,.0f} drop to all survivors!**")
+                                f"**Distributed Ragnarok's ${cash_pool_total:,.0f} drop (30/70): "
+                                f"${participant_cash:,.0f} to each participant, plus ${survivor_bonus_cash:,.0f} extra to each survivor.**"
+                            )
                             if dragon_coins_awarded:
                                 await channel.send(
                                     f"🐉 Bonus drop! All surviving raiders also received **{dragon_coin_bonus} <:dragoncoin:1398714322372395008> Dragon Coins**."
@@ -1707,7 +1771,9 @@ class Raid(commands.Cog):
                         summary_text = (
                             f"Emoji_here Defeated in: **{summary_duration}**\n"
                             f"{summary_crate}\n"
-                            f"Emoji_here Payout per survivor: **${base_cash:,.0f}**\n"
+                            f"Emoji_here Payout per participant: **${participant_cash:,.0f}** ({participant_count} participants)\n"
+                            f"Emoji_here Extra per survivor: **${survivor_bonus_cash:,.0f}**\n"
+                            f"Emoji_here Total per survivor: **${base_cash:,.0f}**\n"
                             f"Emoji_here Survivors: **{survivors} and {bots} of placeholders forces**"
                         )
 
