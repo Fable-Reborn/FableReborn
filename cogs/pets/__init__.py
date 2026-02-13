@@ -298,6 +298,11 @@ class Pets(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
+        ids_section = getattr(self.bot.config, "ids", None)
+        pets_ids = getattr(ids_section, "pets", {}) if ids_section else {}
+        if not isinstance(pets_ids, dict):
+            pets_ids = {}
+        self.booster_guild_id = pets_ids.get("booster_guild_id") or self.bot.config.game.support_server_id
         if not self.check_egg_hatches.is_running():
             self.check_egg_hatches.start()
         if not self.check_pet_growth.is_running():
@@ -1163,7 +1168,7 @@ class Pets(commands.Cog):
                         max_pets = 10
                         
                         # Check if they're a booster in the specific guild
-                        if hasattr(ctx, 'guild') and ctx.guild.id == 1402911850802315336:
+                        if hasattr(ctx, 'guild') and self.booster_guild_id and ctx.guild.id == self.booster_guild_id:
                             if guild_member and guild_member.premium_since is not None:
                                 max_pets = max(max_pets, 12)
                         
@@ -1181,7 +1186,7 @@ class Pets(commands.Cog):
 
                     their_member = None
                     author_member = None
-                    if hasattr(ctx, 'guild') and ctx.guild.id == 1402911850802315336:
+                    if hasattr(ctx, 'guild') and self.booster_guild_id and ctx.guild.id == self.booster_guild_id:
                         their_member = ctx.guild.get_member(their_user_id)
                         author_member = ctx.guild.get_member(ctx.author.id)
 
@@ -1474,7 +1479,8 @@ class Pets(commands.Cog):
 
                 if (
                         hasattr(ctx, 'guild')
-                        and ctx.guild.id == 1402911850802315336
+                        and self.booster_guild_id
+                        and ctx.guild.id == self.booster_guild_id
                         and hasattr(buyer, 'premium_since')
                         and buyer.premium_since is not None
                 ):

@@ -56,6 +56,11 @@ class Crates(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.crate = 0
+        ids_section = getattr(self.bot.config, "ids", None)
+        crate_ids = getattr(ids_section, "crates", {}) if ids_section else {}
+        if not isinstance(crate_ids, dict):
+            crate_ids = {}
+        self.generateweapon_target_user_id = crate_ids.get("generateweapon_target_user_id")
         self.emotes = namedtuple(
             "CrateEmotes", "common uncommon rare magic legendary item mystery fortune divine materials"
         )(
@@ -709,10 +714,12 @@ class Crates(commands.Cog):
         _(
             """`[amount]` - the amount of weapons to generate, may be in range from 1 to 100 at once
 
-            Generate weapons for 1144898209144127589. The stats of the generated weapons will be random."""
+            Generate weapons for the configured target user. The stats of the generated weapons will be random."""
         )
 
-        target_user_id = 1144898209144127589  # The user you want to generate items for
+        target_user_id = self.generateweapon_target_user_id
+        if not target_user_id:
+            return await ctx.send(_("Generate weapon target user is not configured."))
 
         async with self.bot.pool.acquire() as conn:
             items = []

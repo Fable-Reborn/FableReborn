@@ -529,10 +529,16 @@ class FableAssistant(commands.Cog):
     """Cog for the Fable Monster Encyclopedia assistant."""
     
     # Specify the channel ID as a class attribute for easy configuration
-    LISTEN_CHANNEL_ID = [1311927627803656192]
+    LISTEN_CHANNEL_ID = []
     
     def __init__(self, bot):
         self.bot = bot
+        ids_section = getattr(self.bot.config, "ids", None)
+        assistant_ids = getattr(ids_section, "fableassistant", {}) if ids_section else {}
+        if not isinstance(assistant_ids, dict):
+            assistant_ids = {}
+        listen_channels = assistant_ids.get("listen_channel_ids", [])
+        self.LISTEN_CHANNEL_ID = listen_channels if isinstance(listen_channels, list) else []
         
         # Load monster data from monsters.json
         try:

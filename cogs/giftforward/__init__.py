@@ -181,11 +181,24 @@ class GiftForward(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.min_donation = 1000
+        ids_section = getattr(self.bot.config, "ids", None)
+        giftforward_ids = getattr(ids_section, "giftforward", {}) if ids_section else {}
+        if not isinstance(giftforward_ids, dict):
+            giftforward_ids = {}
+        self.log_channel_id = giftforward_ids.get(
+            "log_channel_id", self.bot.config.game.gm_log_channel
+        )
         self.gift_distribution_task.start()  # Start the daily task
 
     async def distribute_gift_by_tier(self, conn, gift):
         tier = gift['tier']
-        log_channel = self.bot.get_channel(1313482408242184213)
+        log_channel = (
+            self.bot.get_channel(self.log_channel_id)
+            if self.log_channel_id
+            else None
+        )
+        if not log_channel:
+            return False
 
         # Find users who have given gifts in this tier but haven't received equal number back
         potential_recipients = await conn.fetch("""
@@ -710,7 +723,11 @@ class GiftForward(commands.Cog):
         # Add gift to distribution queue
         try:
             # Notify in logs
-            log_channel = self.bot.fetch_channel(1313482408242184213)
+            log_channel = (
+                self.bot.get_channel(self.log_channel_id)
+                if self.log_channel_id
+                else None
+            )
             if log_channel:
                 log_embed = discord.Embed(
                     title="🎁 New Gift Queued",

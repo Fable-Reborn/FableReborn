@@ -27,10 +27,15 @@ from utils.i18n import _
 
 
 class Alt(commands.Cog):
-    ALT_ROLE_ID = 1470792499789430917
+    ALT_ROLE_ID = None
 
     def __init__(self, bot):
         self.bot = bot
+        ids_section = getattr(self.bot.config, "ids", None)
+        alt_ids = getattr(ids_section, "alt", {}) if ids_section else {}
+        if not isinstance(alt_ids, dict):
+            alt_ids = {}
+        self.alt_role_id = alt_ids.get("alt_role_id", self.ALT_ROLE_ID)
         self.bot.loop.create_task(self.initialize_tables())
 
     async def initialize_tables(self):
@@ -101,7 +106,7 @@ class Alt(commands.Cog):
     async def assign_alt_role(self, member: discord.Member) -> None:
         if member is None:
             return
-        alt_role = member.guild.get_role(self.ALT_ROLE_ID)
+        alt_role = member.guild.get_role(self.alt_role_id) if self.alt_role_id else None
         if not alt_role or alt_role in member.roles:
             return
         try:
@@ -113,7 +118,7 @@ class Alt(commands.Cog):
         guild = await self._get_support_guild()
         if guild is None:
             return
-        alt_role = guild.get_role(self.ALT_ROLE_ID)
+        alt_role = guild.get_role(self.alt_role_id) if self.alt_role_id else None
         if not alt_role:
             return
         member = guild.get_member(alt_id)
@@ -130,7 +135,7 @@ class Alt(commands.Cog):
         guild = await self._get_support_guild()
         if guild is None:
             return
-        alt_role = guild.get_role(self.ALT_ROLE_ID)
+        alt_role = guild.get_role(self.alt_role_id) if self.alt_role_id else None
         if not alt_role:
             return
 

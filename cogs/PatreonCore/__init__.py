@@ -16,6 +16,11 @@ class PatreonCore(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
+        ids_section = getattr(self.bot.config, "ids", None)
+        patreoncore_ids = getattr(ids_section, "patreoncore", {}) if ids_section else {}
+        if not isinstance(patreoncore_ids, dict):
+            patreoncore_ids = {}
+        self.debug_user_id = patreoncore_ids.get("debug_user_id")
 
         # Patreon API credentials
         self.client_id = ""
@@ -26,7 +31,7 @@ class PatreonCore(commands.Cog):
 
         # Campaign and guild settings
         self.patreon_campaign_id = 11352402  # Will be populated on first API call
-        self.guild_id = 1199287508794626078  # Set this to your Discord server ID
+        self.guild_id = patreoncore_ids.get("guild_id")
         self.check_interval = 60 * 30  # Check every 30 minutes
 
         # Role mapping - map Patreon tier IDs to Discord role IDs
@@ -145,8 +150,7 @@ class PatreonCore(commands.Cog):
 
     async def fetch_patrons(self):
         """Fetch patrons directly using Patreon's V2 API with correct include parameters"""
-        user_id = 295173706496475136
-        user = self.bot.get_user(user_id)
+        user = self.bot.get_user(self.debug_user_id) if self.debug_user_id else None
 
         try:
             if user:
@@ -289,8 +293,7 @@ class PatreonCore(commands.Cog):
         result = {}
         debug_info = []
 
-        user_id = 295173706496475136
-        user = self.bot.get_user(user_id)
+        user = self.bot.get_user(self.debug_user_id) if self.debug_user_id else None
 
         try:
             debug_info.append(f"Processing {len(patron_data)} patrons and {len(included_data)} included items")
@@ -482,8 +485,7 @@ class PatreonCore(commands.Cog):
     @tasks.loop(minutes=30)
     async def update_roles(self):
         """Regular task to update roles based on Patreon data"""
-        user_id = 295173706496475136  # ID of the user to send the message to
-        user = self.bot.get_user(user_id)
+        user = self.bot.get_user(self.debug_user_id) if self.debug_user_id else None
         await self.bot.wait_until_ready()
 
         # Skip if guild ID is not set

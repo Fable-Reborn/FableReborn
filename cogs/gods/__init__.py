@@ -36,6 +36,15 @@ class Gods(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.bot.gods = {god["user"]: god for god in self.bot.config.gods}
+        ids_section = getattr(self.bot.config, "ids", None)
+        gods_ids = getattr(ids_section, "gods", {}) if ids_section else {}
+        if not isinstance(gods_ids, dict):
+            gods_ids = {}
+        support_roles = gods_ids.get("support_god_role_ids", {})
+        primary_roles = gods_ids.get("primary_god_role_ids", {})
+        self.support_god_role_ids = support_roles if isinstance(support_roles, dict) else {}
+        self.primary_god_role_ids = primary_roles if isinstance(primary_roles, dict) else {}
+        self.godless_role_id = gods_ids.get("godless_role_id")
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
@@ -54,12 +63,8 @@ class Gods(commands.Cog):
 
             # Godless users are those with no god and reset_points < 0 (see unfollow)
             if profile["god"] is None and profile["reset_points"] is not None and profile["reset_points"] < 0:
-                godless_role_id = 1424665788362784851
-                god_roles = {
-                    'Drakath': 1406639168070615040,
-                    'Sepulchure': 1406639315240489061,
-                    'Elysia': 1406639398795219126
-                }
+                godless_role_id = self.godless_role_id
+                god_roles = self.support_god_role_ids
 
                 # Remove any god roles in the support server
                 for role_id in god_roles.values():
@@ -177,12 +182,8 @@ class Gods(commands.Cog):
 
             (This command has a cooldown of 3 minutes.)"""
         )
-        god_roles = {
-            'Drakath': 1406639168070615040,
-            'Sepulchure': 1406639315240489061,
-            'Elysia': 1406639398795219126
-        }
-        godless_role_id = 1424665788362784851
+        god_roles = self.support_god_role_ids
+        godless_role_id = self.godless_role_id
         old_god = ctx.character_data["god"]
 
         # Check if the user already has a god and handle reset points
@@ -296,17 +297,9 @@ class Gods(commands.Cog):
             return await ctx.send(_("You already became Godless before."))
 
         old_god = ctx.character_data["god"]
-        god_roles = {
-            'Drakath': 1199302687083204649,
-            'Sepulchure': 1199303145306726410,
-            'Elysia': 1199303066227331163
-        }
-        support_god_roles = {
-            'Drakath': 1406639168070615040,
-            'Sepulchure': 1406639315240489061,
-            'Elysia': 1406639398795219126
-        }
-        godless_role_id = 1424665788362784851
+        god_roles = self.primary_god_role_ids
+        support_god_roles = self.support_god_role_ids
+        godless_role_id = self.godless_role_id
 
 
         if not await ctx.confirm(

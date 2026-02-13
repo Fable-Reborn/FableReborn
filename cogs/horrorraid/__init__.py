@@ -29,8 +29,13 @@ class HorrorRaid(commands.Cog):
         self.boss = None
         self.last_keyword_response = 0  # Timestamp for keyword response cooldown
 
-        # Define raid channel IDs (adjust as necessary)
-        self.raid_channel_ids = [1406637960262320230]
+        ids_section = getattr(self.bot.config, "ids", None)
+        horror_ids = getattr(ids_section, "horrorraid", {}) if ids_section else {}
+        if not isinstance(horror_ids, dict):
+            horror_ids = {}
+        self.raid_channel_ids = horror_ids.get("raid_channel_ids", [])
+        if not isinstance(self.raid_channel_ids, list):
+            self.raid_channel_ids = []
 
         self.allow_sending = discord.PermissionOverwrite(send_messages=True, read_messages=True)
         self.deny_sending = discord.PermissionOverwrite(send_messages=False, read_messages=False)
@@ -94,19 +99,20 @@ class HorrorRaid(commands.Cog):
     async def chaosspawn(self, ctx, boss_hp: IntGreaterThan(0)):
         """[Drakath only] Starts a raid against Eclipse the Void Conqueror."""
         try:
+            if not self.raid_channel_ids:
+                await ctx.send("Horror raid channels are not configured.")
+                return
             # Delay factor to slow down messages for readability.
             delay_factor = 2
 
             # Define the channels where the raid messages will be sent.
-            channels = [
-                self.bot.get_channel(1406637960262320230)
-                # Add additional channels if needed.
-            ]
+            channels = [self.bot.get_channel(channel_id) for channel_id in self.raid_channel_ids]
 
             async def send_to_channels(embed=None, content=None, view=None):
                 """Helper function to send a message to all raid channels."""
                 for channel in channels:
-                    await channel.send(embed=embed, content=content, view=view)
+                    if channel is not None:
+                        await channel.send(embed=embed, content=content, view=view)
 
             # Eclipse's critical hit messages.
             critical_messages = [

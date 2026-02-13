@@ -500,7 +500,7 @@ class Transaction(commands.Cog):
         )
         if await self.bot.has_money(ctx.author.id, ctx.transaction["money"] + amount):
             ctx.transaction["money"] += amount
-            await ctx.message.add_reaction(":blackcheck:441826948919066625")
+            await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
         else:
             await ctx.send(_("You are too poor."))
 
@@ -521,7 +521,7 @@ class Transaction(commands.Cog):
             ctx.author.id, ctx.transaction["crates"][rarity] + amount, rarity
         ):
             ctx.transaction["crates"][rarity] += amount
-            await ctx.message.add_reaction(":blackcheck:441826948919066625")
+            await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
         else:
             await ctx.send(_("You do not have enough crates."))
 
@@ -554,7 +554,7 @@ class Transaction(commands.Cog):
                 return await ctx.send(_("You may not sell modified items."))
 
             ctx.transaction["items"].append(item)
-            await ctx.message.add_reaction(":blackcheck:441826948919066625")
+            await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
         else:
             await ctx.send(_("You do not own this item."))
 
@@ -583,7 +583,7 @@ class Transaction(commands.Cog):
             if item["original_name"] or item["original_type"]:
                 return await ctx.send(_("You may not sell modified items."))
             ctx.transaction["items"].append(item)
-        await ctx.message.add_reaction(":blackcheck:441826948919066625")
+        await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
 
     @has_transaction()
     @add.command(name="resources", brief=_("Adds crafting resources to a trade."))
@@ -661,7 +661,7 @@ class Transaction(commands.Cog):
         
         if user_amount >= current_amount + amount:
             ctx.transaction["resources"][normalized_resource] = current_amount + amount
-            await ctx.message.add_reaction(":blackcheck:441826948919066625")
+            await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
             await self.update(ctx)  # Update the trade display
         else:
             await ctx.send(f"You don't have enough {normalized_resource.replace('_', ' ').title()}. You have {user_amount}.")
@@ -686,7 +686,7 @@ class Transaction(commands.Cog):
         if owned < in_trade + amount:
             return await ctx.send(f"❌ You do not have enough {ctype.replace('_', ' ').title()}. You have {owned}.")
         ctx.transaction["consumables"][ctype] = in_trade + amount
-        await ctx.message.add_reaction(":blackcheck:441826948919066625")
+        await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
         await self.update(ctx)
 
     @has_transaction()
@@ -716,7 +716,7 @@ class Transaction(commands.Cog):
                 if owned < in_trade + amount:
                     return await ctx.send(f"❌ You do not have enough {ctype.replace('_', ' ').title()}. You have {owned}.")
                 ctx.transaction["consumables"][ctype] = in_trade + amount
-        await ctx.message.add_reaction(":blackcheck:441826948919066625")
+        await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
         await self.update(ctx)
 
     @has_transaction()
@@ -754,7 +754,7 @@ class Transaction(commands.Cog):
         )
         if await self.bot.has_money(ctx.author.id, amount):
             ctx.transaction["money"] = amount
-            await ctx.message.add_reaction(":blackcheck:441826948919066625")
+            await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
         else:
             await ctx.send(_("You are too poor."))
 
@@ -773,7 +773,7 @@ class Transaction(commands.Cog):
         )
         if await self.bot.has_crates(ctx.author.id, amount, rarity):
             ctx.transaction["crates"][rarity] = amount
-            await ctx.message.add_reaction(":blackcheck:441826948919066625")
+            await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
         else:
             await ctx.send(_("You do not have enough crates."))
 
@@ -852,7 +852,7 @@ class Transaction(commands.Cog):
         
         if user_amount >= amount:
             ctx.transaction["resources"][normalized_resource] = amount
-            await ctx.message.add_reaction(":blackcheck:441826948919066625")
+            await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
             await self.update(ctx)  # Update the trade display
         else:
             await ctx.send(f"You don't have enough {normalized_resource.replace('_', ' ').title()}. You have {user_amount}.")
@@ -871,7 +871,7 @@ class Transaction(commands.Cog):
         if owned < amount:
             return await ctx.send(f"❌ You do not have enough {ctype.replace('_', ' ').title()}. You have {owned}.")
         ctx.transaction["consumables"][ctype] = amount
-        await ctx.message.add_reaction(":blackcheck:441826948919066625")
+        await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
         await self.update(ctx)
 
     @has_transaction()
@@ -909,7 +909,7 @@ class Transaction(commands.Cog):
         )
         if ctx.transaction["money"] - amount >= 0:
             ctx.transaction["money"] -= amount
-            await ctx.message.add_reaction(":blackcheck:441826948919066625")
+            await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
         else:
             await ctx.send(_("Resulting amount is negative."))
 
@@ -931,7 +931,7 @@ class Transaction(commands.Cog):
                 del ctx.transaction["crates"][rarity]
             else:
                 ctx.transaction["crates"][rarity] -= amount
-            await ctx.message.add_reaction(":blackcheck:441826948919066625")
+            await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
         else:
             await ctx.send(_("The resulting amount would be negative."))
 
@@ -950,7 +950,7 @@ class Transaction(commands.Cog):
         item = discord.utils.find(lambda x: x["id"] == itemid, ctx.transaction["items"])
         if item:
             ctx.transaction["items"].remove(item)
-            await ctx.message.add_reaction(":blackcheck:441826948919066625")
+            await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
         else:
             await ctx.send(_("This item is not in the trade."))
 
@@ -973,7 +973,7 @@ class Transaction(commands.Cog):
             )
             if item:
                 ctx.transaction["items"].remove(item)
-        await ctx.message.add_reaction(":blackcheck:441826948919066625")
+        await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
 
     @has_transaction()
     @remove.command(name="resources", brief=_("Removes crafting resources from a trade."))
@@ -1015,7 +1015,7 @@ class Transaction(commands.Cog):
                 del ctx.transaction["resources"][normalized_resource]
             else:
                 ctx.transaction["resources"][normalized_resource] = current_amount - amount
-            await ctx.message.add_reaction(":blackcheck:441826948919066625")
+            await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
             await self.update(ctx)  # Update the trade display
         else:
             await ctx.send(f"You only have {current_amount} {normalized_resource.replace('_', ' ').title()} in the trade.")
@@ -1035,7 +1035,7 @@ class Transaction(commands.Cog):
             del ctx.transaction["consumables"][ctype]
         else:
             ctx.transaction["consumables"][ctype] = in_trade - amount
-        await ctx.message.add_reaction(":blackcheck:441826948919066625")
+        await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
         await self.update(ctx)
 
     async def transfer_crafting_resources(self, conn, user1, user2, user1_resources, user2_resources):
@@ -1207,3 +1207,4 @@ class Transaction(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(Transaction(bot))
+

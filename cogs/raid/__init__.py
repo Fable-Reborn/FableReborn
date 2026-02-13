@@ -87,9 +87,16 @@ def celestial_vault_free():
 
 def is_cm():
     def predicate(ctx) -> bool:
+        ids_section = getattr(ctx.bot.config, "ids", None)
+        raid_ids = getattr(ids_section, "raid", {}) if ids_section else {}
+        if not isinstance(raid_ids, dict):
+            raid_ids = {}
+        cm_role_id = raid_ids.get("cm_role_id")
+        if not cm_role_id:
+            return False
         return (
                 ctx.guild.id == ctx.bot.config.game.support_server_id
-                and 491353140042530826 in [r.id for r in ctx.author.roles]
+                and cm_role_id in [r.id for r in ctx.author.roles]
         )
 
     return commands.check(predicate)
@@ -117,8 +124,16 @@ class DecisionButton(Button):
     async def callback(self, interaction: Interaction):
         view: DecisionView = self.view
         view.value = self.custom_id
-        await interaction.response.send_message(f"You selected {self.custom_id}. Shortcut back: <#1406638032953671801>",
-                                                ephemeral=True)
+        ids_section = getattr(interaction.client.config, "ids", None)
+        raid_ids = getattr(ids_section, "raid", {}) if ids_section else {}
+        if not isinstance(raid_ids, dict):
+            raid_ids = {}
+        shortcut_channel_id = raid_ids.get("shortcut_channel_id")
+        shortcut_text = f"<#{shortcut_channel_id}>" if shortcut_channel_id else "N/A"
+        await interaction.response.send_message(
+            f"You selected {self.custom_id}. Shortcut back: {shortcut_text}",
+            ephemeral=True,
+        )
         view.stop()
 
 
@@ -368,6 +383,93 @@ class Raid(commands.Cog):
         self.toggle_list = set()  # Use a set for efficient membership checking
         self.chaoslist = []
 
+        ids_section = getattr(self.bot.config, "ids", None)
+        raid_ids = getattr(ids_section, "raid", {}) if ids_section else {}
+        if not isinstance(raid_ids, dict):
+            raid_ids = {}
+        self.raid_ids = raid_ids
+
+        self.main_raid_channel_id = self.raid_ids.get(
+            "main_raid_channel_id",
+            self.bot.config.game.raid_channel,
+        )
+        self.debug_channel_id = self.raid_ids.get(
+            "debug_channel_id", self.bot.config.game.gm_log_channel
+        )
+        self.beta_summary_channel_id = self.raid_ids.get(
+            "beta_summary_channel_id"
+        )
+        self.summary_channel_id = self.raid_ids.get(
+            "summary_channel_id"
+        )
+        self.spawn_announcement_role_id = self.raid_ids.get(
+            "spawn_announcement_role_id"
+        )
+        self.booster_role_id = self.raid_ids.get(
+            "booster_role_id"
+        )
+        self.booster_guild_id = self.raid_ids.get(
+            "booster_guild_id",
+            self.bot.config.game.support_server_id,
+        )
+        self.auto_spawn_channels = self.raid_ids.get(
+            "auto_spawn_channels",
+            [self.main_raid_channel_id] if self.main_raid_channel_id else [],
+        )
+        self.spawn_channels = self.raid_ids.get(
+            "spawn_channels",
+            [self.main_raid_channel_id] if self.main_raid_channel_id else [],
+        )
+        self.spawn_beta_channels = self.raid_ids.get(
+            "spawn_beta_channels",
+            [self.main_raid_channel_id] if self.main_raid_channel_id else [],
+        )
+        self.excluded_user_ids_auto = self.raid_ids.get(
+            "excluded_user_ids_auto",
+            [],
+        )
+        self.excluded_user_ids_spawn = self.raid_ids.get(
+            "excluded_user_ids_spawn",
+            [],
+        )
+        self.raid_bid_default_user_id = self.raid_ids.get(
+            "raid_bid_default_user_id", 0
+        )
+        self.chaos_channel_ids = self.raid_ids.get(
+            "chaos_channel_ids",
+            [],
+        )
+        self.chaos_role_ids = self.raid_ids.get(
+            "chaos_role_ids",
+            [],
+        )
+        self.special_user_id = self.raid_ids.get(
+            "special_user_id"
+        )
+        self.celestial_channel_ids = self.raid_ids.get(
+            "celestial_channel_ids",
+            [],
+        )
+        self.celestial_ping_role_id = self.raid_ids.get(
+            "celestial_ping_role_id"
+        )
+        if not isinstance(self.auto_spawn_channels, list) or not self.auto_spawn_channels:
+            self.auto_spawn_channels = [self.main_raid_channel_id] if self.main_raid_channel_id else []
+        if not isinstance(self.spawn_channels, list) or not self.spawn_channels:
+            self.spawn_channels = [self.main_raid_channel_id] if self.main_raid_channel_id else []
+        if not isinstance(self.spawn_beta_channels, list) or not self.spawn_beta_channels:
+            self.spawn_beta_channels = [self.main_raid_channel_id] if self.main_raid_channel_id else []
+        if not isinstance(self.excluded_user_ids_auto, list):
+            self.excluded_user_ids_auto = []
+        if not isinstance(self.excluded_user_ids_spawn, list):
+            self.excluded_user_ids_spawn = []
+        if not isinstance(self.chaos_channel_ids, list) or len(self.chaos_channel_ids) < 2:
+            self.chaos_channel_ids = []
+        if not isinstance(self.chaos_role_ids, list) or len(self.chaos_role_ids) < 2:
+            self.chaos_role_ids = []
+        if not isinstance(self.celestial_channel_ids, list) or not self.celestial_channel_ids:
+            self.celestial_channel_ids = []
+
         self.joined = []
         self.raidactive = False
         self.active_view = None
@@ -501,7 +603,7 @@ class Raid(commands.Cog):
             await self.bot.wait_until_ready()
             
             # Debug channel for logging
-            channeldebug = self.bot.get_channel(1444392570280087755)
+            channeldebug = self.bot.get_channel(self.debug_channel_id)
             if channeldebug:
                 await channeldebug.send("Auto raid check starting...")
             
@@ -512,7 +614,7 @@ class Raid(commands.Cog):
                 return
             
             # Get the target channel
-            channel_id = 1406295072332451901
+            channel_id = self.main_raid_channel_id
             channel = self.bot.get_channel(channel_id)
             
             if not channel:
@@ -532,7 +634,7 @@ class Raid(commands.Cog):
             from discord.utils import utcnow
             current_time = utcnow()
 
-            channeldebug = self.bot.get_channel(1444392570280087755)
+            channeldebug = self.bot.get_channel(self.debug_channel_id)
             if channeldebug:
                 await channeldebug.send(f"Auto raid check: Checking Channel (last spawn: {last_spawn_time})")
             
@@ -556,16 +658,18 @@ class Raid(commands.Cog):
                 if channeldebug:
                     await channeldebug.send(f"Auto raid check: Raid was spawned {time_diff:.1f} hours ago, waiting until at least 8 hours have passed")
         except Exception as e:
-            channeldebug = self.bot.get_channel(1444392570280087755)
-            await channeldebug.send(e)
+            channeldebug = self.bot.get_channel(self.debug_channel_id)
+            if channeldebug:
+                await channeldebug.send(e)
 
     async def auto_spawn_raid(self, channel, hp, rarity="magic", raid_hp=17776):
         """Auto-spawn a raid without decorator checks."""
         try:
             if rarity not in ["magic", "legendary", "rare", "uncommon", "common", "mystery", "fortune", "divine", "materials"]:
                 raise ValueError("Invalid rarity specified.")
-            channeldebug = self.bot.get_channel(1444392570280087755)
-            channeldebug.send(f"Auto-spawning Ragnarok raid with {hp:,} HP and {rarity} crate")
+            channeldebug = self.bot.get_channel(self.debug_channel_id)
+            if channeldebug:
+                await channeldebug.send(f"Auto-spawning Ragnarok raid with {hp:,} HP and {rarity} crate")
             
             # Get guild from channel
             guild = channel.guild
@@ -601,7 +705,7 @@ class Raid(commands.Cog):
             
             fi_path = "assets/other/startdragon.webp"
             try:
-                channels_ids = [1406295072332451901, ]
+                channels_ids = list(self.auto_spawn_channels)
                 message_ids = []
                 raid_channel = None  # Store the main channel for permissions later
 
@@ -609,19 +713,21 @@ class Raid(commands.Cog):
                     try:
                         current_channel = self.bot.get_channel(channel_id)
                         if current_channel:
-                            if channel_id == 1406295072332451901:  # Main raid channel
+                            if channel_id == self.main_raid_channel_id:  # Main raid channel
                                 raid_channel = current_channel
                                 
                             fi = discord.File(fi_path)
                             sent_msg = await current_channel.send(embed=em, file=fi, view=view)
                             message_ids.append(sent_msg.id)
                         else:
-                            channeldebug = self.bot.get_channel(1444392570280087755)
-                            channeldebug.send(f"Channel with ID {channel_id} not found.")
+                            channeldebug = self.bot.get_channel(self.debug_channel_id)
+                            if channeldebug:
+                                await channeldebug.send(f"Channel with ID {channel_id} not found.")
                     except Exception as e:
-                        channeldebug = self.bot.get_channel(1444392570280087755)
+                        channeldebug = self.bot.get_channel(self.debug_channel_id)
                         error_message = f"Error in channel with ID {channel_id}: {e}. continuing.."
-                        channeldebug.send(error_message)
+                        if channeldebug:
+                            await channeldebug.send(error_message)
                         continue
 
                 self.boss.update(message=message_ids)
@@ -629,7 +735,7 @@ class Raid(commands.Cog):
                 self.raid_preparation = True
 
                 if self.bot.config.bot.is_beta:
-                    summary_channel = self.bot.get_channel(1199299514490683392)
+                    summary_channel = self.bot.get_channel(self.beta_summary_channel_id)
 
                     message_ids = []  # To store the IDs of the sent messages
 
@@ -637,7 +743,7 @@ class Raid(commands.Cog):
                         try:
                             current_channel = self.bot.get_channel(channel_id)
                             if current_channel:
-                                role_id = 1404804032643731467 # Replace with the actual role ID
+                                role_id = self.spawn_announcement_role_id
                                 role = discord.utils.get(guild.roles, id=role_id)
                                 content = f"{role.mention} Ragnarok spawned! 15 Minutes until he is vulnerable..."
                                 sent_msg = await current_channel.send(content, allowed_mentions=discord.AllowedMentions(roles=True))
@@ -687,12 +793,10 @@ class Raid(commands.Cog):
                     await current_channel.send("**Ragnarok is vulnerable! Fetching participant data... Hang on!**")
 
             self.joined.extend(view.joined)
-            # Assuming you have the role ID for the server booster role
-            BOOSTER_ROLE_ID = 1404858099268849816 # Replace with your actual booster role ID
 
             # Define the tier threshold and the user ID to exclude
             tier_threshold = 1  # Assuming you want tiers >= 1
-            excluded_user_ids = [782017044828782642, 579703576570494976, 761469900853215263, 1322593504098254959, 782017044828782642]
+            excluded_user_ids = self.excluded_user_ids_auto
 
             # Fetch Discord IDs where tier is >= tier_threshold and user is not in excluded_user_ids
             discord_ids = await self.bot.pool.fetch(
@@ -716,9 +820,9 @@ class Raid(commands.Cog):
             self.joined.extend(users)
 
             # Fetch members with the server booster role
-            guild = self.bot.get_guild(1402911850802315336)  # Replace YOUR_GUILD_ID with your server's ID
+            guild = self.bot.get_guild(self.booster_guild_id)
             if guild:
-                booster_role = guild.get_role(BOOSTER_ROLE_ID)
+                booster_role = guild.get_role(self.booster_role_id)
                 if booster_role:
                     # Fetch all members with the server booster role
                     booster_members = [member for member in guild.members if booster_role in member.roles]
@@ -879,7 +983,7 @@ class Raid(commands.Cog):
                         "Emoji_here",
                         ":small_blue_diamond:" if self.boss["hp"] < 1 else ":vibration_mode:"
                     )
-                    summary_channel = self.bot.get_channel(1408139518585864193)
+                    summary_channel = self.bot.get_channel(self.summary_channel_id)
 
                     summary_msg = await summary_channel.send(summary)
                     self.raid.clear()
@@ -906,7 +1010,7 @@ class Raid(commands.Cog):
                         print(f"Error setting permissions: {e}")
 
                 highest_bid = [
-                    1403785403651063909,
+                    self.raid_bid_default_user_id,
                     0,
                 ]  # userid, amount
 
@@ -1180,7 +1284,7 @@ class Raid(commands.Cog):
                     ":small_blue_diamond:" if self.boss["hp"] < 1 else ":vibration_mode:"
                 )
                 
-            summary_channel = self.bot.get_channel(1408139518585864193)
+            summary_channel = self.bot.get_channel(self.summary_channel_id)
             if summary_channel and 'summary' in locals():
                 await summary_channel.send(summary)
 
@@ -1194,10 +1298,11 @@ class Raid(commands.Cog):
             self.boss = None
         except Exception as e:
             import traceback
-            current_channel = self.bot.get_channel(1444392570280087755)
+            current_channel = self.bot.get_channel(self.debug_channel_id)
             error_message = f"Error in auto_spawn_raid: {e}\n"
             error_message += traceback.format_exc()
-            await current_channel.send(error_message)
+            if current_channel:
+                await current_channel.send(error_message)
             print(error_message)
             if current_channel:
                 await current_channel.send(f"Error in auto raid: {e}")
@@ -1249,8 +1354,7 @@ class Raid(commands.Cog):
             )
             fi_path = "assets/other/startdragon.webp"
             try:
-                channels_ids = [1140211789573935164, 1406295072332451901,
-                                1158743317325041754]  # Replace with your actual channel IDs
+                channels_ids = list(self.spawn_channels)
 
                 message_ids = []  # To store the IDs of the sent messages
 
@@ -1272,16 +1376,16 @@ class Raid(commands.Cog):
                 self.boss.update(message=message_ids)
 
                 if self.bot.config.bot.is_beta:
-                    summary_channel = self.bot.get_channel(1408139518585864193)
+                    summary_channel = self.bot.get_channel(self.summary_channel_id)
 
-                    channels_ids = [1406295072332451901]  # Replace with your actual channel IDs
+                    channels_ids = list(self.spawn_beta_channels)
                     message_ids = []  # To store the IDs of the sent messages
 
                     for channel_id in channels_ids:
                         try:
                             channel = self.bot.get_channel(channel_id)  # Assumes ctx.guild is available
                             if channel:
-                                role_id = 1404804032643731467 # Replace with the actual role ID
+                                role_id = self.spawn_announcement_role_id
                                 role = discord.utils.get(ctx.guild.roles, id=role_id)
                                 content = f"{role.mention} Ragnarok spawned! 15 Minutes until he is vulnerable..."
                                 sent_msg = await channel.send(content, allowed_mentions=discord.AllowedMentions(roles=True))
@@ -1333,12 +1437,9 @@ class Raid(commands.Cog):
                     await channel.send("**Ragnarok is vulnerable! Fetching participant data... Hang on!**")
 
             self.joined.extend(view.joined)
-            # Assuming you have the role ID for the server booster role
-            BOOSTER_ROLE_ID = 1404858099268849816 # Replace with your actual booster role ID
-
             # Define the tier threshold and the user ID to exclude
             tier_threshold = 1  # Assuming you want tiers >= 1
-            excluded_user_ids = [782017044828782642, 579703576570494976, 761469900853215263, 1322593504098254959, 1139261878065959012]
+            excluded_user_ids = self.excluded_user_ids_spawn
 
             # Fetch Discord IDs where tier is >= tier_threshold and user is not in excluded_user_ids
             discord_ids = await self.bot.pool.fetch(
@@ -1362,9 +1463,9 @@ class Raid(commands.Cog):
             self.joined.extend(users)
 
             # Fetch members with the server booster role
-            guild = self.bot.get_guild(1402911850802315336)  # Replace YOUR_GUILD_ID with your server's ID
+            guild = self.bot.get_guild(self.booster_guild_id)
             if guild:
-                booster_role = guild.get_role(BOOSTER_ROLE_ID)
+                booster_role = guild.get_role(self.booster_role_id)
                 if booster_role:
                     # Fetch all members with the server booster role
                     booster_members = [member for member in guild.members if booster_role in member.roles]
@@ -1521,7 +1622,7 @@ class Raid(commands.Cog):
                         "Emoji_here",
                         ":small_blue_diamond:" if self.boss["hp"] < 1 else ":vibration_mode:"
                     )
-                    summary_channel = self.bot.get_channel(1408139518585864193)
+                    summary_channel = self.bot.get_channel(self.summary_channel_id)
 
                     summary_msg = await summary_channel.send(summary)
                     self.raid.clear()
@@ -1541,7 +1642,7 @@ class Raid(commands.Cog):
                 )
 
                 highest_bid = [
-                    1403785403651063909,
+                    self.raid_bid_default_user_id,
                     0,
                 ]  # userid, amount
 
@@ -1816,7 +1917,7 @@ class Raid(commands.Cog):
                         "Emoji_here",
                         ":small_blue_diamond:" if self.boss["hp"] < 1 else ":vibration_mode:"
                     )
-            summary_channel = self.bot.get_channel(1408139518585864193)
+            summary_channel = self.bot.get_channel(self.summary_channel_id)
             summary_msg = await summary_channel.send(summary)
 
                 #await ctx.send("attempting to clear keys...")
@@ -3026,12 +3127,15 @@ class Raid(commands.Cog):
     async def chaosspawnold(self, ctx, boss_hp: IntGreaterThan(0)):
         """[Drakath only] Starts a raid."""
         try:
+            if len(self.chaos_channel_ids) < 2 or len(self.chaos_role_ids) < 2:
+                await ctx.send("Chaos raid channels/roles are not configured.")
+                return
             await self.set_raid_timer()
 
             # Define the channels where the raid messages will be sent
             channels = [
-                self.bot.get_channel(1154244627822551060),  # This is the current channel where the command was invoked
-                self.bot.get_channel(1199300319256006746),  # Replace with the actual channel ID
+                self.bot.get_channel(self.chaos_channel_ids[0]),  # This is the current channel where the command was invoked
+                self.bot.get_channel(self.chaos_channel_ids[1]),  # Replace with the actual channel ID
             ]
 
             async def send_to_channels(embed=None, content=None, view=None):
@@ -3045,10 +3149,10 @@ class Raid(commands.Cog):
                 timeout=60 * 15,
             )
 
-            channel1 = self.bot.get_channel(1154244627822551060)
-            channel2 = self.bot.get_channel(1199300319256006746)
-            role_id1 = 1153880715419717672
-            role_id2 = 1199302687083204649
+            channel1 = self.bot.get_channel(self.chaos_channel_ids[0])
+            channel2 = self.bot.get_channel(self.chaos_channel_ids[1])
+            role_id1 = self.chaos_role_ids[0]
+            role_id2 = self.chaos_role_ids[1]
 
             if channel1:
                 role1 = ctx.guild.get_role(role_id1)
@@ -3537,8 +3641,8 @@ class Raid(commands.Cog):
     # Set decimal precision high enough for your application's needs
     getcontext().prec = 28
 
-    # Replace this with the actual ID you want to check against
-    SPECIAL_USER_ID = 144932915682344960
+    # Config-backed via self.special_user_id
+    SPECIAL_USER_ID = None
 
     import discord
     from discord.ext import commands
@@ -3610,7 +3714,7 @@ class Raid(commands.Cog):
             self.celestial_elements = {}
             
             # Setup raid preparation
-            channels_ids = [1313482408242184213, 1232708183835803791]
+            channels_ids = list(self.celestial_channel_ids)
             
             # Create the embed for raid announcement
             fi = discord.File("assets/other/celestialguardian.webp")
@@ -3659,7 +3763,7 @@ class Raid(commands.Cog):
                         try:
                             channel = self.bot.get_channel(channel_id)
                             if channel:
-                                role_id = 1199307259965079552
+                                role_id = self.celestial_ping_role_id
                                 role = discord.utils.get(ctx.guild.roles, id=role_id)
                                 content = f"{role.mention} A Celestial Guardian has appeared! 5 minutes until battle begins..."
                                 await channel.send(content, allowed_mentions=discord.AllowedMentions(roles=True))
@@ -4035,7 +4139,7 @@ class Raid(commands.Cog):
                         f":small_red_triangle: Duration: **{summary_duration}**"
                     )
                     
-                    summary_channel = self.bot.get_channel(1199299514490683392)
+                    summary_channel = self.bot.get_channel(self.beta_summary_channel_id)
                     await summary_channel.send(summary)
                     
                     self.raid.clear()
@@ -4126,7 +4230,7 @@ class Raid(commands.Cog):
                         f":tada: Rewards: **{loot_quality.capitalize()} Crate, {gold_reward:,} gold, +20% XP boost**"
                     )
                     
-                    summary_channel = self.bot.get_channel(1199299514490683392)
+                    summary_channel = self.bot.get_channel(self.beta_summary_channel_id)
                     await summary_channel.send(summary)
                     
                     self.raid.clear()

@@ -74,6 +74,11 @@ class GuildAdventureJoinView(View):
         self.ends_at = ends_at
         self.session_key = session_key
         self.members_key = members_key
+        ids_section = getattr(self.bot.config, "ids", None)
+        guild_ids = getattr(ids_section, "guild", {}) if ids_section else {}
+        if not isinstance(guild_ids, dict):
+            guild_ids = {}
+        self.prohibited_user_id = guild_ids.get("prohibited_user_id")
 
         join_button = Button(
             style=ButtonStyle.primary,
@@ -84,7 +89,7 @@ class GuildAdventureJoinView(View):
         self.add_item(join_button)
 
     async def button_pressed(self, interaction) -> None:
-        if interaction.user.id == 939072371971735596:
+        if self.prohibited_user_id and interaction.user.id == self.prohibited_user_id:
             return await interaction.response.send_message(
                 _("You are prohibited from joining."), ephemeral=True
             )

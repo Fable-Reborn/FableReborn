@@ -24,13 +24,18 @@ import aiohttp
 class RelayCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.SOURCE_CHANNEL_ID = 1140211789573935164
+        ids_section = getattr(self.bot.config, "ids", None)
+        relay_ids = getattr(ids_section, "relaycog", {}) if ids_section else {}
+        if not isinstance(relay_ids, dict):
+            relay_ids = {}
+        self.source_channel_id = relay_ids.get("source_channel_id")
+        self.error_channel_id = relay_ids.get("error_channel_id")
         self.WEBHOOK_URL = ''
         self.messages = []  # List to store messages
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        if message.channel.id == self.SOURCE_CHANNEL_ID:
+        if self.source_channel_id and message.channel.id == self.source_channel_id:
 
             # Ignoring specific phrases
             if "You joined the raid" in message.content or "You already joined" in message.content:
@@ -59,8 +64,13 @@ class RelayCog(commands.Cog):
                         embeds=embeds  # Pass the list of embeds to webhook from the original message
                     )
                 except Exception as e:
-                    error_channel = self.bot.get_channel(1075381105412292658)  # Replace with your error channel ID
-                    await error_channel.send(f"Failed to send message: {e}")
+                    error_channel = (
+                        self.bot.get_channel(self.error_channel_id)
+                        if self.error_channel_id
+                        else None
+                    )
+                    if error_channel:
+                        await error_channel.send(f"Failed to send message: {e}")
 
 
 async def setup(bot):

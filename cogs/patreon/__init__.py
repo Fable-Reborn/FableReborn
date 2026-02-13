@@ -62,6 +62,11 @@ class Patreon(commands.Cog):
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
         self.ruby_or_above = []
+        ids_section = getattr(self.bot.config, "ids", None)
+        patreon_ids = getattr(ids_section, "patreon", {}) if ids_section else {}
+        if not isinstance(patreon_ids, dict):
+            patreon_ids = {}
+        self.message_target_user_id = patreon_ids.get("message_target_user_id")
 
         if self.bot.config.external.patreon_token:
             asyncio.create_task(self.update_ruby_or_above())
@@ -184,7 +189,9 @@ class Patreon(commands.Cog):
     @user_cooldown(600)
     @commands.command()
     async def message(self, ctx, email):
-        user_id = 295173706496475136  # Replace with the specific user ID
+        user_id = self.message_target_user_id
+        if not user_id:
+            return await ctx.send("Patreon message target user is not configured.")
 
         try:
             # Fetch the user from Discord's servers

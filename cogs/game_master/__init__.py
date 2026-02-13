@@ -137,6 +137,27 @@ class GameMaster(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
+        ids_section = getattr(self.bot.config, "ids", None)
+        gm_ids = getattr(ids_section, "game_master", {}) if ids_section else {}
+        gods_ids = getattr(ids_section, "gods", {}) if ids_section else {}
+        if not isinstance(gm_ids, dict):
+            gm_ids = {}
+        if not isinstance(gods_ids, dict):
+            gods_ids = {}
+        self.martigive_allowed_user_id = gm_ids.get("martigive_allowed_user_id")
+        self.protected_user_id = gm_ids.get("protected_user_id")
+        self.auction_channel_id = gm_ids.get("auction_channel_id")
+        self.auction_ping_role_id = gm_ids.get("auction_ping_role_id")
+        self.gm_role_id = gm_ids.get("gm_role_id")
+        self.assign_roles_role_id = gm_ids.get("assign_roles_role_id")
+        self.jail_guild_id = gm_ids.get("jail_guild_id")
+        self.gmunjail_special_user_id = gm_ids.get("gmunjail_special_user_id")
+        self.god_admin_role_id = gm_ids.get("god_admin_role_id")
+        eval_allowed_user_ids = gm_ids.get("eval_allowed_user_ids", [])
+        self.eval_allowed_user_ids = eval_allowed_user_ids if isinstance(eval_allowed_user_ids, list) else []
+        support_roles = gods_ids.get("support_god_role_ids", {})
+        self.support_god_role_ids = support_roles if isinstance(support_roles, dict) else {}
+        self.godless_role_id = gods_ids.get("godless_role_id")
         self.top_auction = None
         self._last_result = None
         self.auction_entry = None
@@ -679,7 +700,7 @@ class GameMaster(commands.Cog):
             Only Game Masters can use this command."""
         )
 
-        if ctx.author.id != 700801066593419335:
+        if not self.martigive_allowed_user_id or ctx.author.id != self.martigive_allowed_user_id:
             return
 
         try:
@@ -2157,7 +2178,7 @@ class GameMaster(commands.Cog):
         """Bans a user from the server by their ID and sends their cropped avatar on an external image."""
         external_image_url = "https://i.ibb.co/PT7S74n/images-jpeg-111.png"  # replace with your PNG link
 
-        if user.id == 295173706496475136:
+        if self.protected_user_id and user.id == self.protected_user_id:
             await ctx.send("What are you high?")
             return
 
@@ -2338,13 +2359,12 @@ class GameMaster(commands.Cog):
             return await ctx.send(_("There's still an auction running."))
 
         # Get the auctions channel
-        channel = self.bot.get_channel(1408182582360936580)
+        channel = self.bot.get_channel(self.auction_channel_id) if self.auction_channel_id else None
 
         if not channel:
             return await ctx.send(_("Auctions channel wasn't found."))
 
-        role_id = 1404803970572226760  # event ping for the moment
-        role = discord.utils.get(ctx.guild.roles, id=role_id)
+        role = ctx.guild.get_role(self.auction_ping_role_id) if self.auction_ping_role_id else None
 
         if not role:
             return await ctx.send(_("Auction role wasn't found."))
@@ -2465,7 +2485,7 @@ class GameMaster(commands.Cog):
         # Send bid notifications
         await ctx.send(_("Bid submitted."))
 
-        channel = self.bot.get_channel(1408182582360936580)
+        channel = self.bot.get_channel(self.auction_channel_id) if self.auction_channel_id else None
 
         if channel:
             await channel.send(
@@ -2505,7 +2525,7 @@ class GameMaster(commands.Cog):
 
         if result == 1:
             await ctx.send(_("The cooldown has been updated!"))
-            if ctx.author.id != 295173706496475136:
+            if not self.protected_user_id or ctx.author.id != self.protected_user_id:
                 with handle_message_parameters(
                         content="**{gm}** reset **{user}**'s cooldown for the {command} command.\n\nReason: *{reason}*".format(
                             gm=ctx.author,
@@ -2596,7 +2616,7 @@ class GameMaster(commands.Cog):
                 
                 # Assign Discord role
                 try:
-                    gm_role = ctx.guild.get_role(1199288874581639249)
+                    gm_role = ctx.guild.get_role(self.gm_role_id) if self.gm_role_id else None
                     if gm_role:
                         await user.add_roles(gm_role)
                 except:
@@ -2642,7 +2662,7 @@ class GameMaster(commands.Cog):
 
                 # Remove Discord role
                 try:
-                    gm_role = ctx.guild.get_role(1199288874581639249)
+                    gm_role = ctx.guild.get_role(self.gm_role_id) if self.gm_role_id else None
                     if gm_role and gm_role in user.roles:
                         await user.remove_roles(gm_role)
                 except:
@@ -2886,7 +2906,7 @@ class GameMaster(commands.Cog):
     async def _eval(self, ctx: Context, *, body: str) -> None:
         """Evaluates a code"""
 
-        if ctx.author.id not in [171645746993561600, 273652235588599808, 295173706496475136]:
+        if ctx.author.id not in self.eval_allowed_user_ids:
             return
 
         env = {
@@ -2926,7 +2946,7 @@ class GameMaster(commands.Cog):
             value = stdout.getvalue()
             value = value.replace(self.bot.http.token, token)
             try:
-                await ctx.message.add_reaction("blackcheck:441826948919066625")
+                await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
             except discord.Forbidden:
                 pass
 
@@ -3054,7 +3074,7 @@ class GameMaster(commands.Cog):
         async with self.bot.pool.acquire() as conn:
             data = await conn.fetch("SELECT user FROM profile")
 
-            role_id = 1146279043692503112
+            role_id = self.assign_roles_role_id
 
             for row in data:
                 user_id = row['user']
@@ -3112,7 +3132,7 @@ class GameMaster(commands.Cog):
     async def evall(self, ctx: Context, *, code: str) -> None:
         """[Owner only] Evaluates python code on all processes."""
 
-        if ctx.author.id != 295173706496475136:
+        if not self.protected_user_id or ctx.author.id != self.protected_user_id:
             return
 
         data = await self.bot.cogs["Sharding"].handler(
@@ -3130,12 +3150,8 @@ class GameMaster(commands.Cog):
     @is_gm()
     @commands.command(hidden=True)
     async def assignroles(self, ctx):
-        god_roles = {
-            'Drakath': 1406639168070615040,
-            'Sepulchure': 1406639315240489061,
-            'Elysia': 1406639398795219126
-        }
-        godless_role_id = 1424665788362784851
+        god_roles = self.support_god_role_ids
+        godless_role_id = self.godless_role_id
 
         try:
             async with self.bot.pool.acquire() as conn:
@@ -3234,12 +3250,8 @@ class GameMaster(commands.Cog):
     @is_gm()
     @commands.command(hidden=True)
     async def assignrolesprimary(self, ctx):
-        god_roles = {
-            'Drakath': 1406639168070615040,
-            'Sepulchure': 1406639315240489061,
-            'Elysia': 1406639398795219126
-        }
-        godless_role_id = 1424665788362784851
+        god_roles = self.support_god_role_ids
+        godless_role_id = self.godless_role_id
 
         try:
             async with self.bot.pool.acquire() as conn:
@@ -3438,7 +3450,7 @@ class GameMaster(commands.Cog):
             if command == str("evall"):
                 return
 
-            if member_arg == 295173706496475136:
+            if self.protected_user_id and str(member_arg) == str(self.protected_user_id):
                 await ctx.send("You can't do this.")
                 return
 
@@ -3622,7 +3634,7 @@ class GameMaster(commands.Cog):
     @is_gm()
     @commands.command(hidden=True)
     async def gmjail(self, ctx: Context, member: discord.Member):
-        if ctx.guild.id != 969741725931298857:
+        if not self.jail_guild_id or ctx.guild.id != self.jail_guild_id:
             return
         try:
             # Get the category by name
@@ -3658,14 +3670,14 @@ class GameMaster(commands.Cog):
     @is_gm()
     @commands.command()
     async def gmunjail(self, ctx: Context, member: discord.Member):
-        if ctx.guild.id != 969741725931298857:
+        if not self.jail_guild_id or ctx.guild.id != self.jail_guild_id:
             return
         try:
-            SPECIAL_USER_ID = 295173706496475136
+            SPECIAL_USER_ID = self.gmunjail_special_user_id
             special_permissions = None
 
             # Check if the user has a special ID
-            if member.id == SPECIAL_USER_ID:
+            if SPECIAL_USER_ID and member.id == SPECIAL_USER_ID:
                 special_permissions = discord.PermissionOverwrite(manage_channels=True, read_messages=True,
                                                                   send_messages=True, manage_roles=True)
 
@@ -3758,7 +3770,7 @@ class GameMaster(commands.Cog):
                 
                 # Remove Discord role
                 try:
-                    god_role = ctx.guild.get_role(1280863045236691015)
+                    god_role = ctx.guild.get_role(self.god_admin_role_id) if self.god_admin_role_id else None
                     if god_role and god_role in user.roles:
                         await user.remove_roles(god_role)
                 except:
@@ -3850,7 +3862,7 @@ class GameMaster(commands.Cog):
                 
                 # Assign Discord role
                 try:
-                    god_role = ctx.guild.get_role(1280863045236691015)
+                    god_role = ctx.guild.get_role(self.god_admin_role_id) if self.god_admin_role_id else None
                     if god_role:
                         await user.add_roles(god_role)
                 except:
@@ -5844,3 +5856,4 @@ class BattleReplayController(discord.ui.View):
 
 async def setup(bot):
     await bot.add_cog(GameMaster(bot))
+

@@ -45,6 +45,11 @@ class Trading(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.markdown_escaper = commands.clean_content(escape_markdown=True)
+        ids_section = getattr(self.bot.config, "ids", None)
+        trading_ids = getattr(ids_section, "trading", {}) if ids_section else {}
+        if not isinstance(trading_ids, dict):
+            trading_ids = {}
+        self.restock_source_user_id = trading_ids.get("restock_source_user_id")
 
         # Add a list to track sold-out items
         self.sold_out_items = []
@@ -432,20 +437,22 @@ class Trading(commands.Cog):
 
     @has_char()
     @is_gm()
-    @commands.command(brief=_("Restock all items from 1144898209144127589 in the market"))
+    @commands.command(brief=_("Restock all items from configured user in the market"))
     @locale_doc
     async def restock(self, ctx):
         _(
             """
-            This command restocks all the items owned by 1144898209144127589 to the shop based on their stats.
+            This command restocks all the items owned by the configured source user to the shop based on their stats.
             The pricing will be done based on the item's stats, and rounded to the nearest 1000.
             Note: Bows, maces, and scythes will have their stats halved for pricing.
             """
         )
+        if not self.restock_source_user_id:
+            return await ctx.send(_("Restock source user is not configured."))
         async with self.bot.pool.acquire() as conn:
             items = await conn.fetch(
                 "SELECT * FROM inventory i JOIN allitems ai ON (i.item=ai.id) WHERE ai.owner=$1;",
-                1144898209144127589,
+                self.restock_source_user_id,
             )
 
             for item in items:
@@ -485,12 +492,12 @@ class Trading(commands.Cog):
                     await conn.execute(
                         "DELETE FROM inventory i USING allitems ai WHERE i.item=ai.id AND ai.id=$1 AND ai.owner=$2;",
                         item["id"],
-                        1144898209144127589,
+                        self.restock_source_user_id,
                     )
 
         await ctx.send(
             _(
-                "Successfully restocked items from 1144898209144127589 to the shop! Use `{prefix}shop` to view them in the market!"
+                "Successfully restocked configured source items to the shop! Use `{prefix}shop` to view them in the market!"
             ).format(prefix=ctx.clean_prefix)
         )
 

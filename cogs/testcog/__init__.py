@@ -409,6 +409,11 @@ class TestCog(commands.Cog):
         self.bot = bot
         self.active_adventures = {}  # user_id: AdventureState
         self.error_recipient_id = 0  # Replace with your error recipient's ID
+        ids_section = getattr(self.bot.config, "ids", None)
+        testcog_ids = getattr(ids_section, "testcog", {}) if ids_section else {}
+        if not isinstance(testcog_ids, dict):
+            testcog_ids = {}
+        self.toggle_night_channel_id = testcog_ids.get("toggle_night_channel_id")
 
         # Create a directory for maze images if it doesn't exist.
         self.image_dir = "maze_images"
@@ -487,7 +492,10 @@ When you reach the exit, you will be asked to confirm if you want to exit.
     @is_gm()
     @commands.command(aliases=["aaanight"], brief="Toggle night time manually.")
     async def toggle_night_time(self, ctx, mode: str = None):
-        channel_id = 1311869497497354281  # Replace with your channel ID
+        channel_id = self.toggle_night_channel_id
+        if not channel_id:
+            await ctx.send("Night toggle channel is not configured.")
+            return
         if channel_id != ctx.channel.id:
             return
         if mode is None:

@@ -339,6 +339,11 @@ class MorriganConversationView(View):
 class Soulforge(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        ids_section = getattr(self.bot.config, "ids", None)
+        soulforge_ids = getattr(ids_section, "soulforge", {}) if ids_section else {}
+        if not isinstance(soulforge_ids, dict):
+            soulforge_ids = {}
+        self.splice_admin_user_id = soulforge_ids.get("splice_admin_user_id")
         
     async def get_player_data(self, user_id):
         """Get player's quest progress and character data"""
@@ -1831,7 +1836,12 @@ class Soulforge(commands.Cog):
                     )
                 
                 # Notify the admin
-                admin = self.bot.get_user(295173706496475136)
+                admin = self.bot.get_user(self.splice_admin_user_id) if self.splice_admin_user_id else None
+                if admin is None and self.splice_admin_user_id:
+                    try:
+                        admin = await self.bot.fetch_user(self.splice_admin_user_id)
+                    except Exception:
+                        admin = None
                 if admin:
                     embed = discord.Embed(
                         title="New Splice Request",

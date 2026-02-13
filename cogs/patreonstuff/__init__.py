@@ -7,35 +7,42 @@ import asyncio
 class PatreonStuff(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        ids_section = getattr(self.bot.config, "ids", None)
+        patreonstuff_ids = getattr(ids_section, "patreonstuff", {}) if ids_section else {}
+        if not isinstance(patreonstuff_ids, dict):
+            patreonstuff_ids = {}
+        self.guild_id = patreonstuff_ids.get("guild_id")
 
         # Start tasks after the database is initialized
         self.periodic_tier_assignment.start()
         self.monthly_token_increment.start()
 
         # Define excluded user IDs
-        self.EXCLUDED_USER_IDS = {
-            700801066593419335,
-            295173706496475136,
-            118234287425191938,
-            384534935068737536,
-            708435868842459169,
-            635319019083137057
-        }
+        excluded_ids = patreonstuff_ids.get("excluded_user_ids", [])
+        if isinstance(excluded_ids, list):
+            self.EXCLUDED_USER_IDS = set(excluded_ids)
+        else:
+            self.EXCLUDED_USER_IDS = set()
 
         # Role to Tier mapping
-        self.ROLE_TIER_MAPPING = {
-            1199287508811391015: 1,  # tier 1
-            1199287508811391014: 2,  # tier 2
-            1199287508828172351: 3,  # tier 3
-            1199287508828172353: 4   # tier 4
-        }
+        role_tier_mapping = patreonstuff_ids.get("role_tier_mapping", {})
+        self.ROLE_TIER_MAPPING = {}
+        if isinstance(role_tier_mapping, dict):
+            for role_id, tier in role_tier_mapping.items():
+                try:
+                    self.ROLE_TIER_MAPPING[int(role_id)] = int(tier)
+                except (TypeError, ValueError):
+                    continue
 
         # Role to Token Increment mapping for monthly updates
-        self.ROLE_TOKEN_UPDATES = {
-            1199287508811391015: 5,   # Tier 1 gets 5 tokens
-            1199287508811391014: 5,  # Tier 2
-            1199287508828172351: 5,  # Tier 3
-        }
+        role_token_updates = patreonstuff_ids.get("role_token_updates", {})
+        self.ROLE_TOKEN_UPDATES = {}
+        if isinstance(role_token_updates, dict):
+            for role_id, token_increment in role_token_updates.items():
+                try:
+                    self.ROLE_TOKEN_UPDATES[int(role_id)] = int(token_increment)
+                except (TypeError, ValueError):
+                    continue
 
     def cog_unload(self):
         self.periodic_tier_assignment.cancel()
@@ -46,9 +53,7 @@ class PatreonStuff(commands.Cog):
     async def periodic_tier_assignment(self):
         print('PatreonStuff Cog: Running periodic tier assignment task.')
 
-        # Replace with your actual guild (server) ID
-        GUILD_ID = 1199287508794626078  # e.g., 123456789012345678
-        guild = self.bot.get_guild(GUILD_ID)
+        guild = self.bot.get_guild(self.guild_id) if self.guild_id else None
         if guild is None:
             print('PatreonStuff Cog: Guild not found.')
             return
@@ -103,9 +108,7 @@ class PatreonStuff(commands.Cog):
 
         print(f'PatreonStuff Cog: Running monthly token increment on {now.strftime("%Y-%m-%d")}')
 
-        # Replace with your actual guild (server) ID
-        GUILD_ID = 1199287508794626078  # e.g., 123456789012345678
-        guild = self.bot.get_guild(GUILD_ID)
+        guild = self.bot.get_guild(self.guild_id) if self.guild_id else None
         if guild is None:
             print('PatreonStuff Cog: Guild not found.')
             return

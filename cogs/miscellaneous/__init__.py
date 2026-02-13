@@ -132,11 +132,13 @@ class Miscellaneous(commands.Cog):
         self.bot = bot
         self.talk_context = defaultdict(partial(deque, maxlen=3))
         self.conversations = {}
-        self.ALLOWED_CHANNELS = {
-            1145473586556055672,
-            1152255240654045295,
-            1149193023259951154
-        }
+        ids_section = getattr(self.bot.config, "ids", None)
+        misc_ids = getattr(ids_section, "miscellaneous", {}) if ids_section else {}
+        if not isinstance(misc_ids, dict):
+            misc_ids = {}
+        allowed_channels = misc_ids.get("allowed_channel_ids", [])
+        self.ALLOWED_CHANNELS = set(allowed_channels) if isinstance(allowed_channels, list) else set()
+        self.setstreak_allowed_user_id = misc_ids.get("setstreak_allowed_user_id")
         self.whitelist = load_whitelist()
 
     async def get_imgur_url(self, url: str):
@@ -701,7 +703,7 @@ class Miscellaneous(commands.Cog):
         )
 
         # Check if user is authorized (your user ID)
-        if ctx.author.id != 295173706496475136:
+        if not self.setstreak_allowed_user_id or ctx.author.id != self.setstreak_allowed_user_id:
             await ctx.send("❌ You don't have permission to use this command!")
             return
 
@@ -1564,15 +1566,17 @@ Even $1 can help us.
         _(
             """Invite the bot to your server.
 
-            Use this https://discord.com/api/oauth2/authorize?client_id=1136590782183264308&permissions
-            =8945276537921&scope=bot"""
+            Use the generated OAuth invite link from this command."""
         )
+        client_id = getattr(getattr(self.bot, "user", None), "id", None) or self.bot.config.bot.id
+        if not client_id:
+            return await ctx.send(_("Bot client ID is not configured."))
         await ctx.send(
             _(
                 "You are running version **{version}** by The Fable"
-                "Developers.\nInvite me! https://discord.com/api/oauth2/authorize?client_id=1136590782183264308"
+                "Developers.\nInvite me! https://discord.com/api/oauth2/authorize?client_id={client_id}"
                 "&permissions=8945276537921&scope=bot"
-            ).format(version=self.bot.version)
+            ).format(version=self.bot.version, client_id=client_id)
         )
 
 

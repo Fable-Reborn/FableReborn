@@ -15,6 +15,16 @@ from utils import misc as rpgtools
 class IceDragonChallenge(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        ids_section = getattr(self.bot.config, "ids", None)
+        dragon_ids = getattr(ids_section, "icedragonchallenge", {}) if ids_section else {}
+        if not isinstance(dragon_ids, dict):
+            dragon_ids = {}
+        self.allowed_guild_id = dragon_ids.get(
+            "allowed_guild_id", self.bot.config.game.support_server_id
+        )
+        self.reset_channel_id = dragon_ids.get("reset_channel_id")
+        self.party_category_id = dragon_ids.get("party_category_id")
+        self.party_deny_role_id = dragon_ids.get("party_deny_role_id")
         self.dragon_level = 1
         self.weekly_defeats = 0
         self.current_parties = {}
@@ -191,7 +201,11 @@ class IceDragonChallenge(commands.Cog):
                 ''')
 
                 # Send reset message
-                reset_channel = self.bot.get_channel(1408144167632371845)
+                reset_channel = (
+                    self.bot.get_channel(self.reset_channel_id)
+                    if self.reset_channel_id
+                    else None
+                )
                 if reset_channel:
                     await reset_channel.send("❄️ **Weekly reset!** The Ice Dragon has been reset to level 1.")
                 return True
@@ -273,15 +287,15 @@ class IceDragonChallenge(commands.Cog):
     async def channel(self, ctx, *members: discord.Member):
         """Creates a private channel for the specified members (1-3) and self-destructs after 20 minutes."""
         # Check guild ID
-        if ctx.guild.id != 1402911850802315336:
+        if not self.allowed_guild_id or ctx.guild.id != self.allowed_guild_id:
             await ctx.send("This command can only be used in the specified guild.")
             self.bot.reset_cooldown(ctx)
             return
 
 
         # Define category and channel details
-        category_id = 1415825180030271644
-        deny_role_id = 1199287508857540701
+        category_id = self.party_category_id
+        deny_role_id = self.party_deny_role_id
 
         # Fetch category
         category = discord.utils.get(ctx.guild.categories, id=category_id)
@@ -374,7 +388,7 @@ class IceDragonChallenge(commands.Cog):
             return await ctx.send("This command is not ready yet.")
 
         try:
-            if isinstance(ctx.channel, discord.DMChannel) or ctx.guild.id != 1402911850802315336:
+            if isinstance(ctx.channel, discord.DMChannel) or ctx.guild.id != self.allowed_guild_id:
                 #await self.bot.reset_cooldown(ctx)
                 return await ctx.send("Dragon battles can only be started in the Fable server!")
 

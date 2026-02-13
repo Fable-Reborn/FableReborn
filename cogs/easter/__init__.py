@@ -18,6 +18,22 @@ from utils.i18n import _, locale_doc
 class Easter(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        ids_section = getattr(self.bot.config, "ids", None)
+        easter_ids = getattr(ids_section, "easter", {}) if ids_section else {}
+        if not isinstance(easter_ids, dict):
+            easter_ids = {}
+        team_channel_ids = easter_ids.get("team_channel_ids", {})
+        if not isinstance(team_channel_ids, dict):
+            team_channel_ids = {}
+        self.easter_guild_id = easter_ids.get("guild_id")
+        self.announcement_channel_id = easter_ids.get("announcement_channel_id")
+        self.debug_channel_id = easter_ids.get("debug_channel_id")
+        self.test_participant_user_ids = easter_ids.get("test_participant_user_ids", [])
+        if not isinstance(self.test_participant_user_ids, list):
+            self.test_participant_user_ids = []
+        dawn_channel_id = team_channel_ids.get("dawn_protectors")
+        twilight_channel_id = team_channel_ids.get("twilight_keepers")
+        bloom_channel_id = team_channel_ids.get("bloom_wardens")
         self.enabled = False
         self.join_phase = False  # New: Track join phase
         self.customization_phase = False
@@ -29,7 +45,7 @@ class Easter(commands.Cog):
             "Dawn Protectors": {
                 "color": discord.Color.gold(),
                 "emoji": "🌅",
-                "channel_id": 1361313948091285574,  # Hare channel
+                "channel_id": dawn_channel_id,
                 "guardian": {
                     "name": "Solara, The Radiant Hare",
                     "description": "A golden-furred hare radiating sunlight, crowned with brilliant egg-shaped crystals.",
@@ -79,7 +95,7 @@ class Easter(commands.Cog):
             "Twilight Keepers": {
                 "color": discord.Color.purple(),
                 "emoji": "🌙",
-                "channel_id": 1361313969117073619,  # Drake channel
+                "channel_id": twilight_channel_id,
                 "guardian": {
                     "name": "Umbra, The Shadow Drake",
                     "description": "A sleek, dark-scaled drake with obsidian eggs embedded along its spine.",
@@ -129,7 +145,7 @@ class Easter(commands.Cog):
             "Bloom Wardens": {
                 "color": discord.Color.green(),
                 "emoji": "🌿",
-                "channel_id": 1361313992026624224,  # Serpent channel
+                "channel_id": bloom_channel_id,
                 "guardian": {
                     "name": "Thorne, The Floral Serpent",
                     "description": "A serpent covered in vibrant flowers, with pastel eggs growing like fruit on its leafy mane.",
@@ -183,7 +199,6 @@ class Easter(commands.Cog):
         self.team_battle_cooldowns = {}
         self.player_collect_cooldowns = {}
         self.last_reset = datetime.utcnow()
-        self.announcement_channel_id = 1299588921210179737
         self.total_customization_points = 30  # Total points teams can allocate
 
         # Placement tracking for race-to-kill
@@ -489,7 +504,7 @@ class Easter(commands.Cog):
     @locale_doc
     async def join(self, ctx):
         """Join the Easter Egg Guardian Trials event. Teams are assigned automatically for balance."""
-        if ctx.guild.id != 1199287508794626078:
+        if not self.easter_guild_id or ctx.guild.id != self.easter_guild_id:
             return await ctx.send(_("This command can only be used in the official server."))
         if not self.enabled:
             return await ctx.send(_("The Easter Egg Guardian Trials have not begun yet! Check back soon."))
@@ -653,8 +668,9 @@ class Easter(commands.Cog):
                     )
                     await team_channel.send(embed=update_embed)
             except Exception as e:
-                channel2 = self.bot.get_channel(1362758651047182578)
-                await channel2.send(f"Error updating leaderboard embed: {e}")
+                channel2 = self.bot.get_channel(self.debug_channel_id) if self.debug_channel_id else None
+                if channel2:
+                    await channel2.send(f"Error updating leaderboard embed: {e}")
         elif option.lower() == "ability":
             if not stat:  # Using 'stat' parameter as the ability name
                 return await ctx.send(_("Please specify an ability name to vote for."))
@@ -721,8 +737,9 @@ class Easter(commands.Cog):
                     update_embed.description += ability_list
                     await team_channel.send(embed=update_embed)
             except Exception as e:
-                channel2 = self.bot.get_channel(1362758651047182578)
-                await channel2.send(f"Error updating leaderboard embed: {e}")
+                channel2 = self.bot.get_channel(self.debug_channel_id) if self.debug_channel_id else None
+                if channel2:
+                    await channel2.send(f"Error updating leaderboard embed: {e}")
         else:
             await ctx.send(_("Invalid option. Use `stats` to allocate stat points or `ability` to vote for a starting ability."))
     
@@ -756,8 +773,9 @@ class Easter(commands.Cog):
                 )
                 await announcement_channel.send("@everyone", embed=embed)
         except Exception as e:
-            channel2 = self.bot.get_channel(1362758651047182578)
-            await channel2.send(f"Error updating leaderboard embed: {e}")
+            channel2 = self.bot.get_channel(self.debug_channel_id) if self.debug_channel_id else None
+            if channel2:
+                await channel2.send(f"Error updating leaderboard embed: {e}")
 
     @is_gm()
     @easter.command(hidden=True)
@@ -1647,11 +1665,7 @@ class Easter(commands.Cog):
                 return await ctx.send(f"The {target_team}'s guardian has already been defeated!")
                 
             # Create test participants with specified test IDs
-            test_ids = [
-                708435868842459169, 635319019083137057, 700801066593419335, 384534935068737536, 
-                728283563354619945, 245284329582755840, 761469900853215263, 742200394637246526, 
-                454853145592463360
-            ]
+            test_ids = list(self.test_participant_user_ids)
             
             test_participants = [ctx.author]  # Start with command caller
             
@@ -1682,8 +1696,9 @@ class Easter(commands.Cog):
             try:
                 await self.start_guardian_battle(ctx, test_participants, attacker_team, target_team)
             except Exception as e:
-                channel2 = self.bot.get_channel(1362758651047182578)
-                await channel2.send(f"Error updating leaderboard embed: {e}")
+                channel2 = self.bot.get_channel(self.debug_channel_id) if self.debug_channel_id else None
+                if channel2:
+                    await channel2.send(f"Error updating leaderboard embed: {e}")
             finally:
                 # Clean up temporary team assignment if needed
                 if not original_team and ctx.author.id in self.teams[test_team]["members"]:
@@ -3196,8 +3211,9 @@ class Easter(commands.Cog):
                 
                 await announcement_channel.send(embed=announcement_embed)
         except Exception as e:
-            channel2 = self.bot.get_channel(1362758651047182578)
-            await channel2.send(f"Error updating leaderboard embed: {e}")
+            channel2 = self.bot.get_channel(self.debug_channel_id) if self.debug_channel_id else None
+            if channel2:
+                await channel2.send(f"Error updating leaderboard embed: {e}")
     
     async def update_leaderboard_embed(self, guild):
         """Update or create the live leaderboard embed in the announcement channel."""
@@ -3205,7 +3221,7 @@ class Easter(commands.Cog):
         if channel is None:
             return
         
-        debug_channel = self.bot.get_channel(1362758651047182578)  # Keep your debug channel
+        debug_channel = self.bot.get_channel(self.debug_channel_id) if self.debug_channel_id else None
         
         try:
             # First, sync guardian HP values from battle stats
@@ -3218,7 +3234,8 @@ class Easter(commands.Cog):
                         self.current_hp[f"guardian_{team_name}"] = self.current_hp[battle_key]
                         
                 # Debug information
-                await debug_channel.send(f"Updated {team_name} guardian HP: {self.current_hp.get(f'guardian_{team_name}', 'Not found')}")
+                if debug_channel:
+                    await debug_channel.send(f"Updated {team_name} guardian HP: {self.current_hp.get(f'guardian_{team_name}', 'Not found')}")
             
             # Build the leaderboard embed
             embed = discord.Embed(
@@ -3372,8 +3389,9 @@ class Easter(commands.Cog):
                 await team_channel.send(embed=embed)
                 sent = True
         except Exception as e:
-            channel2 = self.bot.get_channel(1362758651047182578)
-            await channel2.send(f"Error updating leaderboard embed: {e}")
+            channel2 = self.bot.get_channel(self.debug_channel_id) if self.debug_channel_id else None
+            if channel2:
+                await channel2.send(f"Error updating leaderboard embed: {e}")
         if not sent:
             await ctx.send(embed=embed)
             await self.update_leaderboard_embed(ctx.guild)

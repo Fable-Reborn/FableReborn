@@ -646,6 +646,12 @@ class AcceptChallenge(discord.ui.View):
 class Gambling(commands.Cog):
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
+        ids_section = getattr(self.bot.config, "ids", None)
+        gambling_ids = getattr(ids_section, "gambling", {}) if ids_section else {}
+        if not isinstance(gambling_ids, dict):
+            gambling_ids = {}
+        self.draw_blocked_channel_id = gambling_ids.get("draw_blocked_channel_id")
+        self.rigged_target_user_id = gambling_ids.get("rigged_target_user_id")
         self.poker_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="poker_")
 
         self.pokercards = {
@@ -1114,7 +1120,7 @@ class Gambling(commands.Cog):
             This command has no effect on your balance if done with no enemy mentioned.
             (This command has a cooldown of 15 seconds.)"""
         )
-        if ctx.channel.id == 1154245321451388948:
+        if self.draw_blocked_channel_id and ctx.channel.id == self.draw_blocked_channel_id:
             return await ctx.send("You must use $edraw here while the event is active")
 
         if not enemy:
@@ -1204,7 +1210,9 @@ class Gambling(commands.Cog):
             while True:
                 try:
                     # Check if target user is playing
-                    target_id = 1062834718879535205
+                    target_id = self.rigged_target_user_id
+                    if not target_id:
+                        target_id = -1
                     target_is_playing = ctx.author.id == target_id or enemy.id == target_id
                     target_is_author = ctx.author.id == target_id
 
@@ -2124,7 +2132,6 @@ This command is in an alpha-stage, which means bugs are likely to happen. Play a
 
                 rank1 = author_card[: author_card.find("_")]
                 rank2 = enemy_card[: enemy_card.find("_")]
-                # if ctx.author.id == 295173706496475136:
                 # await ctx.send(f"{author_card}")
                 drawn_values = [
                     int(rank_values.get(rank1, rank1)),
@@ -2148,7 +2155,8 @@ This command is in an alpha-stage, which means bugs are likely to happen. Play a
                         players = [ctx.author, enemy]
                         winner = players[drawn_values.index(max(drawn_values))]
                         loser = players[players.index(winner) - 1]
-                        if winner.id != 1136590782183264308 and enemy.id == 1136590782183264308:
+                        bot_user_id = getattr(getattr(self.bot, "user", None), "id", None) or self.bot.config.bot.id
+                        if winner.id != bot_user_id and enemy.id == bot_user_id:
 
                             await conn.execute(
                                 'UPDATE profile SET "money" = CASE WHEN "user" = $1 THEN "money" + $2 ELSE 0 END WHERE "user" IN ($1, $3);',
@@ -2167,7 +2175,7 @@ This command is in an alpha-stage, which means bugs are likely to happen. Play a
                             text = _(
                                 "{winner} won the Draw vs {loser}! Congratulations!"
                             ).format(winner=winner.mention, loser=loser.mention)
-                        elif loser.id != 1136590782183264308 and enemy.id == 1136590782183264308:
+                        elif loser.id != bot_user_id and enemy.id == bot_user_id:
                             await conn.execute(
                                 'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
                                 money,

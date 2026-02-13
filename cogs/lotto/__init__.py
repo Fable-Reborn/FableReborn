@@ -46,6 +46,12 @@ import asyncpg
 class Lottery(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        ids_section = getattr(self.bot.config, "ids", None)
+        lotto_ids = getattr(ids_section, "lotto", {}) if ids_section else {}
+        if not isinstance(lotto_ids, dict):
+            lotto_ids = {}
+        self.announcement_channel_id = lotto_ids.get("announcement_channel_id")
+        self.announcement_role_id = lotto_ids.get("announcement_role_id")
 
     @commands.command(hidden=True)
     @is_gm()
@@ -71,8 +77,11 @@ class Lottery(commands.Cog):
                 f"Lottery settings updated. Ticket cost: **${amount}**, Max tickets per player: **{tickets}**")
 
             # Send a message to the specified channel
-            lottery_channel_id = 1408144167632371845  # Replace with your desired channel ID
-            lottery_channel = self.bot.get_channel(lottery_channel_id)
+            lottery_channel = (
+                self.bot.get_channel(self.announcement_channel_id)
+                if self.announcement_channel_id
+                else None
+            )
 
             if lottery_channel:
                 embed = discord.Embed(
@@ -83,8 +92,11 @@ class Lottery(commands.Cog):
                 await lottery_channel.send(embed=embed)
 
                 # Tag the specified role after sending the embed
-                role_id = 1411806405299671232  # Replace with your desired role ID
-                role = ctx.guild.get_role(role_id)  # Retrieve the role object using role ID
+                role = (
+                    ctx.guild.get_role(self.announcement_role_id)
+                    if self.announcement_role_id
+                    else None
+                )
                 if role:  # Check if role exists
                     role_mention = role.mention  # Get the mention string of the role
                     await ctx.send(f"{role_mention} Lottery announcement sent!", allowed_mentions=discord.AllowedMentions(roles=True))  # Send message with role mention

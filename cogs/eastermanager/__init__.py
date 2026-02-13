@@ -727,7 +727,11 @@ class EasterManager(commands.Cog):
             if channel is None:
                 return
             
-            debug_channel = easter_cog.bot.get_channel(1362758651047182578)
+            debug_channel = (
+                easter_cog.bot.get_channel(getattr(easter_cog, "debug_channel_id", None))
+                if getattr(easter_cog, "debug_channel_id", None)
+                else None
+            )
             
             try:
                 # First, sync guardian HP values from battle stats

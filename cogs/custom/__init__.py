@@ -41,11 +41,18 @@ class Custom(commands.Cog):
     def __init__(self, bot: Bot):
         self.bot = bot
         self._last_result = None
+        ids_section = getattr(self.bot.config, "ids", None)
+        custom_ids = getattr(ids_section, "custom", {}) if ids_section else {}
+        if not isinstance(custom_ids, dict):
+            custom_ids = {}
+        self.givedivine_allowed_user_id = custom_ids.get("givedivine_allowed_user_id")
+        self.hottest_allowed_user_id = custom_ids.get("hottest_allowed_user_id")
+        self.hottest_target_user_id = custom_ids.get("hottest_target_user_id")
 
     @commands.command(breif=_("Gift a crate"))
     @locale_doc
     async def givedivine(self, ctx, amount: int, other: MemberWithCharacter):
-        if ctx.author.id == 294016545254801409:
+        if self.givedivine_allowed_user_id and ctx.author.id == self.givedivine_allowed_user_id:
             await ctx.send(
                 _("Successfully gave {amount} divine crate(s) to {other}.").format(
                     amount=amount, other=other.mention
@@ -57,7 +64,7 @@ class Custom(commands.Cog):
     async def hottest(self, ctx: Context) -> None:
         try:
 
-            if ctx.author.id != 273652235588599808:
+            if not self.hottest_allowed_user_id or ctx.author.id != self.hottest_allowed_user_id:
 
                 await ctx.send("You do not have access to this custom command.")
                 return
@@ -68,7 +75,10 @@ class Custom(commands.Cog):
             await ctx.send("pfft.. Thats no contest!")
             await asyncio.sleep(1)
 
-            user_id = 810567137268727858
+            user_id = self.hottest_target_user_id
+            if not user_id:
+                await ctx.send("This command target user is not configured.")
+                return
             guild = ctx.guild  # Assuming you have access to the guild context
 
             try:

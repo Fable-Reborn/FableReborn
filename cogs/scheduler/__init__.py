@@ -93,6 +93,11 @@ class Scheduling(commands.Cog):
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
         self._handles = 0 in self.bot.shard_ids  # Determines if this shard should handle reminders
+        ids_section = getattr(self.bot.config, "ids", None)
+        scheduler_ids = getattr(ids_section, "scheduler", {}) if ids_section else {}
+        if not isinstance(scheduler_ids, dict):
+            scheduler_ids = {}
+        self.error_report_user_id = scheduler_ids.get("error_report_user_id")
 
         self._have_data = asyncio.Event()
         self._current_timer = None
@@ -175,12 +180,11 @@ class Scheduling(commands.Cog):
             return reminders
         except Exception as e:
             # If an exception occurs, send a direct message to a specific user
-            user_id = 171645746993561600  # ID of the user to send the message to
-            user = self.bot.get_user(user_id)
+            user = self.bot.get_user(self.error_report_user_id) if self.error_report_user_id else None
             if user:
                 await user.send(f"An exception occurred while fetching reminders: {e}")
             else:
-                print(f"Failed to send DM: User {user_id} not found")
+                print("Failed to send DM: Error report user not found")
             return []
 
     @tasks.loop(seconds=1)  # Adjust the interval as needed

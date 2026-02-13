@@ -36,6 +36,11 @@ from utils.i18n import locale_doc, _
 class Slots(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        ids_section = getattr(self.bot.config, "ids", None)
+        dragonslot_ids = getattr(ids_section, "dragonslots", {}) if ids_section else {}
+        if not isinstance(dragonslot_ids, dict):
+            dragonslot_ids = {}
+        self.captcha_lock_channel_id = dragonslot_ids.get("captcha_lock_channel_id")
 
         # -------Health Init------------
         self.player_hp = 100
@@ -669,7 +674,11 @@ class Slots(commands.Cog):
         return user_id in self.captcha_lock
 
     async def send_locked_message(self, user):
-        locked_channel = self.bot.get_channel(1140210404627337256)
+        locked_channel = (
+            self.bot.get_channel(self.captcha_lock_channel_id)
+            if self.captcha_lock_channel_id
+            else None
+        )
         if locked_channel:
             await locked_channel.send(f"{user.name}#{user.discriminator} failed the CAPTCHA and is now locked.")
 

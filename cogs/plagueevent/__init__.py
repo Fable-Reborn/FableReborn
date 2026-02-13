@@ -7,10 +7,6 @@ import math
 from decimal import Decimal, ROUND_HALF_UP
 from collections import deque
 
-# Replace with your actual IDs
-GUILD_ID = 123456789012345678  # Replace with your guild/server ID
-ANNOUNCEMENT_CHANNEL_ID = 123456789012345679  # Replace with your announcement channel ID
-
 # Define ranks and their corresponding XP thresholds and abilities
 RANKS = {
     "Resistance": [
@@ -94,6 +90,13 @@ ABILITY_EFFECTS = {
 class PlagueOfTheUndying(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        ids = getattr(bot.config, "ids", None)
+        plagueevent_ids = getattr(ids, "plagueevent", None) if ids else None
+        if not isinstance(plagueevent_ids, dict):
+            plagueevent_ids = {}
+        self.plague_guild_id = plagueevent_ids.get("guild_id")
+        self.announcement_channel_id = plagueevent_ids.get("announcement_channel_id")
+        self._missing_config_warned = False
         self.event_active = False
         self.factions = {
             "Resistance": {
@@ -122,6 +125,54 @@ class PlagueOfTheUndying(commands.Cog):
         self.conclude_event_task = self.bot.loop.create_task(self.check_event_end())
         self.hourly_update_task = self.bot.loop.create_task(self.hourly_update())
         self.region_battles_task = self.bot.loop.create_task(self.region_battles())
+
+    async def cog_check(self, ctx):
+        if self._is_event_configured():
+            return True
+        await ctx.send(
+            "Plague event is not configured. Missing `ids.plagueevent.guild_id`"
+            " or `ids.plagueevent.announcement_channel_id`."
+        )
+        return False
+
+    def _is_event_configured(self):
+        return bool(self.plague_guild_id and self.announcement_channel_id)
+
+    def _warn_missing_event_config(self, context: str):
+        if self._missing_config_warned:
+            return
+        suffix = f" ({context})" if context else ""
+        message = (
+            "Plague event IDs are not configured correctly"
+            f"{suffix}; skipping action."
+        )
+        logger = getattr(self.bot, "logger", None)
+        if logger:
+            logger.warning(message)
+        else:
+            print(message)
+        self._missing_config_warned = True
+
+    def _get_event_guild(self, *, log_missing: bool = False, context: str = ""):
+        if not self._is_event_configured():
+            if log_missing:
+                self._warn_missing_event_config(context)
+            return None
+        guild = self.bot.get_guild(self.plague_guild_id)
+        if guild is None and log_missing:
+            self._warn_missing_event_config(context)
+        return guild
+
+    def _get_announcement_channel(
+        self, guild=None, *, log_missing: bool = False, context: str = ""
+    ):
+        guild = guild or self._get_event_guild(log_missing=log_missing, context=context)
+        if guild is None:
+            return None
+        channel = guild.get_channel(self.announcement_channel_id)
+        if channel is None and log_missing:
+            self._warn_missing_event_config(context)
+        return channel
 
     def initialize_regions(self):
         """Initialize the regions and their control status."""
@@ -176,7 +227,9 @@ class PlagueOfTheUndying(commands.Cog):
             xp = self.player_xp.get(user_id, 0)
             if xp >= next_rank["xp_threshold"]:
                 # Assign new Discord role
-                guild = self.bot.get_guild(GUILD_ID)
+                guild = self._get_event_guild(log_missing=True, context="promote_player")
+                if guild is None:
+                    return
                 role_name = f"{faction} - {next_rank['name']}"
                 role = discord.utils.get(guild.roles, name=role_name)
                 if not role:
@@ -203,7 +256,9 @@ class PlagueOfTheUndying(commands.Cog):
 
     async def assign_rank_role(self, user, faction, rank_name):
         """Assign a rank role to the user."""
-        guild = self.bot.get_guild(GUILD_ID)
+        guild = self._get_event_guild(log_missing=True, context="assign_rank_role")
+        if guild is None:
+            return
         role_name = f"{faction} - {rank_name}"
         role = discord.utils.get(guild.roles, name=role_name)
         if not role:
@@ -216,7 +271,9 @@ class PlagueOfTheUndying(commands.Cog):
 
     async def update_user_roles(self, user, old_faction, new_faction):
         """Update the user's roles when switching factions."""
-        guild = self.bot.get_guild(GUILD_ID)
+        guild = self._get_event_guild(log_missing=True, context="update_user_roles")
+        if guild is None:
+            return
         # Remove old faction roles
         for rank in RANKS[old_faction]:
             role = discord.utils.get(guild.roles, name=f"{old_faction} - {rank['name']}")
@@ -229,8 +286,11 @@ class PlagueOfTheUndying(commands.Cog):
     async def send_event_start(self):
         if self.event_active:
             return
-        guild = self.bot.get_guild(GUILD_ID)
-        announcement_channel = guild.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+        announcement_channel = self._get_announcement_channel(
+            log_missing=True, context="send_event_start"
+        )
+        if announcement_channel is None:
+            return
 
         prologue = (
             "**📜 Plague of the Undying: Apocalypse Begins**\n\n"
@@ -284,8 +344,12 @@ class PlagueOfTheUndying(commands.Cog):
     async def conclude_event(self, winning_faction):
         """Concludes the event with a winning faction."""
         self.event_active = False
-        guild = self.bot.get_guild(GUILD_ID)
-        announcement_channel = guild.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+        guild = self._get_event_guild(log_missing=True, context="conclude_event")
+        if guild is None:
+            return
+        announcement_channel = self._get_announcement_channel(
+            guild, log_missing=True, context="conclude_event"
+        )
 
         if winning_faction != "No one. It's a tie!":
             description = f"🏆 **{winning_faction}** has achieved a decisive victory in the **Plague of the Undying** event! Their unwavering determination has tilted the balance of power, ensuring a brighter future for their cause.\n\n**Rewards:** All members of the **{winning_faction}** have been awarded a special badge and bonus XP!"
@@ -319,7 +383,8 @@ class PlagueOfTheUndying(commands.Cog):
                 inline=False
             )
 
-        await announcement_channel.send(embed=embed)
+        if announcement_channel is not None:
+            await announcement_channel.send(embed=embed)
 
         # Reward Distribution Logic
         await self.distribute_rewards(winning_faction)
@@ -330,8 +395,12 @@ class PlagueOfTheUndying(commands.Cog):
     async def conclude_event_time_based(self):
         """Concludes the event based on time elapsed."""
         self.event_active = False
-        guild = self.bot.get_guild(GUILD_ID)
-        announcement_channel = guild.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+        guild = self._get_event_guild(log_missing=True, context="conclude_event_time_based")
+        if guild is None:
+            return
+        announcement_channel = self._get_announcement_channel(
+            guild, log_missing=True, context="conclude_event_time_based"
+        )
 
         # Determine winning faction based on current forces
         resistance_forces = self.factions["Resistance"]["forces"]
@@ -376,7 +445,8 @@ class PlagueOfTheUndying(commands.Cog):
                 inline=False
             )
 
-        await announcement_channel.send(embed=embed)
+        if announcement_channel is not None:
+            await announcement_channel.send(embed=embed)
 
         # Reward Distribution Logic
         await self.distribute_rewards(winning_faction)
@@ -386,8 +456,9 @@ class PlagueOfTheUndying(commands.Cog):
 
     async def distribute_rewards(self, winning_faction):
         """Distributes rewards to players based on the event outcome."""
-        guild = self.bot.get_guild(GUILD_ID)
-        announcement_channel = guild.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+        guild = self._get_event_guild(log_missing=True, context="distribute_rewards")
+        if guild is None:
+            return
 
         if winning_faction in self.factions:
             for member_id in self.factions[winning_faction]["members"]:
@@ -460,7 +531,9 @@ class PlagueOfTheUndying(commands.Cog):
         self.event_start_time = None
 
         # Reset roles for all members
-        guild = self.bot.get_guild(GUILD_ID)
+        guild = self._get_event_guild(log_missing=True, context="reset_event")
+        if guild is None:
+            return
         for member in guild.members:
             # Remove faction roles
             for faction in self.factions:
@@ -477,7 +550,9 @@ class PlagueOfTheUndying(commands.Cog):
                 await member.remove_roles(reward_role)
 
         # Notify admins
-        announcement_channel = guild.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+        announcement_channel = self._get_announcement_channel(
+            guild, log_missing=True, context="reset_event"
+        )
         embed = discord.Embed(
             title="🔄 Plague of the Undying: Event Reset",
             description="All event-related data has been reset. You can start a new event using `$plague start_event`.",
@@ -485,7 +560,8 @@ class PlagueOfTheUndying(commands.Cog):
             timestamp=datetime.utcnow()
         )
         embed.set_thumbnail(url="https://i.imgur.com/ResetEvent.png")  # Replace with actual image URL
-        await announcement_channel.send(embed=embed)
+        if announcement_channel is not None:
+            await announcement_channel.send(embed=embed)
 
     # Faction Selection
     @commands.group(name="plague", invoke_without_command=True)
@@ -1714,8 +1790,11 @@ class PlagueOfTheUndying(commands.Cog):
             ])
             self.daily_events.append(event)
             # Send update to announcement channel
-            guild = self.bot.get_guild(GUILD_ID)
-            announcement_channel = guild.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+            announcement_channel = self._get_announcement_channel(
+                log_missing=True, context="hourly_update"
+            )
+            if announcement_channel is None:
+                continue
             embed = discord.Embed(
                 title="🕒 Hourly Update",
                 description=event,
@@ -1760,8 +1839,11 @@ class PlagueOfTheUndying(commands.Cog):
         """Announce the major events of the hour."""
         if not self.daily_events:
             return
-        guild = self.bot.get_guild(GUILD_ID)
-        announcement_channel = guild.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+        announcement_channel = self._get_announcement_channel(
+            log_missing=True, context="announce_daily_events"
+        )
+        if announcement_channel is None:
+            return
         events = "\n".join(self.daily_events)
         embed = discord.Embed(
             title="📢 Event Summary",
@@ -1953,3 +2035,4 @@ class PlagueOfTheUndying(commands.Cog):
 # Setup function to add the Cog to the bot
 async def setup(bot):
     await bot.add_cog(PlagueOfTheUndying(bot))
+

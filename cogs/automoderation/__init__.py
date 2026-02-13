@@ -13,11 +13,24 @@ logger = logging.getLogger('AutoModeration')
 class AutoModeration(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.guild_id = 1402911850802315336  # Target Guild ID
-        self.admin_channel_id = 1406295336313557124
+        ids_section = getattr(self.bot.config, "ids", None)
+        automod_ids = getattr(ids_section, "automoderation", {}) if ids_section else {}
+        if not isinstance(automod_ids, dict):
+            automod_ids = {}
+
+        self.guild_id = automod_ids.get(
+            "guild_id",
+            self.bot.config.game.support_server_id,
+        )
+        self.admin_channel_id = automod_ids.get(
+            "admin_channel_id",
+            self.bot.config.game.gm_log_channel,
+        )
 
         # ID of the user to receive DM logs
-        self.log_user_id = 171645746993561600
+        owner_ids = getattr(self.bot.config.game, "owner_ids", [])
+        owner_fallback = owner_ids[0] if owner_ids else None
+        self.log_user_id = automod_ids.get("log_user_id", owner_fallback)
 
         # URL of the NSFW word list (raw content)
         self.nsfw_word_list_url = "https://gist.githubusercontent.com/ryanlewis/a37739d710ccdb4b406d/raw/0fbd315eb2900bb736609ea894b9bde8217b991a/google_twunter_lol"
@@ -36,6 +49,8 @@ class AutoModeration(commands.Cog):
 
     async def send_log_dm(self, message: str):
         """Send a DM to the designated log user."""
+        if not self.log_user_id:
+            return
         user = self.bot.get_user(self.log_user_id)
         if user is None:
             # Attempt to fetch the user if not cached
@@ -175,7 +190,13 @@ class ModerationView(discord.ui.View):
         self.user = message.author
 
         # ID of the user to receive DM logs
-        self.log_user_id = 171645746993561600
+        ids_section = getattr(self.bot.config, "ids", None)
+        automod_ids = getattr(ids_section, "automoderation", {}) if ids_section else {}
+        if not isinstance(automod_ids, dict):
+            automod_ids = {}
+        owner_ids = getattr(self.bot.config.game, "owner_ids", [])
+        owner_fallback = owner_ids[0] if owner_ids else None
+        self.log_user_id = automod_ids.get("log_user_id", owner_fallback)
 
 
 

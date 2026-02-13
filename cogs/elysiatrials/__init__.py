@@ -28,6 +28,14 @@ class ElysiaTrials(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.raid_active = False
+        ids_section = getattr(self.bot.config, "ids", None)
+        trial_ids = getattr(ids_section, "elysiatrials", {}) if ids_section else {}
+        if not isinstance(trial_ids, dict):
+            trial_ids = {}
+        self.channel_ids = trial_ids.get("channel_ids", [])
+        self.ping_role_id = trial_ids.get("ping_role_id")
+        if not isinstance(self.channel_ids, list):
+            self.channel_ids = []
 
     async def set_raid_timer(self):
         self.raid_active = True
@@ -39,6 +47,9 @@ class ElysiaTrials(commands.Cog):
     @commands.command(hidden=True, brief=_("Starts Elysia's trial"))
     async def goodspawn(self, ctx):
         """[Elysia only] Starts a Trial."""
+        if not self.channel_ids or not self.ping_role_id:
+            await ctx.send("Elysia trials channels/role are not configured.")
+            return
         await self.set_raid_timer()
 
         try:
@@ -48,12 +59,10 @@ class ElysiaTrials(commands.Cog):
                 timeout=60 * 15,
             )
 
-            channels = [
-                self.bot.get_channel(1406638071671292018),  # This is the current channel where the command was invoked
-            ]
+            channels = [self.bot.get_channel(channel_id) for channel_id in self.channel_ids]
 
-            channel1 = self.bot.get_channel(1406638071671292018)
-            role_id1 = 1406639398795219126
+            channel1 = self.bot.get_channel(self.channel_ids[0])
+            role_id1 = self.ping_role_id
 
             if channel1:
                 role1 = ctx.guild.get_role(role_id1)

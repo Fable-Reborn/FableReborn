@@ -165,6 +165,24 @@ class MusicSection:
         self.nodes = data.get("nodes", [])
 
 
+class IdsSection:
+    __slots__ = {"_data"}
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self._data = data if isinstance(data, dict) else {}
+
+    def get_section(self, name: str, default: dict[str, Any] | None = None) -> dict[str, Any]:
+        if default is None:
+            default = {}
+        value = self._data.get(name, default)
+        return value if isinstance(value, dict) else default
+
+    def __getattr__(self, name: str) -> dict[str, Any]:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return self.get_section(name, {})
+
+
 class ConfigLoader:
     """ConfigLoader provides methods for loading and reading values from a .toml file."""
 
@@ -180,6 +198,7 @@ class ConfigLoader:
         "cities",
         "music",
         "gods",
+        "ids",
     }
 
     def __init__(self, path: str) -> None:
@@ -206,3 +225,4 @@ class ConfigLoader:
         self.cities = self.values.get("cities", [])
         self.music = MusicSection(self.values.get("music", {}))
         self.gods = self.values.get("gods", [])
+        self.ids = IdsSection(self.values.get("ids", {}))
