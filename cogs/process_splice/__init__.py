@@ -1,10 +1,11 @@
 import datetime
 from operator import truediv
-from collections import defaultdict, deque
+from collections import defaultdict, deque, OrderedDict
 import discord
 from discord.ext import commands
 from discord.ui import Button, View
 import asyncio
+import threading
 from typing import Optional, List, Dict, Tuple, Union
 from discord import ButtonStyle, SelectOption, ui
 from discord.ui import Button, View, Select
@@ -22,7 +23,7 @@ import tempfile
 from io import BytesIO
 import pathlib
 from openai import OpenAI
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 import secrets
 
 # Constants for auto splice persistence
@@ -462,6 +463,12 @@ class SpliceRequestPaginator(View):
 class ProcessSplice(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._splice_bg_lock = threading.Lock()
+        self._splice_bg_checked = False
+        self._splice_bg_source = None
+        self._splice_bg_cache = OrderedDict()
+        self._splice_bg_cache_max_entries = 2
+        self._splice_bg_cache_max_pixels = 8_000_000
 
     def _create_openai_client(self):
         openai_key = self.bot.config.external.openai
@@ -626,6 +633,444 @@ class ProcessSplice(commands.Cog):
 
         return generation_by_name
 
+    def _load_monsters_json_data(self):
+        with open("monsters.json", "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _build_splice_thumb(self, image_bytes: bytes, thumb_size: int):
+        with Image.open(BytesIO(image_bytes)) as source_img:
+            source_img = source_img.convert("RGBA")
+            return ImageOps.fit(source_img, (thumb_size, thumb_size), method=Image.LANCZOS)
+
+    def _build_splice_tree_fallback_image(self, image_bytes: bytes, fast_mode: bool = False):
+        with Image.open(BytesIO(image_bytes)) as source_img:
+            source_img = source_img.convert("RGB" if fast_mode else "RGBA")
+            fallback = source_img.resize(
+                (max(1024, source_img.width // 2), max(1024, source_img.height // 2)),
+                Image.LANCZOS,
+            )
+            output = BytesIO()
+            if fast_mode:
+                fallback.save(
+                    output,
+                    format="JPEG",
+                    quality=86,
+                    optimize=True,
+                    progressive=True,
+                    subsampling=2,
+                )
+            else:
+                fallback.save(output, format="PNG", optimize=True, compress_level=6)
+            return output.getvalue()
+
+    def _get_splice_tree_background(self, width: int, height: int):
+        cache_key = (int(width), int(height))
+        background_candidates = [
+            "/home/fableadmin/FableRPG-FINAL/FableRPG-FINAL/Fable/cogs/process_splice/Base.png",
+            str(pathlib.Path(__file__).with_name("Base.png")),
+        ]
+
+        with self._splice_bg_lock:
+            cached = self._splice_bg_cache.get(cache_key)
+            if cached is not None:
+                self._splice_bg_cache.move_to_end(cache_key)
+                return cached.copy()
+
+            checked = self._splice_bg_checked
+            bg_source = self._splice_bg_source
+
+        if not checked:
+            loaded_source = None
+            for bg_path in background_candidates:
+                try:
+                    if not os.path.exists(bg_path):
+                        continue
+                    with Image.open(bg_path) as src:
+                        loaded_source = src.convert("RGBA")
+                    break
+                except Exception:
+                    continue
+
+            with self._splice_bg_lock:
+                self._splice_bg_checked = True
+                self._splice_bg_source = loaded_source
+                bg_source = self._splice_bg_source
+
+        if bg_source is None:
+            return None
+
+        fitted = ImageOps.fit(
+            bg_source,
+            (width, height),
+            method=Image.LANCZOS,
+            centering=(0.5, 0.5),
+        )
+
+        if (width * height) <= self._splice_bg_cache_max_pixels:
+            with self._splice_bg_lock:
+                self._splice_bg_cache[cache_key] = fitted.copy()
+                self._splice_bg_cache.move_to_end(cache_key)
+                while len(self._splice_bg_cache) > self._splice_bg_cache_max_entries:
+                    self._splice_bg_cache.popitem(last=False)
+
+        return fitted
+
+    def _render_splice_tree_images(
+        self,
+        *,
+        width: int,
+        height: int,
+        title_band: int,
+        node_diameter: int,
+        spacing_x: float,
+        leaf_count: int,
+        side_gutter: int,
+        max_depth: int,
+        target_name: str,
+        target_generation,
+        duplicate_combo_children: int,
+        tree_nodes: list,
+        generation_by_key: dict,
+        canonical_by_key: dict,
+        thumbnails: dict,
+        fast_mode: bool = False,
+    ):
+        canvas = self._get_splice_tree_background(width, height)
+
+        if canvas is None:
+            canvas = Image.new("RGBA", (width, height), (12, 16, 24, 255))
+
+        draw = ImageDraw.Draw(canvas)
+        draw.rectangle([0, 0, width, title_band], fill=(10, 14, 22, 185))
+
+        def load_font(size_px, bold=False):
+            font_candidates = [
+                "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            ]
+            for font_path in font_candidates:
+                try:
+                    return ImageFont.truetype(font_path, size_px)
+                except Exception:
+                    continue
+            return ImageFont.load_default()
+
+        title_font = load_font(min(220, max(48, width // 24)), bold=True)
+        header_font = load_font(min(96, max(24, width // 64)), bold=False)
+        label_font = load_font(min(62, max(15, node_diameter // 4)), bold=True)
+        meta_font = load_font(min(42, max(12, node_diameter // 6)), bold=False)
+
+        edge_color = (90, 165, 245)
+        edge_width = max(2, node_diameter // 14)
+
+        def draw_connectors(draw_ctx, line_color, line_width):
+            for node in tree_nodes:
+                child_x = node["x"]
+                child_y = node["y"]
+                parents = [p for p in (node.get("left"), node.get("right")) if p is not None]
+                if not parents:
+                    continue
+
+                if len(parents) == 2:
+                    p1 = parents[0]
+                    p2 = parents[1]
+                    left_parent, right_parent = (p1, p2) if p1["x"] <= p2["x"] else (p2, p1)
+
+                    connector_y = int(child_y + (left_parent["y"] - child_y) * 0.42)
+                    child_anchor_y = child_y + (node_diameter // 2)
+                    left_anchor_y = left_parent["y"] - (node_diameter // 2)
+                    right_anchor_y = right_parent["y"] - (node_diameter // 2)
+
+                    draw_ctx.line(
+                        [(child_x, child_anchor_y), (child_x, connector_y)],
+                        fill=line_color,
+                        width=line_width,
+                    )
+                    draw_ctx.line(
+                        [(left_parent["x"], connector_y), (right_parent["x"], connector_y)],
+                        fill=line_color,
+                        width=line_width,
+                    )
+                    draw_ctx.line(
+                        [(left_parent["x"], left_anchor_y), (left_parent["x"], connector_y)],
+                        fill=line_color,
+                        width=line_width,
+                    )
+                    draw_ctx.line(
+                        [(right_parent["x"], right_anchor_y), (right_parent["x"], connector_y)],
+                        fill=line_color,
+                        width=line_width,
+                    )
+                else:
+                    parent = parents[0]
+                    draw_ctx.line(
+                        [
+                            (child_x, child_y + (node_diameter // 2)),
+                            (parent["x"], parent["y"] - (node_diameter // 2)),
+                        ],
+                        fill=line_color,
+                        width=line_width,
+                    )
+
+        if not fast_mode:
+            glow_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+            glow_draw = ImageDraw.Draw(glow_layer)
+            glow_color = (120, 205, 255, 145)
+            glow_width = max(edge_width + 4, edge_width * 4)
+            draw_connectors(glow_draw, glow_color, glow_width)
+            glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(radius=max(2, edge_width * 2)))
+            canvas.alpha_composite(glow_layer)
+
+        # Draw crisp connector lines on top of the glow.
+        draw_connectors(draw, edge_color, edge_width)
+
+        palette = [
+            (126, 180, 255),
+            (144, 221, 168),
+            (255, 205, 120),
+            (255, 151, 120),
+            (214, 167, 255),
+            (120, 220, 220),
+        ]
+
+        def text_width(text, font):
+            text_bbox = draw.textbbox((0, 0), text, font=font)
+            return text_bbox[2] - text_bbox[0]
+
+        def wrap_text_to_width(text, font, max_width):
+            if not text:
+                return [""]
+            words = text.split()
+            if not words:
+                return [text]
+
+            effective_max_width = max(20, max_width - 4)
+            lines = []
+            current = ""
+            for word in words:
+                if not current:
+                    current = word
+                    continue
+                candidate = f"{current} {word}"
+                if text_width(candidate, font) <= effective_max_width:
+                    current = candidate
+                else:
+                    lines.append(current)
+                    current = word
+            if current:
+                lines.append(current)
+            return lines
+
+        inter_node_gap = spacing_x if leaf_count > 1 else (width * 0.40)
+        base_label_max_width = int(
+            max(node_diameter * 1.75, min(width * 0.32, inter_node_gap * 1.55))
+        )
+        base_label_max_width = max(140, min(int(width * 0.42), base_label_max_width))
+        edge_safe_padding = max(24, int(width * 0.012), int(side_gutter * 0.55))
+        label_box_pad_x = max(8, edge_safe_padding // 2)
+
+        nodes_by_depth = defaultdict(list)
+        for node in tree_nodes:
+            nodes_by_depth[node["depth"]].append(node)
+        for depth_nodes in nodes_by_depth.values():
+            depth_nodes.sort(key=lambda n: n["x"])
+
+        neighbor_gap_by_node = {}
+        for depth_nodes in nodes_by_depth.values():
+            depth_node_count = len(depth_nodes)
+            for idx, depth_node in enumerate(depth_nodes):
+                left_gap = depth_node["x"] - depth_nodes[idx - 1]["x"] if idx > 0 else None
+                right_gap = (
+                    depth_nodes[idx + 1]["x"] - depth_node["x"]
+                    if idx < depth_node_count - 1
+                    else None
+                )
+                candidate_gaps = [g for g in (left_gap, right_gap) if g is not None]
+                nearest_gap = min(candidate_gaps) if candidate_gaps else inter_node_gap
+                neighbor_gap_by_node[id(depth_node)] = max(80, int(nearest_gap))
+
+        label_boxes_by_depth = defaultdict(list)
+
+        def rects_overlap(a, b, padding=5):
+            return not (
+                a[2] + padding < b[0]
+                or a[0] > b[2] + padding
+                or a[3] + padding < b[1]
+                or a[1] > b[3] + padding
+            )
+
+        # Draw nodes.
+        for node in sorted(tree_nodes, key=lambda n: (n["depth"], n["x"])):
+            node_key = node["key"]
+            cx = node["x"]
+            cy = node["y"]
+            node_gen = generation_by_key.get(node_key)
+            if node_gen == -1:
+                border = (124, 178, 255)
+                fill = (34, 52, 84)
+                gen_text = "BASE"
+            elif isinstance(node_gen, int):
+                border_rgb = palette[node_gen % len(palette)]
+                border = border_rgb
+                fill = (26, 35, 50)
+                gen_text = f"G{node_gen}"
+            else:
+                border = (150, 150, 150)
+                fill = (45, 45, 45)
+                gen_text = "UNK"
+
+            radius = node_diameter // 2
+            left = cx - radius
+            top = cy - radius
+            right = cx + radius
+            bottom = cy + radius
+
+            draw.ellipse([left, top, right, bottom], fill=fill, outline=border, width=max(2, node_diameter // 20))
+
+            thumb = thumbnails.get(node_key)
+            if thumb:
+                inner = int(node_diameter * 0.80)
+                inner_left = cx - (inner // 2)
+                inner_top = cy - (inner // 2)
+                mask = Image.new("L", (inner, inner), 0)
+                mask_draw = ImageDraw.Draw(mask)
+                mask_draw.ellipse([0, 0, inner - 1, inner - 1], fill=255)
+                thumb_resized = ImageOps.fit(thumb, (inner, inner), method=Image.LANCZOS)
+                canvas.paste(thumb_resized, (inner_left, inner_top), mask)
+
+            node_name = canonical_by_key.get(node_key, node_key) or "Unknown"
+            local_gap = neighbor_gap_by_node.get(id(node), inter_node_gap)
+            local_label_max_width = max(
+                132, min(base_label_max_width, int(local_gap * 0.96))
+            )
+            name_lines = wrap_text_to_width(node_name, label_font, local_label_max_width)
+            line_spacing = max(4, label_font.size // 6)
+            line_metrics = []
+            for line in name_lines:
+                line_bbox = draw.textbbox((0, 0), line, font=label_font)
+                line_left = line_bbox[0]
+                line_top = line_bbox[1]
+                line_w = line_bbox[2] - line_bbox[0]
+                line_h = line_bbox[3] - line_bbox[1]
+                line_metrics.append((line, line_w, line_h, line_left, line_top))
+
+            label_w = max((metric[1] for metric in line_metrics), default=0)
+            label_h = sum(metric[2] for metric in line_metrics)
+            if len(line_metrics) > 1:
+                label_h += line_spacing * (len(line_metrics) - 1)
+
+            def make_label_rect(x, y):
+                return [
+                    x - label_box_pad_x,
+                    y - 6,
+                    x + label_w + label_box_pad_x,
+                    y + label_h + 6,
+                ]
+
+            label_x_max = max(edge_safe_padding, width - label_w - edge_safe_padding)
+
+            label_x = cx - (label_w // 2)
+            label_x = max(edge_safe_padding, min(label_x, label_x_max))
+            base_label_gap = 18 if node["depth"] <= 2 else 10
+            label_y = cy + radius + base_label_gap
+            label_rect = make_label_rect(label_x, label_y)
+
+            depth_label_boxes = label_boxes_by_depth[node["depth"]]
+            if depth_label_boxes:
+                max_horizontal_shift = max(0, int(local_gap * 0.45))
+                shift_step = max(8, label_font.size // 3)
+                candidate_offsets = [0]
+                if max_horizontal_shift > 0:
+                    for delta in range(shift_step, max_horizontal_shift + shift_step, shift_step):
+                        candidate_offsets.extend((-delta, delta))
+
+                placed = False
+                for offset in candidate_offsets:
+                    candidate_x = max(edge_safe_padding, min(label_x + offset, label_x_max))
+                    candidate_rect = make_label_rect(candidate_x, label_y)
+                    if not any(rects_overlap(candidate_rect, box) for box in depth_label_boxes):
+                        label_x = candidate_x
+                        label_rect = candidate_rect
+                        placed = True
+                        break
+
+                if not placed:
+                    stagger_step = max(8, label_font.size // 2)
+                    max_stagger = max(stagger_step, int(node_diameter * 0.35))
+                    used_stagger = 0
+                    while used_stagger < max_stagger and any(
+                        rects_overlap(label_rect, box) for box in depth_label_boxes
+                    ):
+                        label_y += stagger_step
+                        used_stagger += stagger_step
+                        label_rect = make_label_rect(label_x, label_y)
+
+            depth_label_boxes.append(label_rect)
+            draw.rectangle(
+                label_rect,
+                fill=(0, 0, 0),
+            )
+
+            line_y = label_y
+            for line, line_w, line_h, line_left, line_top in line_metrics:
+                line_box_x = label_x + ((label_w - line_w) // 2)
+                draw_x = line_box_x - line_left
+                draw_y = line_y - line_top
+                draw.text((draw_x, draw_y), line, font=label_font, fill=(245, 248, 255))
+                line_y += line_h + line_spacing
+
+            gen_bbox = draw.textbbox((0, 0), gen_text, font=meta_font)
+            gen_w = gen_bbox[2] - gen_bbox[0]
+            gen_h = gen_bbox[3] - gen_bbox[1]
+            gen_x = cx - (gen_w // 2)
+            gen_y = cy - radius - gen_h - 8
+            draw.rectangle(
+                [gen_x - 6, gen_y - 3, gen_x + gen_w + 6, gen_y + gen_h + 3],
+                fill=(0, 0, 0),
+            )
+            draw.text((gen_x, gen_y), gen_text, font=meta_font, fill=(232, 236, 245))
+
+        title_text = f"Splice Tree: {target_name}"
+        subtitle_text = (
+            f"Nodes: {len(tree_nodes)} | Levels: {max_depth + 1} | "
+            f"Target Gen: {target_generation if target_generation is not None else 'Unknown'} | "
+            f"Multi-parent rows collapsed: {duplicate_combo_children}"
+        )
+        title_y = max(26, int(title_band * 0.12))
+        subtitle_y = title_y + title_font.size + max(12, title_font.size // 4)
+        title_bbox = draw.textbbox((0, 0), title_text, font=title_font)
+        title_w = title_bbox[2] - title_bbox[0]
+        subtitle_bbox = draw.textbbox((0, 0), subtitle_text, font=header_font)
+        subtitle_w = subtitle_bbox[2] - subtitle_bbox[0]
+        title_x = max(12, (width - title_w) // 2)
+        subtitle_x = max(12, (width - subtitle_w) // 2)
+        draw.text((title_x, title_y), title_text, font=title_font, fill=(248, 250, 255))
+        draw.text((subtitle_x, subtitle_y), subtitle_text, font=header_font, fill=(190, 205, 230))
+
+        filename_safe_target = "".join(ch for ch in target_name if ch.isalnum() or ch in ("-", "_", " ")).strip()
+        if not filename_safe_target:
+            filename_safe_target = "splice_tree"
+        filename_safe_target = filename_safe_target.replace(" ", "_")[:80]
+
+        output = BytesIO()
+        if fast_mode:
+            jpeg_canvas = canvas.convert("RGB")
+            jpeg_canvas.save(
+                output,
+                format="JPEG",
+                quality=88,
+                optimize=True,
+                progressive=True,
+                subsampling=2,
+            )
+            output_ext = "jpg"
+        else:
+            canvas.save(output, format="PNG", optimize=True, compress_level=6)
+            output_ext = "png"
+        output_bytes = output.getvalue()
+
+        return filename_safe_target, output_bytes, output_ext
+
     @is_gm()
     @commands.command(
         name="splicegenstats",
@@ -772,6 +1217,8 @@ class ProcessSplice(commands.Cog):
         - $splicetree
         - $splicetree <monster name>
         - $splicetree <size> <monster name>   (size max: 16000)
+        - $splicetree quality <monster name>        (PNG output)
+        - $splicetree <size> quality <monster name> (PNG output)
         """
         default_size = 4096
         min_size = 2048
@@ -779,26 +1226,34 @@ class ProcessSplice(commands.Cog):
 
         requested = (target or "").strip()
         size = default_size
+        fast_mode = True
         target_name = "furthest"
 
         if requested:
             parts = requested.split()
             if parts and parts[0].isdigit():
                 size = int(parts[0])
-                remainder = " ".join(parts[1:]).strip()
-                target_name = remainder if remainder else "furthest"
-            else:
-                target_name = requested
+                parts = parts[1:]
+
+            if parts and parts[0].casefold() in {"quality", "png", "--quality", "hq"}:
+                fast_mode = False
+                parts = parts[1:]
+            elif parts and parts[0].casefold() in {"fast", "--fast", "jpg", "jpeg"}:
+                fast_mode = True
+                parts = parts[1:]
+
+            remainder = " ".join(parts).strip()
+            target_name = remainder if remainder else "furthest"
 
         size = max(min_size, min(max_size, size))
 
         status = await ctx.send(
-            f"Building splice tree at base size **{size}** for target: **{target_name}** ..."
+            f"Building splice tree at base size **{size}** for target: **{target_name}** "
+            f"({'jpg-fast' if fast_mode else 'png-quality'} mode)..."
         )
 
         try:
-            with open("monsters.json", "r", encoding="utf-8") as f:
-                monsters_data = json.load(f)
+            monsters_data = await asyncio.to_thread(self._load_monsters_json_data)
         except FileNotFoundError:
             return await status.edit(content="Could not read `monsters.json`.")
         except Exception as e:
@@ -1035,7 +1490,11 @@ class ProcessSplice(commands.Cog):
         title_band = max(300, int(size * 0.14))
         margin_x = side_gutter + max(96, int(base_tree_width * 0.03))
         margin_bottom = max(280, int(size * 0.16))
-        tree_top_padding = max(110, int(size * 0.04))
+        # Slightly larger top padding so the root splice sits lower in the scene.
+        tree_top_padding = max(130, int(size * 0.04) + 20)
+        root_anchor_x = 2438
+        min_title_to_splice_gap = 16
+        extra_downward_nudge = 30
 
         height = int(size * 0.74)
         if max_depth > 8:
@@ -1070,6 +1529,40 @@ class ProcessSplice(commands.Cog):
                 node["x"] = width // 2
             node["y"] = int(title_band + tree_top_padding + (node["depth"] * level_spacing))
 
+        # Anchor root X and ensure a small visual gap from title area on Y.
+        if tree_nodes:
+            min_x = min(node["x"] for node in tree_nodes)
+            max_x = max(node["x"] for node in tree_nodes)
+            min_y = min(node["y"] for node in tree_nodes)
+            max_y = max(node["y"] for node in tree_nodes)
+
+            requested_shift_x = root_anchor_x - root_node["x"]
+            min_root_center_y = title_band + (node_diameter // 2) + min_title_to_splice_gap
+            requested_shift_y = max(0, min_root_center_y - root_node["y"]) + extra_downward_nudge
+
+            min_shift = margin_x - min_x
+            max_shift = (width - margin_x) - max_x
+            clamped_shift_x = int(max(min_shift, min(max_shift, requested_shift_x)))
+
+            max_visual_center_y = height - margin_bottom - (node_diameter // 2) - 10
+            max_shift_y = max(0, max_visual_center_y - max_y)
+
+            # Grow canvas just enough when necessary so downward shift isn't clamped away.
+            if requested_shift_y > max_shift_y and height < max_size:
+                needed_extra = int(requested_shift_y - max_shift_y)
+                grow_by = min(max_size - height, needed_extra)
+                if grow_by > 0:
+                    height += grow_by
+                    max_visual_center_y = height - margin_bottom - (node_diameter // 2) - 10
+                    max_shift_y = max(0, max_visual_center_y - max_y)
+
+            clamped_shift_y = int(min(max_shift_y, requested_shift_y))
+
+            if clamped_shift_x or clamped_shift_y:
+                for node in tree_nodes:
+                    node["x"] += clamped_shift_x
+                    node["y"] += clamped_shift_y
+
         await status.edit(
             content=(
                 f"Rendering splice tree for **{target_name}** "
@@ -1094,10 +1587,8 @@ class ProcessSplice(commands.Cog):
                             return
                         data = await response.read()
 
-                with Image.open(BytesIO(data)) as source_img:
-                    source_img = source_img.convert("RGBA")
-                    thumb = ImageOps.fit(source_img, (thumb_size, thumb_size), method=Image.LANCZOS)
-                    thumbnails[node_key] = thumb
+                thumb = await asyncio.to_thread(self._build_splice_thumb, data, thumb_size)
+                thumbnails[node_key] = thumb
             except Exception:
                 return
 
@@ -1121,321 +1612,53 @@ class ProcessSplice(commands.Cog):
                 return_exceptions=True,
             )
 
-        canvas = Image.new("RGB", (width, height), (12, 16, 24))
-        draw = ImageDraw.Draw(canvas)
-        draw.rectangle([0, 0, width, title_band], fill=(10, 14, 22))
-
-        def load_font(size_px, bold=False):
-            font_candidates = [
-                "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf",
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            ]
-            for font_path in font_candidates:
-                try:
-                    return ImageFont.truetype(font_path, size_px)
-                except Exception:
-                    continue
-            return ImageFont.load_default()
-
-        title_font = load_font(min(220, max(48, width // 24)), bold=True)
-        header_font = load_font(min(96, max(24, width // 64)), bold=False)
-        label_font = load_font(min(62, max(15, node_diameter // 4)), bold=True)
-        meta_font = load_font(min(42, max(12, node_diameter // 6)), bold=False)
-
-        edge_color = (90, 165, 245)
-        edge_width = max(2, node_diameter // 14)
-
-        # Draw genealogy connectors first.
-        for node in tree_nodes:
-            child_x = node["x"]
-            child_y = node["y"]
-            parents = [p for p in (node.get("left"), node.get("right")) if p is not None]
-            if not parents:
-                continue
-
-            if len(parents) == 2:
-                p1 = parents[0]
-                p2 = parents[1]
-                left_parent, right_parent = (p1, p2) if p1["x"] <= p2["x"] else (p2, p1)
-
-                connector_y = int(child_y + (left_parent["y"] - child_y) * 0.42)
-                child_anchor_y = child_y + (node_diameter // 2)
-                left_anchor_y = left_parent["y"] - (node_diameter // 2)
-                right_anchor_y = right_parent["y"] - (node_diameter // 2)
-
-                draw.line(
-                    [(child_x, child_anchor_y), (child_x, connector_y)],
-                    fill=edge_color,
-                    width=edge_width,
-                )
-                draw.line(
-                    [(left_parent["x"], connector_y), (right_parent["x"], connector_y)],
-                    fill=edge_color,
-                    width=edge_width,
-                )
-                draw.line(
-                    [(left_parent["x"], left_anchor_y), (left_parent["x"], connector_y)],
-                    fill=edge_color,
-                    width=edge_width,
-                )
-                draw.line(
-                    [(right_parent["x"], right_anchor_y), (right_parent["x"], connector_y)],
-                    fill=edge_color,
-                    width=edge_width,
-                )
-            else:
-                parent = parents[0]
-                draw.line(
-                    [
-                        (child_x, child_y + (node_diameter // 2)),
-                        (parent["x"], parent["y"] - (node_diameter // 2)),
-                    ],
-                    fill=edge_color,
-                    width=edge_width,
-                )
-
-        palette = [
-            (126, 180, 255),
-            (144, 221, 168),
-            (255, 205, 120),
-            (255, 151, 120),
-            (214, 167, 255),
-            (120, 220, 220),
-        ]
-
-        def text_width(text, font):
-            text_bbox = draw.textbbox((0, 0), text, font=font)
-            return text_bbox[2] - text_bbox[0]
-
-        def wrap_text_to_width(text, font, max_width):
-            if not text:
-                return [""]
-            words = text.split()
-            if not words:
-                return [text]
-
-            effective_max_width = max(20, max_width - 4)
-            lines = []
-            current = ""
-            for word in words:
-                if not current:
-                    current = word
-                    continue
-                candidate = f"{current} {word}"
-                if text_width(candidate, font) <= effective_max_width:
-                    current = candidate
-                else:
-                    lines.append(current)
-                    current = word
-            if current:
-                lines.append(current)
-            return lines
-
-        inter_node_gap = spacing_x if leaf_count > 1 else (width * 0.40)
-        base_label_max_width = int(
-            max(node_diameter * 1.75, min(width * 0.32, inter_node_gap * 1.55))
-        )
-        base_label_max_width = max(140, min(int(width * 0.42), base_label_max_width))
-        edge_safe_padding = max(24, int(width * 0.012), int(side_gutter * 0.55))
-        label_box_pad_x = max(8, edge_safe_padding // 2)
-
-        nodes_by_depth = defaultdict(list)
-        for node in tree_nodes:
-            nodes_by_depth[node["depth"]].append(node)
-        for depth_nodes in nodes_by_depth.values():
-            depth_nodes.sort(key=lambda n: n["x"])
-
-        neighbor_gap_by_node = {}
-        for depth_nodes in nodes_by_depth.values():
-            node_count = len(depth_nodes)
-            for idx, depth_node in enumerate(depth_nodes):
-                left_gap = depth_node["x"] - depth_nodes[idx - 1]["x"] if idx > 0 else None
-                right_gap = (
-                    depth_nodes[idx + 1]["x"] - depth_node["x"]
-                    if idx < node_count - 1
-                    else None
-                )
-                candidate_gaps = [g for g in (left_gap, right_gap) if g is not None]
-                nearest_gap = min(candidate_gaps) if candidate_gaps else inter_node_gap
-                neighbor_gap_by_node[id(depth_node)] = max(80, int(nearest_gap))
-
-        label_boxes_by_depth = defaultdict(list)
-
-        def rects_overlap(a, b, padding=5):
-            return not (
-                a[2] + padding < b[0]
-                or a[0] > b[2] + padding
-                or a[3] + padding < b[1]
-                or a[1] > b[3] + padding
-            )
-
-        # Draw nodes.
-        for node in sorted(tree_nodes, key=lambda n: (n["depth"], n["x"])):
-            node_key = node["key"]
-            cx = node["x"]
-            cy = node["y"]
-            node_gen = generation_by_key.get(node_key)
-            if node_gen == -1:
-                border = (124, 178, 255)
-                fill = (34, 52, 84)
-                gen_text = "BASE"
-            elif isinstance(node_gen, int):
-                border_rgb = palette[node_gen % len(palette)]
-                border = border_rgb
-                fill = (26, 35, 50)
-                gen_text = f"G{node_gen}"
-            else:
-                border = (150, 150, 150)
-                fill = (45, 45, 45)
-                gen_text = "UNK"
-
-            radius = node_diameter // 2
-            left = cx - radius
-            top = cy - radius
-            right = cx + radius
-            bottom = cy + radius
-
-            draw.ellipse([left, top, right, bottom], fill=fill, outline=border, width=max(2, node_diameter // 20))
-
-            thumb = thumbnails.get(node_key)
-            if thumb:
-                inner = int(node_diameter * 0.80)
-                inner_left = cx - (inner // 2)
-                inner_top = cy - (inner // 2)
-                mask = Image.new("L", (inner, inner), 0)
-                mask_draw = ImageDraw.Draw(mask)
-                mask_draw.ellipse([0, 0, inner - 1, inner - 1], fill=255)
-                thumb_resized = ImageOps.fit(thumb, (inner, inner), method=Image.LANCZOS)
-                canvas.paste(thumb_resized, (inner_left, inner_top), mask)
-
-            node_name = canonical_by_key.get(node_key, node_key) or "Unknown"
-            local_gap = neighbor_gap_by_node.get(id(node), inter_node_gap)
-            local_label_max_width = max(
-                132, min(base_label_max_width, int(local_gap * 0.96))
-            )
-            name_lines = wrap_text_to_width(node_name, label_font, local_label_max_width)
-            line_spacing = max(4, label_font.size // 6)
-            line_metrics = []
-            for line in name_lines:
-                line_bbox = draw.textbbox((0, 0), line, font=label_font)
-                line_left = line_bbox[0]
-                line_top = line_bbox[1]
-                line_w = line_bbox[2] - line_bbox[0]
-                line_h = line_bbox[3] - line_bbox[1]
-                line_metrics.append((line, line_w, line_h, line_left, line_top))
-
-            label_w = max((metric[1] for metric in line_metrics), default=0)
-            label_h = sum(metric[2] for metric in line_metrics)
-            if len(line_metrics) > 1:
-                label_h += line_spacing * (len(line_metrics) - 1)
-
-            def make_label_rect(x, y):
-                return [
-                    x - label_box_pad_x,
-                    y - 6,
-                    x + label_w + label_box_pad_x,
-                    y + label_h + 6,
-                ]
-
-            label_x_max = max(edge_safe_padding, width - label_w - edge_safe_padding)
-
-            label_x = cx - (label_w // 2)
-            label_x = max(edge_safe_padding, min(label_x, label_x_max))
-            base_label_gap = 18 if node["depth"] <= 2 else 10
-            label_y = cy + radius + base_label_gap
-            label_rect = make_label_rect(label_x, label_y)
-
-            depth_label_boxes = label_boxes_by_depth[node["depth"]]
-            if depth_label_boxes:
-                max_horizontal_shift = max(0, int(local_gap * 0.45))
-                shift_step = max(8, label_font.size // 3)
-                candidate_offsets = [0]
-                if max_horizontal_shift > 0:
-                    for delta in range(shift_step, max_horizontal_shift + shift_step, shift_step):
-                        candidate_offsets.extend((-delta, delta))
-
-                placed = False
-                for offset in candidate_offsets:
-                    candidate_x = max(edge_safe_padding, min(label_x + offset, label_x_max))
-                    candidate_rect = make_label_rect(candidate_x, label_y)
-                    if not any(rects_overlap(candidate_rect, box) for box in depth_label_boxes):
-                        label_x = candidate_x
-                        label_rect = candidate_rect
-                        placed = True
-                        break
-
-                if not placed:
-                    stagger_step = max(8, label_font.size // 2)
-                    max_stagger = max(stagger_step, int(node_diameter * 0.35))
-                    used_stagger = 0
-                    while used_stagger < max_stagger and any(
-                        rects_overlap(label_rect, box) for box in depth_label_boxes
-                    ):
-                        label_y += stagger_step
-                        used_stagger += stagger_step
-                        label_rect = make_label_rect(label_x, label_y)
-
-            depth_label_boxes.append(label_rect)
-            draw.rectangle(
-                label_rect,
-                fill=(0, 0, 0),
-            )
-
-            line_y = label_y
-            for line, line_w, line_h, line_left, line_top in line_metrics:
-                line_box_x = label_x + ((label_w - line_w) // 2)
-                draw_x = line_box_x - line_left
-                draw_y = line_y - line_top
-                draw.text((draw_x, draw_y), line, font=label_font, fill=(245, 248, 255))
-                line_y += line_h + line_spacing
-
-            gen_bbox = draw.textbbox((0, 0), gen_text, font=meta_font)
-            gen_w = gen_bbox[2] - gen_bbox[0]
-            gen_h = gen_bbox[3] - gen_bbox[1]
-            gen_x = cx - (gen_w // 2)
-            gen_y = cy - radius - gen_h - 8
-            draw.rectangle(
-                [gen_x - 6, gen_y - 3, gen_x + gen_w + 6, gen_y + gen_h + 3],
-                fill=(0, 0, 0),
-            )
-            draw.text((gen_x, gen_y), gen_text, font=meta_font, fill=(232, 236, 245))
-
-        title_text = f"Splice Tree: {target_name}"
-        subtitle_text = (
-            f"Nodes: {len(tree_nodes)} | Levels: {max_depth + 1} | "
-            f"Target Gen: {target_generation if target_generation is not None else 'Unknown'} | "
-            f"Multi-parent rows collapsed: {duplicate_combo_children}"
-        )
-        title_y = max(26, int(title_band * 0.12))
-        subtitle_y = title_y + title_font.size + max(12, title_font.size // 4)
-        title_bbox = draw.textbbox((0, 0), title_text, font=title_font)
-        title_w = title_bbox[2] - title_bbox[0]
-        subtitle_bbox = draw.textbbox((0, 0), subtitle_text, font=header_font)
-        subtitle_w = subtitle_bbox[2] - subtitle_bbox[0]
-        title_x = max(12, (width - title_w) // 2)
-        subtitle_x = max(12, (width - subtitle_w) // 2)
-        draw.text((title_x, title_y), title_text, font=title_font, fill=(248, 250, 255))
-        draw.text((subtitle_x, subtitle_y), subtitle_text, font=header_font, fill=(190, 205, 230))
-
-        filename_safe_target = "".join(ch for ch in target_name if ch.isalnum() or ch in ("-", "_", " ")).strip()
-        if not filename_safe_target:
-            filename_safe_target = "splice_tree"
-        filename_safe_target = filename_safe_target.replace(" ", "_")[:80]
-
-        output = BytesIO()
         try:
-            canvas.save(output, format="PNG", optimize=True, compress_level=6)
-            output.seek(0)
-            await ctx.send(file=discord.File(output, filename=f"{filename_safe_target}_tree.png"))
+            filename_safe_target, output_bytes, output_ext = await asyncio.to_thread(
+                self._render_splice_tree_images,
+                width=width,
+                height=height,
+                title_band=title_band,
+                node_diameter=node_diameter,
+                spacing_x=spacing_x,
+                leaf_count=leaf_count,
+                side_gutter=side_gutter,
+                max_depth=max_depth,
+                target_name=target_name,
+                target_generation=target_generation,
+                duplicate_combo_children=duplicate_combo_children,
+                tree_nodes=tree_nodes,
+                generation_by_key=generation_by_key,
+                canonical_by_key=canonical_by_key,
+                thumbnails=thumbnails,
+                fast_mode=fast_mode,
+            )
+        except Exception as e:
+            return await status.edit(content=f"Failed to render splice tree: {e}")
+
+        try:
+            await ctx.send(
+                file=discord.File(
+                    BytesIO(output_bytes),
+                    filename=f"{filename_safe_target}_tree.{output_ext}",
+                )
+            )
             await status.edit(content="Splice tree generated.")
         except discord.HTTPException:
-            # Retry with a half-size fallback if upload fails.
-            fallback = canvas.resize((max(1024, width // 2), max(1024, height // 2)), Image.LANCZOS)
-            output = BytesIO()
-            fallback.save(output, format="PNG", optimize=True, compress_level=6)
-            output.seek(0)
-            await ctx.send(file=discord.File(output, filename=f"{filename_safe_target}_tree_fallback.png"))
-            await status.edit(content="Splice tree generated (fallback size, PNG).")
+            try:
+                fallback_bytes = await asyncio.to_thread(
+                    self._build_splice_tree_fallback_image,
+                    output_bytes,
+                    fast_mode,
+                )
+            except Exception as e:
+                return await status.edit(content=f"Failed to build fallback splice tree: {e}")
+            await ctx.send(
+                file=discord.File(
+                    BytesIO(fallback_bytes),
+                    filename=f"{filename_safe_target}_tree_fallback.{output_ext}",
+                )
+            )
+            await status.edit(content=f"Splice tree generated (fallback size, {output_ext.upper()}).")
         except Exception as e:
             await status.edit(content=f"Failed to render splice tree: {e}")
 
