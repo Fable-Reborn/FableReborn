@@ -793,7 +793,7 @@ class ProcessSplice(commands.Cog):
         size = max(min_size, min(max_size, size))
 
         status = await ctx.send(
-            f"Building splice tree at **{size}x{size}** for target: **{target_name}** ..."
+            f"Building splice tree at base size **{size}** for target: **{target_name}** ..."
         )
 
         try:
@@ -1007,15 +1007,41 @@ class ProcessSplice(commands.Cog):
 
         leaf_count = max(1, leaf_counter)
         max_depth = max(node["depth"] for node in tree_nodes)
+        node_count = len(tree_nodes)
 
-        width = size
-        title_band = max(260, int(size * 0.11))
-        margin_x = max(140, int(width * 0.06))
-        margin_bottom = max(220, int(size * 0.12))
+        spacing_pressure = 1.0
+        if max_depth > 10:
+            spacing_pressure += min(1.2, (max_depth - 10) * 0.08)
+        if leaf_count > 18:
+            spacing_pressure += min(0.8, (leaf_count - 18) * 0.025)
+        if node_count > 30:
+            spacing_pressure += min(0.6, (node_count - 30) * 0.02)
+        spacing_pressure = min(2.6, spacing_pressure)
 
-        height = int(size * 0.68)
+        # Use a wider landscape canvas so dense trees have enough horizontal room.
+        min_leaf_spacing_base = max(220, int(size * 0.055))
+        min_leaf_spacing = int(min_leaf_spacing_base * spacing_pressure)
+        min_leaf_spacing = min(min_leaf_spacing, max(320, int(size * 0.22)))
+        width_buffer = int(size * (0.20 + min(0.24, (max_depth * 0.006))))
+        width_from_leaves = int(max(0, leaf_count - 1) * min_leaf_spacing + width_buffer)
+        landscape_multiplier = 1.55 + min(
+            1.05,
+            (max_depth * 0.04) + (leaf_count * 0.015) + (node_count * 0.006),
+        )
+        base_tree_width = max(size, int(size * landscape_multiplier), width_from_leaves)
+        side_gutter_base = max(220, int(size * 0.09))
+        side_gutter = int(side_gutter_base * min(2.0, 0.9 + (spacing_pressure * 0.45)))
+        width = base_tree_width + (side_gutter * 2)
+        title_band = max(300, int(size * 0.14))
+        margin_x = side_gutter + max(96, int(base_tree_width * 0.03))
+        margin_bottom = max(280, int(size * 0.16))
+        tree_top_padding = max(110, int(size * 0.04))
+
+        height = int(size * 0.74)
         if max_depth > 8:
-            height = int(height * (1.0 + min(1.2, (max_depth - 8) * 0.08)))
+            height = int(height * (1.0 + min(1.5, (max_depth - 8) * 0.10)))
+        if node_count > 30:
+            height = int(height * (1.0 + min(0.45, (node_count - 30) * 0.02)))
         height = max(min_size, min(max_size, height))
 
         # Keep memory in check for very large requests.
@@ -1026,7 +1052,7 @@ class ProcessSplice(commands.Cog):
             height = max(1400, int(height * scale))
 
         usable_width = max(1, width - (2 * margin_x))
-        usable_height = max(1, height - title_band - margin_bottom)
+        usable_height = max(1, height - title_band - tree_top_padding - margin_bottom)
         spacing_x = usable_width / max(1, leaf_count - 1) if leaf_count > 1 else usable_width
         level_spacing = usable_height / max(1, max_depth if max_depth > 0 else 1)
 
@@ -1042,7 +1068,7 @@ class ProcessSplice(commands.Cog):
                 node["x"] = int(margin_x + (node["order"] * spacing_x))
             else:
                 node["x"] = width // 2
-            node["y"] = int(title_band + (node["depth"] * level_spacing))
+            node["y"] = int(title_band + tree_top_padding + (node["depth"] * level_spacing))
 
         await status.edit(
             content=(
@@ -1177,21 +1203,9 @@ class ProcessSplice(commands.Cog):
             (120, 220, 220),
         ]
 
-        def split_word_to_width(word, font, max_width):
-            if draw.textlength(word, font=font) <= max_width:
-                return [word]
-            chunks = []
-            current = ""
-            for ch in word:
-                candidate = current + ch
-                if current and draw.textlength(candidate, font=font) > max_width:
-                    chunks.append(current)
-                    current = ch
-                else:
-                    current = candidate
-            if current:
-                chunks.append(current)
-            return chunks
+        def text_width(text, font):
+            text_bbox = draw.textbbox((0, 0), text, font=font)
+            return text_bbox[2] - text_bbox[0]
 
         def wrap_text_to_width(text, font, max_width):
             if not text:
@@ -1200,32 +1214,63 @@ class ProcessSplice(commands.Cog):
             if not words:
                 return [text]
 
+            effective_max_width = max(20, max_width - 4)
             lines = []
             current = ""
             for word in words:
-                pieces = split_word_to_width(word, font, max_width)
-                for piece in pieces:
-                    if not current:
-                        current = piece
-                        continue
-                    candidate = f"{current} {piece}"
-                    if draw.textlength(candidate, font=font) <= max_width:
-                        current = candidate
-                    else:
-                        lines.append(current)
-                        current = piece
+                if not current:
+                    current = word
+                    continue
+                candidate = f"{current} {word}"
+                if text_width(candidate, font) <= effective_max_width:
+                    current = candidate
+                else:
+                    lines.append(current)
+                    current = word
             if current:
                 lines.append(current)
             return lines
 
         inter_node_gap = spacing_x if leaf_count > 1 else (width * 0.40)
-        label_max_width = int(
-            max(node_diameter * 1.9, min(width * 0.32, inter_node_gap * 1.65))
+        base_label_max_width = int(
+            max(node_diameter * 1.75, min(width * 0.32, inter_node_gap * 1.55))
         )
-        label_max_width = max(140, min(int(width * 0.45), label_max_width))
+        base_label_max_width = max(140, min(int(width * 0.42), base_label_max_width))
+        edge_safe_padding = max(24, int(width * 0.012), int(side_gutter * 0.55))
+        label_box_pad_x = max(8, edge_safe_padding // 2)
+
+        nodes_by_depth = defaultdict(list)
+        for node in tree_nodes:
+            nodes_by_depth[node["depth"]].append(node)
+        for depth_nodes in nodes_by_depth.values():
+            depth_nodes.sort(key=lambda n: n["x"])
+
+        neighbor_gap_by_node = {}
+        for depth_nodes in nodes_by_depth.values():
+            node_count = len(depth_nodes)
+            for idx, depth_node in enumerate(depth_nodes):
+                left_gap = depth_node["x"] - depth_nodes[idx - 1]["x"] if idx > 0 else None
+                right_gap = (
+                    depth_nodes[idx + 1]["x"] - depth_node["x"]
+                    if idx < node_count - 1
+                    else None
+                )
+                candidate_gaps = [g for g in (left_gap, right_gap) if g is not None]
+                nearest_gap = min(candidate_gaps) if candidate_gaps else inter_node_gap
+                neighbor_gap_by_node[id(depth_node)] = max(80, int(nearest_gap))
+
+        label_boxes_by_depth = defaultdict(list)
+
+        def rects_overlap(a, b, padding=5):
+            return not (
+                a[2] + padding < b[0]
+                or a[0] > b[2] + padding
+                or a[3] + padding < b[1]
+                or a[1] > b[3] + padding
+            )
 
         # Draw nodes.
-        for node in tree_nodes:
+        for node in sorted(tree_nodes, key=lambda n: (n["depth"], n["x"])):
             node_key = node["key"]
             cx = node["x"]
             cy = node["y"]
@@ -1264,32 +1309,84 @@ class ProcessSplice(commands.Cog):
                 canvas.paste(thumb_resized, (inner_left, inner_top), mask)
 
             node_name = canonical_by_key.get(node_key, node_key) or "Unknown"
-            name_lines = wrap_text_to_width(node_name, label_font, label_max_width)
+            local_gap = neighbor_gap_by_node.get(id(node), inter_node_gap)
+            local_label_max_width = max(
+                132, min(base_label_max_width, int(local_gap * 0.96))
+            )
+            name_lines = wrap_text_to_width(node_name, label_font, local_label_max_width)
             line_spacing = max(4, label_font.size // 6)
             line_metrics = []
             for line in name_lines:
                 line_bbox = draw.textbbox((0, 0), line, font=label_font)
+                line_left = line_bbox[0]
+                line_top = line_bbox[1]
                 line_w = line_bbox[2] - line_bbox[0]
                 line_h = line_bbox[3] - line_bbox[1]
-                line_metrics.append((line, line_w, line_h))
+                line_metrics.append((line, line_w, line_h, line_left, line_top))
 
             label_w = max((metric[1] for metric in line_metrics), default=0)
             label_h = sum(metric[2] for metric in line_metrics)
             if len(line_metrics) > 1:
                 label_h += line_spacing * (len(line_metrics) - 1)
 
+            def make_label_rect(x, y):
+                return [
+                    x - label_box_pad_x,
+                    y - 6,
+                    x + label_w + label_box_pad_x,
+                    y + label_h + 6,
+                ]
+
+            label_x_max = max(edge_safe_padding, width - label_w - edge_safe_padding)
+
             label_x = cx - (label_w // 2)
-            label_x = max(8, min(label_x, width - label_w - 8))
-            label_y = cy + radius + 10
+            label_x = max(edge_safe_padding, min(label_x, label_x_max))
+            base_label_gap = 18 if node["depth"] <= 2 else 10
+            label_y = cy + radius + base_label_gap
+            label_rect = make_label_rect(label_x, label_y)
+
+            depth_label_boxes = label_boxes_by_depth[node["depth"]]
+            if depth_label_boxes:
+                max_horizontal_shift = max(0, int(local_gap * 0.45))
+                shift_step = max(8, label_font.size // 3)
+                candidate_offsets = [0]
+                if max_horizontal_shift > 0:
+                    for delta in range(shift_step, max_horizontal_shift + shift_step, shift_step):
+                        candidate_offsets.extend((-delta, delta))
+
+                placed = False
+                for offset in candidate_offsets:
+                    candidate_x = max(edge_safe_padding, min(label_x + offset, label_x_max))
+                    candidate_rect = make_label_rect(candidate_x, label_y)
+                    if not any(rects_overlap(candidate_rect, box) for box in depth_label_boxes):
+                        label_x = candidate_x
+                        label_rect = candidate_rect
+                        placed = True
+                        break
+
+                if not placed:
+                    stagger_step = max(8, label_font.size // 2)
+                    max_stagger = max(stagger_step, int(node_diameter * 0.35))
+                    used_stagger = 0
+                    while used_stagger < max_stagger and any(
+                        rects_overlap(label_rect, box) for box in depth_label_boxes
+                    ):
+                        label_y += stagger_step
+                        used_stagger += stagger_step
+                        label_rect = make_label_rect(label_x, label_y)
+
+            depth_label_boxes.append(label_rect)
             draw.rectangle(
-                [label_x - 8, label_y - 6, label_x + label_w + 8, label_y + label_h + 6],
+                label_rect,
                 fill=(0, 0, 0),
             )
 
             line_y = label_y
-            for line, line_w, line_h in line_metrics:
-                line_x = label_x + ((label_w - line_w) // 2)
-                draw.text((line_x, line_y), line, font=label_font, fill=(245, 248, 255))
+            for line, line_w, line_h, line_left, line_top in line_metrics:
+                line_box_x = label_x + ((label_w - line_w) // 2)
+                draw_x = line_box_x - line_left
+                draw_y = line_y - line_top
+                draw.text((draw_x, draw_y), line, font=label_font, fill=(245, 248, 255))
                 line_y += line_h + line_spacing
 
             gen_bbox = draw.textbbox((0, 0), gen_text, font=meta_font)
@@ -1311,8 +1408,14 @@ class ProcessSplice(commands.Cog):
         )
         title_y = max(26, int(title_band * 0.12))
         subtitle_y = title_y + title_font.size + max(12, title_font.size // 4)
-        draw.text((margin_x, title_y), title_text, font=title_font, fill=(248, 250, 255))
-        draw.text((margin_x, subtitle_y), subtitle_text, font=header_font, fill=(190, 205, 230))
+        title_bbox = draw.textbbox((0, 0), title_text, font=title_font)
+        title_w = title_bbox[2] - title_bbox[0]
+        subtitle_bbox = draw.textbbox((0, 0), subtitle_text, font=header_font)
+        subtitle_w = subtitle_bbox[2] - subtitle_bbox[0]
+        title_x = max(12, (width - title_w) // 2)
+        subtitle_x = max(12, (width - subtitle_w) // 2)
+        draw.text((title_x, title_y), title_text, font=title_font, fill=(248, 250, 255))
+        draw.text((subtitle_x, subtitle_y), subtitle_text, font=header_font, fill=(190, 205, 230))
 
         filename_safe_target = "".join(ch for ch in target_name if ch.isalnum() or ch in ("-", "_", " ")).strip()
         if not filename_safe_target:
