@@ -462,6 +462,12 @@ class SpliceRequestPaginator(View):
 class ProcessSplice(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+
+    def _create_openai_client(self):
+        openai_key = self.bot.config.external.openai
+        if not openai_key:
+            raise ValueError("Missing OpenAI key: bot.config.external.openai")
+        return OpenAI(api_key=openai_key)
         
     async def get_player_data(self, user_id):
         """Get player's quest progress and character data"""
@@ -1394,7 +1400,7 @@ class ProcessSplice(commands.Cog):
             await ctx.send(f"Batch size limited to {MAX_BATCH}")
 
         try:
-            openai_client = OpenAI(api_key="")
+            openai_client = self._create_openai_client()
             await ctx.send("🤖 **AUTO SPLICE INITIATED**\n✅ OpenAI client ready – processing with default settings...")
         except Exception as e:
             return await ctx.send(f"⚠️ OpenAI init failed ({e}) – cannot proceed with auto splice.")
@@ -2085,7 +2091,7 @@ class ProcessSplice(commands.Cog):
         
         # Initialize OpenAI client
         try:
-            openai_client = OpenAI(api_key="")
+            openai_client = self._create_openai_client()
         except Exception as e:
             return await ctx.send(f"❌ OpenAI client initialization failed: {e}")
         
@@ -2416,7 +2422,7 @@ class ProcessSplice(commands.Cog):
             await ctx.send(f"Batch size limited to {MAX_BATCH}")
 
         try:
-            openai_client = OpenAI(api_key="")
+            openai_client = self._create_openai_client()
             await ctx.send("✅ OpenAI client initialised – gpt-image-1 enabled.")
         except Exception as e:
             openai_client = None
