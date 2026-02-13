@@ -677,6 +677,10 @@ class CouplesTowerView(discord.ui.View):
                 await self.on_cancel()
 
 class Battles(commands.Cog):
+    DRAGON_COIN_DROP_CHANCE_PERCENT = 10
+    DRAGON_COIN_DROP_MIN = 2
+    DRAGON_COIN_DROP_MAX = 5
+
     def __init__(self, bot):
         self.bot = bot
         self.forceleg = False
@@ -3784,8 +3788,22 @@ class Battles(commands.Cog):
             if max_level is not None and old_level > max_level:
                 continue
             eligible_drops.append(drop)
+        dragon_coin_reward = 0
         try:
             async with self.bot.pool.acquire() as conn:
+                party_member_ids = list(dict.fromkeys(member.id for member in party_members))
+                if (
+                    party_member_ids
+                    and random.randint(1, 100) <= self.DRAGON_COIN_DROP_CHANCE_PERCENT
+                ):
+                    dragon_coin_reward = random.randint(
+                        self.DRAGON_COIN_DROP_MIN, self.DRAGON_COIN_DROP_MAX
+                    )
+                    await conn.execute(
+                        'UPDATE profile SET dragoncoins = dragoncoins + $1 WHERE "user" = ANY($2);',
+                        dragon_coin_reward,
+                        party_member_ids,
+                    )
                 for idx, member in enumerate(party_members):
                     try:
                         # Calculate individual rewards with diminishing returns
@@ -3884,6 +3902,10 @@ class Battles(commands.Cog):
                     except Exception:
                         # Continue with next member even if this one fails
                         continue
+                if dragon_coin_reward > 0:
+                    reward_text += (
+                        f"🐉 Dragon Coin Bonus: Each party member also received {dragon_coin_reward} <:dragoncoin:1398714322372395008> Dragon Coins\n"
+                    )
         except Exception:
             # Try to continue with embed even if rewards failed
             reward_text = "Error processing rewards."

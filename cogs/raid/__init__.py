@@ -357,6 +357,9 @@ class DecisionView(View):
 
 class Raid(commands.Cog):
     """Raids are only available in the support server. Use the support command for an invite link."""
+    DRAGON_COIN_DROP_CHANCE_PERCENT = 10
+    DRAGON_COIN_DROP_MIN = 2
+    DRAGON_COIN_DROP_MAX = 5
 
     def __init__(self, bot):
         self.bot = bot
@@ -401,6 +404,23 @@ class Raid(commands.Cog):
 
     async def clear_raid_timer(self):
         await self.bot.redis.execute_command("DEL", "special:raid")
+
+    def _roll_raid_dragon_coin_bonus(self):
+        if random.randint(1, 100) > self.DRAGON_COIN_DROP_CHANCE_PERCENT:
+            return 0
+        return random.randint(self.DRAGON_COIN_DROP_MIN, self.DRAGON_COIN_DROP_MAX)
+
+    async def _award_raid_dragon_coins(self, user_ids, amount):
+        if amount <= 0 or not user_ids:
+            return False
+
+        unique_user_ids = list(dict.fromkeys(user_ids))
+        await self.bot.pool.execute(
+            'UPDATE profile SET dragoncoins = dragoncoins + $1 WHERE "user"=ANY($2);',
+            amount,
+            unique_user_ids,
+        )
+        return True
 
     @is_gm()
     @commands.command(hidden=True)
@@ -999,6 +1019,10 @@ class Raid(commands.Cog):
                         base_cash,
                         users
                     )
+                    dragon_coin_bonus = self._roll_raid_dragon_coin_bonus()
+                    dragon_coins_awarded = await self._award_raid_dragon_coins(
+                        users, dragon_coin_bonus
+                    )
 
                     # Process each survivor for potential Raider bonus
                     for (user, p_type) in list(
@@ -1047,6 +1071,10 @@ class Raid(commands.Cog):
                         if current_channel:
                             await current_channel.send(
                                 f"**Gave ${base_cash:,.0f} of Ragnarok's ${cash_pool:,.0f} drop to all survivors!**")
+                            if dragon_coins_awarded:
+                                await current_channel.send(
+                                    f"🐉 Bonus drop! All surviving raiders also received **{dragon_coin_bonus} <:dragoncoin:1398714322372395008> Dragon Coins**."
+                                )
 
                         summary_text = (
                             f"Emoji_here Defeated in: **{summary_duration}**\n"
@@ -1619,6 +1647,10 @@ class Raid(commands.Cog):
                         base_cash,
                         users
                     )
+                    dragon_coin_bonus = self._roll_raid_dragon_coin_bonus()
+                    dragon_coins_awarded = await self._award_raid_dragon_coins(
+                        users, dragon_coin_bonus
+                    )
 
                     # Process each survivor for potential Raider bonus
                     for (user, p_type) in list(
@@ -1667,6 +1699,10 @@ class Raid(commands.Cog):
                         if channel:
                             await channel.send(
                                 f"**Gave ${base_cash:,.0f} of Ragnarok's ${cash_pool:,.0f} drop to all survivors!**")
+                            if dragon_coins_awarded:
+                                await channel.send(
+                                    f"🐉 Bonus drop! All surviving raiders also received **{dragon_coin_bonus} <:dragoncoin:1398714322372395008> Dragon Coins**."
+                                )
 
                         summary_text = (
                             f"Emoji_here Defeated in: **{summary_duration}**\n"
@@ -2873,6 +2909,14 @@ class Raid(commands.Cog):
                 await ctx.send(
                     f"💰 All participants receive **${cash_reward}** as a token of Sepulchure's gratitude!"
                 )
+                dragon_coin_bonus = self._roll_raid_dragon_coin_bonus()
+                dragon_coins_awarded = await self._award_raid_dragon_coins(
+                    users, dragon_coin_bonus
+                )
+                if dragon_coins_awarded:
+                    await ctx.send(
+                        f"🐉 Bonus drop! All ritual participants also received **{dragon_coin_bonus} <:dragoncoin:1398714322372395008> Dragon Coins**."
+                    )
 
             else:
                 await ctx.send(f"💔 The ritual failed to reach completion. Darkness retreats as the Guardian prevails.")
@@ -3178,6 +3222,12 @@ class Raid(commands.Cog):
                     except Exception as e:
                         print(f"An error occurred: {e}")
 
+                    survivor_ids = [participant.id for participant in raid.keys() if not participant.bot]
+                    dragon_coin_bonus = self._roll_raid_dragon_coin_bonus()
+                    dragon_coins_awarded = await self._award_raid_dragon_coins(
+                        survivor_ids, dragon_coin_bonus
+                    )
+
                     em = discord.Embed(
                         title="Win!",
                         description=f"The forces aligned with Drakath have triumphed over Eclipse, wresting victory from the "
@@ -3190,6 +3240,12 @@ class Raid(commands.Cog):
                     em.set_image(url="https://i.imgur.com/s5tvHMd.png")
                     em.add_field(name="Crate Found", value=crate)
                     await send_to_channels(embed=em)
+                    if dragon_coins_awarded:
+                        await send_to_channels(
+                            content=(
+                                f"🐉 Bonus drop! All surviving followers also received **{dragon_coin_bonus} <:dragoncoin:1398714322372395008> Dragon Coins**."
+                            )
+                        )
                     await self.clear_raid_timer()
                 except Exception:
                     em = discord.Embed(
