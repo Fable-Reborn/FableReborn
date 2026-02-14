@@ -1532,7 +1532,6 @@ class ProcessSplice(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    @is_gm()
     @commands.command(
         name="splicetree",
         aliases=["splicemap", "splicetreeimg"],
@@ -2445,25 +2444,23 @@ class ProcessSplice(commands.Cog):
                 pet["url"] = DEFAULT_IMG
 
         # ──────────────────────────────────────────────────────────
-        # 4) STEP-2 AUTO STAT GENERATION (with tag-based caps)
+        # 4) STEP-2 AUTO STAT GENERATION (no hard caps)
         # ──────────────────────────────────────────────────────────
-        await ctx.send("⚔️ **AUTO-GENERATING STATS** (using tag-based caps for each splice type)...")
+        await ctx.send("⚔️ **AUTO-GENERATING STATS** (no hard caps; splice-type weighted)...")
 
         for pet in pets:
             try:
                 p1hp, p1atk, p1def = pet["pet1_hp"], pet["pet1_attack"], pet["pet1_defense"]
                 p2hp, p2atk, p2def = pet["pet2_hp"], pet["pet2_attack"], pet["pet2_defense"]
                 
-                # Set stat cap based on splice type
                 if pet["splice_type"] == "FINAL":
-                    CAP = 3500  # FINAL splice cap
                     def avg(a, b):
                         m = max(a, b)
                         # FINAL splices get higher boost chance
-                        if m > CAP * 0.75:  # If already high, apply smaller increase
-                            return min(int(m * random.uniform(1.02, 1.08)), CAP)
+                        if m > 2600:  # If already high, apply smaller increase
+                            return int(m * random.uniform(1.02, 1.08))
                         else:  # Otherwise give more significant boost
-                            return min(int(m * random.uniform(1.10, 1.18)), CAP)
+                            return int(m * random.uniform(1.10, 1.18))
                     
                     # Generate stats with higher boost
                     hp = avg(p1hp, p2hp)
@@ -2471,14 +2468,13 @@ class ProcessSplice(commands.Cog):
                     dfs = avg(p1def, p2def)
                     
                 elif pet["splice_type"] == "SPECIAL":
-                    CAP = 3000  # SPECIAL splice cap
                     def avg(a, b):
                         m = max(a, b)
                         # SPECIAL splices get moderate boost
-                        if m > CAP * 0.8:
-                            return min(int(m * random.uniform(1.01, 1.05)), CAP)
+                        if m > 2400:
+                            return int(m * random.uniform(1.01, 1.05))
                         else:
-                            return min(int(m * random.uniform(1.05, 1.12)), CAP)
+                            return int(m * random.uniform(1.05, 1.12))
                     
                     # Generate stats
                     hp = avg(p1hp, p2hp)
@@ -2486,12 +2482,11 @@ class ProcessSplice(commands.Cog):
                     dfs = avg(p1def, p2def)
                     
                 elif pet["splice_type"] == "UNSTABLE":
-                    CAP = 2850  # UNSTABLE splice cap
                     def avg(a, b):
                         m = max(a, b)
                         # UNSTABLE splices get randomly varying boosts
                         volatility = random.random() * 0.2  # 0 to 0.2 volatility
-                        return min(int(m * random.uniform(0.95 + volatility, 1.08 + volatility)), CAP)
+                        return int(m * random.uniform(0.95 + volatility, 1.08 + volatility))
                     
                     # Generate potentially volatile stats
                     hp = avg(p1hp, p2hp)
@@ -2500,24 +2495,20 @@ class ProcessSplice(commands.Cog):
                     
                 elif pet["splice_type"] == "DESTABILIZED":
                         # DESTABILIZED splices get much weaker stats
-                    CAP = 1500  # Lower cap for DESTABILIZED
                     pet['is_destabilised'] = True  # Ensure this flag is set for compatibility
                     
                     def d(x, y):
-                        return min(int(max(x, y) * random.uniform(0.10, 0.30)), CAP)
+                        return int(max(x, y) * random.uniform(0.10, 0.30))
 
                     hp = d(p1hp, p2hp)
                     atk = d(p1atk, p2atk)
                     dfs = d(p1def, p2def)
                     
                 else:  # NORMAL splice
-                    CAP = 2700  # Default cap
-
                     def avg(a, b):
                         m = max(a, b)
-                        if m > CAP:
-                            return min(int(((a + b) / 2) * random.uniform(1.05, 1.10)), CAP)
-                        return min(int(m * random.uniform(0.92, 0.98)), CAP)
+                        # Keep NORMAL splices near/around the stronger parent stat.
+                        return int(m * random.uniform(0.98, 1.03))
 
                     hp = avg(p1hp, p2hp)
                     atk = avg(p1atk, p2atk) 
@@ -3360,13 +3351,11 @@ class ProcessSplice(commands.Cog):
 
                     hp, atk, dfs = d(p1hp, p2hp), d(p1atk, p2atk), d(p1def, p2def)
                 else:
-                    CAP = 1500
-
                     def avg(a, b):
                         m = max(a, b)
-                        if m > CAP:
-                            return min(int(((a + b) / 2) * random.uniform(1.05, 1.10)), CAP)
-                        return min(int(m * random.uniform(0.92, 0.98)), CAP)
+                        # Keep non-destabilized batch suggestions near/around
+                        # the stronger parent stat without hard-cap clipping.
+                        return int(m * random.uniform(0.98, 1.03))
 
                     hp, atk, dfs = avg(p1hp, p2hp), avg(p1atk, p2atk), avg(p1def, p2def)
 
@@ -3730,30 +3719,16 @@ class ProcessSplice(commands.Cog):
             pet2_defense = splice['pet2_defense']
             
             # Function to calculate stats that are slightly under the max parent stat
-            def calc_slightly_under(stat1, stat2, max_allowed=1500):
-                # Get the effective max (respecting the original stat if it exceeds max_allowed)
+            def calc_slightly_under(stat1, stat2):
                 effective_max = max(stat1, stat2)
-                cap = effective_max if effective_max > max_allowed else max_allowed
-                
-                # Calculate a value slightly under the max (90-99% of max)
                 under_percentage = random.uniform(0.90, 0.99)
-                suggested = int(effective_max * under_percentage)
-                
-                # Ensure we don't exceed the cap
-                return min(suggested, cap)
+                return int(effective_max * under_percentage)
             
             # Function to calculate a stat that slightly exceeds the max parent stat
-            def calc_slightly_over(stat1, stat2, max_allowed=1500):
-                # Get the effective max (respecting the original stat if it exceeds max_allowed)
+            def calc_slightly_over(stat1, stat2):
                 effective_max = max(stat1, stat2)
-                cap = effective_max if effective_max > max_allowed else max_allowed
-                
-                # Calculate a value slightly over the max (1-15% boost)
                 over_percentage = random.uniform(1.01, 1.15)
-                suggested = int(effective_max * over_percentage)
-                
-                # Ensure we don't exceed the cap
-                return min(suggested, cap)
+                return int(effective_max * over_percentage)
             
             # Check if this is a destabilized creature
             is_destabilised = "[DESTABILISED]" in new_name
@@ -3772,48 +3747,38 @@ class ProcessSplice(commands.Cog):
                 # Add warning about destabilized status
                 destabilised_warning = "⚠️ **DESTABILIZED GENETIC STRUCTURE DETECTED** ⚠️\nThe forging process has encountered severe arcane instability! The resulting creature will manifest with diminished capabilities."
             else:
-                # Define 1.5k cap for normal stats
-                standard_cap = 1500
-                
                 # Calculate stats based on 60/40 chance
                 random_chance = random.random()
                 
                 # Helper functions for the two different calculation methods
                 def calc_averaged_stats(stat1, stat2):
-                    """60% chance: Calculate stats close to parents' strongest stats within reason"""
+                    """60% chance: Calculate stats close to parents' strongest stats"""
                     max_stat = max(stat1, stat2)
                     
-                    # Always respect the hard cap of 1500
-                    if max_stat > standard_cap:
+                    if max_stat > 1500:
                         # Calculate a weighted average favoring the higher stat
                         average = (stat1 + stat2) / 2
                         # Add 5-10% to the average
                         boost = random.uniform(1.05, 1.10)
-                        # Apply but ensure it doesn't exceed the cap
-                        return min(int(average * boost), standard_cap)
+                        return int(average * boost)
                     else:
-                        # Otherwise, stay close to the stronger parent within the cap
+                        # Otherwise, stay close to the stronger parent
                         close_percentage = random.uniform(0.92, 0.98)  # 92-98% of max
-                        return min(int(max_stat * close_percentage), standard_cap)
+                        return int(max_stat * close_percentage)
 
-# ... (rest of the code remains the same)
                 def calc_one_boosted(stat1, stat2, boost_this=False):
                     """40% chance: One stat higher than parent, others slightly lower"""
                     max_stat = max(stat1, stat2)
                     
-                    # For the boosted stat - ALWAYS respect the absolute 1500 cap
                     if boost_this:
                         # Calculate boosted value
                         boost = random.uniform(1.02, 1.07)  # 2-7% boost
-                        boosted_value = int(max_stat * boost)
-                        # Strict enforcement of 1500 cap regardless of parent stats
-                        return min(boosted_value, standard_cap)
+                        return int(max_stat * boost)
                     # For non-boosted stats
                     else:
                         # Slightly lower than max parent
                         lower_percentage = random.uniform(0.85, 0.95)  # 85-95% of max
-                        # Still respect the cap, though this should always be under it
-                        return min(int(max_stat * lower_percentage), standard_cap)
+                        return int(max_stat * lower_percentage)
                 
                 # Apply the appropriate calculation based on random chance
                 if random_chance < 0.60:  # 60% chance
