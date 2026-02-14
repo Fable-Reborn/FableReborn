@@ -612,6 +612,22 @@ class ProcessSplice(commands.Cog):
             raise RuntimeError("Missing PixelCut configuration: external.pixelcut_key")
         return pixelcut_key
 
+    @staticmethod
+    def _image_has_transparency(image_bytes: bytes) -> bool:
+        try:
+            image = Image.open(BytesIO(image_bytes))
+            if image.mode not in ("RGBA", "LA") and "transparency" not in image.info:
+                return False
+
+            if image.mode != "RGBA":
+                image = image.convert("RGBA")
+
+            alpha = image.getchannel("A")
+            min_alpha, _ = alpha.getextrema()
+            return min_alpha < 255
+        except Exception:
+            return False
+
     async def _pixelcut_remove_background_from_url(
         self,
         image_url: str,
@@ -627,6 +643,10 @@ class ProcessSplice(commands.Cog):
             "X-API-KEY": pixelcut_key,
         }
         payload = json.dumps({"image_url": image_url, "format": "png"})
+        image_download_headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        }
 
         timeout = aiohttp.ClientTimeout(
             total=timeout_seconds,
@@ -658,7 +678,11 @@ class ProcessSplice(commands.Cog):
                         if not result_url:
                             raise RuntimeError("PixelCut response missing result_url.")
 
-                    async with session.get(result_url) as image_response:
+                    async with session.get(
+                        result_url,
+                        headers=image_download_headers,
+                        allow_redirects=True,
+                    ) as image_response:
                         if image_response.status != 200:
                             if image_response.status in {429, 500, 502, 503, 504} and attempt < attempts:
                                 await asyncio.sleep(min(2 ** (attempt - 1), 4))
@@ -670,6 +694,10 @@ class ProcessSplice(commands.Cog):
                         result_bytes = await image_response.read()
                         if not result_bytes:
                             raise RuntimeError("PixelCut returned empty image bytes.")
+                        if not self._image_has_transparency(result_bytes):
+                            raise RuntimeError(
+                                "PixelCut returned an image without transparency (background likely unchanged)."
+                            )
                         return result_bytes
             except Exception as exc:
                 last_error = exc
@@ -689,7 +717,7 @@ class ProcessSplice(commands.Cog):
     ) -> bytes:
         """
         Remove image background using PixelCut with multiple source fallbacks:
-        source URL -> R2 temp URL -> Discord temp URL.
+        source URL -> Discord temp URL -> R2 temp URL.
         """
         if not img_url and not img_bytes:
             raise ValueError("Need either img_url or img_bytes")
@@ -704,6 +732,17 @@ class ProcessSplice(commands.Cog):
             candidate_sources.append(("provided URL", img_url))
 
         if img_bytes:
+            try:
+                temp_message = await ctx.channel.send(
+                    file=discord.File(BytesIO(img_bytes), filename=safe_filename)
+                )
+                if temp_message.attachments:
+                    candidate_sources.append(("Discord temp URL", temp_message.attachments[0].url))
+                else:
+                    failure_notes.append("Discord temp upload produced no attachment URL.")
+            except Exception as exc:
+                failure_notes.append(f"Discord temp URL setup failed: {exc}")
+
             content_type = mimetypes.guess_type(safe_filename)[0] or "image/png"
             temp_r2_key = (
                 f"temp/pixelcut_{datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')}_"
@@ -738,21 +777,6 @@ class ProcessSplice(commands.Cog):
                     )
                 except Exception as exc:
                     failure_notes.append(f"{label} failed: {exc}")
-
-            if img_bytes:
-                try:
-                    temp_message = await ctx.channel.send(
-                        file=discord.File(BytesIO(img_bytes), filename=safe_filename)
-                    )
-                    if temp_message.attachments:
-                        discord_url = temp_message.attachments[0].url
-                        return await self._pixelcut_remove_background_from_url(
-                            discord_url,
-                            attempts=attempts_per_source,
-                        )
-                    failure_notes.append("Discord temp upload produced no attachment URL.")
-                except Exception as exc:
-                    failure_notes.append(f"Discord temp URL fallback failed: {exc}")
 
             details = "; ".join(failure_notes) if failure_notes else "No valid image source URL was available."
             raise RuntimeError(details)
@@ -2119,23 +2143,7 @@ class ProcessSplice(commands.Cog):
 
         async def has_transparency(image_bytes: bytes) -> bool:
             """Check if image has transparency"""
-            try:
-                image = Image.open(io.BytesIO(image_bytes))
-                
-                # Check if image has alpha channel
-                if image.mode in ('RGBA', 'LA') or 'transparency' in image.info:
-                    # Convert to RGBA if not already
-                    if image.mode != 'RGBA':
-                        image = image.convert('RGBA')
-                    
-                    # Check if any pixels are actually transparent
-                    for pixel in image.getdata():
-                        if len(pixel) == 4 and pixel[3] < 255:  # Alpha channel exists and is not fully opaque
-                            return True
-                
-                return False
-            except Exception:
-                return False  # If we can't determine, assume no transparency
+            return self._image_has_transparency(image_bytes)
 
         async def remove_background(
                 ctx: commands.Context,
@@ -2424,6 +2432,7 @@ class ProcessSplice(commands.Cog):
                         try:
                             await ctx.send(f"🎭 Removing background for {pet['name']}...")
                             gen_bytes = await remove_background(ctx, img_bytes=gen_bytes, filename="ai.png")
+                            await ctx.send(f"✅ Background removed for {pet['name']}.")
                         except Exception as e:
                             await ctx.send(f"⚠️ Background removal failed: {e}")
 
