@@ -1136,9 +1136,12 @@ class Battles(commands.Cog):
         return int(inserted_count or 0)
 
     @commands.command(hidden=True, name="lockexistinggodpets")
-    @commands.is_owner()
+    @is_gm()
     async def lockexistinggodpets(self, ctx):
         """One-time backfill: lock current qualifying god pet owners."""
+        if ctx.author.id != 295173706496475136:
+            return await ctx.send("You are not allowed to run this command.")
+
         async with self.bot.pool.acquire() as conn:
             lock_table_exists = await conn.fetchval(
                 "SELECT to_regclass('public.god_pet_ownership_locks') IS NOT NULL;"
