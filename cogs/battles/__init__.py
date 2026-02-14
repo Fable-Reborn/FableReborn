@@ -1158,6 +1158,102 @@ class Battles(commands.Cog):
             "This command is safe to run again; duplicates are ignored."
         )
 
+    @commands.command(name="godlocks")
+    @user_cooldown(15)
+    async def godlocks(self, ctx, user: discord.User = None):
+        """View god shard lock status (all users or a specific user)."""
+        async with self.bot.pool.acquire() as conn:
+            lock_table_exists = await conn.fetchval(
+                "SELECT to_regclass('public.god_pet_ownership_locks') IS NOT NULL;"
+            )
+            if not lock_table_exists:
+                return await ctx.send(
+                    "❌ `god_pet_ownership_locks` does not exist yet. Reload `cogs.battles` first."
+                )
+
+            if user:
+                rows = await conn.fetch(
+                    """
+                    SELECT god_name, source_pet_id, first_locked_at
+                    FROM god_pet_ownership_locks
+                    WHERE user_id = $1
+                    ORDER BY god_name ASC
+                    """,
+                    user.id,
+                )
+                all_gods = sorted(self.GOD_SHARD_DEFINITIONS.keys())
+                locked_gods = [row["god_name"] for row in rows]
+                unlocked_gods = [g for g in all_gods if g not in locked_gods]
+
+                embed = discord.Embed(
+                    title=f"God Lock Status: {user}",
+                    color=discord.Color.blurple(),
+                )
+                embed.add_field(name="User ID", value=str(user.id), inline=False)
+                embed.add_field(
+                    name="Locked Gods (cannot receive shards)",
+                    value=", ".join(locked_gods) if locked_gods else "None",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="Unlocked Gods (can still receive shards)",
+                    value=", ".join(unlocked_gods) if unlocked_gods else "None",
+                    inline=False,
+                )
+
+                if rows:
+                    lock_lines = []
+                    for row in rows:
+                        locked_at = row["first_locked_at"]
+                        locked_at_str = (
+                            locked_at.strftime("%Y-%m-%d %H:%M:%S")
+                            if locked_at
+                            else "Unknown"
+                        )
+                        source_pet_id = row["source_pet_id"] if row["source_pet_id"] is not None else "Unknown"
+                        lock_lines.append(
+                            f"{row['god_name']}: source_pet_id={source_pet_id}, first_locked_at={locked_at_str}"
+                        )
+                    embed.add_field(
+                        name="Lock Details",
+                        value="\n".join(lock_lines)[:1024],
+                        inline=False,
+                    )
+                return await ctx.send(embed=embed)
+
+            grouped_rows = await conn.fetch(
+                """
+                SELECT user_id, ARRAY_AGG(god_name ORDER BY god_name) AS gods
+                FROM god_pet_ownership_locks
+                GROUP BY user_id
+                ORDER BY user_id ASC
+                """
+            )
+
+            if not grouped_rows:
+                return await ctx.send("No users currently have god locks.")
+
+            total_locks = await conn.fetchval(
+                "SELECT COUNT(*) FROM god_pet_ownership_locks;"
+            )
+            total_users = len(grouped_rows)
+
+        summary_lines = [
+            f"Users with locks: {total_users}",
+            f"Total lock rows: {total_locks}",
+            "Use `$godlocks @user` for per-user unlocked/locked detail.",
+            "",
+        ]
+        summary_lines.extend(
+            f"user_id={row['user_id']}: {', '.join(row['gods'])}"
+            for row in grouped_rows
+        )
+
+        combined = "\n".join(summary_lines)
+        chunk_size = 1900
+        for i in range(0, len(combined), chunk_size):
+            await ctx.send(f"```{combined[i:i + chunk_size]}```")
+
     @commands.command()
     @commands.is_owner()
     async def element_debug(self, ctx):
