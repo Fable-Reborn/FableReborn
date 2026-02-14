@@ -1158,7 +1158,7 @@ class Battles(commands.Cog):
             "This command is safe to run again; duplicates are ignored."
         )
 
-    @commands.command(name="godlocks")
+    @commands.command(name="godlocks", aliases=["godlock"])
     @user_cooldown(10)
     async def godlocks(self, ctx):
         """View your own shard/god lock status."""
@@ -1204,26 +1204,34 @@ class Battles(commands.Cog):
             god_name = row["god_name"]
             shard_num = int(row["shard_number"])
             shards_by_god.setdefault(god_name, set()).add(shard_num)
+        embed = discord.Embed(
+            title="God Shard Progress",
+            description=f"{target_user.mention}\n✅ Owned/locked  |  ❌ Missing",
+            color=discord.Color.gold(),
+        )
+        embed.set_footer(text=f"User ID: {target_user.id}")
+        embed.set_thumbnail(url=target_user.display_avatar.url)
 
-        lines = [f"God shard status for {target_user} ({target_user.id})", ""]
         for god_name, definition in self.GOD_SHARD_DEFINITIONS.items():
             god_locked = god_name in locked_gods
             owned_numbers = set(range(1, 7)) if god_locked else shards_by_god.get(god_name, set())
 
+            alignment = definition.get("alignment", "Unknown")
+            alignment_emoji = self.GOD_SHARD_ALIGNMENT_EMOJIS.get(alignment, "")
             god_mark = "✅" if god_locked else "❌"
-            progress_text = "6/6 (God owned)" if god_locked else f"{len(owned_numbers)}/6"
-            lines.append(f"{god_mark} {god_name} [{progress_text}]")
+            progress_text = "6/6" if god_locked else f"{len(owned_numbers)}/6"
 
+            shard_lines = []
             shard_names = definition.get("shards", [])
             for idx, shard_name in enumerate(shard_names, start=1):
                 shard_mark = "✅" if (god_locked or idx in owned_numbers) else "❌"
-                lines.append(f"{shard_mark} Shard {idx}: {shard_name}")
-            lines.append("")
+                shard_lines.append(f"{shard_mark} Shard {idx}: {shard_name}")
 
-        combined = "\n".join(lines).strip()
-        chunk_size = 1900
-        for i in range(0, len(combined), chunk_size):
-            await ctx.send(combined[i:i + chunk_size])
+            field_name = f"{alignment_emoji} {god_name} [{progress_text}]".strip()
+            field_value = f"God Pet: {god_mark}\n" + "\n".join(shard_lines)
+            embed.add_field(name=field_name, value=field_value, inline=False)
+
+        await ctx.send(embed=embed)
 
     @commands.command()
     @commands.is_owner()
