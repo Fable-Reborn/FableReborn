@@ -685,6 +685,10 @@ class Battles(commands.Cog):
         "Evil": "<:EvilShard:1472140682759110716>",
         "Good": "<:GoodShard:1472140691667816479>",
     }
+    GOD_SHARD_CANONICAL_NAMES = {
+        "Astraea": "Elysia",
+        "Asterea": "Elysia",
+    }
     GOD_SHARD_DROP_RATES = (0.15, 0.40, 0.10, 0.15, 0.10, 0.10)
     GOD_SHARD_DEFINITIONS = {
         "Elysia": {
@@ -863,6 +867,28 @@ class Battles(commands.Cog):
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_god_pve_shards_user_id ON god_pve_shards(user_id);"
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS god_pet_ownership_locks (
+                    user_id BIGINT NOT NULL,
+                    god_name TEXT NOT NULL,
+                    source_pet_id BIGINT,
+                    first_locked_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, god_name)
+                );
+                """
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_god_pet_ownership_locks_user_id ON god_pet_ownership_locks(user_id);"
+            )
+            monster_pets_exists = await conn.fetchval(
+                "SELECT to_regclass('public.monster_pets') IS NOT NULL;"
+            )
+            if monster_pets_exists:
+                await conn.execute(
+                    "DROP TRIGGER IF EXISTS trg_track_god_pet_ownership_lock ON monster_pets;"
+                )
+            await conn.execute("DROP FUNCTION IF EXISTS track_god_pet_ownership_lock();")
 
             ability_seed = [
                     ("Ice Breath", "move", "Effect: freeze. Damage: 600. Chance: 30%", 600, "freeze", 0.3),
@@ -976,16 +1002,20 @@ class Battles(commands.Cog):
             self.couples_battle_tower_data = json.load(f)
         with open("cogs/battles/couples_game_levels.json", "r") as f:
             self.couples_game_levels = json.load(f)
+
+    def _canonical_god_shard_name(self, god_name: str) -> str:
+        return self.GOD_SHARD_CANONICAL_NAMES.get(god_name, god_name)
     
     def _is_god_shard_monster(self, monster) -> bool:
         if not monster:
             return False
-        monster_name = (monster.get("name") or "").strip()
+        monster_name = self._canonical_god_shard_name((monster.get("name") or "").strip())
         return monster_name in self.GOD_SHARD_DEFINITIONS
 
     async def handle_god_shard_drop(self, ctx, monster):
         """Roll and award up to 6 unique god shards on god PvE victories."""
-        monster_name = (monster.get("name") or "").strip()
+        monster_name_raw = (monster.get("name") or "").strip()
+        monster_name = self._canonical_god_shard_name(monster_name_raw)
         definition = self.GOD_SHARD_DEFINITIONS.get(monster_name)
         if not definition:
             return
@@ -995,6 +1025,21 @@ class Battles(commands.Cog):
         dropped_shards = []
 
         async with self.bot.pool.acquire() as conn:
+            has_god_pet_ownership_lock = await conn.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM god_pet_ownership_locks
+                    WHERE user_id = $1
+                      AND god_name = $2
+                )
+                """,
+                ctx.author.id,
+                monster_name,
+            )
+            if has_god_pet_ownership_lock:
+                return
+
             owned_rows = await conn.fetch(
                 """
                 SELECT shard_number
@@ -1044,6 +1089,71 @@ class Battles(commands.Cog):
                 + "\n".join(lines)
                 + "\nUse `$inventory` to view your collected shards."
             )
+
+    async def _backfill_god_pet_ownership_locks(self, conn) -> int:
+        monster_pets_exists = await conn.fetchval(
+            "SELECT to_regclass('public.monster_pets') IS NOT NULL;"
+        )
+        if not monster_pets_exists:
+            return 0
+
+        inserted_count = await conn.fetchval(
+            """
+            WITH lock_candidates AS (
+                SELECT
+                    id,
+                    user_id,
+                    growth_stage,
+                    hp,
+                    COALESCE(NULLIF(BTRIM(default_name), ''), NULLIF(BTRIM(name), '')) AS raw_name
+                FROM monster_pets
+            ),
+            canonical_candidates AS (
+                SELECT
+                    user_id,
+                    id AS source_pet_id,
+                    CASE
+                        WHEN raw_name IN ('Astraea', 'Asterea') THEN 'Elysia'
+                        ELSE raw_name
+                    END AS god_name
+                FROM lock_candidates
+                WHERE user_id > 0
+                  AND growth_stage = 'adult'
+                  AND COALESCE(hp, 0) > 10000
+                  AND raw_name IS NOT NULL
+            ),
+            ins AS (
+                INSERT INTO god_pet_ownership_locks (user_id, god_name, source_pet_id)
+                SELECT user_id, god_name, source_pet_id
+                FROM canonical_candidates
+                WHERE god_name IN ('Elysia', 'Sepulchure', 'Drakath')
+                ON CONFLICT (user_id, god_name) DO NOTHING
+                RETURNING 1
+            )
+            SELECT COUNT(*) FROM ins;
+            """
+        )
+        return int(inserted_count or 0)
+
+    @commands.command(hidden=True, name="lockexistinggodpets")
+    @commands.is_owner()
+    async def lockexistinggodpets(self, ctx):
+        """One-time backfill: lock current qualifying god pet owners."""
+        async with self.bot.pool.acquire() as conn:
+            lock_table_exists = await conn.fetchval(
+                "SELECT to_regclass('public.god_pet_ownership_locks') IS NOT NULL;"
+            )
+            if not lock_table_exists:
+                return await ctx.send(
+                    "❌ `god_pet_ownership_locks` does not exist yet. Reload `cogs.battles` first."
+                )
+
+            inserted = await self._backfill_god_pet_ownership_locks(conn)
+
+        await ctx.send(
+            f"✅ Added **{inserted}** ownership lock record(s). "
+            "This command is safe to run again; duplicates are ignored."
+        )
 
     @commands.command()
     @commands.is_owner()

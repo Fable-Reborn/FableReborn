@@ -351,6 +351,66 @@ class MorriganConversationView(View):
         await interaction.followup.send("*Morrigan's eyes gleam one final time before she dissolves into shadow, her voice lingering in the air: \"The ancient knowledge awaits when you are ready to seek it again...\"*")
 
 class Soulforge(commands.Cog):
+    GOD_PET_FORGE_RECIPES = {
+        "Elysia": {
+            "aliases": ("elysia", "astraea", "asterea"),
+            "alignment": "Good",
+            "shards": (
+                "Dawnheart Shard",
+                "Mercy Prism Shard",
+                "Sunveil Shard",
+                "Lifebloom Shard",
+                "Aegis Grace Shard",
+                "Seraphic Echo Shard",
+            ),
+            "stats": {
+                "hp": 18000,
+                "attack": 3500,
+                "defense": 2500,
+                "element": "Light",
+                "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_5z90r962trs71_1-Photoroom.png",
+            },
+        },
+        "Sepulchure": {
+            "aliases": ("sepulchure",),
+            "alignment": "Evil",
+            "shards": (
+                "Deathmark Shard",
+                "Gravebone Shard",
+                "Nightveil Shard",
+                "Bloodcurse Shard",
+                "Ruin Sigil Shard",
+                "Voidmourne Shard",
+            ),
+            "stats": {
+                "hp": 16000,
+                "attack": 3000,
+                "defense": 3000,
+                "element": "Dark",
+                "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_wakai-quketsuki-sepulchuredoomknightdoomblade-Photoroom.png",
+            },
+        },
+        "Drakath": {
+            "aliases": ("drakath",),
+            "alignment": "Chaos",
+            "shards": (
+                "Entropy Shard",
+                "Wildspark Shard",
+                "Riftlash Shard",
+                "Discord Shard",
+                "Paradox Shard",
+                "Tempest Fracture Shard",
+            ),
+            "stats": {
+                "hp": 15000,
+                "attack": 4000,
+                "defense": 2500,
+                "element": "Corrupted",
+                "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Pngtreelightning_source_lightning_effect_purple_3916970.png",
+            },
+        },
+    }
+
     def __init__(self, bot):
         self.bot = bot
         ids_section = getattr(self.bot.config, "ids", None)
@@ -358,6 +418,248 @@ class Soulforge(commands.Cog):
         if not isinstance(soulforge_ids, dict):
             soulforge_ids = {}
         self.splice_admin_user_id = soulforge_ids.get("splice_admin_user_id")
+        pets_ids = getattr(ids_section, "pets", {}) if ids_section else {}
+        if not isinstance(pets_ids, dict):
+            pets_ids = {}
+        game_section = getattr(self.bot.config, "game", None)
+        support_server_id = getattr(game_section, "support_server_id", None)
+        self.booster_guild_id = pets_ids.get("booster_guild_id") or support_server_id
+
+    def _canonical_god_recipe_name(self, raw_name: Optional[str]) -> Optional[str]:
+        if not raw_name:
+            return None
+
+        cleaned = str(raw_name).strip().lower()
+        if not cleaned:
+            return None
+
+        for god_name, recipe in self.GOD_PET_FORGE_RECIPES.items():
+            aliases = recipe.get("aliases", ())
+            if cleaned == god_name.lower() or cleaned in aliases:
+                return god_name
+        return None
+
+    def _calculate_max_pet_slots_for_user(self, ctx, tier) -> int:
+        max_slots = 10
+
+        if (
+            getattr(ctx, "guild", None)
+            and self.booster_guild_id
+            and ctx.guild.id == self.booster_guild_id
+        ):
+            guild_member = ctx.guild.get_member(ctx.author.id)
+            if guild_member and guild_member.premium_since is not None:
+                max_slots = max(max_slots, 12)
+
+        if tier == 1:
+            max_slots = max(max_slots, 12)
+        elif tier == 2:
+            max_slots = 14
+        elif tier == 3:
+            max_slots = 17
+        elif tier == 4:
+            max_slots = 25
+
+        return max_slots
+
+    async def _count_user_pet_capacity_items(self, conn, user_id: int) -> int:
+        pet_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM monster_pets WHERE user_id = $1;",
+            user_id,
+        )
+
+        monster_eggs_exists = await conn.fetchval(
+            "SELECT to_regclass('public.monster_eggs') IS NOT NULL;"
+        )
+        egg_count = 0
+        if monster_eggs_exists:
+            egg_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM monster_eggs WHERE user_id = $1 AND hatched = FALSE;",
+                user_id,
+            )
+
+        splice_requests_exists = await conn.fetchval(
+            "SELECT to_regclass('public.splice_requests') IS NOT NULL;"
+        )
+        pending_splice_count = 0
+        if splice_requests_exists:
+            pending_splice_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM splice_requests WHERE user_id = $1 AND status = 'pending';",
+                user_id,
+            )
+
+        return int((pet_count or 0) + (egg_count or 0) + (pending_splice_count or 0))
+
+    def create_god_forging_pages(
+        self,
+        player_data,
+        canonical_god: str,
+        recipe: Dict[str, Union[str, Dict[str, Union[int, str]], Tuple[str, ...]]],
+        iv_percentage: float,
+        hp_iv: int,
+        attack_iv: int,
+        defense_iv: int,
+        forged_hp: int,
+        forged_attack: int,
+        forged_defense: int,
+        new_pet_id: int,
+    ):
+        pages = []
+
+        god_profiles = {
+            "Elysia": {
+                "color": 0xE8C547,
+                "epithet": "The Dawnbound Arbiter",
+                "invocation": (
+                    "*\"Light does not ask permission to exist,\"* Morrigan whispers, wings spread over the basin. "
+                    "*\"It simply reveals what was hidden. These six fragments remember mercy, oath, and judgment. "
+                    "Hold steady, and the forge will return their oldest shape.\"*"
+                ),
+                "manifest": (
+                    "Golden filaments arc between the shards, weaving a lattice of sunlit sigils. "
+                    "The quicksilver rises like a tide at dawn, and from its surface steps a figure of radiant poise, "
+                    "eyes bright with impossible memory."
+                ),
+                "charge": (
+                    "*\"Elysia is not summoned,\"* Morrigan says softly. *\"She is acknowledged. "
+                    "Treat this reborn will as covenant, not ornament.\"*"
+                ),
+            },
+            "Sepulchure": {
+                "color": 0x4A0D1F,
+                "epithet": "The Gravebound Sovereign",
+                "invocation": (
+                    "*\"Darkness is not absence,\"* Morrigan croaks, voice low as funeral bells. "
+                    "*\"It is pressure, memory, and the promise that all debts are paid. "
+                    "These six shards remember ruin and rule. Feed them to the crucible and do not flinch.\"*"
+                ),
+                "manifest": (
+                    "Black vapor coils from the runes, thick as velvet smoke. "
+                    "One by one the shards extinguish their own light, then flare together in a single void-bright pulse. "
+                    "A mailed silhouette rises from the basin, shadow clinging to every edge."
+                ),
+                "charge": (
+                    "*\"Sepulchure answers strength, not prayer,\"* Morrigan warns. "
+                    "*\"Command with certainty, or be measured by your own fear.\"*"
+                ),
+            },
+            "Drakath": {
+                "color": 0x7B2CBF,
+                "epithet": "The Fractured Crown of Chaos",
+                "invocation": (
+                    "*\"Chaos is the first language,\"* Morrigan hisses, pupils narrowing to knives of gold. "
+                    "*\"Before law, before creed, there was the storm of becoming. "
+                    "These six fragments remember contradiction. Speak no rigid intent now.\"*"
+                ),
+                "manifest": (
+                    "The forge stutters through colors that have no names. "
+                    "Time lurches, doubles, and snaps back as the shards spin in impossible geometry. "
+                    "When the tremor settles, a warlike presence stands where the turbulence broke."
+                ),
+                "charge": (
+                    "*\"Drakath is possibility armed,\"* Morrigan says, feathers bristling. "
+                    "*\"He will break patterns - yours included - if you grow complacent.\"*"
+                ),
+            },
+        }
+
+        profile = god_profiles.get(
+            canonical_god,
+            {
+                "color": 0x4CC9F0,
+                "epithet": "The Reforged Divine",
+                "invocation": (
+                    "*\"Six shards, one will,\"* Morrigan murmurs. "
+                    "*\"The forge remembers what the ages tried to erase.\"*"
+                ),
+                "manifest": "The crucible blooms with ancient light as a divine form rematerializes from essence and oath.",
+                "charge": "*\"Power reforged is still power. Wield it with intent.\"*",
+            },
+        )
+
+        player_name = player_data.get("name", "Wyrdweaver")
+        player_god = (player_data.get("god") or "the old powers")
+        alignment = recipe.get("alignment", "Unknown")
+        stats = recipe.get("stats", {})
+        element = stats.get("element", "Unknown")
+        shard_lines = "\n".join(
+            f"• Shard {idx}: {shard_name}"
+            for idx, shard_name in enumerate(recipe.get("shards", ()), start=1)
+        )
+
+        embed = discord.Embed(
+            title=f"🧪 The Sixfold Rite: {canonical_god} 🧪",
+            description=(
+                f"You place six aligned shards into the Soulforge's ring, and each one answers with a different note. "
+                f"The air tightens around {player_name} as the crucible locks onto a singular pattern."
+            ),
+            color=profile["color"],
+        )
+        embed.add_field(
+            name="Shard Resonance Matrix",
+            value=shard_lines,
+            inline=False,
+        )
+        embed.add_field(
+            name="Morrigan's Invocation",
+            value=profile["invocation"],
+            inline=False,
+        )
+        pages.append(embed)
+
+        embed = discord.Embed(
+            title=f"⚡ {profile['epithet']} ⚡",
+            description=(
+                f"The sigils etched into the forge wall ignite in sequence, translating alignment into form: **{alignment}**."
+            ),
+            color=profile["color"],
+        )
+        embed.add_field(
+            name="Manifestation",
+            value=profile["manifest"],
+            inline=False,
+        )
+        embed.add_field(
+            name="Divine Friction",
+            value=(
+                f"*\"Your patron, {player_god}, feels this rite,\"* Morrigan notes. "
+                "*\"Some gods call it trespass. We call it remembrance.\"*"
+            ),
+            inline=False,
+        )
+        pages.append(embed)
+
+        embed = discord.Embed(
+            title=f"✨ {canonical_god} Reforged ✨",
+            description=(
+                f"The ritual resolves. Essence condenses. A divine companion stands bound to your mark, "
+                "not by chain, but by chosen pattern."
+            ),
+            color=profile["color"],
+        )
+        embed.add_field(
+            name="Morrigan's Charge",
+            value=profile["charge"],
+            inline=False,
+        )
+        embed.add_field(
+            name="Forged Pet Record",
+            value=(
+                f"ID: `{new_pet_id}`\n"
+                f"Alignment: **{alignment}**\n"
+                f"Element: **{element}**\n"
+                f"IV: **{iv_percentage:.2f}%**\n"
+                f"HP: **{forged_hp}** (+{hp_iv})\n"
+                f"ATK: **{forged_attack}** (+{attack_iv})\n"
+                f"DEF: **{forged_defense}** (+{defense_iv})"
+            ),
+            inline=False,
+        )
+        if stats.get("url"):
+            embed.set_thumbnail(url=stats["url"])
+        pages.append(embed)
+
+        return pages
         
     async def get_player_data(self, user_id):
         """Get player's quest progress and character data"""
@@ -868,7 +1170,8 @@ class Soulforge(commands.Cog):
         embed.add_field(
             name="Basic Commands",
             value="• `$splice [pet1] [pet2]` - Combine two creatures into a new form\n"
-                "• `$forgestatus` - Check your forge's condition and divine scrutiny level",
+                "• `$forgestatus` - Check your forge's condition and divine scrutiny level\n"
+                "• `$forgegodpet <god>` - Consume 6 god shards to forge that god pet",
             inline=False
         )
         embed.add_field(
@@ -1885,6 +2188,212 @@ class Soulforge(commands.Cog):
         
         except Exception as e:
             await ctx.send(e)
+
+    @commands.command(aliases=["forgegod", "godforge", "godpetforge"])
+    @user_cooldown(60)
+    async def forgegodpet(self, ctx, *, god_name: str = None):
+        """Forge a god pet by consuming all 6 shards for that god."""
+        player_data = await self.get_player_data(ctx.author.id)
+
+        if not player_data:
+            await self.bot.reset_cooldown(ctx)
+            return await ctx.send("You must create a character first!")
+
+        if not player_data["forge_built"]:
+            await self.bot.reset_cooldown(ctx)
+            return await ctx.send("You need an active Soulforge first. Use `$soulforge` and then `$forgesoulforge`.")
+
+        canonical_god = self._canonical_god_recipe_name(god_name)
+        if canonical_god is None:
+            await self.bot.reset_cooldown(ctx)
+            return await ctx.send(
+                "Usage: `$forgegodpet <Elysia|Sepulchure|Drakath>`\n"
+                "Note: `Astraea` and `Asterea` are treated as `Elysia`."
+            )
+
+        recipe = self.GOD_PET_FORGE_RECIPES[canonical_god]
+        required_shards = {1, 2, 3, 4, 5, 6}
+
+        async with self.bot.pool.acquire() as conn:
+            shard_rows = await conn.fetch(
+                """
+                SELECT shard_number
+                FROM god_pve_shards
+                WHERE user_id = $1 AND god_name = $2
+                ORDER BY shard_number
+                """,
+                ctx.author.id,
+                canonical_god,
+            )
+
+        owned_shards = {int(row["shard_number"]) for row in shard_rows}
+        missing = [idx for idx in sorted(required_shards) if idx not in owned_shards]
+        if missing:
+            await self.bot.reset_cooldown(ctx)
+            missing_text = ", ".join(
+                f"{idx} ({recipe['shards'][idx - 1]})" for idx in missing
+            )
+            return await ctx.send(
+                f"You are missing **{canonical_god}** shards: {missing_text}.\n"
+                "Collect all 6 shard numbers before forging."
+            )
+
+        async with self.bot.pool.acquire() as conn:
+            tier = await conn.fetchval(
+                "SELECT tier FROM profile WHERE profile.user = $1",
+                ctx.author.id,
+            )
+            current_slot_usage = await self._count_user_pet_capacity_items(conn, ctx.author.id)
+
+        max_slots = self._calculate_max_pet_slots_for_user(ctx, tier)
+        if current_slot_usage + 1 > max_slots:
+            await self.bot.reset_cooldown(ctx)
+            return await ctx.send(
+                f"❌ You cannot have more than {max_slots} pets or eggs (including pending splices). "
+                f"You currently have {current_slot_usage} occupied slots and would exceed the limit."
+            )
+
+        confirmed = await ctx.confirm(
+            f"Forge **{canonical_god}** by consuming all 6 of its shards? This cannot be undone."
+        )
+        if not confirmed:
+            await self.bot.reset_cooldown(ctx)
+            return await ctx.send("God forging canceled.")
+
+        stats = recipe["stats"]
+        iv_percentage = random.uniform(10, 1000)
+        if iv_percentage < 20:
+            iv_percentage = random.uniform(90, 100)
+        elif iv_percentage < 70:
+            iv_percentage = random.uniform(80, 90)
+        elif iv_percentage < 150:
+            iv_percentage = random.uniform(70, 80)
+        elif iv_percentage < 350:
+            iv_percentage = random.uniform(60, 70)
+        elif iv_percentage < 700:
+            iv_percentage = random.uniform(50, 60)
+        else:
+            iv_percentage = random.uniform(30, 50)
+        total_iv_points = int(round((iv_percentage / 100) * 100))
+        hp_iv, attack_iv, defense_iv = await self.allocate_iv_points(total_iv_points)
+        forged_hp = int(stats["hp"]) + hp_iv
+        forged_attack = int(stats["attack"]) + attack_iv
+        forged_defense = int(stats["defense"]) + defense_iv
+
+        try:
+            async with self.bot.pool.acquire() as conn:
+                async with conn.transaction():
+                    locked_rows = await conn.fetch(
+                        """
+                        SELECT shard_number
+                        FROM god_pve_shards
+                        WHERE user_id = $1 AND god_name = $2
+                        FOR UPDATE
+                        """,
+                        ctx.author.id,
+                        canonical_god,
+                    )
+                    locked_owned = {int(row["shard_number"]) for row in locked_rows}
+                    locked_missing = [idx for idx in sorted(required_shards) if idx not in locked_owned]
+                    if locked_missing:
+                        missing_text = ", ".join(
+                            f"{idx} ({recipe['shards'][idx - 1]})" for idx in locked_missing
+                        )
+                        await self.bot.reset_cooldown(ctx)
+                        return await ctx.send(
+                            f"Forge interrupted: missing shards during transaction: {missing_text}."
+                        )
+
+                    current_slot_usage = await self._count_user_pet_capacity_items(conn, ctx.author.id)
+                    if current_slot_usage + 1 > max_slots:
+                        await self.bot.reset_cooldown(ctx)
+                        return await ctx.send(
+                            f"❌ You cannot have more than {max_slots} pets or eggs (including pending splices). "
+                            f"You currently have {current_slot_usage} occupied slots and would exceed the limit."
+                        )
+
+                    consumed = await conn.fetch(
+                        """
+                        DELETE FROM god_pve_shards
+                        WHERE user_id = $1
+                          AND god_name = $2
+                          AND shard_number = ANY($3::smallint[])
+                        RETURNING shard_number
+                        """,
+                        ctx.author.id,
+                        canonical_god,
+                        [1, 2, 3, 4, 5, 6],
+                    )
+                    if len(consumed) != 6:
+                        raise RuntimeError("Failed to consume all required shards.")
+
+                    new_pet_id = await conn.fetchval(
+                        """
+                        INSERT INTO monster_pets
+                        (
+                            user_id,
+                            name,
+                            default_name,
+                            hp,
+                            attack,
+                            defense,
+                            element,
+                            url,
+                            growth_stage,
+                            growth_index,
+                            growth_time,
+                            "IV"
+                        )
+                        VALUES
+                        (
+                            $1, $2, $3, $4, $5, $6, $7, $8, 'adult', 4, NULL, $9
+                        )
+                        RETURNING id
+                        """,
+                        ctx.author.id,
+                        canonical_god,
+                        canonical_god,
+                        forged_hp,
+                        forged_attack,
+                        forged_defense,
+                        stats["element"],
+                        stats["url"],
+                        iv_percentage,
+                    )
+
+                    lock_table_exists = await conn.fetchval(
+                        "SELECT to_regclass('public.god_pet_ownership_locks') IS NOT NULL;"
+                    )
+                    if lock_table_exists:
+                        await conn.execute(
+                            """
+                            INSERT INTO god_pet_ownership_locks (user_id, god_name, source_pet_id)
+                            VALUES ($1, $2, $3)
+                            ON CONFLICT (user_id, god_name) DO NOTHING
+                            """,
+                            ctx.author.id,
+                            canonical_god,
+                            new_pet_id,
+                        )
+        except Exception as e:
+            await self.bot.reset_cooldown(ctx)
+            return await ctx.send(f"An error occurred while forging your god pet: {e}")
+
+        lore_pages = self.create_god_forging_pages(
+            player_data=player_data,
+            canonical_god=canonical_god,
+            recipe=recipe,
+            iv_percentage=iv_percentage,
+            hp_iv=hp_iv,
+            attack_iv=attack_iv,
+            defense_iv=defense_iv,
+            forged_hp=forged_hp,
+            forged_attack=forged_attack,
+            forged_defense=forged_defense,
+            new_pet_id=new_pet_id,
+        )
+        lore_view = LoreView(lore_pages, ctx.author.id)
+        await ctx.send(embed=lore_pages[0], view=lore_view)
 
 
     @commands.command()
