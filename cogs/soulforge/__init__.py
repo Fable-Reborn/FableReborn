@@ -787,6 +787,231 @@ class Soulforge(commands.Cog):
         await ctx.send(embed=embed)
 
 
+    @commands.command(name="soulforgeguide", aliases=["sfguide", "forgeguide"])
+    @user_cooldown(30)
+    async def soulforgeguide(self, ctx):
+        """Step-by-step guide for the full Soulforge flow."""
+        pages = self.create_soulforge_guide_pages(ctx.clean_prefix)
+        view = LoreView(pages, ctx.author.id)
+        await ctx.send(embed=pages[0], view=view)
+
+    def create_soulforge_guide_pages(self, prefix: str):
+        """Create beginner-friendly Soulforge guide pages from start to finish."""
+        pages = []
+        p = prefix or "$"
+
+        # Page 1: Overview
+        embed = discord.Embed(
+            title="🧭 Soulforge Guide (Start to Finish)",
+            description="A full walkthrough of how the Soulforge system works.",
+            color=0x6e4799,
+        )
+        embed.add_field(
+            name="Flow Overview",
+            value=(
+                f"1) Start quest with `{p}soulforge`\n"
+                "2) Gather 10 Eidolith Shards\n"
+                "3) Find Alchemist's Primer\n"
+                "4) Have 2,500,000 gold\n"
+                f"5) Build forge with `{p}forgesoulforge`\n"
+                f"6) Splice pets with `{p}splice`\n"
+                "7) Maintain forge and manage divine attention\n"
+                "8) Endgame: collect God Shards and forge god pets"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Who Should Use This",
+            value=(
+                "New players, returning players, and anyone confused about "
+                "where shard/primer/god progression fits."
+            ),
+            inline=False,
+        )
+        pages.append(embed)
+
+        # Page 2: Quest start
+        embed = discord.Embed(
+            title="1) Start the Wyrdweaver Quest",
+            description="This initializes your Soulforge progression data.",
+            color=0x7d2aad,
+        )
+        embed.add_field(
+            name="Command",
+            value=f"`{p}soulforge`",
+            inline=False,
+        )
+        embed.add_field(
+            name="What It Does",
+            value=(
+                "Starts your quest (if first time), shows lore/progress, "
+                "and tracks your requirements in `splicing_quest`."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Main Requirements",
+            value="10 Eidolith Shards, Alchemist's Primer, and 2,500,000 gold.",
+            inline=False,
+        )
+        pages.append(embed)
+
+        # Page 3: Requirements and drops
+        embed = discord.Embed(
+            title="2) Gather Soulforge Requirements",
+            description="How you actually get each requirement right now.",
+            color=0x57068c,
+        )
+        embed.add_field(
+            name="Eidolith Shards (0/10)",
+            value=(
+                "From successful PvE completion while quest is active.\n"
+                "Current chance: 20% per successful PvE."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Alchemist's Primer",
+            value=(
+                "From successful raid completion (participant path).\n"
+                "Current chance: 5% if you do not already have it."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Useful Check Commands",
+            value=(
+                f"`{p}soulforge` for progress\n"
+                f"`{p}eshards` for quick Eidolith shard count"
+            ),
+            inline=False,
+        )
+        pages.append(embed)
+
+        # Page 4: Build forge
+        embed = discord.Embed(
+            title="3) Build the Soulforge",
+            description="Unlocks actual splicing and forge systems.",
+            color=0x4cc9f0,
+        )
+        embed.add_field(
+            name="Command",
+            value=f"`{p}forgesoulforge`",
+            inline=False,
+        )
+        embed.add_field(
+            name="Checks Before Build",
+            value=(
+                "Requires all 3: 10 Eidolith Shards, Primer found, and "
+                "2,500,000 gold available."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="On Success",
+            value=(
+                "Consumes the gold, marks forge as built, and unlocks active "
+                "forge gameplay commands."
+            ),
+            inline=False,
+        )
+        pages.append(embed)
+
+        # Page 5: Splicing loop
+        embed = discord.Embed(
+            title="4) Splicing Loop",
+            description="Create new creatures from two pets.",
+            color=0x9d4edd,
+        )
+        embed.add_field(
+            name="Core Command",
+            value=f"`{p}splice <pet1_id> <pet2_id>`",
+            inline=False,
+        )
+        embed.add_field(
+            name="What Happens",
+            value=(
+                "Your request is saved to `splice_requests` as `pending`, then "
+                "processed by staff/automation. When complete, your new pet is created."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Tracking",
+            value=(
+                f"`{p}splicestatus` lists your requests\n"
+                f"`{p}splicestatus <id>` shows one request"
+            ),
+            inline=False,
+        )
+        pages.append(embed)
+
+        # Page 6: Maintenance and defense
+        embed = discord.Embed(
+            title="5) Keep the Forge Operational",
+            description="Ignoring forge upkeep will block progress.",
+            color=0xff9f1c,
+        )
+        embed.add_field(
+            name="Important Rule",
+            value="If forge condition is too low, splicing is blocked until repaired.",
+            inline=False,
+        )
+        embed.add_field(
+            name="Maintenance Commands",
+            value=(
+                f"`{p}forgestatus` • `{p}repairforge` • `{p}eidolithmask`\n"
+                f"`{p}defendforge` • `{p}recruitdefender` • `{p}mydefenders`"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Concepts",
+            value=(
+                "Forge Condition = durability.\n"
+                "Divine Attention = threat level; higher values increase pressure."
+            ),
+            inline=False,
+        )
+        pages.append(embed)
+
+        # Page 7: God shards (last page)
+        embed = discord.Embed(
+            title="6) God Shards and God Pets (Endgame)",
+            description="Final progression layer after your forge journey is stable.",
+            color=0x2ec4b6,
+        )
+        embed.add_field(
+            name="How God Shards Drop",
+            value=(
+                "From PvE fights against god monsters.\n"
+                "Each fight rolls each shard once with rates:\n"
+                "1: 15% • 2: 40% • 3: 10% • 4: 15% • 5: 10% • 6: 10%."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Rules",
+            value=(
+                "Shards are account-bound and unique per god/shard number.\n"
+                "No duplicates for the same shard number.\n"
+                "Use `godlocks` to view your god shard progress."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Forge God Pet",
+            value=(
+                f"`{p}forgegodpet <Elysia|Sepulchure|Drakath>`\n"
+                "Consumes all 6 shards for that god and creates the god pet."
+            ),
+            inline=False,
+        )
+        pages.append(embed)
+
+        return pages
+
+
     @commands.command()
     @user_cooldown(60)
     async def speaktomorrigan(self, ctx):
