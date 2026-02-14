@@ -1,4 +1,5 @@
 import datetime
+import mimetypes
 from operator import truediv
 from collections import defaultdict, deque, OrderedDict
 import discord
@@ -9,8 +10,7 @@ import threading
 from typing import Optional, List, Dict, Tuple, Union
 from discord import ButtonStyle, SelectOption, ui
 from discord.ui import Button, View, Select
-import firebase_admin
-from firebase_admin import credentials, storage
+import boto3
 import random
 import json
 import aiohttp
@@ -22,6 +22,7 @@ import base64
 import tempfile
 from io import BytesIO
 import pathlib
+from urllib.parse import quote
 from openai import OpenAI
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 import secrets
@@ -342,26 +343,42 @@ class SpliceRequestPaginator(View):
         self.total_pages = (len(splices) + per_page - 1) // per_page
         self.message = None
         self.current_time = datetime.datetime.now(datetime.timezone.utc)
+        self.prev_button = None
+        self.next_button = None
         
         # Add navigation buttons
         self.add_buttons()
+        self._sync_navigation_buttons()
     
     def add_buttons(self):
         """Add navigation buttons to the view"""
         # Previous button
-        prev_button = Button(style=ButtonStyle.primary, emoji="⬅️", disabled=self.current_page == 0)
-        prev_button.callback = self.previous_page
-        self.add_item(prev_button)
+        self.prev_button = Button(style=ButtonStyle.primary, emoji="⬅️", disabled=self.current_page == 0)
+        self.prev_button.callback = self.previous_page
+        self.add_item(self.prev_button)
         
         # Next button
-        next_button = Button(style=ButtonStyle.primary, emoji="➡️", disabled=self.current_page == self.total_pages - 1)
-        next_button.callback = self.next_page
-        self.add_item(next_button)
+        self.next_button = Button(style=ButtonStyle.primary, emoji="➡️", disabled=self.current_page == self.total_pages - 1)
+        self.next_button.callback = self.next_page
+        self.add_item(self.next_button)
         
         # Close button
         close_button = Button(style=ButtonStyle.danger, emoji="❌")
         close_button.callback = self.close_view
         self.add_item(close_button)
+
+    def _sync_navigation_buttons(self):
+        """Keep button states in sync with the current page."""
+        if self.prev_button:
+            self.prev_button.disabled = self.current_page <= 0
+        if self.next_button:
+            self.next_button.disabled = self.current_page >= self.total_pages - 1
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("This paginator is not for you.", ephemeral=True)
+            return False
+        return True
     
     def get_current_page_embed(self):
         """Generate the embed for the current page"""
@@ -423,32 +440,30 @@ class SpliceRequestPaginator(View):
         
         return embed
     
-    async def update_message(self):
+    async def update_message(self, interaction: discord.Interaction):
         """Update the message with current page"""
-        for child in self.children:
-            if child.emoji == "⬅️":
-                child.disabled = self.current_page == 0
-            elif child.emoji == "➡️":
-                child.disabled = self.current_page == self.total_pages - 1
-        
-        await self.message.edit(embed=self.get_current_page_embed(), view=self)
+        self._sync_navigation_buttons()
+        embed = self.get_current_page_embed()
+        if interaction.response.is_done():
+            await self.message.edit(embed=embed, view=self)
+        else:
+            await interaction.response.edit_message(embed=embed, view=self)
     
     async def previous_page(self, interaction):
         """Go to the previous page"""
         if self.current_page > 0:
             self.current_page -= 1
-            await self.update_message()
-        await interaction.response.defer()
+        await self.update_message(interaction)
     
     async def next_page(self, interaction):
         """Go to the next page"""
         if self.current_page < self.total_pages - 1:
             self.current_page += 1
-            await self.update_message()
-        await interaction.response.defer()
+        await self.update_message(interaction)
     
     async def close_view(self, interaction):
         """Close the paginator"""
+        await interaction.response.defer()
         await interaction.message.delete()
         self.stop()
     
@@ -469,12 +484,126 @@ class ProcessSplice(commands.Cog):
         self._splice_bg_cache = OrderedDict()
         self._splice_bg_cache_max_entries = 2
         self._splice_bg_cache_max_pixels = 8_000_000
+        self._r2_client = None
+        self._r2_bucket = None
+        self._r2_public_base_url = None
 
     def _create_openai_client(self):
         openai_key = self.bot.config.external.openai
         if not openai_key:
             raise ValueError("Missing OpenAI key: bot.config.external.openai")
         return OpenAI(api_key=openai_key)
+
+    def _get_r2_client(self):
+        if self._r2_client is not None:
+            return self._r2_client
+
+        ext = getattr(self.bot.config, "external", None)
+        account_id = (getattr(ext, "r2_account_id", None) or "").strip()
+        access_key_id = (getattr(ext, "r2_access_key_id", None) or "").strip()
+        secret_access_key = (getattr(ext, "r2_secret_access_key", None) or "").strip()
+        bucket = (getattr(ext, "r2_bucket", None) or "").strip()
+        public_base_url = (getattr(ext, "r2_public_base_url", None) or "").strip().rstrip("/")
+        endpoint_url = (getattr(ext, "r2_endpoint_url", None) or "").strip()
+
+        missing = []
+        if not account_id and not endpoint_url:
+            missing.append("R2_ACCOUNT_ID (or R2_ENDPOINT_URL)")
+        if not access_key_id:
+            missing.append("R2_ACCESS_KEY_ID")
+        if not secret_access_key:
+            missing.append("R2_SECRET_ACCESS_KEY")
+        if not bucket:
+            missing.append("R2_BUCKET")
+
+        if missing:
+            raise RuntimeError(f"Missing R2 configuration: {', '.join(missing)}")
+
+        if not endpoint_url:
+            endpoint_url = f"https://{account_id}.r2.cloudflarestorage.com"
+
+        self._r2_client = boto3.client(
+            "s3",
+            endpoint_url=endpoint_url,
+            aws_access_key_id=access_key_id,
+            aws_secret_access_key=secret_access_key,
+            region_name="auto",
+        )
+        self._r2_bucket = bucket
+        self._r2_public_base_url = public_base_url
+        return self._r2_client
+
+    @staticmethod
+    def _normalize_r2_key(key: str) -> str:
+        return key.lstrip("/")
+
+    def _build_r2_public_url(self, key: str) -> str:
+        if not self._r2_public_base_url:
+            raise RuntimeError(
+                "Missing R2_PUBLIC_BASE_URL. Configure a public domain (or r2.dev URL) for persisted image URLs."
+            )
+        encoded_key = quote(key, safe="/-_.~")
+        return f"{self._r2_public_base_url}/{encoded_key}"
+
+    async def _r2_upload_bytes(
+        self,
+        data: bytes,
+        key: str,
+        *,
+        content_type: Optional[str] = None,
+    ) -> str:
+        client = self._get_r2_client()
+        object_key = self._normalize_r2_key(key)
+        content_type = content_type or mimetypes.guess_type(object_key)[0] or "application/octet-stream"
+
+        await asyncio.to_thread(
+            client.put_object,
+            Bucket=self._r2_bucket,
+            Key=object_key,
+            Body=data,
+            ContentType=content_type,
+        )
+        return self._build_r2_public_url(object_key)
+
+    async def _r2_upload_temp_and_get_url(
+        self,
+        data: bytes,
+        key: str,
+        *,
+        expires_in: int = 900,
+        content_type: Optional[str] = None,
+    ) -> str:
+        client = self._get_r2_client()
+        object_key = self._normalize_r2_key(key)
+        content_type = content_type or mimetypes.guess_type(object_key)[0] or "application/octet-stream"
+
+        await asyncio.to_thread(
+            client.put_object,
+            Bucket=self._r2_bucket,
+            Key=object_key,
+            Body=data,
+            ContentType=content_type,
+        )
+
+        if self._r2_public_base_url:
+            return self._build_r2_public_url(object_key)
+
+        return await asyncio.to_thread(
+            lambda: client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self._r2_bucket, "Key": object_key},
+                ExpiresIn=expires_in,
+            )
+        )
+
+    async def _r2_delete_object(self, key: str) -> None:
+        client = self._get_r2_client()
+        object_key = self._normalize_r2_key(key)
+        await asyncio.to_thread(
+            client.delete_object,
+            Bucket=self._r2_bucket,
+            Key=object_key,
+        )
         
     async def get_player_data(self, user_id):
         """Get player's quest progress and character data"""
@@ -1708,6 +1837,101 @@ class ProcessSplice(commands.Cog):
         except Exception as e:
             await status.edit(content=f"Failed to render splice tree: {e}")
 
+    @is_gm()
+    @commands.command(
+        name="testbgremoval",
+        aliases=["test_bg_removal", "testbgremove"],
+        hidden=True,
+    )
+    async def testbgremoval(self, ctx: commands.Context, mode: str = "upload"):
+        """GM-only PixelCut background-removal test using direct URL, then R2 fallback."""
+        pixelcut_key = (getattr(self.bot.config.external, "pixelcut_key", None) or "").strip()
+        if not pixelcut_key:
+            return await ctx.send("Missing `external.pixelcut_key` in `config.toml`.")
+
+        pixelcut_url = "https://api.developer.pixelcut.ai/v1/remove-background"
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-API-KEY": pixelcut_key,
+        }
+
+        async def call_pixelcut(image_url: str):
+            payload = json.dumps({"image_url": image_url, "format": "png"})
+            async with aiohttp.ClientSession() as session:
+                async with session.post(pixelcut_url, headers=headers, data=payload) as response:
+                    raw = await response.text()
+                    if response.status != 200:
+                        return False, None, f"HTTP {response.status}: {raw[:1000]}"
+                    try:
+                        data = json.loads(raw)
+                    except json.JSONDecodeError:
+                        return False, None, "PixelCut returned non-JSON response."
+
+                    result_url = data.get("result_url")
+                    if not result_url:
+                        return False, None, "PixelCut response had no `result_url`."
+                    return True, result_url, None
+
+        if mode.lower() == "example":
+            await ctx.send("Testing PixelCut with example image URL...")
+            ok, result_url, err = await call_pixelcut("https://cdn3.pixelcut.app/product.jpg")
+            if ok:
+                return await ctx.send(f"Success: {result_url}")
+            return await ctx.send(f"Example test failed: {err}")
+
+        await ctx.send("Upload an image to test background removal.")
+
+        def check(message: discord.Message):
+            return (
+                message.author.id == ctx.author.id
+                and message.channel.id == ctx.channel.id
+                and bool(message.attachments)
+            )
+
+        try:
+            msg = await self.bot.wait_for("message", check=check, timeout=90)
+        except asyncio.TimeoutError:
+            return await ctx.send("Timed out waiting for image upload.")
+
+        attachment = msg.attachments[0]
+        if not attachment.height:
+            return await ctx.send("Attachment is not an image.")
+
+        await ctx.send("Trying PixelCut with direct Discord attachment URL...")
+        ok, result_url, err = await call_pixelcut(attachment.url)
+        if ok:
+            return await ctx.send(f"Direct URL succeeded: {result_url}")
+
+        await ctx.send(f"Direct URL failed ({err}). Trying R2 temp URL fallback...")
+        temp_key = (
+            f"temp/test_bgremoval_{ctx.author.id}_"
+            f"{datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')}_"
+            f"{secrets.token_hex(4)}_{attachment.filename}"
+        )
+
+        try:
+            image_data = await attachment.read()
+            temp_url = await self._r2_upload_temp_and_get_url(
+                image_data,
+                temp_key,
+                expires_in=900,
+                content_type=attachment.content_type or "image/png",
+            )
+            ok, result_url, err = await call_pixelcut(temp_url)
+        except Exception as e:
+            return await ctx.send(f"R2 fallback failed: {e}")
+        finally:
+            try:
+                await self._r2_delete_object(temp_key)
+            except Exception:
+                pass
+
+        if ok:
+            await ctx.send(f"R2 fallback succeeded: {result_url}")
+        else:
+            await ctx.send(f"R2 fallback failed: {err}")
+
     # ──────────────────────────────────────────────────────────────────────
     #  AUTO S P L I C E   (automated version of batch splice)
     # ──────────────────────────────────────────────────────────────────────
@@ -1717,15 +1941,12 @@ class ProcessSplice(commands.Cog):
         """Automated batch splice with default settings and interactive review"""
         
         import aiohttp, asyncio, base64, datetime, io, json, os, random, traceback, secrets
-        from firebase_admin import credentials, storage
-        import firebase_admin
         from openai import OpenAI
 
         MAX_BATCH = 21
         DEFAULT_IMG = "https://i.imgur.com/nJYMPOQ.png"
-        BUCKET = "fablerpg-f74c2.appspot.com"
         PIXELCUT_URL = "https://api.developer.pixelcut.ai/v1/remove-background"
-        PIXELCUT_KEY = os.getenv("PIXELCUT_KEY") or ""
+        PIXELCUT_KEY = (getattr(self.bot.config.external, "pixelcut_key", None) or "").strip()
 
         # ──────────────────────────────────────────────────────────
         # helper wrappers
@@ -1800,18 +2021,8 @@ class ProcessSplice(commands.Cog):
 
             return result_bytes
 
-        def get_firebase_bucket():
-            """Return a google.cloud.storage.bucket.Bucket object"""
-            if not firebase_admin._apps:
-                firebase_admin.initialize_app(credentials.Certificate("acc.json"))
-            return storage.bucket(BUCKET)
-
-        async def firebase_upload(data: bytes, filename: str) -> str:
-            bucket = get_firebase_bucket()
-            blob = bucket.blob(filename)
-            blob.upload_from_string(data)
-            blob.make_public()
-            return blob.public_url
+        async def storage_upload(data: bytes, filename: str) -> str:
+            return await self._r2_upload_bytes(data, filename)
 
         # Helper to generate a unique filename
         def unique_filename(base: str, ext: str = ".png") -> str:
@@ -1903,7 +2114,7 @@ class ProcessSplice(commands.Cog):
         # ──────────────────────────────────────────────────────────
         # 3) STEP-1 AUTO IMAGE GENERATION
         # ──────────────────────────────────────────────────────────
-        await ctx.send("🎨 **AUTO-GENERATING IMAGES** (using gpt-image-1 with enhanced creative prompts...)")
+        await ctx.send("🎨 **AUTO-GENERATING IMAGES** (using gpt-image-1.5 with enhanced creative prompts...)")
         
         # Define creative elements for dynamic prompt generation
         creature_types = ['mythical', 'elemental', 'celestial', 'abyssal', 'arcane', 'primordial', 'ethereal', 'fey',
@@ -2064,10 +2275,10 @@ class ProcessSplice(commands.Cog):
                 with open(p2_file, "wb") as f:
                     f.write(p2_bytes)
 
-                # Generate with gpt-image-1
+                # Generate with gpt-image-1.5
                 def _edit():
                     return openai_client.images.edit(
-                        model="gpt-image-1",
+                        model="gpt-image-1.5",
                         image=[open(p1_file, "rb"), open(p2_file, "rb")],
                         prompt=prompt,
                     )
@@ -2085,8 +2296,8 @@ class ProcessSplice(commands.Cog):
                         except Exception as e:
                             await ctx.send(f"⚠️ Background removal failed: {e}")
 
-                # Upload to Firebase
-                pet["url"] = await firebase_upload(
+                # Upload to R2
+                pet["url"] = await storage_upload(
                     gen_bytes, unique_filename(f"{ctx.author.id}_{pet['name']}_auto")
                 )
 
@@ -2736,22 +2947,19 @@ class ProcessSplice(commands.Cog):
             await ctx.send(f"❌ Error clearing saves: {e}")
 
     # ──────────────────────────────────────────────────────────────────────
-    #  BATCH S P L I C E   (full command – gpt-image-1, retry loops, etc.)
+    #  BATCH S P L I C E   (full command – gpt-image-1.5, retry loops, etc.)
     # ──────────────────────────────────────────────────────────────────────
     @is_gm()
     @commands.command(hidden=True)
     async def batch_splice(self, ctx: commands.Context, count: int = 5):
 
         import aiohttp, asyncio, base64, datetime, io, json, os, random, traceback
-        from firebase_admin import credentials, storage
-        import firebase_admin
         from openai import OpenAI
 
         MAX_BATCH = 21
         DEFAULT_IMG = "https://i.imgur.com/nJYMPOQ.png"
-        BUCKET = "fablerpg-f74c2.appspot.com"
         PIXELCUT_URL = "https://api.developer.pixelcut.ai/v1/remove-background"
-        PIXELCUT_KEY = os.getenv("PIXELCUT_KEY") or ""
+        PIXELCUT_KEY = (getattr(self.bot.config.external, "pixelcut_key", None) or "").strip()
 
         # ──────────────────────────────────────────────────────────
         # helper wrappers  (only used inside this command)
@@ -2821,25 +3029,8 @@ class ProcessSplice(commands.Cog):
 
             return result_bytes
 
-        BUCKET_NAME = "fablerpg-f74c2.appspot.com"
-
-        def get_firebase_bucket():
-            """
-            Return a google.cloud.storage.bucket.Bucket object.
-            initialise exactly ONE firebase app – never duplicated.
-            """
-            if not firebase_admin._apps:
-                firebase_admin.initialize_app(credentials.Certificate("acc.json"))
-
-            # works even if the app was started without storageBucket in its options
-            return storage.bucket(BUCKET_NAME)
-
-        async def firebase_upload(data: bytes, filename: str) -> str:
-            bucket = get_firebase_bucket()
-            blob = bucket.blob(filename)
-            blob.upload_from_string(data)
-            blob.make_public()
-            return blob.public_url
+        async def storage_upload(data: bytes, filename: str) -> str:
+            return await self._r2_upload_bytes(data, filename)
 
         # ──────────────────────────────────────────────────────────
         # 0) limit batch + create OpenAI client
@@ -2850,7 +3041,7 @@ class ProcessSplice(commands.Cog):
 
         try:
             openai_client = self._create_openai_client()
-            await ctx.send("✅ OpenAI client initialised – gpt-image-1 enabled.")
+            await ctx.send("✅ OpenAI client initialised – gpt-image-1.5 enabled.")
         except Exception as e:
             openai_client = None
             await ctx.send(f"⚠️  OpenAI init failed ({e}) – AI disabled.")
@@ -2912,7 +3103,7 @@ class ProcessSplice(commands.Cog):
             )
 
         # ──────────────────────────────────────────────────────────
-        # 3) STEP-1  IMAGE  (with retry loop + gpt-image-1 edit)
+        # 3) STEP-1  IMAGE  (with retry loop + gpt-image-1.5 edit)
         # ──────────────────────────────────────────────────────────
         await ctx.send("__**STEP-1  – choose / create an image for each pet**__")
 
@@ -2923,7 +3114,7 @@ class ProcessSplice(commands.Cog):
                         f"**{idx}/{len(pets)} – {pet['name']}**\n"
                         "Choose:\n"
                         "`1` upload attachment\n`2` paste URL\n"
-                        "`3` generate with gpt-image-1 (parent pictures merged)\n"
+                        "`3` generate with gpt-image-1.5 (parent pictures merged)\n"
                         "`cancel` abort batch"
                     )
                     await ctx.send(menu)
@@ -2952,7 +3143,7 @@ class ProcessSplice(commands.Cog):
                             except asyncio.TimeoutError:
                                 pass
 
-                        pet["url"] = await firebase_upload(
+                        pet["url"] = await storage_upload(
                             data, f"{ctx.author.id}_{pet['name']}_{att.filename}"
                         )
                         break
@@ -2963,7 +3154,7 @@ class ProcessSplice(commands.Cog):
                         pet["url"] = (await admin_wait()).content.strip()
                         break
 
-                    # ── 3) gpt-image-1  (merge parents)
+                    # ── 3) gpt-image-1.5  (merge parents)
                     if choice == "3" and openai_client:
                         # download parent images to temp files
                         p1_bytes = await download_bytes(pet["pet1_url"])
@@ -2986,11 +3177,11 @@ class ProcessSplice(commands.Cog):
                             await ctx.send("Enter extra prompt:")
                             default_prompt += " " + (await admin_wait(timeout=120)).content.strip()
 
-                        await ctx.send("Creating image with gpt-image-1…")
+                        await ctx.send("Creating image with gpt-image-1.5…")
 
                         def _edit():
                             return openai_client.images.edit(
-                                model="gpt-image-1",
+                                model="gpt-image-1.5",
                                 image=[open(p1_file, "rb"), open(p2_file, "rb")],
                                 prompt=default_prompt,
                             )
@@ -3032,7 +3223,7 @@ class ProcessSplice(commands.Cog):
                             dec = None
 
                         if dec and dec.content.lower().startswith("y"):
-                            pet["url"] = await firebase_upload(
+                            pet["url"] = await storage_upload(
                                 gen_bytes, f"{ctx.author.id}_{pet['name']}_ai.png"
                             )
                             if gen_bytes:
@@ -3367,40 +3558,8 @@ class ProcessSplice(commands.Cog):
             )
         await ctx.send(embed=summ)
 
-
-
+    @is_gm()
     @commands.command(hidden=True)
-    @commands.is_owner()
-    async def process_splice(self, ctx, splice_id: int = None):
-        """Process a splice request (owner only)"""
-        try:
-            if not splice_id:
-                # List pending splice requests
-                async with self.bot.pool.acquire() as conn:
-                    splices = await conn.fetch(
-                        """
-                        SELECT 
-                            id, user_id, pet1_name, pet2_name, 
-                            pet1_default, pet2_default, created_at,
-                            pet1_url, pet2_url, temp_name
-                        FROM splice_requests 
-                        WHERE status = 'pending' 
-                        ORDER BY created_at ASC
-                        """
-                    )
-
-                if not splices:
-                    return await ctx.send("No pending splice requests.")
-                
-                # Create and start the paginator
-                paginator = SpliceRequestPaginator(ctx, splices)
-                await paginator.start()
-                return
-        except Exception as e:
-            await ctx.send(f"Error: {e}")
-    
-    @commands.command(hidden=True)
-    @commands.is_owner()
     async def process_splice(self, ctx, splice_id: int = None):
         """Process a splice request (owner only)"""
         try:
@@ -3767,15 +3926,6 @@ class ProcessSplice(commands.Cog):
                 # If there's an attachment, process it as an upload
                 if url_msg.attachments:
                     try:
-                        # Initialize Firebase
-                        cred = credentials.Certificate("acc.json")
-                        if not firebase_admin._apps:
-                            firebase_app = firebase_admin.initialize_app(cred)
-                        else:
-                            firebase_app = firebase_admin.get_app()
-
-                        firebase_storage = storage.bucket("fablerpg-f74c2.appspot.com")
-                        
                         attachment = url_msg.attachments[0]
                         if attachment.height:  # Verify it's an image
                             # Create user-specific filename
@@ -3803,21 +3953,20 @@ class ProcessSplice(commands.Cog):
                                 # Proceed with background removal if confirmed
                                 if remove_bg:
                                     try:
-                                        # First, upload the image to Firebase temporarily
-                                        temp_filename = f"temp_{user_filename}"
-                                        temp_blob = firebase_storage.blob(temp_filename)
-                                        temp_blob.upload_from_string(image_data)
-                                        
-                                        # Make the blob publicly accessible
-                                        temp_blob.make_public()
-                                        
-                                        # Get temporary public URL
-                                        temp_url = temp_blob.public_url
+                                        # First, upload the image to R2 temporarily.
+                                        temp_filename = f"temp/{user_filename}"
+                                        temp_url = await self._r2_upload_temp_and_get_url(
+                                            image_data,
+                                            temp_filename,
+                                            expires_in=900,
+                                        )
                                         await ctx.send(f"Processing image for background removal...")
                                     
                                         # Call PixelCut API to remove background
                                         await ctx.send("Removing background from image...")
-                                        pixelcut_api_key = ""
+                                        pixelcut_api_key = (
+                                            getattr(self.bot.config.external, "pixelcut_key", None) or ""
+                                        ).strip()
                                         pixelcut_url = "https://api.developer.pixelcut.ai/v1/remove-background"
                                         headers = {
                                             "Content-Type": "application/json",
@@ -3852,21 +4001,19 @@ class ProcessSplice(commands.Cog):
                                                         await ctx.send(f"Background removal API didn't return an image URL. Using original image instead.")
                                                 else:
                                                     await ctx.send(f"Background removal failed with status {response.status}. Using original image instead.")
-                                        
-                                        # Clean up temporary file
-                                        temp_blob.delete()
+
+                                        # Clean up temporary object in R2
+                                        try:
+                                            await self._r2_delete_object(temp_filename)
+                                        except Exception:
+                                            pass
                                     except Exception as e:
                                         await ctx.send(f"Background removal failed: {str(e)}. Using original image instead.")
                             else:
                                 await ctx.send("Keeping original image with background.")
                             
-                            # Upload the final image (either background-removed or original) to Firebase
-                            blob = firebase_storage.blob(user_filename)
-                            blob.upload_from_string(image_data)
-                            blob.make_public()
-                            
-                            # Get public URL
-                            url = blob.public_url
+                            # Upload the final image (either background-removed or original) to R2
+                            url = await self._r2_upload_bytes(image_data, user_filename)
                             
                             await ctx.send(f"Image uploaded successfully!")
                         else:
@@ -4039,10 +4186,6 @@ class ProcessSplice(commands.Cog):
             else:
                 # Fix: Make sure we set a valid IV percentage when value is 700 or higher
                 iv_percentage = random.uniform(30, 50)
-            # Still get the Firebase app if needed
-            firebase_app = firebase_admin.get_app()
-
-            firebase_storage = storage.bucket("fablerpg-f74c2.appspot.com")
             baby_defense = baby_defense + defense_iv
 
             # Create the spliced pet
@@ -4202,3 +4345,4 @@ async def setup(bot):
     await bot.add_cog(ProcessSplice(bot))
 
     
+

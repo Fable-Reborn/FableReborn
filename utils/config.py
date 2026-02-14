@@ -56,11 +56,18 @@ class ExternalSection:
         "patreon_token",
         "imgur_token",
         "openai",
+        "pixelcut_key",
         "okapi_token",
         "traviapi",
         "base_url",
         "okapi_url",
         "proxy_url",
+        "r2_account_id",
+        "r2_endpoint_url",
+        "r2_access_key_id",
+        "r2_secret_access_key",
+        "r2_bucket",
+        "r2_public_base_url",
         "donator_roles",
     }
 
@@ -68,11 +75,18 @@ class ExternalSection:
         self.patreon_token = data.get("patreon_token", None)
         self.imgur_token = data.get("imgur_token", None)
         self.openai = data.get("openai", None)
+        self.pixelcut_key = data.get("pixelcut_key", None)
         self.okapi_token = data.get("okapi_token", None)
         self.traviapi = data.get("traviapi", None)
         self.base_url = data.get("base_url", "https://idlerpg.xyz")
         self.okapi_url = data.get("okapi_url", "http://localhost:3000")
         self.proxy_url = data.get("proxy_url", None)
+        self.r2_account_id = data.get("r2_account_id", None)
+        self.r2_endpoint_url = data.get("r2_endpoint_url", None)
+        self.r2_access_key_id = data.get("r2_access_key_id", None)
+        self.r2_secret_access_key = data.get("r2_secret_access_key", None)
+        self.r2_bucket = data.get("r2_bucket", None)
+        self.r2_public_base_url = data.get("r2_public_base_url", None)
         self.donator_roles = [DonatorRole(i) for i in data.get("donator_roles", [])]
 
 

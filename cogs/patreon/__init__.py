@@ -18,12 +18,12 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import asyncio
 import datetime
-import firebase_admin
-from firebase_admin import credentials, storage
+import mimetypes
 import urllib.request
 import urllib.parse, urllib.error
 
 import aiohttp
+import boto3
 import discord
 import requests
 
@@ -62,6 +62,9 @@ class Patreon(commands.Cog):
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
         self.ruby_or_above = []
+        self._r2_client = None
+        self._r2_bucket = None
+        self._r2_public_base_url = None
         ids_section = getattr(self.bot.config, "ids", None)
         patreon_ids = getattr(ids_section, "patreon", {}) if ids_section else {}
         if not isinstance(patreon_ids, dict):
@@ -70,6 +73,61 @@ class Patreon(commands.Cog):
 
         if self.bot.config.external.patreon_token:
             asyncio.create_task(self.update_ruby_or_above())
+
+    def _get_r2_client(self):
+        if self._r2_client is not None:
+            return self._r2_client
+
+        ext = getattr(self.bot.config, "external", None)
+        account_id = (getattr(ext, "r2_account_id", None) or "").strip()
+        access_key_id = (getattr(ext, "r2_access_key_id", None) or "").strip()
+        secret_access_key = (getattr(ext, "r2_secret_access_key", None) or "").strip()
+        bucket = (getattr(ext, "r2_bucket", None) or "").strip()
+        public_base_url = (getattr(ext, "r2_public_base_url", None) or "").strip().rstrip("/")
+        endpoint_url = (getattr(ext, "r2_endpoint_url", None) or "").strip()
+
+        missing = []
+        if not account_id and not endpoint_url:
+            missing.append("R2_ACCOUNT_ID (or R2_ENDPOINT_URL)")
+        if not access_key_id:
+            missing.append("R2_ACCESS_KEY_ID")
+        if not secret_access_key:
+            missing.append("R2_SECRET_ACCESS_KEY")
+        if not bucket:
+            missing.append("R2_BUCKET")
+        if not public_base_url:
+            missing.append("R2_PUBLIC_BASE_URL")
+
+        if missing:
+            raise RuntimeError(f"Missing R2 configuration: {', '.join(missing)}")
+
+        if not endpoint_url:
+            endpoint_url = f"https://{account_id}.r2.cloudflarestorage.com"
+
+        self._r2_client = boto3.client(
+            "s3",
+            endpoint_url=endpoint_url,
+            aws_access_key_id=access_key_id,
+            aws_secret_access_key=secret_access_key,
+            region_name="auto",
+        )
+        self._r2_bucket = bucket
+        self._r2_public_base_url = public_base_url
+        return self._r2_client
+
+    async def _r2_upload_bytes(self, data: bytes, key: str) -> str:
+        client = self._get_r2_client()
+        object_key = key.lstrip("/")
+        content_type = mimetypes.guess_type(object_key)[0] or "application/octet-stream"
+
+        await asyncio.to_thread(
+            client.put_object,
+            Bucket=self._r2_bucket,
+            Key=object_key,
+            Body=data,
+            ContentType=content_type,
+        )
+        return f"{self._r2_public_base_url}/{urllib.parse.quote(object_key, safe='/-_.~')}"
 
     async def update_ruby_or_above(self) -> None:
         await self.bot.wait_until_ready()
@@ -486,15 +544,6 @@ class Patreon(commands.Cog):
     @locale_doc
     async def upload(self, ctx):
         try:
-            cred = credentials.Certificate("acc.json")
-            if not firebase_admin._apps:
-                firebase_app = firebase_admin.initialize_app(cred)
-            else:
-                firebase_app = firebase_admin.get_app()
-
-            firebase_storage = storage.bucket("fablerpg-f74c2.appspot.com")
-
-
             if ctx.message.attachments:
                 for attachment in ctx.message.attachments:
                     if attachment.height:  # Checking if it's an image
@@ -504,12 +553,8 @@ class Patreon(commands.Cog):
                         # Get image data
                         image_data = await attachment.read()
 
-                        # Upload image to Firebase Storage
-                        blob = firebase_storage.blob(user_filename)
-                        blob.upload_from_string(image_data)
-
-                        # Get the URL of the uploaded image
-                        image_url = blob.public_url
+                        # Upload image to Cloudflare R2
+                        image_url = await self._r2_upload_bytes(image_data, user_filename)
 
                         await ctx.send(f"Uploaded image URL: {image_url}")
                         return

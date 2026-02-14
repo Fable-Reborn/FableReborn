@@ -112,26 +112,42 @@ class SpliceRequestPaginator(View):
         self.total_pages = (len(splices) + per_page - 1) // per_page
         self.message = None
         self.current_time = datetime.datetime.now(datetime.timezone.utc)
+        self.prev_button = None
+        self.next_button = None
         
         # Add navigation buttons
         self.add_buttons()
+        self._sync_navigation_buttons()
     
     def add_buttons(self):
         """Add navigation buttons to the view"""
         # Previous button
-        prev_button = Button(style=ButtonStyle.primary, emoji="⬅️", disabled=self.current_page == 0)
-        prev_button.callback = self.previous_page
-        self.add_item(prev_button)
+        self.prev_button = Button(style=ButtonStyle.primary, emoji="⬅️", disabled=self.current_page == 0)
+        self.prev_button.callback = self.previous_page
+        self.add_item(self.prev_button)
         
         # Next button
-        next_button = Button(style=ButtonStyle.primary, emoji="➡️", disabled=self.current_page == self.total_pages - 1)
-        next_button.callback = self.next_page
-        self.add_item(next_button)
+        self.next_button = Button(style=ButtonStyle.primary, emoji="➡️", disabled=self.current_page == self.total_pages - 1)
+        self.next_button.callback = self.next_page
+        self.add_item(self.next_button)
         
         # Close button
         close_button = Button(style=ButtonStyle.danger, emoji="❌")
         close_button.callback = self.close_view
         self.add_item(close_button)
+
+    def _sync_navigation_buttons(self):
+        """Keep button states in sync with the current page."""
+        if self.prev_button:
+            self.prev_button.disabled = self.current_page <= 0
+        if self.next_button:
+            self.next_button.disabled = self.current_page >= self.total_pages - 1
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("This paginator is not for you.", ephemeral=True)
+            return False
+        return True
     
     def get_current_page_embed(self):
         """Generate the embed for the current page"""
@@ -193,32 +209,30 @@ class SpliceRequestPaginator(View):
         
         return embed
     
-    async def update_message(self):
+    async def update_message(self, interaction: discord.Interaction):
         """Update the message with current page"""
-        for child in self.children:
-            if child.emoji == "⬅️":
-                child.disabled = self.current_page == 0
-            elif child.emoji == "➡️":
-                child.disabled = self.current_page == self.total_pages - 1
-        
-        await self.message.edit(embed=self.get_current_page_embed(), view=self)
+        self._sync_navigation_buttons()
+        embed = self.get_current_page_embed()
+        if interaction.response.is_done():
+            await self.message.edit(embed=embed, view=self)
+        else:
+            await interaction.response.edit_message(embed=embed, view=self)
     
     async def previous_page(self, interaction):
         """Go to the previous page"""
         if self.current_page > 0:
             self.current_page -= 1
-            await self.update_message()
-        await interaction.response.defer()
+        await self.update_message(interaction)
     
     async def next_page(self, interaction):
         """Go to the next page"""
         if self.current_page < self.total_pages - 1:
             self.current_page += 1
-            await self.update_message()
-        await interaction.response.defer()
+        await self.update_message(interaction)
     
     async def close_view(self, interaction):
         """Close the paginator"""
+        await interaction.response.defer()
         await interaction.message.delete()
         self.stop()
     
