@@ -16,6 +16,7 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
+import asyncio
 import importlib
 import importlib.util
 import sys
@@ -28,6 +29,13 @@ from utils.checks import is_gm
 
 
 class ReloadCog(commands.Cog):
+    GIT_PULL_ALLOWED_USER_IDS = {
+        171645746993561600,
+        295173706496475136,
+        273652235588599808,
+    }
+    GIT_PULL_CWD = Path("/home/fableadmin/FableRPG-FINAL/FableRPG-FINAL/Fable")
+
     def __init__(self, bot):
         self.bot = bot
 
@@ -153,6 +161,41 @@ class ReloadCog(commands.Cog):
             await ctx.send(
                 f"Failed to reload `{module}`\n{type(e).__name__}: {e}"
             )
+
+    @is_gm()
+    @commands.command(name="gitpull", hidden=True)
+    async def git_pull(self, ctx):
+        if ctx.author.id not in self.GIT_PULL_ALLOWED_USER_IDS:
+            return await ctx.send("You are not allowed to run this command.")
+
+        await ctx.send(
+            f"Running `git pull` in `{self.GIT_PULL_CWD}`..."
+        )
+
+        try:
+            result = await asyncio.create_subprocess_exec(
+                "git",
+                "pull",
+                cwd=str(self.GIT_PULL_CWD),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await result.communicate()
+        except Exception as e:
+            return await ctx.send(f"Failed to run git pull: {type(e).__name__}: {e}")
+
+        stdout_text = stdout.decode(errors="replace").strip()
+        stderr_text = stderr.decode(errors="replace").strip()
+        combined = (
+            f"$ git pull\n"
+            f"exit_code={result.returncode}\n\n"
+            f"[stdout]\n{stdout_text or '(empty)'}\n\n"
+            f"[stderr]\n{stderr_text or '(empty)'}"
+        ).replace("```", "'''")
+
+        chunk_size = 1900
+        for i in range(0, len(combined), chunk_size):
+            await ctx.send(f"```{combined[i:i + chunk_size]}```")
 
 
 async def setup(bot):
