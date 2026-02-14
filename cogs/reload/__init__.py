@@ -168,30 +168,46 @@ class ReloadCog(commands.Cog):
         if ctx.author.id not in self.GIT_PULL_ALLOWED_USER_IDS:
             return await ctx.send("You are not allowed to run this command.")
 
-        await ctx.send(
-            f"Running `git pull` in `{self.GIT_PULL_CWD}`..."
-        )
+        await ctx.send(f"Running git pull in `{self.GIT_PULL_CWD}`...")
 
-        try:
+        async def run_git(*args):
             result = await asyncio.create_subprocess_exec(
                 "git",
-                "pull",
+                *args,
                 cwd=str(self.GIT_PULL_CWD),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, stderr = await result.communicate()
+            return (
+                result.returncode,
+                stdout.decode(errors="replace").strip(),
+                stderr.decode(errors="replace").strip(),
+            )
+
+        command_chain = [
+            ("reset", "--hard"),
+            ("pull",),
+        ]
+
+        output_parts = []
+        try:
+            for args in command_chain:
+                exit_code, stdout_text, stderr_text = await run_git(*args)
+                output_parts.append(
+                    (
+                        f"$ git {' '.join(args)}\n"
+                        f"exit_code={exit_code}\n\n"
+                        f"[stdout]\n{stdout_text or '(empty)'}\n\n"
+                        f"[stderr]\n{stderr_text or '(empty)'}"
+                    )
+                )
+                if exit_code != 0:
+                    break
         except Exception as e:
             return await ctx.send(f"Failed to run git pull: {type(e).__name__}: {e}")
 
-        stdout_text = stdout.decode(errors="replace").strip()
-        stderr_text = stderr.decode(errors="replace").strip()
-        combined = (
-            f"$ git pull\n"
-            f"exit_code={result.returncode}\n\n"
-            f"[stdout]\n{stdout_text or '(empty)'}\n\n"
-            f"[stderr]\n{stderr_text or '(empty)'}"
-        ).replace("```", "'''")
+        combined = "\n\n".join(output_parts).replace("```", "'''")
 
         chunk_size = 1900
         for i in range(0, len(combined), chunk_size):

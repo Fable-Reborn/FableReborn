@@ -2985,6 +2985,6 @@ class Soulforge(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(Soulforge(bot))
-    await bot.load_extension("cogs.soulforge.test_bg_removal")
+    
 
     
