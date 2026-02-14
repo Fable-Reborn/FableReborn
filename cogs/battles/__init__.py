@@ -1159,9 +1159,11 @@ class Battles(commands.Cog):
         )
 
     @commands.command(name="godlocks")
-    @user_cooldown(15)
-    async def godlocks(self, ctx, user: discord.User = None):
-        """View god shard lock status (all users or a specific user)."""
+    @user_cooldown(10)
+    async def godlocks(self, ctx):
+        """View your own shard/god lock status."""
+        target_user = ctx.author
+
         async with self.bot.pool.acquire() as conn:
             lock_table_exists = await conn.fetchval(
                 "SELECT to_regclass('public.god_pet_ownership_locks') IS NOT NULL;"
@@ -1171,88 +1173,57 @@ class Battles(commands.Cog):
                     "❌ `god_pet_ownership_locks` does not exist yet. Reload `cogs.battles` first."
                 )
 
-            if user:
-                rows = await conn.fetch(
-                    """
-                    SELECT god_name, source_pet_id, first_locked_at
-                    FROM god_pet_ownership_locks
-                    WHERE user_id = $1
-                    ORDER BY god_name ASC
-                    """,
-                    user.id,
-                )
-                all_gods = sorted(self.GOD_SHARD_DEFINITIONS.keys())
-                locked_gods = [row["god_name"] for row in rows]
-                unlocked_gods = [g for g in all_gods if g not in locked_gods]
-
-                embed = discord.Embed(
-                    title=f"God Lock Status: {user}",
-                    color=discord.Color.blurple(),
-                )
-                embed.add_field(name="User ID", value=str(user.id), inline=False)
-                embed.add_field(
-                    name="Locked Gods (cannot receive shards)",
-                    value=", ".join(locked_gods) if locked_gods else "None",
-                    inline=False,
-                )
-                embed.add_field(
-                    name="Unlocked Gods (can still receive shards)",
-                    value=", ".join(unlocked_gods) if unlocked_gods else "None",
-                    inline=False,
-                )
-
-                if rows:
-                    lock_lines = []
-                    for row in rows:
-                        locked_at = row["first_locked_at"]
-                        locked_at_str = (
-                            locked_at.strftime("%Y-%m-%d %H:%M:%S")
-                            if locked_at
-                            else "Unknown"
-                        )
-                        source_pet_id = row["source_pet_id"] if row["source_pet_id"] is not None else "Unknown"
-                        lock_lines.append(
-                            f"{row['god_name']}: source_pet_id={source_pet_id}, first_locked_at={locked_at_str}"
-                        )
-                    embed.add_field(
-                        name="Lock Details",
-                        value="\n".join(lock_lines)[:1024],
-                        inline=False,
-                    )
-                return await ctx.send(embed=embed)
-
-            grouped_rows = await conn.fetch(
+            locked_rows = await conn.fetch(
                 """
-                SELECT user_id, ARRAY_AGG(god_name ORDER BY god_name) AS gods
+                SELECT god_name
                 FROM god_pet_ownership_locks
-                GROUP BY user_id
-                ORDER BY user_id ASC
-                """
+                WHERE user_id = $1
+                ORDER BY god_name ASC
+                """,
+                target_user.id,
             )
 
-            if not grouped_rows:
-                return await ctx.send("No users currently have god locks.")
-
-            total_locks = await conn.fetchval(
-                "SELECT COUNT(*) FROM god_pet_ownership_locks;"
+            shards_table_exists = await conn.fetchval(
+                "SELECT to_regclass('public.god_pve_shards') IS NOT NULL;"
             )
-            total_users = len(grouped_rows)
+            shard_rows = []
+            if shards_table_exists:
+                shard_rows = await conn.fetch(
+                    """
+                    SELECT god_name, shard_number
+                    FROM god_pve_shards
+                    WHERE user_id = $1
+                    ORDER BY god_name ASC, shard_number ASC
+                    """,
+                    target_user.id,
+                )
 
-        summary_lines = [
-            f"Users with locks: {total_users}",
-            f"Total lock rows: {total_locks}",
-            "Use `$godlocks @user` for per-user unlocked/locked detail.",
-            "",
-        ]
-        summary_lines.extend(
-            f"user_id={row['user_id']}: {', '.join(row['gods'])}"
-            for row in grouped_rows
-        )
+        locked_gods = {row["god_name"] for row in locked_rows}
+        shards_by_god = {}
+        for row in shard_rows:
+            god_name = row["god_name"]
+            shard_num = int(row["shard_number"])
+            shards_by_god.setdefault(god_name, set()).add(shard_num)
 
-        combined = "\n".join(summary_lines)
+        lines = [f"God shard status for {target_user} ({target_user.id})", ""]
+        for god_name, definition in self.GOD_SHARD_DEFINITIONS.items():
+            god_locked = god_name in locked_gods
+            owned_numbers = set(range(1, 7)) if god_locked else shards_by_god.get(god_name, set())
+
+            god_mark = "✅" if god_locked else "❌"
+            progress_text = "6/6 (God owned)" if god_locked else f"{len(owned_numbers)}/6"
+            lines.append(f"{god_mark} {god_name} [{progress_text}]")
+
+            shard_names = definition.get("shards", [])
+            for idx, shard_name in enumerate(shard_names, start=1):
+                shard_mark = "✅" if (god_locked or idx in owned_numbers) else "❌"
+                lines.append(f"{shard_mark} Shard {idx}: {shard_name}")
+            lines.append("")
+
+        combined = "\n".join(lines).strip()
         chunk_size = 1900
         for i in range(0, len(combined), chunk_size):
-            await ctx.send(f"```{combined[i:i + chunk_size]}```")
+            await ctx.send(combined[i:i + chunk_size])
 
     @commands.command()
     @commands.is_owner()
