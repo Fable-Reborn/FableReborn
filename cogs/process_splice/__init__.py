@@ -604,6 +604,170 @@ class ProcessSplice(commands.Cog):
             Bucket=self._r2_bucket,
             Key=object_key,
         )
+
+    def _get_pixelcut_key(self) -> str:
+        external = getattr(self.bot.config, "external", None)
+        pixelcut_key = (getattr(external, "pixelcut_key", None) or "").strip()
+        if not pixelcut_key:
+            raise RuntimeError("Missing PixelCut configuration: external.pixelcut_key")
+        return pixelcut_key
+
+    async def _pixelcut_remove_background_from_url(
+        self,
+        image_url: str,
+        *,
+        attempts: int = 3,
+        timeout_seconds: int = 45,
+    ) -> bytes:
+        pixelcut_key = self._get_pixelcut_key()
+        pixelcut_url = "https://api.developer.pixelcut.ai/v1/remove-background"
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-API-KEY": pixelcut_key,
+        }
+        payload = json.dumps({"image_url": image_url, "format": "png"})
+
+        timeout = aiohttp.ClientTimeout(
+            total=timeout_seconds,
+            connect=15,
+            sock_connect=15,
+            sock_read=timeout_seconds,
+        )
+        last_error = None
+
+        for attempt in range(1, max(1, attempts) + 1):
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(pixelcut_url, headers=headers, data=payload) as response:
+                        raw = await response.text()
+                        if response.status != 200:
+                            detail = raw[:500].replace("\n", " ")
+                            # Retry only for rate limits / transient upstream errors.
+                            if response.status in {429, 500, 502, 503, 504} and attempt < attempts:
+                                await asyncio.sleep(min(2 ** (attempt - 1), 4))
+                                continue
+                            raise RuntimeError(f"PixelCut status {response.status}: {detail}")
+
+                        try:
+                            data = json.loads(raw)
+                        except json.JSONDecodeError:
+                            raise RuntimeError("PixelCut returned non-JSON response.")
+
+                        result_url = (data.get("result_url") or "").strip()
+                        if not result_url:
+                            raise RuntimeError("PixelCut response missing result_url.")
+
+                    async with session.get(result_url) as image_response:
+                        if image_response.status != 200:
+                            if image_response.status in {429, 500, 502, 503, 504} and attempt < attempts:
+                                await asyncio.sleep(min(2 ** (attempt - 1), 4))
+                                continue
+                            raise RuntimeError(
+                                f"PixelCut result download failed with status {image_response.status}."
+                            )
+
+                        result_bytes = await image_response.read()
+                        if not result_bytes:
+                            raise RuntimeError("PixelCut returned empty image bytes.")
+                        return result_bytes
+            except Exception as exc:
+                last_error = exc
+                if attempt < attempts:
+                    await asyncio.sleep(min(2 ** (attempt - 1), 4))
+
+        raise RuntimeError(f"PixelCut failed after {attempts} attempt(s): {last_error}")
+
+    async def _remove_background_with_fallback(
+        self,
+        ctx: commands.Context,
+        *,
+        img_url: Optional[str] = None,
+        img_bytes: Optional[bytes] = None,
+        filename: str = "temp.png",
+        attempts_per_source: int = 3,
+    ) -> bytes:
+        """
+        Remove image background using PixelCut with multiple source fallbacks:
+        source URL -> R2 temp URL -> Discord temp URL.
+        """
+        if not img_url and not img_bytes:
+            raise ValueError("Need either img_url or img_bytes")
+
+        candidate_sources: List[Tuple[str, str]] = []
+        failure_notes: List[str] = []
+        temp_message: Optional[discord.Message] = None
+        temp_r2_key: Optional[str] = None
+        safe_filename = pathlib.Path(filename or "temp.png").name or "temp.png"
+
+        if img_url:
+            candidate_sources.append(("provided URL", img_url))
+
+        if img_bytes:
+            content_type = mimetypes.guess_type(safe_filename)[0] or "image/png"
+            temp_r2_key = (
+                f"temp/pixelcut_{datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')}_"
+                f"{secrets.token_hex(6)}_{safe_filename}"
+            )
+            try:
+                r2_temp_url = await self._r2_upload_temp_and_get_url(
+                    img_bytes,
+                    temp_r2_key,
+                    expires_in=900,
+                    content_type=content_type,
+                )
+                candidate_sources.append(("R2 temp URL", r2_temp_url))
+            except Exception as exc:
+                temp_r2_key = None
+                failure_notes.append(f"R2 temp upload failed: {exc}")
+
+        # Keep unique URLs in order.
+        deduped_sources: List[Tuple[str, str]] = []
+        seen_urls = set()
+        for label, url in candidate_sources:
+            if url and url not in seen_urls:
+                deduped_sources.append((label, url))
+                seen_urls.add(url)
+
+        try:
+            for label, url in deduped_sources:
+                try:
+                    return await self._pixelcut_remove_background_from_url(
+                        url,
+                        attempts=attempts_per_source,
+                    )
+                except Exception as exc:
+                    failure_notes.append(f"{label} failed: {exc}")
+
+            if img_bytes:
+                try:
+                    temp_message = await ctx.channel.send(
+                        file=discord.File(BytesIO(img_bytes), filename=safe_filename)
+                    )
+                    if temp_message.attachments:
+                        discord_url = temp_message.attachments[0].url
+                        return await self._pixelcut_remove_background_from_url(
+                            discord_url,
+                            attempts=attempts_per_source,
+                        )
+                    failure_notes.append("Discord temp upload produced no attachment URL.")
+                except Exception as exc:
+                    failure_notes.append(f"Discord temp URL fallback failed: {exc}")
+
+            details = "; ".join(failure_notes) if failure_notes else "No valid image source URL was available."
+            raise RuntimeError(details)
+        finally:
+            if temp_message is not None:
+                try:
+                    await temp_message.delete()
+                except Exception:
+                    pass
+
+            if temp_r2_key:
+                try:
+                    await self._r2_delete_object(temp_r2_key)
+                except Exception:
+                    pass
         
     async def get_player_data(self, user_id):
         """Get player's quest progress and character data"""
@@ -1945,8 +2109,6 @@ class ProcessSplice(commands.Cog):
 
         MAX_BATCH = 21
         DEFAULT_IMG = "https://i.imgur.com/nJYMPOQ.png"
-        PIXELCUT_URL = "https://api.developer.pixelcut.ai/v1/remove-background"
-        PIXELCUT_KEY = (getattr(self.bot.config.external, "pixelcut_key", None) or "").strip()
 
         # ──────────────────────────────────────────────────────────
         # helper wrappers
@@ -1983,43 +2145,13 @@ class ProcessSplice(commands.Cog):
                 img_bytes: bytes | None = None,
                 filename: str = "temp.png",
         ) -> bytes:
-            """Remove background with Pixelcut"""
-            if not img_url and not img_bytes:
-                raise ValueError("Need either img_url or img_bytes")
-
-            # 1. make sure we end up with a publicly reachable URL
-            temp_msg = None
-            if not img_url:
-                temp_msg = await ctx.channel.send(
-                    file=discord.File(io.BytesIO(img_bytes), filename)
-                )
-                img_url = temp_msg.attachments[0].url
-
-            # 2. call Pixelcut with the URL
-            headers = {
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "X-API-KEY": PIXELCUT_KEY,
-            }
-            payload = json.dumps({"image_url": img_url, "format": "png"})
-
-            async with aiohttp.ClientSession() as s:
-                async with s.post(PIXELCUT_URL, headers=headers, data=payload) as r:
-                    if r.status != 200:
-                        raise RuntimeError(f"PixelCut status {r.status}")
-                    data = await r.json()
-
-                async with s.get(data["result_url"]) as r2:
-                    result_bytes = await r2.read()
-
-            # 3. clean up the temp message if we created one
-            if temp_msg:
-                try:
-                    await temp_msg.delete()
-                except Exception:
-                    pass
-
-            return result_bytes
+            return await self._remove_background_with_fallback(
+                ctx,
+                img_url=img_url,
+                img_bytes=img_bytes,
+                filename=filename,
+                attempts_per_source=4,
+            )
 
         async def storage_upload(data: bytes, filename: str) -> str:
             return await self._r2_upload_bytes(data, filename)
@@ -2958,8 +3090,6 @@ class ProcessSplice(commands.Cog):
 
         MAX_BATCH = 21
         DEFAULT_IMG = "https://i.imgur.com/nJYMPOQ.png"
-        PIXELCUT_URL = "https://api.developer.pixelcut.ai/v1/remove-background"
-        PIXELCUT_KEY = (getattr(self.bot.config.external, "pixelcut_key", None) or "").strip()
 
         # ──────────────────────────────────────────────────────────
         # helper wrappers  (only used inside this command)
@@ -2983,51 +3113,13 @@ class ProcessSplice(commands.Cog):
                 img_bytes: bytes | None = None,
                 filename: str = "temp.png",
         ) -> bytes:
-            """
-            Remove background with Pixelcut.
-            – If `img_url` is given, that URL is sent straight to Pixelcut.
-            – If `img_bytes` is given, the bot uploads the file to Discord,
-              obtains the CDN URL, then calls Pixelcut and finally deletes the
-              temporary Discord message.
-            Returns: PNG bytes with background removed.
-            Raises RuntimeError on a non-200 response.
-            """
-            if not img_url and not img_bytes:
-                raise ValueError("Need either img_url or img_bytes")
-
-            # 1. make sure we end up with a publicly reachable URL
-            temp_msg = None
-            if not img_url:
-                temp_msg = await ctx.channel.send(
-                    file=discord.File(io.BytesIO(img_bytes), filename)
-                )
-                img_url = temp_msg.attachments[0].url
-
-            # 2. call Pixelcut with the URL
-            headers = {
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "X-API-KEY": PIXELCUT_KEY,
-            }
-            payload = json.dumps({"image_url": img_url, "format": "png"})
-
-            async with aiohttp.ClientSession() as s:
-                async with s.post(PIXELCUT_URL, headers=headers, data=payload) as r:
-                    if r.status != 200:
-                        raise RuntimeError(f"PixelCut status {r.status}")
-                    data = await r.json()
-
-                async with s.get(data["result_url"]) as r2:
-                    result_bytes = await r2.read()
-
-            # 3. clean up the temp message if we created one
-            if temp_msg:
-                try:
-                    await temp_msg.delete()
-                except Exception:
-                    pass
-
-            return result_bytes
+            return await self._remove_background_with_fallback(
+                ctx,
+                img_url=img_url,
+                img_bytes=img_bytes,
+                filename=filename,
+                attempts_per_source=4,
+            )
 
         async def storage_upload(data: bytes, filename: str) -> str:
             return await self._r2_upload_bytes(data, filename)
@@ -3953,60 +4045,15 @@ class ProcessSplice(commands.Cog):
                                 # Proceed with background removal if confirmed
                                 if remove_bg:
                                     try:
-                                        # First, upload the image to R2 temporarily.
-                                        temp_filename = f"temp/{user_filename}"
-                                        temp_url = await self._r2_upload_temp_and_get_url(
-                                            image_data,
-                                            temp_filename,
-                                            expires_in=900,
+                                        await ctx.send("Processing image for background removal...")
+                                        image_data = await self._remove_background_with_fallback(
+                                            ctx,
+                                            img_url=attachment.url,
+                                            img_bytes=image_data,
+                                            filename=attachment.filename or "upload.png",
+                                            attempts_per_source=4,
                                         )
-                                        await ctx.send(f"Processing image for background removal...")
-                                    
-                                        # Call PixelCut API to remove background
-                                        await ctx.send("Removing background from image...")
-                                        pixelcut_api_key = (
-                                            getattr(self.bot.config.external, "pixelcut_key", None) or ""
-                                        ).strip()
-                                        pixelcut_url = "https://api.developer.pixelcut.ai/v1/remove-background"
-                                        headers = {
-                                            "Content-Type": "application/json",
-                                            "Accept": "application/json",
-                                            "X-API-KEY": pixelcut_api_key
-                                        }
-                                        
-                                        # Prepare payload with json.dumps as required by the API
-                                        payload_data = {
-                                            "image_url": temp_url,
-                                            "format": "png"
-                                        }
-                                        payload = json.dumps(payload_data)
-                                        
-                                        async with aiohttp.ClientSession() as session:
-                                            async with session.post(pixelcut_url, headers=headers, data=payload) as response:
-                                                if response.status == 200:
-                                                    response_data = await response.json()
-                                                    # Get the background-removed image URL
-                                                    bg_removed_url = response_data.get("result_url")
-                                                    
-                                                    if bg_removed_url:
-                                                        # Download the background-removed image
-                                                        async with session.get(bg_removed_url) as img_response:
-                                                            if img_response.status == 200:
-                                                                # Replace the original image_data with background-removed image
-                                                                image_data = await img_response.read()
-                                                                await ctx.send("Background removed successfully!")
-                                                            else:
-                                                                await ctx.send(f"Failed to download background-removed image. Using original image instead.")
-                                                    else:
-                                                        await ctx.send(f"Background removal API didn't return an image URL. Using original image instead.")
-                                                else:
-                                                    await ctx.send(f"Background removal failed with status {response.status}. Using original image instead.")
-
-                                        # Clean up temporary object in R2
-                                        try:
-                                            await self._r2_delete_object(temp_filename)
-                                        except Exception:
-                                            pass
+                                        await ctx.send("Background removed successfully!")
                                     except Exception as e:
                                         await ctx.send(f"Background removal failed: {str(e)}. Using original image instead.")
                             else:
