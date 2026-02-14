@@ -418,6 +418,9 @@ class Soulforge(commands.Cog):
         if not isinstance(soulforge_ids, dict):
             soulforge_ids = {}
         self.splice_admin_user_id = soulforge_ids.get("splice_admin_user_id")
+        self.splice_request_channel_id = (
+            soulforge_ids.get("splice_request_channel_id") or 1472207997051605184
+        )
         pets_ids = getattr(ids_section, "pets", {}) if ids_section else {}
         if not isinstance(pets_ids, dict):
             pets_ids = {}
@@ -2152,14 +2155,20 @@ class Soulforge(commands.Cog):
                         pet2_data["url"]
                     )
                 
-                # Notify the admin
-                admin = self.bot.get_user(self.splice_admin_user_id) if self.splice_admin_user_id else None
-                if admin is None and self.splice_admin_user_id:
+                # Notify the splice request channel
+                splice_channel = (
+                    self.bot.get_channel(self.splice_request_channel_id)
+                    if self.splice_request_channel_id
+                    else None
+                )
+                if splice_channel is None and self.splice_request_channel_id:
                     try:
-                        admin = await self.bot.fetch_user(self.splice_admin_user_id)
+                        splice_channel = await self.bot.fetch_channel(
+                            self.splice_request_channel_id
+                        )
                     except Exception:
-                        admin = None
-                if admin:
+                        splice_channel = None
+                if splice_channel:
                     embed = discord.Embed(
                         title="New Splice Request",
                         description=f"User {ctx.author.name} (ID: {ctx.author.id}) has requested a splice.",
@@ -2174,7 +2183,7 @@ class Soulforge(commands.Cog):
                     embed.add_field(name="Command", value=f"Splice ID {splice_id}`", inline=False)
                     embed.add_field(name="Forge Impact", value=f"Splice Rarity: {splice_rarity}\nForge Condition: {forge_condition}% → {new_condition}%\nDivine Attention: {current_divine_attention}% → {new_divine_attention}%", inline=False)
                     
-                    await admin.send(embed=embed)
+                    await splice_channel.send(embed=embed)
                 
                 # Let the player know they can check status
                 await ctx.send(
