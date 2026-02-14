@@ -680,6 +680,47 @@ class Battles(commands.Cog):
     DRAGON_COIN_DROP_CHANCE_PERCENT = 10
     DRAGON_COIN_DROP_MIN = 2
     DRAGON_COIN_DROP_MAX = 5
+    GOD_SHARD_ALIGNMENT_EMOJIS = {
+        "Chaos": "<:ChaosShard:1472140674215444521>",
+        "Evil": "<:EvilShard:1472140682759110716>",
+        "Good": "<:GoodShard:1472140691667816479>",
+    }
+    GOD_SHARD_DROP_RATES = (0.15, 0.40, 0.10, 0.15, 0.10, 0.10)
+    GOD_SHARD_DEFINITIONS = {
+        "Elysia": {
+            "alignment": "Good",
+            "shards": [
+                "Dawnheart Shard",
+                "Mercy Prism Shard",
+                "Sunveil Shard",
+                "Lifebloom Shard",
+                "Aegis Grace Shard",
+                "Seraphic Echo Shard",
+            ],
+        },
+        "Sepulchure": {
+            "alignment": "Evil",
+            "shards": [
+                "Deathmark Shard",
+                "Gravebone Shard",
+                "Nightveil Shard",
+                "Bloodcurse Shard",
+                "Ruin Sigil Shard",
+                "Voidmourne Shard",
+            ],
+        },
+        "Drakath": {
+            "alignment": "Chaos",
+            "shards": [
+                "Entropy Shard",
+                "Wildspark Shard",
+                "Riftlash Shard",
+                "Discord Shard",
+                "Paradox Shard",
+                "Tempest Fracture Shard",
+            ],
+        },
+    }
 
     def __init__(self, bot):
         self.bot = bot
@@ -806,6 +847,22 @@ class Battles(commands.Cog):
             await conn.execute("ALTER TABLE ice_dragon_stages ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;")
             await conn.execute("ALTER TABLE ice_dragon_drops ADD COLUMN IF NOT EXISTS is_global BOOLEAN NOT NULL DEFAULT TRUE;")
             await conn.execute("ALTER TABLE ice_dragon_drops ADD COLUMN IF NOT EXISTS dragon_stage_id INTEGER;")
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS god_pve_shards (
+                    user_id BIGINT NOT NULL,
+                    god_name TEXT NOT NULL,
+                    alignment TEXT NOT NULL,
+                    shard_number SMALLINT NOT NULL CHECK (shard_number BETWEEN 1 AND 6),
+                    shard_name TEXT NOT NULL,
+                    obtained_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, god_name, shard_number)
+                );
+                """
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_god_pve_shards_user_id ON god_pve_shards(user_id);"
+            )
 
             ability_seed = [
                     ("Ice Breath", "move", "Effect: freeze. Damage: 600. Chance: 30%", 600, "freeze", 0.3),
@@ -909,7 +966,7 @@ class Battles(commands.Cog):
                 self.monsters_data = json.load(f)
         except FileNotFoundError:
             self.monsters_data = {}
-            
+
         # Initialize element extension
         from .extensions.elements import ElementExtension
         self.element_ext = ElementExtension()
@@ -919,6 +976,74 @@ class Battles(commands.Cog):
             self.couples_battle_tower_data = json.load(f)
         with open("cogs/battles/couples_game_levels.json", "r") as f:
             self.couples_game_levels = json.load(f)
+    
+    def _is_god_shard_monster(self, monster) -> bool:
+        if not monster:
+            return False
+        monster_name = (monster.get("name") or "").strip()
+        return monster_name in self.GOD_SHARD_DEFINITIONS
+
+    async def handle_god_shard_drop(self, ctx, monster):
+        """Roll and award up to 6 unique god shards on god PvE victories."""
+        monster_name = (monster.get("name") or "").strip()
+        definition = self.GOD_SHARD_DEFINITIONS.get(monster_name)
+        if not definition:
+            return
+
+        alignment = definition["alignment"]
+        shard_names = definition["shards"]
+        dropped_shards = []
+
+        async with self.bot.pool.acquire() as conn:
+            owned_rows = await conn.fetch(
+                """
+                SELECT shard_number
+                FROM god_pve_shards
+                WHERE user_id = $1 AND god_name = $2
+                """,
+                ctx.author.id,
+                monster_name,
+            )
+            owned_numbers = {row["shard_number"] for row in owned_rows}
+
+            for idx, (shard_name, drop_rate) in enumerate(
+                zip(shard_names, self.GOD_SHARD_DROP_RATES), start=1
+            ):
+                if idx in owned_numbers:
+                    continue
+                if random.random() >= drop_rate:
+                    continue
+
+                inserted = await conn.fetchrow(
+                    """
+                    INSERT INTO god_pve_shards (
+                        user_id, god_name, alignment, shard_number, shard_name
+                    )
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (user_id, god_name, shard_number) DO NOTHING
+                    RETURNING shard_number, shard_name
+                    """,
+                    ctx.author.id,
+                    monster_name,
+                    alignment,
+                    idx,
+                    shard_name,
+                )
+                if inserted:
+                    dropped_shards.append(inserted)
+
+        if dropped_shards:
+            dropped_shards.sort(key=lambda s: s["shard_number"])
+            lines = [
+                f"**Shard {row['shard_number']}**: {row['shard_name']}"
+                for row in dropped_shards
+            ]
+            alignment_emoji = self.GOD_SHARD_ALIGNMENT_EMOJIS.get(alignment, "🧩")
+            await ctx.send(
+                f"{alignment_emoji} **{monster_name} ({alignment}) Shards Obtained**\n"
+                + "\n".join(lines)
+                + "\nUse `$inventory` to view your collected shards."
+            )
 
     @commands.command()
     @commands.is_owner()
@@ -2644,47 +2769,49 @@ class Battles(commands.Cog):
             
             # Handle egg drops and other PvE-specific outcomes
             if result and result.name == "Player":
-                # Player won - check for egg drops based on level
-                # Skip egg drops if macro penalty is active (count >= 12)
+                # Player won - handle PvE drops (skip if macro penalty is active)
                 if levelchoice < 12 and macro_penalty_level == 0:
-                    # Calculate base egg chance
-                    if levelchoice == 11:
-                        base_egg_chance = 0.02
+                    # God fights now roll alignment shards directly (not affected by ranger bonuses).
+                    if self._is_god_shard_monster(monster):
+                        await self.handle_god_shard_drop(ctx, monster)
                     else:
-                        base_egg_chance = 0.50 - ((levelchoice - 1) / 9) * 0.45
-                    final_egg_chance = base_egg_chance
-                    
-                    # Check for Ranger class bonus
-                    ranger_egg_bonuses = {
-                        "Caretaker": 0.02,  # +2% (total 7%)
-                        "Tamer": 0.04,      # +4% (total 9%)
-                        "Trainer": 0.06,    # +6% (total 11%)
-                        "Bowman": 0.08,     # +8% (total 13%)
-                        "Hunter": 0.10,     # +10% (total 15%)
-                        "Warden": 0.13,     # +13% (total 18%)
-                        "Ranger": 0.15,     # +15% (total 25%)
-                    }
-                    
-                    # Apply ranger bonus if player has the class
-                    async with self.bot.pool.acquire() as conn:
-                        profile = await conn.fetchrow('SELECT class FROM profile WHERE "user"=$1;', ctx.author.id)
-                        if profile and profile['class']:
-                            # Find the highest ranger bonus
-                            ranger_bonus = 0
-                            for class_name in profile['class']:
-                                if class_name in ranger_egg_bonuses:
-                                    class_bonus = ranger_egg_bonuses[class_name]
-                                    ranger_bonus = max(ranger_bonus, class_bonus)
-                                    
-                            # Apply ranger bonus with scaling
-                            bonus_multiplier = 1.0 - ((levelchoice - 1) / 9) * (1/3)
-                            adjusted_ranger_bonus = ranger_bonus * bonus_multiplier
-                            final_egg_chance += adjusted_ranger_bonus
-                    
-                    # Check for egg drop
-                    if random.random() < final_egg_chance:
-                        # Handle egg drop logic
-                        await self.handle_egg_drop(ctx, monster, levelchoice)
+                        # Non-god fights retain egg drop behavior.
+                        if levelchoice == 11:
+                            base_egg_chance = 0.02
+                        else:
+                            base_egg_chance = 0.50 - ((levelchoice - 1) / 9) * 0.45
+                        final_egg_chance = base_egg_chance
+                        
+                        # Check for Ranger class bonus
+                        ranger_egg_bonuses = {
+                            "Caretaker": 0.02,  # +2% (total 7%)
+                            "Tamer": 0.04,      # +4% (total 9%)
+                            "Trainer": 0.06,    # +6% (total 11%)
+                            "Bowman": 0.08,     # +8% (total 13%)
+                            "Hunter": 0.10,     # +10% (total 15%)
+                            "Warden": 0.13,     # +13% (total 18%)
+                            "Ranger": 0.15,     # +15% (total 25%)
+                        }
+                        
+                        # Apply ranger bonus if player has the class
+                        async with self.bot.pool.acquire() as conn:
+                            profile = await conn.fetchrow('SELECT class FROM profile WHERE "user"=$1;', ctx.author.id)
+                            if profile and profile['class']:
+                                # Find the highest ranger bonus
+                                ranger_bonus = 0
+                                for class_name in profile['class']:
+                                    if class_name in ranger_egg_bonuses:
+                                        class_bonus = ranger_egg_bonuses[class_name]
+                                        ranger_bonus = max(ranger_bonus, class_bonus)
+                                        
+                                # Apply ranger bonus with scaling
+                                bonus_multiplier = 1.0 - ((levelchoice - 1) / 9) * (1/3)
+                                adjusted_ranger_bonus = ranger_bonus * bonus_multiplier
+                                final_egg_chance += adjusted_ranger_bonus
+                        
+                        # Check for egg drop
+                        if random.random() < final_egg_chance:
+                            await self.handle_egg_drop(ctx, monster, levelchoice)
             
                 # Dispatch PVE completion event
                 success = True

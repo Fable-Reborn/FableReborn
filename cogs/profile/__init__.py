@@ -154,6 +154,11 @@ class ArmoryPaginatorView(discord.ui.View):
 
 class Profile(commands.Cog):
     _PRESET_AMULET_MARKER_OFFSET = 1_000_000_000
+    GOD_SHARD_ALIGNMENT_EMOJIS = {
+        "Chaos": "<:ChaosShard:1472140674215444521>",
+        "Evil": "<:EvilShard:1472140682759110716>",
+        "Good": "<:GoodShard:1472140691667816479>",
+    }
 
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
@@ -1447,7 +1452,7 @@ class Profile(commands.Cog):
         )
         return result
 
-    def invembedd(self, ctx, reset_potions_chunk, amulets, level_candies, premium_consumables, current_page, max_page):
+    def invembedd(self, ctx, reset_potions_chunk, amulets, level_candies, premium_consumables, god_shards, current_page, max_page):
         result = discord.Embed(
             title=_("{user}'s Inventory").format(user=ctx.author.display_name),
             colour=discord.Colour.blurple(),
@@ -1526,6 +1531,30 @@ class Profile(commands.Cog):
                 inline=False
             )
 
+        # Display divine god shards (first page only)
+        if current_page == 0 and god_shards:
+            grouped_shards = {}
+            for shard in god_shards:
+                god_name = shard.get("god_name", "Unknown")
+                grouped_shards.setdefault(god_name, []).append(shard)
+
+            for god_name in sorted(grouped_shards.keys()):
+                shards_for_god = sorted(
+                    grouped_shards[god_name],
+                    key=lambda s: s.get("shard_number", 0),
+                )
+                alignment = shards_for_god[0].get("alignment", "Unknown")
+                shard_lines = [
+                    f"Shard {row['shard_number']}: {row['shard_name']}"
+                    for row in shards_for_god
+                ]
+                alignment_emoji = self.GOD_SHARD_ALIGNMENT_EMOJIS.get(alignment, "🧩")
+                result.add_field(
+                    name=f"{alignment_emoji} {god_name} ({alignment}) Shards [{len(shards_for_god)}/6]",
+                    value="\n".join(shard_lines),
+                    inline=False,
+                )
+
         # Display premium consumables
         for consumable in premium_consumables:
             consumable_type = consumable['consumable_type']
@@ -1592,14 +1621,29 @@ class Profile(commands.Cog):
                     ctx.author.id,
                 )
 
+                # Fetch PvE god shards
+                try:
+                    god_shards = await conn.fetch(
+                        """
+                        SELECT god_name, alignment, shard_number, shard_name, obtained_at
+                        FROM god_pve_shards
+                        WHERE user_id = $1
+                        ORDER BY god_name ASC, shard_number ASC
+                        """,
+                        ctx.author.id,
+                    )
+                except Exception:
+                    god_shards = []
+
             # Check if inventory is empty
             has_reset_potions = ret and ret[0]['resetpotion'] > 0
             has_level_candy = ret and ret[0]['levelcandy'] > 0
             has_high_candy = ret and ret[0]['highqualitylevelcandy'] > 0
             has_amulets = bool(amulets)
             has_premium = bool(premium_consumables)
+            has_god_shards = bool(god_shards)
             
-            if not (has_reset_potions or has_amulets or has_level_candy or has_high_candy or has_premium):
+            if not (has_reset_potions or has_amulets or has_level_candy or has_high_candy or has_premium or has_god_shards):
                 return await ctx.send(_("Your inventory is empty."))
 
             # Handle reset potions pagination
@@ -1617,7 +1661,7 @@ class Profile(commands.Cog):
                 max_page = 0
 
             embeds = [
-                self.invembedd(ctx, chunk, amulets, ret, premium_consumables, idx, max_page)
+                self.invembedd(ctx, chunk, amulets, ret, premium_consumables, god_shards, idx, max_page)
                 for idx, chunk in enumerate(reset_potions_chunks)
             ]
 
