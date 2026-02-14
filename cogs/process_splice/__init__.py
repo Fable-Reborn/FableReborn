@@ -3650,8 +3650,9 @@ class ProcessSplice(commands.Cog):
             )
         await ctx.send(embed=summ)
 
-    @is_gm()
+
     @commands.command(hidden=True)
+    @user_cooldown(30)
     async def process_splice(self, ctx, splice_id: int = None):
         """Process a splice request (owner only)"""
         try:
