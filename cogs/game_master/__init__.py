@@ -1150,7 +1150,7 @@ class GameMaster(commands.Cog):
             ctx,
             target: UserWithCharacter,
             item: str,
-            amount: IntGreaterThan(0) = 1,
+            amount: int = 1,
             *,
             reason: str = None,
     ):
