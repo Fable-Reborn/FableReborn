@@ -63,7 +63,7 @@ class PremiumShop(commands.Cog):
             description=_(
                 "Welcome to the Dragon Coin Shop!\n\n"
                 "**Buy:** `{prefix}dragoncoinbuy <item> [amount]`\n"
-                "**Currency:** <:dragoncoin:1398714322372395008> Dragon Coins\n\n"
+                "**Currency:** <:dragoncoin:1404860657366728788> Dragon Coins\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             ).format(prefix=ctx.clean_prefix),
             colour=discord.Colour.purple(),
@@ -71,7 +71,7 @@ class PremiumShop(commands.Cog):
         
         shopembed.add_field(
             name=_("Your Dragon Coins"),
-            value=_(f"**{dragoncoins}** <:dragoncoin:1398714322372395008>"),
+            value=_(f"**{dragoncoins}** <:dragoncoin:1404860657366728788>"),
             inline=False,
         )
 
@@ -97,7 +97,7 @@ class PremiumShop(commands.Cog):
         item_paragraphs = [
             "<:ageup:1473265287238385797> **Pet Age Potion** - 200 <:dragoncoin:1398714322372395008> (`petage`)\n*Instantly age your pet to the next growth stage*",
             "<:finalpotion:1473265347581710346> **Pet Speed Growth Potion** - 300 <:dragoncoin:1398714322372395008> (`petspeed`)\n*Doubles growth speed for a specific pet*",
-            "<:splicepotion:1399690724051779745> **Pet XP Potion** - 1200 <:dragoncoin:1398714322372395008> (`petxp`)\n*Gives a pet permanent x2 pet-care XP multiplier*",
+            "<:SplicePotion:1473266873612107836> **Pet XP Potion** - 1200 <:dragoncoin:1398714322372395008> (`petxp`)\n*Gives a pet permanent x2 pet-care XP multiplier*",
             "📜 **Weapon Element Scroll** - 800 <:dragoncoin:1398714322372395008> (`weapelement`)\n*Changes the element of one weapon in your inventory*",
             "<:F_Legendary:1139514868400132116> **Legendary Crate** - 500 <:dragoncoin:1398714322372395008> (`legendary`)\n*Contains items with stats ranging from 41 to 80, may also in rare cases contain dragon coins*",
             "<:f_divine:1169412814612471869> **Divine Crate** - 1000 <:dragoncoin:1398714322372395008> (`divine`)\n*Contains items with stats ranging from 47 to 100*",
