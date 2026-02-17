@@ -2381,7 +2381,7 @@ class GameMaster(commands.Cog):
             f"Current bid: **$0**\n\n"
             f"Please use `{ctx.clean_prefix}bid amount` to raise the bid from any channel.\n\n"
             f"If no more bids are sent within 30 minutes of the highest bid, the auction will end.\n"
-            f"{role.mention}"
+            f"{role.mention}", allowed_mentions=discord.AllowedMentions(roles=True)
         )
 
         # Create and start the auction task
@@ -2479,7 +2479,11 @@ class GameMaster(commands.Cog):
 
             # Update auction state
             old_top = self.top_auction[0]
+<<<<<<< HEAD
             old_bid = self.top_auction[1]
+=======
+            old_amount = self.top_auction[1]
+>>>>>>> 5dd05127ab404dff268793de4d41b5244cb50480
             self.top_auction = (ctx.author, amount)
             self.auction_entry.set()
 
@@ -2492,7 +2496,12 @@ class GameMaster(commands.Cog):
             await channel.send(
                 f"**{ctx.author.mention}** bids **${amount:,}** on **{self.current_item}**!\n"
                 + (f"Previous bidder: {old_top.mention}\n" if old_top else "")
+<<<<<<< HEAD
                 + f"Previous bid: **${old_bid:,}**"
+=======
+                + f"Previous bid: **${old_amount:,}**",
+                allowed_mentions=discord.AllowedMentions(roles=True)
+>>>>>>> 5dd05127ab404dff268793de4d41b5244cb50480
             )
 
     @is_gm()
