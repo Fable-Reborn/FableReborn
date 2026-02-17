@@ -49,66 +49,83 @@ class PremiumShop(commands.Cog):
         _(
             """Show the premium shop. For a detailed explanation of premium items, check `{prefix}help dragoncoinshop`."""
         )
-        try:
-            # Get user's Dragon Coins from database
-            async with self.bot.pool.acquire() as conn:
-                dragoncoins = await conn.fetchval(
-                    'SELECT dragoncoins FROM profile WHERE "user" = $1;',
-                    ctx.author.id
-                )
-            
-            dragoncoins = dragoncoins or 0
-            
-            shopembed = discord.Embed(
-                title=_("Dragon Coin Shop"),
-                description=_(
-                    "Welcome to the Dragon Coin Shop!\n\n"
-                    "**Buy:** `{prefix}dragoncoinbuy <item> [amount]`\n"
-                    "**Currency:** <:dragoncoin:1398714322372395008> Dragon Coins\n\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                ).format(prefix=ctx.clean_prefix),
-                colour=discord.Colour.purple(),
+        # Get user's Dragon Coins from database
+        async with self.bot.pool.acquire() as conn:
+            dragoncoins = await conn.fetchval(
+                'SELECT dragoncoins FROM profile WHERE "user" = $1;',
+                ctx.author.id
             )
-            
+        
+        dragoncoins = dragoncoins or 0
+        
+        shopembed = discord.Embed(
+            title=_("Dragon Coin Shop"),
+            description=_(
+                "Welcome to the Dragon Coin Shop!\n\n"
+                "**Buy:** `{prefix}dragoncoinbuy <item> [amount]`\n"
+                "**Currency:** <:dragoncoin:1398714322372395008> Dragon Coins\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ).format(prefix=ctx.clean_prefix),
+            colour=discord.Colour.purple(),
+        )
+        
+        shopembed.add_field(
+            name=_("Your Dragon Coins"),
+            value=_(f"**{dragoncoins}** <:dragoncoin:1398714322372395008>"),
+            inline=False,
+        )
+
+        def chunk_paragraphs(paragraphs, limit=1024):
+            chunks = []
+            current = ""
+            for paragraph in paragraphs:
+                addition = paragraph if not current else f"\n\n{paragraph}"
+                if len(current) + len(addition) > limit:
+                    if current:
+                        chunks.append(current)
+                        current = paragraph
+                    else:
+                        # Fallback: hard-truncate impossible-long single paragraph.
+                        chunks.append(paragraph[:limit])
+                        current = ""
+                else:
+                    current += addition
+            if current:
+                chunks.append(current)
+            return chunks
+
+        item_paragraphs = [
+            "<:ageup:1398715567166455969> **Pet Age Potion** - 200 <:dragoncoin:1398714322372395008> (`petage`)\n*Instantly age your pet to the next growth stage*",
+            "<:finalpotion:1398721503268438169> **Pet Speed Growth Potion** - 300 <:dragoncoin:1398714322372395008> (`petspeed`)\n*Doubles growth speed for a specific pet*",
+            "<:splicepotion:1399690724051779745> **Pet XP Potion** - 1200 <:dragoncoin:1398714322372395008> (`petxp`)\n*Gives a pet permanent x2 pet-care XP multiplier*",
+            "📜 **Weapon Element Scroll** - 800 <:dragoncoin:1398714322372395008> (`weapelement`)\n*Changes the element of one weapon in your inventory*",
+            "<:F_Legendary:1139514868400132116> **Legendary Crate** - 500 <:dragoncoin:1398714322372395008> (`legendary`)\n*Contains items with stats ranging from 41 to 80, may also in rare cases contain dragon coins*",
+            "<:f_divine:1169412814612471869> **Divine Crate** - 1000 <:dragoncoin:1398714322372395008> (`divine`)\n*Contains items with stats ranging from 47 to 100*",
+            "<:c_mats:1398983405516882002> **Materials Crate** - 450 <:dragoncoin:1398714322372395008> (`materials`)\n*Contains 3-10 random crafting materials*",
+            "*More items coming soon...*",
+        ]
+        item_chunks = chunk_paragraphs(item_paragraphs, limit=1024)
+        for index, chunk in enumerate(item_chunks, start=1):
+            if index == 1:
+                field_name = _("Available Items")
+            else:
+                field_name = _("Available Items (Page {page})").format(page=index)
             shopembed.add_field(
-                name=_("Your Dragon Coins"),
-                value=_(f"**{dragoncoins}** <:dragoncoin:1398714322372395008>"),
+                name=field_name,
+                value=_(chunk),
                 inline=False,
             )
-            
-            shopembed.add_field(
-                name=_("Available Items"),
-                value=_(
-                    "<:ageup:1398715567166455969> **Pet Age Potion** - 200 <:dragoncoin:1398714322372395008> (`petage`)\n"
-                    "*Instantly age your pet to the next growth stage*\n\n"
-                    "<:finalpotion:1398721503268438169> **Pet Speed Growth Potion** - 300 <:dragoncoin:1398714322372395008> (`petspeed`)\n"
-                    "*Doubles growth speed for a specific pet*\n\n"
-                    "<:splicepotion:1399690724051779745> **Pet XP Potion** - 1200 <:dragoncoin:1398714322372395008> (`petxp`)\n"
-                    "*Gives a pet permanent x2 pet-care XP multiplier*\n\n"
-                    "📜 **Weapon Element Scroll** - 800 <:dragoncoin:1398714322372395008> (`weapelement`)\n"
-                    "*Changes the element of one weapon in your inventory*\n\n"
-                    "<:F_Legendary:1139514868400132116> **Legendary Crate** - 500 <:dragoncoin:1398714322372395008> (`legendary`)\n"
-                    "*Contains items with stats ranging from 41 to 80, may also in rare cases contain dragon coins*\n\n"
-                    "<:f_divine:1169412814612471869> **Divine Crate** - 1000 <:dragoncoin:1398714322372395008> (`divine`)\n"
-                    "*Contains items with stats ranging from 47 to 100*\n\n"
-                    "<:c_mats:1398983405516882002> **Materials Crate** - 450 <:dragoncoin:1398714322372395008> (`materials`)\n"
-                    "*Contains 3-10 random crafting materials*\n\n"
-                    "*More items coming soon...*"
-                ),
-                inline=False,
+        
+        shopembed.set_footer(
+            text=_("Premium Shop • Use {prefix}dcbuy to purchase").format(
+                prefix=ctx.clean_prefix
             )
-            
-            shopembed.set_footer(
-                text=_("Premium Shop • Use {prefix}dcbuy to purchase").format(
-                    prefix=ctx.clean_prefix
-                )
-            )
-            # Set thumbnail
-            shopembed.set_thumbnail(url="https://i.ibb.co/27724pjY/Chat-GPT-Image-Jan-30-2026-11-06-50-PM-1.png")
-            
-            await ctx.send(embed=shopembed)
-        except Exception as e:
-            await ctx.send(f"An error occurred: {e}")
+        )
+        # Set thumbnail
+        shopembed.set_thumbnail(url="https://i.ibb.co/27724pjY/Chat-GPT-Image-Jan-30-2026-11-06-50-PM-1.png")
+        
+        await ctx.send(embed=shopembed)
+
 
 
     @has_char()
