@@ -27,6 +27,11 @@ import asyncio
 
 from utils.checks import is_gm
 
+UNKNOWN_TIER_LEVEL = 12
+UNKNOWN_TIER_DISPLAY_LEVEL = "X"
+UNKNOWN_TIER_DISPLAY_NAME = "???"
+UNKNOWN_TIER_IMAGE_URL = "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_Unknown_Level12_17022026.png"
+
 
 class MonsterSelect(discord.ui.Select):
     """A dropdown select menu for monsters."""
@@ -37,11 +42,16 @@ class MonsterSelect(discord.ui.Select):
         # Create options from monsters (limit to 25 due to Discord's limitation)
         options = []
         for idx, (name, monster) in enumerate(monsters[:25]):
+            is_unknown_tier = monster.get("level") == UNKNOWN_TIER_LEVEL
+            display_name = UNKNOWN_TIER_DISPLAY_NAME if is_unknown_tier else name
+            display_level = UNKNOWN_TIER_DISPLAY_LEVEL if is_unknown_tier else monster.get("level", "?")
+            display_element = "Unknown" if is_unknown_tier else monster.get("element", "?")
+
             # Create a description with basic monster info
-            description = f"Level {monster.get('level', '?')} {monster.get('element', '?')}"
+            description = f"Level {display_level} {display_element}"
             
             options.append(discord.SelectOption(
-                label=name[:100],  # Discord limits label to 100 chars
+                label=display_name[:100],  # Discord limits label to 100 chars
                 description=description[:100],  # Discord limits description to 100 chars
                 value=str(idx)
             ))
@@ -329,8 +339,10 @@ class MonsterPaginationView(discord.ui.View):
             # Create a table-like display of monsters
             monster_list = []
             for idx, (name, monster) in enumerate(self.filtered_monsters[start_idx:end_idx], start=1):
-                level = monster.get('level', '?')
-                element = monster.get('element', '?')
+                is_unknown_tier = monster.get("level") == UNKNOWN_TIER_LEVEL
+                display_name = UNKNOWN_TIER_DISPLAY_NAME if is_unknown_tier else name
+                level = UNKNOWN_TIER_DISPLAY_LEVEL if is_unknown_tier else monster.get("level", "?")
+                element = "Unknown" if is_unknown_tier else monster.get("element", "?")
                 
                 # Get element emoji
                 element_emoji = {
@@ -347,7 +359,7 @@ class MonsterPaginationView(discord.ui.View):
                 }.get(element.lower() if element else "", "")
                 
                 # Format entry with level first, then name
-                monster_list.append(f"`Lvl {level}` {element_emoji} **{name}**")
+                monster_list.append(f"`Lvl {level}` {element_emoji} **{display_name}**")
             
             # Use a single field for better display without gaps
             embed.add_field(
@@ -387,6 +399,21 @@ class MonsterPaginationView(discord.ui.View):
     
     def create_monster_detail_embed(self, name: str, monster: Dict[str, Any]) -> discord.Embed:
         """Create an embed showing detailed information about a monster."""
+        is_unknown_tier = monster.get("level") == UNKNOWN_TIER_LEVEL
+
+        if is_unknown_tier:
+            embed = discord.Embed(
+                title=f"❓ {UNKNOWN_TIER_DISPLAY_NAME}",
+                description="*Level X ??? Monster*",
+                color=0x111111
+            )
+            embed.add_field(name="💖 HP", value="`???`\n⭐⭐⭐", inline=False)
+            embed.add_field(name="⚔️ Attack", value="`???`\n⭐⭐⭐", inline=False)
+            embed.add_field(name="🛡️ Defense", value="`???`\n⭐⭐⭐", inline=False)
+            embed.set_thumbnail(url=UNKNOWN_TIER_IMAGE_URL)
+            embed.set_footer(text="A hidden presence beyond the known tiers.")
+            return embed
+
         # Choose color based on element
         element = monster.get('element', '').lower()
         element_colors = {

@@ -6,6 +6,8 @@ import datetime
 
 class PetExtension:
     """Extension for pet integration in battles"""
+    PET_MAX_LEVEL = 100
+    PET_LEVEL_STAT_BONUS = 0.01
     
     def find_owner_combatant(self, pet_combatant):
         """Find the owner combatant object from the same team as the pet"""
@@ -2531,11 +2533,13 @@ class PetExtension:
             # Calculate trust bonus
             trust_level = pet.get('trust_level', 0)
             trust_bonus = self.get_trust_bonus(trust_level)
+            pet_level = max(1, min(int(pet.get("level", 1)), self.PET_MAX_LEVEL))
+            level_multiplier = 1 + (pet_level * self.PET_LEVEL_STAT_BONUS)
             
-            # Apply trust bonus to stats
-            base_hp = float(pet["hp"])
-            base_armor = float(pet["defense"])
-            base_damage = float(pet["attack"])
+            # Apply +1% base stat scaling per level (level 100 => +100%).
+            base_hp = float(pet["hp"]) * level_multiplier
+            base_armor = float(pet["defense"]) * level_multiplier
+            base_damage = float(pet["attack"]) * level_multiplier
             
             bonus_hp = base_hp * trust_bonus
             bonus_armor = base_armor * trust_bonus

@@ -1466,15 +1466,6 @@
             "element": "Dark",
             "url": "https://image2url.com/r2/default/images/1768569992080-9ebca168-69c4-4473-8b75-3d2d251c7a06.jpg",
             "ispublic": true
-        },
-        {
-            "name": "Angel",
-            "hp": 6666,
-            "attack": 6666,
-            "defense": 6666,
-            "element": "Corrupted",
-            "url": "https://i.ibb.co/XxdknqGr/IMG-4210.jpg",
-            "ispublic": true
         }
     ],
     "11": [
@@ -1503,6 +1494,17 @@
             "defense": 3000,
             "element": "Dark",
             "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_wakai-quketsuki-sepulchuredoomknightdoomblade-Photoroom.png",
+            "ispublic": true
+        }
+    ],
+    "12": [
+        {
+            "name": "???",
+            "hp": "???",
+            "attack": "???",
+            "defense": "???",
+            "element": "???",
+            "url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_Unknown_Level12_17022026.png",
             "ispublic": true
         }
     ]

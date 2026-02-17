@@ -166,6 +166,7 @@ class PetPaginator(discord.ui.View):
         skill_points = pet.get('skill_points', 0)
         trust_level = pet.get('trust_level', 0)
         xp_multiplier = pet.get('xp_multiplier', 1.0)
+        combat_level_bonus_pct = max(1, min(int(level), self.cog.PET_MAX_LEVEL))
         
         # Add XP multiplier to display if it's greater than 1
         xp_multiplier_text = f"\n**XP Multiplier:** x{xp_multiplier}" if xp_multiplier > 1.0 else ""
@@ -173,9 +174,10 @@ class PetPaginator(discord.ui.View):
         embed.add_field(
             name="🌟 **Enhanced Stats**",
             value=(
-                f"**Level:** {level}/50\n"
+                f"**Level:** {level}/{self.cog.PET_MAX_LEVEL}\n"
                 f"**Experience:** {experience}\n"
                 f"**Skill Points:** {skill_points}\n"
+                f"**Combat Level Bonus:** +{combat_level_bonus_pct}%\n"
                 f"**Trust:** {trust_info['emoji']} {trust_info['name']} ({trust_level}/100)"
                 f"{xp_multiplier_text}"
             ),
@@ -295,6 +297,20 @@ class TradeConfirmationView(discord.ui.View):
 class Pets(commands.Cog):
     ALIAS_MAX_LENGTH = 20
     ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+    PET_MAX_LEVEL = 100
+    PET_SKILL_POINT_INTERVAL = 10
+    PET_LEVEL_STAT_BONUS = 0.01
+    PET_XP_CURVE_MULTIPLIER = 2.5
+    PET_BATTLE_DAILY_XP_CAP = 12000
+    PET_BATTLE_XP_BASE = 80
+    PET_BATTLE_XP_PER_TIER = 25
+    PET_COMMAND_XP_VALUES = {
+        "pet": 25,
+        "play": 100,
+        "treat": 250,
+        "train": 500,
+    }
+    PET_LEVEL_MIGRATION_KEY = "double_pet_levels_to_100_v1"
 
     def __init__(self, bot):
         self.bot = bot
@@ -563,6 +579,23 @@ class Pets(commands.Cog):
                     ON monster_pets (user_id, lower(alt_name))
                     WHERE alt_name IS NOT NULL;
                 """)
+
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS pet_system_migrations (
+                        migration_key TEXT PRIMARY KEY,
+                        executed_by BIGINT NOT NULL,
+                        executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                """)
+
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS pet_battle_xp_daily (
+                        user_id BIGINT NOT NULL,
+                        day DATE NOT NULL,
+                        xp_gained INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY (user_id, day)
+                    );
+                """)
                 
                 print("Enhanced pet system database tables initialized successfully!")
         except Exception as e:
@@ -611,13 +644,13 @@ class Pets(commands.Cog):
 
     def calculate_level_requirements(self, level):
         """Calculate XP required for a specific level"""
-        return int(100 * (level ** 3))  # Exponential growth
+        return int(self.PET_XP_CURVE_MULTIPLIER * (level ** 3))
 
     def get_skill_points_for_level(self, level):
         """Calculate skill points gained from leveling up"""
-        return 1 if level % 5 == 0 else 0  # 1 skill point every 5 levels
+        return 1 if level % self.PET_SKILL_POINT_INTERVAL == 0 else 0  # 1 skill point every 10 levels
 
-    async def gain_experience(self, pet_id, xp_amount, trust_gain=0):
+    async def gain_experience(self, pet_id, xp_amount, trust_gain=0, apply_xp_multiplier=True):
         """Award experience and trust to a pet"""
         async with self.bot.pool.acquire() as conn:
             # Get current pet stats including XP multiplier
@@ -629,9 +662,12 @@ class Pets(commands.Cog):
             if not pet:
                 return False
             
-            # Apply XP multiplier to the gained experience
-            xp_multiplier = pet.get('xp_multiplier', 1.0)
-            adjusted_xp_amount = int(xp_amount * xp_multiplier)
+            base_xp_amount = max(0, int(xp_amount))
+            xp_multiplier = float(pet.get('xp_multiplier', 1.0) or 1.0)
+            if apply_xp_multiplier:
+                adjusted_xp_amount = int(base_xp_amount * xp_multiplier)
+            else:
+                adjusted_xp_amount = base_xp_amount
             
             new_exp = pet['experience'] + adjusted_xp_amount
             new_trust = min(100, pet['trust_level'] + trust_gain)
@@ -640,7 +676,7 @@ class Pets(commands.Cog):
             new_skill_points = pet['skill_points']
             
             # Check for level ups
-            while new_exp >= self.calculate_level_requirements(new_level + 1) and new_level < 50:
+            while new_exp >= self.calculate_level_requirements(new_level + 1) and new_level < self.PET_MAX_LEVEL:
                 new_level += 1
                 new_skill_points += self.get_skill_points_for_level(new_level)
             
@@ -655,16 +691,117 @@ class Pets(commands.Cog):
                 'leveled_up': new_level > current_level,
                 'new_level': new_level,
                 'skill_points_gained': new_skill_points - pet['skill_points'],
-                'xp_multiplier_applied': xp_multiplier > 1.0,
-                'original_xp': xp_amount,
+                'xp_multiplier_applied': bool(apply_xp_multiplier and xp_multiplier > 1.0),
+                'original_xp': base_xp_amount,
                 'adjusted_xp': adjusted_xp_amount
             }
+
+    async def _get_default_pet_for_user(self, conn, user_id):
+        pet = await conn.fetchrow(
+            "SELECT id, name FROM monster_pets WHERE user_id = $1 AND equipped = TRUE ORDER BY id ASC LIMIT 1;",
+            user_id,
+        )
+        if pet:
+            return pet
+
+        pets = await conn.fetch(
+            "SELECT id, name FROM monster_pets WHERE user_id = $1 ORDER BY id ASC LIMIT 2;",
+            user_id,
+        )
+        if len(pets) == 1:
+            return pets[0]
+        return None
+
+    async def award_battle_experience_for_user(self, user_id, battle_xp, trust_gain=1):
+        """Award battle XP to the equipped pet, or only pet if exactly one exists."""
+        try:
+            async with self.bot.pool.acquire() as conn:
+                pet = await self._get_default_pet_for_user(conn, user_id)
+            if not pet:
+                return {"awarded_xp": 0, "reason": "no_active_pet"}
+            return await self.award_battle_experience(pet["id"], battle_xp, trust_gain=trust_gain)
+        except Exception as e:
+            print(f"Error awarding battle experience for user {user_id}: {e}")
+            return {"awarded_xp": 0, "reason": "error"}
 
     async def award_battle_experience(self, pet_id, battle_xp, trust_gain=1):
         """Award experience to a pet after participating in a battle"""
         try:
-            result = await self.gain_experience(pet_id, battle_xp, trust_gain)
-            return result
+            requested_xp = max(0, int(battle_xp))
+            if requested_xp <= 0:
+                return {"awarded_xp": 0, "requested_xp": 0, "reason": "no_xp_requested"}
+
+            async with self.bot.pool.acquire() as conn:
+                pet = await conn.fetchrow(
+                    "SELECT id, user_id, name FROM monster_pets WHERE id = $1;",
+                    pet_id,
+                )
+                if not pet:
+                    return {"awarded_xp": 0, "requested_xp": requested_xp, "reason": "pet_not_found"}
+
+                user_id = pet["user_id"]
+                if not user_id or int(user_id) <= 0:
+                    return {"awarded_xp": 0, "requested_xp": requested_xp, "reason": "invalid_owner"}
+
+                today = datetime.datetime.utcnow().date()
+                used_today = await conn.fetchval(
+                    "SELECT xp_gained FROM pet_battle_xp_daily WHERE user_id = $1 AND day = $2;",
+                    user_id,
+                    today,
+                ) or 0
+
+                remaining_today = max(0, self.PET_BATTLE_DAILY_XP_CAP - int(used_today))
+                if remaining_today <= 0:
+                    return {
+                        "pet_id": pet["id"],
+                        "pet_name": pet["name"],
+                        "awarded_xp": 0,
+                        "requested_xp": requested_xp,
+                        "daily_cap": self.PET_BATTLE_DAILY_XP_CAP,
+                        "daily_remaining_after": 0,
+                        "cap_reached": True,
+                        "reason": "daily_cap_reached",
+                    }
+
+                xp_to_award = min(requested_xp, remaining_today)
+
+            level_result = await self.gain_experience(
+                pet_id,
+                xp_to_award,
+                trust_gain,
+                apply_xp_multiplier=False,
+            )
+
+            async with self.bot.pool.acquire() as conn:
+                today = datetime.datetime.utcnow().date()
+                await conn.execute(
+                    """
+                    INSERT INTO pet_battle_xp_daily (user_id, day, xp_gained)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (user_id, day)
+                    DO UPDATE SET xp_gained = pet_battle_xp_daily.xp_gained + EXCLUDED.xp_gained;
+                    """,
+                    user_id,
+                    today,
+                    xp_to_award,
+                )
+
+            if not level_result:
+                return {"awarded_xp": 0, "requested_xp": requested_xp, "reason": "award_failed"}
+
+            level_result.update(
+                {
+                    "pet_id": pet["id"],
+                    "pet_name": pet["name"],
+                    "awarded_xp": xp_to_award,
+                    "requested_xp": requested_xp,
+                    "daily_cap": self.PET_BATTLE_DAILY_XP_CAP,
+                    "daily_remaining_after": max(0, remaining_today - xp_to_award),
+                    "cap_reached": xp_to_award >= remaining_today,
+                    "reason": "ok",
+                }
+            )
+            return level_result
         except Exception as e:
             print(f"Error awarding battle experience to pet {pet_id}: {e}")
             return None
@@ -2223,7 +2360,8 @@ class Pets(commands.Cog):
             """, new_happiness, datetime.datetime.utcnow(), pet["id"])
             
             # Award experience and trust
-            level_result = await self.gain_experience(pet["id"], 5, trust_gain)
+            xp_gain = self.PET_COMMAND_XP_VALUES["pet"]
+            level_result = await self.gain_experience(pet["id"], xp_gain, trust_gain)
 
         # Pet response messages based on happiness
         responses = [
@@ -2247,7 +2385,7 @@ class Pets(commands.Cog):
             name="📈 Effects",
             value=f"**Happiness:** +{happiness_boost}%\n"
                   f"**Trust:** +{trust_gain}\n"
-                  f"**XP:** +5",
+                  f"**XP:** +{xp_gain}",
             inline=True
         )
 
@@ -2312,7 +2450,7 @@ class Pets(commands.Cog):
             happiness_boost = 25
             new_happiness = min(100, pet['happiness'] + happiness_boost)
             trust_gain = 1
-            xp_gain = 10
+            xp_gain = self.PET_COMMAND_XP_VALUES["play"]
             
             # Update pet
             await conn.execute("""
@@ -2417,7 +2555,7 @@ class Pets(commands.Cog):
             happiness_boost = 50
             new_happiness = min(100, pet['happiness'] + happiness_boost)
             trust_gain = 5
-            xp_gain = 25
+            xp_gain = self.PET_COMMAND_XP_VALUES["treat"]
             
             # Update pet
             await conn.execute("""
@@ -2519,7 +2657,7 @@ class Pets(commands.Cog):
                         return
 
             # Training gives significant XP and some trust
-            xp_gain = 50
+            xp_gain = self.PET_COMMAND_XP_VALUES["train"]
             trust_gain = 2
 
             
@@ -2619,7 +2757,7 @@ class Pets(commands.Cog):
         
         embed = discord.Embed(
             title=f"🌳 {pet['name']}'s Skill Tree ({element_emoji} {element})",
-            description=f"**Level:** {pet['level']}/50 | **Skill Points:** {pet['skill_points']} | **Trust:** {pet['trust_level']}/100\n"
+            description=f"**Level:** {pet['level']}/{self.PET_MAX_LEVEL} | **Skill Points:** {pet['skill_points']} | **Trust:** {pet['trust_level']}/100\n"
                        f"**Learned Skills:** {len(learned_skills)}/15",
             color=discord.Color.blue()
         )
@@ -2818,8 +2956,16 @@ class Pets(commands.Cog):
                 return
 
         trust_info = self.get_trust_level_info(pet['trust_level'])
-        next_level_xp = self.calculate_level_requirements(pet['level'] + 1)
-        progress_to_next = (pet['experience'] / next_level_xp * 100) if next_level_xp > 0 else 0
+        if pet["level"] >= self.PET_MAX_LEVEL:
+            next_level_xp = None
+            progress_to_next = 100.0
+            experience_text = f"**Experience:** {pet['experience']} (MAX LEVEL)\n"
+        else:
+            next_level_xp = self.calculate_level_requirements(pet["level"] + 1)
+            progress_to_next = (pet["experience"] / next_level_xp * 100) if next_level_xp > 0 else 0
+            experience_text = (
+                f"**Experience:** {pet['experience']}/{next_level_xp} ({progress_to_next:.1f}%)\n"
+            )
         
         # Calculate trust progress to next level
         next_trust_threshold = None
@@ -2874,12 +3020,14 @@ class Pets(commands.Cog):
         # Check for XP multiplier
         xp_multiplier = pet.get('xp_multiplier', 1.0)
         xp_multiplier_text = f"**XP Multiplier:** x{xp_multiplier}" if xp_multiplier > 1.0 else ""
+        combat_level_bonus_pct = max(1, min(int(pet["level"]), self.PET_MAX_LEVEL))
         
         embed.add_field(
             name="📈 Progression",
-            value=f"**Level:** {pet['level']}/50\n"
-                  f"**Experience:** {pet['experience']}/{next_level_xp} ({progress_to_next:.1f}%)\n"
+            value=f"**Level:** {pet['level']}/{self.PET_MAX_LEVEL}\n"
+                  f"{experience_text}"
                   f"**Skill Points:** {pet['skill_points']}\n"
+                  f"**Combat Level Bonus:** +{combat_level_bonus_pct}%\n"
                   f"{xp_multiplier_text}",
             inline=True
         )
@@ -3347,6 +3495,62 @@ class Pets(commands.Cog):
                 params=params,
             )
 
+    @is_gm()
+    @commands.command(hidden=True, name="gmdoublepetlevels")
+    async def gmdoublepetlevels(self, ctx, confirm: str = None):
+        """One-time migration: doubles all active pet levels and rescales XP for the new 1-100 curve."""
+        if (confirm or "").upper() != "YES":
+            return await ctx.send(
+                "This one-time migration doubles all owned pet levels (capped at 100) and multiplies pet XP by 8.\n"
+                f"Run `{ctx.prefix}gmdoublepetlevels YES` to execute."
+            )
+
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS pet_system_migrations (
+                    migration_key TEXT PRIMARY KEY,
+                    executed_by BIGINT NOT NULL,
+                    executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+
+            already_executed = await conn.fetchval(
+                "SELECT 1 FROM pet_system_migrations WHERE migration_key = $1;",
+                self.PET_LEVEL_MIGRATION_KEY,
+            )
+            if already_executed:
+                return await ctx.send("This migration has already been executed.")
+
+            async with conn.transaction():
+                result = await conn.fetchrow(
+                    """
+                    WITH updated AS (
+                        UPDATE monster_pets
+                        SET level = LEAST(GREATEST(level, 1) * 2, $1),
+                            experience = GREATEST(experience, 0) * 8
+                        WHERE user_id <> 0
+                        RETURNING id
+                    )
+                    SELECT COUNT(*)::BIGINT AS updated_count
+                    FROM updated;
+                    """,
+                    self.PET_MAX_LEVEL,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO pet_system_migrations (migration_key, executed_by)
+                    VALUES ($1, $2);
+                    """,
+                    self.PET_LEVEL_MIGRATION_KEY,
+                    ctx.author.id,
+                )
+
+        updated_count = int(result["updated_count"]) if result else 0
+        await ctx.send(
+            f"Pet level migration completed. Updated **{updated_count:,}** pets. "
+            f"Levels doubled (max {self.PET_MAX_LEVEL}) and XP scaled by x8."
+        )
+
     @pets.command(brief=_("Learn how to use the pet system"))
     async def help(self, ctx):
         """
@@ -3376,10 +3580,10 @@ class Pets(commands.Cog):
                 name=_("🍖 Care & Bonding Commands"),
                 value=_(
                     "• `$pets feed [id|alias] [food_type]` - Feed with different food types (defaults to equipped/only pet; use `$pets feedhelp` for details)\n"
-                    "• `$pets pet [id|alias]` - Pet for happiness (+0-1 trust, 1min cooldown; defaults to equipped/only pet)\n"
-                    "• `$pets play [id|alias]` - Play for bonuses (+1 trust, +10 XP, 5min cooldown; defaults to equipped/only pet)\n"
-                    "• `$pets treat [id|alias]` - Give treats (+5 trust, +25 XP, 10min cooldown; defaults to equipped/only pet)\n"
-                    "• `$pets train [id|alias]` - Train for experience and trust (+50 XP, +2 trust, 30min cooldown; defaults to equipped/only pet)"
+                    "• `$pets pet [id|alias]` - Pet for happiness (+0-1 trust, +25 XP, 5min cooldown; defaults to equipped/only pet)\n"
+                    "• `$pets play [id|alias]` - Play for bonuses (+1 trust, +100 XP, 5min cooldown; defaults to equipped/only pet)\n"
+                    "• `$pets treat [id|alias]` - Give treats (+5 trust, +250 XP, 10min cooldown; defaults to equipped/only pet)\n"
+                    "• `$pets train [id|alias]` - Train for experience and trust (+500 XP, +2 trust, 30min cooldown; defaults to equipped/only pet)"
                 ),
                 inline=False,
             )
@@ -3439,7 +3643,7 @@ class Pets(commands.Cog):
                     "• **Trusting** (41-60): +10% battle stats 😊\n"
                     "• **Loyal** (61-80): +20% battle stats 😍\n"
                     "• **Devoted** (81-100): +30% battle stats 🥰\n\n"
-                    "**Leveling:** Pets gain XP from feeding, training, and battles. Skill points earned only every 5 levels!"
+                    "**Leveling:** Pets gain XP from feeding, training, and battles. Skill points are earned every 10 levels!"
                 ),
                 inline=False,
             )
@@ -3521,7 +3725,7 @@ class Pets(commands.Cog):
             value=(
                 "• **1-hour cooldown** between feedings\n"
                 "• **Warrior tier+ required** for elemental food\n"
-                "• **Skill points** earned every 5 levels (5, 10, 15...)\n"
+                "• **Skill points** earned every 10 levels (10, 20, 30...)\n"
                 "• **Hunger depletes** over time based on growth stage\n"
                 "• **Adult pets** are self-sufficient (no hunger loss)\n"
                 "• **Trust affects** all battle stats significantly"

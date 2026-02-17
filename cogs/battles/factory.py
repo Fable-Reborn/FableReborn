@@ -22,6 +22,12 @@ from .settings import BattleSettings
 
 class BattleFactory:
     """Factory for creating various battle types"""
+    PVE_LEVEL_BRACKET_SIZE = 10
+    PVE_MAX_TIER = 10
+    PVE_GOD_TIER = 11
+    PVE_GOD_ENCOUNTER_LEVEL = 100
+    PVE_PER_LEVEL_STAT_SCALE = Decimal("0.02")
+    PVE_LEGENDARY_SPAWN_CHANCE = 0.01
     
     def __init__(self, bot):
         self.bot = bot
@@ -34,6 +40,46 @@ class BattleFactory:
     async def initialize(self):
         """Initialize the battle factory and its components"""
         await self.settings.initialize()
+
+    def _get_pve_tier_for_player_level(self, player_level: int) -> int:
+        normalized_level = max(1, int(player_level))
+        return min(
+            self.PVE_MAX_TIER,
+            ((normalized_level - 1) // self.PVE_LEVEL_BRACKET_SIZE) + 1,
+        )
+
+    def _get_encounter_level_range_for_tier(self, tier: int) -> tuple[int, int]:
+        normalized_tier = int(tier)
+        if normalized_tier >= self.PVE_GOD_TIER:
+            return self.PVE_GOD_ENCOUNTER_LEVEL, self.PVE_GOD_ENCOUNTER_LEVEL
+        normalized_tier = max(1, min(self.PVE_MAX_TIER, normalized_tier))
+        range_min = (normalized_tier - 1) * self.PVE_LEVEL_BRACKET_SIZE
+        range_max = normalized_tier * self.PVE_LEVEL_BRACKET_SIZE
+        return range_min, range_max
+
+    def _scale_monster_for_encounter(
+        self, monster_data: dict, tier: int, encounter_level: int | None = None
+    ) -> dict:
+        range_min, range_max = self._get_encounter_level_range_for_tier(tier)
+        if encounter_level is None:
+            encounter_level = random.randint(range_min, range_max)
+        encounter_level = max(range_min, min(range_max, int(encounter_level)))
+
+        scale_steps = max(0, encounter_level - range_min)
+        scale_multiplier = Decimal("1") + (
+            self.PVE_PER_LEVEL_STAT_SCALE * Decimal(scale_steps)
+        )
+
+        scaled_monster = dict(monster_data)
+        for stat_key in ("hp", "attack", "defense"):
+            base_value = Decimal(str(monster_data.get(stat_key, 0)))
+            scaled_value = int(round(float(base_value * scale_multiplier)))
+            scaled_monster[stat_key] = max(1, scaled_value)
+
+        scaled_monster["encounter_level"] = encounter_level
+        scaled_monster["pve_tier"] = int(tier)
+        scaled_monster["pve_stat_multiplier"] = float(scale_multiplier)
+        return scaled_monster
     
     async def create_battle(self, battle_type, ctx, **kwargs):
         """Create a battle of specified type with given parameters"""
@@ -112,6 +158,16 @@ class BattleFactory:
         
         # Create monster combatant
         if monster_data:
+            if "encounter_level" not in monster_data or "pve_tier" not in monster_data:
+                tier_for_scaling = int(monster_level or monster_data.get("pve_tier") or 1)
+                monster_data = self._scale_monster_for_encounter(
+                    monster_data,
+                    tier_for_scaling,
+                    encounter_level=monster_data.get("encounter_level"),
+                )
+                monster_level = tier_for_scaling
+            else:
+                monster_level = int(monster_level or monster_data.get("pve_tier") or 1)
             monster_combatant = await self.create_monster_combatant(monster_data, level=monster_level)
         else:
             # Generate random monster based on level
@@ -120,29 +176,25 @@ class BattleFactory:
             player_level = rpgtools.xptolevel(player_xp)
             
             if monster_level is None:
-                # Determine monster level based on player level
-                if player_level <= 4:
-                    monster_level = random.randint(1, 2)
-                elif player_level <= 8:
-                    monster_level = random.randint(1, 3)
-                elif player_level <= 12:
-                    monster_level = random.randint(1, 4)
-                elif player_level <= 15:
-                    monster_level = random.randint(1, 5)
-                elif player_level <= 20:
-                    monster_level = random.randint(1, 6)
-                elif player_level <= 25:
-                    monster_level = random.randint(1, 7)
-                elif player_level <= 30:
-                    monster_level = random.randint(1, 8)
-                elif player_level <= 35:
-                    monster_level = random.randint(1, 9)
-                elif player_level <= 40:
-                    monster_level = random.randint(1, 10)
-                else:  # player_level > 40
-                    monster_level = random.randint(1, 10)
+                if (
+                    player_level >= 5
+                    and random.random() < self.PVE_LEGENDARY_SPAWN_CHANCE
+                ):
+                    monster_level = self.PVE_GOD_TIER
+                else:
+                    monster_level = self._get_pve_tier_for_player_level(player_level)
             
             monster_data = await self.generate_monster(ctx, monster_level)
+            forced_level = (
+                self.PVE_GOD_ENCOUNTER_LEVEL
+                if monster_level == self.PVE_GOD_TIER
+                else None
+            )
+            monster_data = self._scale_monster_for_encounter(
+                monster_data,
+                monster_level,
+                encounter_level=forced_level,
+            )
             monster_combatant = await self.create_monster_combatant(monster_data, level=monster_level)
         
         # Create teams
@@ -478,20 +530,22 @@ class BattleFactory:
             # Get damage and armor
             dmg, deff = await ctx.bot.get_raidstats(player, conn=conn)
             
-            # Get element
-            element = await self.element_ext.get_player_element(ctx, player.id)
+            equipped_items = await conn.fetch(
+                "SELECT ai.type, ai.damage, ai.armor, ai.element FROM profile p "
+                "JOIN allitems ai ON (p.user=ai.owner) JOIN inventory i ON (ai.id=i.item) "
+                "WHERE i.equipped IS TRUE AND p.user=$1;",
+                player.id,
+            )
+            element_data = self.element_ext.resolve_player_combat_elements(equipped_items)
+            attack_element = element_data.get("attack_element", "Unknown")
+            defense_element = element_data.get("defense_element", attack_element)
+            dual_attack_elements = element_data.get("dual_attack_elements")
             
             # Get class buffs
             classes = result['class'] if isinstance(result['class'], list) else [result['class']]
             buffs = await self.class_ext.get_class_buffs(classes)
             
-            # Check for shield
-            shield_data = await conn.fetchrow(
-                "SELECT 1 FROM profile p JOIN allitems ai ON (p.user=ai.owner) JOIN inventory i ON (ai.id=i.item) " 
-                "WHERE p.user=$1 AND i.equipped IS TRUE AND ai.type='Shield'", 
-                player.id
-            )
-            has_shield = bool(shield_data)
+            has_shield = element_data.get("has_shield", False)
             
             # Apply tank buffs if applicable
             tank_evolution = buffs.get("tank_evolution")
@@ -504,7 +558,10 @@ class BattleFactory:
                 max_hp=total_health,
                 damage=dmg,
                 armor=deff,
-                element=element,
+                element=attack_element,
+                attack_element=attack_element,
+                defense_element=defense_element,
+                dual_attack_elements=dual_attack_elements,
                 luck=luck,
                 lifesteal_percent=buffs.get("lifesteal_percent", 0),
                 death_cheat_chance=buffs.get("death_cheat_chance", 0),
@@ -570,15 +627,18 @@ class BattleFactory:
         # Try to load from monsters.json through the Battles cog
         try:
             battle_cog = ctx.bot.cogs["Battles"]
-            monsters_data = battle_cog.monsters_data
+            if hasattr(battle_cog, "_get_public_monsters_by_level"):
+                monsters = await battle_cog._get_public_monsters_by_level()
+            else:
+                monsters_data = battle_cog.monsters_data
 
-            # Convert keys from strings to integers and filter out non-public monsters
-            monsters = {}
-            for level_str, monster_list in monsters_data.items():
-                monster_level = int(level_str)
-                # Only keep monsters where ispublic is True (defaulting to True if key is missing)
-                public_monsters = [monster for monster in monster_list if monster.get("ispublic", True)]
-                monsters[monster_level] = public_monsters
+                # Convert keys from strings to integers and filter out non-public monsters
+                monsters = {}
+                for level_str, monster_list in monsters_data.items():
+                    monster_level = int(level_str)
+                    # Only keep monsters where ispublic is True (defaulting to True if key is missing)
+                    public_monsters = [monster for monster in monster_list if monster.get("ispublic", True)]
+                    monsters[monster_level] = public_monsters
 
             # Return a random monster of the appropriate level
             if level in monsters and monsters[level]:

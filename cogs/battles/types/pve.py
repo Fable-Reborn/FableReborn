@@ -9,6 +9,17 @@ from ..core.battle import Battle
 
 class PvEBattle(Battle):
     """Player vs Environment (monster) battle implementation"""
+    GOD_OF_GODS_TIER = 12
+    ADAPTIVE_ELEMENTS = (
+        "Light",
+        "Dark",
+        "Corrupted",
+        "Nature",
+        "Electric",
+        "Water",
+        "Fire",
+        "Wind",
+    )
     
     def __init__(self, ctx, teams, **kwargs):
         super().__init__(ctx, teams, **kwargs)
@@ -62,6 +73,7 @@ class PvEBattle(Battle):
         
         monster_name = self.monster_team.combatants[0].name
         await self.add_to_log(f"Battle against {monster_name} started!")
+        await self._handle_godofgods_adaptive_element()
         
         # Determine turn order (randomized)
         self.turn_order = []
@@ -77,6 +89,97 @@ class PvEBattle(Battle):
         await asyncio.sleep(2)
         
         return True
+
+    def _normalize_element(self, element):
+        if not element:
+            return "Unknown"
+        return str(element).strip().capitalize()
+
+    def _pick_strongest_counter_element(self, enemy_elements, current_element):
+        battles_cog = self.ctx.bot.get_cog("Battles")
+        element_ext = getattr(battles_cog, "element_ext", None) if battles_cog else None
+        strengths = getattr(element_ext, "element_strengths", {}) if element_ext else {}
+
+        if not strengths:
+            return current_element
+
+        normalized_enemies = []
+        for element in enemy_elements:
+            normalized = self._normalize_element(element)
+            if normalized != "Unknown":
+                normalized_enemies.append(normalized)
+        if not normalized_enemies:
+            return current_element
+
+        def score(candidate_element):
+            total = 0
+            for enemy_element in normalized_enemies:
+                if strengths.get(candidate_element) == enemy_element:
+                    total += 2
+                if strengths.get(enemy_element) == candidate_element:
+                    total -= 1
+            return total
+
+        best_element = current_element
+        best_score = score(current_element)
+
+        for candidate in self.ADAPTIVE_ELEMENTS:
+            candidate_score = score(candidate)
+            if candidate_score > best_score:
+                best_score = candidate_score
+                best_element = candidate
+
+        return best_element
+
+    async def _handle_godofgods_adaptive_element(self):
+        if int(self.monster_level or 0) != self.GOD_OF_GODS_TIER:
+            return
+        if not self.monster_team.combatants:
+            return
+
+        boss = self.monster_team.combatants[0]
+        old_element = self._normalize_element(
+            getattr(boss, "attack_element", getattr(boss, "element", "Unknown"))
+        )
+        enemy_elements = [
+            self._normalize_element(self.resolve_defense_element(combatant))
+            for combatant in self.player_team.combatants
+            if combatant.is_alive()
+        ]
+        new_element = self._pick_strongest_counter_element(enemy_elements, old_element)
+        boss.element = new_element
+        boss.attack_element = new_element
+        boss.defense_element = new_element
+
+        battles_cog = self.ctx.bot.get_cog("Battles")
+        element_ext = getattr(battles_cog, "element_ext", None) if battles_cog else None
+        element_to_emoji = getattr(element_ext, "element_to_emoji", {}) if element_ext else {}
+        old_emoji = element_to_emoji.get(old_element, "❓")
+        new_emoji = element_to_emoji.get(new_element, "❓")
+
+        target_hint = ", ".join(sorted(set(enemy_elements))) if enemy_elements else "your team"
+        if new_element != old_element:
+            description = (
+                f"{boss.name}'s chest crystal glows with ancient light.\n"
+                f"It attunes against **{target_hint}** and shifts from "
+                f"**{old_emoji} {old_element}** to **{new_emoji} {new_element}**."
+            )
+        else:
+            description = (
+                f"{boss.name}'s chest crystal glows with ancient light.\n"
+                f"It attunes against **{target_hint}** and stabilizes as "
+                f"**{new_emoji} {new_element}**."
+            )
+
+        embed = discord.Embed(
+            title="💠 Crystal Adaptation",
+            description=description,
+            color=discord.Color.gold(),
+        )
+        await self.ctx.send(embed=embed)
+        await self.add_to_log(
+            f"{boss.name}'s chest crystal glowed and adapted its element to {new_element}."
+        )
     
     async def process_turn(self):
         """Process a single turn of the battle"""
@@ -173,8 +276,8 @@ class PvEBattle(Battle):
                     if self.config["element_effects"] and hasattr(self.ctx.bot.cogs["Battles"], "element_ext"):
                         element_mod = self.ctx.bot.cogs["Battles"].element_ext.calculate_damage_modifier(
                             self.ctx,
-                            self.attacker.element, 
-                            self.defender.element
+                            self.resolve_attack_element(self.attacker),
+                            self.resolve_defense_element(self.defender),
                         )
                         
                         # Apply void affinity protection to defender
@@ -259,8 +362,8 @@ class PvEBattle(Battle):
                     if self.config["element_effects"] and hasattr(self.ctx.bot.cogs["Battles"], "element_ext"):
                         element_mod = self.ctx.bot.cogs["Battles"].element_ext.calculate_damage_modifier(
                             self.ctx,
-                            self.attacker.element, 
-                            self.defender.element
+                            self.resolve_attack_element(self.attacker),
+                            self.resolve_defense_element(self.defender),
                         )
                         
                         if element_mod != 0:
@@ -500,6 +603,23 @@ class PvEBattle(Battle):
                     xp_gain,
                     self.ctx.author.id,
                 )
+
+            # Award pet battle XP to equipped/only pet with a daily cap.
+            pet_battle_result = None
+            pets_cog = self.ctx.bot.get_cog("Pets")
+            if pets_cog:
+                pet_tier = max(1, int(self.monster_level or 1))
+                pet_battle_xp = (
+                    pets_cog.PET_BATTLE_XP_BASE
+                    + (pets_cog.PET_BATTLE_XP_PER_TIER * pet_tier)
+                )
+                if self.macro_penalty_level >= 12:
+                    pet_battle_xp = max(1, pet_battle_xp // 10)
+                pet_battle_result = await pets_cog.award_battle_experience_for_user(
+                    self.ctx.author.id,
+                    pet_battle_xp,
+                    trust_gain=1,
+                )
             
             # Award crafting resources based on monster level (skip if macro penalty active)
             crafting_resources_awarded = []
@@ -544,6 +664,19 @@ class PvEBattle(Battle):
             if crafting_resources_awarded:
                 resources_text = ", ".join(crafting_resources_awarded)
                 victory_message += f"\n🔨 **Crafting Resources Found:** {resources_text}"
+
+            if pet_battle_result:
+                awarded_pet_xp = int(pet_battle_result.get("awarded_xp", 0) or 0)
+                pet_name = pet_battle_result.get("pet_name", "your pet")
+                if awarded_pet_xp > 0:
+                    pet_line = f"\n🐾 **Pet XP:** **+{awarded_pet_xp}** to **{pet_name}**"
+                    if pet_battle_result.get("leveled_up"):
+                        pet_line += f" (Level {pet_battle_result.get('new_level')})"
+                    if pet_battle_result.get("cap_reached"):
+                        pet_line += " - daily battle XP cap reached."
+                    victory_message += pet_line
+                elif pet_battle_result.get("reason") == "daily_cap_reached":
+                    victory_message += "\n🐾 **Pet XP:** Daily battle XP cap already reached today."
             
             await self.ctx.send(victory_message)
             

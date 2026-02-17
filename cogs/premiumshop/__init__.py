@@ -28,6 +28,18 @@ from cogs.shard_communication import user_on_cooldown as user_cooldown
 
 
 class PremiumShop(commands.Cog):
+    WEAPON_ELEMENTS = (
+        "Light",
+        "Dark",
+        "Corrupted",
+        "Fire",
+        "Water",
+        "Electric",
+        "Nature",
+        "Wind",
+        "Earth",
+    )
+
     def __init__(self, bot):
         self.bot = bot
 
@@ -71,7 +83,9 @@ class PremiumShop(commands.Cog):
                 "<:finalpotion:1398721503268438169> **Pet Speed Growth Potion** - 300 <:dragoncoin:1398714322372395008> (`petspeed`)\n"
                 "*Doubles growth speed for a specific pet*\n\n"
                 "<:splicepotion:1399690724051779745> **Pet XP Potion** - 1200 <:dragoncoin:1398714322372395008> (`petxp`)\n"
-                "*Gives a pet permanent x2 XP multiplier*\n\n"
+                "*Gives a pet permanent x2 pet-care XP multiplier*\n\n"
+                "📜 **Weapon Element Scroll** - 800 <:dragoncoin:1398714322372395008> (`weapelement`)\n"
+                "*Changes the element of one weapon in your inventory*\n\n"
                 "<:F_Legendary:1139514868400132116> **Legendary Crate** - 500 <:dragoncoin:1398714322372395008> (`legendary`)\n"
                 "*Contains items with stats ranging from 41 to 80, may also in rare cases contain dragon coins*\n\n"
                 "<:f_divine:1169412814612471869> **Divine Crate** - 1000 <:dragoncoin:1398714322372395008> (`divine`)\n"
@@ -119,14 +133,17 @@ class PremiumShop(commands.Cog):
             # Short names
             "petage": {"name": "Pet Age Potion", "price": 200, "description": "Instantly age your pet", "short": "petage"},
             "petspeed": {"name": "Pet Speed Growth Potion", "price": 300, "description": "Doubles growth speed for a specific pet", "short": "petspeed"},
-            "petxp": {"name": "Pet XP Potion", "price": 1200, "description": "Gives a pet permanent x2 XP multiplier", "short": "petxp"},
+            "petxp": {"name": "Pet XP Potion", "price": 1200, "description": "Gives a pet permanent x2 pet-care XP multiplier", "short": "petxp"},
+            "weapelement": {"name": "Weapon Element Scroll", "price": 800, "description": "Changes the element of one weapon", "short": "weapelement"},
+            "elementscroll": {"name": "Weapon Element Scroll", "price": 800, "description": "Changes the element of one weapon", "short": "weapelement"},
             "legendary": {"name": "Legendary Crate", "price": 500, "description": "Contains items with stats 41-80, may also in rare cases contain dragon coins", "short": "legendary"},
             "divine": {"name": "Divine Crate", "price": 1000, "description": "Contains items with stats 47-100, may also in rare cases contain dragon coins", "short": "divine"},
             "materials": {"name": "Materials Crate", "price": 450, "description": "Contains 3-10 random crafting materials", "short": "materials"},
             # Long names
             "pet age potion": {"name": "Pet Age Potion", "price": 200, "description": "Instantly age your pet", "short": "petage"},
             "pet speed growth potion": {"name": "Pet Speed Growth Potion", "price": 300, "description": "Doubles growth speed for a specific pet", "short": "petspeed"},
-            "pet xp potion": {"name": "Pet XP Potion", "price": 1200, "description": "Gives a pet permanent x2 XP multiplier", "short": "petxp"},
+            "pet xp potion": {"name": "Pet XP Potion", "price": 1200, "description": "Gives a pet permanent x2 pet-care XP multiplier", "short": "petxp"},
+            "weapon element scroll": {"name": "Weapon Element Scroll", "price": 800, "description": "Changes the element of one weapon", "short": "weapelement"},
             "legendary crate": {"name": "Legendary Crate", "price": 500, "description": "Contains items with stats 41-80, may also in rare cases contain dragon coins", "short": "legendary"},
             "divine crate": {"name": "Divine Crate", "price": 1000, "description": "Contains items with stats 47-100, may also in rare cases contain dragon coins", "short": "divine"},
             "materials crate": {"name": "Materials Crate", "price": 450, "description": "Contains 3-10 random crafting materials", "short": "materials"}
@@ -136,7 +153,7 @@ class PremiumShop(commands.Cog):
         normalized_item = " ".join(item.lower().split())
         
         if normalized_item not in items:
-            return await ctx.send(_("Invalid item. Available items: petage/pet age potion, petspeed/pet speed growth potion, petxp/pet xp potion, legendary/legendary crate, divine/divine crate, materials/materials crate"))
+            return await ctx.send(_("Invalid item. Available items: petage/pet age potion, petspeed/pet speed growth potion, petxp/pet xp potion, weapelement/weapon element scroll, legendary/legendary crate, divine/divine crate, materials/materials crate"))
         
         # Get the short name for processing
         item_data = items[normalized_item]
@@ -158,7 +175,7 @@ class PremiumShop(commands.Cog):
             )
             
             # Handle different item types
-            if item in ["petage", "petspeed", "petxp"]:
+            if item in ["petage", "petspeed", "petxp", "weapelement"]:
                 # Add consumables to user_consumables table
                 if item == "petage":
                     consumable_type = 'pet_age_potion'
@@ -166,6 +183,8 @@ class PremiumShop(commands.Cog):
                     consumable_type = 'pet_speed_growth_potion'
                 elif item == "petxp":
                     consumable_type = 'pet_xp_potion'
+                elif item == "weapelement":
+                    consumable_type = 'weapon_element_scroll'
                 else:
                     return await ctx.send(_("Unknown item type."))
                 
@@ -372,7 +391,7 @@ class PremiumShop(commands.Cog):
         success_message = (
             f"🔮 **Pet XP Potion consumed!**\n\n"
             f"**{pet['name']}** now has **x2 XP permanently!**\n"
-            f"This pet will gain double experience from all activities forever!"
+            f"This pet will gain double XP from pet care activities (feed/play/treat/train)."
         )
         
         return True, success_message
@@ -600,6 +619,78 @@ class PremiumShop(commands.Cog):
 
         if return_details:
             return True, success_message, materials_gained
+        return True, success_message
+
+    def _normalize_weapon_element(self, raw_element: str):
+        if not raw_element:
+            return None
+        normalized = str(raw_element).strip().lower()
+        aliases = {
+            "corruption": "Corrupted",
+            "corrupted": "Corrupted",
+            "light": "Light",
+            "dark": "Dark",
+            "fire": "Fire",
+            "water": "Water",
+            "electric": "Electric",
+            "electricity": "Electric",
+            "nature": "Nature",
+            "wind": "Wind",
+            "earth": "Earth",
+        }
+        candidate = aliases.get(normalized)
+        if not candidate:
+            return None
+        return candidate if candidate in self.WEAPON_ELEMENTS else None
+
+    async def consume_weapon_element_scroll(self, ctx, item_id: int, new_element: str):
+        """
+        Function to handle weapon element scroll consumption.
+        Called by the consume command in profile cog.
+        """
+        desired_element = self._normalize_weapon_element(new_element)
+        if not desired_element:
+            valid = ", ".join(self.WEAPON_ELEMENTS)
+            return False, _(f"Invalid element. Valid elements: {valid}")
+
+        async with self.bot.pool.acquire() as conn:
+            scroll = await conn.fetchrow(
+                'SELECT id, quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;',
+                ctx.author.id,
+                'weapon_element_scroll'
+            )
+            if not scroll or scroll['quantity'] < 1:
+                return False, _("You don't have any Weapon Element Scrolls.")
+
+            weapon = await conn.fetchrow(
+                'SELECT id, name, type, element FROM allitems WHERE id = $1 AND owner = $2;',
+                item_id,
+                ctx.author.id
+            )
+            if not weapon:
+                return False, _("Weapon not found or doesn't belong to you.")
+            if str(weapon["type"]).lower() == "shield":
+                return False, _("That item is a shield. Weapon Element Scroll can only be used on weapons.")
+
+            current_element = (weapon["element"] or "Unknown").capitalize()
+            if current_element == desired_element:
+                return False, _("That weapon already has this element.")
+
+            async with conn.transaction():
+                await conn.execute(
+                    'UPDATE user_consumables SET quantity = quantity - 1 WHERE id = $1;',
+                    scroll['id']
+                )
+                await conn.execute(
+                    'UPDATE allitems SET element = $1 WHERE id = $2;',
+                    desired_element,
+                    item_id
+                )
+
+        success_message = _(
+            f"📜 **Weapon Element Scroll consumed!**\n\n"
+            f"**{weapon['name']}** (ID: `{weapon['id']}`) changed from **{current_element}** to **{desired_element}**."
+        )
         return True, success_message
 
 

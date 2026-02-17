@@ -1,0 +1,472 @@
+{
+  "level_names": [
+    "The Tower's Foyer",
+    "Shadowy Staircase",
+    "Chamber of Whispers",
+    "Serpent's Lair",
+    "Halls of Despair",
+    "Crimson Abyss",
+    "Forgotten Abyss",
+    "Dreadlord's Domain",
+    "Gates of Twilight",
+    "Twisted Reflections",
+    "Voidforged Sanctum",
+    "Nexus of Chaos",
+    "Eternal Torment Halls",
+    "Abyssal Desolation",
+    "Cursed Citadel",
+    "The Shapeshifter's Domain",
+    "Tempest's Descent",
+    "Roost of Doombringers",
+    "The Endless Spiral",
+    "Malevolent Apex",
+    "Apocalypse's Abyss",
+    "Chaosborne Throne",
+    "Supreme Darkness",
+    "The Tower's Heart",
+    "The Ultimate Test",
+    "Realm of Annihilation",
+    "Lord of Despair",
+    "Abyssal Overlord",
+    "The End of All",
+    "The Final Confrontation"
+  ],
+  "victories": {
+    "1": {
+      "title": "Too Easy",
+      "description": "The Abyssal Guardian falls with little effort. In the settling dust, something glints\u2014a small charm with your initials carved into it. You don't remember making it. When did you have time? You only entered the tower this morning.\n\nYou pocket the charm and move forward, but the unease lingers.",
+      "has_chest": true,
+      "chest_rewards": {
+        "default": {
+          "left": {
+            "type": "crate",
+            "value": "rare",
+            "amount": 1
+          },
+          "right": {
+            "type": "nothing",
+            "value": 0,
+            "amount": 0
+          }
+        },
+        "prestige": "random"
+      }
+    },
+    "2": {
+      "title": "Muscle Memory",
+      "description": "As the Vile Serpent collapses, its dying words echo in your mind: 'Third time... you've used that exact combo... muscle memory...'\n\nWhat does that mean? You've never been here before. Have you?",
+      "has_chest": false
+    },
+    "3": {
+      "title": "The Whispers",
+      "description": "Warlord Grakthar's body dissolves, but the whispers remain. Hundreds of voices bouncing off the chamber walls, all pleading, all desperate. And they all sound like you.\n\n'How many times?'\n'I can't remember their faces anymore.'\n'Please, someone remember me.'\n\nYou press your hands to your ears, but the voices come from inside your head.",
+      "has_chest": false
+    },
+    "4": {
+      "title": "Cycle 7",
+      "description": "Necromancer Voss crumbles to ash. Behind where he stood, you find a leather-bound journal. The cover is worn, the pages yellowed. You open it.\n\nThe handwriting is yours.\n\n'Cycle 7: I'm starting to remember. The tower doesn't kill us\u2014it recycles us. Every time we reach the top, we're sent back down with our memories erased. But fragments remain. I need to leave myself clues.'\n\nYour hands shake. Cycle 7? What cycle are you on now? When did you write this? You search the rest of the journal, but every other page has been torn out.",
+      "has_chest": true,
+      "chest_rewards": {
+        "default": {
+          "left": {
+            "type": "crate",
+            "value": "common",
+            "amount": 3
+          },
+          "right": {
+            "type": "money",
+            "value": 20000,
+            "amount": 1
+          }
+        },
+        "prestige": "random"
+      }
+    },
+    "5": {
+      "title": "Forty-Seven Cycles",
+      "description": "The Blackblade Marauder falls, and with his last breath: 'I was a hero once... just like you... forty-seven cycles ago...'\n\nYou search his lair and find something that makes your blood run cold\u2014a wanted poster. Your face. Your name. Dated five years ago. But you only entered the tower yesterday. Didn't you?",
+      "has_chest": true,
+      "chest_rewards": {
+        "default": {
+          "left": {
+            "type": "crate",
+            "value": "common",
+            "amount": 3
+          },
+          "right": {
+            "type": "money",
+            "value": 20000,
+            "amount": 1
+          }
+        },
+        "prestige": "random"
+      }
+    },
+    "6": {
+      "title": "The Vision",
+      "description": "The Arachnok Queen's body dissolves into mist. Her web remains, shimmering with an otherworldly light. Against your better judgment, you touch it.\n\nThe vision hits you like a physical blow. You see yourself at the summit of the tower, victorious. Your god descends to congratulate you. You reach out\u2014\n\nAnd then you're at the bottom again. Memories gone. Starting over.\n\nThe vision ends. You stumble backward, gasping. Your hands have scars you don't remember getting.",
+      "has_chest": false
+    },
+    "7": {
+      "title": "Cycle 44",
+      "description": "Lich Lord Moros fades into spectral mist, his final words haunting: 'You're on Cycle 44... there's a mark... behind your left ear...'\n\nWith trembling fingers, you reach behind your ear. You feel them immediately\u2014small notches carved into your skin. You count them.\n\nForty-three.\n\nYou don't remember making them. Your hand moves on its own, pulling a small blade from your pack. You carve the forty-fourth notch, watching your own blood drip onto the stone floor.\n\nForty-four times. How long have you been trapped here?",
+      "has_chest": true,
+      "chest_rewards": {
+        "default": {
+          "left": {
+            "type": "crate",
+            "value": "uncommon",
+            "amount": 2
+          },
+          "right": {
+            "type": "money",
+            "value": 40000,
+            "amount": 1
+          }
+        },
+        "prestige": "random"
+      }
+    },
+    "8": {
+      "title": "They're Watching",
+      "description": "As the Frostfire Behemoth falls, divine light fills the chamber. Words appear in the air, written in fire and gold\u2014a message from your god:\n\n'You're doing wonderfully, my champion. Keep climbing. Glory awaits at the summit.'\n\nThe words should inspire you. They should fill you with purpose. Instead, they feel hollow. Empty. Like lines from a script you've heard too many times before.",
+      "has_chest": false
+    },
+    "9": {
+      "title": "Can't Die Here",
+      "description": "The Crystalwing Matriarch collapses, her wings shattered. As she fades, she shows you something\u2014old fractures covering every bone. 'Some climbers try to escape... throw themselves off the tower... but you can't die here permanently... you just wake up at the bottom...'\n\nYou look over the edge of the tower. The ground is impossibly far below. For a moment, you consider it. But you know she's right. Death isn't an escape. It's just another reset.",
+      "has_chest": true,
+      "chest_rewards": {
+        "default": {
+          "left": {
+            "type": "crate",
+            "value": "rare",
+            "amount": 1
+          },
+          "right": {
+            "type": "money",
+            "value": 50000,
+            "amount": 1
+          }
+        },
+        "prestige": "random"
+      }
+    },
+    "10": {
+      "title": "All Your Deaths",
+      "description": "You shatter the mirror. The glass explodes into hundreds of fragments, each one showing a different version of you. Different ages. Different scars. Different expressions. But all of them have the same look in their eyes\u2014desperation.\n\nAmong the shards, you find another journal entry in your handwriting:\n\n'Cycle 29: I'm going to make it this time. I have to. I can't forget them again. I can't forget her name. Please, if I'm reading this\u2014her name was\u2014'\n\nThe rest is burned away. Who was 'her'? Why can't you remember?",
+      "has_chest": false
+    },
+    "11": {
+      "title": "Tally Marks",
+      "description": "The walls of the Voidforged Sanctum are covered in tally marks. Not hundreds. Not thousands. Millions. Carved into every surface, overlapping, endless.\n\nYou find a clear spot and add five marks\u2014one for each finger.\n\nHow many of these are yours?",
+      "has_chest": true,
+      "chest_rewards": {
+        "default": {
+          "left": {
+            "type": "crate",
+            "value": "rare",
+            "amount": 2
+          },
+          "right": {
+            "type": "money",
+            "value": 70000,
+            "amount": 1
+          }
+        },
+        "prestige": "random"
+      }
+    },
+    "12": {
+      "title": "Livestock",
+      "description": "Shadowmancer Kael's final revelation echoes in your mind: 'You're not a champion. You're livestock.'\n\nAs he dissolves, a memory breaks through the fog\u2014you've fought him before. You've had this exact conversation. Seventeen times, you realize. And each time, you were shocked. Each time, you couldn't believe it.\n\nBut now you do.",
+      "has_chest": false
+    },
+    "13": {
+      "title": "Loop Within a Loop",
+      "description": "You find another climber on this floor\u2014not a boss, but a person like you. They're sitting against the wall, staring at nothing.\n\n'Turn back,' they whisper. 'I'm stuck. I'm always on Floor 13. I beat it, and then I wake up here again. Over and over.'\n\nYou try to help them. You try to bring them with you. But when you ascend to the next floor and look back, they're gone. The floor resets. And somewhere below, they're waking up on Floor 13 again.\n\nSome people don't just repeat the tower. They repeat a single floor. Forever.",
+      "has_chest": true,
+      "chest_rewards": {
+        "default": {
+          "left": {
+            "type": "crate",
+            "value": "uncommon",
+            "amount": 3
+          },
+          "right": {
+            "type": "money",
+            "value": 60000,
+            "amount": 1
+          }
+        },
+        "prestige": "random"
+      }
+    },
+    "14": {
+      "title": "Warning From a God",
+      "description": "As you stand victorious, divine light fills the chamber. But it's not your god this time\u2014it's one of the others.\n\n{OTHER_GOD_MESSAGE}\n\nThe light fades. Your own god doesn't respond. The silence is answer enough.",
+      "has_chest": false,
+      "god_messages": {
+        "elysia": "I tried to warn your kind. This tower was supposed to be destroyed. But the others... they enjoyed the harvest too much.",
+        "sepulchure": "You want honesty? I don't care about you. None of us do. But I respect your tenacity. You've climbed 44 times. Most break by 20.",
+        "drakath": "The cycle must be broken. But I can't break it from outside. Someone inside needs to shatter it. Climb higher. You'll understand."
+      }
+    },
+    "15": {
+      "title": "M & J",
+      "description": "You find a room filled with equipment. Swords you don't remember wielding. Armor you've never seen. Trinkets from people whose faces you can't recall.\n\nThere's a locket on a shelf. Inside is a photograph\u2014you with two other people. A woman and a child. You're smiling. They're smiling. On the back, in faded ink: 'We'll wait for you. Love, M & J.'\n\nWho are M and J? Were they real? Are they still waiting?\n\nHow long have they been waiting?",
+      "has_chest": true,
+      "chest_rewards": {
+        "default": {
+          "left": {
+            "type": "crate",
+            "value": "rare",
+            "amount": 2
+          },
+          "right": {
+            "type": "money",
+            "value": 80000,
+            "amount": 1
+          }
+        },
+        "prestige": "random"
+      }
+    },
+    "16": {
+      "title": "Maya",
+      "description": "The Shapeshifter takes the form of someone important. You know they are. You can feel it. But you can't remember who.\n\n'You promised you'd come back,' the Shapeshifter says in her voice. 'That was 44 cycles ago. I waited. I grew old. I died. And you don't even remember my name.'\n\nAs the Shapeshifter dies, it whispers: 'Maya. My name was Maya. Please... remember me this time.'\n\nYou pull out a knife and carve the name into your forearm, deep enough to scar. You will not forget. Not this time.",
+      "has_chest": false
+    },
+    "17": {
+      "title": "Changing",
+      "description": "You catch your reflection in a pool of water. Your eyes look different\u2014harder, colder, older than they should be. Your skin is covered in scars that weren't there before.\n\nYou're changing. Becoming like the permanent residents of the tower. How long before you forget why you're human?",
+      "has_chest": true,
+      "chest_rewards": {
+        "default": {
+          "left": {
+            "type": "crate",
+            "value": "magic",
+            "amount": 2
+          },
+          "right": {
+            "type": "money",
+            "value": 90000,
+            "amount": 1
+          }
+        },
+        "prestige": "random"
+      }
+    },
+    "18": {
+      "title": "Time-Rot",
+      "description": "Chromaggus sniffs the air as he dies. 'You smell like time-rot... how many centuries have you been climbing?'\n\nCenturies? No. You've only been here... how long? You try to remember when you entered. Yesterday? Last week? Last year?\n\nYou don't know. You genuinely don't know anymore.",
+      "has_chest": false
+    },
+    "19": {
+      "title": "847 Steps",
+      "description": "The architecture stops making sense. You walk upward but feel like you're falling. Time skips. You blink and you're somewhere else. You blink again and you're back where you started.\n\nPanic sets in. You're trapped. This is the end\u2014\n\nThen you see it. Scratched into the floor in your own handwriting: 'FLOOR 19 IS A TRAP. DON'T TRUST YOUR PERCEPTION. COUNT YOUR STEPS. EXACTLY 847 STEPS FORWARD.'\n\nYou count. On step 847, the illusion shatters. How many cycles did it take past-you to figure that out? How many times did you die here?",
+      "has_chest": true,
+      "chest_rewards": {
+        "default": {
+          "left": {
+            "type": "crate",
+            "value": "rare",
+            "amount": 3
+          },
+          "right": {
+            "type": "money",
+            "value": 100000,
+            "amount": 1
+          }
+        },
+        "prestige": "random"
+      }
+    },
+    "20": {
+      "title": "The Vision of Maya",
+      "description": "Halfway there. The tower rewards you with a vision\u2014your future victory at the summit.\n\nBut then the vision continues. You see the reset. The memory wipe. And then it shows you something new\u2014alternate timelines. In one, you're not alone. There's a woman with you. Maya. She's smiling, laughing, fighting by your side.\n\nThen Floor 27. She's hit. She's dying. You hold her as the light leaves her eyes. She says something, but you can't hear it.\n\nThen the reset. You forget her. And in the next cycle, she's not there. You left her behind. Left her to die. And you didn't even remember her name.\n\nThe vision ends. You vomit.",
+      "has_chest": false
+    },
+    "21": {
+      "title": "For Me",
+      "description": "Your god sends another message. The pretense is gone now:\n\n'I can feel your doubt, my champion. You're wondering if this is worth it. Let me assure you\u2014it is. For me.'\n\nThey're not even trying to hide it anymore.",
+      "has_chest": true,
+      "chest_rewards": {
+        "default": {
+          "left": {
+            "type": "crate",
+            "value": "fortune",
+            "amount": 1
+          },
+          "right": {
+            "type": "money",
+            "value": 120000,
+            "amount": 1
+          }
+        },
+        "prestige": "random"
+      }
+    },
+    "22": {
+      "title": "The First Key",
+      "description": "Banshee Queen Shriekara's form wavers as she dies. 'We all made deals with gods... they promised everything... gave us this prison...'\n\nShe presses something into your hand\u2014a key made of bone, cold and ancient.\n\n'Floor 30 has two doors. One leads to the reset. One leads out. This key opens the second door. But\u2014'\n\nShe dissolves before she can finish. But you understand. There's a way out. You just have to reach it.",
+      "has_chest": false
+    },
+    "23": {
+      "title": "The Second Key",
+      "description": "Voidlord Malgros crumbles into shadow. As he fades, he drops something\u2014another key.\n\n'You think you're special? You're not the first to remember. You're not the first to reach this floor with clarity. You're just the first in this cycle.'\n\n'There are three keys. Three doors. One for each god's ending. Choose wisely.'\n\nTwo keys now. One more to go.",
+      "has_chest": false
+    },
+    "24": {
+      "title": "The Tower's Heart",
+      "description": "You reach the tower's core. It's vast\u2014a cathedral of twisted architecture and pulsing energy. Thousands of glowing threads hang from the ceiling, each one connected to a climber somewhere in the tower.\n\nYou find yours. It's old. Worn thin. Frayed at the edges. It's been stretched across 44 cycles.\n\nThen the tower speaks. Not a boss. Not a god. The tower itself:\n\n'You're breaking. I can feel it. Most break by now. But you're stubborn. That's why you're my favorite.'\n\nThe tower is alive. It's been the prison all along.",
+      "has_chest": false
+    },
+    "25": {
+      "title": "The Third Key",
+      "description": "The Pyroclasmic Overfiend dies, and with his final breath: 'The gods didn't build this tower. I did. They just... took advantage of my work.'\n\nHe drops the third key. 'If you use all three keys at once... I don't know what happens. No one's ever collected all three.'\n\nYou now hold all three keys. You can feel their power humming in your hands. Three gods. Three doors. One hidden exit.\n\nThe choice is coming.",
+      "has_chest": true,
+      "chest_rewards": {
+        "default": {
+          "left": {
+            "type": "crate",
+            "value": "fortune",
+            "amount": 1
+          },
+          "right": {
+            "type": "money",
+            "value": 2,
+            "amount": 1,
+            "message": "The tower mocks you."
+          }
+        },
+        "prestige": "random"
+      }
+    },
+    "26": {
+      "title": "You Were Kinder Then",
+      "description": "Sangromancer Malroth falls. His last words cut deep:\n\n'I knew you in Cycle 12. We climbed together. We were friends. You don't remember, but I do. You were kinder then.'\n\nWhat has this tower done to you? What have you become?",
+      "has_chest": false
+    },
+    "27": {
+      "title": "Maya's Letter",
+      "description": "You find her. Maya. Her body is here, preserved by the tower's magic, exactly where she fell. She's been here since Cycle 12\u201432 cycles ago.\n\nThere's a note clutched in her hand, written in shaking letters:\n\n'If you're reading this, you've forgotten me again. I love you. I forgive you. Please break the cycle. Don't let anyone else end up like me. -M'\n\nYou sit beside her body and cry. You don't remember when you last cried. Maybe you never have. Not in this cycle.\n\nYou place her letter in your pack. You will not forget again.",
+      "has_chest": false
+    },
+    "28": {
+      "title": "Last Chance",
+      "description": "Abyssal Enderark's final warning: 'Last chance to turn back. Floor 30 changes everything. Every person who reaches the summit makes a choice. And every choice is wrong.'\n\nYou're not turning back. You've come too far. Lost too much. Forgotten too much.\n\nFloor 30 is above. The gods are waiting.",
+      "has_chest": false
+    },
+    "29": {
+      "title": "They're Waiting",
+      "description": "Tidal Terror Abaddon dissolves into mist. 'The gods are waiting for you. All three of them. They're going to make you an offer. They've made it to everyone who reached the top. No one has ever refused.'\n\n'Be the first.'\n\nYou can see Floor 30 above you. The summit glows with divine light. This is it. The end of the cycle. Or the beginning of something else.\n\nYou think of Maya. Of the 44 scars behind your ear. Of the stranger trapped on Floor 13. Of all the versions of yourself lost in the tower's memory.\n\nYou climb the final staircase.",
+      "has_chest": false
+    },
+    "30": {
+      "title": "The Choice",
+      "description": "The summit is not a battlefield. It's a throne room. Three gods stand before you: Elysia, radiant and cold. Sepulchure, dark and smiling. Drakath, shifting and chaotic.\n\nBehind them, you see three doors. And then, in the corner of your vision, a fourth door. Hidden. Shimmering. Locked by three keyholes.\n\nElysia speaks: 'Impressive. You've maintained coherence through 44 cycles. Most shatter by 30.'\n\nSepulchure laughs: 'You have three keys. Smart. We were wondering if anyone would figure that out.'\n\nDrakath grins: 'You have a choice to make, mortal. And this time, the choice actually matters.'\n\nYou grip the three keys in your hand. The weight of 44 cycles presses down on you. The memory of Maya burns in your mind.\n\nThe gods wait. The doors wait. Your decision will change everything.\n\n**What will you choose?**",
+      "finale": true,
+      "rewards": {
+        "default": {
+          "type": "crate",
+          "value": "divine",
+          "amount": 1
+        },
+        "prestige": {
+          "type": "random_premium"
+        }
+      },
+      "endings": {
+        "door_1_elysia": {
+          "title": "The New Administrator",
+          "description": "You step through Elysia's door. Light envelops you. She offers you freedom\u2014if you become the tower's new administrator. You'll never have to climb again. You'll be free.\n\nYou accept.\n\nThe tower's power flows into you. You become its guardian, its keeper. And then you see him\u2014a young man entering the tower, eyes bright with hope. He's you. A younger version, memory wiped, ready to start Cycle 45.\n\nYou try to warn him. The tower won't let you. Your voice comes out as: 'Welcome to the Tower of Ascension. Your god has sponsored your entry.'\n\nThe cycle continues. And now you're complicit.\n\n**TO BE CONTINUED...**"
+        },
+        "door_2_sepulchure": {
+          "title": "Welcome, Brother",
+          "description": "You step through Sepulchure's door. Darkness enfolds you. He offers you godhood\u2014if you can kill one of the other gods and take their place. True power. True freedom.\n\nYou accept.\n\nDivine power floods your veins. Sepulchure throws you into battle with Elysia. You fight across dimensions, across time itself. Eons pass in seconds. You're winning. You're actually winning\u2014\n\nYou deliver the killing blow.\n\nEverything goes white.\n\nYou wake up on Floor 1.\n\nYou still have your divine power. You still remember everything. But you're in the tower. You try to leave. You can't. The walls won't let you pass.\n\nSepulchure's laughter echoes from everywhere: 'Did I forget to mention? Gods can't leave the tower either. Welcome to eternity, brother.'\n\n**TO BE CONTINUED...**"
+        },
+        "door_3_drakath": {
+          "title": "Between All Things",
+          "description": "You step through Drakath's door. Reality fractures. He offers you true freedom\u2014if you become something neither mortal nor divine. A paradox. A being that exists between cycles.\n\nYou accept.\n\nTime shatters. You're on Floor 1 and Floor 30 simultaneously. You're in Cycle 1 and Cycle 44 at once. You see Maya alive. You see her dead. You see yourself winning and losing, living and dying, remembering and forgetting.\n\nEvery possibility. Every timeline. All at once.\n\nDrakath's laughter echoes across infinite moments: 'Now you understand. This is freedom. Every possibility, every timeline, all at once. Most go mad instantly. But you? You might survive. Good luck.'\n\nYou're free from the linear cycle. But you're trapped in ALL cycles at once. Forever.\n\n**TO BE CONTINUED...**"
+        },
+        "door_4_freedom": {
+          "title": "OUTSIDE",
+          "description": "You ignore the gods. You walk past them, the three keys burning in your hand. You approach the hidden fourth door.\n\nAll three gods shout at once:\n'STOP. That door\u2014'\n'\u2014was never meant to be opened\u2014'\n'\u2014it leads Outside\u2014'\n'\u2014and we can't follow you there.'\n\nYou insert all three keys. The door opens. Light spills out\u2014real light, not divine light. Sunlight.\n\nYou step through.\n\n---\n\nYou emerge into a plaza. The sky is wrong\u2014too red, with three suns. Around you stretch thousands of towers, each identical to the one you just left. The God Farm.\n\nBeings wander the plaza\u2014humans, elves, demons, creatures you can't name. All scarred. All broken. All free.\n\nAn old woman approaches. She has 147 notches behind her ear.\n\n'First time Outside?' she asks.\n\nYou nod, unable to speak.\n\n'Welcome to the Harvest Plaza. There are ten thousand towers here. You escaped one.' She gestures to the vast cityscape. 'Where did you think divine power comes from?'\n\nYou look at your hands. 44 scars behind your ear. Maya's name carved into your arm. The three keys crumbling to dust.\n\n'Most people go back in,' she says. 'Can't handle the truth. Some try other towers. It never helps.'\n\n'What do you do?' you ask.\n\n'Some of us fight. Try to shut down the towers. Free everyone. It's not going well. Gods are stronger than we thought. And there are so many of them.' She extends a hand. 'But we could use someone who collected all three keys. That takes someone special.'\n\nYou look back at your tower. New climbers enter, bright-eyed and naive. You think of Maya. Of all the versions of you still trapped inside.\n\n'Tell me everything,' you say.\n\n'It's going to be a long conversation. Come. We have a camp. Others like us. And a plan.'\n\nShe starts walking. You follow.\n\nBehind you, the Battle Tower hums, pulling in fresh souls. The harvest continues.\n\nBut now you know the truth. And you're going to burn it all down.\n\n**TO BE CONTINUED IN: THE GOD FARM**"
+        }
+      }
+    }
+  },
+  "chest_options": {
+    "random": {
+      "types": [
+        "crate",
+        "money"
+      ],
+      "crate_options": [
+        {
+          "value": "legendary",
+          "weight": 1
+        },
+        {
+          "value": "fortune",
+          "weight": 1
+        },
+        {
+          "value": "mystery",
+          "weight": 80
+        },
+        {
+          "value": "common",
+          "weight": 170
+        },
+        {
+          "value": "uncommon",
+          "weight": 150
+        },
+        {
+          "value": "magic",
+          "weight": 20
+        },
+        {
+          "value": "rare",
+          "weight": 75
+        }
+      ],
+      "money_options": [
+        10000,
+        15000,
+        20000,
+        50000,
+        25000,
+        10000,
+        27000,
+        33000,
+        100000,
+        5000,
+        150000
+      ]
+    },
+    "random_premium": {
+      "types": [
+        "legendary",
+        "divine",
+        "fortune"
+      ],
+      "weights": [
+        0.25,
+        0.25,
+        0.25
+      ]
+    }
+  },
+  "prestige_changes": {
+    "note": "Dialogues and victory text should subtly change based on prestige count",
+    "1-5": "Normal run. No hints of the loop.",
+    "6-10": "Bosses start making odd comments. D\u00e9j\u00e0 vu increases.",
+    "11-20": "NPCs recognize you. You find your own journals.",
+    "21-30": "The whispers get louder. Others beg for freedom.",
+    "31-43": "Gods speak directly. The fourth door becomes visible.",
+    "44+": "Full memory. The Old Woman appears before entry, offering escape."
+  }
+}

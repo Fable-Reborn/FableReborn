@@ -676,10 +676,221 @@ class CouplesTowerView(discord.ui.View):
             if self.on_cancel:
                 await self.on_cancel()
 
+
+class PVELocationSelect(Select):
+    def __init__(self, locations: list[dict], author_id: int):
+        self.author_id = author_id
+        self.locations_by_id = {location["id"]: location for location in locations}
+        options = []
+        for location in locations:
+            is_locked = bool(location.get("is_locked", False))
+            tier_keys = sorted(
+                int(tier) for tier in (location.get("tier_weights", {}) or {}).keys()
+            )
+            if tier_keys:
+                tier_band = (
+                    f"T{tier_keys[0]}"
+                    if len(tier_keys) == 1
+                    else f"T{tier_keys[0]}-T{tier_keys[-1]}"
+                )
+            else:
+                tier_band = "T?"
+            desc = (
+                f"{'Locked' if is_locked else 'Unlocked'} • {tier_band} • Unlock Lv {location['unlock_level']} "
+                f"• God {location.get('god_chance', 0)}%"
+            )
+            label = f"🔒 {location['name']}" if is_locked else location["name"]
+            options.append(
+                discord.SelectOption(
+                    label=label,
+                    value=location["id"],
+                    description=desc[:100],
+                )
+            )
+
+        super().__init__(
+            placeholder="Choose where to search...",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "This location selection isn't yours.",
+                ephemeral=True,
+            )
+            return
+
+        view = self.view
+        if not isinstance(view, PVELocationView):
+            await interaction.response.send_message(
+                "Something went wrong with this selection.",
+                ephemeral=True,
+            )
+            return
+
+        selected_id = self.values[0]
+        selected_location = self.locations_by_id.get(selected_id)
+
+        if not selected_location:
+            await interaction.response.edit_message(
+                content="Invalid location selection.",
+                view=view,
+            )
+            return
+
+        if selected_location.get("is_locked"):
+            await interaction.response.send_message(
+                f"🔒 **{selected_location['name']}** unlocks at level {selected_location['unlock_level']}.",
+                ephemeral=True,
+            )
+            return
+
+        view.selected_location = selected_location
+        for child in view.children:
+            child.disabled = True
+
+        await interaction.response.edit_message(
+            content=f"Searching in **{view.selected_location['name']}**...",
+            view=view,
+        )
+        view.stop()
+
+
+class PVELocationView(View):
+    def __init__(self, author_id: int, locations: list[dict], timeout: float = 60.0):
+        super().__init__(timeout=timeout)
+        self.author_id = author_id
+        self.locations = locations
+        self.selected_location = None
+        self.cancelled = False
+        self.message = None
+        self.add_item(PVELocationSelect(locations, author_id))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "This location selection isn't yours.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(
+        label="Cancel",
+        style=discord.ButtonStyle.secondary,
+        emoji="❌",
+        row=1,
+    )
+    async def cancel_button(self, interaction: discord.Interaction, button: Button):
+        self.cancelled = True
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="PvE search cancelled.", view=self)
+        self.stop()
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
 class Battles(commands.Cog):
     DRAGON_COIN_DROP_CHANCE_PERCENT = 10
     DRAGON_COIN_DROP_MIN = 2
     DRAGON_COIN_DROP_MAX = 5
+    PVE_LEVEL_BRACKET_SIZE = 10
+    PVE_MAX_TIER = 10
+    PVE_GOD_TIER = 11
+    PVE_GOD_ENCOUNTER_LEVEL = 100
+    PVE_PER_LEVEL_STAT_SCALE = Decimal("0.02")
+    PVE_LEGENDARY_SPAWN_CHANCE = 0.01
+    PVE_SPLICE_SAMPLE_PER_GENERATION = 75
+    PVE_SPLICE_GENERATIONS = (0,)
+    PVE_LOCATIONS = (
+        {
+            "id": "verdant_outskirts",
+            "name": "Verdant Outskirts",
+            "unlock_level": 1,
+            "god_chance": 0,
+            "tier_weights": {1: 65, 2: 30, 3: 5},
+        },
+        {
+            "id": "whisperwood",
+            "name": "Whisperwood",
+            "unlock_level": 10,
+            "god_chance": 0,
+            "tier_weights": {2: 55, 3: 35, 4: 10},
+        },
+        {
+            "id": "ashfall_crags",
+            "name": "Ashfall Crags",
+            "unlock_level": 20,
+            "god_chance": 0,
+            "tier_weights": {3: 50, 4: 35, 5: 15},
+        },
+        {
+            "id": "sunken_ruins",
+            "name": "Sunken Ruins",
+            "unlock_level": 30,
+            "god_chance": 0,
+            "tier_weights": {4: 45, 5: 35, 6: 20},
+        },
+        {
+            "id": "stormfront_ridge",
+            "name": "Stormfront Ridge",
+            "unlock_level": 40,
+            "god_chance": 0,
+            "tier_weights": {5: 40, 6: 35, 7: 25},
+        },
+        {
+            "id": "blightfen",
+            "name": "Blightfen",
+            "unlock_level": 50,
+            "god_chance": 1,
+            "tier_weights": {6: 43, 7: 35, 8: 20, 10: 2},
+        },
+        {
+            "id": "crystal_expanse",
+            "name": "Crystal Expanse",
+            "unlock_level": 60,
+            "god_chance": 2,
+            "tier_weights": {7: 42, 8: 32, 9: 18, 10: 8},
+        },
+        {
+            "id": "voidscar_wastes",
+            "name": "Voidscar Wastes",
+            "unlock_level": 70,
+            "god_chance": 4,
+            "tier_weights": {8: 40, 9: 42, 10: 18},
+        },
+        {
+            "id": "pantheon_approach",
+            "name": "Pantheon Approach",
+            "unlock_level": 80,
+            "god_chance": 10,
+            "tier_weights": {8: 30, 9: 31, 10: 39},
+        },
+        {
+            "id": "apex_of_ascension",
+            "name": "Apex of Ascension",
+            "unlock_level": 95,
+            "god_chance": 25,
+            "tier_weights": {9: 30, 10: 70},
+        },
+        {
+            "id": "omnithrone_sanctum",
+            "name": "Omnithrone Sanctum",
+            "unlock_level": 100,
+            "god_chance": 0,
+            "tier_weights": {12: 100},
+        },
+    )
     GOD_SHARD_ALIGNMENT_EMOJIS = {
         "Chaos": "<:ChaosShard:1472140674215444521>",
         "Evil": "<:EvilShard:1472140682759110716>",
@@ -725,6 +936,19 @@ class Battles(commands.Cog):
             ],
         },
     }
+    BATTLE_TOWER_THUMBNAIL_TOKENS = {
+        "GOD_ELYSIA": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_Elysia_BT12.png",
+        "GOD_SEPULCHURE": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_Sep_BT12.png",
+        "GOD_DRAKATH": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_Drakath_BT12.png",
+        # Fallback narrator icon for system/voice lines.
+        "SYSTEM": "https://i.ibb.co/CWTp4xf/download.jpg",
+    }
+    DEFAULT_DIALOGUE_AVATAR = "https://ia803204.us.archive.org/4/items/discordprofilepictures/discordblue.png"
+    TOWER_KEY_FLOOR_BITS = {22: 1, 23: 2, 25: 4}
+    TOWER_KEY_DROP_CHANCE = 0.55
+    TOWER_FREEDOM_MILESTONE_GAINS = {10: 1, 20: 1, 25: 1}
+    TOWER_FREEDOM_FINALE_MISS_GAIN = 2
+    TOWER_FREEDOM_UNLOCK_THRESHOLD = 6
 
     def __init__(self, bot):
         self.bot = bot
@@ -781,6 +1005,12 @@ class Battles(commands.Cog):
                     dialoguetoggle BOOLEAN DEFAULT FALSE
                 )
             """)
+            await conn.execute(
+                "ALTER TABLE battletower ADD COLUMN IF NOT EXISTS run_key_bits INTEGER NOT NULL DEFAULT 0;"
+            )
+            await conn.execute(
+                "ALTER TABLE battletower ADD COLUMN IF NOT EXISTS freedom_meter INTEGER NOT NULL DEFAULT 0;"
+            )
 
             # Ice Dragon tables
             await conn.execute(
@@ -881,6 +1111,29 @@ class Battles(commands.Cog):
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_god_pet_ownership_locks_user_id ON god_pet_ownership_locks(user_id);"
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS godofgods (
+                    id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+                    name TEXT NOT NULL,
+                    hp INTEGER NOT NULL CHECK (hp > 0),
+                    attack INTEGER NOT NULL CHECK (attack > 0),
+                    defense INTEGER NOT NULL CHECK (defense > 0),
+                    element TEXT NOT NULL,
+                    image_url TEXT NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pve_preferences (
+                    user_id BIGINT PRIMARY KEY,
+                    include_splice BOOLEAN NOT NULL DEFAULT FALSE,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
             monster_pets_exists = await conn.fetchval(
                 "SELECT to_regclass('public.monster_pets') IS NOT NULL;"
             )
@@ -973,18 +1226,41 @@ class Battles(commands.Cog):
 
     def load_data_files(self):
         """Load all necessary data files for battles"""
-        # Load battle tower data
-        with open(os.path.join(os.path.dirname(__file__), 'battle_tower_data.json'), 'r') as f:
-            self.battle_data = json.load(f)
+        battles_dir = os.path.dirname(__file__)
+
+        # Load battle tower data (base + optional remastered override)
+        with open(os.path.join(battles_dir, "battle_tower_data.json"), "r", encoding="utf-8") as f:
+            battle_data = json.load(f)
+
+        remastered_battle_path = os.path.join(battles_dir, "battle_tower_data_remastered.json")
+        if os.path.exists(remastered_battle_path):
+            with open(remastered_battle_path, "r", encoding="utf-8") as f:
+                remastered_battle_data = json.load(f)
+            for key, value in remastered_battle_data.items():
+                if key == "victories" and isinstance(value, dict):
+                    battle_data.setdefault("victories", {})
+                    battle_data["victories"].update(value)
+                else:
+                    battle_data[key] = value
+        self.battle_data = battle_data
 
         # Load game levels
-        with open(os.path.join(os.path.dirname(__file__), 'game_levels.json'), 'r') as f:
+        with open(os.path.join(battles_dir, 'game_levels.json'), 'r') as f:
             data = json.load(f)
             self.levels = data['levels']
 
-        # Load dialogue data
-        with open(os.path.join(os.path.dirname(__file__), 'battle_tower_dialogues.json'), 'r') as f:
-            self.dialogue_data = json.load(f)
+        # Load dialogue data (base + optional remastered override)
+        with open(os.path.join(battles_dir, "battle_tower_dialogues.json"), "r", encoding="utf-8") as f:
+            dialogue_data = json.load(f)
+
+        remastered_dialogue_path = os.path.join(battles_dir, "battle_tower_dialogues_remastered.json")
+        if os.path.exists(remastered_dialogue_path):
+            with open(remastered_dialogue_path, "r", encoding="utf-8") as f:
+                remastered_dialogue_data = json.load(f)
+            if isinstance(remastered_dialogue_data.get("dialogues"), dict):
+                dialogue_data.setdefault("dialogues", {})
+                dialogue_data["dialogues"].update(remastered_dialogue_data["dialogues"])
+        self.dialogue_data = dialogue_data
 
         # Load monsters if file exists
         try:
@@ -1011,6 +1287,157 @@ class Battles(commands.Cog):
             return False
         monster_name = self._canonical_god_shard_name((monster.get("name") or "").strip())
         return monster_name in self.GOD_SHARD_DEFINITIONS
+
+    def _tower_required_key_mask(self) -> int:
+        mask = 0
+        for bit in self.TOWER_KEY_FLOOR_BITS.values():
+            mask |= bit
+        return mask
+
+    def _tower_key_count(self, run_key_bits: int) -> int:
+        return sum(
+            1 for bit in self.TOWER_KEY_FLOOR_BITS.values() if (int(run_key_bits) & int(bit))
+        )
+
+    def _tower_key_label_for_floor(self, level: int) -> str:
+        return {
+            22: "First Key",
+            23: "Second Key",
+            25: "Third Key",
+        }.get(level, "Tower Key")
+
+    def _tower_door_label(self, door_key: str) -> str:
+        return {
+            "door_1_elysia": "Door 1 - Elysia",
+            "door_2_sepulchure": "Door 2 - Sepulchure",
+            "door_3_drakath": "Door 3 - Drakath",
+            "door_4_freedom": "Door 4 - Hidden Freedom Door",
+        }.get(door_key, door_key.replace("_", " ").title())
+
+    async def _update_tower_run_progress(self, ctx, level: int):
+        freedom_gain = int(self.TOWER_FREEDOM_MILESTONE_GAINS.get(level, 0) or 0)
+        has_key_roll = level in self.TOWER_KEY_FLOOR_BITS
+        if not freedom_gain and not has_key_roll:
+            return
+
+        async with self.bot.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT COALESCE(run_key_bits, 0) AS run_key_bits, COALESCE(freedom_meter, 0) AS freedom_meter
+                FROM battletower
+                WHERE id = $1
+                """,
+                ctx.author.id,
+            )
+            if not row:
+                return
+
+            old_bits = int(row["run_key_bits"] or 0)
+            new_bits = old_bits
+            old_meter = int(row["freedom_meter"] or 0)
+            new_meter = old_meter + freedom_gain
+            key_message = None
+
+            if has_key_roll:
+                bit = int(self.TOWER_KEY_FLOOR_BITS[level])
+                key_label = self._tower_key_label_for_floor(level)
+                if old_bits & bit:
+                    key_message = f"🔑 **{key_label}** is already resonating for this run."
+                elif random.random() < self.TOWER_KEY_DROP_CHANCE:
+                    new_bits = old_bits | bit
+                    key_message = (
+                        f"🔑 **{key_label}** resonates with your soul. "
+                        f"Keys this run: **{self._tower_key_count(new_bits)}/3**."
+                    )
+                else:
+                    key_message = (
+                        f"🗝️ **{key_label}** slips away this cycle. "
+                        f"Keys this run: **{self._tower_key_count(new_bits)}/3**."
+                    )
+
+            if new_bits != old_bits or freedom_gain:
+                await conn.execute(
+                    """
+                    UPDATE battletower
+                    SET run_key_bits = $1,
+                        freedom_meter = GREATEST(0, COALESCE(freedom_meter, 0) + $2)
+                    WHERE id = $3
+                    """,
+                    new_bits,
+                    freedom_gain,
+                    ctx.author.id,
+                )
+
+        if freedom_gain:
+            shown_meter = min(new_meter, self.TOWER_FREEDOM_UNLOCK_THRESHOLD)
+            await ctx.send(
+                f"🧭 Hidden Door resonance +{freedom_gain} "
+                f"(**{shown_meter}/{self.TOWER_FREEDOM_UNLOCK_THRESHOLD}**)."
+            )
+        if key_message:
+            await ctx.send(key_message)
+
+    async def _get_tower_unlock_state(self, user_id: int) -> dict:
+        async with self.bot.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT COALESCE(run_key_bits, 0) AS run_key_bits, COALESCE(freedom_meter, 0) AS freedom_meter
+                FROM battletower
+                WHERE id = $1
+                """,
+                user_id,
+            )
+
+        run_key_bits = int(row["run_key_bits"]) if row else 0
+        freedom_meter = int(row["freedom_meter"]) if row else 0
+        key_count = self._tower_key_count(run_key_bits)
+        full_key_unlock = (run_key_bits & self._tower_required_key_mask()) == self._tower_required_key_mask()
+        meter_unlock = freedom_meter >= self.TOWER_FREEDOM_UNLOCK_THRESHOLD
+        door4_unlocked = full_key_unlock or meter_unlock
+
+        return {
+            "run_key_bits": run_key_bits,
+            "freedom_meter": freedom_meter,
+            "key_count": key_count,
+            "full_key_unlock": full_key_unlock,
+            "meter_unlock": meter_unlock,
+            "door4_unlocked": door4_unlocked,
+        }
+
+    async def _prompt_finale_door_choice(self, ctx, available_door_keys, endings):
+        entries = []
+        choices = []
+
+        for door_key in available_door_keys:
+            ending = endings.get(door_key)
+            if not ending:
+                continue
+            label = self._tower_door_label(door_key)
+            title = ending.get("title", "Unknown Ending")
+            entries.append(f"**{label}**\n{title}")
+            choices.append(label)
+
+        if not entries:
+            return None
+
+        try:
+            selected_idx = await self.bot.paginator.Choose(
+                title="Choose Your Door",
+                placeholder="Pick one door",
+                entries=entries,
+                choices=choices,
+                return_index=True,
+                timeout=60,
+            ).paginate(ctx)
+            return available_door_keys[int(selected_idx)]
+        except self.bot.paginator.NoChoice:
+            chosen = random.choice(available_door_keys)
+            await ctx.send(
+                f"You hesitated too long. The tower chooses for you: **{self._tower_door_label(chosen)}**."
+            )
+            return chosen
+        except Exception:
+            return random.choice(available_door_keys)
 
     async def handle_god_shard_drop(self, ctx, monster):
         """Roll and award up to 6 unique god shards on god PvE victories."""
@@ -1233,6 +1660,55 @@ class Battles(commands.Cog):
 
         await ctx.send(embed=embed)
 
+    @commands.command(hidden=True, name="gmsetgodofgods")
+    @is_gm()
+    async def gmsetgodofgods(
+        self,
+        ctx,
+        hp: int,
+        attack: int,
+        defense: int,
+        element: str,
+        image_url: str,
+        *,
+        name: str,
+    ):
+        """[GM only] Upsert the tier-12 God of Gods record in database."""
+        if hp <= 0 or attack <= 0 or defense <= 0:
+            return await ctx.send("HP, Attack, and Defense must all be positive integers.")
+
+        clean_name = (name or "").strip()
+        clean_element = (element or "").strip()
+        clean_url = (image_url or "").strip()
+        if not clean_name or not clean_element or not clean_url:
+            return await ctx.send("Name, element, and image URL are required.")
+
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO godofgods (id, name, hp, attack, defense, element, image_url, updated_at)
+                VALUES (1, $1, $2, $3, $4, $5, $6, NOW())
+                ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    hp = EXCLUDED.hp,
+                    attack = EXCLUDED.attack,
+                    defense = EXCLUDED.defense,
+                    element = EXCLUDED.element,
+                    image_url = EXCLUDED.image_url,
+                    updated_at = NOW();
+                """,
+                clean_name,
+                int(hp),
+                int(attack),
+                int(defense),
+                clean_element,
+                clean_url,
+            )
+
+        await ctx.send(
+            f"✅ godofgods updated: **{clean_name}** | HP {hp:,} | ATK {attack:,} | DEF {defense:,} | {clean_element}"
+        )
+
     @commands.command()
     @commands.is_owner()
     async def element_debug(self, ctx):
@@ -1358,8 +1834,499 @@ class Battles(commands.Cog):
         
         user_data = self.pve_macro_detection[user_id]
         return user_data["count"] if user_data["count"] >= 48 else 0
+
+    def _get_pve_tier_for_player_level(self, player_level: int) -> int:
+        """Map player levels into 10-level PvE tiers."""
+        normalized_level = max(1, int(player_level))
+        return min(
+            self.PVE_MAX_TIER,
+            ((normalized_level - 1) // self.PVE_LEVEL_BRACKET_SIZE) + 1,
+        )
+
+    def _get_unlocked_pve_locations(self, player_level: int) -> list[dict]:
+        """Return all PvE locations unlocked at the player's current level."""
+        normalized_level = max(1, int(player_level))
+        return [
+            dict(location)
+            for location in self.PVE_LOCATIONS
+            if normalized_level >= int(location["unlock_level"])
+        ]
+
+    def _get_pve_location_by_id(self, location_id: str | None) -> dict | None:
+        """Look up a PvE location by id."""
+        if not location_id:
+            return None
+        for location in self.PVE_LOCATIONS:
+            if location["id"] == location_id:
+                return dict(location)
+        return None
+
+    def _get_pve_tier_rates_for_location(self, location: dict) -> list[tuple[int, float]]:
+        """Return exact encounter rates (percent) per tier for a location."""
+        god_chance = float(location.get("god_chance", 0) or 0)
+        god_chance = max(0.0, min(100.0, god_chance))
+
+        tier_weights: dict[int, float] = {}
+        for tier, weight in (location.get("tier_weights", {}) or {}).items():
+            tier_int = int(tier)
+            weight_float = float(weight)
+            if weight_float <= 0:
+                continue
+            tier_weights[tier_int] = tier_weights.get(tier_int, 0.0) + weight_float
+
+        rates: list[tuple[int, float]] = []
+        non_god_budget = max(0.0, 100.0 - god_chance)
+        total_weight = sum(tier_weights.values())
+
+        if total_weight > 0:
+            for tier in sorted(tier_weights):
+                rate = non_god_budget * (tier_weights[tier] / total_weight)
+                rates.append((tier, rate))
+        elif non_god_budget > 0:
+            fallback_tier = self._get_pve_tier_for_player_level(
+                int(location.get("unlock_level", 1))
+            )
+            rates.append((fallback_tier, non_god_budget))
+
+        if god_chance > 0:
+            rates.append((self.PVE_GOD_TIER, god_chance))
+
+        return sorted(rates, key=lambda entry: entry[0])
+
+    def _format_pve_rate_percent(self, value: float) -> str:
+        """Format a percentage value for PvE display."""
+        rounded = round(float(value), 1)
+        if float(rounded).is_integer():
+            return f"{int(rounded)}%"
+        return f"{rounded:.1f}%"
+
+    def _resolve_pve_location_query(self, query: str | None) -> dict | None:
+        """Resolve location by id or name (exact first, then contains match)."""
+        if not query:
+            return None
+
+        normalized = str(query).strip().lower()
+        if not normalized:
+            return None
+
+        for location in self.PVE_LOCATIONS:
+            if normalized == str(location.get("id", "")).lower():
+                return dict(location)
+
+        for location in self.PVE_LOCATIONS:
+            if normalized == str(location.get("name", "")).lower():
+                return dict(location)
+
+        matches = [
+            dict(location)
+            for location in self.PVE_LOCATIONS
+            if normalized in str(location.get("id", "")).lower()
+            or normalized in str(location.get("name", "")).lower()
+        ]
+        if not matches:
+            return None
+        return matches[0]
+
+    async def _get_godofgods_monster_data(self) -> dict | None:
+        """Fetch the real tier-12 monster data from database storage."""
+        async with self.bot.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT name, hp, attack, defense, element, image_url
+                FROM godofgods
+                WHERE id = 1
+                """
+            )
+        if not row:
+            return None
+
+        return {
+            "name": row["name"],
+            "hp": int(row["hp"]),
+            "attack": int(row["attack"]),
+            "defense": int(row["defense"]),
+            "element": row["element"],
+            "url": row["image_url"],
+            "ispublic": True,
+        }
+
+    async def _get_public_monsters_by_level(self) -> dict[int, list[dict]]:
+        """Load public monster pools, resolving tier-12 combat data from DB."""
+        if not self.monsters_data:
+            with open("monsters.json", "r") as f:
+                self.monsters_data = json.load(f)
+
+        monsters: dict[int, list[dict]] = {}
+        tier12_data = await self._get_godofgods_monster_data()
+
+        for level_str, monster_list in self.monsters_data.items():
+            try:
+                level = int(level_str)
+            except (TypeError, ValueError):
+                continue
+
+            if level == 12:
+                monsters[level] = [dict(tier12_data)] if tier12_data else []
+                continue
+
+            public_monsters = [
+                dict(monster)
+                for monster in monster_list
+                if monster.get("ispublic", True)
+            ]
+            monsters[level] = public_monsters
+
+        return monsters
+
+    def _load_base_pve_monster_names(self) -> set[str]:
+        """Load base monsters from monsters.json for splice generation mapping."""
+        if not self.monsters_data:
+            with open("monsters.json", "r", encoding="utf-8") as f:
+                self.monsters_data = json.load(f)
+
+        base_names = set()
+        if isinstance(self.monsters_data, dict):
+            for monster_list in self.monsters_data.values():
+                if not isinstance(monster_list, list):
+                    continue
+                for monster in monster_list:
+                    if not isinstance(monster, dict):
+                        continue
+                    name = monster.get("name")
+                    if isinstance(name, str):
+                        cleaned = name.strip()
+                        if cleaned:
+                            base_names.add(cleaned)
+        return base_names
+
+    def _build_splice_generation_map_for_pve(
+        self,
+        base_monster_names: set[str],
+        completed_rows,
+    ) -> dict[str, int]:
+        """
+        Build generation map matching splicegenstats rules.
+        Base monsters are generation -1; child generation is max(parent gens) + 1.
+        """
+        generation_by_name = {name: -1 for name in base_monster_names}
+        max_passes = max(1, len(completed_rows) + 1)
+
+        for _ in range(max_passes):
+            changed = False
+            for row in completed_rows:
+                parent1 = row["pet1_default"]
+                parent2 = row["pet2_default"]
+                result_name = row["result_name"]
+
+                if not isinstance(parent1, str) or not isinstance(parent2, str) or not isinstance(result_name, str):
+                    continue
+
+                parent1 = parent1.strip()
+                parent2 = parent2.strip()
+                result_name = result_name.strip()
+                if not parent1 or not parent2 or not result_name:
+                    continue
+
+                parent1_gen = generation_by_name.get(parent1)
+                parent2_gen = generation_by_name.get(parent2)
+                if parent1_gen is None or parent2_gen is None:
+                    continue
+
+                child_gen = max(parent1_gen, parent2_gen) + 1
+                existing_gen = generation_by_name.get(result_name)
+
+                # Keep canonical base monster mapping untouched.
+                if existing_gen == -1:
+                    continue
+
+                if existing_gen is None or child_gen < existing_gen:
+                    generation_by_name[result_name] = child_gen
+                    changed = True
+
+            if not changed:
+                break
+
+        return generation_by_name
+
+    def _classify_splice_row_generation(
+        self,
+        generation_by_name: dict[str, int],
+        parent1_name,
+        parent2_name,
+    ) -> int | None:
+        if not isinstance(parent1_name, str) or not isinstance(parent2_name, str):
+            return None
+
+        parent1 = parent1_name.strip()
+        parent2 = parent2_name.strip()
+        if not parent1 or not parent2:
+            return None
+
+        parent1_gen = generation_by_name.get(parent1)
+        parent2_gen = generation_by_name.get(parent2)
+        if parent1_gen is None or parent2_gen is None:
+            return None
+
+        return int(max(parent1_gen, parent2_gen) + 1)
+
+    async def _get_splice_pve_monsters_by_level(
+        self,
+        sample_per_generation: int | None = None,
+    ) -> dict[int, list[dict]]:
+        """
+        Build a splice-only PvE pool from splice_combinations.
+        Samples up to N monsters from Gen0, then buckets by power into tiers 1-10.
+        """
+        try:
+            base_monster_names = self._load_base_pve_monster_names()
+        except Exception:
+            return {}
+
+        if not base_monster_names:
+            return {}
+
+        try:
+            async with self.bot.pool.acquire() as conn:
+                completed_rows = await conn.fetch(
+                    """
+                    SELECT id, pet1_default, pet2_default, result_name, hp, attack, defense, element, url, created_at
+                    FROM splice_combinations
+                    ORDER BY created_at ASC, id ASC
+                    """
+                )
+        except Exception:
+            return {}
+
+        if not completed_rows:
+            return {}
+
+        generation_map = self._build_splice_generation_map_for_pve(
+            base_monster_names,
+            completed_rows,
+        )
+
+        target_sample = int(sample_per_generation or self.PVE_SPLICE_SAMPLE_PER_GENERATION)
+        target_sample = max(1, target_sample)
+
+        generation_buckets = {generation: [] for generation in self.PVE_SPLICE_GENERATIONS}
+        seen_by_generation = {generation: set() for generation in self.PVE_SPLICE_GENERATIONS}
+
+        for row in completed_rows:
+            row_generation = self._classify_splice_row_generation(
+                generation_map,
+                row["pet1_default"],
+                row["pet2_default"],
+            )
+            if row_generation not in generation_buckets:
+                continue
+
+            result_name = row["result_name"]
+            if not isinstance(result_name, str):
+                continue
+            result_name = result_name.strip()
+            if not result_name:
+                continue
+
+            dedupe_key = result_name.casefold()
+            if dedupe_key in seen_by_generation[row_generation]:
+                continue
+            seen_by_generation[row_generation].add(dedupe_key)
+
+            try:
+                hp = int(row["hp"])
+                attack = int(row["attack"])
+                defense = int(row["defense"])
+            except (TypeError, ValueError):
+                continue
+
+            if hp <= 0 or attack <= 0 or defense <= 0:
+                continue
+
+            generation_buckets[row_generation].append(
+                {
+                    "name": result_name,
+                    "hp": hp,
+                    "attack": attack,
+                    "defense": defense,
+                    "element": (row["element"] or "Unknown"),
+                    "url": row["url"] or "",
+                    "ispublic": True,
+                    "splice_generation": int(row_generation),
+                    "splice_source_id": int(row["id"]),
+                }
+            )
+
+        selected_monsters = []
+        for generation in self.PVE_SPLICE_GENERATIONS:
+            candidates = generation_buckets[generation]
+            random.shuffle(candidates)
+            selected_monsters.extend(candidates[:target_sample])
+
+        if not selected_monsters:
+            return {}
+
+        # Spread splice monsters across tiers by total power, weakest -> strongest.
+        random.shuffle(selected_monsters)
+        selected_monsters.sort(key=lambda monster: monster["hp"] + monster["attack"] + monster["defense"])
+
+        total_count = len(selected_monsters)
+        tier_buckets = {tier: [] for tier in range(1, self.PVE_MAX_TIER + 1)}
+        for index, monster in enumerate(selected_monsters):
+            tier = min(
+                self.PVE_MAX_TIER,
+                max(1, ((index * self.PVE_MAX_TIER) // total_count) + 1),
+            )
+            monster_copy = dict(monster)
+            monster_copy["pve_pool"] = "splice"
+            tier_buckets[tier].append(monster_copy)
+
+        return {tier: bucket for tier, bucket in tier_buckets.items() if bucket}
+
+    def _merge_pve_monster_pools(
+        self,
+        default_pool: dict[int, list[dict]],
+        splice_pool: dict[int, list[dict]],
+    ) -> dict[int, list[dict]]:
+        """Merge splice monsters into the normal PvE pool by tier."""
+        merged: dict[int, list[dict]] = {
+            int(tier): [dict(monster) for monster in monster_list]
+            for tier, monster_list in (default_pool or {}).items()
+        }
+        for tier, monster_list in (splice_pool or {}).items():
+            tier_key = int(tier)
+            merged.setdefault(tier_key, [])
+            merged[tier_key].extend(dict(monster) for monster in monster_list)
+        return merged
+
+    async def _get_user_pve_splice_toggle(self, user_id: int) -> bool:
+        """Return whether a user has splice injection enabled for PvE."""
+        async with self.bot.pool.acquire() as conn:
+            enabled = await conn.fetchval(
+                "SELECT include_splice FROM pve_preferences WHERE user_id = $1;",
+                user_id,
+            )
+        return bool(enabled)
+
+    async def _set_user_pve_splice_toggle(self, user_id: int, enabled: bool):
+        """Persist user preference for splice injection into PvE pool."""
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO pve_preferences (user_id, include_splice, updated_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (user_id)
+                DO UPDATE SET include_splice = EXCLUDED.include_splice, updated_at = NOW();
+                """,
+                user_id,
+                bool(enabled),
+            )
+
+    async def _get_pve_monster_pool_for_user(
+        self,
+        user_id: int,
+        force_include_splice: bool | None = None,
+    ) -> tuple[dict[int, list[dict]], bool]:
+        """
+        Build PvE pool for a user.
+        Returns (pool, splice_injected).
+        """
+        default_pool = await self._get_public_monsters_by_level()
+
+        include_splice = (
+            bool(force_include_splice)
+            if force_include_splice is not None
+            else await self._get_user_pve_splice_toggle(user_id)
+        )
+        if not include_splice:
+            return default_pool, False
+
+        splice_pool = await self._get_splice_pve_monsters_by_level()
+        if not splice_pool:
+            return default_pool, False
+
+        return self._merge_pve_monster_pools(default_pool, splice_pool), True
+
+    def _roll_pve_tier_for_location(self, location: dict) -> int:
+        """
+        Roll a tier using location-specific weights and god chance.
+        God chance is a percentage.
+        """
+        god_chance = float(location.get("god_chance", 0) or 0)
+        god_chance = max(0.0, min(100.0, god_chance))
+
+        if god_chance > 0 and random.random() < (god_chance / 100):
+            return self.PVE_GOD_TIER
+
+        tier_weights = location.get("tier_weights", {})
+        tiers = []
+        weights = []
+        for tier, weight in tier_weights.items():
+            tier_int = int(tier)
+            weight_float = float(weight)
+            if weight_float <= 0:
+                continue
+            tiers.append(tier_int)
+            weights.append(weight_float)
+
+        if not tiers:
+            return self._get_pve_tier_for_player_level(location.get("unlock_level", 1))
+        return int(random.choices(tiers, weights=weights, k=1)[0])
+
+    def _roll_pve_tier(self, player_level: int, allow_legendary: bool = True) -> int:
+        """Roll the PvE tier for an encounter, with optional legendary god chance."""
+        if (
+            allow_legendary
+            and player_level >= 5
+            and random.random() < self.PVE_LEGENDARY_SPAWN_CHANCE
+        ):
+            return self.PVE_GOD_TIER
+        return self._get_pve_tier_for_player_level(player_level)
+
+    def _get_encounter_level_range_for_tier(self, tier: int) -> tuple[int, int]:
+        """Return encounter-level range for a given PvE tier."""
+        normalized_tier = int(tier)
+        if normalized_tier >= self.PVE_GOD_TIER:
+            return self.PVE_GOD_ENCOUNTER_LEVEL, self.PVE_GOD_ENCOUNTER_LEVEL
+
+        normalized_tier = max(1, min(self.PVE_MAX_TIER, normalized_tier))
+        range_min = (normalized_tier - 1) * self.PVE_LEVEL_BRACKET_SIZE
+        range_max = normalized_tier * self.PVE_LEVEL_BRACKET_SIZE
+        return range_min, range_max
+
+    def _scale_monster_for_encounter(
+        self, monster: dict, tier: int, encounter_level: int | None = None
+    ) -> dict:
+        """
+        Scale monster stats by encounter level inside its tier range.
+        The range minimum keeps base stats, then each level step adds +2%.
+        """
+        range_min, range_max = self._get_encounter_level_range_for_tier(tier)
+
+        if encounter_level is None:
+            encounter_level = random.randint(range_min, range_max)
+        encounter_level = max(range_min, min(range_max, int(encounter_level)))
+
+        scale_steps = max(0, encounter_level - range_min)
+        scale_multiplier = Decimal("1") + (
+            self.PVE_PER_LEVEL_STAT_SCALE * Decimal(scale_steps)
+        )
+
+        scaled_monster = dict(monster)
+        for stat_key in ("hp", "attack", "defense"):
+            base_value = Decimal(str(monster.get(stat_key, 0)))
+            scaled_value = int(
+                (base_value * scale_multiplier).to_integral_value(
+                    rounding=ROUND_HALF_UP
+                )
+            )
+            scaled_monster[stat_key] = max(1, scaled_value)
+
+        scaled_monster["encounter_level"] = encounter_level
+        scaled_monster["pve_tier"] = int(tier)
+        scaled_monster["pve_stat_multiplier"] = float(scale_multiplier)
+        return scaled_monster
     
-    async def display_dialogue(self, ctx, level, name_value, dialoguetoggle=False):
+    async def display_dialogue(self, ctx, level, name_value, dialoguetoggle=False, god_value=None):
         """Display dialogue for battle tower levels"""
         # Skip dialogue if toggle is on
         if dialoguetoggle:
@@ -1391,23 +2358,44 @@ class Battles(commands.Cog):
         
         # Process dialogue lines
         processed_lines = []
+        player_god = god_value if isinstance(god_value, str) and god_value else "an unknown god"
         for line in dialogue_info["lines"]:
             speaker = line["speaker"]
-            text = line["text"].replace("PLAYER", name_value)
+            text = (
+                line["text"]
+                .replace("{PLAYER_GOD}", player_god)
+                .replace("PLAYER_GOD", player_god)
+                .replace("PLAYER", name_value)
+            )
             thumbnail = line["thumbnail"]
+
+            if speaker == "PLAYER":
+                speaker = name_value
             
             # Replace placeholder thumbnails
-            if thumbnail == "PLAYER_AVATAR":
+            if thumbnail in self.BATTLE_TOWER_THUMBNAIL_TOKENS:
+                thumbnail = self.BATTLE_TOWER_THUMBNAIL_TOKENS[thumbnail]
+            elif thumbnail == "PLAYER_AVATAR":
                 thumbnail = ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url
+            elif thumbnail == "RANDOM_USER_1_AVATAR":
+                if random_user_objects:
+                    thumbnail = random_user_objects[0].avatar.url if random_user_objects[0].avatar else self.DEFAULT_DIALOGUE_AVATAR
+                else:
+                    thumbnail = self.DEFAULT_DIALOGUE_AVATAR
+            elif thumbnail == "RANDOM_USER_2_AVATAR":
+                if len(random_user_objects) > 1:
+                    thumbnail = random_user_objects[1].avatar.url if random_user_objects[1].avatar else self.DEFAULT_DIALOGUE_AVATAR
+                else:
+                    thumbnail = self.DEFAULT_DIALOGUE_AVATAR
             elif "special" in dialogue_info and dialogue_info["special"] == "random_users":
                 if speaker == "RANDOM_USER_1" and random_user_objects:
                     speaker = random_user_objects[0].display_name
                     text = text.replace("RANDOM_USER_1", speaker)
-                    thumbnail = random_user_objects[0].avatar.url if random_user_objects[0].avatar else "https://ia803204.us.archive.org/4/items/discordprofilepictures/discordblue.png"
+                    thumbnail = random_user_objects[0].avatar.url if random_user_objects[0].avatar else self.DEFAULT_DIALOGUE_AVATAR
                 elif speaker == "RANDOM_USER_2" and len(random_user_objects) > 1:
                     speaker = random_user_objects[1].display_name
                     text = text.replace("RANDOM_USER_2", speaker)
-                    thumbnail = random_user_objects[1].avatar.url if random_user_objects[1].avatar else "https://ia803204.us.archive.org/4/items/discordprofilepictures/discordblue.png"
+                    thumbnail = random_user_objects[1].avatar.url if random_user_objects[1].avatar else self.DEFAULT_DIALOGUE_AVATAR
             
             processed_lines.append({
                 "speaker": speaker,
@@ -1673,40 +2661,33 @@ class Battles(commands.Cog):
                     return
 
                 try:
-                    user_level = await connection.fetchval('SELECT level FROM battletower WHERE id = $1', ctx.author.id)
+                    progress_row = await connection.fetchrow(
+                        """
+                        SELECT
+                            level,
+                            prestige,
+                            COALESCE(run_key_bits, 0) AS run_key_bits,
+                            COALESCE(freedom_meter, 0) AS freedom_meter
+                        FROM battletower
+                        WHERE id = $1
+                        """,
+                        ctx.author.id,
+                    )
+                    if not progress_row:
+                        await ctx.send("You have not started Battletower. You can start by using `$battletower start`")
+                        return
 
-                    level_names_1 = [
-                        "The Tower's Foyer",
-                        "Shadowy Staircase",
-                        "Chamber of Whispers",
-                        "Serpent's Lair",
-                        "Halls of Despair",
-                        "Crimson Abyss",
-                        "Forgotten Abyss",
-                        "Dreadlord's Domain",
-                        "Gates of Twilight",
-                        "Twisted Reflections",
-                        "Voidforged Sanctum",
-                        "Nexus of Chaos",
-                        "Eternal Torment Halls",
-                        "Abyssal Desolation",
-                        "Cursed Citadel",
-                        "The Spire of Shadows",
-                        "Tempest's Descent",
-                        "Roost of Doombringers",
-                        "The Endless Spiral",
-                        "Malevolent Apex",
-                        "Apocalypse's Abyss",
-                        "Chaosborne Throne",
-                        "Supreme Darkness",
-                        "The Tower's Heart",
-                        "The Ultimate Test",
-                        "Realm of Annihilation",
-                        "Lord of Despair",
-                        "Abyssal Overlord",
-                        "The End of All",
-                        "The Final Confrontation"
-                    ]
+                    user_level = int(progress_row["level"] or 1)
+                    prestige_level = int(progress_row["prestige"] or 0)
+                    run_key_bits = int(progress_row["run_key_bits"] or 0)
+                    freedom_meter = int(progress_row["freedom_meter"] or 0)
+                    keys_this_run = self._tower_key_count(run_key_bits)
+                    hidden_door_ready = (
+                        keys_this_run == 3
+                        or freedom_meter >= self.TOWER_FREEDOM_UNLOCK_THRESHOLD
+                    )
+
+                    level_names_1 = self.battle_data.get("level_names") or []
 
                     # Function to generate the formatted level list
                     def generate_level_list(levels, start_level=1):
@@ -1718,12 +2699,16 @@ class Battles(commands.Cog):
                         return result
 
                     # Create embed for levels 1-30
-                    prestige_level = await connection.fetchval('SELECT prestige FROM battletower WHERE id = $1',
-                                                               ctx.author.id)
-
                     embed_1 = discord.Embed(
                         title="Battle Tower Progress (Levels 1-30)",
-                        description=f"Level: {user_level}\nPrestige Level: {prestige_level}",
+                        description=(
+                            f"Level: {user_level}\n"
+                            f"Prestige Level: {prestige_level}\n"
+                            f"Keys This Run: {keys_this_run}/3\n"
+                            f"Hidden Door Resonance: "
+                            f"{min(freedom_meter, self.TOWER_FREEDOM_UNLOCK_THRESHOLD)}/{self.TOWER_FREEDOM_UNLOCK_THRESHOLD}\n"
+                            f"Hidden Door Ready: {'✅' if hidden_door_ready else '❌'}"
+                        ),
                         color=0x0000FF
                     )
                     embed_1.add_field(name="Level Progress", value=generate_level_list(level_names_1), inline=False)
@@ -1777,6 +2762,9 @@ class Battles(commands.Cog):
             color=0x00ff00  # Green color for success
         )
         await ctx.send(embed=victory_embed)
+
+        # Track run-based hidden-door progress (key rolls + resonance milestones).
+        await self._update_tower_run_progress(ctx, level)
         
         # Handle chest rewards if this level has them
         if "has_chest" in victory_data and victory_data["has_chest"]:
@@ -2034,70 +3022,162 @@ class Battles(commands.Cog):
     
     async def handle_finale_rewards(self, ctx, level):
         """Handle level 30 finale rewards for battle tower."""
+        victory_data = self.battle_data["victories"].get("30", {})
+        unlock_state = await self._get_tower_unlock_state(ctx.author.id)
+        keys_this_run = int(unlock_state["key_count"])
+        freedom_meter = int(unlock_state["freedom_meter"])
+        hidden_door_ready = bool(unlock_state["door4_unlocked"])
+        hidden_ready_reason = (
+            "All 3 keys resonated this run."
+            if unlock_state["full_key_unlock"]
+            else "Your resonance meter reached the hidden threshold."
+            if unlock_state["meter_unlock"]
+            else "Not unlocked this cycle."
+        )
+
         # Create and send cosmic embed
         cosmic_embed = discord.Embed(
-            title="The Cosmic Abyss: A Symphony of Despair",
-            description=self.battle_data["victories"]["30"]["description"],
-            color=0xff0000  # Red color for the climax
+            title=victory_data.get("title", self.battle_data["victories"]["30"]["title"]),
+            description=victory_data.get("description", self.battle_data["victories"]["30"]["description"]),
+            color=0xff0000,  # Red color for the climax
+        )
+        cosmic_embed.add_field(
+            name="Hidden Door Status",
+            value=(
+                f"Keys This Run: **{keys_this_run}/3**\n"
+                f"Resonance Meter: **{min(freedom_meter, self.TOWER_FREEDOM_UNLOCK_THRESHOLD)}/{self.TOWER_FREEDOM_UNLOCK_THRESHOLD}**\n"
+                f"Door 4 Ready: {'✅' if hidden_door_ready else '❌'}\n"
+                f"{hidden_ready_reason}"
+            ),
+            inline=False,
         )
         await ctx.send(embed=cosmic_embed)
-        
+
+        endings = victory_data.get("endings", {})
+        selected_door_key = None
+        if isinstance(endings, dict) and endings:
+            ordered_doors = [
+                "door_1_elysia",
+                "door_2_sepulchure",
+                "door_3_drakath",
+                "door_4_freedom",
+            ]
+            available_door_keys = [
+                door_key
+                for door_key in ordered_doors
+                if door_key in endings and (door_key != "door_4_freedom" or hidden_door_ready)
+            ]
+            if available_door_keys:
+                selected_door_key = await self._prompt_finale_door_choice(
+                    ctx, available_door_keys, endings
+                )
+                if not selected_door_key:
+                    selected_door_key = random.choice(available_door_keys)
+
+                selected_ending = endings.get(selected_door_key)
+                if selected_ending:
+                    ending_embed = discord.Embed(
+                        title=selected_ending.get("title", self._tower_door_label(selected_door_key)),
+                        description=selected_ending.get("description", "The path forward is unclear."),
+                        color=0x8B0000,
+                    )
+                    await ctx.send(embed=ending_embed)
+
         # Check prestige level
         async with self.bot.pool.acquire() as connection:
-            prestige_level = await connection.fetchval('SELECT prestige FROM battletower WHERE id = $1', ctx.author.id)
-            
+            prestige_level = await connection.fetchval(
+                'SELECT prestige FROM battletower WHERE id = $1',
+                ctx.author.id,
+            )
+            prestige_level = int(prestige_level or 0)
+
+        # Get emoji mapping for display
+        emotes = {
+            "common": "<:c_common:1403797578197368923>",
+            "uncommon": "<:c_uncommon:1403797597532983387>",
+            "rare": "<:c_rare:1403797594827657247>",
+            "magic": "<:c_Magic:1403797589169541330>",
+            "legendary": "<:c_Legendary:1403797587236225044>",
+            "mystery": "<:c_mystspark:1403797593129222235>",
+            "fortune": "<:c_money:1403797585411575971>",
+            "divine": "<:c_divine:1403797579635884202>",
+        }
+
         if prestige_level >= 1:
-            # Update level
-            async with self.bot.pool.acquire() as connection:
-                await connection.execute('UPDATE battletower SET level = level + 1 WHERE id = $1', ctx.author.id)
-                
-            await ctx.send(f'This is the end for you... {ctx.author.mention}.. or is it..?')
-            
-            # Award a random premium crate
-            success = True
-            self.bot.dispatch("raid_completion", ctx, success, ctx.author.id)
-            
-            # Get premium crate options
             premium_options = self.battle_data["chest_options"]["random_premium"]
             crate_options = premium_options["types"]
             weights = premium_options["weights"]
-            
-            # Select random crate type
             selected_crate = random.choices(crate_options, weights)[0]
-            
-            # Award the crate
             async with self.bot.pool.acquire() as connection:
                 await connection.execute(
                     f'UPDATE profile SET crates_{selected_crate} = crates_{selected_crate} + 1 WHERE "user" = $1',
-                    ctx.author.id)
-                    
-            # Get emoji mapping for display
-            emotes = {
-                "common": "<:c_common:1403797578197368923>",
-                "uncommon": "<:c_uncommon:1403797597532983387>",
-                "rare": "<:c_rare:1403797594827657247>",
-                "magic": "<:c_Magic:1403797589169541330>",
-                "legendary": "<:c_Legendary:1403797587236225044>",
-                "mystery": "<:c_mystspark:1403797593129222235>",
-                "fortune": "<:c_money:1403797585411575971>",
-                "divine": "<:c_divine:1403797579635884202>",
-            }
-                    
-            await ctx.send(f"You have received 1 {emotes[selected_crate]} crate for completing the battletower on prestige level: {prestige_level}. Congratulations!")
+                    ctx.author.id,
+                )
+            reward_message = (
+                f"You have received 1 {emotes[selected_crate]} crate for completing the battletower "
+                f"on prestige level: {prestige_level}. Congratulations!"
+            )
         else:
-            # First-time completion gets divine crate
             async with self.bot.pool.acquire() as connection:
                 await connection.execute(
                     'UPDATE profile SET crates_divine = crates_divine + 1 WHERE "user" = $1',
-                    ctx.author.id)
-                await connection.execute('UPDATE battletower SET level = level + 1 WHERE id = $1', ctx.author.id)
-                
-            await ctx.send(f'This is the end for you... {ctx.author.mention}.. or is it..?')
-            await ctx.send("You have received 1 <:f_divine:1169412814612471869> crate for completing the battletower, congratulations.")
-            
+                    ctx.author.id,
+                )
+            reward_message = (
+                "You have received 1 <:f_divine:1169412814612471869> crate "
+                "for completing the battletower, congratulations."
+            )
+
+        # Progression updates after floor 30:
+        # - always advance to level 31 (prestige prompt remains in `fight`)
+        # - reset run keys for the next cycle
+        # - apply hidden-door resonance gain/consumption
+        freedom_delta = 0
+        if not hidden_door_ready:
+            freedom_delta += self.TOWER_FREEDOM_FINALE_MISS_GAIN
+        elif (
+            selected_door_key == "door_4_freedom"
+            and unlock_state["meter_unlock"]
+            and not unlock_state["full_key_unlock"]
+        ):
+            freedom_delta -= self.TOWER_FREEDOM_UNLOCK_THRESHOLD
+
+        async with self.bot.pool.acquire() as connection:
+            await connection.execute(
+                """
+                UPDATE battletower
+                SET level = level + 1,
+                    run_key_bits = 0,
+                    freedom_meter = GREATEST(0, COALESCE(freedom_meter, 0) + $1)
+                WHERE id = $2
+                """,
+                freedom_delta,
+                ctx.author.id,
+            )
+
+        await ctx.send(f'This is the end for you... {ctx.author.mention}.. or is it..?')
+        await ctx.send(reward_message)
+
+        if not hidden_door_ready:
+            new_meter = max(0, freedom_meter + self.TOWER_FREEDOM_FINALE_MISS_GAIN)
+            await ctx.send(
+                f"🧭 The hidden door stayed sealed this cycle. "
+                f"Resonance +{self.TOWER_FREEDOM_FINALE_MISS_GAIN} "
+                f"(**{min(new_meter, self.TOWER_FREEDOM_UNLOCK_THRESHOLD)}/{self.TOWER_FREEDOM_UNLOCK_THRESHOLD}**)."
+            )
+        elif (
+            selected_door_key == "door_4_freedom"
+            and unlock_state["meter_unlock"]
+            and not unlock_state["full_key_unlock"]
+        ):
+            remaining_meter = max(0, freedom_meter - self.TOWER_FREEDOM_UNLOCK_THRESHOLD)
+            await ctx.send(
+                f"🗝️ Hidden-door resonance consumed: "
+                f"{self.TOWER_FREEDOM_UNLOCK_THRESHOLD}. Remaining: **{remaining_meter}**."
+            )
+
         # Complete the raid
-        completed = True
-        self.bot.dispatch("raid_completion", ctx, completed, ctx.author.id)
+        self.bot.dispatch("raid_completion", ctx, True, ctx.author.id)
         try:
             await self.remove_player_from_fight(ctx.author.id)
         except Exception as e:
@@ -2137,7 +3217,7 @@ class Battles(commands.Cog):
                     if confirm:
                         async with self.bot.pool.acquire() as connection:
                             await connection.execute(
-                                'UPDATE battletower SET level = 1, prestige = prestige + 1 WHERE id = $1',
+                                'UPDATE battletower SET level = 1, prestige = prestige + 1, run_key_bits = 0 WHERE id = $1',
                                 ctx.author.id)
                         await ctx.send(
                             "You have prestiged. Your level has been reset to 1. The rewards for your next run will be completely randomized.")
@@ -2153,7 +3233,7 @@ class Battles(commands.Cog):
                     return
 
             # Display dialogue for the current level
-            await self.display_dialogue(ctx, level, name_value, dialoguetoggle)
+            await self.display_dialogue(ctx, level, name_value, dialoguetoggle, god_value)
 
             # Check if player is already in a fight
             if await self.is_player_in_fight(ctx.author.id):
@@ -2801,11 +3881,224 @@ class Battles(commands.Cog):
                 )
 
     @has_char()
+    @commands.command(
+        brief=_("Toggle splice monsters in your PvE pool"),
+        aliases=["pvesplices", "pvepoolsplice", "splicepve"],
+    )
+    @locale_doc
+    async def pvesplice(self, ctx, mode: str = "toggle"):
+        """
+        Toggle splice monster injection in your regular PvE pool.
+
+        Usage:
+        - `$pvesplice` (toggle)
+        - `$pvesplice on`
+        - `$pvesplice off`
+        - `$pvesplice status`
+        """
+        normalized = str(mode or "toggle").strip().lower()
+        current = await self._get_user_pve_splice_toggle(ctx.author.id)
+
+        if normalized in {"status", "state", "show"}:
+            new_state = current
+            changed = False
+        elif normalized in {"on", "enable", "enabled", "yes", "true", "1"}:
+            new_state = True
+            changed = new_state != current
+        elif normalized in {"off", "disable", "disabled", "no", "false", "0"}:
+            new_state = False
+            changed = new_state != current
+        elif normalized in {"toggle", "flip", "switch"}:
+            new_state = not current
+            changed = True
+        else:
+            await ctx.send("Usage: `$pvesplice [on|off|toggle|status]`")
+            return
+
+        if changed:
+            await self._set_user_pve_splice_toggle(ctx.author.id, new_state)
+
+        if new_state:
+            await ctx.send(
+                "✅ Splice injection is **ON**. Your `$pve` and `$scout` pools now include sampled Gen 0 splice monsters."
+            )
+        else:
+            await ctx.send(
+                "✅ Splice injection is **OFF**. Your `$pve` and `$scout` use only the default monster pool."
+            )
+
+    @has_char()
+    @commands.command(
+        brief=_("Show PvE location unlocks and tier highlights"),
+        aliases=["pvelocs", "pvemap"],
+    )
+    @locale_doc
+    async def pvelocations(self, ctx):
+        _(
+            """Show all PvE locations, their unlock levels, and strongest tier rates.
+            Use `$pveinfo <location>` for exact tier-by-tier odds."""
+        )
+        player_level = rpgtools.xptolevel(ctx.character_data.get("xp", 0))
+        lines = []
+
+        for location in self.PVE_LOCATIONS:
+            unlock_level = int(location.get("unlock_level", 1))
+            unlocked = player_level >= unlock_level
+            status_icon = "✅" if unlocked else "🔒"
+
+            rates = self._get_pve_tier_rates_for_location(location)
+            if rates:
+                tier_ids = [tier for tier, _ in rates]
+                min_tier = min(tier_ids)
+                max_tier = max(tier_ids)
+                tier_band = f"T{min_tier}" if min_tier == max_tier else f"T{min_tier}-T{max_tier}"
+                top_tier, top_rate = max(rates, key=lambda entry: entry[1])
+                top_label = "God" if top_tier == self.PVE_GOD_TIER else f"T{top_tier}"
+                top_rate_text = self._format_pve_rate_percent(top_rate)
+            else:
+                tier_band = "T?"
+                top_label = "T?"
+                top_rate_text = "0%"
+
+            lines.append(
+                f"{status_icon} **{location['name']}** (`{location['id']}`) "
+                f"- Lv {unlock_level}+ - {tier_band} - Top {top_label} {top_rate_text}"
+            )
+
+        if not lines:
+            await ctx.send("No PvE locations are configured.")
+            return
+
+        embed = discord.Embed(
+            title="PvE Locations",
+            description=f"Your level: **{player_level}**",
+            color=self.bot.config.game.primary_colour,
+        )
+
+        # Keep each field below Discord's 1024-char limit.
+        chunk: list[str] = []
+        chunk_len = 0
+        section_index = 1
+        for line in lines:
+            projected = chunk_len + len(line) + 1
+            if chunk and projected > 980:
+                field_name = "Locations" if section_index == 1 else f"Locations ({section_index})"
+                embed.add_field(name=field_name, value="\n".join(chunk), inline=False)
+                section_index += 1
+                chunk = [line]
+                chunk_len = len(line) + 1
+            else:
+                chunk.append(line)
+                chunk_len = projected
+        if chunk:
+            field_name = "Locations" if section_index == 1 else f"Locations ({section_index})"
+            embed.add_field(name=field_name, value="\n".join(chunk), inline=False)
+
+        embed.set_footer(text="Use `$pveinfo <location name or id>` for exact odds.")
+        await ctx.send(embed=embed)
+
+    @has_char()
+    @commands.command(
+        brief=_("Show exact encounter rates for one PvE location"),
+        aliases=["pvelocinfo", "locationinfo"],
+    )
+    @locale_doc
+    async def pveinfo(self, ctx, *, location_query: str = ""):
+        _(
+            """`<location>` - location name or id
+            Show exact tier encounter odds for a PvE location."""
+        )
+        player_level = rpgtools.xptolevel(ctx.character_data.get("xp", 0))
+        query = str(location_query or "").strip()
+        if not query:
+            location_list = ", ".join(f"`{loc['id']}`" for loc in self.PVE_LOCATIONS)
+            await ctx.send(
+                "Usage: `$pveinfo <location name or id>`\n"
+                f"Available ids: {location_list}"
+            )
+            return
+
+        location = self._resolve_pve_location_query(query)
+        if not location:
+            await ctx.send(
+                "Unknown location. Use `$pvelocations` to view ids, then run `$pveinfo <id>`."
+            )
+            return
+
+        unlock_level = int(location.get("unlock_level", 1))
+        unlocked = player_level >= unlock_level
+        rates = self._get_pve_tier_rates_for_location(location)
+        if rates:
+            rate_lines = []
+            for tier, rate in rates:
+                if tier == self.PVE_GOD_TIER:
+                    tier_name = "Tier 11 (God)"
+                elif tier == 12:
+                    tier_name = "Tier 12 (Level X)"
+                else:
+                    tier_name = f"Tier {tier}"
+                rate_lines.append(
+                    f"• {tier_name}: **{self._format_pve_rate_percent(rate)}**"
+                )
+            rates_text = "\n".join(rate_lines)
+        else:
+            rates_text = "No tier rates configured."
+
+        splice_enabled = await self._get_user_pve_splice_toggle(ctx.author.id)
+        pool_text = (
+            "Default + sampled Gen 0 splice monsters (`$pvesplice` is ON)."
+            if splice_enabled
+            else "Default monster pool only (`$pvesplice` is OFF)."
+        )
+
+        embed = discord.Embed(
+            title=f"PvE Info: {location['name']}",
+            description=(
+                f"ID: `{location['id']}`\n"
+                f"Unlock: **Lv {unlock_level}+** "
+                f"({'Unlocked' if unlocked else '🔒 Locked'})"
+            ),
+            color=self.bot.config.game.primary_colour,
+        )
+        embed.add_field(name="Encounter Rates", value=rates_text, inline=False)
+        embed.add_field(name="Monster Pool", value=pool_text, inline=False)
+        embed.add_field(
+            name="How This Works",
+            value=(
+                "Location first rolls a tier using these odds, then picks a random "
+                "monster from your current tier pool."
+            ),
+            inline=False,
+        )
+        await ctx.send(embed=embed)
+
+    @has_char()
     @commands.command(brief=_("Battle against a monster and gain XP"))
     @user_cooldown(1800)  # 30-minute cooldown
     @locale_doc
-    async def pve(self, ctx):
-        """Battle against a monster and gain experience points."""
+    async def pve(self, ctx, pool_option: str = "default"):
+        """Battle against a monster and gain experience points.
+
+        Optional legacy override:
+        - `$pve splice` to force splice injection for this run
+        - `$pve normal` to force default-only pool for this run
+        """
+        pool_override = getattr(ctx, "pve_pool_override", None)
+        requested_pool = str(pool_override or pool_option or "").strip().lower()
+        if requested_pool in {"", "default"}:
+            include_splice_override = None
+        elif requested_pool in {"splice", "splices", "sp"}:
+            include_splice_override = True
+        elif requested_pool in {"normal", "base", "off", "nosplice"}:
+            include_splice_override = False
+        else:
+            await ctx.send(
+                "Unknown PvE option. Use `$pve` normally, `$pvesplice on/off`, "
+                "or one-run overrides `$pve splice` / `$pve normal`."
+            )
+            await self.bot.reset_cooldown(ctx)
+            return
+
         # Check for macro detection
         macro_detected = await self.check_pve_macro_detection(ctx.author.id)
         if macro_detected:
@@ -2825,20 +4118,14 @@ class Battles(commands.Cog):
         # Check for monster override from scout command
         monster_override = getattr(ctx, 'monster_override', None)
         levelchoice_override = getattr(ctx, 'levelchoice_override', None)
+        locationchoice_override = getattr(ctx, 'locationchoice_override', None)
 
         # Load monsters data
         try:
-            if not self.monsters_data:
-                with open("monsters.json", "r") as f:
-                    self.monsters_data = json.load(f)
-            
-            # Convert keys from strings to integers and filter out non-public monsters
-            monsters = {}
-            for level_str, monster_list in self.monsters_data.items():
-                level = int(level_str)
-                # Only keep monsters where ispublic is True (defaulting to True if key is missing)
-                public_monsters = [monster for monster in monster_list if monster.get("ispublic", True)]
-                monsters[level] = public_monsters
+            monsters, splice_injected = await self._get_pve_monster_pool_for_user(
+                ctx.author.id,
+                force_include_splice=include_splice_override,
+            )
         except Exception as e:
             await ctx.send(_("Error loading monsters data. Please contact the admin."))
             await self.bot.reset_cooldown(ctx)
@@ -2847,11 +4134,87 @@ class Battles(commands.Cog):
         # Fetch the player's XP and determine level
         player_xp = ctx.character_data.get("xp", 0)
         player_level = rpgtools.xptolevel(player_xp)
+        selected_location = None
+
+        if not monster_override:
+            all_locations = []
+            for location in self.PVE_LOCATIONS:
+                location_entry = dict(location)
+                location_entry["is_locked"] = player_level < int(location_entry["unlock_level"])
+                all_locations.append(location_entry)
+
+            unlocked_locations = [
+                location for location in all_locations if not location.get("is_locked")
+            ]
+            if not unlocked_locations:
+                await ctx.send(_("No PvE locations are unlocked for your level yet."))
+                await self.bot.reset_cooldown(ctx)
+                return
+
+            location_lines = []
+            for location in all_locations:
+                tier_keys = sorted(int(tier) for tier in location["tier_weights"].keys())
+                tier_text = ", ".join(str(tier) for tier in tier_keys)
+                lock_prefix = "🔒 " if location.get("is_locked") else ""
+                location_lines.append(
+                    f"• {lock_prefix}**{location['name']}** (`{location['id']}`) (Lv {location['unlock_level']}+) "
+                    f"- Tiers [{tier_text}] - God {location.get('god_chance', 0)}%"
+                )
+
+            location_embed = discord.Embed(
+                title=_("Choose a PvE Location"),
+                description=_("Select where you want to search for monsters."),
+                color=self.bot.config.game.primary_colour,
+            )
+            location_embed.add_field(
+                name=_("Locations"),
+                value="\n".join(location_lines),
+                inline=False,
+            )
+            location_embed.add_field(
+                name=_("Need Exact Odds?"),
+                value=_("Use `$pveinfo <location name or id>` for full tier rates."),
+                inline=False,
+            )
+            if splice_injected:
+                location_embed.set_footer(
+                    text="Splice injection active: sampled Gen 0 splice monsters are mixed into your pool."
+                )
+
+            location_view = PVELocationView(
+                author_id=ctx.author.id,
+                locations=all_locations,
+                timeout=60.0,
+            )
+            location_message = await ctx.send(embed=location_embed, view=location_view)
+            location_view.message = location_message
+
+            await location_view.wait()
+
+            if location_view.cancelled:
+                await self.bot.reset_cooldown(ctx)
+                return
+
+            if not location_view.selected_location:
+                await ctx.send(_("⏱️ Location selection timed out."))
+                await self.bot.reset_cooldown(ctx)
+                return
+
+            selected_location = location_view.selected_location
 
         # Send an embed indicating that the player is searching for a monster
+        if selected_location:
+            searching_description = _(
+                "You head toward **{location}** in search of a worthy foe."
+            ).format(location=selected_location["name"])
+        else:
+            searching_description = _(
+                "Your journey begins as you venture into the unknown to find a worthy foe."
+            )
+
         searching_embed = discord.Embed(
             title=_("Searching for a monster..."),
-            description=_("Your journey begins as you venture into the unknown to find a worthy foe."),
+            description=searching_description,
             color=self.bot.config.game.primary_colour,
         )
         searching_message = await ctx.send(embed=searching_embed)
@@ -2860,71 +4223,111 @@ class Battles(commands.Cog):
         if not monster_override:
             # Simulate searching time
             await asyncio.sleep(random.randint(3, 8))
+            levelchoice = self._roll_pve_tier_for_location(selected_location)
+            monster_pool = monsters.get(levelchoice, [])
+            if not monster_pool:
+                await ctx.send(_("No public monsters are configured for this tier."))
+                await self.bot.reset_cooldown(ctx)
+                return
 
-            # Determine if a legendary monster should spawn
-            legendary_spawn_chance = 0.01  # 1% chance
-            spawn_legendary = False
+            base_monster = random.choice(monster_pool)
+            forced_level = (
+                self.PVE_GOD_ENCOUNTER_LEVEL
+                if levelchoice == self.PVE_GOD_TIER
+                else None
+            )
+            monster = self._scale_monster_for_encounter(
+                base_monster,
+                levelchoice,
+                encounter_level=forced_level,
+            )
+            if base_monster.get("pve_pool"):
+                monster["pve_pool"] = base_monster["pve_pool"]
+            monster["pve_location_id"] = selected_location["id"]
+            monster["pve_location_name"] = selected_location["name"]
 
-            if player_level >= 5:
-                if random.random() < legendary_spawn_chance:
-                    spawn_legendary = True
-
-
-            if spawn_legendary:
-                # Select legendary monster
-                monster = random.choice(monsters[11])
+            if levelchoice == self.PVE_GOD_TIER:
                 legendary_embed = discord.Embed(
                     title=_("A Legendary God Appears!"),
                     description=_(
-                        "Behold! **{monster}** has descended to challenge you! Prepare for an epic battle!"
-                    ).format(monster=monster["name"]),
+                        "Behold! **Level {level} {monster}** has descended to challenge you! Prepare for an epic battle!"
+                    ).format(
+                        level=monster["encounter_level"],
+                        monster=monster["name"],
+                    ),
                     color=discord.Color.gold(),
                 )
+                if selected_location:
+                    legendary_embed.add_field(
+                        name=_("Location"),
+                        value=selected_location["name"],
+                        inline=False,
+                    )
                 await searching_message.edit(embed=legendary_embed)
-                levelchoice = 11
                 await asyncio.sleep(4)
-            else:
-                # Determine monster level based on player level
-                if player_level <= 4:
-                    levelchoice = random.randint(1, 2)
-                elif player_level <= 8:
-                    levelchoice = random.randint(1, 3)
-                elif player_level <= 12:
-                    levelchoice = random.randint(1, 4)
-                elif player_level <= 15:
-                    levelchoice = random.randint(1, 5)
-                elif player_level <= 20:
-                    levelchoice = random.randint(1, 6)
-                elif player_level <= 25:
-                    levelchoice = random.randint(1, 7)
-                elif player_level <= 30:
-                    levelchoice = random.randint(1, 8)
-                elif player_level <= 35:
-                    levelchoice = random.randint(1, 9)
-                elif player_level <= 40:
-                    # For levels 1-10, level 10 has half chance
-                    level_weights = [10] * 10  # 10 weights for levels 1-10
-                    level_weights[9] = 5  # Level 10 (index 9) gets half weight
-                    levelchoice = random.choices(range(1, 11), weights=level_weights, k=1)[0]
-                else:  # player_level > 40
-                    # For levels 1-11, level 10 has half chance, level 11 much lower
-                    level_weights = [10] * 11  # 11 weights for levels 1-11
-                    level_weights[9] = 5  # Level 10 (index 9) gets half weight
-                    level_weights[10] = 1  # Level 11 (index 10) gets much lower weight
-                    levelchoice = random.choices(range(1, 12), weights=level_weights, k=1)[0]
-
-                monster = random.choice(monsters[levelchoice])
         else:
             # Use override from scout command
-            monster = monster_override
-            levelchoice = levelchoice_override
+            monster = dict(monster_override)
+            levelchoice = int(
+                levelchoice_override
+                or monster.get("pve_tier")
+                or self._get_pve_tier_for_player_level(player_level)
+            )
+            if "encounter_level" not in monster:
+                monster = self._scale_monster_for_encounter(monster, levelchoice)
+            selected_location = self._get_pve_location_by_id(
+                monster.get("pve_location_id")
+            )
+            if not selected_location:
+                selected_location = self._get_pve_location_by_id(locationchoice_override)
+            if not selected_location and monster.get("pve_location_name"):
+                selected_location = {
+                    "name": monster["pve_location_name"],
+                    "id": monster.get("pve_location_id", "unknown"),
+                }
+
+        encounter_level = int(monster.get("encounter_level", levelchoice))
 
         # Update embed with found monster
+        is_splice_pool = monster.get("pve_pool") == "splice"
+        if selected_location:
+            found_description = (
+                _(
+                    "In **{location}**, a Spliced Level {level} **{monster}** has appeared! Prepare to fight.."
+                ).format(
+                    location=selected_location["name"],
+                    level=encounter_level,
+                    monster=monster["name"],
+                )
+                if is_splice_pool
+                else _(
+                    "In **{location}**, a Level {level} **{monster}** has appeared! Prepare to fight.."
+                ).format(
+                    location=selected_location["name"],
+                    level=encounter_level,
+                    monster=monster["name"],
+                )
+            )
+        else:
+            found_description = (
+                _(
+                    "A Spliced Level {level} **{monster}** has appeared! Prepare to fight.."
+                ).format(
+                    level=encounter_level,
+                    monster=monster["name"],
+                )
+                if is_splice_pool
+                else _(
+                    "A Level {level} **{monster}** has appeared! Prepare to fight.."
+                ).format(
+                    level=encounter_level,
+                    monster=monster["name"],
+                )
+            )
+
         found_embed = discord.Embed(
             title=_("Monster Found!"),
-            description=_("A Level {level} **{monster}** has appeared! Prepare to fight..").format(
-                level=levelchoice, monster=monster["name"]
-            ),
+            description=found_description,
             color=self.bot.config.game.primary_colour,
         )
         await searching_message.edit(embed=found_embed)
@@ -3273,17 +4676,7 @@ class Battles(commands.Cog):
         
         # Load monsters data
         try:
-            if not self.monsters_data:
-                with open("monsters.json", "r") as f:
-                    self.monsters_data = json.load(f)
-            
-            # Convert keys from strings to integers and filter out non-public monsters
-            monsters = {}
-            for level_str, monster_list in self.monsters_data.items():
-                level = int(level_str)
-                # Only keep monsters where ispublic is True (defaulting to True if key is missing)
-                public_monsters = [monster for monster in monster_list if monster.get("ispublic", True)]
-                monsters[level] = public_monsters
+            monsters, _ = await self._get_pve_monster_pool_for_user(ctx.author.id)
         except Exception as e:
             await ctx.send(_("Error loading monsters data. Please contact the admin."))
             await self.bot.reset_cooldown(ctx)
@@ -3344,6 +4737,11 @@ class Battles(commands.Cog):
                 # Get player level for monster selection
                 player_xp = ctx.character_data.get("xp", 0)
                 player_level = rpgtools.xptolevel(player_xp)
+                unlocked_locations = self._get_unlocked_pve_locations(player_level)
+                if not unlocked_locations:
+                    await ctx.send("No PvE locations are unlocked for your level yet.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
                 
                 # Create scouting view
                 class ScoutingView(discord.ui.View):
@@ -3414,26 +4812,54 @@ class Battles(commands.Cog):
                     def update_button_states(self):
                         self.reroll_button.disabled = self.rerolls <= 0
                 
-                # Function to select monster based on level
-                async def select_monster(level):
-                    return random.choice(monsters[level])
+                # Function to select monster based on location and tier
+                async def select_monster(location_data, level):
+                    monster_pool = monsters.get(level, [])
+                    if not monster_pool:
+                        return None
+                    base_monster = random.choice(monster_pool)
+                    forced_level = (
+                        self.PVE_GOD_ENCOUNTER_LEVEL
+                        if level == self.PVE_GOD_TIER
+                        else None
+                    )
+                    scaled_monster = self._scale_monster_for_encounter(
+                        base_monster,
+                        level,
+                        encounter_level=forced_level,
+                    )
+                    if base_monster.get("pve_pool"):
+                        scaled_monster["pve_pool"] = base_monster["pve_pool"]
+                    scaled_monster["pve_location_id"] = location_data["id"]
+                    scaled_monster["pve_location_name"] = location_data["name"]
+                    return scaled_monster
                 
                 # Function to create monster info embed
-                async def show_monster_info(monster_data, rerolls, max_rerolls):
+                async def show_monster_info(monster_data, location_data, monster_tier, rerolls, max_rerolls):
+                    encounter_level = int(monster_data.get("encounter_level", monster_tier))
                     embed = discord.Embed(
                         title="🔍 Monster Scouting Report",
-                        description=f"You spot a Level {levelchoice} **{monster_data['name']}** ahead!",
+                        description=(
+                            f"Location: **{location_data['name']}**\n"
+                            f"You spot a Level {encounter_level} **{monster_data['name']}** ahead!"
+                        ),
                         color=discord.Color.blue()
                     )
                     
                     element_emoji = element_to_emoji.get(monster_data["element"], "❓")
                     stats_text = (
+                        f"**Tier:** {monster_tier}\n"
                         f"**Element:** {element_emoji} {monster_data['element']}\n"
                         f"**HP:** {monster_data['hp']}\n"
                         f"**Attack:** {monster_data['attack']}\n"
                         f"**Defense:** {monster_data['defense']}"
                     )
                     embed.add_field(name="Stats", value=stats_text, inline=False)
+                    embed.add_field(
+                        name="Location Effects",
+                        value=f"God chance here: **{location_data.get('god_chance', 0)}%**",
+                        inline=False,
+                    )
                     
                     embed.add_field(
                         name="Scouting Options",
@@ -3445,38 +4871,22 @@ class Battles(commands.Cog):
                 
                 # Main scouting loop
                 while True:
-                    # Determine monster level with weighted random (same as pve command)
-                    if player_level <= 4:
-                        levelchoice = random.randint(1, 2)
-                    elif player_level <= 8:
-                        levelchoice = random.randint(1, 3)
-                    elif player_level <= 12:
-                        levelchoice = random.randint(1, 4)
-                    elif player_level <= 15:
-                        levelchoice = random.randint(1, 5)
-                    elif player_level <= 20:
-                        levelchoice = random.randint(1, 6)
-                    elif player_level <= 25:
-                        levelchoice = random.randint(1, 7)
-                    elif player_level <= 30:
-                        levelchoice = random.randint(1, 8)
-                    elif player_level <= 35:
-                        levelchoice = random.randint(1, 9)
-                    elif player_level <= 40:
-                        # For levels 1-10, level 10 has half chance
-                        level_weights = [10] * 10  # 10 weights for levels 1-10
-                        level_weights[9] = 5  # Level 10 (index 9) gets half weight
-                        levelchoice = random.choices(range(1, 11), weights=level_weights, k=1)[0]
-                    else:  # player_level > 40
-                        # For levels 1-11, level 10 has half chance, level 11 much lower
-                        level_weights = [10] * 11  # 11 weights for levels 1-11
-                        level_weights[9] = 5  # Level 10 (index 9) gets half weight
-                        level_weights[10] = 1  # Level 11 (index 10) gets much lower weight
-                        levelchoice = random.choices(range(1, 12), weights=level_weights, k=1)[0]
+                    scout_location = random.choice(unlocked_locations)
+                    levelchoice = self._roll_pve_tier_for_location(scout_location)
                     
                     # Select and display monster
-                    monster_data = await select_monster(levelchoice)
-                    embed = await show_monster_info(monster_data, rerolls_left, max_rerolls)
+                    monster_data = await select_monster(scout_location, levelchoice)
+                    if not monster_data:
+                        await ctx.send("No public monsters are configured for this tier.")
+                        await self.bot.reset_cooldown(ctx)
+                        return
+                    embed = await show_monster_info(
+                        monster_data,
+                        scout_location,
+                        levelchoice,
+                        rerolls_left,
+                        max_rerolls
+                    )
                     
                     # Show scouting view
                     view = ScoutingView(ctx, monster_data, rerolls_left, max_rerolls)
@@ -3510,6 +4920,7 @@ class Battles(commands.Cog):
                         await message.delete()
                         ctx.monster_override = monster_data
                         ctx.levelchoice_override = levelchoice
+                        ctx.locationchoice_override = scout_location["id"]
                         await ctx.invoke(self.bot.get_command("pve"))
                         break
                     elif view.result == "reroll":

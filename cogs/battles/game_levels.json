@@ -65,17 +65,17 @@
         "boss": {"hp": 285, "armor": 132, "damage": 137}
       },
       "9": {
-        "minion1_name": "Lizardman",
-        "minion2_name": "Dragonkin",
-        "boss_name": "Dragonlord Zaldrak",
+        "minion1_name": "Crystal Hatchling",
+        "minion2_name": "Shattered Wyvern",
+        "boss_name": "Crystalwing Matriarch",
         "minion1": {"hp": 160, "armor": 45, "damage": 90},
         "minion2": {"hp": 180, "armor": 52, "damage": 95},
         "boss": {"hp": 295, "armor": 138, "damage": 140}
       },
       "10": {
-        "minion1_name": "Haunted Spirit",
-        "minion2_name": "Phantom Wraith",
-        "boss_name": "Soulreaver Lurkthar",
+        "minion1_name": "Fractured Echo",
+        "minion2_name": "Phantom Reflection",
+        "boss_name": "Mirror Self",
         "minion1": {"hp": 160, "armor": 48, "damage": 93},
         "minion2": {"hp": 185, "armor": 55, "damage": 97},
         "boss": {"hp": 315, "armor": 150, "damage": 150}
@@ -91,7 +91,7 @@
       "12": {
         "minion1_name": "Gloomhound",
         "minion2_name": "Nocturne Stalker",
-        "boss_name": "Nightshade Serpentis",
+        "boss_name": "Shadowmancer Kael",
         "minion1": {"hp": 170, "armor": 82, "damage": 139},
         "minion2": {"hp": 190, "armor": 87, "damage": 144},
         "boss": {"hp": 335, "armor": 157, "damage": 160}
@@ -139,7 +139,7 @@
       "18": {
         "minion1_name": "Blood Warden",
         "minion2_name": "Juzam Djinn",
-        "boss_name": "Dreadlord Vortigon",
+        "boss_name": "Chromaggus the Flamebrand",
         "minion1": {"hp": 190, "armor": 153, "damage": 95},
         "minion2": {"hp": 250, "armor": 159, "damage": 99},
         "boss": {"hp": 360, "armor": 180, "damage": 175}
@@ -233,9 +233,9 @@
         "boss": {"hp": 390, "armor": 230, "damage": 150}
       },
       "30": {
-        "minion1_name": "Elder Voidfiend",
-        "minion2_name": "Abyssal Voidreaver",
-        "boss_name": "Eldritch Archdemon",
+        "minion1_name": "Elysia",
+        "minion2_name": "Sepulchure",
+        "boss_name": "Drakath",
         "minion1": {"hp": 250, "armor": 110, "damage": 110},
         "minion2": {"hp": 250, "armor": 140, "damage": 140},
         "boss": {"hp": 600, "armor": 200, "damage": 190}

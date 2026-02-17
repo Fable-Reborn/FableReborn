@@ -119,6 +119,22 @@ class Battle(ABC):
             return f"{number:.2f}"
         # If not a number, return as is
         return str(number)
+
+    def resolve_attack_element(self, attacker):
+        """Resolve outgoing element for an attack action."""
+        if not attacker:
+            return "Unknown"
+        if hasattr(attacker, "get_attack_element_for_turn"):
+            return attacker.get_attack_element_for_turn() or "Unknown"
+        return getattr(attacker, "attack_element", getattr(attacker, "element", "Unknown")) or "Unknown"
+
+    def resolve_defense_element(self, defender):
+        """Resolve incoming element used for defense checks."""
+        if not defender:
+            return "Unknown"
+        if hasattr(defender, "get_defense_element"):
+            return defender.get_defense_element() or "Unknown"
+        return getattr(defender, "defense_element", getattr(defender, "element", "Unknown")) or "Unknown"
         
     # ----- Status Effect System Methods -----
     

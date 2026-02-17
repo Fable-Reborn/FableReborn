@@ -2479,6 +2479,7 @@ class GameMaster(commands.Cog):
 
             # Update auction state
             old_top = self.top_auction[0]
+            old_bid = self.top_auction[1]
             self.top_auction = (ctx.author, amount)
             self.auction_entry.set()
 
@@ -2491,7 +2492,7 @@ class GameMaster(commands.Cog):
             await channel.send(
                 f"**{ctx.author.mention}** bids **${amount:,}** on **{self.current_item}**!\n"
                 + (f"Previous bidder: {old_top.mention}\n" if old_top else "")
-                + f"Previous bid: **${self.top_auction[1]:,}**"
+                + f"Previous bid: **${old_bid:,}**"
             )
 
     @is_gm()

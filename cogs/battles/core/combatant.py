@@ -11,7 +11,23 @@ class Combatant:
         self.max_hp = Decimal(str(max_hp))
         self.damage = Decimal(str(damage))
         self.armor = Decimal(str(armor))
-        self.element = element or "Unknown"
+        base_element = self._normalize_element(element)
+        self.attack_element = self._normalize_element(kwargs.get("attack_element", base_element))
+        self.defense_element = self._normalize_element(
+            kwargs.get("defense_element", self.attack_element)
+        )
+        dual_attack_elements = kwargs.get("dual_attack_elements")
+        self.dual_attack_elements = None
+        if dual_attack_elements:
+            normalized_dual_elements = [
+                self._normalize_element(dual_element) for dual_element in dual_attack_elements
+            ]
+            unique_dual_elements = [element for element in normalized_dual_elements if element]
+            if len(unique_dual_elements) >= 2 and len(set(unique_dual_elements)) > 1:
+                self.dual_attack_elements = unique_dual_elements[:2]
+        self._dual_attack_index = 0
+        # Keep legacy single-element access for existing systems/UI.
+        self.element = self.attack_element
         self.is_pet = kwargs.get("is_pet", False)
         self.owner = kwargs.get("owner", None)  # For pets
         self.luck = Decimal(str(kwargs.get("luck", 50)))
@@ -34,6 +50,22 @@ class Combatant:
         for key, value in kwargs.items():
             if not hasattr(self, key):
                 setattr(self, key, value)
+
+    @staticmethod
+    def _normalize_element(element):
+        if not element:
+            return "Unknown"
+        return str(element).strip().capitalize()
+
+    def get_attack_element_for_turn(self):
+        if self.dual_attack_elements:
+            element = self.dual_attack_elements[self._dual_attack_index % len(self.dual_attack_elements)]
+            self._dual_attack_index += 1
+            return element
+        return self.attack_element
+
+    def get_defense_element(self):
+        return self.defense_element or self.attack_element or self.element or "Unknown"
     
     def is_alive(self):
         """Check if combatant has HP remaining"""

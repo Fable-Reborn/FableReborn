@@ -275,8 +275,8 @@ class TowerBattle(Battle):
                 if self.config["element_effects"] and hasattr(self.ctx.bot.cogs["Battles"], "element_ext"):
                     element_mod = self.ctx.bot.cogs["Battles"].element_ext.calculate_damage_modifier(
                         self.ctx,
-                        current_combatant.element, 
-                        target.element
+                        self.resolve_attack_element(current_combatant),
+                        self.resolve_defense_element(target)
                     )
                     if element_mod != 0:
                         raw_damage = raw_damage * (1 + Decimal(str(element_mod)))

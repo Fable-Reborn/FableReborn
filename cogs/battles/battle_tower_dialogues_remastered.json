@@ -1,0 +1,396 @@
+{
+  "dialogues": {
+    "0": {
+      "title": "The Tower's Entrance",
+      "lines": [
+        {
+          "speaker": "Guard",
+          "text": "Another aspirant. Tell me, whose banner do you carry? Elysia's light? Sepulchure's shadow? Or Drakath's storm?",
+          "thumbnail": "https://i.ibb.co/CWTp4xf/download.jpg"
+        },
+        {
+          "speaker": "PLAYER",
+          "text": "I serve {PLAYER_GOD}. I'm here to prove myself.",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "Guard",
+          "text": "Then you've come to the right place. The Tower of Ascension\u2014where mortals become legends. Your god has sponsored your entry. The fee is waived.",
+          "thumbnail": "https://i.ibb.co/CWTp4xf/download.jpg"
+        },
+        {
+          "speaker": "Guard",
+          "text": "Though I wonder... how many times have I said these exact words to you?",
+          "thumbnail": "https://i.ibb.co/CWTp4xf/download.jpg"
+        },
+        {
+          "speaker": "PLAYER",
+          "text": "What? We've never met.",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "Guard",
+          "text": "No. Of course not. Proceed.",
+          "thumbnail": "https://i.ibb.co/CWTp4xf/download.jpg"
+        }
+      ]
+    },
+    "2": {
+      "title": "Shadowy Staircase",
+      "lines": [
+        {
+          "speaker": "Vile Serpent",
+          "text": "Back again, little champion? No? You don't remember? Good. They're getting better at the wipe.",
+          "thumbnail": "https://i.ibb.co/LJcM38s/download-2.png"
+        },
+        {
+          "speaker": "PLAYER",
+          "text": "What are you talking about? This is my first time here.",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "Wraith",
+          "text": "That's what they all say. Every. Single. Time.",
+          "thumbnail": "https://i.ibb.co/NC2kHpz/download-3.png"
+        },
+        {
+          "speaker": "Soul Eater",
+          "text": "You'll understand soon enough. Or you won't. Either way, we'll be seeing you again.",
+          "thumbnail": "https://i.ibb.co/BchZsDh/download-7.png"
+        }
+      ]
+    },
+    "3": {
+      "title": "Chamber of Whispers",
+      "lines": [
+        {
+          "speaker": "PLAYER",
+          "text": "What... what are those voices?",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "Warlord Grakthar",
+          "text": "The whispers? Those are the echoes of everyone who came before. Or perhaps... everyone you were before.",
+          "thumbnail": "https://i.ibb.co/wLYrp17/download-8.png"
+        },
+        {
+          "speaker": "PLAYER",
+          "text": "That doesn't make any sense.",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "Goblin",
+          "text": "Doesn't it? Listen closer. They all sound familiar, don't they?",
+          "thumbnail": "https://i.ibb.co/nfMcsry/download-10.png"
+        }
+      ]
+    },
+    "4": {
+      "title": "Serpent's Lair",
+      "lines": [
+        {
+          "speaker": "Necromancer Voss",
+          "text": "Ah, another lamb enters my domain. Tell me, do you feel it yet? The d\u00e9j\u00e0 vu?",
+          "thumbnail": "https://i.ibb.co/G5DrFfv/download-13.jpg"
+        },
+        {
+          "speaker": "PLAYER",
+          "text": "I... found a journal. With my handwriting. It talks about cycles.",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "Necromancer Voss",
+          "text": "Ah, so you're one of the clever ones. You left yourself a warning. How many cycles ago, I wonder?",
+          "thumbnail": "https://i.ibb.co/G5DrFfv/download-13.jpg"
+        },
+        {
+          "speaker": "Skeleton",
+          "text": "Seven cycles, according to the entry. But this one is on cycle forty-four.",
+          "thumbnail": "https://i.ibb.co/zS26jYD/download-12.jpg"
+        },
+        {
+          "speaker": "PLAYER",
+          "text": "Forty-four? That's impossible. I just arrived yesterday!",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "Necromancer Voss",
+          "text": "Did you? Or is that just what they want you to remember?",
+          "thumbnail": "https://i.ibb.co/G5DrFfv/download-13.jpg"
+        }
+      ]
+    },
+    "5": {
+      "title": "Halls of Despair",
+      "lines": [
+        {
+          "speaker": "Blackblade Marauder",
+          "text": "I remember my first run. I was a hero like you. That was forty-seven cycles ago.",
+          "thumbnail": "https://i.ibb.co/0BdGZBn/download-14.jpg"
+        },
+        {
+          "speaker": "PLAYER",
+          "text": "So it's true. The tower... recycles people.",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "Blackblade Marauder",
+          "text": "Recycles. What a gentle word for it. Now I'm part of the tower. You will be too, eventually.",
+          "thumbnail": "https://i.ibb.co/0BdGZBn/download-14.jpg"
+        },
+        {
+          "speaker": "Bandit",
+          "text": "Some of us tried to resist. Tried to break free. The tower made us into bosses instead.",
+          "thumbnail": "https://i.ibb.co/gzsJR55/download-15.jpg"
+        }
+      ]
+    },
+    "6": {
+      "title": "Crimson Abyss",
+      "lines": [
+        {
+          "speaker": "Arachnok Queen",
+          "text": "Ssss... your god promised you glory, yesss? All three of them make the same promise.",
+          "thumbnail": "https://i.ibb.co/0rGtfC9/3d-illustration-dark-purple-spider-260nw-2191752107.png"
+        },
+        {
+          "speaker": "PLAYER",
+          "text": "You're saying the gods are lying?",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "Arachnok Queen",
+          "text": "Not lying. Just... omitting. Touch my web. See what awaits you at the summit.",
+          "thumbnail": "https://i.ibb.co/0rGtfC9/3d-illustration-dark-purple-spider-260nw-2191752107.png"
+        },
+        {
+          "speaker": "PLAYER",
+          "text": "I... I saw myself at the top. And then... everything reset. No. NO!",
+          "thumbnail": "PLAYER_AVATAR"
+        }
+      ]
+    },
+    "7": {
+      "title": "Forgotten Abyss",
+      "lines": [
+        {
+          "speaker": "Lich Lord Moros",
+          "text": "I was like you once. Chosen by Sepulchure himself. Beat the tower. Shook hands with my god.",
+          "thumbnail": "https://i.ibb.co/4jF6z29/download-22.jpg"
+        },
+        {
+          "speaker": "PLAYER",
+          "text": "And then what happened?",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "Lich Lord Moros",
+          "text": "Then I woke up at the bottom again. And again. And again. Until I forgot why I was climbing.",
+          "thumbnail": "https://i.ibb.co/4jF6z29/download-22.jpg"
+        },
+        {
+          "speaker": "Lich Lord Moros",
+          "text": "You're on Cycle 44. I counted. There's a mark... behind your left ear.",
+          "thumbnail": "https://i.ibb.co/4jF6z29/download-22.jpg"
+        }
+      ]
+    },
+    "10": {
+      "title": "Twisted Reflections",
+      "lines": [
+        {
+          "speaker": "Mirror Self",
+          "text": "Hello. I'm you. From Cycle 29.",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "PLAYER",
+          "text": "This is some kind of trick.",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "Mirror Self",
+          "text": "I made it to Floor 26 before I fell. The you from Cycle 38 only made it to Floor 23.",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "Mirror Self",
+          "text": "We're all still here, trapped in the tower's memory. When you die, you'll join us.",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "PLAYER",
+          "text": "I'm not going to die. I'm going to finish this.",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "Mirror Self",
+          "text": "That's what I said too.",
+          "thumbnail": "PLAYER_AVATAR"
+        }
+      ]
+    },
+    "12": {
+      "title": "Nexus of Chaos",
+      "lines": [
+        {
+          "speaker": "Shadowmancer Kael",
+          "text": "You want to know the truth? The tower isn't a trial. It's a power source.",
+          "thumbnail": "https://i.ibb.co/4TtY6T9/download-14.jpg"
+        },
+        {
+          "speaker": "PLAYER",
+          "text": "What do you mean?",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "Shadowmancer Kael",
+          "text": "Every time you climb, your god siphons your strength. Every reset feeds the cycle.",
+          "thumbnail": "https://i.ibb.co/4TtY6T9/download-14.jpg"
+        },
+        {
+          "speaker": "Shadowmancer Kael",
+          "text": "You're not a champion. You're livestock.",
+          "thumbnail": "https://i.ibb.co/4TtY6T9/download-14.jpg"
+        }
+      ]
+    },
+    "16": {
+      "title": "Shapeshifter's Domain",
+      "lines": [
+        {
+          "speaker": "Master Shapeshifter",
+          "text": "Do you recognize this face?",
+          "thumbnail": "https://gcdnb.pbrd.co/images/ueKgTmbvB8qb.jpg"
+        },
+        {
+          "speaker": "PLAYER",
+          "text": "I... I should. I know I should. But I can't remember.",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "Shapeshifter (as Maya)",
+          "text": "My name is Maya. You promised you'd come back. That was 44 cycles ago.",
+          "thumbnail": "RANDOM_USER_1_AVATAR"
+        },
+        {
+          "speaker": "Shapeshifter (as Maya)",
+          "text": "I waited. I grew old. I died. And you don't even remember my name.",
+          "thumbnail": "RANDOM_USER_1_AVATAR"
+        }
+      ],
+      "special": "random_users"
+    },
+    "22": {
+      "title": "Chaosborne Throne",
+      "lines": [
+        {
+          "speaker": "Banshee Queen Shriekara",
+          "text": "We all made deals with gods once. They promised us everything.",
+          "thumbnail": "https://i.ibb.co/pLP2djF/download-22.jpg"
+        },
+        {
+          "speaker": "PLAYER",
+          "text": "And they gave you this prison instead.",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "Banshee Queen Shriekara",
+          "text": "Smart one. Here. Take this. Floor 30 has more than one door. This key opens the second.",
+          "thumbnail": "https://i.ibb.co/pLP2djF/download-22.jpg"
+        },
+        {
+          "speaker": "Banshee Queen Shriekara",
+          "text": "But...",
+          "thumbnail": "https://i.ibb.co/pLP2djF/download-22.jpg"
+        }
+      ]
+    },
+    "24": {
+      "title": "The Tower's Heart",
+      "lines": [
+        {
+          "speaker": "Voice of the Tower",
+          "text": "You're breaking. I can feel it. Most break by now.",
+          "thumbnail": "SYSTEM"
+        },
+        {
+          "speaker": "PLAYER",
+          "text": "The tower... it's alive?",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "Voice of the Tower",
+          "text": "I've always been alive. I've been waiting for you. Watching you. Feeding on you.",
+          "thumbnail": "SYSTEM"
+        },
+        {
+          "speaker": "Voice of the Tower",
+          "text": "You're stubborn. That's why you're my favorite.",
+          "thumbnail": "SYSTEM"
+        }
+      ]
+    },
+    "27": {
+      "title": "Lord of Despair",
+      "lines": [
+        {
+          "speaker": "PLAYER",
+          "text": "Maya...",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "PLAYER",
+          "text": "(Reading her note) 'If you're reading this, you've forgotten me again. I love you. I forgive you.'",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "PLAYER",
+          "text": "'Please break the cycle. Don't let anyone else end up like me.'",
+          "thumbnail": "PLAYER_AVATAR"
+        }
+      ]
+    },
+    "30": {
+      "title": "The Final Confrontation",
+      "lines": [
+        {
+          "speaker": "Elysia",
+          "text": "Impressive. You've maintained coherence through 44 cycles. Most shatter by 30.",
+          "thumbnail": "GOD_ELYSIA"
+        },
+        {
+          "speaker": "Sepulchure",
+          "text": "You have three keys. Smart. We were wondering if anyone would figure that out.",
+          "thumbnail": "GOD_SEPULCHURE"
+        },
+        {
+          "speaker": "Drakath",
+          "text": "You have a choice to make, mortal. And this time, the choice actually matters.",
+          "thumbnail": "GOD_DRAKATH"
+        },
+        {
+          "speaker": "PLAYER",
+          "text": "Why? Why do this to us?",
+          "thumbnail": "PLAYER_AVATAR"
+        },
+        {
+          "speaker": "Elysia",
+          "text": "Divine power doesn't come from nothing. It must be harvested.",
+          "thumbnail": "GOD_ELYSIA"
+        },
+        {
+          "speaker": "Sepulchure",
+          "text": "Every cycle you complete feeds us. Makes us stronger.",
+          "thumbnail": "GOD_SEPULCHURE"
+        },
+        {
+          "speaker": "Drakath",
+          "text": "But you... you've collected all three keys. You've earned a real choice.",
+          "thumbnail": "GOD_DRAKATH"
+        }
+      ],
+      "choice": "three_doors"
+    }
+  }
+}

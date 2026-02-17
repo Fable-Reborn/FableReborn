@@ -446,17 +446,22 @@ class DragonBattle(Battle):
             element_message = ""
             if self.config.get("element_effects", True) and hasattr(self.ctx.bot.cogs["Battles"], "element_ext"):
                 dragon_element = self.dragon_element or "Water"
-                target_element = getattr(target, "element", None)
+                target_element = self.resolve_defense_element(target)
                 
                 if target_element:
                     # Get element multiplier from element extension
                     try:
-                        element_modifier = await self.ctx.bot.cogs["Battles"].element_ext.get_element_multiplier(dragon_element, target_element)
+                        element_mod = self.ctx.bot.cogs["Battles"].element_ext.calculate_damage_modifier(
+                            self.ctx,
+                            dragon_element,
+                            target_element,
+                        )
+                        element_modifier = 1.0 + element_mod
                         
                         # Element messages will be added to the attack message
-                        if element_modifier > 1.0:
+                        if element_mod > 0:
                             element_message = f" ({dragon_element} is strong against {target_element}!)"
-                        elif element_modifier < 1.0:
+                        elif element_mod < 0:
                             element_message = f" ({dragon_element} is weak against {target_element}!)"
                     except Exception:
                         # Fallback if element extension fails
@@ -734,8 +739,10 @@ class DragonBattle(Battle):
         if self.config.get("element_effects", True) and hasattr(self.ctx.bot.cogs["Battles"], "element_ext"):
             # Use configured dragon element for elemental modifiers (or target element if not dragon)
             dragon_element = self.dragon_element or "Water"
-            defender_element = dragon_element if is_dragon_target else getattr(target, "element", None)
-            player_element = getattr(player, "element", None)
+            defender_element = (
+                dragon_element if is_dragon_target else self.resolve_defense_element(target)
+            )
+            player_element = self.resolve_attack_element(player)
             
             if player_element and defender_element:
                 # Get element multiplier from element extension
