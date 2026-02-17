@@ -310,7 +310,9 @@ class Pets(commands.Cog):
         "treat": 250,
         "train": 500,
     }
-    PET_LEVEL_MIGRATION_KEY = "double_pet_levels_to_100_v1"
+    PET_LEVEL_MIGRATION_LEGACY_KEY = "double_pet_levels_to_100_v1"  # legacy x8 rollout
+    PET_LEVEL_MIGRATION_KEY = "double_pet_levels_to_100_v2"  # current x2 rollout
+    PET_LEVEL_MIGRATION_XP_FIX_KEY = "double_pet_levels_to_100_v1_x8_to_x2_fix"
 
     def __init__(self, bot):
         self.bot = bot
@@ -3501,7 +3503,7 @@ class Pets(commands.Cog):
         """One-time migration: doubles all active pet levels and rescales XP for the new 1-100 curve."""
         if (confirm or "").upper() != "YES":
             return await ctx.send(
-                "This one-time migration doubles all owned pet levels (capped at 100) and multiplies pet XP by 8.\n"
+                "This one-time migration doubles all owned pet levels (capped at 100) and multiplies pet XP by 2.\n"
                 f"Run `{ctx.prefix}gmdoublepetlevels YES` to execute."
             )
 
@@ -3511,14 +3513,24 @@ class Pets(commands.Cog):
                     migration_key TEXT PRIMARY KEY,
                     executed_by BIGINT NOT NULL,
                     executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
-            """)
+                    );
+                """)
 
-            already_executed = await conn.fetchval(
+            legacy_executed = await conn.fetchval(
+                "SELECT 1 FROM pet_system_migrations WHERE migration_key = $1;",
+                self.PET_LEVEL_MIGRATION_LEGACY_KEY,
+            )
+            current_executed = await conn.fetchval(
                 "SELECT 1 FROM pet_system_migrations WHERE migration_key = $1;",
                 self.PET_LEVEL_MIGRATION_KEY,
             )
-            if already_executed:
+            if legacy_executed or current_executed:
+                if legacy_executed and not current_executed:
+                    return await ctx.send(
+                        "A legacy x8 migration has already been executed.\n"
+                        f"Run `{ctx.prefix}gmfixdoublepetlevels YES` to convert XP to x2, or "
+                        f"`{ctx.prefix}gmrevertdoublepetlevels YES` to fully roll back."
+                    )
                 return await ctx.send("This migration has already been executed.")
 
             async with conn.transaction():
@@ -3527,7 +3539,7 @@ class Pets(commands.Cog):
                     WITH updated AS (
                         UPDATE monster_pets
                         SET level = LEAST(GREATEST(level, 1) * 2, $1),
-                            experience = GREATEST(experience, 0) * 8
+                            experience = GREATEST(experience, 0) * 2
                         WHERE user_id <> 0
                         RETURNING id
                     )
@@ -3548,7 +3560,165 @@ class Pets(commands.Cog):
         updated_count = int(result["updated_count"]) if result else 0
         await ctx.send(
             f"Pet level migration completed. Updated **{updated_count:,}** pets. "
-            f"Levels doubled (max {self.PET_MAX_LEVEL}) and XP scaled by x8."
+            f"Levels doubled (max {self.PET_MAX_LEVEL}) and XP scaled by x2."
+        )
+
+    @is_gm()
+    @commands.command(hidden=True, name="gmfixdoublepetlevels")
+    async def gmfixdoublepetlevels(self, ctx, confirm: str = None):
+        """
+        One-time correction for the legacy x8 migration:
+        keeps doubled levels and changes XP scale from x8 to x2 (divides XP by 4).
+        """
+        if (confirm or "").upper() != "YES":
+            return await ctx.send(
+                "This one-time fix converts legacy pet migration XP from x8 to x2 (divides pet XP by 4).\n"
+                f"Run `{ctx.prefix}gmfixdoublepetlevels YES` to execute."
+            )
+
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS pet_system_migrations (
+                    migration_key TEXT PRIMARY KEY,
+                    executed_by BIGINT NOT NULL,
+                    executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+
+            legacy_executed = await conn.fetchval(
+                "SELECT 1 FROM pet_system_migrations WHERE migration_key = $1;",
+                self.PET_LEVEL_MIGRATION_LEGACY_KEY,
+            )
+            current_executed = await conn.fetchval(
+                "SELECT 1 FROM pet_system_migrations WHERE migration_key = $1;",
+                self.PET_LEVEL_MIGRATION_KEY,
+            )
+            already_fixed = await conn.fetchval(
+                "SELECT 1 FROM pet_system_migrations WHERE migration_key = $1;",
+                self.PET_LEVEL_MIGRATION_XP_FIX_KEY,
+            )
+
+            if current_executed:
+                return await ctx.send(
+                    "Current migration (x2) is already active. No legacy x8 fix is needed."
+                )
+            if not legacy_executed:
+                return await ctx.send(
+                    "No legacy x8 migration record found. Nothing to fix."
+                )
+            if already_fixed:
+                return await ctx.send("Legacy x8 -> x2 fix has already been executed.")
+
+            async with conn.transaction():
+                result = await conn.fetchrow(
+                    """
+                    WITH updated AS (
+                        UPDATE monster_pets
+                        SET experience = GREATEST(0, GREATEST(experience, 0) / 4)
+                        WHERE user_id <> 0
+                        RETURNING id
+                    )
+                    SELECT COUNT(*)::BIGINT AS updated_count
+                    FROM updated;
+                    """
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO pet_system_migrations (migration_key, executed_by)
+                    VALUES ($1, $2);
+                    """,
+                    self.PET_LEVEL_MIGRATION_XP_FIX_KEY,
+                    ctx.author.id,
+                )
+
+        updated_count = int(result["updated_count"]) if result else 0
+        await ctx.send(
+            f"Legacy migration XP fix completed. Updated **{updated_count:,}** pets. "
+            "XP converted from x8-equivalent to x2-equivalent (levels unchanged)."
+        )
+
+    @is_gm()
+    @commands.command(hidden=True, name="gmrevertdoublepetlevels")
+    async def gmrevertdoublepetlevels(self, ctx, confirm: str = None):
+        """
+        Roll back the pet level migration:
+        - levels roughly halved
+        - XP divided based on detected migration version
+        - migration flags cleared so gmdoublepetlevels can be re-run
+        """
+        if (confirm or "").upper() != "YES":
+            return await ctx.send(
+                "This rollback halves migrated levels and reverses migration XP scaling.\n"
+                f"Run `{ctx.prefix}gmrevertdoublepetlevels YES` to execute."
+            )
+
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS pet_system_migrations (
+                    migration_key TEXT PRIMARY KEY,
+                    executed_by BIGINT NOT NULL,
+                    executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+
+            legacy_executed = await conn.fetchval(
+                "SELECT 1 FROM pet_system_migrations WHERE migration_key = $1;",
+                self.PET_LEVEL_MIGRATION_LEGACY_KEY,
+            )
+            current_executed = await conn.fetchval(
+                "SELECT 1 FROM pet_system_migrations WHERE migration_key = $1;",
+                self.PET_LEVEL_MIGRATION_KEY,
+            )
+            legacy_fixed = await conn.fetchval(
+                "SELECT 1 FROM pet_system_migrations WHERE migration_key = $1;",
+                self.PET_LEVEL_MIGRATION_XP_FIX_KEY,
+            )
+
+            if not (legacy_executed or current_executed):
+                return await ctx.send("No pet level migration record found to roll back.")
+
+            # Detect XP divisor from migration history:
+            # - v2 is x2
+            # - legacy v1 is x8 unless already fixed to x2
+            xp_divisor = 2 if (current_executed or legacy_fixed) else 8
+
+            async with conn.transaction():
+                result = await conn.fetchrow(
+                    """
+                    WITH updated AS (
+                        UPDATE monster_pets
+                        SET level = GREATEST(
+                                1,
+                                LEAST($1, CEIL(GREATEST(level, 1)::NUMERIC / 2.0)::INT)
+                            ),
+                            experience = GREATEST(0, GREATEST(experience, 0) / $2)
+                        WHERE user_id <> 0
+                        RETURNING id
+                    )
+                    SELECT COUNT(*)::BIGINT AS updated_count
+                    FROM updated;
+                    """,
+                    self.PET_MAX_LEVEL,
+                    int(xp_divisor),
+                )
+
+                await conn.execute(
+                    """
+                    DELETE FROM pet_system_migrations
+                    WHERE migration_key = ANY($1::TEXT[]);
+                    """,
+                    [
+                        self.PET_LEVEL_MIGRATION_LEGACY_KEY,
+                        self.PET_LEVEL_MIGRATION_KEY,
+                        self.PET_LEVEL_MIGRATION_XP_FIX_KEY,
+                    ],
+                )
+
+        updated_count = int(result["updated_count"]) if result else 0
+        await ctx.send(
+            f"Pet migration rollback completed. Updated **{updated_count:,}** pets. "
+            f"Levels were halved and XP divided by {int(xp_divisor)}. "
+            "Migration flags were cleared, so you can run `gmdoublepetlevels` again."
         )
 
     @pets.command(brief=_("Learn how to use the pet system"))
