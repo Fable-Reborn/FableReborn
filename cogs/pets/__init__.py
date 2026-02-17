@@ -2939,9 +2939,16 @@ class Pets(commands.Cog):
                 await ctx.send(f"❌ Skill '{skill_name}' not found in {element} skill tree.")
                 return
 
-            # Check if already learned - handle both None and list cases
-            learned_skills = pet.get('learned_skills') or []
-            if not isinstance(learned_skills, list):
+            # Check if already learned - normalize JSON/text/list storage formats
+            learned_skills = pet.get('learned_skills', [])
+            if isinstance(learned_skills, str):
+                try:
+                    learned_skills = json.loads(learned_skills)
+                except (json.JSONDecodeError, TypeError):
+                    learned_skills = []
+            elif learned_skills is None:
+                learned_skills = []
+            elif not isinstance(learned_skills, list):
                 learned_skills = []
                 
             if skill_found['name'] in learned_skills:
