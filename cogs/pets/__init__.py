@@ -318,6 +318,7 @@ class Pets(commands.Cog):
     PET_LEVEL_MIGRATION_KEY = "double_pet_levels_to_100_v2"  # current x2 rollout
     PET_LEVEL_MIGRATION_XP_FIX_KEY = "double_pet_levels_to_100_v1_x8_to_x2_fix"
     PET_LEVEL_MIGRATION_SP_BACKFILL_KEY = "double_pet_levels_to_100_sp_backfill_v1"
+    PET_SKILL_POINT_RECONCILE_KEY = "pet_skill_points_reconcile_v1"
 
     def __init__(self, bot):
         self.bot = bot
@@ -699,6 +700,96 @@ class Pets(commands.Cog):
     def get_skill_points_for_level(self, level):
         """Calculate skill points gained from leveling up"""
         return 1 if level % self.PET_SKILL_POINT_INTERVAL == 0 else 0  # 1 skill point every 10 levels
+
+    def normalize_learned_skills(self, learned_skills):
+        """Normalize learned skills from DB storage formats into a deduplicated name list."""
+        if isinstance(learned_skills, str):
+            try:
+                learned_skills = json.loads(learned_skills)
+            except (json.JSONDecodeError, TypeError):
+                learned_skills = []
+        elif learned_skills is None:
+            learned_skills = []
+
+        if not isinstance(learned_skills, list):
+            return []
+
+        normalized = []
+        seen = set()
+        for skill_name in learned_skills:
+            if not isinstance(skill_name, str):
+                continue
+            cleaned = skill_name.strip()
+            if not cleaned:
+                continue
+            key = cleaned.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(cleaned)
+        return normalized
+
+    def estimate_spent_skill_points(self, element, learned_skills):
+        """
+        Estimate spent skill points for currently learned skills.
+
+        Uses a conservative ordering (Battery Life applied as late as possible at each level)
+        so reconciliation does not over-refund.
+        """
+        skill_tree = self.SKILL_TREES.get(element, {})
+        if not skill_tree:
+            return 0, 0
+
+        skill_lookup = {}
+        for branch_skills in skill_tree.values():
+            for level_key, skill_data in branch_skills.items():
+                skill_name = str(skill_data.get("name", "")).strip()
+                if not skill_name:
+                    continue
+                try:
+                    required_level = int(level_key)
+                except (TypeError, ValueError):
+                    required_level = 1
+                cost = int(skill_data.get("cost", 0) or 0)
+                skill_lookup[skill_name.lower()] = {
+                    "name": skill_name,
+                    "cost": max(0, cost),
+                    "required_level": max(1, required_level),
+                    "is_battery": "battery life" in skill_name.lower(),
+                }
+
+        ordered = []
+        unknown_count = 0
+        for learned_name in self.normalize_learned_skills(learned_skills):
+            meta = skill_lookup.get(learned_name.lower())
+            if not meta:
+                unknown_count += 1
+                continue
+            ordered.append(meta)
+
+        # Battery skills sorted after same-level skills for conservative refunding.
+        ordered.sort(
+            key=lambda entry: (
+                entry["required_level"],
+                1 if entry["is_battery"] else 0,
+                entry["name"].lower(),
+            )
+        )
+
+        spent = 0
+        battery_active = False
+        for entry in ordered:
+            skill_cost = int(entry["cost"])
+            if battery_active:
+                if skill_cost >= 4:
+                    skill_cost = max(1, skill_cost - 2)
+                else:
+                    skill_cost = max(1, skill_cost - 1)
+            spent += skill_cost
+            if entry["is_battery"]:
+                battery_active = True
+
+        return spent, unknown_count
 
     async def gain_experience(self, pet_id, xp_amount, trust_gain=0, apply_xp_multiplier=True):
         """Award experience and trust to a pet"""
@@ -3806,6 +3897,157 @@ class Pets(commands.Cog):
             f"Pet skill point backfill completed. Updated **{updated_count:,}** pets, "
             f"added **{total_sp_added:,}** total skill points."
         )
+
+    @is_gm()
+    @commands.command(hidden=True, name="gmreconcilepetskillpoints")
+    async def gmreconcilepetskillpoints(self, ctx, confirm: str = None):
+        """
+        One-time reconciliation for skill points after skill-list inconsistencies.
+
+        Rebuilds expected unspent skill points as:
+        floor(level / 10) - estimated_spent_points_from_current_learned_skills
+        and tops up any pet that is below that value.
+        """
+        if (confirm or "").upper() != "YES":
+            return await ctx.send(
+                "This one-time reconciliation recalculates pet skill points from current level/skills "
+                "and refunds missing points.\n"
+                f"Run `{ctx.prefix}gmreconcilepetskillpoints YES` to execute."
+            )
+
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pet_system_migrations (
+                    migration_key TEXT PRIMARY KEY,
+                    executed_by BIGINT NOT NULL,
+                    executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+
+            already_executed = await conn.fetchval(
+                "SELECT 1 FROM pet_system_migrations WHERE migration_key = $1;",
+                self.PET_SKILL_POINT_RECONCILE_KEY,
+            )
+            if already_executed:
+                return await ctx.send(
+                    "Skill point reconciliation has already been executed. "
+                    "Use `gmrefundpetskillpoints` for manual follow-up adjustments."
+                )
+
+            pets = await conn.fetch(
+                """
+                SELECT id, level, skill_points, element, learned_skills
+                FROM monster_pets
+                WHERE user_id <> 0;
+                """
+            )
+
+            updates = []
+            total_refunded = 0
+            unknown_skill_entries = 0
+
+            for pet in pets:
+                pet_level = max(1, int(pet.get("level") or 1))
+                earned_skill_points = pet_level // self.PET_SKILL_POINT_INTERVAL
+                current_skill_points = max(0, int(pet.get("skill_points") or 0))
+
+                spent_skill_points, unknown_count = self.estimate_spent_skill_points(
+                    str(pet.get("element") or ""),
+                    pet.get("learned_skills"),
+                )
+                unknown_skill_entries += int(unknown_count)
+
+                expected_skill_points = max(0, int(earned_skill_points - spent_skill_points))
+                if current_skill_points < expected_skill_points:
+                    delta = expected_skill_points - current_skill_points
+                    updates.append((int(delta), int(pet["id"])))
+                    total_refunded += int(delta)
+
+            async with conn.transaction():
+                if updates:
+                    await conn.executemany(
+                        """
+                        UPDATE monster_pets
+                        SET skill_points = GREATEST(skill_points, 0) + $1
+                        WHERE id = $2;
+                        """,
+                        updates,
+                    )
+                await conn.execute(
+                    """
+                    INSERT INTO pet_system_migrations (migration_key, executed_by)
+                    VALUES ($1, $2);
+                    """,
+                    self.PET_SKILL_POINT_RECONCILE_KEY,
+                    ctx.author.id,
+                )
+
+        await ctx.send(
+            f"Pet skill point reconciliation completed. Scanned **{len(pets):,}** pets, "
+            f"updated **{len(updates):,}** pets, refunded **{total_refunded:,}** skill points total."
+            + (
+                f" Unknown skill entries skipped: **{unknown_skill_entries:,}**."
+                if unknown_skill_entries
+                else ""
+            )
+        )
+
+    @is_gm()
+    @commands.command(
+        hidden=True,
+        name="gmrefundpetskillpoints",
+        aliases=["gmaddpetskillpoints", "gmgivepetskillpoints"],
+    )
+    async def gmrefundpetskillpoints(
+        self,
+        ctx,
+        target: discord.User,
+        pet_ref: str,
+        amount: IntGreaterThan(0) = 1,
+        *,
+        reason: str = None,
+    ):
+        """
+        GM utility: refund/add skill points to a specific pet.
+
+        Usage:
+        - $gmrefundpetskillpoints <user> <pet_id|alias> [amount] [reason]
+        """
+        async with self.bot.pool.acquire() as conn:
+            pet, pet_id = await self.fetch_pet_for_user(conn, target.id, pet_ref)
+            if not pet:
+                return await ctx.send(
+                    f"❌ {target.mention} does not have a pet with ID or alias `{pet_ref}`."
+                )
+
+            new_skill_points = await conn.fetchval(
+                """
+                UPDATE monster_pets
+                SET skill_points = GREATEST(skill_points, 0) + $1
+                WHERE id = $2
+                RETURNING skill_points;
+                """,
+                int(amount),
+                pet_id,
+            )
+
+        reason_text = reason or f"<{ctx.message.jump_url}>"
+        await ctx.send(
+            f"✅ Refunded **{int(amount)}** skill point(s) to **{pet['name']}** "
+            f"(ID: `{pet_id}`) owned by {target.mention}. New total: **{int(new_skill_points)}** SP."
+        )
+
+        gm_log_channel = self.bot.get_channel(self.bot.config.game.gm_log_channel)
+        if gm_log_channel:
+            await gm_log_channel.send(
+                f"**{ctx.author}** refunded **{int(amount)}** pet skill point(s).\n"
+                f"Target: {target} (`{target.id}`)\n"
+                f"Pet: {pet['name']} (`{pet_id}`)\n"
+                f"New SP: {int(new_skill_points)}\n"
+                f"Reason: {reason_text}"
+            )
 
     @is_gm()
     @commands.command(hidden=True, name="gmrevertdoublepetlevels")
