@@ -6242,7 +6242,7 @@ class Battles(commands.Cog):
         async with self.bot.pool.acquire() as conn:
             await conn.execute(query, id1, id2, level, prestige_change)
             
-    @couples_battletower.command(name="start")
+    @couples_battletower.command(name="start", aliases=["fight"])
     @has_char()
     @user_cooldown(3600)
     async def cbt_start(self, ctx):
