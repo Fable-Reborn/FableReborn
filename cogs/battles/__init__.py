@@ -678,8 +678,16 @@ class CouplesTowerView(discord.ui.View):
 
 
 class PVELocationSelect(Select):
-    def __init__(self, locations: list[dict], author_id: int):
-        self.author_id = author_id
+    def __init__(self, locations: list[dict], allowed_user_ids):
+        if isinstance(allowed_user_ids, int):
+            allowed_ids = {int(allowed_user_ids)}
+        else:
+            allowed_ids = {
+                int(user_id)
+                for user_id in (allowed_user_ids or [])
+                if user_id is not None
+            }
+        self.allowed_user_ids = allowed_ids
         self.locations_by_id = {location["id"]: location for location in locations}
         options = []
         for location in locations:
@@ -695,11 +703,13 @@ class PVELocationSelect(Select):
                 )
             else:
                 tier_band = "T?"
-            desc = (
-                f"{'Locked' if is_locked else 'Unlocked'} • {tier_band} • Unlock Lv {location['unlock_level']} "
-                f"• God {location.get('god_chance', 0)}%"
-            )
-            label = f"🔒 {location['name']}" if is_locked else location["name"]
+            god_chance = location.get("god_chance", 0)
+            try:
+                god_text = f"{float(god_chance):g}%"
+            except (TypeError, ValueError):
+                god_text = f"{god_chance}%"
+            desc = f"Lv {location['unlock_level']}+ | {tier_band} | God {god_text}"
+            label = f"🔒 {location['name']}" if is_locked else f"🟢 {location['name']}"
             options.append(
                 discord.SelectOption(
                     label=label,
@@ -709,14 +719,14 @@ class PVELocationSelect(Select):
             )
 
         super().__init__(
-            placeholder="Choose where to search...",
+            placeholder="Choose a location to hunt...",
             min_values=1,
             max_values=1,
             options=options,
         )
 
     async def callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.author_id:
+        if interaction.user.id not in self.allowed_user_ids:
             await interaction.response.send_message(
                 "This location selection isn't yours.",
                 ephemeral=True,
@@ -760,17 +770,33 @@ class PVELocationSelect(Select):
 
 
 class PVELocationView(View):
-    def __init__(self, author_id: int, locations: list[dict], timeout: float = 60.0):
+    def __init__(
+        self,
+        author_id: int,
+        locations: list[dict],
+        timeout: float = 60.0,
+        allowed_user_ids=None,
+    ):
         super().__init__(timeout=timeout)
         self.author_id = author_id
+        if isinstance(allowed_user_ids, int):
+            allowed_ids = {int(allowed_user_ids)}
+        else:
+            allowed_ids = {
+                int(user_id)
+                for user_id in (allowed_user_ids or [])
+                if user_id is not None
+            }
+        allowed_ids.add(int(author_id))
+        self.allowed_user_ids = allowed_ids
         self.locations = locations
         self.selected_location = None
         self.cancelled = False
         self.message = None
-        self.add_item(PVELocationSelect(locations, author_id))
+        self.add_item(PVELocationSelect(locations, self.allowed_user_ids))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.author_id:
+        if interaction.user.id not in self.allowed_user_ids:
             await interaction.response.send_message(
                 "This location selection isn't yours.",
                 ephemeral=True,
@@ -4151,40 +4177,110 @@ class Battles(commands.Cog):
                 await self.bot.reset_cooldown(ctx)
                 return
 
-            location_lines = []
-            for location in all_locations:
+            def format_god_percent(value):
+                try:
+                    return f"{float(value):g}%"
+                except (TypeError, ValueError):
+                    return f"{value}%"
+
+            def build_location_block(location, icon):
                 tier_keys = sorted(int(tier) for tier in location["tier_weights"].keys())
-                tier_text = ", ".join(str(tier) for tier in tier_keys)
-                lock_prefix = "🔒 " if location.get("is_locked") else ""
-                location_lines.append(
-                    f"• {lock_prefix}**{location['name']}** (`{location['id']}`) (Lv {location['unlock_level']}+) "
-                    f"- Tiers [{tier_text}] - God {location.get('god_chance', 0)}%"
+                if tier_keys:
+                    tier_band = (
+                        f"T{tier_keys[0]}"
+                        if len(tier_keys) == 1
+                        else f"T{tier_keys[0]}-T{tier_keys[-1]}"
+                    )
+                else:
+                    tier_band = "T?"
+                god_text = format_god_percent(location.get("god_chance", 0))
+                return (
+                    f"{icon} **{location['name']}**\n"
+                    f"`Lv {location['unlock_level']}+`  `Tiers {tier_band}`  `God {god_text}`"
                 )
+
+            unlocked_blocks = []
+            locked_blocks = []
+            for location in all_locations:
+                if location.get("is_locked"):
+                    locked_blocks.append(build_location_block(location, "🔒"))
+                else:
+                    unlocked_blocks.append(build_location_block(location, "🟢"))
 
             location_embed = discord.Embed(
                 title=_("Choose a PvE Location"),
-                description=_("Select where you want to search for monsters."),
+                description=(
+                    f"Your level: **{player_level}**\n"
+                    "Pick a location from the dropdown below.\n"
+                    "Preview key: `Lv` unlock level, `Tiers` encounter band, `God` god encounter chance."
+                ),
                 color=self.bot.config.game.primary_colour,
             )
-            location_embed.add_field(
-                name=_("Locations"),
-                value="\n".join(location_lines),
-                inline=False,
+
+            def add_location_fields(embed, title, blocks):
+                if not blocks:
+                    return
+                chunk = []
+                chunk_len = 0
+                section_index = 1
+                for block in blocks:
+                    projected = chunk_len + len(block) + 2
+                    if chunk and projected > 980:
+                        suffix = "" if section_index == 1 else f" ({section_index})"
+                        embed.add_field(
+                            name=f"{title}{suffix}",
+                            value="\n\n".join(chunk),
+                            inline=False,
+                        )
+                        section_index += 1
+                        chunk = [block]
+                        chunk_len = len(block)
+                    else:
+                        chunk.append(block)
+                        chunk_len = projected
+                if chunk:
+                    suffix = "" if section_index == 1 else f" ({section_index})"
+                    embed.add_field(
+                        name=f"{title}{suffix}",
+                        value="\n\n".join(chunk),
+                        inline=False,
+                    )
+
+            add_location_fields(
+                location_embed,
+                f"Unlocked ({len(unlocked_blocks)})",
+                unlocked_blocks,
             )
+            add_location_fields(
+                location_embed,
+                f"Locked ({len(locked_blocks)})",
+                locked_blocks,
+            )
+
             location_embed.add_field(
                 name=_("Need Exact Odds?"),
-                value=_("Use `$pveinfo <location name or id>` for full tier rates."),
+                value=_("Use `$pveinfo <location>` for full tier rates."),
                 inline=False,
             )
             if splice_injected:
                 location_embed.set_footer(
                     text="Splice injection active: sampled Gen 0 splice monsters are mixed into your pool."
                 )
+            else:
+                location_embed.set_footer(
+                    text="Tip: Use `$pvelocations` for a quick overview of all zones."
+                )
+
+            allowed_location_users = {ctx.author.id}
+            alt_invoker_id = getattr(ctx, "alt_invoker_id", None)
+            if alt_invoker_id is not None:
+                allowed_location_users.add(int(alt_invoker_id))
 
             location_view = PVELocationView(
                 author_id=ctx.author.id,
                 locations=all_locations,
                 timeout=60.0,
+                allowed_user_ids=allowed_location_users,
             )
             location_message = await ctx.send(embed=location_embed, view=location_view)
             location_view.message = location_message

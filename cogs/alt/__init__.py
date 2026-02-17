@@ -216,6 +216,7 @@ class Alt(commands.Cog):
         fake_msg.author = member
 
         new_ctx = await ctx.bot.get_context(fake_msg, cls=commands.Context)
+        new_ctx.alt_invoker_id = ctx.author.id
         await ctx.bot.invoke(new_ctx)
 
     @alt.command(name="register", brief=_("Register an alt account"))
