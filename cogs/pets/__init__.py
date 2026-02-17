@@ -638,6 +638,22 @@ class Pets(commands.Cog):
         )
         return pet, pet_id
 
+    async def fetch_pet_progress_snapshot(self, conn, pet_id: int):
+        """Fetch canonical progression fields to avoid stale/inconsistent displays."""
+        return await conn.fetchrow(
+            """
+            SELECT
+                COALESCE(level, 1) AS level,
+                COALESCE(experience, 0) AS experience,
+                COALESCE(trust_level, 0) AS trust_level,
+                COALESCE(skill_points, 0) AS skill_points,
+                COALESCE(xp_multiplier, 1.0) AS xp_multiplier
+            FROM monster_pets
+            WHERE id = $1;
+            """,
+            pet_id,
+        )
+
     def get_trust_level_info(self, trust_level):
         """Get trust level information based on trust points"""
         for threshold in sorted(self.TRUST_LEVELS.keys(), reverse=True):
@@ -2732,6 +2748,11 @@ class Pets(commands.Cog):
                 await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
                 return
 
+            snapshot = await self.fetch_pet_progress_snapshot(conn, pet_id)
+            if snapshot:
+                pet = dict(pet)
+                pet.update(dict(snapshot))
+
         element = pet['element']
         if element not in self.SKILL_TREES:
             await ctx.send(f"❌ {pet['name']} has an unknown element: {element}")
@@ -2958,6 +2979,11 @@ class Pets(commands.Cog):
                 await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
                 return
 
+            snapshot = await self.fetch_pet_progress_snapshot(conn, pet_id)
+            if snapshot:
+                pet = dict(pet)
+                pet.update(dict(snapshot))
+
         trust_info = self.get_trust_level_info(pet['trust_level'])
         if pet["level"] >= self.PET_MAX_LEVEL:
             next_level_xp = None
@@ -2997,6 +3023,7 @@ class Pets(commands.Cog):
         embed.add_field(
             name="🌟 Basic Info",
             value=f"**Element:** {pet['element']}\n"
+                  f"**ID:** {pet_id}\n"
                   f"**Growth Stage:** {pet['growth_stage'].capitalize()}\n"
                   f"**Equipped:** {'✅' if pet['equipped'] else '❌'}"
                   f"{alias_text}",
