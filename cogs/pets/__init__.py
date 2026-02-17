@@ -313,6 +313,7 @@ class Pets(commands.Cog):
     PET_LEVEL_MIGRATION_LEGACY_KEY = "double_pet_levels_to_100_v1"  # legacy x8 rollout
     PET_LEVEL_MIGRATION_KEY = "double_pet_levels_to_100_v2"  # current x2 rollout
     PET_LEVEL_MIGRATION_XP_FIX_KEY = "double_pet_levels_to_100_v1_x8_to_x2_fix"
+    PET_LEVEL_MIGRATION_SP_BACKFILL_KEY = "double_pet_levels_to_100_sp_backfill_v1"
 
     def __init__(self, bot):
         self.bot = bot
@@ -3539,7 +3540,11 @@ class Pets(commands.Cog):
                     WITH updated AS (
                         UPDATE monster_pets
                         SET level = LEAST(GREATEST(level, 1) * 2, $1),
-                            experience = GREATEST(experience, 0) * 2
+                            experience = GREATEST(experience, 0) * 2,
+                            skill_points = GREATEST(skill_points, 0) + GREATEST(
+                                0,
+                                (LEAST(GREATEST(level, 1) * 2, $1) / $2) - (GREATEST(level, 1) / $2)
+                            )
                         WHERE user_id <> 0
                         RETURNING id
                     )
@@ -3547,6 +3552,7 @@ class Pets(commands.Cog):
                     FROM updated;
                     """,
                     self.PET_MAX_LEVEL,
+                    self.PET_SKILL_POINT_INTERVAL,
                 )
                 await conn.execute(
                     """
@@ -3560,7 +3566,7 @@ class Pets(commands.Cog):
         updated_count = int(result["updated_count"]) if result else 0
         await ctx.send(
             f"Pet level migration completed. Updated **{updated_count:,}** pets. "
-            f"Levels doubled (max {self.PET_MAX_LEVEL}) and XP scaled by x2."
+            f"Levels doubled (max {self.PET_MAX_LEVEL}), XP scaled by x2, and milestone skill points were backfilled."
         )
 
     @is_gm()
@@ -3638,6 +3644,92 @@ class Pets(commands.Cog):
         )
 
     @is_gm()
+    @commands.command(hidden=True, name="gmbackfillpetskillpoints")
+    async def gmbackfillpetskillpoints(self, ctx, confirm: str = None):
+        """
+        One-time backfill for missed migration skill points.
+        Grants points that should have been awarded for newly crossed 10-level milestones
+        when levels were doubled.
+        """
+        if (confirm or "").upper() != "YES":
+            return await ctx.send(
+                "This one-time backfill grants missed skill points from the level-doubling migration.\n"
+                f"Run `{ctx.prefix}gmbackfillpetskillpoints YES` to execute."
+            )
+
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS pet_system_migrations (
+                    migration_key TEXT PRIMARY KEY,
+                    executed_by BIGINT NOT NULL,
+                    executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+
+            legacy_executed = await conn.fetchval(
+                "SELECT 1 FROM pet_system_migrations WHERE migration_key = $1;",
+                self.PET_LEVEL_MIGRATION_LEGACY_KEY,
+            )
+            current_executed = await conn.fetchval(
+                "SELECT 1 FROM pet_system_migrations WHERE migration_key = $1;",
+                self.PET_LEVEL_MIGRATION_KEY,
+            )
+            already_backfilled = await conn.fetchval(
+                "SELECT 1 FROM pet_system_migrations WHERE migration_key = $1;",
+                self.PET_LEVEL_MIGRATION_SP_BACKFILL_KEY,
+            )
+
+            if not (legacy_executed or current_executed):
+                return await ctx.send(
+                    "No pet level migration record found. Run the level migration first."
+                )
+            if already_backfilled:
+                return await ctx.send("Skill point backfill has already been executed.")
+
+            async with conn.transaction():
+                result = await conn.fetchrow(
+                    """
+                    WITH candidates AS (
+                        SELECT
+                            id,
+                            GREATEST(
+                                0,
+                                (GREATEST(level, 1) / $1) - (((GREATEST(level, 1) + 1) / 2) / $1)
+                            )::INT AS sp_delta
+                        FROM monster_pets
+                        WHERE user_id <> 0
+                    ),
+                    updated AS (
+                        UPDATE monster_pets AS p
+                        SET skill_points = GREATEST(p.skill_points, 0) + c.sp_delta
+                        FROM candidates AS c
+                        WHERE p.id = c.id AND c.sp_delta > 0
+                        RETURNING c.sp_delta
+                    )
+                    SELECT
+                        COUNT(*)::BIGINT AS updated_count,
+                        COALESCE(SUM(sp_delta), 0)::BIGINT AS total_sp_added
+                    FROM updated;
+                    """,
+                    self.PET_SKILL_POINT_INTERVAL,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO pet_system_migrations (migration_key, executed_by)
+                    VALUES ($1, $2);
+                    """,
+                    self.PET_LEVEL_MIGRATION_SP_BACKFILL_KEY,
+                    ctx.author.id,
+                )
+
+        updated_count = int(result["updated_count"]) if result else 0
+        total_sp_added = int(result["total_sp_added"]) if result else 0
+        await ctx.send(
+            f"Pet skill point backfill completed. Updated **{updated_count:,}** pets, "
+            f"added **{total_sp_added:,}** total skill points."
+        )
+
+    @is_gm()
     @commands.command(hidden=True, name="gmrevertdoublepetlevels")
     async def gmrevertdoublepetlevels(self, ctx, confirm: str = None):
         """
@@ -3711,6 +3803,7 @@ class Pets(commands.Cog):
                         self.PET_LEVEL_MIGRATION_LEGACY_KEY,
                         self.PET_LEVEL_MIGRATION_KEY,
                         self.PET_LEVEL_MIGRATION_XP_FIX_KEY,
+                        self.PET_LEVEL_MIGRATION_SP_BACKFILL_KEY,
                     ],
                 )
 
