@@ -134,6 +134,32 @@ class GameMaster(commands.Cog):
             "lnybag": 10,
         },
     }
+    GM_CONSUMABLE_ALIASES = {
+        "petage": {"consumable_type": "pet_age_potion", "display_name": "Pet Age Potion"},
+        "pet age potion": {"consumable_type": "pet_age_potion", "display_name": "Pet Age Potion"},
+        "pet speed growth potion": {
+            "consumable_type": "pet_speed_growth_potion",
+            "display_name": "Pet Speed Growth Potion",
+        },
+        "petspeed": {
+            "consumable_type": "pet_speed_growth_potion",
+            "display_name": "Pet Speed Growth Potion",
+        },
+        "pet xp potion": {"consumable_type": "pet_xp_potion", "display_name": "Pet XP Potion"},
+        "petxp": {"consumable_type": "pet_xp_potion", "display_name": "Pet XP Potion"},
+        "weapelement": {
+            "consumable_type": "weapon_element_scroll",
+            "display_name": "Weapon Element Scroll",
+        },
+        "weapon element scroll": {
+            "consumable_type": "weapon_element_scroll",
+            "display_name": "Weapon Element Scroll",
+        },
+        "elementscroll": {
+            "consumable_type": "weapon_element_scroll",
+            "display_name": "Weapon Element Scroll",
+        },
+    }
 
     def __init__(self, bot):
         self.bot = bot
@@ -164,6 +190,12 @@ class GameMaster(commands.Cog):
         #self.patron_ids = self.load_patron_ids()
         self.isbid = False
         self.event_flags = {}
+
+    @staticmethod
+    def _normalize_consumable_alias(alias: str) -> str:
+        if not alias:
+            return ""
+        return " ".join(alias.lower().replace("_", " ").replace("-", " ").split())
 
     @is_gm()
     @commands.command(brief=_("Publish an announcement"))
@@ -1105,6 +1137,95 @@ class GameMaster(commands.Cog):
         for user in self.bot.owner_ids:
             user = await self.bot.get_user_global(user)
             await user.send(message)
+
+    @is_gm()
+    @commands.command(
+        hidden=True,
+        aliases=["gmconsumable", "gmgivecons"],
+        brief=_("Grant premium consumables"),
+    )
+    @locale_doc
+    async def gmgiveconsumable(
+            self,
+            ctx,
+            target: UserWithCharacter,
+            item: str,
+            amount: IntGreaterThan(0) = 1,
+            *,
+            reason: str = None,
+    ):
+        _(
+            """`<target>` - A discord User with character
+            `<item>` - One of: petage, petspeed, petxp, weapelement (or long aliases)
+            `[amount]` - Optional amount to grant, defaults to 1
+            `[reason]` - The reason this action was done, defaults to the command message link
+
+            Grant premium consumables directly to a user's consumable inventory.
+            For multi-word item names, use quotes.
+
+            Only Game Masters can use this command."""
+        )
+        normalized_item = self._normalize_consumable_alias(item)
+        item_data = self.GM_CONSUMABLE_ALIASES.get(normalized_item)
+        if not item_data:
+            valid_items = (
+                "petage, pet age potion, pet_age_potion, petspeed, "
+                "pet speed growth potion, pet_speed_growth_potion, "
+                "petxp, pet xp potion, pet_xp_potion, "
+                "weapelement, elementscroll, weapon element scroll, weapon_element_scroll"
+            )
+            return await ctx.send(
+                _("Invalid consumable. Valid options: {items}").format(items=valid_items)
+            )
+
+        consumable_type = item_data["consumable_type"]
+        display_name = item_data["display_name"]
+
+        async with self.bot.pool.acquire() as conn:
+            existing = await conn.fetchrow(
+                'SELECT id, quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;',
+                target.id,
+                consumable_type,
+            )
+            if existing:
+                await conn.execute(
+                    'UPDATE user_consumables SET quantity = quantity + $1 WHERE id = $2;',
+                    amount,
+                    existing["id"],
+                )
+            else:
+                await conn.execute(
+                    'INSERT INTO user_consumables (user_id, consumable_type, quantity) VALUES ($1, $2, $3);',
+                    target.id,
+                    consumable_type,
+                    amount,
+                )
+
+            new_quantity = await conn.fetchval(
+                'SELECT quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;',
+                target.id,
+                consumable_type,
+            )
+
+        await ctx.send(
+            _(
+                "Granted **{amount}x {item_name}** to **{target}**. New quantity: **{quantity}**."
+            ).format(amount=amount, item_name=display_name, target=target, quantity=new_quantity)
+        )
+
+        with handle_message_parameters(
+                content="**{gm}** gave **{amount}x {item_name}** to **{target}**.\n\nReason: *{reason}*".format(
+                    gm=ctx.author,
+                    amount=amount,
+                    item_name=display_name,
+                    target=target,
+                    reason=reason or f"<{ctx.message.jump_url}>",
+                )
+        ) as params:
+            await self.bot.http.send_message(
+                self.bot.config.game.gm_log_channel,
+                params=params,
+            )
 
     @is_gm()
     @commands.command(hidden=True, brief=_("Create crates"))
