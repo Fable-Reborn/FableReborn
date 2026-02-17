@@ -826,6 +826,162 @@ class PVELocationView(View):
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass
 
+
+class ScoutLocationChoiceSelect(Select):
+    RANDOM_VALUE = "__random__"
+
+    def __init__(self, locations: list[dict], allowed_user_ids):
+        if isinstance(allowed_user_ids, int):
+            allowed_ids = {int(allowed_user_ids)}
+        else:
+            allowed_ids = {
+                int(user_id)
+                for user_id in (allowed_user_ids or [])
+                if user_id is not None
+            }
+        self.allowed_user_ids = allowed_ids
+        self.locations_by_id = {location["id"]: location for location in locations}
+
+        options = [
+            discord.SelectOption(
+                label="🎲 Random Unlocked",
+                value=self.RANDOM_VALUE,
+                description="Roll from any unlocked location each scout.",
+            )
+        ]
+
+        for location in locations:
+            tier_keys = sorted(
+                int(tier) for tier in (location.get("tier_weights", {}) or {}).keys()
+            )
+            if tier_keys:
+                tier_band = (
+                    f"T{tier_keys[0]}"
+                    if len(tier_keys) == 1
+                    else f"T{tier_keys[0]}-T{tier_keys[-1]}"
+                )
+            else:
+                tier_band = "T?"
+            god_chance = location.get("god_chance", 0)
+            try:
+                god_text = f"{float(god_chance):g}%"
+            except (TypeError, ValueError):
+                god_text = f"{god_chance}%"
+            desc = f"Lv {location['unlock_level']}+ | {tier_band} | God {god_text}"
+            options.append(
+                discord.SelectOption(
+                    label=location["name"][:100],
+                    value=location["id"],
+                    description=desc[:100],
+                )
+            )
+
+        super().__init__(
+            placeholder="Choose your scouting location mode...",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id not in self.allowed_user_ids:
+            await interaction.response.send_message(
+                "This location selection isn't yours.",
+                ephemeral=True,
+            )
+            return
+
+        view = self.view
+        if not isinstance(view, ScoutLocationChoiceView):
+            await interaction.response.send_message(
+                "Something went wrong with this selection.",
+                ephemeral=True,
+            )
+            return
+
+        selected_value = self.values[0]
+        if selected_value == self.RANDOM_VALUE:
+            view.use_random_location = True
+            view.selected_location = None
+            mode_text = "Scouting mode set to **Random Unlocked**."
+        else:
+            selected_location = self.locations_by_id.get(selected_value)
+            if not selected_location:
+                await interaction.response.send_message(
+                    "Invalid location selection.",
+                    ephemeral=True,
+                )
+                return
+            view.use_random_location = False
+            view.selected_location = selected_location
+            mode_text = (
+                f"Scouting mode locked to **{selected_location['name']}**."
+            )
+
+        for child in view.children:
+            child.disabled = True
+        await interaction.response.edit_message(content=mode_text, view=view)
+        view.stop()
+
+
+class ScoutLocationChoiceView(View):
+    def __init__(
+        self,
+        author_id: int,
+        locations: list[dict],
+        timeout: float = 60.0,
+        allowed_user_ids=None,
+    ):
+        super().__init__(timeout=timeout)
+        self.author_id = author_id
+        if isinstance(allowed_user_ids, int):
+            allowed_ids = {int(allowed_user_ids)}
+        else:
+            allowed_ids = {
+                int(user_id)
+                for user_id in (allowed_user_ids or [])
+                if user_id is not None
+            }
+        allowed_ids.add(int(author_id))
+        self.allowed_user_ids = allowed_ids
+        self.locations = locations
+        self.selected_location = None
+        self.use_random_location = None
+        self.cancelled = False
+        self.message = None
+        self.add_item(ScoutLocationChoiceSelect(locations, self.allowed_user_ids))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id not in self.allowed_user_ids:
+            await interaction.response.send_message(
+                "This location selection isn't yours.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(
+        label="Cancel",
+        style=discord.ButtonStyle.secondary,
+        emoji="❌",
+        row=1,
+    )
+    async def cancel_button(self, interaction: discord.Interaction, button: Button):
+        self.cancelled = True
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="Scouting cancelled.", view=self)
+        self.stop()
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
 class Battles(commands.Cog):
     DRAGON_COIN_DROP_CHANCE_PERCENT = 10
     DRAGON_COIN_DROP_MIN = 2
@@ -4838,16 +4994,82 @@ class Battles(commands.Cog):
                     await ctx.send("No PvE locations are unlocked for your level yet.")
                     await self.bot.reset_cooldown(ctx)
                     return
+
+                allowed_scout_user_ids = {ctx.author.id}
+                alt_invoker_id = getattr(ctx, "alt_invoker_id", None)
+                if alt_invoker_id is not None:
+                    allowed_scout_user_ids.add(int(alt_invoker_id))
+
+                location_choice_embed = discord.Embed(
+                    title="Choose Scout Location",
+                    description=(
+                        "Pick a specific location to focus your scout rolls, or select "
+                        "**Random Unlocked** to keep randomizing between unlocked zones."
+                    ),
+                    color=self.bot.config.game.primary_colour,
+                )
+                location_choice_embed.add_field(
+                    name="Tip",
+                    value=(
+                        "Choosing one location prevents rerolls from landing in zones "
+                        "you don't want."
+                    ),
+                    inline=False,
+                )
+
+                location_choice_view = ScoutLocationChoiceView(
+                    author_id=ctx.author.id,
+                    locations=unlocked_locations,
+                    timeout=60.0,
+                    allowed_user_ids=allowed_scout_user_ids,
+                )
+                location_choice_message = await ctx.send(
+                    embed=location_choice_embed,
+                    view=location_choice_view,
+                )
+                location_choice_view.message = location_choice_message
+
+                await location_choice_view.wait()
+
+                if location_choice_view.cancelled:
+                    await self.bot.reset_cooldown(ctx)
+                    return
+
+                if location_choice_view.use_random_location is None:
+                    await ctx.send("⏱️ Scout location selection timed out.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
+
+                forced_scout_location = (
+                    None
+                    if location_choice_view.use_random_location
+                    else location_choice_view.selected_location
+                )
                 
                 # Create scouting view
                 class ScoutingView(discord.ui.View):
-                    def __init__(self, ctx, monster_data, rerolls_left, max_rerolls):
+                    def __init__(
+                        self,
+                        ctx,
+                        monster_data,
+                        rerolls_left,
+                        max_rerolls,
+                        allowed_user_ids,
+                    ):
                         super().__init__(timeout=30)
                         self.ctx = ctx
                         self.monster = monster_data
                         self.rerolls = rerolls_left
                         self.max_rerolls = max_rerolls
                         self.result = None
+                        if isinstance(allowed_user_ids, int):
+                            self.allowed_user_ids = {int(allowed_user_ids)}
+                        else:
+                            self.allowed_user_ids = {
+                                int(user_id)
+                                for user_id in (allowed_user_ids or [])
+                                if user_id is not None
+                            }
                         
                         # Add buttons
                         self.engage_button = discord.ui.Button(
@@ -4875,9 +5097,12 @@ class Battles(commands.Cog):
                         self.add_item(self.retreat_button)
                         
                         self.update_button_states()
+
+                    def can_interact(self, interaction: discord.Interaction) -> bool:
+                        return interaction.user.id in self.allowed_user_ids
                     
                     async def engage_callback(self, interaction: discord.Interaction):
-                        if interaction.user.id != self.ctx.author.id:
+                        if not self.can_interact(interaction):
                             await interaction.response.send_message("This isn't your battle!", ephemeral=True)
                             return
                         
@@ -4886,7 +5111,7 @@ class Battles(commands.Cog):
                         self.stop()
                     
                     async def reroll_callback(self, interaction: discord.Interaction):
-                        if interaction.user.id != self.ctx.author.id:
+                        if not self.can_interact(interaction):
                             await interaction.response.send_message("This isn't your battle!", ephemeral=True)
                             return
                         
@@ -4897,7 +5122,7 @@ class Battles(commands.Cog):
                             self.stop()
                     
                     async def retreat_callback(self, interaction: discord.Interaction):
-                        if interaction.user.id != self.ctx.author.id:
+                        if not self.can_interact(interaction):
                             await interaction.response.send_message("This isn't your battle!", ephemeral=True)
                             return
                         
@@ -4967,7 +5192,11 @@ class Battles(commands.Cog):
                 
                 # Main scouting loop
                 while True:
-                    scout_location = random.choice(unlocked_locations)
+                    scout_location = (
+                        forced_scout_location
+                        if forced_scout_location is not None
+                        else random.choice(unlocked_locations)
+                    )
                     levelchoice = self._roll_pve_tier_for_location(scout_location)
                     
                     # Select and display monster
@@ -4985,7 +5214,13 @@ class Battles(commands.Cog):
                     )
                     
                     # Show scouting view
-                    view = ScoutingView(ctx, monster_data, rerolls_left, max_rerolls)
+                    view = ScoutingView(
+                        ctx,
+                        monster_data,
+                        rerolls_left,
+                        max_rerolls,
+                        allowed_scout_user_ids,
+                    )
                     message = await ctx.send(embed=embed, view=view)
                     
                     await view.wait()
