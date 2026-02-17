@@ -95,13 +95,13 @@ class PremiumShop(commands.Cog):
             return chunks
 
         item_paragraphs = [
-            "<:ageup:1473265287238385797> **Pet Age Potion** - 200 <:dragoncoin:1398714322372395008> (`petage`)\n*Instantly age your pet to the next growth stage*",
-            "<:finalpotion:1473265347581710346> **Pet Speed Growth Potion** - 300 <:dragoncoin:1398714322372395008> (`petspeed`)\n*Doubles growth speed for a specific pet*",
-            "<:SplicePotion:1473266873612107836> **Pet XP Potion** - 1200 <:dragoncoin:1398714322372395008> (`petxp`)\n*Gives a pet permanent x2 pet-care XP multiplier*",
-            "📜 **Weapon Element Scroll** - 800 <:dragoncoin:1398714322372395008> (`weapelement`)\n*Changes the element of one weapon in your inventory*",
-            "<:F_Legendary:1139514868400132116> **Legendary Crate** - 500 <:dragoncoin:1398714322372395008> (`legendary`)\n*Contains items with stats ranging from 41 to 80, may also in rare cases contain dragon coins*",
-            "<:f_divine:1169412814612471869> **Divine Crate** - 1000 <:dragoncoin:1398714322372395008> (`divine`)\n*Contains items with stats ranging from 47 to 100*",
-            "<:c_mats:1403797590335819897> **Materials Crate** - 450 <:dragoncoin:1398714322372395008> (`materials`)\n*Contains 3-10 random crafting materials*",
+            "<:ageup:1473265287238385797> **Pet Age Potion** - 200 <:dragoncoin:1404860657366728788> (`petage`)\n*Instantly age your pet to the next growth stage*",
+            "<:finalpotion:1473265347581710346> **Pet Speed Growth Potion** - 300 <:dragoncoin:1404860657366728788> (`petspeed`)\n*Doubles growth speed for a specific pet*",
+            "<:SplicePotion:1473266873612107836> **Pet XP Potion** - 1200 <:dragoncoin:1404860657366728788> (`petxp`)\n*Gives a pet permanent x2 pet-care XP multiplier*",
+            "📜 **Weapon Element Scroll** - 800 <:dragoncoin:1404860657366728788> (`weapelement`)\n*Changes the element of one weapon in your inventory*",
+            "<:F_Legendary:1139514868400132116> **Legendary Crate** - 500 <:dragoncoin:1404860657366728788> (`legendary`)\n*Contains items with stats ranging from 41 to 80, may also in rare cases contain dragon coins*",
+            "<:f_divine:1169412814612471869> **Divine Crate** - 1000 <:dragoncoin:1404860657366728788> (`divine`)\n*Contains items with stats ranging from 47 to 100*",
+            "<:c_mats:1403797590335819897> **Materials Crate** - 450 <:dragoncoin:1404860657366728788> (`materials`)\n*Contains 3-10 random crafting materials*",
             "*More items coming soon...*",
         ]
         item_chunks = chunk_paragraphs(item_paragraphs, limit=1024)
