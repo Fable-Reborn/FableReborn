@@ -531,6 +531,91 @@ class IdleHelp(commands.HelpCommand):
         self.owner_exts = {"Owner"}
         self.group_emoji = "💠"
         self.command_emoji = "🔷"
+        self._owner_table_checked = False
+        self._owner_table_name = None
+        self._owner_table_column = None
+        self._db_gm_cache = set()
+
+    async def _is_db_gm(self, user_id: int) -> bool:
+        gm_cache = getattr(self.context.bot, "_gm_cache", None)
+        if isinstance(gm_cache, set) and user_id in gm_cache:
+            return True
+        if user_id in self._db_gm_cache:
+            return True
+        try:
+            result = await self.context.bot.pool.fetchrow(
+                "SELECT 1 FROM game_masters WHERE user_id = $1",
+                user_id,
+            )
+        except Exception:
+            return False
+        is_gm = result is not None
+        if is_gm:
+            self._db_gm_cache.add(user_id)
+            if isinstance(gm_cache, set):
+                gm_cache.add(user_id)
+        return is_gm
+
+    async def _resolve_owner_db_table(self) -> None:
+        if self._owner_table_checked:
+            return
+
+        self._owner_table_checked = True
+        table_candidates = ("bot_owners", "game_owners", "owners")
+        column_candidates = ("user_id", "owner_id")
+
+        for table in table_candidates:
+            try:
+                exists = await self.context.bot.pool.fetchval(
+                    "SELECT to_regclass($1)",
+                    f"public.{table}",
+                )
+            except Exception:
+                continue
+            if not exists:
+                continue
+
+            for column in column_candidates:
+                try:
+                    await self.context.bot.pool.fetchrow(
+                        f"SELECT 1 FROM {table} WHERE {column} = $1 LIMIT 1",
+                        0,
+                    )
+                except Exception:
+                    continue
+                self._owner_table_name = table
+                self._owner_table_column = column
+                return
+
+    async def _is_db_owner(self, user_id: int) -> bool:
+        await self._resolve_owner_db_table()
+        if not self._owner_table_name or not self._owner_table_column:
+            return False
+        try:
+            result = await self.context.bot.pool.fetchrow(
+                f"SELECT 1 FROM {self._owner_table_name} WHERE {self._owner_table_column} = $1",
+                user_id,
+            )
+        except Exception:
+            return False
+        return result is not None
+
+    async def _is_owner_user(self, user: discord.abc.User) -> bool:
+        config_owner_ids = set(getattr(self.context.bot.config.game, "owner_ids", []) or [])
+        if user.id in self.context.bot.owner_ids or user.id in config_owner_ids:
+            return True
+        try:
+            if await self.context.bot.is_owner(user):
+                return True
+        except Exception:
+            pass
+        return await self._is_db_owner(user.id)
+
+    async def _is_gm_user(self, user: discord.abc.User) -> bool:
+        config_gms = set(getattr(self.context.bot.config.game, "game_masters", []) or [])
+        if user.id in config_gms:
+            return True
+        return await self._is_db_gm(user.id)
 
     async def command_callback(self, ctx, *, command=None):
         await self.prepare_help_command(ctx, command)
@@ -606,19 +691,16 @@ class IdleHelp(commands.HelpCommand):
 
         ).format(prefix=self.context.clean_prefix)
 
+        is_owner = await self._is_owner_user(self.context.author)
+        is_gm = is_owner or await self._is_gm_user(self.context.author)
+
         allowed = []
         for cog in sorted(mapping.keys(), key=lambda x: x.qualified_name if x else ""):
             if cog is None:
                 continue
-            if (
-                self.context.author.id not in self.context.bot.config.game.game_masters
-                and cog.qualified_name in self.gm_exts
-            ):
+            if not is_gm and cog.qualified_name in self.gm_exts:
                 continue
-            if (
-                self.context.author.id not in self.context.bot.owner_ids
-                and cog.qualified_name in self.owner_exts
-            ):
+            if not is_owner and cog.qualified_name in self.owner_exts:
                 continue
             if (
                 cog.qualified_name not in self.gm_exts
@@ -637,18 +719,14 @@ class IdleHelp(commands.HelpCommand):
         await self.context.send(embed=e)
 
     async def send_cog_help(self, cog):
-        if (cog.qualified_name in self.gm_exts) and (
-            self.context.author.id not in self.context.bot.config.game.game_masters
-        ):
-            if self.context.author.id in self.context.bot.owner_ids:
-                pass  # owners don't have restrictions
-            else:
-                return await self.context.send(
-                    _("You do not have access to these commands!")
-                )
-        if (cog.qualified_name in self.owner_exts) and (
-            self.context.author.id not in self.context.bot.owner_ids
-        ):
+        is_owner = await self._is_owner_user(self.context.author)
+        is_gm = is_owner or await self._is_gm_user(self.context.author)
+
+        if cog.qualified_name in self.gm_exts and not is_gm:
+            return await self.context.send(
+                _("You do not have access to these commands!")
+            )
+        if cog.qualified_name in self.owner_exts and not is_owner:
             return await self.context.send(
                 _("You do not have access to these commands!")
             )
@@ -674,18 +752,14 @@ class IdleHelp(commands.HelpCommand):
 
     async def send_command_help(self, command: Command):
         if command.cog:
-            if (command.cog.qualified_name in self.gm_exts) and (
-                self.context.author.id not in self.context.bot.config.game.game_masters
-            ):
-                if self.context.author.id in self.context.bot.owner_ids:
-                    pass  # owners don't have restrictions
-                else:
-                    return await self.context.send(
-                        _("You do not have access to this command!")
-                    )
-            if (command.cog.qualified_name in self.owner_exts) and (
-                self.context.author.id not in self.context.bot.owner_ids
-            ):
+            is_owner = await self._is_owner_user(self.context.author)
+            is_gm = is_owner or await self._is_gm_user(self.context.author)
+
+            if command.cog.qualified_name in self.gm_exts and not is_gm:
+                return await self.context.send(
+                    _("You do not have access to this command!")
+                )
+            if command.cog.qualified_name in self.owner_exts and not is_owner:
                 return await self.context.send(
                     _("You do not have access to this command!")
                 )
@@ -713,17 +787,14 @@ class IdleHelp(commands.HelpCommand):
 
     async def send_group_help(self, group):
         if group.cog:
-            if (
-                self.context.author.id not in self.context.bot.config.game.game_masters
-                and group.cog.qualified_name in self.gm_exts
-            ):
+            is_owner = await self._is_owner_user(self.context.author)
+            is_gm = is_owner or await self._is_gm_user(self.context.author)
+
+            if group.cog.qualified_name in self.gm_exts and not is_gm:
                 return await self.context.send(
                     _("You do not have access to this command!")
                 )
-            if (
-                self.context.author.id not in self.context.bot.owner_ids
-                and group.cog.qualified_name in self.owner_exts
-            ):
+            if group.cog.qualified_name in self.owner_exts and not is_owner:
                 return await self.context.send(
                     _("You do not have access to this command!")
                 )
