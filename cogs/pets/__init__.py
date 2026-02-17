@@ -114,9 +114,13 @@ class PetPaginator(discord.ui.View):
 
         stage_data = growth_stages.get(pet["growth_index"], growth_stages[1])  # Default to 'baby' stage
         stat_multiplier = stage_data["stat_multiplier"]
-        hp = round(pet["hp"])
-        attack = round(pet["attack"] )
-        defense = round(pet["defense"])
+        stat_data = self.cog.calculate_pet_battle_stats(pet)
+        hp = round(stat_data["battle_hp"], 1)
+        attack = round(stat_data["battle_attack"], 1)
+        defense = round(stat_data["battle_defense"], 1)
+        base_hp = round(stat_data["base_hp"])
+        base_attack = round(stat_data["base_attack"])
+        base_defense = round(stat_data["base_defense"])
 
         # Calculate growth time left
         growth_time_left = None
@@ -150,12 +154,12 @@ class PetPaginator(discord.ui.View):
         )
 
         embed.add_field(
-            name="✨ **Stats**",
+            name="⚔️ **Battle Stats**",
             value=(
                 f"**IV** {iv}%\n"
-                f"**HP:** {hp}\n"
-                f"**Attack:** {attack}\n"
-                f"**Defense:** {defense}"
+                f"**HP:** {hp:,} *(Base: {base_hp:,})*\n"
+                f"**Attack:** {attack:,} *(Base: {base_attack:,})*\n"
+                f"**Defense:** {defense:,} *(Base: {base_defense:,})*"
             ),
             inline=False,
         )
@@ -362,11 +366,11 @@ class Pets(commands.Cog):
         }
 
         self.TRUST_LEVELS = {
-            0: {"name": "Distrustful", "bonus": -20, "emoji": "😠"},
+            0: {"name": "Distrustful", "bonus": -10, "emoji": "😠"},
             21: {"name": "Cautious", "bonus": 0, "emoji": "😐"},
-            41: {"name": "Trusting", "bonus": 10, "emoji": "😊"},
-            61: {"name": "Loyal", "bonus": 20, "emoji": "😍"},
-            81: {"name": "Devoted", "bonus": 30, "emoji": "🥰"}
+            41: {"name": "Trusting", "bonus": 5, "emoji": "😊"},
+            61: {"name": "Loyal", "bonus": 8, "emoji": "😍"},
+            81: {"name": "Devoted", "bonus": 10, "emoji": "🥰"}
         }
 
         # Element-based skill trees
@@ -660,6 +664,33 @@ class Pets(commands.Cog):
             if trust_level >= threshold:
                 return self.TRUST_LEVELS[threshold]
         return self.TRUST_LEVELS[0]  # Default to Distrustful
+
+    def calculate_pet_battle_stats(self, pet):
+        """Calculate effective in-battle stats using level and trust bonuses."""
+        level = max(1, min(int(pet.get("level", 1)), self.PET_MAX_LEVEL))
+        trust_level = int(pet.get("trust_level", 0) or 0)
+        trust_info = self.get_trust_level_info(trust_level)
+        trust_bonus_pct = int(trust_info.get("bonus", 0))
+
+        level_multiplier = 1 + (level * self.PET_LEVEL_STAT_BONUS)
+        trust_multiplier = 1 + (trust_bonus_pct / 100.0)
+
+        base_hp = float(pet.get("hp", 0) or 0)
+        base_attack = float(pet.get("attack", 0) or 0)
+        base_defense = float(pet.get("defense", 0) or 0)
+
+        battle_hp = base_hp * level_multiplier * trust_multiplier
+        battle_attack = base_attack * level_multiplier * trust_multiplier
+        battle_defense = base_defense * level_multiplier * trust_multiplier
+
+        return {
+            "base_hp": base_hp,
+            "base_attack": base_attack,
+            "base_defense": base_defense,
+            "battle_hp": battle_hp,
+            "battle_attack": battle_attack,
+            "battle_defense": battle_defense,
+        }
 
     def calculate_level_requirements(self, level):
         """Calculate XP required for a specific level"""
@@ -3030,11 +3061,19 @@ class Pets(commands.Cog):
             inline=True
         )
 
+        stat_data = self.calculate_pet_battle_stats(pet)
+        battle_hp = round(stat_data["battle_hp"], 1)
+        battle_attack = round(stat_data["battle_attack"], 1)
+        battle_defense = round(stat_data["battle_defense"], 1)
+        base_hp = round(stat_data["base_hp"])
+        base_attack = round(stat_data["base_attack"])
+        base_defense = round(stat_data["base_defense"])
+
         embed.add_field(
             name="⚔️ Battle Stats",
-            value=f"**HP:** {pet['hp']}\n"
-                  f"**Attack:** {pet['attack']}\n"
-                  f"**Defense:** {pet['defense']}\n"
+            value=f"**HP:** {battle_hp:,} *(Base: {base_hp:,})*\n"
+                  f"**Attack:** {battle_attack:,} *(Base: {base_attack:,})*\n"
+                  f"**Defense:** {battle_defense:,} *(Base: {base_defense:,})*\n"
                   f"**IV:** {pet['IV']}%",
             inline=True
         )
@@ -3136,12 +3175,17 @@ class Pets(commands.Cog):
                 description=f"**{pet['name']}** is now equipped and ready for battle!",
                 color=discord.Color.green()
             )
+
+            stat_data = self.calculate_pet_battle_stats(pet)
+            battle_hp = round(stat_data["battle_hp"], 1)
+            battle_attack = round(stat_data["battle_attack"], 1)
+            battle_defense = round(stat_data["battle_defense"], 1)
             
             embed.add_field(
                 name="📊 Battle Stats",
-                value=f"**HP:** {pet['hp']}\n"
-                    f"**Attack:** {pet['attack']}\n"
-                    f"**Defense:** {pet['defense']}\n"
+                value=f"**HP:** {battle_hp:,}\n"
+                    f"**Attack:** {battle_attack:,}\n"
+                    f"**Defense:** {battle_defense:,}\n"
                     f"**Element:** {pet['element']}",
                 inline=True
             )
@@ -3928,11 +3972,11 @@ class Pets(commands.Cog):
                 name=_("💖 Trust & Battle System"),
                 value=_(
                     "**Trust affects battle performance:**\n"
-                    "• **Distrustful** (0-20): -20% battle stats 😠\n"
+                    "• **Distrustful** (0-20): -10% battle stats 😠\n"
                     "• **Cautious** (21-40): Normal stats 😐\n"
-                    "• **Trusting** (41-60): +10% battle stats 😊\n"
-                    "• **Loyal** (61-80): +20% battle stats 😍\n"
-                    "• **Devoted** (81-100): +30% battle stats 🥰\n\n"
+                    "• **Trusting** (41-60): +5% battle stats 😊\n"
+                    "• **Loyal** (61-80): +8% battle stats 😍\n"
+                    "• **Devoted** (81-100): +10% battle stats 🥰\n\n"
                     "**Leveling:** Pets gain XP from feeding, training, and battles. Skill points are earned every 10 levels!"
                 ),
                 inline=False,
@@ -4000,11 +4044,11 @@ class Pets(commands.Cog):
         embed.add_field(
             name="💖 Trust System & Battle Bonuses",
             value=(
-                "**Distrustful** (0-20): **-20% battle stats** 😠\n"
+                "**Distrustful** (0-20): **-10% battle stats** 😠\n"
                 "**Cautious** (21-40): **Normal stats** 😐\n"
-                "**Trusting** (41-60): **+10% battle stats** 😊\n"
-                "**Loyal** (61-80): **+20% battle stats** 😍\n"
-                "**Devoted** (81-100): **+30% battle stats** 🥰\n\n"
+                "**Trusting** (41-60): **+5% battle stats** 😊\n"
+                "**Loyal** (61-80): **+8% battle stats** 😍\n"
+                "**Devoted** (81-100): **+10% battle stats** 🥰\n\n"
             ),
             inline=False
         )

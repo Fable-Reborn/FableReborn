@@ -26,15 +26,15 @@ class PetExtension:
     def get_trust_bonus(self, trust_level):
         """Calculate trust bonus based on trust level"""
         if trust_level >= 81:
-            return 0.30  # Devoted: +30%
+            return 0.10  # Devoted: +10%
         elif trust_level >= 61:
-            return 0.20  # Loyal: +20%
+            return 0.08  # Loyal: +8%
         elif trust_level >= 41:
-            return 0.10  # Trusting: +10%
+            return 0.05  # Trusting: +5%
         elif trust_level >= 21:
             return 0.0   # Cautious: +0%
         else:
-            return -0.20  # Distrustful: -20%
+            return -0.10  # Distrustful: -10%
     
     def apply_skill_effects(self, pet_combatant, learned_skills):
         """Apply skill effects to pet combatant with actual implementations"""
