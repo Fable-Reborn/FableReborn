@@ -435,16 +435,18 @@ class Sharding(commands.Cog):
                 "date": "❤️",  # Heart emoji for Family Date
                 "tournament": "🏆",  # Trophy emoji for Tournament
                 "raidtournament": "🏆",  # Trophy emoji for Raid Tournament
+                "couples_battletower start": "💕",
                 "bless": "🙏",
                 "pve": "⚔️",
                 "scout": "🐾",
-                "dragonchallenge party":"❄️",
+                "dragonchallenge party":"🐉",
                 "pets feed": "🐾",
                 "pets train": "🐾",
                 "pets play": "🐾",
                 "pets trade": "💰",
                 "pets treat": "🐾",
                 "pets pet": "🐾",
+                "splice": "💕",
             }
 
             # Create empty lists to store formatted cooldowns for different categories
@@ -474,7 +476,7 @@ class Sharding(commands.Cog):
                     # Check the category of the cooldown and add it to the respective list
                     if cmd in ["battle", "raidbattle", "tournament", "raidtournament"]:
                         category_cooldowns = battle_cooldowns
-                    elif cmd in ["child", "familyevent", "date"]:
+                    elif cmd in ["child", "familyevent", "date", "couples_battletower start"]:
                         category_cooldowns = family_cooldowns
                     elif cmd in ["pets feed", "pets train", "pets play", "pets trade", "pets treat", "pets pet"]:
                         category_cooldowns = pets_cooldowns
