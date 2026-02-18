@@ -25,6 +25,7 @@ import re
 import asyncpg
 import discord
 from discord.ext import commands, tasks
+from discord.http import handle_message_parameters
 from discord.ui.button import Button
 from discord.enums import ButtonStyle
 
@@ -3642,30 +3643,33 @@ class Pets(commands.Cog):
 
         await ctx.send(f"Monster **{monster_name}** has been successfully added to level {level_int}!")
 
-        # Log the monster creation to GM log channel
-        with handle_message_parameters(
-                content="**{gm}** created monster **{name}** (Level {level}).\n\n"
-                        "**Stats**: HP: {hp}, Attack: {attack}, Defense: {defense}\n"
-                        "**Element**: {element}\n"
-                        "**Public**: {public}\n"
-                        "**URL**: {url}\n\n"
-                        "Reason: *{reason}*".format(
-                    gm=ctx.author,
-                    name=monster_name,
-                    level=level_int,
-                    hp=hp_val,
-                    attack=attack_val,
-                    defense=defense_val,
-                    element=monster_element,
-                    public="Yes" if is_public else "No",
-                    url=monster_url,
-                    reason=f"<{ctx.message.jump_url}>",
+        # Log the monster creation to GM log channel.
+        try:
+            with handle_message_parameters(
+                    content="**{gm}** created monster **{name}** (Level {level}).\n\n"
+                            "**Stats**: HP: {hp}, Attack: {attack}, Defense: {defense}\n"
+                            "**Element**: {element}\n"
+                            "**Public**: {public}\n"
+                            "**URL**: {url}\n\n"
+                            "Reason: *{reason}*".format(
+                        gm=ctx.author,
+                        name=monster_name,
+                        level=level_int,
+                        hp=hp_val,
+                        attack=attack_val,
+                        defense=defense_val,
+                        element=monster_element,
+                        public="Yes" if is_public else "No",
+                        url=monster_url,
+                        reason=f"<{ctx.message.jump_url}>",
+                    )
+            ) as params:
+                await self.bot.http.send_message(
+                    self.bot.config.game.gm_log_channel,
+                    params=params,
                 )
-        ) as params:
-            await self.bot.http.send_message(
-                self.bot.config.game.gm_log_channel,
-                params=params,
-            )
+        except Exception as e:
+            self.bot.logger.error(f"Failed to send gmcreatemonster log: {e}")
 
     @is_gm()
     @commands.command(hidden=True, name="gmdoublepetlevels")
