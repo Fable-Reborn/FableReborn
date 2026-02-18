@@ -446,7 +446,7 @@ class Sharding(commands.Cog):
                 "pets trade": "💰",
                 "pets treat": "🐾",
                 "pets pet": "🐾",
-                "splice": "💕",
+                "splice": "🧪",
             }
 
             # Create empty lists to store formatted cooldowns for different categories
