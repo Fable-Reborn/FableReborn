@@ -873,8 +873,12 @@ class Soulforge(commands.Cog):
         embed.add_field(
             name="Alchemist's Primer",
             value=(
-                "From successful raid completion (participant path).\n"
-                "Current chance: 5% if you do not already have it."
+                "Can drop from eligible completions while your Soulforge quest is active:\n"
+                "• Adventure clears at character level 15+ (any adventure tier)\n"
+                "• Guild Adventure completion (rolls for one random participating member)\n"
+                "• Battle Tower floor 30 finale clear (the run that advances to floor 31)\n"
+                "• Raid event completions\n"
+                "Current chance: 5% per eligible completion if you do not already have it."
             ),
             inline=False,
         )

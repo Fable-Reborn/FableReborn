@@ -1,1042 +1,1135 @@
-import discord
-from discord.ext import commands, tasks
-import patreon
-from datetime import datetime, timedelta
-import aiohttp
 import asyncio
 import json
-import os
+import re
 
-from utils.checks import is_gm
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+import aiohttp
+import discord
+
+from discord.ext import commands, tasks
+
 from cogs.shard_communication import user_on_cooldown as user_cooldown
+from utils.checks import is_gm
+
+
+class SetupCancelled(Exception):
+    pass
+
+
+class PatreonRequestError(Exception):
+    def __init__(self, status: int, message: str):
+        self.status = status
+        self.message = message
+        super().__init__(f"[{status}] {message}" if status else message)
+
+
+@dataclass
+class SyncResult:
+    patrons: int = 0
+    candidates: int = 0
+    roles_added: int = 0
+    roles_removed: int = 0
+    tier_updates: int = 0
+    pages: int = 0
+    members_seen: int = 0
+    active_members: int = 0
+    mapped_members: int = 0
+    error: str | None = None
 
 
 class PatreonCore(commands.Cog):
-    """Cog for syncing Patreon pledges with Discord roles"""
+    """Synchronize Patreon pledges with Discord roles and in-game tier values."""
+
+    TOKEN_URL = "https://www.patreon.com/api/oauth2/token"
+    CAMPAIGNS_URL = "https://www.patreon.com/api/oauth2/api/current_user/campaigns"
+    MEMBERS_URL = "https://www.patreon.com/api/oauth2/v2/campaigns/{campaign_id}/members"
+    CAMPAIGN_DETAILS_URL = "https://www.patreon.com/api/oauth2/v2/campaigns/{campaign_id}"
 
     def __init__(self, bot):
         self.bot = bot
+        self.http_timeout = aiohttp.ClientTimeout(total=30)
+        self.config_file = Path("patreon_config.json")
+        self._sync_lock = asyncio.Lock()
+
         ids_section = getattr(self.bot.config, "ids", None)
         patreoncore_ids = getattr(ids_section, "patreoncore", {}) if ids_section else {}
         if not isinstance(patreoncore_ids, dict):
             patreoncore_ids = {}
-        self.debug_user_id = patreoncore_ids.get("debug_user_id")
 
-        # Patreon API credentials
+        self.debug_user_id = self._parse_int(patreoncore_ids.get("debug_user_id"))
+        self.guild_id = self._parse_int(patreoncore_ids.get("guild_id"))
+        self.log_channel_id: int | None = None
+        self.check_interval_seconds = 60 * 30
+
         self.client_id = ""
         self.client_secret = ""
         self.access_token = ""
         self.refresh_token = ""
-        self.token_expires_at = datetime.now() + timedelta(days=30)  # Assuming token expires in 30 days
+        self.token_expires_at = self._utcnow() + timedelta(days=30)
 
-        # Campaign and guild settings
-        self.patreon_campaign_id = 11352402  # Will be populated on first API call
-        self.guild_id = patreoncore_ids.get("guild_id")
-        self.check_interval = 60 * 30  # Check every 30 minutes
+        self.patreon_campaign_id: str | None = None
 
-        # Role mapping - map Patreon tier IDs to Discord role IDs
-        # You'll need to populate this with your actual tier IDs and role IDs
-        self.tier_role_mapping = {}
+        self.tier_role_mapping: dict[str, int] = {}
+        self.tier_level_mapping: dict[str, int] = {}
+        self.tier_titles: dict[str, str] = {}
+        self.tier_amounts: dict[str, int] = {}
 
-        # Store patron data
-        self.patrons_data = {}
-        self.last_updated = None
+        self.patrons_data: dict[int, list[str]] = {}
+        self.last_updated: datetime | None = None
+        self.last_sync_result: SyncResult | None = None
 
-        # Configurable log channel
-        self.log_channel_id = None
-
-        # Config file path
-        self.config_file = "patreon_config.json"
         self._load_config()
 
-        # Start the update task
-        self.update_roles.start()
+        self.sync_patrons_loop.change_interval(seconds=self.check_interval_seconds)
+        self.sync_patrons_loop.start()
 
-    def _load_config(self):
-        """Load configuration from file"""
+    def cog_unload(self):
+        self.sync_patrons_loop.cancel()
+        self._save_config()
+
+    @staticmethod
+    def _utcnow() -> datetime:
+        return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _parse_int(value: Any) -> int | None:
         try:
-            if os.path.exists(self.config_file):
-                with open(self.config_file, 'r') as f:
-                    config = json.load(f)
+            if value is None:
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
-                # Load basic settings
-                self.guild_id = config.get('guild_id', self.guild_id)
-                self.log_channel_id = config.get('log_channel_id', self.log_channel_id)
-                self.check_interval = config.get('check_interval', self.check_interval)
+    @staticmethod
+    def _coerce_datetime(value: Any) -> datetime | None:
+        if not value:
+            return None
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        try:
+            dt = datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
-                # Load token info
-                self.access_token = config.get('access_token', self.access_token)
-                self.refresh_token = config.get('refresh_token', self.refresh_token)
-                expires_at = config.get('token_expires_at')
-                if expires_at:
-                    self.token_expires_at = datetime.fromisoformat(expires_at)
+    @staticmethod
+    def _extract_snowflake(value: str) -> int | None:
+        if not value:
+            return None
+        if value.isdigit():
+            return int(value)
+        match = re.search(r"\d{15,22}", value)
+        return int(match.group(0)) if match else None
 
-                # Load tier-role mapping
-                self.tier_role_mapping = config.get('tier_role_mapping', {})
+    @staticmethod
+    def _normalize_tier_role_mapping(raw: Any) -> dict[str, int]:
+        if not isinstance(raw, dict):
+            return {}
+        mapping = {}
+        for tier_id, role_id in raw.items():
+            tier_key = str(tier_id).strip()
+            parsed_role_id = PatreonCore._parse_int(role_id)
+            if tier_key and parsed_role_id:
+                mapping[tier_key] = parsed_role_id
+        return mapping
 
-                print("[PatreonCore] Configuration loaded successfully.")
+    @staticmethod
+    def _normalize_tier_level_mapping(raw: Any) -> dict[str, int]:
+        if not isinstance(raw, dict):
+            return {}
+        mapping = {}
+        for tier_id, level in raw.items():
+            tier_key = str(tier_id).strip()
+            parsed_level = PatreonCore._parse_int(level)
+            if tier_key and parsed_level and parsed_level > 0:
+                mapping[tier_key] = parsed_level
+        return mapping
+
+    def _snapshot_config(self) -> dict[str, Any]:
+        return {
+            "guild_id": self.guild_id,
+            "log_channel_id": self.log_channel_id,
+            "check_interval_seconds": self.check_interval_seconds,
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "access_token": self.access_token,
+            "refresh_token": self.refresh_token,
+            "token_expires_at": self.token_expires_at.isoformat(),
+            "patreon_campaign_id": self.patreon_campaign_id,
+            "tier_role_mapping": dict(self.tier_role_mapping),
+            "tier_level_mapping": dict(self.tier_level_mapping),
+        }
+
+    def _restore_config(self, snapshot: dict[str, Any]) -> None:
+        self.guild_id = self._parse_int(snapshot.get("guild_id"))
+        self.log_channel_id = self._parse_int(snapshot.get("log_channel_id"))
+        self.check_interval_seconds = max(
+            300, self._parse_int(snapshot.get("check_interval_seconds")) or 1800
+        )
+        self.client_id = str(snapshot.get("client_id") or "")
+        self.client_secret = str(snapshot.get("client_secret") or "")
+        self.access_token = str(snapshot.get("access_token") or "")
+        self.refresh_token = str(snapshot.get("refresh_token") or "")
+        self.token_expires_at = self._coerce_datetime(snapshot.get("token_expires_at")) or (
+            self._utcnow() + timedelta(days=30)
+        )
+        campaign = snapshot.get("patreon_campaign_id")
+        self.patreon_campaign_id = str(campaign).strip() if campaign else None
+        self.tier_role_mapping = self._normalize_tier_role_mapping(
+            snapshot.get("tier_role_mapping", {})
+        )
+        self.tier_level_mapping = self._normalize_tier_level_mapping(
+            snapshot.get("tier_level_mapping", {})
+        )
+        self.sync_patrons_loop.change_interval(seconds=self.check_interval_seconds)
+
+    def _load_config(self) -> None:
+        try:
+            if not self.config_file.exists():
+                return
+
+            with self.config_file.open("r", encoding="utf-8") as f:
+                config = json.load(f)
+
+            self.guild_id = self._parse_int(config.get("guild_id")) or self.guild_id
+            self.log_channel_id = self._parse_int(config.get("log_channel_id"))
+
+            interval_seconds = self._parse_int(config.get("check_interval_seconds"))
+            legacy_interval = self._parse_int(config.get("check_interval"))
+            interval = interval_seconds or legacy_interval or self.check_interval_seconds
+            self.check_interval_seconds = max(300, interval)
+
+            self.client_id = str(config.get("client_id") or self.client_id or "")
+            self.client_secret = str(config.get("client_secret") or self.client_secret or "")
+            self.access_token = str(config.get("access_token") or self.access_token or "")
+            self.refresh_token = str(config.get("refresh_token") or self.refresh_token or "")
+
+            token_expires_at = self._coerce_datetime(config.get("token_expires_at"))
+            if token_expires_at:
+                self.token_expires_at = token_expires_at
+
+            campaign_id = config.get("patreon_campaign_id")
+            self.patreon_campaign_id = str(campaign_id).strip() if campaign_id else None
+
+            self.tier_role_mapping = self._normalize_tier_role_mapping(
+                config.get("tier_role_mapping", {})
+            )
+            self.tier_level_mapping = self._normalize_tier_level_mapping(
+                config.get("tier_level_mapping", {})
+            )
+
+            print("[PatreonCore] Configuration loaded successfully.")
         except Exception as e:
             print(f"[PatreonCore] Error loading config: {e}")
 
-    def _save_config(self):
-        """Save configuration to file"""
+    def _save_config(self) -> None:
         try:
             config = {
-                'guild_id': self.guild_id,
-                'log_channel_id': self.log_channel_id,
-                'check_interval': self.check_interval,
-                'access_token': self.access_token,
-                'refresh_token': self.refresh_token,
-                'token_expires_at': self.token_expires_at.isoformat(),
-                'tier_role_mapping': self.tier_role_mapping
+                "guild_id": self.guild_id,
+                "log_channel_id": self.log_channel_id,
+                "check_interval_seconds": self.check_interval_seconds,
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "access_token": self.access_token,
+                "refresh_token": self.refresh_token,
+                "token_expires_at": self.token_expires_at.isoformat(),
+                "patreon_campaign_id": self.patreon_campaign_id,
+                "tier_role_mapping": self.tier_role_mapping,
+                "tier_level_mapping": self.tier_level_mapping,
             }
-
-            with open(self.config_file, 'w') as f:
+            with self.config_file.open("w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2)
-
             print("[PatreonCore] Configuration saved successfully.")
         except Exception as e:
             print(f"[PatreonCore] Error saving config: {e}")
 
-    def cog_unload(self):
-        """Clean up when cog is unloaded"""
-        self.update_roles.cancel()
-        self._save_config()
+    def _is_minimally_configured(self) -> bool:
+        return bool(self.guild_id and (self.access_token or self.refresh_token))
 
-    async def refresh_access_token(self):
-        """Refresh the Patreon access token"""
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        params: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> tuple[int, Any | None, str]:
+        session = getattr(self.bot, "session", None)
+        owns_session = session is None or session.closed
+        if owns_session:
+            session = aiohttp.ClientSession(timeout=self.http_timeout)
+
         try:
-            async with aiohttp.ClientSession() as session:
-                payload = {
-                    'grant_type': 'refresh_token',
-                    'refresh_token': self.refresh_token,
-                    'client_id': self.client_id,
-                    'client_secret': self.client_secret
-                }
+            async with session.request(
+                method,
+                url,
+                headers=headers,
+                params=params,
+                data=data,
+                timeout=self.http_timeout,
+            ) as response:
+                text = await response.text()
+                payload = None
+                if text:
+                    try:
+                        payload = json.loads(text)
+                    except json.JSONDecodeError:
+                        payload = None
+                return response.status, payload, text
+        finally:
+            if owns_session:
+                await session.close()
 
-                async with session.post('https://www.patreon.com/api/oauth2/token', data=payload) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        self.access_token = data['access_token']
-                        self.refresh_token = data['refresh_token']
-                        # Set expiration time (usually 30 days)
-                        self.token_expires_at = datetime.now() + timedelta(seconds=data.get('expires_in', 2592000))
-                        self._save_config()
-                        print("[PatreonCore] Token refreshed successfully")
-                        return True
-                    else:
-                        error_text = await response.text()
-                        print(f"[PatreonCore] Failed to refresh token: {response.status} - {error_text}")
-                        return False
-        except Exception as e:
-            print(f"[PatreonCore] Error refreshing token: {e}")
+    async def _request_json(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        params: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        status, payload, text = await self._request(
+            method, url, headers=headers, params=params, data=data
+        )
+        if status < 200 or status >= 300:
+            raise PatreonRequestError(status, text[:400] if text else "Request failed.")
+        if not isinstance(payload, dict):
+            raise PatreonRequestError(status, "Expected a JSON object response.")
+        return payload
+
+    def _auth_headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.access_token}"}
+
+    async def refresh_access_token(self) -> bool:
+        if not self.client_id or not self.client_secret or not self.refresh_token:
+            print("[PatreonCore] Missing client credentials or refresh token.")
             return False
 
-    async def get_api_client(self):
-        """Get a valid Patreon API client, refreshing the token if needed"""
-        # Check if token needs refreshing (with 1-hour buffer)
-        if datetime.now() + timedelta(hours=1) >= self.token_expires_at:
-            success = await self.refresh_access_token()
-            if not success:
-                print("[PatreonCore] Could not refresh token. Using existing token.")
-
-        # Return API client
-        return patreon.API(self.access_token)
-
-    async def get_campaign_id(self):
-        """Get the campaign ID if not already set"""
-        campid = 11352402
-        return campid
-
-    async def fetch_patrons(self):
-        """Fetch patrons directly using Patreon's V2 API with correct include parameters"""
-        user = self.bot.get_user(self.debug_user_id) if self.debug_user_id else None
+        payload = {
+            "grant_type": "refresh_token",
+            "refresh_token": self.refresh_token,
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+        }
 
         try:
-            if user:
-                print("[PatreonCore] Starting patron fetch process using direct API")
-
-            campaign_id = await self.get_campaign_id()
-            if not campaign_id:
-                if user:
-                    print("[PatreonCore] No campaign ID available. Cannot fetch patrons.")
-                return [], []
-
-            # Get all patrons using direct API calls
-            all_patrons = []
-            included_data = []
-
-            async with aiohttp.ClientSession() as session:
-                # Build the URL with CORRECTED includes and fields
-                base_url = f"https://www.patreon.com/api/oauth2/v2/campaigns/{campaign_id}/members"
-                params = {
-                    # Simplified include parameter - removed the nested relationship
-                    "include": "user,currently_entitled_tiers",
-                    "fields[member]": "patron_status,full_name,email",
-                    "fields[user]": "social_connections,email",
-                    "fields[tier]": "title,description,amount_cents",
-                    "page[count]": 100
-                }
-
-                headers = {"Authorization": f"Bearer {self.access_token}"}
-
-                if user:
-                    print(f"[PatreonCore] Using params: {params}")
-
-                next_url = base_url
-                page_count = 0
-
-                while next_url:
-                    page_count += 1
-                    if user:
-                        print(f"[PatreonCore] Fetching page {page_count} of members...")
-
-                    try:
-                        async with session.get(next_url, params=params if page_count == 1 else None,
-                                               headers=headers) as response:
-                            # Print response status for debugging
-                            if user:
-                                print(f"[PatreonCore] Response status: {response.status}")
-
-                            if response.status != 200:
-                                if user:
-                                    print(f"[PatreonCore] API error: {response.status}")
-                                    error_text = await response.text()
-                                    print(f"Error details: {error_text[:500]}...")
-                                break
-
-                            data = await response.json()
-
-                            # Print some of the response structure for debugging
-                            if user:
-                                keys = list(data.keys())
-                                print(f"[PatreonCore] Response keys: {keys}")
-
-                            # Extract patrons from the data
-                            members = data.get("data", [])
-                            if user:
-                                print(f"[PatreonCore] Fetched {len(members)} members in page {page_count}")
-                                if members:
-                                    print(f"[PatreonCore] First member keys: {list(members[0].keys())}")
-
-                            # Debug first member
-                            if members and len(members) > 0 and user:
-                                sample = members[0]
-                                attributes = sample.get("attributes", {})
-                                status = attributes.get("patron_status")
-                                print(f"[PatreonCore] Sample member status: {status}")
-
-                                # Check for user relationship
-                                relationships = sample.get("relationships", {})
-                                print(f"[PatreonCore] Relationship keys: {list(relationships.keys())}")
-
-                                user_rel = relationships.get("user", {}).get("data", {})
-                                if user_rel:
-                                    print(
-                                        f"[PatreonCore] Sample member has user relationship: {user_rel.get('id')}")
-                                else:
-                                    print("[PatreonCore] Sample member has NO user relationship")
-
-                            # Get included data
-                            included = data.get("included", [])
-                            if user:
-                                print(
-                                    f"[PatreonCore] Fetched {len(included)} included objects in page {page_count}")
-                                if included:
-                                    types = set([inc.get("type") for inc in included])
-                                    print(f"[PatreonCore] Included object types: {types}")
-
-                            all_patrons.extend(members)
-                            included_data.extend(included)
-
-                            # Check for pagination
-                            links = data.get("links", {})
-                            next_url = links.get("next")
-                            if not next_url:
-                                if user:
-                                    print("[PatreonCore] No more pages to fetch")
-                                break
-
-                            # Remove params as they're included in the next_url
-                            params = None
-
-                    except Exception as e:
-                        if user:
-                            print(f"[PatreonCore] Error in API request: {e}")
-                        break
-
-                if user:
-                    print(
-                        f"[PatreonCore] Total patrons fetched: {len(all_patrons)} with {len(included_data)} included objects")
-
-                # Debug what types of data we got
-                status_counts = {}
-                for patron in all_patrons:
-                    status = patron.get("attributes", {}).get("patron_status")
-                    status_counts[status] = status_counts.get(status, 0) + 1
-
-                if user:
-                    print(f"[PatreonCore] Patron status counts: {status_counts}")
-
-                return all_patrons, included_data
-
+            data = await self._request_json("POST", self.TOKEN_URL, data=payload)
+        except PatreonRequestError as e:
+            print(f"[PatreonCore] Token refresh failed: {e}")
+            return False
         except Exception as e:
-            import traceback
-            error_traceback = traceback.format_exc()
-            if user:
-                print(f"[PatreonCore] Error fetching patrons: {e}")
-                print(error_traceback)
-            return [], []
+            print(f"[PatreonCore] Unexpected token refresh error: {e}")
+            return False
 
-    def process_patrons(self, patron_data, included_data):
-        """Process patron data and extract Discord IDs with tier information"""
-        result = {}
-        debug_info = []
+        new_access_token = data.get("access_token")
+        if not new_access_token:
+            print("[PatreonCore] Token refresh response did not contain access_token.")
+            return False
 
-        user = self.bot.get_user(self.debug_user_id) if self.debug_user_id else None
+        self.access_token = str(new_access_token)
+        new_refresh = data.get("refresh_token")
+        if new_refresh:
+            self.refresh_token = str(new_refresh)
 
-        try:
-            debug_info.append(f"Processing {len(patron_data)} patrons and {len(included_data)} included items")
+        expires_in = self._parse_int(data.get("expires_in")) or 2592000
+        self.token_expires_at = self._utcnow() + timedelta(seconds=expires_in)
+        self._save_config()
+        print("[PatreonCore] Access token refreshed.")
+        return True
 
-            # Create mappings from included data
-            user_discord_map = {}  # Maps user_id to discord_id
-            tier_map = {}  # Maps tier_id to tier_info
+    async def _ensure_access_token(self) -> bool:
+        if not self.access_token and self.refresh_token:
+            return await self.refresh_access_token()
 
-            # Process included data first
-            debug_info.append("Processing included data...")
-            for included in included_data:
-                try:
-                    inc_type = included.get("type")
-                    inc_id = included.get("id")
+        if self.token_expires_at <= self._utcnow() + timedelta(minutes=5):
+            if self.refresh_token:
+                refreshed = await self.refresh_access_token()
+                if refreshed:
+                    return True
+            return bool(self.access_token)
 
-                    if inc_type == "user":
-                        # Extract social connections
-                        attrs = included.get("attributes", {})
-                        debug_info.append(f"User {inc_id} attributes keys: {list(attrs.keys())}")
+        return bool(self.access_token)
 
-                        social = attrs.get("social_connections", {})
-                        debug_info.append(f"User {inc_id} social connections: {social}")
-                        discord_data = social.get("discord")
+    async def _patreon_get_json(
+        self, url: str, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        if not await self._ensure_access_token():
+            raise PatreonRequestError(0, "Patreon access token is not configured.")
 
-                        if discord_data and "user_id" in discord_data:
-                            discord_id = discord_data["user_id"]
-                            if discord_id:
-                                user_discord_map[inc_id] = discord_id
-                                debug_info.append(f"Found Discord ID {discord_id} for user {inc_id}")
-
-                    elif inc_type == "tier":
-                        tier_title = included.get("attributes", {}).get("title", "Unknown Tier")
-                        tier_map[inc_id] = {
-                            "title": tier_title,
-                            "amount_cents": included.get("attributes", {}).get("amount_cents", 0)
-                        }
-                        debug_info.append(f"Found tier: {tier_title} (ID: {inc_id})")
-
-                except Exception as e:
-                    debug_info.append(f"Error processing included item: {e}")
-
-            if user:
-                print(f"[PatreonCore] Found {len(user_discord_map)} users with Discord connections")
-                print(f"[PatreonCore] Found {len(tier_map)} tiers")
-
-            # Process patrons
-            debug_info.append("Processing patron data...")
-            patron_count = 0
-            active_patrons = 0
-
-            for patron in patron_data:
-                try:
-                    patron_count += 1
-
-                    # Get patron status
-                    attributes = patron.get("attributes", {})
-                    patron_status = attributes.get("patron_status")
-
-                    # Only process active patrons
-                    if patron_status != "active_patron":
-                        continue
-
-                    active_patrons += 1
-
-                    # Get user ID and Discord ID
-                    relationships = patron.get("relationships", {})
-                    user_rel = relationships.get("user", {}).get("data", {})
-                    user_id = user_rel.get("id") if user_rel else None
-
-                    if not user_id:
-                        debug_info.append(f"No user ID for patron {patron_count}")
-                        continue
-
-                    if user_id not in user_discord_map:
-                        debug_info.append(f"No Discord ID for user {user_id}")
-                        continue
-
-                    discord_id = user_discord_map[user_id]
-
-                    # Get entitled tiers
-                    entitled_tiers = []
-                    tier_rels = relationships.get("currently_entitled_tiers", {}).get("data", [])
-
-                    for tier_rel in tier_rels:
-                        tier_id = tier_rel.get("id")
-                        if tier_id:
-                            entitled_tiers.append(tier_id)
-
-                    # Add this patron to the result with their entitled tiers
-                    result[discord_id] = entitled_tiers
-
-                    # Debug info
-                    if entitled_tiers:
-                        tier_names = [tier_map.get(tier_id, {}).get("title", f"Unknown ({tier_id})") for tier_id in
-                                      entitled_tiers]
-                        debug_info.append(f"Patron {discord_id} entitled to tiers: {', '.join(tier_names)}")
-                    else:
-                        debug_info.append(f"Patron {discord_id} has no entitled tiers")
-
-                except Exception as e:
-                    debug_info.append(f"Error processing patron {patron_count}: {e}")
-
-            if user:
-                print(
-                    f"[PatreonCore] Successfully mapped {len(result)} Discord users out of {active_patrons} active patrons")
-
-            debug_info.append(
-                f"Successfully processed {len(result)} patrons with Discord accounts out of {active_patrons} active patrons")
-            self.last_processing_debug = debug_info
-            return result
-
-        except Exception as e:
-            import traceback
-            error_text = traceback.format_exc()
-            if user:
-                print(f"[PatreonCore] Error processing patrons: {e}")
-                print(error_text)
-            debug_info.append(f"Error processing patrons: {e}")
-            debug_info.append(error_text)
-            self.last_processing_debug = debug_info
-            return {}
-
-    # Then add a new command to report on the processing
-    @commands.command()
-    @commands.has_permissions(administrator=True)
-    async def patrondebug(self, ctx):
-        """Display detailed debug info about the last patron processing"""
-        if not hasattr(self, 'last_processing_debug') or not self.last_processing_debug:
-            await ctx.send("No patron processing debug information available.")
-            return
-
-        # Send in chunks to avoid message size limits
-        chunks = []
-        current_chunk = "### Patron Processing Debug Info:\n"
-
-        for line in self.last_processing_debug:
-            if len(current_chunk) + len(line) + 1 > 1900:
-                chunks.append(current_chunk)
-                current_chunk = line + "\n"
-            else:
-                current_chunk += line + "\n"
-
-        if current_chunk:
-            chunks.append(current_chunk)
-
-        for i, chunk in enumerate(chunks):
-            await ctx.send(f"{chunk}\n[Part {i + 1}/{len(chunks)}]")
-
-    async def log_message(self, message):
-        """Send a log message to the configured log channel"""
-        if not self.log_channel_id:
-            return
-
-        try:
-            channel = self.bot.get_channel(self.log_channel_id)
-            if channel:
-                await channel.send(message)
-        except Exception as e:
-            print(f"[PatreonCore] Error sending log message: {e}")
-
-    async def update_patron_tier_in_db(self, discord_id, tier_level):
-        """Update the patron's tier in the database"""
-        try:
-            # Convert discord_id to int if it's a string
-            user_id = int(discord_id) if isinstance(discord_id, str) else discord_id
-
-            # Try to update the tier in the database
-
-                # Using the bot's connection pool
-            async with self.bot.pool.acquire() as conn:
-                    # First check if the user exists in the database
-                user_exists = await conn.fetchval(
-                    'SELECT EXISTS(SELECT 1 FROM profile WHERE "user" = $1)',
-                    user_id
+        status, payload, text = await self._request(
+            "GET", url, headers=self._auth_headers(), params=params
+        )
+        if status == 401:
+            refreshed = await self.refresh_access_token()
+            if refreshed:
+                status, payload, text = await self._request(
+                    "GET", url, headers=self._auth_headers(), params=params
                 )
 
-                if user_exists:
-                    await conn.execute(
-                        'UPDATE profile SET "tier" = $1 WHERE "user" = $2',
-                        tier_level, user_id
-                    )
-                    print(f"[PatreonCore] Updated tier for user {user_id} to {tier_level}")
+        if status < 200 or status >= 300:
+            raise PatreonRequestError(status, text[:400] if text else "Patreon API request failed.")
+        if not isinstance(payload, dict):
+            raise PatreonRequestError(status, "Patreon API returned invalid JSON.")
+        return payload
 
-        except Exception as e:
-            print(f"[PatreonCore] Error updating database for user {discord_id}: {e}")
-            import traceback
-            print(traceback.format_exc())
+    async def get_campaign_id(self, force_refresh: bool = False) -> str | None:
+        if self.patreon_campaign_id and not force_refresh:
+            return self.patreon_campaign_id
 
-    @tasks.loop(minutes=30)
-    async def update_roles(self):
-        """Regular task to update roles based on Patreon data"""
-        user = self.bot.get_user(self.debug_user_id) if self.debug_user_id else None
-        await self.bot.wait_until_ready()
+        data = await self._patreon_get_json(self.CAMPAIGNS_URL)
+        campaigns = data.get("data")
+        if isinstance(campaigns, dict):
+            campaigns = [campaigns]
+        if not isinstance(campaigns, list) or not campaigns:
+            return None
 
-        # Skip if guild ID is not set
-        if not self.guild_id:
-            print("[PatreonCore] Guild ID not set. Skipping role update!")
-            return
+        first_campaign = campaigns[0] if isinstance(campaigns[0], dict) else {}
+        campaign_id = str(first_campaign.get("id") or "").strip()
+        if not campaign_id:
+            return None
 
-        print(f"[PatreonCore] [{datetime.now()}] Updating Patreon roles...")
+        self.patreon_campaign_id = campaign_id
+        self._save_config()
+        return campaign_id
 
+    async def fetch_tiers(self) -> dict[str, dict[str, Any]]:
+        campaign_id = await self.get_campaign_id()
+        if not campaign_id:
+            return {}
+
+        url = self.CAMPAIGN_DETAILS_URL.format(campaign_id=campaign_id)
+        params = {"include": "tiers", "fields[tier]": "title,amount_cents"}
+        data = await self._patreon_get_json(url, params=params)
+
+        tiers: dict[str, dict[str, Any]] = {}
+        for item in data.get("included", []):
+            if not isinstance(item, dict) or item.get("type") != "tier":
+                continue
+            tier_id = str(item.get("id") or "").strip()
+            if not tier_id:
+                continue
+            attrs = item.get("attributes", {}) if isinstance(item.get("attributes"), dict) else {}
+            amount_cents = self._parse_int(attrs.get("amount_cents"))
+            tiers[tier_id] = {
+                "title": str(attrs.get("title") or f"Tier {tier_id}"),
+                "amount_cents": amount_cents if amount_cents is not None else 0,
+            }
+        return tiers
+
+    @staticmethod
+    def _extract_discord_user_id(user_obj: dict[str, Any]) -> int | None:
+        attrs = user_obj.get("attributes", {})
+        if not isinstance(attrs, dict):
+            return None
+        social = attrs.get("social_connections", {})
+        if not isinstance(social, dict):
+            return None
+        discord_data = social.get("discord", {})
+        if not isinstance(discord_data, dict):
+            return None
+        user_id = discord_data.get("user_id")
         try:
-            # Fetch and process patron data
-            patrons, included = await self.fetch_patrons()
-            if not patrons:
-                if user:
-                    print("[PatreonCore] No patrons fetched. Skipping role update!!")
-                return
+            return int(user_id)
+        except (TypeError, ValueError):
+            return None
 
-            new_data = self.process_patrons(patrons, included)
+    async def fetch_active_patrons(
+        self,
+    ) -> tuple[dict[int, list[str]], dict[str, int], dict[str, str], dict[str, int]]:
+        campaign_id = await self.get_campaign_id()
+        if not campaign_id:
+            raise PatreonRequestError(0, "No campaign ID available.")
 
-            # Get the guild
-            guild = self.bot.get_guild(self.guild_id)
-            if not guild:
-                print(f"[PatreonCore] Could not find guild with ID {self.guild_id}!")
-                return
+        next_url = self.MEMBERS_URL.format(campaign_id=campaign_id)
+        params: dict[str, Any] | None = {
+            "include": "user,currently_entitled_tiers",
+            "fields[member]": "patron_status,currently_entitled_amount_cents",
+            "fields[user]": "social_connections",
+            "fields[tier]": "title,amount_cents",
+            "page[count]": 100,
+        }
 
-            # Update roles for all members
-            roles_added = 0
-            roles_removed = 0
+        patrons: dict[int, set[str]] = defaultdict(set)
+        known_user_discord_map: dict[str, int] = {}
+        tier_amounts: dict[str, int] = {}
+        tier_titles: dict[str, str] = {}
 
-            for member_id, tier_ids in new_data.items():
-                try:
-                    member = await guild.fetch_member(int(member_id))
-                    if not member:
-                        print(f"[PatreonCore] Could not find member {member_id}")
+        pages = 0
+        members_seen = 0
+        active_members = 0
+        mapped_members = 0
+
+        while next_url:
+            payload = await self._patreon_get_json(next_url, params=params)
+            params = None
+            pages += 1
+
+            included = payload.get("included", [])
+            if isinstance(included, list):
+                for item in included:
+                    if not isinstance(item, dict):
+                        continue
+                    item_type = item.get("type")
+                    item_id = str(item.get("id") or "").strip()
+                    if not item_id:
                         continue
 
-                    # Determine which roles the member should have
-                    should_have_roles = set()
-                    for tier_id in tier_ids:
-                        if tier_id in self.tier_role_mapping:
-                            should_have_roles.add(int(self.tier_role_mapping[tier_id]))  # Convert to int here
+                    if item_type == "user":
+                        discord_id = self._extract_discord_user_id(item)
+                        if discord_id:
+                            known_user_discord_map[item_id] = discord_id
+                    elif item_type == "tier":
+                        attrs = item.get("attributes", {})
+                        if not isinstance(attrs, dict):
+                            attrs = {}
+                        title = str(attrs.get("title") or f"Tier {item_id}")
+                        amount = self._parse_int(attrs.get("amount_cents")) or 0
+                        tier_titles[item_id] = title
+                        tier_amounts[item_id] = amount
 
-                    # Determine which patron roles the member currently has
-                    has_roles = set()
-                    for role_id in self.tier_role_mapping.values():
-                        role = guild.get_role(int(role_id))
-                        if role and role in member.roles:
-                            has_roles.add(int(role_id))
+            members = payload.get("data", [])
+            if isinstance(members, list):
+                for member in members:
+                    if not isinstance(member, dict):
+                        continue
+                    members_seen += 1
 
-                    # Add missing roles
-                    for role_id in should_have_roles - has_roles:
-                        role = guild.get_role(int(role_id))
-                        if role:
-                            await member.add_roles(role)
-                            print(f"[PatreonCore] Added role {role.name} to {member.display_name}")
-                            roles_added += 1
+                    attrs = member.get("attributes", {})
+                    if not isinstance(attrs, dict):
+                        attrs = {}
+                    if attrs.get("patron_status") != "active_patron":
+                        continue
+                    active_members += 1
 
-                    # Remove roles they should no longer have
-                    for role_id in has_roles - should_have_roles:
-                        role = guild.get_role(int(role_id))
-                        if role:
-                            await member.remove_roles(role)
-                            print(f"[PatreonCore] Removed role {role.name} from {member.display_name}")
-                            roles_removed += 1
+                    relationships = member.get("relationships", {})
+                    if not isinstance(relationships, dict):
+                        relationships = {}
+                    user_data = relationships.get("user", {})
+                    if not isinstance(user_data, dict):
+                        user_data = {}
+                    user_rel = user_data.get("data", {})
+                    if not isinstance(user_rel, dict):
+                        user_rel = {}
+                    patreon_user_id = str(user_rel.get("id") or "").strip()
+                    if not patreon_user_id:
+                        continue
 
-                    # Determine tier level based on role names
-                    tier_level = 0
-                    for role_id in should_have_roles:
-                        role = guild.get_role(int(role_id))
-                        if role:
-                            # Check role name to determine tier level
-                            if "Ragnarok" in role.name:
-                                tier_level = max(tier_level, 4)
-                            elif "Legendary" in role.name:
-                                tier_level = max(tier_level, 3)
-                            elif "Warrior" in role.name:
-                                tier_level = max(tier_level, 2)
-                            elif "Adventurer" in role.name:
-                                tier_level = max(tier_level, 1)
+                    discord_id = known_user_discord_map.get(patreon_user_id)
+                    if not discord_id:
+                        continue
 
-                    # Update the database with tier level
-                    await self.update_patron_tier_in_db(member_id, tier_level)
+                    entitled = relationships.get("currently_entitled_tiers", {})
+                    if not isinstance(entitled, dict):
+                        entitled = {}
+                    entitled_data = entitled.get("data", [])
+                    if not isinstance(entitled_data, list):
+                        entitled_data = []
 
-                except discord.errors.NotFound:
-                    print(f"[PatreonCore] Member {member_id} not found in server")
-                except Exception as e:
-                    print(f"[PatreonCore] Error updating roles for member {member_id}: {e}")
+                    for tier in entitled_data:
+                        if not isinstance(tier, dict):
+                            continue
+                        tier_id = str(tier.get("id") or "").strip()
+                        if tier_id:
+                            patrons[discord_id].add(tier_id)
 
-            # Update stored data
-            self.patrons_data = new_data
-            self.last_updated = datetime.now()
+                    mapped_members += 1
 
-            # Log results
-            update_msg = (f"Patreon sync complete! Processed {len(self.patrons_data)} patrons. "
-                          f"Added {roles_added} roles and removed {roles_removed} roles.")
-            print(f"[PatreonCore] {update_msg}")
-            
+            links = payload.get("links", {})
+            if not isinstance(links, dict):
+                links = {}
+            next_link = links.get("next")
+            next_url = str(next_link).strip() if next_link else None
 
-        except Exception as e:
-            import traceback
-            error_message = f"Error occurred: {e}\n"
-            error_message += traceback.format_exc()
-            print(error_message)
+        patron_map = {uid: sorted(tiers) for uid, tiers in patrons.items()}
+        stats = {
+            "pages": pages,
+            "members_seen": members_seen,
+            "active_members": active_members,
+            "mapped_members": mapped_members,
+        }
+        return patron_map, tier_amounts, tier_titles, stats
 
-    async def fetch_tiers(self):
-        """Fetch tier information with proper names using the V2 API"""
-        try:
-            # First ensure we have the campaign ID
-            if not self.patreon_campaign_id:
-                await self.get_campaign_id()
+    def _desired_role_ids_for_tiers(self, tier_ids: list[str]) -> set[int]:
+        role_ids = set()
+        for tier_id in tier_ids:
+            role_id = self.tier_role_mapping.get(tier_id)
+            if role_id:
+                role_ids.add(role_id)
+        return role_ids
 
-            if not self.patreon_campaign_id:
-                print("[PatreonCore] No campaign ID available. Cannot fetch tiers.")
-                return {}
+    def _tier_level_for_tiers(self, tier_ids: list[str], tier_amounts: dict[str, int]) -> int:
+        if not tier_ids:
+            return 0
 
-            # First get all tier IDs
-            tier_ids = []
-            async with aiohttp.ClientSession() as session:
-                # Get campaign with tier relationship data
-                url = f"https://www.patreon.com/api/oauth2/v2/campaigns/{self.patreon_campaign_id}?include=tiers"
-                headers = {"Authorization": f"Bearer {self.access_token}"}
+        explicit_level = 0
+        for tier_id in tier_ids:
+            explicit_level = max(explicit_level, self.tier_level_mapping.get(tier_id, 0))
+        if explicit_level > 0:
+            return explicit_level
 
-                async with session.get(url, headers=headers) as response:
-                    if response.status == 200:
-                        data = await response.json()
+        amounts = sorted({amt for amt in tier_amounts.values() if isinstance(amt, int) and amt > 0})
+        if not amounts:
+            return 1
 
-                        # Extract tier IDs from included data
-                        if "included" in data:
-                            for item in data["included"]:
-                                if item.get("type") == "tier":
-                                    tier_id = item.get("id")
-                                    if tier_id:
-                                        tier_ids.append(tier_id)
+        highest_amount = max(tier_amounts.get(tier_id, 0) for tier_id in tier_ids)
+        if highest_amount <= 0:
+            return 1
 
-                        # If no tiers found in included, try relationships
-                        if not tier_ids and "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
-                            relationships = data["data"][0].get("relationships", {})
-                            if "tiers" in relationships and "data" in relationships["tiers"]:
-                                for tier in relationships["tiers"]["data"]:
-                                    tier_id = tier.get("id")
-                                    if tier_id:
-                                        tier_ids.append(tier_id)
-                    else:
-                        print(f"[PatreonCore] Error fetching campaign: {response.status}")
-                        return {}
+        return sum(1 for amount in amounts if amount <= highest_amount)
 
-            # Now get tier details with separate API calls
-            tiers = {}
-            async with aiohttp.ClientSession() as session:
-                for tier_id in tier_ids:
-                    url = f"https://www.patreon.com/api/oauth2/v2/tiers/{tier_id}?fields%5Btier%5D=title,description,amount_cents"
-                    headers = {"Authorization": f"Bearer {self.access_token}"}
+    async def _bulk_update_tiers(self, tier_by_user: dict[int, int]) -> int:
+        if not tier_by_user:
+            return 0
 
+        user_ids = list(tier_by_user.keys())
+        async with self.bot.pool.acquire() as conn:
+            existing_rows = await conn.fetch(
+                'SELECT "user", "tier" FROM profile WHERE "user" = ANY($1::bigint[])',
+                user_ids,
+            )
+            current = {int(row["user"]): int(row["tier"] or 0) for row in existing_rows}
+
+            changed = [
+                (user_id, level)
+                for user_id, level in tier_by_user.items()
+                if user_id in current and current[user_id] != level
+            ]
+            if not changed:
+                return 0
+
+            changed_user_ids = [user_id for user_id, _ in changed]
+            changed_levels = [level for _, level in changed]
+
+            await conn.execute(
+                'UPDATE profile AS p SET "tier" = src.tier '
+                "FROM UNNEST($1::bigint[], $2::integer[]) AS src(user_id, tier) "
+                'WHERE p."user" = src.user_id;',
+                changed_user_ids,
+                changed_levels,
+            )
+            return len(changed)
+
+    async def _sync_roles(self, guild: discord.Guild, patrons: dict[int, list[str]]) -> tuple[int, int, int]:
+        tracked_role_ids = set(self.tier_role_mapping.values())
+        if not tracked_role_ids:
+            return 0, 0, 0
+
+        candidate_ids = set(patrons.keys()) | set(self.patrons_data.keys())
+        for role_id in tracked_role_ids:
+            role = guild.get_role(role_id)
+            if role:
+                candidate_ids.update(member.id for member in role.members)
+
+        roles_added = 0
+        roles_removed = 0
+
+        for member_id in candidate_ids:
+            member = guild.get_member(member_id)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(member_id)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    continue
+
+            desired_role_ids = self._desired_role_ids_for_tiers(patrons.get(member_id, []))
+            current_role_ids = {role.id for role in member.roles if role.id in tracked_role_ids}
+
+            to_add = desired_role_ids - current_role_ids
+            to_remove = current_role_ids - desired_role_ids
+
+            if to_add:
+                add_roles = [guild.get_role(role_id) for role_id in to_add]
+                add_roles = [role for role in add_roles if role is not None]
+                if add_roles:
                     try:
-                        async with session.get(url, headers=headers) as response:
-                            if response.status == 200:
-                                tier_data = await response.json()
+                        await member.add_roles(*add_roles, reason="Patreon sync")
+                        roles_added += len(add_roles)
+                    except (discord.Forbidden, discord.HTTPException):
+                        pass
 
-                                # Extract tier title
-                                tier_title = tier_data.get("data", {}).get("attributes", {}).get("title")
-                                if tier_title:
-                                    tiers[tier_id] = tier_title
-                                    print(f"[PatreonCore] Found tier: {tier_id} - {tier_title}")
-                                else:
-                                    # Fallback to generic name if title not found
-                                    tiers[tier_id] = f"Tier {tier_id}"
-                                    print(f"[PatreonCore] Found tier with no title: {tier_id}")
-                            else:
-                                print(f"[PatreonCore] Error fetching tier {tier_id}: {response.status}")
-                                # Use fallback name
-                                tiers[tier_id] = f"Tier {tier_id}"
-                    except Exception as e:
-                        print(f"[PatreonCore] Error processing tier {tier_id}: {e}")
-                        # Use fallback name
-                        tiers[tier_id] = f"Tier {tier_id}"
+            if to_remove:
+                remove_roles = [guild.get_role(role_id) for role_id in to_remove]
+                remove_roles = [role for role in remove_roles if role is not None]
+                if remove_roles:
+                    try:
+                        await member.remove_roles(*remove_roles, reason="Patreon sync")
+                        roles_removed += len(remove_roles)
+                    except (discord.Forbidden, discord.HTTPException):
+                        pass
 
-            # If no tiers found at all, use hardcoded values as fallback
-            if not tiers:
-                print("[PatreonCore] Using fallback tier IDs")
-                tiers = {
-                    "21626836": "Tier 21626836",
-                    "21626838": "Tier 21626838",
-                    "22117682": "Tier 22117682",
-                    "22117697": "Tier 22117697",
-                    "22117706": "Tier 22117706"
-                }
+        return len(candidate_ids), roles_added, roles_removed
 
-            return tiers
+    def _format_sync_result(self, result: SyncResult) -> str:
+        if result.error:
+            return f"Patreon sync failed: {result.error}"
+        return (
+            "Patreon sync complete: "
+            f"{result.patrons} patrons, "
+            f"{result.candidates} role candidates, "
+            f"+{result.roles_added}/-{result.roles_removed} role changes, "
+            f"{result.tier_updates} tier DB updates, "
+            f"{result.pages} page(s), "
+            f"{result.members_seen} members seen, "
+            f"{result.active_members} active, "
+            f"{result.mapped_members} mapped."
+        )
 
+    async def run_sync(self, *, manual: bool = False) -> SyncResult:
+        result = SyncResult()
+
+        if not self._is_minimally_configured():
+            result.error = "Missing guild ID or Patreon token credentials. Run patreonsetup."
+            self.last_sync_result = result
+            return result
+
+        async with self._sync_lock:
+            try:
+                patrons, tier_amounts, tier_titles, stats = await self.fetch_active_patrons()
+                result.patrons = len(patrons)
+                result.pages = stats.get("pages", 0)
+                result.members_seen = stats.get("members_seen", 0)
+                result.active_members = stats.get("active_members", 0)
+                result.mapped_members = stats.get("mapped_members", 0)
+
+                guild = self.bot.get_guild(self.guild_id)
+                if not guild:
+                    result.error = f"Guild {self.guild_id} not found."
+                    self.last_sync_result = result
+                    return result
+
+                tier_by_user: dict[int, int] = {user_id: 0 for user_id in self.patrons_data.keys()}
+                for user_id, tier_ids in patrons.items():
+                    tier_by_user[user_id] = self._tier_level_for_tiers(tier_ids, tier_amounts)
+
+                result.tier_updates = await self._bulk_update_tiers(tier_by_user)
+                result.candidates, result.roles_added, result.roles_removed = await self._sync_roles(
+                    guild, patrons
+                )
+
+                self.patrons_data = patrons
+                self.tier_titles = tier_titles
+                self.tier_amounts = tier_amounts
+                self.last_updated = self._utcnow()
+                self.last_sync_result = result
+
+                if manual:
+                    await self.log_message(self._format_sync_result(result))
+                return result
+            except PatreonRequestError as e:
+                result.error = str(e)
+                self.last_sync_result = result
+                print(f"[PatreonCore] API error during sync: {e}")
+                return result
+            except Exception as e:
+                result.error = str(e)
+                self.last_sync_result = result
+                print(f"[PatreonCore] Unexpected sync error: {e}")
+                return result
+
+    async def log_message(self, message: str):
+        if not self.log_channel_id:
+            return
+        channel = self.bot.get_channel(self.log_channel_id)
+        if not channel:
+            return
+        try:
+            await channel.send(message)
         except Exception as e:
-            print(f"[PatreonCore] Error in fetch_tiers: {e}")
-            import traceback
-            traceback.print_exc()
-            return {}
+            print(f"[PatreonCore] Failed to send log message: {e}")
+
+    @tasks.loop(seconds=1800)
+    async def sync_patrons_loop(self):
+        if not self._is_minimally_configured():
+            return
+        result = await self.run_sync(manual=False)
+        if result.error:
+            print(f"[PatreonCore] {result.error}")
+
+    @sync_patrons_loop.before_loop
+    async def before_sync_patrons_loop(self):
+        await self.bot.wait_until_ready()
+
+    async def _wizard_wait(self, ctx, *, timeout: int = 300) -> str:
+        def check(msg):
+            return msg.author.id == ctx.author.id and msg.channel.id == ctx.channel.id
+
+        msg = await self.bot.wait_for("message", check=check, timeout=timeout)
+        content = msg.content.strip()
+
+        if ctx.guild is None:
+            try:
+                await msg.delete()
+            except discord.HTTPException:
+                pass
+
+        if content.lower() in {"cancel", "abort", "stop"}:
+            raise SetupCancelled()
+        return content
+
+    async def _wizard_ask(
+        self,
+        ctx,
+        prompt: str,
+        *,
+        default: str | None = None,
+        allow_empty: bool = False,
+    ) -> str:
+        default_text = f" (default: {default})" if default is not None else ""
+        await ctx.send(f"{prompt}{default_text}")
+
+        while True:
+            value = await self._wizard_wait(ctx)
+            if not value:
+                if default is not None:
+                    return default
+                if allow_empty:
+                    return ""
+                await ctx.send("This value cannot be empty.")
+                continue
+            if allow_empty and value.lower() in {"skip", "none"}:
+                return ""
+            return value
+
+    @staticmethod
+    def _chunk_text(text: str, limit: int = 1900) -> list[str]:
+        if len(text) <= limit:
+            return [text]
+        chunks = []
+        start = 0
+        while start < len(text):
+            chunks.append(text[start : start + limit])
+            start += limit
+        return chunks
+
+    @commands.command()
+    @is_gm()
+    async def patreonsetup(self, ctx):
+        """DM-only setup wizard for PatreonCore configuration."""
+        if ctx.guild is not None:
+            return await ctx.send(
+                "Run this command in DM with the bot. It collects Patreon secrets."
+            )
+
+        snapshot = self._snapshot_config()
+        await ctx.send(
+            "Patreon setup started. Reply `cancel` anytime to abort and restore previous config."
+        )
+
+        try:
+            guild_id = None
+            while guild_id is None:
+                raw_guild = await self._wizard_ask(ctx, "1) Enter the guild ID for role sync:")
+                guild_id = self._extract_snowflake(raw_guild)
+                if guild_id is None:
+                    await ctx.send("Invalid guild ID. Please try again.")
+
+            log_channel_id = None
+            while True:
+                raw_log = await self._wizard_ask(
+                    ctx,
+                    "2) Enter log channel ID (or `skip`):",
+                    allow_empty=True,
+                )
+                if not raw_log:
+                    log_channel_id = None
+                    break
+                parsed = self._extract_snowflake(raw_log)
+                if parsed is None:
+                    await ctx.send("Invalid channel ID. Please try again.")
+                    continue
+                log_channel_id = parsed
+                break
+
+            client_id = await self._wizard_ask(ctx, "3) Patreon OAuth Client ID:")
+            client_secret = await self._wizard_ask(ctx, "4) Patreon OAuth Client Secret:")
+            access_token = await self._wizard_ask(ctx, "5) Patreon Access Token:")
+            refresh_token = await self._wizard_ask(ctx, "6) Patreon Refresh Token:")
+
+            interval_default = str(max(5, self.check_interval_seconds // 60))
+            interval_minutes = None
+            while interval_minutes is None:
+                raw_interval = await self._wizard_ask(
+                    ctx,
+                    "7) Sync interval in minutes (minimum 5):",
+                    default=interval_default,
+                )
+                parsed_interval = self._parse_int(raw_interval)
+                if parsed_interval is None or parsed_interval < 5:
+                    await ctx.send("Interval must be an integer >= 5.")
+                    continue
+                interval_minutes = parsed_interval
+
+            raw_campaign_id = await self._wizard_ask(
+                ctx,
+                "8) Patreon campaign ID (or `skip` to auto-detect):",
+                allow_empty=True,
+            )
+            campaign_id = str(raw_campaign_id).strip() if raw_campaign_id else None
+
+            self.guild_id = guild_id
+            self.log_channel_id = log_channel_id
+            self.client_id = client_id.strip()
+            self.client_secret = client_secret.strip()
+            self.access_token = access_token.strip()
+            self.refresh_token = refresh_token.strip()
+            self.check_interval_seconds = interval_minutes * 60
+            self.patreon_campaign_id = campaign_id or None
+
+            self.sync_patrons_loop.change_interval(seconds=self.check_interval_seconds)
+
+            if not self.patreon_campaign_id:
+                auto_campaign_id = await self.get_campaign_id(force_refresh=True)
+                if not auto_campaign_id:
+                    raise RuntimeError("Could not auto-detect campaign ID from Patreon API.")
+                self.patreon_campaign_id = auto_campaign_id
+
+            tiers = await self.fetch_tiers()
+            if tiers:
+                tier_lines = ["Detected tiers (tier_id | title | amount):"]
+                for tier_id, info in sorted(
+                    tiers.items(), key=lambda item: item[1].get("amount_cents", 0)
+                ):
+                    amount_cents = info.get("amount_cents", 0)
+                    amount_display = f"${amount_cents / 100:.2f}" if amount_cents else "$0.00"
+                    tier_lines.append(f"{tier_id} | {info.get('title', f'Tier {tier_id}')} | {amount_display}")
+                for chunk in self._chunk_text("\n".join(tier_lines)):
+                    await ctx.send(f"```{chunk}```")
+            else:
+                await ctx.send(
+                    "No tiers were returned from Patreon. You can still map tier IDs manually."
+                )
+
+            await ctx.send(
+                "9) Send tier mappings one per message in format `tier_id role_id tier_level`.\n"
+                "`tier_level` is optional and defaults to 1.\n"
+                "Send `done` when finished."
+            )
+
+            tier_role_mapping: dict[str, int] = {}
+            tier_level_mapping: dict[str, int] = {}
+
+            while True:
+                line = await self._wizard_wait(ctx)
+                if not line:
+                    continue
+                if line.lower() == "done":
+                    break
+
+                parts = [p for p in re.split(r"[:\s,]+", line.strip()) if p]
+                if len(parts) < 2:
+                    await ctx.send("Invalid format. Use `tier_id role_id tier_level`.")
+                    continue
+
+                tier_id = parts[0]
+                role_id = self._extract_snowflake(parts[1])
+                if not role_id:
+                    await ctx.send("Invalid role ID.")
+                    continue
+
+                level = 1
+                if len(parts) >= 3:
+                    parsed_level = self._parse_int(parts[2])
+                    if not parsed_level or parsed_level < 1:
+                        await ctx.send("Tier level must be a positive integer.")
+                        continue
+                    level = parsed_level
+
+                tier_role_mapping[tier_id] = role_id
+                tier_level_mapping[tier_id] = level
+                await ctx.send(f"Mapped tier `{tier_id}` -> role `{role_id}` (level {level}).")
+
+            if not tier_role_mapping:
+                raise RuntimeError("At least one tier mapping is required.")
+
+            self.tier_role_mapping = tier_role_mapping
+            self.tier_level_mapping = tier_level_mapping
+            self._save_config()
+
+            await ctx.send("Configuration saved. Running initial Patreon sync...")
+            sync_result = await self.run_sync(manual=True)
+            await ctx.send(self._format_sync_result(sync_result))
+        except SetupCancelled:
+            self._restore_config(snapshot)
+            self._save_config()
+            await ctx.send("Setup cancelled. Previous configuration restored.")
+        except asyncio.TimeoutError:
+            self._restore_config(snapshot)
+            self._save_config()
+            await ctx.send("Setup timed out. Previous configuration restored.")
+        except Exception as e:
+            self._restore_config(snapshot)
+            self._save_config()
+            await ctx.send(f"Setup failed: {e}. Previous configuration restored.")
 
     @commands.command()
     @is_gm()
     async def forcesync(self, ctx):
-        """Force synchronization of Patreon pledges with Discord roles"""
-        try:
-            await ctx.send("🔄 Forcing Patreon role sync... This may take a minute.")
-
-            # Cancel existing task if running
-            if self.update_roles.is_running():
-                self.update_roles.cancel()
-
-            # Run update immediately
-            await self.update_roles()
-
-            if self.last_updated:
-                await ctx.send(
-                    f"✅ Patreon role sync complete! Last updated: {self.last_updated.strftime('%Y-%m-%d %H:%M:%S')}")
-            else:
-                await ctx.send("⚠️ Patreon role sync attempted but may have failed. Check logs for details.")
-
-            # Restart the task
-            if not self.update_roles.is_running():
-                self.update_roles.start()
-        except Exception as e:
-            import traceback
-            error_message = f"Error occurred: {e}\n"
-            error_message += traceback.format_exc()
-            await ctx.send(error_message)
+        """Force an immediate Patreon sync."""
+        await ctx.send("Running Patreon sync...")
+        result = await self.run_sync(manual=True)
+        await ctx.send(self._format_sync_result(result))
 
     @commands.command()
     @is_gm()
     async def patronstatus(self, ctx):
-        """Show status of Patreon integration"""
-        embed = discord.Embed(
-            title="Patreon Bot Status",
-            color=0xFF5441
+        """Show PatreonCore status and sync health."""
+        embed = discord.Embed(title="PatreonCore Status", color=0xFF5441)
+        embed.add_field(
+            name="Configured",
+            value="Yes" if self._is_minimally_configured() else "No",
+            inline=True,
+        )
+        embed.add_field(name="Guild ID", value=str(self.guild_id or "Not set"), inline=True)
+        embed.add_field(
+            name="Campaign ID",
+            value=str(self.patreon_campaign_id or "Auto/Not set"),
+            inline=True,
+        )
+        embed.add_field(
+            name="Log Channel",
+            value=str(self.log_channel_id or "Not set"),
+            inline=True,
+        )
+        embed.add_field(
+            name="Sync Interval",
+            value=f"{self.check_interval_seconds // 60} minute(s)",
+            inline=True,
+        )
+        embed.add_field(
+            name="Tier Mappings",
+            value=str(len(self.tier_role_mapping)),
+            inline=True,
         )
 
-        # Check if configured
-        if not self.guild_id:
-            embed.description = "⚠️ Patreon integration is not fully configured. Use `!patreonsetup` to configure."
-            await ctx.send(embed=embed)
-            return
-
-        # Basic info
-        embed.add_field(name="Guild ID", value=str(self.guild_id), inline=True)
-        embed.add_field(name="Update Interval", value=f"{self.check_interval // 60} minutes", inline=True)
-
-        if self.log_channel_id:
-            log_channel = self.bot.get_channel(self.log_channel_id)
-            embed.add_field(name="Log Channel", value=log_channel.mention if log_channel else "Invalid Channel",
-                            inline=True)
-        else:
-            embed.add_field(name="Log Channel", value="Not set", inline=True)
-
-        # Token info
-        now = datetime.now()
-        if self.token_expires_at > now:
-            expires_in = self.token_expires_at - now
-            token_status = f"Valid (Expires in {expires_in.days} days, {expires_in.seconds // 3600} hours)"
-        else:
-            token_status = "Expired! Will try to refresh on next update."
-
-        embed.add_field(name="Token Status", value=token_status, inline=False)
-
-        # Tier mappings
-        if self.tier_role_mapping:
-            tier_mappings = []
-            guild = self.bot.get_guild(self.guild_id)
-
-            for tier_id, role_id in self.tier_role_mapping.items():
-                role = guild.get_role(int(role_id)) if guild else None
-                role_name = role.name if role else "Invalid Role"
-                tier_mappings.append(f"• Tier {tier_id} → {role_name}")
-
-            embed.add_field(name="Tier Mappings", value="\n".join(tier_mappings), inline=False)
-        else:
-            embed.add_field(name="Tier Mappings", value="No tier mappings configured", inline=False)
-
-        # Patron info
         if self.last_updated:
-            embed.add_field(name="Patrons Tracked", value=str(len(self.patrons_data)), inline=True)
-            embed.add_field(name="Last Updated", value=self.last_updated.strftime("%Y-%m-%d %H:%M:%S"), inline=True)
-            embed.set_footer(
-                text=f"Next update in approximately {self.update_roles.next_iteration - datetime.now()} (HH:MM:SS)")
+            embed.add_field(
+                name="Last Updated",
+                value=self.last_updated.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                inline=False,
+            )
         else:
-            embed.add_field(name="Status", value="No patron data fetched yet", inline=False)
+            embed.add_field(name="Last Updated", value="Never", inline=False)
+
+        if self.last_sync_result:
+            embed.add_field(
+                name="Last Sync",
+                value=self._format_sync_result(self.last_sync_result)[:1024],
+                inline=False,
+            )
+
+        if self.sync_patrons_loop.is_running() and self.sync_patrons_loop.next_iteration:
+            next_sync = self.sync_patrons_loop.next_iteration
+            if next_sync.tzinfo is None:
+                next_sync = next_sync.replace(tzinfo=timezone.utc)
+            remaining = next_sync - self._utcnow()
+            if remaining.total_seconds() < 0:
+                remaining = timedelta(0)
+            embed.set_footer(text=f"Next sync in {str(remaining).split('.')[0]}")
 
         await ctx.send(embed=embed)
 
     @commands.command()
     @is_gm()
     async def patronlist(self, ctx):
-        """List all patrons with their roles"""
+        """List currently tracked patrons and their tiers."""
         if not self.patrons_data:
-            await ctx.send("❌ No patron data available.")
-            return
+            return await ctx.send("No patron data is cached yet.")
 
-        guild = self.bot.get_guild(self.guild_id)
-        if not guild:
-            await ctx.send("❌ Could not find guild!")
-            return
-
-        # Create a reverse mapping from role IDs to tier names
-        role_to_tier = {}
-        for tier_id, role_id in self.tier_role_mapping.items():
-            role = guild.get_role(int(role_id))
-            if role:
-                role_to_tier[int(role_id)] = role.name
-
+        guild = self.bot.get_guild(self.guild_id) if self.guild_id else None
         embed = discord.Embed(
             title="Patreon Supporters",
-            description=f"Total patrons: {len(self.patrons_data)}",
-            color=0xFF5441
+            description=f"Tracked patrons: {len(self.patrons_data)}",
+            color=0xFF5441,
         )
 
-        # Limit to 25 patrons to avoid hitting embed limits
-        count = 0
-        for discord_id, tier_ids in list(self.patrons_data.items())[:25]:
-            try:
-                member = await guild.fetch_member(int(discord_id))
-                if member:
-                    role_names = []
-                    for tier_id in tier_ids:
-                        if tier_id in self.tier_role_mapping:
-                            role_id = int(self.tier_role_mapping[tier_id])
-                            if role_id in role_to_tier:
-                                role_names.append(role_to_tier[role_id])
+        displayed = 0
+        for user_id, tier_ids in list(self.patrons_data.items())[:25]:
+            member = guild.get_member(user_id) if guild else None
+            name = member.display_name if member else str(user_id)
+            tier_names = [self.tier_titles.get(tier_id, f"Tier {tier_id}") for tier_id in tier_ids]
+            embed.add_field(
+                name=name,
+                value=", ".join(tier_names) if tier_names else "No entitled tier",
+                inline=False,
+            )
+            displayed += 1
 
-                    embed.add_field(
-                        name=member.display_name,
-                        value=", ".join(role_names) if role_names else "No tier",
-                        inline=True
-                    )
-                    count += 1
-            except:
-                pass
+        if displayed < len(self.patrons_data):
+            embed.set_footer(text=f"Showing {displayed} of {len(self.patrons_data)} patrons")
 
-        if count == 0:
-            await ctx.send("❌ No patron data could be displayed.")
-        else:
-            if count < len(self.patrons_data):
-                embed.set_footer(text=f"Showing {count} of {len(self.patrons_data)} patrons")
-            await ctx.send(embed=embed)
+        await ctx.send(embed=embed)
 
     @commands.command()
     @is_gm()
     async def refreshtoken(self, ctx):
-        """Manually refresh the Patreon access token"""
-        await ctx.send("🔄 Attempting to refresh Patreon access token...")
-
+        """Manually refresh Patreon OAuth access token."""
+        await ctx.send("Refreshing Patreon token...")
         success = await self.refresh_access_token()
-
         if success:
             await ctx.send(
-                f"✅ Token refreshed successfully! New expiration: {self.token_expires_at.strftime('%Y-%m-%d %H:%M:%S')}")
+                "Token refreshed. "
+                f"Expires at {self.token_expires_at.strftime('%Y-%m-%d %H:%M:%S UTC')}."
+            )
         else:
-            await ctx.send("❌ Failed to refresh token. Check logs for details.")
-            
+            await ctx.send("Token refresh failed. Check logs/config.")
+
     @commands.command()
-    @is_gm()
-    async def check_tiers(self, ctx):
-        """Manually check all patron tiers and provide detailed debugging output"""
-        await ctx.send("🔍 Beginning manual tier check...")
-        
-        if not self.guild_id:
-            return await ctx.send("❌ Guild ID not set. Cannot check tiers!")
-            
-        guild = self.bot.get_guild(self.guild_id)
-        if not guild:
-            return await ctx.send(f"❌ Could not find guild with ID {self.guild_id}!")
-            
-        status_msg = await ctx.send("📊 Fetching patron data...")
-        
-        try:
-            # Fetch latest data if needed
-            if not self.patrons_data:
-                patrons, included = await self.fetch_patrons()
-                if not patrons:
-                    return await status_msg.edit(content="❌ No patrons fetched. Check logs for details.")
-                self.patrons_data = self.process_patrons(patrons, included)
-                
-            await status_msg.edit(content=f"📊 Processing {len(self.patrons_data)} patrons...")
-            
-            debug_output = ["**Tier Check Debug Report**"]
-            total_members = 0
-            tier_counts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
-            role_debug = []
-            
-            # Check each member's roles and determine tier
-            for member_id, tier_ids in self.patrons_data.items():
-                try:
-                    member = await guild.fetch_member(int(member_id))
-                    if not member:
-                        role_debug.append(f"⚠️ Member not found: {member_id}")
-                        continue
-                        
-                    total_members += 1
-                    member_debug = [f"**Member:** {member.display_name} ({member_id})\n**Tier IDs:** {tier_ids}"]
-                    
-                    # Find assigned roles
-                    should_have_roles = set()
-                    for tier_id in tier_ids:
-                        if tier_id in self.tier_role_mapping:
-                            role_id = int(self.tier_role_mapping[tier_id])
-                            should_have_roles.add(role_id)
-                            role = guild.get_role(role_id)
-                            member_debug.append(f"- Should have role: {role.name if role else 'Unknown'} ({role_id})")
-                    
-                    # Check current roles
-                    has_roles = set()
-                    patron_roles = []
-                    for role_id in self.tier_role_mapping.values():
-                        role = guild.get_role(int(role_id))
-                        if role and role in member.roles:
-                            has_roles.add(int(role_id))
-                            patron_roles.append(role.name)
-                    
-                    member_debug.append(f"- Current patron roles: {', '.join(patron_roles) if patron_roles else 'None'}")
-                    
-                    # Determine tier level based on role names
-                    tier_level = 0
-                    roles_checked = []
-                    for role in member.roles:
-                        role_name = role.name
-                        roles_checked.append(role_name)
-                        if "Ragnarok" in role_name:
-                            tier_level = max(tier_level, 4)
-                            member_debug.append(f"- Found Ragnarok role: {role_name}")
-                        elif "Legendary" in role_name:
-                            tier_level = max(tier_level, 3)
-                            member_debug.append(f"- Found Legendary role: {role_name}")
-                        elif "Warrior" in role_name:
-                            tier_level = max(tier_level, 2)
-                            member_debug.append(f"- Found Warrior role: {role_name}")
-                        elif "Adventurer" in role_name:
-                            tier_level = max(tier_level, 1)
-                            member_debug.append(f"- Found Adventurer role: {role_name}")
-                    
-                    member_debug.append(f"- All roles checked: {', '.join(roles_checked)}")
-                    tier_counts[tier_level] += 1
-                    member_debug.append(f"- **Calculated tier level: {tier_level}**")
-                    
-                    # Check if database update would work
-                    try:
-                        await self.bot.pool.execute(
-                            'SELECT 1 FROM profile WHERE "user"=$1', int(member_id)
-                        )
-                        member_debug.append(f"- Database record exists: ✅")
-                    except Exception as db_error:
-                        member_debug.append(f"- Database check failed: ❌ ({str(db_error)})")
-                    
-                    # Add this member's debug info
-                    role_debug.append("\n".join(member_debug))
-                    
-                except Exception as e:
-                    role_debug.append(f"❌ Error processing {member_id}: {str(e)}")
-            
-            # Create summary
-            debug_output.append(f"**Total members processed:** {total_members}")
-            debug_output.append(f"**Tier level counts:**")
-            debug_output.append(f"- Tier 0 (No tier): {tier_counts[0]}")
-            debug_output.append(f"- Tier 1 (Adventurer): {tier_counts[1]}")
-            debug_output.append(f"- Tier 2 (Warrior): {tier_counts[2]}")
-            debug_output.append(f"- Tier 3 (Legendary): {tier_counts[3]}")
-            debug_output.append(f"- Tier 4 (Ragnarok): {tier_counts[4]}")
-            
-            # Send summary
-            await status_msg.edit(content="✅ Tier check complete!")
-            await ctx.send("\n".join(debug_output))
-            
-            # Send member details in chunks to avoid message length limits
-            chunks = []
-            current_chunk = []
-            current_length = 0
-            
-            for item in role_debug:
-                # Discord has a 2000 character limit
-                if current_length + len(item) + 2 > 1900:  # Add some buffer
-                    chunks.append("\n\n".join(current_chunk))
-                    current_chunk = [item]
-                    current_length = len(item)
-                else:
-                    current_chunk.append(item)
-                    current_length += len(item) + 2  # +2 for the newlines
-            
-            if current_chunk:
-                chunks.append("\n\n".join(current_chunk))
-            
-            for i, chunk in enumerate(chunks):
-                await ctx.send(f"**Member Details ({i+1}/{len(chunks)}):**\n\n{chunk}")
-                
-        except Exception as e:
-            import traceback
-            error_message = f"Error occurred: {e}\n"
-            error_message += traceback.format_exc()
-            await ctx.send(f"❌ Error during tier check: ```{error_message[:1500]}```")
-            print(error_message)
-            
-    @commands.command()
-    @user_cooldown(2764800)  # 32 days in seconds (32 * 24 * 60 * 60)
+    @user_cooldown(2764800)  # 32 days
     async def redeemweapontokens(self, ctx):
-        """Redeem 5 weapon tokens if you're a patron (tier 1 or higher)."""
-        # Check if the user has tier 1 or higher in the database
+        """Redeem 5 weapon tokens if user has Patreon tier 1 or higher."""
         async with self.bot.pool.acquire() as conn:
             patron_tier = await conn.fetchval(
                 'SELECT "tier" FROM profile WHERE "user"=$1',
-                ctx.author.id
+                ctx.author.id,
             )
-            
-            # If tier is None or less than 1, deny the request and reset cooldown
+
             if patron_tier is None or patron_tier < 1:
                 await self.bot.reset_cooldown(ctx)
-                return await ctx.send("❌ You need to be a patron (tier 1 or higher) to redeem weapon tokens!")
-            
-            # Add 5 weapon tokens to their account
+                return await ctx.send(
+                    "You need to be a patron (tier 1 or higher) to redeem weapon tokens."
+                )
+
             try:
-                # Update weapon tokens
                 await conn.execute(
                     'UPDATE profile SET "weapontoken"="weapontoken"+5 WHERE "user"=$1',
-                    ctx.author.id
+                    ctx.author.id,
                 )
-                
-                # Get new weapon token balance for confirmation message
+
                 new_balance = await conn.fetchval(
                     'SELECT "weapontoken" FROM profile WHERE "user"=$1',
-                    ctx.author.id
+                    ctx.author.id,
                 )
-                
-                # Log the redemption if log channel is set
+
                 if self.log_channel_id:
                     log_channel = self.bot.get_channel(self.log_channel_id)
                     if log_channel:
-                        await log_channel.send(f"⚔️ **Weapon Token Redemption**: {ctx.author.mention} ({ctx.author.id}) redeemed 5 weapon tokens as a Tier {patron_tier} Patron.")
-                
-                # Create an embed for a nice response
+                        await log_channel.send(
+                            "Weapon Token Redemption: "
+                            f"{ctx.author.mention} ({ctx.author.id}) redeemed 5 weapon tokens as tier {patron_tier}."
+                        )
+
                 embed = discord.Embed(
-                    title="⚔️ Weapon Tokens Redeemed!",
-                    description=f"Thank you for supporting us as a patron!",
-                    color=0x3CB371  # Medium sea green
+                    title="Weapon Tokens Redeemed",
+                    description="Thank you for supporting us on Patreon.",
+                    color=0x3CB371,
                 )
                 embed.add_field(name="Tokens Added", value="5", inline=True)
                 embed.add_field(name="New Balance", value=f"{new_balance:,}", inline=True)
                 embed.add_field(name="Patron Tier", value=f"Tier {patron_tier}", inline=True)
-                embed.set_footer(text="You can redeem weapon tokens once every 32 days.")
-                
+                embed.set_footer(text="You can redeem this once every 32 days.")
                 await ctx.send(embed=embed)
-                
             except Exception as e:
-                # Reset cooldown so they can try again if error occurs
-                self.bot.reset_cooldown(ctx)
-                await ctx.send(f"❌ Error updating your weapon tokens: {e}")
-                # Log the error
-                print(f"[PatreonCore] Error in redeemweapontokens for {ctx.author.id}: {e}")
+                await self.bot.reset_cooldown(ctx)
+                await ctx.send(f"Error updating weapon tokens: {e}")
+                print(f"[PatreonCore] redeemweapontokens error for {ctx.author.id}: {e}")
 
 
-# Function to add this cog to your bot
 async def setup(bot):
     await bot.add_cog(PatreonCore(bot))
