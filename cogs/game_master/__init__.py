@@ -187,7 +187,6 @@ class GameMaster(commands.Cog):
         self.top_auction = None
         self._last_result = None
         self.auction_entry = None
-        #self.patron_ids = self.load_patron_ids()
         self.isbid = False
         self.event_flags = {}
 
@@ -229,49 +228,6 @@ class GameMaster(commands.Cog):
         await ctx.send(
             _("Cleared {num} shop items which timed out.").format(num=len(timed_out))
         )
-
-    @is_gm()
-    @commands.command(
-        hidden=True, brief=_("Clear donator cache for a user")
-    )
-    @locale_doc
-    async def code(self, ctx, tier: int, userid):
-
-        try:
-            try:
-                user = await self.bot.fetch_user(int(userid))
-            except discord.errors.NotFound:
-                await ctx.send("Invalid user ID. Please provide a valid Discord user ID.")
-                return
-
-            if tier < 1 or tier > 4:
-                await ctx.send("Invalid tier. Please provide a validtier level.")
-                return
-
-            generated_code = '-'.join(
-                ''.join(secrets.choice('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789') for _ in range(5)) for _ in range(5))
-
-            await self.bot.pool.execute(
-                'INSERT INTO patreon_keys ("key", "tier", "discordid") VALUES ($1, $2, $3);', generated_code, str(tier),
-                int(userid)
-            )
-
-            user_id = userid  # Replace with the specific user ID
-
-            try:
-                # Fetch the user from Discord's servers
-                user = await self.bot.fetch_user(user_id)
-
-                # Send a direct message to the user
-                await user.send(
-                    f'Thank you so much for your support! You can redeem your perks using $patreonredeem and the following code: {generated_code}')
-                await ctx.send('Message sent.')
-            except discord.NotFound:
-                await ctx.send('User not found.')
-
-            await ctx.send(f"Generated code: {generated_code}")
-        except Exception as e:
-            await ctx.send(e)
 
     @is_gm()
     @commands.command(
@@ -565,23 +521,6 @@ class GameMaster(commands.Cog):
     async def reloadbans(self, ctx):
         await self.bot.reload_bans()
         await ctx.send("Bans Reloaded")
-
-    @is_gm()
-    @commands.command(hidden=True)
-    async def changetier(self, ctx, userID: int, tier: int):
-        # Validate the tier input
-        if tier not in [0, 1, 2, 3, 4]:
-            await ctx.send("Invalid tier value. Please choose a tier between 0 and 4.")
-            return
-
-        # Update the tier using the PostgreSQL connection with placeholders
-        async with self.bot.pool.acquire() as connection:
-            await connection.execute(
-                'UPDATE profile SET "tier" = $1 WHERE "user" = $2',
-                tier, userID
-            )
-
-        await ctx.send(f"Tier for user ID {userID} has been updated to {tier}.")
 
     @is_gm()
     @commands.command(hidden=True, brief=_("Bot-unban a user"))
@@ -2380,53 +2319,6 @@ class GameMaster(commands.Cog):
                 self.bot.config.game.gm_log_channel,
                 params=params,
             )
-
-    def load_patron_ids(self):
-        try:
-            with open("patron_ids.json", "r") as file:
-                return json.load(file)
-        except FileNotFoundError:
-            return []
-
-    def save_patron_ids(self):
-        with open("patron_ids.json", "w") as file:
-            json.dump(self.patron_ids, file)
-
-    def add_patron(self, user_id: int):
-        if user_id not in self.patron_ids:
-            self.patron_ids.append(user_id)
-            self.save_patron_ids()  # Save updated patron IDs
-            return True
-        else:
-            return False
-
-    def remove_patron(self, user_id: int):
-        if user_id in self.patron_ids:
-            self.patron_ids.remove(user_id)
-            self.save_patron_ids()  # Save updated patron IDs
-            return True
-        else:
-            return False
-
-    @is_gm()
-    @commands.command(hidden=True, brief=_("Add Patreon"))
-    async def add_patron(self, ctx, user_id: int):
-        """Add a patron by their user ID."""
-        if user_id not in self.patron_ids:
-            self.patron_ids.append(user_id)
-            self.save_patron_ids()  # Use self to access the method
-            await ctx.send(f"User with ID {user_id} has been added as a patron.")
-        else:
-            await ctx.send(f"User with ID {user_id} is already a patron.")
-
-    @is_gm()
-    @commands.command(hidden=True, brief=_("Remove Patreon"))
-    async def remove_patron(self, ctx, user_id: int):
-        """Remove a patron by their user ID."""
-        if self.remove_patron(user_id):
-            await ctx.send(f"User with ID {user_id} has been removed as a patron.")
-        else:
-            await ctx.send(f"User with ID {user_id} is not a patron.")
 
     async def end_auction(self, channel):
         """Helper method to handle auction ending"""

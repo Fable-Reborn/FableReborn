@@ -39,6 +39,8 @@ class SyncResult:
     members_seen: int = 0
     active_members: int = 0
     mapped_members: int = 0
+    manual_grants_applied: int = 0
+    manual_grants_expired: int = 0
     error: str | None = None
 
 
@@ -49,6 +51,7 @@ class PatreonCore(commands.Cog):
     CAMPAIGNS_URL = "https://www.patreon.com/api/oauth2/api/current_user/campaigns"
     MEMBERS_URL = "https://www.patreon.com/api/oauth2/v2/campaigns/{campaign_id}/members"
     CAMPAIGN_DETAILS_URL = "https://www.patreon.com/api/oauth2/v2/campaigns/{campaign_id}"
+    DURATION_PART_RE = re.compile(r"(\d+)\s*([smhdw])", re.IGNORECASE)
 
     def __init__(self, bot):
         self.bot = bot
@@ -78,6 +81,7 @@ class PatreonCore(commands.Cog):
         self.tier_level_mapping: dict[str, int] = {}
         self.tier_titles: dict[str, str] = {}
         self.tier_amounts: dict[str, int] = {}
+        self.manual_tier_grants: dict[int, dict[str, Any]] = {}
 
         self.patrons_data: dict[int, list[str]] = {}
         self.last_updated: datetime | None = None
@@ -150,6 +154,106 @@ class PatreonCore(commands.Cog):
                 mapping[tier_key] = parsed_level
         return mapping
 
+    @staticmethod
+    def _normalize_manual_tier_grants(raw: Any) -> dict[int, dict[str, Any]]:
+        if not isinstance(raw, dict):
+            return {}
+
+        grants: dict[int, dict[str, Any]] = {}
+        now = PatreonCore._utcnow()
+        for user_key, grant in raw.items():
+            if not isinstance(grant, dict):
+                continue
+
+            user_id = PatreonCore._parse_int(user_key)
+            if not user_id:
+                user_id = PatreonCore._parse_int(grant.get("user_id"))
+            if not user_id:
+                continue
+
+            tier = PatreonCore._parse_int(grant.get("tier"))
+            if not tier or tier < 1:
+                continue
+
+            expires_at = PatreonCore._coerce_datetime(grant.get("expires_at"))
+            added_at = PatreonCore._coerce_datetime(grant.get("added_at")) or now
+            added_by = PatreonCore._parse_int(grant.get("added_by"))
+            reason = str(grant.get("reason") or "")
+
+            grants[user_id] = {
+                "tier": tier,
+                "expires_at": expires_at,
+                "added_at": added_at,
+                "added_by": added_by,
+                "reason": reason,
+            }
+        return grants
+
+    def _export_manual_tier_grants(self) -> dict[str, dict[str, Any]]:
+        exported: dict[str, dict[str, Any]] = {}
+        for user_id, grant in self.manual_tier_grants.items():
+            expires_at = grant.get("expires_at")
+            added_at = grant.get("added_at")
+            exported[str(user_id)] = {
+                "user_id": user_id,
+                "tier": int(grant.get("tier", 0)),
+                "expires_at": expires_at.isoformat() if isinstance(expires_at, datetime) else None,
+                "added_at": added_at.isoformat() if isinstance(added_at, datetime) else None,
+                "added_by": grant.get("added_by"),
+                "reason": str(grant.get("reason") or ""),
+            }
+        return exported
+
+    @classmethod
+    def _parse_duration_to_timedelta(cls, raw: str) -> timedelta | None:
+        text = (raw or "").strip().lower()
+        if not text or text in {"perm", "permanent", "none", "never", "0"}:
+            return None
+
+        compact = re.sub(r"\s+", "", text)
+        matches = list(cls.DURATION_PART_RE.finditer(compact))
+        if not matches:
+            raise ValueError("Duration must look like 7d, 12h, 30m, or a combination like 7d12h.")
+
+        consumed = "".join(match.group(0) for match in matches)
+        if consumed != compact:
+            raise ValueError("Invalid duration format.")
+
+        total_seconds = 0
+        unit_seconds = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+        for match in matches:
+            amount = int(match.group(1))
+            unit = match.group(2).lower()
+            total_seconds += amount * unit_seconds[unit]
+
+        if total_seconds <= 0:
+            raise ValueError("Duration must be greater than 0.")
+        return timedelta(seconds=total_seconds)
+
+    def _cleanup_expired_manual_grants(self) -> set[int]:
+        now = self._utcnow()
+        expired_users: set[int] = set()
+
+        for user_id, grant in list(self.manual_tier_grants.items()):
+            expires_at = grant.get("expires_at")
+            if isinstance(expires_at, datetime) and expires_at <= now:
+                expired_users.add(user_id)
+                del self.manual_tier_grants[user_id]
+
+        if expired_users:
+            self._save_config()
+        return expired_users
+
+    def _apply_manual_tier_grants(self, tier_by_user: dict[int, int]) -> int:
+        applied = 0
+        for user_id, grant in self.manual_tier_grants.items():
+            grant_tier = self._parse_int(grant.get("tier")) or 0
+            if grant_tier <= 0:
+                continue
+            tier_by_user[user_id] = max(tier_by_user.get(user_id, 0), grant_tier)
+            applied += 1
+        return applied
+
     def _snapshot_config(self) -> dict[str, Any]:
         return {
             "guild_id": self.guild_id,
@@ -163,6 +267,7 @@ class PatreonCore(commands.Cog):
             "patreon_campaign_id": self.patreon_campaign_id,
             "tier_role_mapping": dict(self.tier_role_mapping),
             "tier_level_mapping": dict(self.tier_level_mapping),
+            "manual_tier_grants": self._export_manual_tier_grants(),
         }
 
     def _restore_config(self, snapshot: dict[str, Any]) -> None:
@@ -185,6 +290,9 @@ class PatreonCore(commands.Cog):
         )
         self.tier_level_mapping = self._normalize_tier_level_mapping(
             snapshot.get("tier_level_mapping", {})
+        )
+        self.manual_tier_grants = self._normalize_manual_tier_grants(
+            snapshot.get("manual_tier_grants", {})
         )
         self.sync_patrons_loop.change_interval(seconds=self.check_interval_seconds)
 
@@ -222,6 +330,9 @@ class PatreonCore(commands.Cog):
             self.tier_level_mapping = self._normalize_tier_level_mapping(
                 config.get("tier_level_mapping", {})
             )
+            self.manual_tier_grants = self._normalize_manual_tier_grants(
+                config.get("manual_tier_grants", {})
+            )
 
             print("[PatreonCore] Configuration loaded successfully.")
         except Exception as e:
@@ -241,6 +352,7 @@ class PatreonCore(commands.Cog):
                 "patreon_campaign_id": self.patreon_campaign_id,
                 "tier_role_mapping": self.tier_role_mapping,
                 "tier_level_mapping": self.tier_level_mapping,
+                "manual_tier_grants": self._export_manual_tier_grants(),
             }
             with self.config_file.open("w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2)
@@ -669,6 +781,12 @@ class PatreonCore(commands.Cog):
     def _format_sync_result(self, result: SyncResult) -> str:
         if result.error:
             return f"Patreon sync failed: {result.error}"
+        manual_note = ""
+        if result.manual_grants_applied or result.manual_grants_expired:
+            manual_note = (
+                f", manual grants active {result.manual_grants_applied}, "
+                f"expired {result.manual_grants_expired}"
+            )
         return (
             "Patreon sync complete: "
             f"{result.patrons} patrons, "
@@ -678,7 +796,8 @@ class PatreonCore(commands.Cog):
             f"{result.pages} page(s), "
             f"{result.members_seen} members seen, "
             f"{result.active_members} active, "
-            f"{result.mapped_members} mapped."
+            f"{result.mapped_members} mapped"
+            f"{manual_note}."
         )
 
     async def run_sync(self, *, manual: bool = False) -> SyncResult:
@@ -704,10 +823,17 @@ class PatreonCore(commands.Cog):
                     self.last_sync_result = result
                     return result
 
-                tier_by_user: dict[int, int] = {user_id: 0 for user_id in self.patrons_data.keys()}
+                expired_manual_users = self._cleanup_expired_manual_grants()
+                result.manual_grants_expired = len(expired_manual_users)
+
+                baseline_users = set(self.patrons_data.keys())
+                baseline_users.update(expired_manual_users)
+                baseline_users.update(self.manual_tier_grants.keys())
+                tier_by_user: dict[int, int] = {user_id: 0 for user_id in baseline_users}
                 for user_id, tier_ids in patrons.items():
                     tier_by_user[user_id] = self._tier_level_for_tiers(tier_ids, tier_amounts)
 
+                result.manual_grants_applied = self._apply_manual_tier_grants(tier_by_user)
                 result.tier_updates = await self._bulk_update_tiers(tier_by_user)
                 result.candidates, result.roles_added, result.roles_removed = await self._sync_roles(
                     guild, patrons
@@ -970,6 +1096,120 @@ class PatreonCore(commands.Cog):
 
     @commands.command()
     @is_gm()
+    async def patreongrant(
+        self,
+        ctx,
+        user: int | discord.User,
+        tier: int,
+        duration: str = "permanent",
+        *,
+        reason: str = "",
+    ):
+        """Manually grant a Patreon tier with optional expiry (e.g. 30d, 12h, 7d12h)."""
+        if tier < 1 or tier > 4:
+            return await ctx.send("Tier must be between 1 and 4.")
+
+        user_id = user if isinstance(user, int) else user.id
+        if user_id <= 0:
+            return await ctx.send("Invalid user ID.")
+
+        try:
+            ttl = self._parse_duration_to_timedelta(duration)
+        except ValueError as e:
+            return await ctx.send(f"Invalid duration: {e}")
+
+        now = self._utcnow()
+        expires_at = now + ttl if ttl else None
+        self.manual_tier_grants[user_id] = {
+            "tier": tier,
+            "expires_at": expires_at,
+            "added_at": now,
+            "added_by": ctx.author.id,
+            "reason": reason.strip(),
+        }
+        self._save_config()
+
+        existing_tier = await self.bot.pool.fetchval(
+            'SELECT "tier" FROM profile WHERE "user"=$1',
+            user_id,
+        )
+        if existing_tier is None:
+            await ctx.send(
+                f"Saved manual grant for `{user_id}` (tier {tier}), but no profile row exists yet."
+            )
+            return
+
+        target_tier = max(int(existing_tier or 0), tier)
+        await self._bulk_update_tiers({user_id: target_tier})
+
+        expiry_text = (
+            expires_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+            if expires_at
+            else "never (manual revoke required)"
+        )
+        await ctx.send(
+            f"Manual Patreon tier grant saved for `{user_id}`: tier {tier}, expires {expiry_text}."
+        )
+
+    @commands.command()
+    @is_gm()
+    async def patreonrevokegrant(self, ctx, user: int | discord.User):
+        """Remove a manual Patreon tier grant previously added via patreongrant."""
+        user_id = user if isinstance(user, int) else user.id
+        grant = self.manual_tier_grants.pop(user_id, None)
+        if not grant:
+            return await ctx.send(f"No manual Patreon grant exists for `{user_id}`.")
+
+        self._save_config()
+
+        fallback_tier = 0
+        if user_id in self.patrons_data:
+            fallback_tier = self._tier_level_for_tiers(
+                self.patrons_data[user_id], self.tier_amounts
+            )
+        await self._bulk_update_tiers({user_id: fallback_tier})
+
+        message = f"Manual Patreon grant removed for `{user_id}`."
+        if self._is_minimally_configured():
+            result = await self.run_sync(manual=True)
+            message += f" Sync status: {self._format_sync_result(result)}"
+        await ctx.send(message)
+
+    @commands.command()
+    @is_gm()
+    async def patreongrants(self, ctx):
+        """List active manual Patreon grants."""
+        expired = self._cleanup_expired_manual_grants()
+        if not self.manual_tier_grants:
+            if expired:
+                return await ctx.send(
+                    f"No active manual Patreon grants. Cleaned up {len(expired)} expired grant(s)."
+                )
+            return await ctx.send("No active manual Patreon grants.")
+
+        lines = []
+        for user_id, grant in sorted(self.manual_tier_grants.items()):
+            tier = int(grant.get("tier", 0))
+            expires_at = grant.get("expires_at")
+            expires_text = (
+                expires_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+                if isinstance(expires_at, datetime)
+                else "never"
+            )
+            added_by = grant.get("added_by") or "unknown"
+            reason = str(grant.get("reason") or "").strip() or "-"
+            lines.append(
+                f"{user_id}: tier {tier}, expires {expires_text}, added_by {added_by}, reason: {reason}"
+            )
+
+        if expired:
+            lines.insert(0, f"Cleaned up {len(expired)} expired grant(s).")
+
+        for chunk in self._chunk_text("\n".join(lines)):
+            await ctx.send(f"```{chunk}```")
+
+    @commands.command()
+    @is_gm()
     async def forcesync(self, ctx):
         """Force an immediate Patreon sync."""
         await ctx.send("Running Patreon sync...")
@@ -1005,6 +1245,11 @@ class PatreonCore(commands.Cog):
         embed.add_field(
             name="Tier Mappings",
             value=str(len(self.tier_role_mapping)),
+            inline=True,
+        )
+        embed.add_field(
+            name="Manual Grants",
+            value=str(len(self.manual_tier_grants)),
             inline=True,
         )
 
