@@ -1542,7 +1542,7 @@ If you want to continue using the bot or just help us, please donate a small amo
 Even $1 can help us.
 **Thank you!**
 
-<https://patreon.com/FableRPG>"""
+<https://patreon.com/FableReborn>"""
             ).format(guild_count=guild_count)
         )
 
@@ -1556,8 +1556,8 @@ Even $1 can help us.
             """Shows Idles GitLab page and license alongside our own source as required by AGPLv3 Licensing."""
         )
         await ctx.send("IdleRPG - AGPLv3+\nhttps://git.travitia.xyz/Kenvyra/IdleRPG")
-
         await ctx.send("Fable - AGPLv3+\nhttps://github.com/prototypeX37/FableRPG-")
+        await ctx.send("Fable - AGPLv3+\nhttps://github.com/Fable-Reborn/FableReborn")
 
 
     @commands.hybrid_command(brief=_("Invite the bot to your server."))
