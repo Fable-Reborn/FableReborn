@@ -916,6 +916,15 @@
             "element": "Dark",
             "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Argo-removebg-preview.png",
             "ispublic": true
+        },
+        {
+            "name": "Draco",
+            "hp": 400,
+            "attack": 450,
+            "defense": 380,
+            "element": "Nature",
+            "url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_content.png",
+            "ispublic": true
         }
     ],
     "6": [
