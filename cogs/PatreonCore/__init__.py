@@ -676,6 +676,35 @@ class PatreonCore(commands.Cog):
                 role_ids.add(role_id)
         return role_ids
 
+    def _manual_role_ids_for_tier_level(self, tier_level: int) -> set[int]:
+        if tier_level <= 0:
+            return set()
+
+        exact = {
+            self.tier_role_mapping[tier_id]
+            for tier_id, level in self.tier_level_mapping.items()
+            if level == tier_level and tier_id in self.tier_role_mapping
+        }
+        if exact:
+            return exact
+
+        fallback_level = max(
+            (
+                level
+                for tier_id, level in self.tier_level_mapping.items()
+                if tier_id in self.tier_role_mapping and level <= tier_level
+            ),
+            default=0,
+        )
+        if fallback_level <= 0:
+            return set()
+
+        return {
+            self.tier_role_mapping[tier_id]
+            for tier_id, level in self.tier_level_mapping.items()
+            if level == fallback_level and tier_id in self.tier_role_mapping
+        }
+
     def _tier_level_for_tiers(self, tier_ids: list[str], tier_amounts: dict[str, int]) -> int:
         if not tier_ids:
             return 0
@@ -734,6 +763,7 @@ class PatreonCore(commands.Cog):
             return 0, 0, 0
 
         candidate_ids = set(patrons.keys()) | set(self.patrons_data.keys())
+        candidate_ids.update(self.manual_tier_grants.keys())
         for role_id in tracked_role_ids:
             role = guild.get_role(role_id)
             if role:
@@ -751,6 +781,10 @@ class PatreonCore(commands.Cog):
                     continue
 
             desired_role_ids = self._desired_role_ids_for_tiers(patrons.get(member_id, []))
+            manual_grant = self.manual_tier_grants.get(member_id)
+            if manual_grant:
+                manual_tier = self._parse_int(manual_grant.get("tier")) or 0
+                desired_role_ids.update(self._manual_role_ids_for_tier_level(manual_tier))
             current_role_ids = {role.id for role in member.roles if role.id in tracked_role_ids}
 
             to_add = desired_role_ids - current_role_ids
@@ -1133,23 +1167,29 @@ class PatreonCore(commands.Cog):
             'SELECT "tier" FROM profile WHERE "user"=$1',
             user_id,
         )
-        if existing_tier is None:
-            await ctx.send(
-                f"Saved manual grant for `{user_id}` (tier {tier}), but no profile row exists yet."
-            )
-            return
-
-        target_tier = max(int(existing_tier or 0), tier)
-        await self._bulk_update_tiers({user_id: target_tier})
+        has_profile = existing_tier is not None
+        if has_profile:
+            target_tier = max(int(existing_tier or 0), tier)
+            await self._bulk_update_tiers({user_id: target_tier})
 
         expiry_text = (
             expires_at.strftime("%Y-%m-%d %H:%M:%S UTC")
             if expires_at
             else "never (manual revoke required)"
         )
-        await ctx.send(
+        message = (
             f"Manual Patreon tier grant saved for `{user_id}`: tier {tier}, expires {expiry_text}."
         )
+        if not has_profile:
+            message += " No profile row exists, so DB tier was not updated."
+
+        if self._is_minimally_configured():
+            result = await self.run_sync(manual=True)
+            message += f" Sync status: {self._format_sync_result(result)}"
+        else:
+            message += " Auto-sync is not configured; run patreonsetup/forcesync to apply roles."
+
+        await ctx.send(message)
 
     @commands.command()
     @is_gm()
