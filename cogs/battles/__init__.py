@@ -2905,7 +2905,46 @@ class Battles(commands.Cog):
         except Exception as e:
             await ctx.send(f"An error occurred while accessing the database: {e}")
 
-    async def handle_victory(self, ctx, level, name_value, dialoguetoggle, minion1_name=None, minion2_name=None, emotes=None, player_balance=0, victory_description=None):
+    def _get_other_god_message(self, victory_data, player_god=None):
+        """Pick a god message, preferring one that is not the player's god."""
+        god_messages = victory_data.get("god_messages")
+        if not isinstance(god_messages, dict) or not god_messages:
+            return None
+
+        normalized_player_god = (
+            player_god.strip().lower()
+            if isinstance(player_god, str) and player_god.strip()
+            else None
+        )
+
+        filtered_messages = [
+            msg
+            for god_name, msg in god_messages.items()
+            if isinstance(msg, str)
+            and msg.strip()
+            and (normalized_player_god is None or god_name.lower() != normalized_player_god)
+        ]
+
+        if not filtered_messages:
+            filtered_messages = [
+                msg for msg in god_messages.values() if isinstance(msg, str) and msg.strip()
+            ]
+
+        return random.choice(filtered_messages) if filtered_messages else None
+
+    async def handle_victory(
+        self,
+        ctx,
+        level,
+        name_value,
+        dialoguetoggle,
+        minion1_name=None,
+        minion2_name=None,
+        emotes=None,
+        player_balance=0,
+        victory_description=None,
+        player_god=None,
+    ):
         """Handle victory rewards for battle tower."""
         if victory_description:
             await ctx.send(victory_description)
@@ -2936,6 +2975,11 @@ class Battles(commands.Cog):
             description = description.replace("{minion1_name}", minion1_name)
         if minion2_name:
             description = description.replace("{minion2_name}", minion2_name)
+        if "{OTHER_GOD_MESSAGE}" in description:
+            other_god_message = self._get_other_god_message(victory_data, player_god)
+            if not other_god_message:
+                other_god_message = "A divine warning echoes in your mind, then vanishes."
+            description = description.replace("{OTHER_GOD_MESSAGE}", other_god_message)
         
         # Create and send the victory embed
         victory_embed = discord.Embed(
@@ -3554,7 +3598,8 @@ class Battles(commands.Cog):
                         minion1_name=minion1_name,
                         minion2_name=minion2_name,
                         emotes=emotes,
-                        player_balance=player_balance
+                        player_balance=player_balance,
+                        player_god=god_value,
                     )
                 else:
                     await ctx.send(f"**{ctx.author.mention}**, you have been defeated. Better luck next time!")
