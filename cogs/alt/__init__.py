@@ -103,6 +103,20 @@ class Alt(commands.Cog):
             return None
         return self.bot.get_guild(support_server_id)
 
+    async def _is_gm_user(self, user_id: int) -> bool:
+        config_gms = set(getattr(self.bot.config.game, "game_masters", []) or [])
+        if user_id in config_gms:
+            return True
+        try:
+            async with self.bot.pool.acquire() as conn:
+                result = await conn.fetchrow(
+                    "SELECT 1 FROM game_masters WHERE user_id = $1",
+                    user_id,
+                )
+            return result is not None
+        except Exception:
+            return False
+
     async def assign_alt_role(self, member: discord.Member) -> None:
         if member is None:
             return
@@ -202,10 +216,17 @@ class Alt(commands.Cog):
             )
 
         member = ctx.guild.get_member(int(alt_id))
+        command_author = member
         if not member:
-            return await ctx.send(
-                _("Your linked alt must be in this server to run commands.")
-            )
+            if not await self._is_gm_user(ctx.author.id):
+                return await ctx.send(
+                    _("Your linked alt must be in this server to run commands.")
+                )
+            command_author = await self.bot.get_user_global(int(alt_id))
+            if not command_author:
+                return await ctx.send(
+                    _("I couldn't fetch your linked alt account. Check the link and try again.")
+                )
 
         command_lower = command.strip().lower()
         if command_lower.startswith("alt"):
@@ -213,7 +234,7 @@ class Alt(commands.Cog):
 
         fake_msg = copy.copy(ctx.message)
         fake_msg._update(dict(channel=ctx.channel, content=ctx.clean_prefix + command))
-        fake_msg.author = member
+        fake_msg.author = command_author
 
         new_ctx = await ctx.bot.get_context(fake_msg, cls=commands.Context)
         new_ctx.alt_invoker_id = ctx.author.id
