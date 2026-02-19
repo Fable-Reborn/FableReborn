@@ -3309,6 +3309,13 @@ class Battles(commands.Cog):
                     )
                     await ctx.send(embed=ending_embed)
 
+        # Door 4 bonus: if the run had all 3 keys, finale rewards are always doubled.
+        door4_double_rewards = (
+            selected_door_key == "door_4_freedom"
+            and bool(unlock_state.get("full_key_unlock"))
+        )
+        reward_multiplier = 2 if door4_double_rewards else 1
+
         # Check prestige level
         async with self.bot.pool.acquire() as connection:
             prestige_level = await connection.fetchval(
@@ -3336,21 +3343,25 @@ class Battles(commands.Cog):
             selected_crate = random.choices(crate_options, weights)[0]
             async with self.bot.pool.acquire() as connection:
                 await connection.execute(
-                    f'UPDATE profile SET crates_{selected_crate} = crates_{selected_crate} + 1 WHERE "user" = $1',
+                    f'UPDATE profile SET crates_{selected_crate} = crates_{selected_crate} + $1 WHERE "user" = $2',
+                    reward_multiplier,
                     ctx.author.id,
                 )
             reward_message = (
-                f"You have received 1 {emotes[selected_crate]} crate for completing the battletower "
+                f"You have received {reward_multiplier} {emotes[selected_crate]} crate"
+                f"{'' if reward_multiplier == 1 else 's'} for completing the battletower "
                 f"on prestige level: {prestige_level}. Congratulations!"
             )
         else:
             async with self.bot.pool.acquire() as connection:
                 await connection.execute(
-                    'UPDATE profile SET crates_divine = crates_divine + 1 WHERE "user" = $1',
+                    'UPDATE profile SET crates_divine = crates_divine + $1 WHERE "user" = $2',
+                    reward_multiplier,
                     ctx.author.id,
                 )
             reward_message = (
-                "You have received 1 <:f_divine:1169412814612471869> crate "
+                f"You have received {reward_multiplier} <:f_divine:1169412814612471869> crate"
+                f"{'' if reward_multiplier == 1 else 's'} "
                 "for completing the battletower, congratulations."
             )
 
@@ -3382,6 +3393,8 @@ class Battles(commands.Cog):
             )
 
         await ctx.send(f'This is the end for you... {ctx.author.mention}.. or is it..?')
+        if door4_double_rewards:
+            await ctx.send("🔓 The hidden fourth door recognizes your 3 keys. Finale rewards are **doubled**.")
         await ctx.send(reward_message)
 
         if not hidden_door_ready:
