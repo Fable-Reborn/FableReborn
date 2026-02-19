@@ -501,9 +501,10 @@ class Classes(commands.Cog):
                     # How much we've actually stolen so far
                     stolen_so_far = 0
                     order_modifications = []
+                    wallet_refunded_from_orders = 0
                     
                     # Start by taking from wallet
-                    wallet_stolen = min(steal_amount, usr["money"])
+                    wallet_stolen = min(steal_amount, int(usr["money"]))
                     stolen_so_far += wallet_stolen
                     
                     # Take from wallet first
@@ -533,7 +534,7 @@ class Classes(commands.Cog):
                                 FROM weapon_buy_orders 
                                 WHERE user_id = $1 AND active = TRUE
                                   AND quantity > quantity_filled
-                                ORDER BY created_at DESC;
+                                ORDER BY price ASC, created_at DESC;
                                 """,
                                 usr["user"]
                             )
@@ -550,7 +551,7 @@ class Classes(commands.Cog):
                                 FROM crate_buy_orders 
                                 WHERE user_id = $1 AND active = TRUE
                                   AND quantity > quantity_filled
-                                ORDER BY created_at DESC;
+                                ORDER BY price_each ASC, created_at DESC;
                                 """,
                                 usr["user"]
                             )
@@ -566,22 +567,23 @@ class Classes(commands.Cog):
                             if remaining_to_steal <= 0:
                                 break
                                 
+                            unit_price = int(order['price'])
                             unfilled_quantity = order['quantity'] - order['quantity_filled']
-                            order_value = unfilled_quantity * order['price']
+                            order_value = unfilled_quantity * unit_price
                             
                             if order_value <= 0:
                                 continue
                                 
-                            # How much to take from this order
-                            take_from_order = min(order_value, remaining_to_steal)
-                            
-                            # Calculate how many items to reduce
-                            items_to_reduce = int(take_from_order / order['price'])
-                            if items_to_reduce < 1:
-                                items_to_reduce = 1  # Take at least one
-                                
-                            # Calculate actual amount taken
-                            actual_taken = items_to_reduce * Decimal(str(order['price']))
+                            # Reduce by as many units as needed; if one unit exceeds remaining,
+                            # still take one and refund surplus back to victim wallet.
+                            units_for_remaining = remaining_to_steal // unit_price
+                            items_to_reduce = min(
+                                unfilled_quantity,
+                                max(1, int(units_for_remaining))
+                            )
+                            released_amount = items_to_reduce * unit_price
+                            thief_take = min(released_amount, remaining_to_steal)
+                            refund_amount = released_amount - thief_take
                             
                             # Update order
                             new_quantity = order['quantity'] - items_to_reduce
@@ -594,30 +596,32 @@ class Classes(commands.Cog):
                                 weapon_updates.append((new_quantity, order['id']))
                                 order_modifications.append(f"Reduced weapon order for {order['weapon_type']}")
                             
-                            stolen_so_far += actual_taken
-                            remaining_to_steal -= actual_taken
+                            stolen_so_far += thief_take
+                            remaining_to_steal -= thief_take
+                            wallet_refunded_from_orders += refund_amount
                         
                         # Process crate orders if still need more
                         for order in crate_orders:
                             if remaining_to_steal <= 0:
                                 break
                                 
+                            unit_price = int(order['price_each'])
                             unfilled_quantity = order['quantity'] - order['quantity_filled']
-                            order_value = unfilled_quantity * order['price_each']
+                            order_value = unfilled_quantity * unit_price
                             
                             if order_value <= 0:
                                 continue
                                 
-                            # How much to take from this order
-                            take_from_order = min(order_value, remaining_to_steal)
-                            
-                            # Calculate how many items to reduce
-                            items_to_reduce = int(take_from_order / order['price_each'])
-                            if items_to_reduce < 1:
-                                items_to_reduce = 1  # Take at least one
-                                
-                            # Calculate actual amount taken
-                            actual_taken = items_to_reduce * Decimal(str(order['price_each']))
+                            # Reduce by as many units as needed; if one unit exceeds remaining,
+                            # still take one and refund surplus back to victim wallet.
+                            units_for_remaining = remaining_to_steal // unit_price
+                            items_to_reduce = min(
+                                unfilled_quantity,
+                                max(1, int(units_for_remaining))
+                            )
+                            released_amount = items_to_reduce * unit_price
+                            thief_take = min(released_amount, remaining_to_steal)
+                            refund_amount = released_amount - thief_take
                             
                             # Update order
                             new_quantity = order['quantity'] - items_to_reduce
@@ -630,8 +634,9 @@ class Classes(commands.Cog):
                                 crate_updates.append((new_quantity, order['id']))
                                 order_modifications.append(f"Reduced crate order for {order['crate_type']} crates")
                             
-                            stolen_so_far += actual_taken
-                            remaining_to_steal -= actual_taken
+                            stolen_so_far += thief_take
+                            remaining_to_steal -= thief_take
+                            wallet_refunded_from_orders += refund_amount
                         
                         # Execute updates in batches
                         if weapon_cancels:
@@ -657,6 +662,13 @@ class Classes(commands.Cog):
                                 'UPDATE crate_buy_orders SET quantity = $1 WHERE id = $2;',
                                 crate_updates
                             )
+
+                        if wallet_refunded_from_orders > 0:
+                            await conn.execute(
+                                'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                                wallet_refunded_from_orders,
+                                usr["user"],
+                            )
                     
                     # Give stolen money to thief
                     await conn.execute(
@@ -671,6 +683,10 @@ class Classes(commands.Cog):
                         "Total Money": total_money,
                         "From Wallet": wallet_stolen
                     }
+                    if stolen_so_far > wallet_stolen:
+                        log_data["From Buy Orders"] = stolen_so_far - wallet_stolen
+                    if wallet_refunded_from_orders > 0:
+                        log_data["Refunded To Victim Wallet"] = wallet_refunded_from_orders
                     
                     # Add order modifications to log if any
                     if order_modifications:
