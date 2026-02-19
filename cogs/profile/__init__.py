@@ -63,6 +63,13 @@ class ArmoryPaginatorView(discord.ui.View):
         self.embeds = embeds
         self.current_page = 0
 
+    def _is_allowed_user(self, user_id: int) -> bool:
+        allowed_user_ids = {int(self.ctx.author.id)}
+        alt_invoker_id = getattr(self.ctx, "alt_invoker_id", None)
+        if alt_invoker_id is not None:
+            allowed_user_ids.add(int(alt_invoker_id))
+        return int(user_id) in allowed_user_ids
+
     async def start(self):
         """Send the initial embed and attach this view to it."""
         await self.ctx.send(embed=self.embeds[self.current_page], view=self)
@@ -70,7 +77,7 @@ class ArmoryPaginatorView(discord.ui.View):
     @discord.ui.button(label="First", style=discord.ButtonStyle.blurple)
     async def go_first(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Jump to the first page."""
-        if interaction.user.id != self.ctx.author.id:
+        if not self._is_allowed_user(interaction.user.id):
             await interaction.response.send_message("Only the command author can use this button.", ephemeral=True)
             return
         self.current_page = 0
@@ -81,7 +88,7 @@ class ArmoryPaginatorView(discord.ui.View):
     @discord.ui.button(label="Previous", style=discord.ButtonStyle.blurple)
     async def go_previous(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Go back one page."""
-        if interaction.user.id != self.ctx.author.id:
+        if not self._is_allowed_user(interaction.user.id):
             await interaction.response.send_message("Only the command author can use this button.", ephemeral=True)
             return
         if self.current_page > 0:
@@ -98,7 +105,7 @@ class ArmoryPaginatorView(discord.ui.View):
     @discord.ui.button(label="Stop", style=discord.ButtonStyle.danger)
     async def stop_pages(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Stop the paginator (removes all buttons)."""
-        if interaction.user.id != self.ctx.author.id:
+        if not self._is_allowed_user(interaction.user.id):
             await interaction.response.send_message("Only the command author can use this button.", ephemeral=True)
             return
         await interaction.response.defer()  # Acknowledge the button press
@@ -108,7 +115,7 @@ class ArmoryPaginatorView(discord.ui.View):
     @discord.ui.button(label="Next", style=discord.ButtonStyle.blurple)
     async def go_next(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Advance forward one page."""
-        if interaction.user.id != self.ctx.author.id:
+        if not self._is_allowed_user(interaction.user.id):
             await interaction.response.send_message("Only the command author can use this button.", ephemeral=True)
             return
         if self.current_page < len(self.embeds) - 1:
@@ -124,7 +131,7 @@ class ArmoryPaginatorView(discord.ui.View):
     @discord.ui.button(label="Last", style=discord.ButtonStyle.blurple)
     async def go_last(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Jump to the last page."""
-        if interaction.user.id != self.ctx.author.id:
+        if not self._is_allowed_user(interaction.user.id):
             await interaction.response.send_message("Only the command author can use this button.", ephemeral=True)
             return
         self.current_page = len(self.embeds) - 1
@@ -137,7 +144,7 @@ class ArmoryPaginatorView(discord.ui.View):
         """
         Collect the item IDs from the current page and send them to the channel.
         """
-        if interaction.user.id != self.ctx.author.id:
+        if not self._is_allowed_user(interaction.user.id):
             await interaction.response.send_message("Only the command author can use this button.", ephemeral=True)
             return
         current_items = self.pages[self.current_page]  # raw DB rows for this page

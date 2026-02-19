@@ -449,11 +449,18 @@ class ConfirmView(View):
         return True
 
 class DialogueView(discord.ui.View):
-    def __init__(self, pages: list[discord.Embed], author: discord.User):
+    def __init__(
+        self,
+        pages: list[discord.Embed],
+        author: discord.User,
+        allowed_user_ids: set[int] | None = None,
+    ):
         super().__init__(timeout=60)
         self.pages = pages
         self.current_page = 0
         self.author = author
+        self.allowed_user_ids = set(allowed_user_ids or {author.id})
+        self.allowed_user_ids.add(int(author.id))
 
     async def update_message(self, interaction: discord.Interaction):
         # If the response hasn't been sent yet, use response.edit_message.
@@ -469,8 +476,14 @@ class DialogueView(discord.ui.View):
             )
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        # Only allow the view author to interact with these buttons.
-        return interaction.user.id == self.author.id
+        # Only allow permitted users (author or alt invoker when applicable).
+        if interaction.user.id in self.allowed_user_ids:
+            return True
+        await interaction.response.send_message(
+            _("This command was not initiated by you."),
+            ephemeral=True,
+        )
+        return False
 
     @discord.ui.button(label="Previous", style=discord.ButtonStyle.primary)
     async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2600,7 +2613,16 @@ class Battles(commands.Cog):
         pages = [create_dialogue_page(i) for i in range(len(processed_lines))]
         
         # Show dialogue
-        view = DialogueView(pages, ctx.author)
+        allowed_dialogue_users = {int(ctx.author.id)}
+        alt_invoker_id = getattr(ctx, "alt_invoker_id", None)
+        if alt_invoker_id is not None:
+            allowed_dialogue_users.add(int(alt_invoker_id))
+
+        view = DialogueView(
+            pages,
+            ctx.author,
+            allowed_user_ids=allowed_dialogue_users,
+        )
         await ctx.send(embed=pages[0], view=view)
         await view.wait()
         

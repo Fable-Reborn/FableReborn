@@ -75,6 +75,30 @@ def pager(
         yield entries[x : x + chunk]
 
 
+def _ctx_allowed_user_ids(ctx: commands.Context) -> set[int]:
+    allowed_user_ids = {int(ctx.author.id)}
+    alt_invoker_id = getattr(ctx, "alt_invoker_id", None)
+    if alt_invoker_id is not None:
+        allowed_user_ids.add(int(alt_invoker_id))
+    return allowed_user_ids
+
+
+def _interaction_allowed_for_view(
+    ctx: commands.Context, allowed_user_id: int, interaction_user_id: int
+) -> bool:
+    if interaction_user_id == int(allowed_user_id):
+        return True
+
+    alt_invoker_id = getattr(ctx, "alt_invoker_id", None)
+    if (
+        alt_invoker_id is not None
+        and int(allowed_user_id) == int(ctx.author.id)
+        and interaction_user_id == int(alt_invoker_id)
+    ):
+        return True
+    return False
+
+
 class TextPaginator:
     __slots__ = ("ctx", "reactions", "_paginator", "current", "message", "update_lock")
 
@@ -146,9 +170,11 @@ class TextPaginator:
                 )
 
     async def listener(self) -> None:
+        allowed_user_ids = _ctx_allowed_user_ids(self.ctx)
+
         def check(reaction: discord.Reaction, user: discord.User) -> bool:
             return (
-                user == self.ctx.author
+                user.id in allowed_user_ids
                 and self.message is not None
                 and reaction.message.id == self.message.id
                 and reaction.emoji in self.reactions
@@ -185,7 +211,7 @@ class TextPaginator:
 
                 def new_check(msg):
                     return (
-                        msg.author.id == self.ctx.author.id
+                        msg.author.id in allowed_user_ids
                         and msg.content.isdigit()
                         and 0 < int(msg.content) <= self.page_count
                     )
@@ -306,7 +332,11 @@ class ChooseLong(discord.ui.View):
         await self.message.edit(embed=self.pages[self.current])
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if self.allowed_user.id == interaction.user.id:
+        if _interaction_allowed_for_view(
+            self.ctx,
+            self.allowed_user.id,
+            interaction.user.id,
+        ):
             return True
         else:
             asyncio.create_task(
@@ -590,7 +620,11 @@ class ChooseView(discord.ui.View):
         self.message = await messagable.send(embed=embed, view=self)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if self.allowed_user.id == interaction.user.id:
+        if _interaction_allowed_for_view(
+            self.ctx,
+            self.allowed_user.id,
+            interaction.user.id,
+        ):
             return True
         else:
             asyncio.create_task(

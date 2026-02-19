@@ -58,6 +58,38 @@ class Transaction(commands.Cog):
             return key
         return self.transactions[key]["content"][user]
 
+    async def _get_linked_trade_actor_ids(
+        self, participant_ids: list[int]
+    ) -> dict[int, set[int]]:
+        actor_ids_by_participant = {
+            int(participant_id): {int(participant_id)}
+            for participant_id in participant_ids
+        }
+        if not participant_ids:
+            return actor_ids_by_participant
+
+        try:
+            rows = await self.bot.pool.fetch(
+                """
+                SELECT main, alt
+                FROM alt_links
+                WHERE main = ANY($1::bigint[]) OR alt = ANY($1::bigint[])
+                """,
+                participant_ids,
+            )
+        except Exception:
+            return actor_ids_by_participant
+
+        for row in rows:
+            main_id = int(row["main"])
+            alt_id = int(row["alt"])
+            if main_id in actor_ids_by_participant:
+                actor_ids_by_participant[main_id].add(alt_id)
+            if alt_id in actor_ids_by_participant:
+                actor_ids_by_participant[alt_id].add(main_id)
+
+        return actor_ids_by_participant
+
     async def update(self, ctx):
         id_ = self.get_transaction(ctx.author, return_id=True)
         content = "\n\n".join(
@@ -118,17 +150,42 @@ class Transaction(commands.Cog):
         msg = trans["base"]
         users = list(trans["content"].keys())
         key = "-".join([str(u.id) for u in users])
-        acc = []
+        participant_ids = [int(user.id) for user in users]
+        participant_actor_ids = await self._get_linked_trade_actor_ids(
+            participant_ids
+        )
+
+        for participant_id, extra_actor_ids in (
+            trans.get("participant_actor_ids", {}) or {}
+        ).items():
+            normalized_participant_id = int(participant_id)
+            if normalized_participant_id not in participant_actor_ids:
+                participant_actor_ids[normalized_participant_id] = {
+                    normalized_participant_id
+                }
+            participant_actor_ids[normalized_participant_id].update(
+                int(actor_id) for actor_id in extra_actor_ids
+            )
+
+        def resolve_participant_id(user_id: int) -> int | None:
+            normalized_user_id = int(user_id)
+            for participant_id, actor_ids in participant_actor_ids.items():
+                if normalized_user_id in actor_ids:
+                    return participant_id
+            return None
+
+        acc = set()
         reacts = ["\U0000274e", "\U00002705"]
         for r in reacts:
             await msg.add_reaction(r)
 
         def check(r, u):
+            participant_id = resolve_participant_id(u.id)
             return (
-                u in users
+                participant_id is not None
                 and r.emoji in reacts
                 and r.message.id == msg.id
-                and u not in acc
+                and participant_id not in acc
             )
 
         while len(acc) < 2:
@@ -138,8 +195,11 @@ class Transaction(commands.Cog):
                 await msg.delete()
                 del self.transactions[key]
                 return await msg.channel.send(_("Trade timed out."))
+            participant_id = resolve_participant_id(u.id)
+            if participant_id is None:
+                continue
             if reacts.index(r.emoji):
-                acc.append(u)
+                acc.add(participant_id)
             else:
                 await msg.delete()
                 del self.transactions[key]
@@ -459,6 +519,13 @@ class Transaction(commands.Cog):
         ):
             return await ctx.send(_("Someone is already in a trade."))
         identifier = f"{ctx.author.id}-{user.id}"
+        participant_actor_ids: dict[int, set[int]] = {
+            int(ctx.author.id): {int(ctx.author.id)}
+        }
+        alt_invoker_id = getattr(ctx, "alt_invoker_id", None)
+        if alt_invoker_id is not None:
+            participant_actor_ids[int(ctx.author.id)].add(int(alt_invoker_id))
+
         self.transactions[identifier] = {
             "content": {
                 ctx.author: {"crates": defaultdict(lambda: 0), "money": 0, "items": [], "resources": defaultdict(lambda: 0), "consumables": defaultdict(lambda: 0)},
@@ -466,6 +533,7 @@ class Transaction(commands.Cog):
             },
             "base": None,
             "task": None,
+            "participant_actor_ids": participant_actor_ids,
         }
         await self.update(ctx)
 
