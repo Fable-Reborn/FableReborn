@@ -311,6 +311,52 @@ class Profile(commands.Cog):
                 return candidate
         return None
 
+    def _find_element_icon(self, element_name: str) -> Optional[Path]:
+        base = Path("assets") / "elements"
+        if not element_name:
+            return None
+
+        raw = str(element_name).strip()
+        if not raw:
+            return None
+
+        normalized = raw.lower()
+        aliases = {
+            "lightning": "electric",
+            "electricity": "electric",
+        }
+        normalized = aliases.get(normalized, normalized)
+
+        preferred_stem = {
+            "wind": "Wind",
+            "electric": "Electric",
+            "light": "Light",
+            "dark": "Dark",
+            "corrupted": "Corrupted",
+            "earth": "Earth",
+            "water": "Water",
+            "fire": "Fire",
+        }.get(normalized, raw.capitalize())
+
+        direct_candidate = base / f"{preferred_stem}.png"
+        if direct_candidate.exists():
+            return direct_candidate
+
+        if not base.exists():
+            return None
+
+        # Fallback to case-insensitive stem matching.
+        for candidate in base.iterdir():
+            if candidate.is_file() and candidate.suffix.lower() in {
+                ".png",
+                ".webp",
+                ".jpg",
+                ".jpeg",
+            }:
+                if candidate.stem.lower() == normalized:
+                    return candidate
+        return None
+
     async def _resolve_profile_target_user(self, ctx: Context, raw_target: Optional[str]):
         target = str(ctx.author.id) if not raw_target else raw_target.split()[0]
         id_pattern = re.compile(r"^\d{17,19}$")
@@ -533,8 +579,28 @@ class Profile(commands.Cog):
         )
         draw.text((80, 852), f"ID {user.id}", font=tiny_font, fill=colors["muted"])
 
+        right_hand, left_hand = None, None
+        any_count = sum(1 for i in items if i.get("hand") == "any")
+        if len(items) == 2 and any_count == 1 and items[0].get("hand") == "any":
+            items = [items[1], items[0]]
+        for i in items:
+            h = i.get("hand")
+            if h == "both":
+                right_hand = left_hand = i
+            elif h == "left":
+                left_hand = i
+            elif h == "right":
+                right_hand = i
+            elif h == "any":
+                if not right_hand:
+                    right_hand = i
+                else:
+                    left_hand = i
+
         icon_size, icon_gap = 74, 10
-        icon_start = header_rect[2] - 22 - (icon_size * 3 + icon_gap * 2)
+        element_slots = [right_hand, left_hand]
+        icon_count = len(element_slots)
+        icon_start = header_rect[2] - 22 - (icon_size * icon_count + icon_gap * (icon_count - 1))
         name_x = header_rect[0] + 22
         name_max = max(80, icon_start - name_x - 20)
         draw.text((name_x, 150), clip(card_name, title_font, name_max), font=title_font, fill=colors["text"])
@@ -547,25 +613,22 @@ class Profile(commands.Cog):
         draw.text((name_x, 310), clip(f"Power {power:,}", value_font, 390), font=value_font, fill=colors["border"])
         draw.text((844, 310), clip(f"Luck Blessing {luck_percent:.2f}%", value_font, 390), font=value_font, fill=colors["muted"])
 
-        for idx, cname in enumerate(class_list[:3]):
-            try:
-                cobj = class_from_string(cname) if cname else None
-            except Exception:
-                cobj = None
-            key = cobj.get_class_line_name().lower().replace(" ", "_") if cobj else ""
+        for idx, weapon_item in enumerate(element_slots):
+            raw_element = str(weapon_item.get("element") if weapon_item else "").strip()
+            element_name = raw_element.capitalize() if raw_element else "Unknown"
             x = icon_start + idx * (icon_size + icon_gap)
             slot = (x, 146, x + icon_size, 146 + icon_size)
             draw.rounded_rectangle(slot, radius=14, fill=(70, 48, 28, 220), outline=colors["border_dim"], width=2)
-            icon_path = self._find_class_icon(key)
+            icon_path = self._find_element_icon(element_name)
             if icon_path:
                 try:
                     icon = Image.open(icon_path).convert("RGBA")
                     icon = ImageOps.fit(icon, (icon_size - 12, icon_size - 12), method=resample)
                     canvas.paste(icon, (x + 6, 152), icon)
                 except Exception:
-                    draw.text((x + 25, 170), (key[:1] or "?").upper(), font=heading_font, fill=colors["text"])
+                    draw.text((x + 25, 170), (element_name[:1] or "?").upper(), font=heading_font, fill=colors["text"])
             else:
-                draw.text((x + 25, 170), (key[:1] or "?").upper(), font=heading_font, fill=colors["text"])
+                draw.text((x + 25, 170), (element_name[:1] or "?").upper(), font=heading_font, fill=colors["text"])
 
         def stat_bar(x, y, w, label, value, ratio, color):
             v = clip(value, tiny_font, 120)
@@ -613,24 +676,6 @@ class Profile(commands.Cog):
             draw.text((ledger_rect[0] + 18, y), f"{k}:", font=label_font, fill=colors["muted"])
             draw.text((ledger_rect[0] + 210, y), clip(v, value_font, max_value), font=value_font, fill=colors["text"])
             y += 33
-
-        right_hand, left_hand = None, None
-        any_count = sum(1 for i in items if i.get("hand") == "any")
-        if len(items) == 2 and any_count == 1 and items[0].get("hand") == "any":
-            items = [items[1], items[0]]
-        for i in items:
-            h = i.get("hand")
-            if h == "both":
-                right_hand = left_hand = i
-            elif h == "left":
-                left_hand = i
-            elif h == "right":
-                right_hand = i
-            elif h == "any":
-                if not right_hand:
-                    right_hand = i
-                else:
-                    left_hand = i
 
         px1, py1, px2, py2 = pet_rect
         pet_w = px2 - px1 - 28
