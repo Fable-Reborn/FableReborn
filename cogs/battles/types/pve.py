@@ -82,6 +82,7 @@ class PvEBattle(Battle):
                 self.turn_order.append(combatant)
         
         random.shuffle(self.turn_order)
+        self.turn_order = self.prioritize_turn_order(self.turn_order)
         
         # Create and send initial battle embed
         embed = await self.create_battle_embed()
@@ -263,122 +264,58 @@ class PvEBattle(Battle):
                 
                 # Start with base damage
                 raw_damage = self.attacker.damage
+                outcome = self.resolve_pet_attack_outcome(
+                    self.attacker,
+                    self.defender,
+                    raw_damage,
+                    apply_element_mod=self.config["element_effects"],
+                    damage_variance=damage_variance,
+                    minimum_damage=Decimal("10"),
+                )
+                damage = outcome.final_damage
+                blocked_damage = outcome.blocked_damage
+                skill_messages = outcome.skill_messages
+                defender_messages = outcome.defender_messages
                 
-                # PROCESS PET SKILL EFFECTS ON ATTACK
-                skill_messages = []
-                if (self.attacker.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                    raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(self.attacker, self.defender, raw_damage)
-                    # Set flag for turn processing (damage will be set after final calculation)
-                    setattr(self.attacker, 'attacked_this_turn', True)
+                self.defender.take_damage(damage)
+                
+                message = f"{self.attacker.name} attacks! {self.defender.name} takes **{self.format_number(damage)} HP** damage."
+                
+                # Add skill effect messages
+                if skill_messages:
+                    message += "\n" + "\n".join(skill_messages)
+                if defender_messages:
+                    message += "\n" + "\n".join(defender_messages)
                     
-                    # Apply element effects to base damage if enabled
-                    if self.config["element_effects"] and hasattr(self.ctx.bot.cogs["Battles"], "element_ext"):
-                        element_mod = self.ctx.bot.cogs["Battles"].element_ext.calculate_damage_modifier(
-                            self.ctx,
-                            self.resolve_attack_element(self.attacker),
-                            self.resolve_defense_element(self.defender),
-                        )
-                        
-                        # Apply void affinity protection to defender
-                        if hasattr(self.ctx.bot.cogs["Battles"], "battle_factory"):
-                            pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                            element_mod = pet_ext.apply_void_affinity_protection(self.defender, element_mod)
-                        
-                        if element_mod != 0:
-                            raw_damage = raw_damage * (1 + Decimal(str(element_mod)))
+                # Check for skeleton summoning after skill processing
+                if hasattr(self.attacker, 'summon_skeleton'):
+                    skeleton_data = self.attacker.summon_skeleton
                     
-                    # Add variance
-                    raw_damage += Decimal(damage_variance)
+                    # Create skeleton combatant
+                    from cogs.battles.core.combatant import Combatant
+                    skeleton = Combatant(
+                        user=f"Skeleton Warrior #{self.attacker.skeleton_count}",  # User/name
+                        hp=skeleton_data['hp'],
+                        max_hp=skeleton_data['hp'],  # Same as current HP
+                        damage=skeleton_data['damage'],
+                        armor=skeleton_data['armor'],
+                        element=skeleton_data['element'],
+                        luck=50,  # Base luck
+                        is_pet=True,
+                        name=f"Skeleton Warrior #{self.attacker.skeleton_count}"
+                    )
+                    skeleton.is_summoned = True
+                    skeleton.summoner = self.attacker
                     
-                    # Check for special damage types
-                    ignore_armor = getattr(self.defender, 'ignore_armor_this_hit', False)
-                    true_damage = getattr(self.defender, 'true_damage', False)
-                    bypass_defenses = getattr(self.defender, 'bypass_defenses', False)
-                    ignore_all = getattr(self.defender, 'ignore_all_defenses', False)
+                    # Add skeleton to player team
+                    self.player_team.combatants.append(skeleton)
+                    # Also add to turn order
+                    self.turn_order.append(skeleton)
+                    self.turn_order = self.prioritize_turn_order(self.turn_order)
+                    message += f"\n💀 A skeleton warrior joins your side!"
                     
-                    if ignore_all or true_damage or ignore_armor or bypass_defenses:
-                        damage = raw_damage  # No armor reduction
-                        blocked_damage = Decimal('0')
-                    else:
-                        blocked_damage = min(raw_damage, self.defender.armor)
-                        damage = max(raw_damage - self.defender.armor, Decimal('10'))
-                    
-                    # Clear special damage flags
-                    for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses']:
-                        if hasattr(self.defender, flag):
-                            delattr(self.defender, flag)
-                    
-                    # PROCESS PET SKILL EFFECTS ON DAMAGE TAKEN
-                    defender_messages = []
-                    if (self.defender.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(self.defender, self.attacker, damage)
-                    
-                    # Store the actual final damage dealt (for skills like Soul Drain)
-                    if self.attacker.is_pet:
-                        setattr(self.attacker, 'last_damage_dealt', damage)
-                    
-                    self.defender.take_damage(damage)
-                    
-                    message = f"{self.attacker.name} attacks! {self.defender.name} takes **{self.format_number(damage)} HP** damage."
-                    
-                    # Add skill effect messages
-                    if skill_messages:
-                        message += "\n" + "\n".join(skill_messages)
-                    if defender_messages:
-                        message += "\n" + "\n".join(defender_messages)
-                        
-                    # Check for skeleton summoning after skill processing
-                    if hasattr(self.attacker, 'summon_skeleton'):
-                        skeleton_data = self.attacker.summon_skeleton
-                        
-                        # Create skeleton combatant
-                        from cogs.battles.core.combatant import Combatant
-                        skeleton = Combatant(
-                            user=f"Skeleton Warrior #{self.attacker.skeleton_count}",  # User/name
-                            hp=skeleton_data['hp'],
-                            max_hp=skeleton_data['hp'],  # Same as current HP
-                            damage=skeleton_data['damage'],
-                            armor=skeleton_data['armor'],
-                            element=skeleton_data['element'],
-                            luck=50,  # Base luck
-                            is_pet=True,
-                            name=f"Skeleton Warrior #{self.attacker.skeleton_count}"
-                        )
-                        skeleton.is_summoned = True
-                        skeleton.summoner = self.attacker
-                        
-                        # Add skeleton to player team
-                        self.player_team.combatants.append(skeleton)
-                        # Also add to turn order
-                        self.turn_order.append(skeleton)
-                        message += f"\n💀 A skeleton warrior joins your side!"
-                        
-                        # Clear the summon flag
-                        delattr(self.attacker, 'summon_skeleton')
-                else:
-                    # Non-pet regular attack - apply element effects to base damage if enabled
-                    if self.config["element_effects"] and hasattr(self.ctx.bot.cogs["Battles"], "element_ext"):
-                        element_mod = self.ctx.bot.cogs["Battles"].element_ext.calculate_damage_modifier(
-                            self.ctx,
-                            self.resolve_attack_element(self.attacker),
-                            self.resolve_defense_element(self.defender),
-                        )
-                        
-                        if element_mod != 0:
-                            raw_damage = raw_damage * (1 + Decimal(str(element_mod)))
-                    
-                    # Add variance
-                    raw_damage += Decimal(damage_variance)
-                    
-                    # Calculate damage with armor
-                    blocked_damage = min(raw_damage, self.defender.armor)
-                    damage = max(raw_damage - self.defender.armor, Decimal('10'))
-                    
-                    self.defender.take_damage(damage)
-                    
-                    message = f"{self.attacker.name} attacks! {self.defender.name} takes **{self.format_number(damage)} HP** damage."
+                    # Clear the summon flag
+                    delattr(self.attacker, 'summon_skeleton')
             
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 

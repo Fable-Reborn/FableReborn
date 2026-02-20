@@ -4,6 +4,7 @@ import asyncio
 import datetime
 import uuid
 from collections import deque
+from dataclasses import dataclass, field
 from decimal import Decimal
 import random
 from typing import List, Dict, Optional, Union, Any
@@ -15,6 +16,15 @@ class DecimalEncoder(json.JSONEncoder):
         if isinstance(obj, Decimal):
             return float(obj)
         return super().default(obj)
+
+
+@dataclass
+class PetAttackOutcome:
+    final_damage: Decimal
+    blocked_damage: Decimal
+    skill_messages: List[str] = field(default_factory=list)
+    defender_messages: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 import discord
 from discord.ext import commands
@@ -135,6 +145,142 @@ class Battle(ABC):
         if hasattr(defender, "get_defense_element"):
             return defender.get_defense_element() or "Unknown"
         return getattr(defender, "defense_element", getattr(defender, "element", "Unknown")) or "Unknown"
+
+    def _get_battles_cog(self):
+        if hasattr(self.ctx, "bot") and hasattr(self.ctx.bot, "cogs"):
+            return self.ctx.bot.cogs.get("Battles")
+        return None
+
+    def _get_pet_extension(self):
+        battles_cog = self._get_battles_cog()
+        if not battles_cog:
+            return None
+        battle_factory = getattr(battles_cog, "battle_factory", None)
+        return getattr(battle_factory, "pet_ext", None)
+
+    def _get_element_extension(self):
+        battles_cog = self._get_battles_cog()
+        if not battles_cog:
+            return None
+        return getattr(battles_cog, "element_ext", None)
+
+    def get_turn_priority(self, combatant):
+        """Calculate turn priority score for ordering combatants."""
+        if not combatant:
+            return Decimal("0")
+
+        priority = Decimal("0")
+        if getattr(combatant, "attack_priority", False):
+            priority += Decimal("1000")
+        if getattr(combatant, "quick_charge_active", False):
+            priority += Decimal("800")
+        if getattr(combatant, "air_currents_boost", False):
+            priority += Decimal("300")
+        if getattr(combatant, "freedom_boost", False):
+            priority += Decimal("200")
+        if hasattr(combatant, "zephyr_speed"):
+            priority += Decimal(str(getattr(combatant, "zephyr_speed", 0))) * Decimal("100")
+        if hasattr(combatant, "zephyr_slow"):
+            priority -= Decimal(str(getattr(combatant, "zephyr_slow", 0))) * Decimal("100")
+        return priority
+
+    def prioritize_turn_order(self, combatants):
+        """Return combatants sorted by priority while preserving original order ties."""
+        indexed = list(enumerate(combatants))
+        indexed.sort(key=lambda item: (-self.get_turn_priority(item[1]), item[0]))
+        return [combatant for _, combatant in indexed]
+
+    def resolve_pet_attack_outcome(
+        self,
+        attacker,
+        defender,
+        raw_damage,
+        *,
+        apply_element_mod=True,
+        damage_variance=0,
+        minimum_damage=Decimal("10"),
+    ):
+        """Canonical damage resolution path for all pet-enabled battle modes."""
+        raw_damage = Decimal(str(raw_damage))
+        damage_variance = Decimal(str(damage_variance))
+        minimum_damage = Decimal(str(minimum_damage))
+        blocked_damage = Decimal("0")
+        skill_messages: List[str] = []
+        defender_messages: List[str] = []
+
+        pet_ext = self._get_pet_extension()
+        element_ext = self._get_element_extension()
+
+        # 1) Element modifier on base damage (mode-configurable).
+        if apply_element_mod and self.config.get("element_effects", True) and element_ext:
+            element_mod = element_ext.calculate_damage_modifier(
+                self.ctx,
+                self.resolve_attack_element(attacker),
+                self.resolve_defense_element(defender),
+            )
+            # Void affinity protection is a pet-only defensive mechanic.
+            if pet_ext and getattr(attacker, "is_pet", False):
+                element_mod = pet_ext.apply_void_affinity_protection(defender, element_mod)
+            if element_mod != 0:
+                raw_damage = raw_damage * (Decimal("1") + Decimal(str(element_mod)))
+
+        # 2) Add per-hit variance.
+        raw_damage += damage_variance
+
+        # 3) Pet attack skill effects.
+        if pet_ext and getattr(attacker, "is_pet", False):
+            raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(attacker, defender, raw_damage)
+            setattr(attacker, "attacked_this_turn", True)
+
+        # 4) Apply armor/defense bypass rules.
+        ignore_armor = getattr(defender, "ignore_armor_this_hit", False)
+        true_damage = getattr(defender, "true_damage", False)
+        bypass_defenses = getattr(defender, "bypass_defenses", False)
+        ignore_all = getattr(defender, "ignore_all_defenses", False)
+        partial_true_damage = Decimal(str(getattr(defender, "partial_true_damage", 0)))
+
+        if ignore_all or true_damage or ignore_armor or bypass_defenses:
+            final_damage = raw_damage
+            blocked_damage = Decimal("0")
+        elif partial_true_damage > 0:
+            normal_after_armor = max(raw_damage - defender.armor, minimum_damage)
+            final_damage = normal_after_armor + partial_true_damage
+            blocked_damage = min(raw_damage, defender.armor)
+        else:
+            blocked_damage = min(raw_damage, defender.armor)
+            final_damage = max(raw_damage - defender.armor, minimum_damage)
+
+        # 5) Clear one-hit flags in one place.
+        for flag in [
+            "ignore_armor_this_hit",
+            "true_damage",
+            "bypass_defenses",
+            "ignore_all_defenses",
+            "partial_true_damage",
+        ]:
+            if hasattr(defender, flag):
+                delattr(defender, flag)
+
+        # 6) Defender pet mitigation effects.
+        if pet_ext and getattr(defender, "is_pet", False):
+            final_damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(
+                defender, attacker, final_damage
+            )
+
+        # 7) Track damage dealt for pet lifesteal and per-turn effects.
+        if getattr(attacker, "is_pet", False):
+            setattr(attacker, "last_damage_dealt", final_damage)
+
+        return PetAttackOutcome(
+            final_damage=Decimal(str(final_damage)),
+            blocked_damage=Decimal(str(blocked_damage)),
+            skill_messages=skill_messages,
+            defender_messages=defender_messages,
+            metadata={
+                "raw_damage_after_mods": Decimal(str(raw_damage)),
+                "partial_true_damage": partial_true_damage,
+            },
+        )
         
     # ----- Status Effect System Methods -----
     

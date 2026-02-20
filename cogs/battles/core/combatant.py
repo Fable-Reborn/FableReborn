@@ -74,8 +74,24 @@ class Combatant:
     def take_damage(self, amount):
         """Apply damage to the combatant, accounting for shields and immortality"""
         damage = Decimal(str(amount))
-        
-        # Check if combatant has shield attribute
+
+        # Consume pending true damage (from effects like Shadow Strike) first.
+        pending_true_damage = Decimal('0')
+        if hasattr(self, 'pending_true_damage_bypass_shield'):
+            try:
+                pending_true_damage = Decimal(str(self.pending_true_damage_bypass_shield))
+            except Exception:
+                pending_true_damage = Decimal('0')
+            delattr(self, 'pending_true_damage_bypass_shield')
+
+        if pending_true_damage > 0 and damage > 0:
+            true_damage = min(damage, pending_true_damage)
+            self._apply_hp_damage(true_damage)
+            damage -= true_damage
+            if not self.is_alive():
+                return self.hp
+
+        # Check if combatant has shield attribute.
         if hasattr(self, 'shield') and self.shield > 0:
             # Shield absorbs damage first
             absorbed = min(self.shield, damage)
@@ -86,17 +102,19 @@ class Combatant:
             if self.shield < 0:
                 self.shield = Decimal('0')
         
-        # Apply remaining damage to HP
+        # Apply remaining damage to HP.
         if damage > 0:
-            self.hp -= damage
-            
-            # Check for water immortality before setting HP to 0
-            if self.hp <= 0 and getattr(self, 'water_immortality', False):
-                self.hp = Decimal('1')  # Stay at 1 HP when immortal
-            elif self.hp < 0:
-                self.hp = Decimal('0')
-                
+            self._apply_hp_damage(damage)
+
         return self.hp
+
+    def _apply_hp_damage(self, damage):
+        """Apply direct HP damage without shield absorption."""
+        self.hp -= damage
+        if self.hp <= 0 and getattr(self, 'water_immortality', False):
+            self.hp = Decimal('1')
+        elif self.hp < 0:
+            self.hp = Decimal('0')
     
     def heal(self, amount):
         """Heal the combatant by the specified amount"""

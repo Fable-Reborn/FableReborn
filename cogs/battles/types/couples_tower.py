@@ -1000,52 +1000,19 @@ class CouplesTowerBattle(TowerBattle):
                 # Add variance and apply armor
                 raw_damage += Decimal(damage_variance)
                 
-                # PROCESS PET SKILL EFFECTS ON ATTACK
-                skill_messages = []
-                if (current_combatant.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(current_combatant, target, raw_damage)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Apply armor reduction
-                if hasattr(target, 'ignore_armor_this_hit') or hasattr(target, 'true_damage'):
-                    # True damage ignores armor completely
-                    damage = raw_damage
-                elif hasattr(target, 'bypass_defenses'):
-                    # Bypass defenses ignores armor 
-                    damage = raw_damage
-                elif hasattr(target, 'ignore_all_defenses'):
-                    # Ignore all defenses
-                    damage = raw_damage
-                elif hasattr(target, 'partial_true_damage'):
-                    # Partial true damage - only 50% armor mitigation
-                    damage = raw_damage - (target.armor * Decimal('0.5'))
-                else:
-                    # Normal armor calculation
-                    damage = raw_damage - target.armor
-                
-                # Ensure minimum damage
-                damage = max(damage, Decimal('1'))
-                
-                # Clear special damage flags
-                for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses', 'partial_true_damage']:
-                    if hasattr(target, flag):
-                        delattr(target, flag)
-                
-                # PROCESS PET SKILL EFFECTS ON DAMAGE TAKEN
-                defender_messages = []
-                if (target.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(target, current_combatant, damage)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Store the actual final damage dealt (for skills like Soul Drain)
-                if current_combatant.is_pet:
-                    setattr(current_combatant, 'last_damage_dealt', damage)
+
+                outcome = self.resolve_pet_attack_outcome(
+                    current_combatant,
+                    target,
+                    raw_damage,
+                    apply_element_mod=False,
+                    damage_variance=0,
+                    minimum_damage=Decimal('10'),
+                )
+                damage = outcome.final_damage
+                blocked_damage = outcome.blocked_damage
+                skill_messages = outcome.skill_messages
+                defender_messages = outcome.defender_messages
                 
                 # *** LEVEL 7 MEMORY SHIELD FOR REGULAR ATTACKS ***
                 if target in self.player_team.combatants and self.memory_fragments > 0:
@@ -1311,53 +1278,19 @@ class CouplesTowerBattle(TowerBattle):
                 # Add variance and apply armor
                 raw_damage += Decimal(damage_variance)
                 
-                # PROCESS PET SKILL EFFECTS ON ATTACK
-                skill_messages = []
-                if (current_combatant.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(current_combatant, target, raw_damage)
-                        # Set flag for turn processing (damage will be set after final calculation)
-                        setattr(current_combatant, 'attacked_this_turn', True)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Check for special damage types
-                ignore_armor = getattr(target, 'ignore_armor_this_hit', False)
-                true_damage = getattr(target, 'true_damage', False)
-                bypass_defenses = getattr(target, 'bypass_defenses', False)
-                ignore_all = getattr(target, 'ignore_all_defenses', False)
-                partial_true_damage = getattr(target, 'partial_true_damage', 0)
-                
-                if ignore_all or true_damage or ignore_armor or bypass_defenses:
-                    damage = raw_damage  # No armor reduction
-                    blocked_damage = Decimal('0')
-                elif partial_true_damage > 0:
-                    # Handle partial true damage: some bypasses armor, some doesn't
-                    normal_damage_after_armor = max(raw_damage - target.armor, Decimal('10'))
-                    damage = normal_damage_after_armor + Decimal(str(partial_true_damage))
-                    blocked_damage = min(raw_damage, target.armor)
-                else:
-                    blocked_damage = min(raw_damage, target.armor)  # Can't block more than the armor value
-                    damage = max(raw_damage - target.armor, Decimal('10'))  # Minimum 10 damage
-                
-                # Clear special damage flags
-                for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses', 'partial_true_damage']:
-                    if hasattr(target, flag):
-                        delattr(target, flag)
-                
-                # PROCESS PET SKILL EFFECTS ON DAMAGE TAKEN
-                defender_messages = []
-                if (target.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(target, current_combatant, damage)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Store the actual final damage dealt (for skills like Soul Drain)
-                if current_combatant.is_pet:
-                    setattr(current_combatant, 'last_damage_dealt', damage)
+
+                outcome = self.resolve_pet_attack_outcome(
+                    current_combatant,
+                    target,
+                    raw_damage,
+                    apply_element_mod=False,
+                    damage_variance=0,
+                    minimum_damage=Decimal('10'),
+                )
+                damage = outcome.final_damage
+                blocked_damage = outcome.blocked_damage
+                skill_messages = outcome.skill_messages
+                defender_messages = outcome.defender_messages
                 
                 # *** LEVEL 7 MEMORY SHIELD FOR REGULAR ATTACKS ***
                 if target in self.player_team.combatants and self.memory_fragments > 0:
@@ -1642,53 +1575,19 @@ class CouplesTowerBattle(TowerBattle):
                 # Add variance and apply armor
                 raw_damage += Decimal(damage_variance)
                 
-                # PROCESS PET SKILL EFFECTS ON ATTACK
-                skill_messages = []
-                if (current_combatant.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(current_combatant, target, raw_damage)
-                        # Set flag for turn processing (damage will be set after final calculation)
-                        setattr(current_combatant, 'attacked_this_turn', True)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Check for special damage types
-                ignore_armor = getattr(target, 'ignore_armor_this_hit', False)
-                true_damage = getattr(target, 'true_damage', False)
-                bypass_defenses = getattr(target, 'bypass_defenses', False)
-                ignore_all = getattr(target, 'ignore_all_defenses', False)
-                partial_true_damage = getattr(target, 'partial_true_damage', 0)
-                
-                if ignore_all or true_damage or ignore_armor or bypass_defenses:
-                    damage = raw_damage  # No armor reduction
-                    blocked_damage = Decimal('0')
-                elif partial_true_damage > 0:
-                    # Handle partial true damage: some bypasses armor, some doesn't
-                    normal_damage_after_armor = max(raw_damage - target.armor, Decimal('10'))
-                    damage = normal_damage_after_armor + Decimal(str(partial_true_damage))
-                    blocked_damage = min(raw_damage, target.armor)
-                else:
-                    blocked_damage = min(raw_damage, target.armor)  # Can't block more than the armor value
-                    damage = max(raw_damage - target.armor, Decimal('10'))  # Minimum 10 damage
-                
-                # Clear special damage flags
-                for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses', 'partial_true_damage']:
-                    if hasattr(target, flag):
-                        delattr(target, flag)
-                
-                # PROCESS PET SKILL EFFECTS ON DAMAGE TAKEN
-                defender_messages = []
-                if (target.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(target, current_combatant, damage)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Store the actual final damage dealt (for skills like Soul Drain)
-                if current_combatant.is_pet:
-                    setattr(current_combatant, 'last_damage_dealt', damage)
+
+                outcome = self.resolve_pet_attack_outcome(
+                    current_combatant,
+                    target,
+                    raw_damage,
+                    apply_element_mod=False,
+                    damage_variance=0,
+                    minimum_damage=Decimal('10'),
+                )
+                damage = outcome.final_damage
+                blocked_damage = outcome.blocked_damage
+                skill_messages = outcome.skill_messages
+                defender_messages = outcome.defender_messages
                 
                 # *** LEVEL 8 FRIENDLY FIRE DAMAGE REDUCTION FOR REGULAR ATTACKS ***
                 if friendly_fire_occurred:
@@ -1955,53 +1854,19 @@ class CouplesTowerBattle(TowerBattle):
                 # Add variance and apply armor
                 raw_damage += Decimal(damage_variance)
                 
-                # PROCESS PET SKILL EFFECTS ON ATTACK
-                skill_messages = []
-                if (current_combatant.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(current_combatant, target, raw_damage)
-                        # Set flag for turn processing (damage will be set after final calculation)
-                        setattr(current_combatant, 'attacked_this_turn', True)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Check for special damage types
-                ignore_armor = getattr(target, 'ignore_armor_this_hit', False)
-                true_damage = getattr(target, 'true_damage', False)
-                bypass_defenses = getattr(target, 'bypass_defenses', False)
-                ignore_all = getattr(target, 'ignore_all_defenses', False)
-                partial_true_damage = getattr(target, 'partial_true_damage', 0)
-                
-                if ignore_all or true_damage or ignore_armor or bypass_defenses:
-                    damage = raw_damage  # No armor reduction
-                    blocked_damage = Decimal('0')
-                elif partial_true_damage > 0:
-                    # Handle partial true damage: some bypasses armor, some doesn't
-                    normal_damage_after_armor = max(raw_damage - target.armor, Decimal('10'))
-                    damage = normal_damage_after_armor + Decimal(str(partial_true_damage))
-                    blocked_damage = min(raw_damage, target.armor)
-                else:
-                    blocked_damage = min(raw_damage, target.armor)  # Can't block more than the armor value
-                    damage = max(raw_damage - target.armor, Decimal('10'))  # Minimum 10 damage
-                
-                # Clear special damage flags
-                for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses', 'partial_true_damage']:
-                    if hasattr(target, flag):
-                        delattr(target, flag)
-                
-                # PROCESS PET SKILL EFFECTS ON DAMAGE TAKEN
-                defender_messages = []
-                if (target.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(target, current_combatant, damage)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Store the actual final damage dealt (for skills like Soul Drain)
-                if current_combatant.is_pet:
-                    setattr(current_combatant, 'last_damage_dealt', damage)
+
+                outcome = self.resolve_pet_attack_outcome(
+                    current_combatant,
+                    target,
+                    raw_damage,
+                    apply_element_mod=False,
+                    damage_variance=0,
+                    minimum_damage=Decimal('10'),
+                )
+                damage = outcome.final_damage
+                blocked_damage = outcome.blocked_damage
+                skill_messages = outcome.skill_messages
+                defender_messages = outcome.defender_messages
                 
                 # *** LEVEL 10 UNITY MODE FOR REGULAR ATTACKS ***
                 if current_combatant in self.player_team.combatants and not current_combatant.is_pet:
@@ -2432,53 +2297,19 @@ class CouplesTowerBattle(TowerBattle):
                 # Add variance and apply armor
                 raw_damage += Decimal(damage_variance)
                 
-                # PROCESS PET SKILL EFFECTS ON ATTACK
-                skill_messages = []
-                if (current_combatant.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(current_combatant, target, raw_damage)
-                        # Set flag for turn processing (damage will be set after final calculation)
-                        setattr(current_combatant, 'attacked_this_turn', True)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Check for special damage types
-                ignore_armor = getattr(target, 'ignore_armor_this_hit', False)
-                true_damage = getattr(target, 'true_damage', False)
-                bypass_defenses = getattr(target, 'bypass_defenses', False)
-                ignore_all = getattr(target, 'ignore_all_defenses', False)
-                partial_true_damage = getattr(target, 'partial_true_damage', 0)
-                
-                if ignore_all or true_damage or ignore_armor or bypass_defenses:
-                    damage = raw_damage  # No armor reduction
-                    blocked_damage = Decimal('0')
-                elif partial_true_damage > 0:
-                    # Handle partial true damage: some bypasses armor, some doesn't
-                    normal_damage_after_armor = max(raw_damage - target.armor, Decimal('10'))
-                    damage = normal_damage_after_armor + Decimal(str(partial_true_damage))
-                    blocked_damage = min(raw_damage, target.armor)
-                else:
-                    blocked_damage = min(raw_damage, target.armor)  # Can't block more than the armor value
-                    damage = max(raw_damage - target.armor, Decimal('10'))  # Minimum 10 damage
-                
-                # Clear special damage flags
-                for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses', 'partial_true_damage']:
-                    if hasattr(target, flag):
-                        delattr(target, flag)
-                
-                # PROCESS PET SKILL EFFECTS ON DAMAGE TAKEN
-                defender_messages = []
-                if (target.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(target, current_combatant, damage)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Store the actual final damage dealt (for skills like Soul Drain)
-                if current_combatant.is_pet:
-                    setattr(current_combatant, 'last_damage_dealt', damage)
+
+                outcome = self.resolve_pet_attack_outcome(
+                    current_combatant,
+                    target,
+                    raw_damage,
+                    apply_element_mod=False,
+                    damage_variance=0,
+                    minimum_damage=Decimal('10'),
+                )
+                damage = outcome.final_damage
+                blocked_damage = outcome.blocked_damage
+                skill_messages = outcome.skill_messages
+                defender_messages = outcome.defender_messages
                 
                 # *** LEVEL 6 DAMAGE SHARING FOR REGULAR ATTACKS ***
                 if target in self.player_team.combatants and not target.is_pet:
@@ -2752,53 +2583,19 @@ class CouplesTowerBattle(TowerBattle):
                 # Add variance and apply armor
                 raw_damage += Decimal(damage_variance)
                 
-                # PROCESS PET SKILL EFFECTS ON ATTACK
-                skill_messages = []
-                if (current_combatant.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(current_combatant, target, raw_damage)
-                        # Set flag for turn processing (damage will be set after final calculation)
-                        setattr(current_combatant, 'attacked_this_turn', True)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Check for special damage types
-                ignore_armor = getattr(target, 'ignore_armor_this_hit', False)
-                true_damage = getattr(target, 'true_damage', False)
-                bypass_defenses = getattr(target, 'bypass_defenses', False)
-                ignore_all = getattr(target, 'ignore_all_defenses', False)
-                partial_true_damage = getattr(target, 'partial_true_damage', 0)
-                
-                if ignore_all or true_damage or ignore_armor or bypass_defenses:
-                    damage = raw_damage  # No armor reduction
-                    blocked_damage = Decimal('0')
-                elif partial_true_damage > 0:
-                    # Handle partial true damage: some bypasses armor, some doesn't
-                    normal_damage_after_armor = max(raw_damage - target.armor, Decimal('10'))
-                    damage = normal_damage_after_armor + Decimal(str(partial_true_damage))
-                    blocked_damage = min(raw_damage, target.armor)
-                else:
-                    blocked_damage = min(raw_damage, target.armor)  # Can't block more than the armor value
-                    damage = max(raw_damage - target.armor, Decimal('10'))  # Minimum 10 damage
-                
-                # Clear special damage flags
-                for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses', 'partial_true_damage']:
-                    if hasattr(target, flag):
-                        delattr(target, flag)
-                
-                # PROCESS PET SKILL EFFECTS ON DAMAGE TAKEN
-                defender_messages = []
-                if (target.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(target, current_combatant, damage)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Store the actual final damage dealt (for skills like Soul Drain)
-                if current_combatant.is_pet:
-                    setattr(current_combatant, 'last_damage_dealt', damage)
+
+                outcome = self.resolve_pet_attack_outcome(
+                    current_combatant,
+                    target,
+                    raw_damage,
+                    apply_element_mod=False,
+                    damage_variance=0,
+                    minimum_damage=Decimal('10'),
+                )
+                damage = outcome.final_damage
+                blocked_damage = outcome.blocked_damage
+                skill_messages = outcome.skill_messages
+                defender_messages = outcome.defender_messages
                 
                 # *** LEVEL 13 MISCOMMUNICATION FOR REGULAR ATTACKS ***
                 if current_combatant in self.player_team.combatants and not current_combatant.is_pet:
@@ -3064,53 +2861,19 @@ class CouplesTowerBattle(TowerBattle):
                 # Add variance and apply armor
                 raw_damage += Decimal(damage_variance)
                 
-                # PROCESS PET SKILL EFFECTS ON ATTACK
-                skill_messages = []
-                if (current_combatant.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(current_combatant, target, raw_damage)
-                        # Set flag for turn processing (damage will be set after final calculation)
-                        setattr(current_combatant, 'attacked_this_turn', True)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Check for special damage types
-                ignore_armor = getattr(target, 'ignore_armor_this_hit', False)
-                true_damage = getattr(target, 'true_damage', False)
-                bypass_defenses = getattr(target, 'bypass_defenses', False)
-                ignore_all = getattr(target, 'ignore_all_defenses', False)
-                partial_true_damage = getattr(target, 'partial_true_damage', 0)
-                
-                if ignore_all or true_damage or ignore_armor or bypass_defenses:
-                    damage = raw_damage  # No armor reduction
-                    blocked_damage = Decimal('0')
-                elif partial_true_damage > 0:
-                    # Handle partial true damage: some bypasses armor, some doesn't
-                    normal_damage_after_armor = max(raw_damage - target.armor, Decimal('10'))
-                    damage = normal_damage_after_armor + Decimal(str(partial_true_damage))
-                    blocked_damage = min(raw_damage, target.armor)
-                else:
-                    blocked_damage = min(raw_damage, target.armor)  # Can't block more than the armor value
-                    damage = max(raw_damage - target.armor, Decimal('10'))  # Minimum 10 damage
-                
-                # Clear special damage flags
-                for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses', 'partial_true_damage']:
-                    if hasattr(target, flag):
-                        delattr(target, flag)
-                
-                # PROCESS PET SKILL EFFECTS ON DAMAGE TAKEN
-                defender_messages = []
-                if (target.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(target, current_combatant, damage)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Store the actual final damage dealt (for skills like Soul Drain)
-                if current_combatant.is_pet:
-                    setattr(current_combatant, 'last_damage_dealt', damage)
+
+                outcome = self.resolve_pet_attack_outcome(
+                    current_combatant,
+                    target,
+                    raw_damage,
+                    apply_element_mod=False,
+                    damage_variance=0,
+                    minimum_damage=Decimal('10'),
+                )
+                damage = outcome.final_damage
+                blocked_damage = outcome.blocked_damage
+                skill_messages = outcome.skill_messages
+                defender_messages = outcome.defender_messages
                 
                 target.take_damage(damage)
                 
@@ -3395,53 +3158,19 @@ class CouplesTowerBattle(TowerBattle):
                 # Add variance and apply armor
                 raw_damage += Decimal(damage_variance)
                 
-                # PROCESS PET SKILL EFFECTS ON ATTACK
-                skill_messages = []
-                if (current_combatant.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(current_combatant, target, raw_damage)
-                        # Set flag for turn processing (damage will be set after final calculation)
-                        setattr(current_combatant, 'attacked_this_turn', True)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Check for special damage types
-                ignore_armor = getattr(target, 'ignore_armor_this_hit', False)
-                true_damage = getattr(target, 'true_damage', False)
-                bypass_defenses = getattr(target, 'bypass_defenses', False)
-                ignore_all = getattr(target, 'ignore_all_defenses', False)
-                partial_true_damage = getattr(target, 'partial_true_damage', 0)
-                
-                if ignore_all or true_damage or ignore_armor or bypass_defenses:
-                    damage = raw_damage  # No armor reduction
-                    blocked_damage = Decimal('0')
-                elif partial_true_damage > 0:
-                    # Handle partial true damage: some bypasses armor, some doesn't
-                    normal_damage_after_armor = max(raw_damage - target.armor, Decimal('10'))
-                    damage = normal_damage_after_armor + Decimal(str(partial_true_damage))
-                    blocked_damage = min(raw_damage, target.armor)
-                else:
-                    blocked_damage = min(raw_damage, target.armor)  # Can't block more than the armor value
-                    damage = max(raw_damage - target.armor, Decimal('10'))  # Minimum 10 damage
-                
-                # Clear special damage flags
-                for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses', 'partial_true_damage']:
-                    if hasattr(target, flag):
-                        delattr(target, flag)
-                
-                # PROCESS PET SKILL EFFECTS ON DAMAGE TAKEN
-                defender_messages = []
-                if (target.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(target, current_combatant, damage)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Store the actual final damage dealt (for skills like Soul Drain)
-                if current_combatant.is_pet:
-                    setattr(current_combatant, 'last_damage_dealt', damage)
+
+                outcome = self.resolve_pet_attack_outcome(
+                    current_combatant,
+                    target,
+                    raw_damage,
+                    apply_element_mod=False,
+                    damage_variance=0,
+                    minimum_damage=Decimal('10'),
+                )
+                damage = outcome.final_damage
+                blocked_damage = outcome.blocked_damage
+                skill_messages = outcome.skill_messages
+                defender_messages = outcome.defender_messages
                 
                 # *** LEVEL 15 BETRAYAL ILLUSIONS FOR REGULAR ATTACKS ***
                 if current_combatant in self.player_team.combatants and not current_combatant.is_pet:
@@ -3742,53 +3471,19 @@ class CouplesTowerBattle(TowerBattle):
                 # Add variance and apply armor
                 raw_damage += Decimal(damage_variance)
                 
-                # PROCESS PET SKILL EFFECTS ON ATTACK
-                skill_messages = []
-                if (current_combatant.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(current_combatant, target, raw_damage)
-                        # Set flag for turn processing (damage will be set after final calculation)
-                        setattr(current_combatant, 'attacked_this_turn', True)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Check for special damage types
-                ignore_armor = getattr(target, 'ignore_armor_this_hit', False)
-                true_damage = getattr(target, 'true_damage', False)
-                bypass_defenses = getattr(target, 'bypass_defenses', False)
-                ignore_all = getattr(target, 'ignore_all_defenses', False)
-                partial_true_damage = getattr(target, 'partial_true_damage', 0)
-                
-                if ignore_all or true_damage or ignore_armor or bypass_defenses:
-                    damage = raw_damage  # No armor reduction
-                    blocked_damage = Decimal('0')
-                elif partial_true_damage > 0:
-                    # Handle partial true damage: some bypasses armor, some doesn't
-                    normal_damage_after_armor = max(raw_damage - target.armor, Decimal('10'))
-                    damage = normal_damage_after_armor + Decimal(str(partial_true_damage))
-                    blocked_damage = min(raw_damage, target.armor)
-                else:
-                    blocked_damage = min(raw_damage, target.armor)  # Can't block more than the armor value
-                    damage = max(raw_damage - target.armor, Decimal('10'))  # Minimum 10 damage
-                
-                # Clear special damage flags
-                for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses', 'partial_true_damage']:
-                    if hasattr(target, flag):
-                        delattr(target, flag)
-                
-                # PROCESS PET SKILL EFFECTS ON DAMAGE TAKEN
-                defender_messages = []
-                if (target.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(target, current_combatant, damage)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Store the actual final damage dealt (for skills like Soul Drain)
-                if current_combatant.is_pet:
-                    setattr(current_combatant, 'last_damage_dealt', damage)
+
+                outcome = self.resolve_pet_attack_outcome(
+                    current_combatant,
+                    target,
+                    raw_damage,
+                    apply_element_mod=False,
+                    damage_variance=0,
+                    minimum_damage=Decimal('10'),
+                )
+                damage = outcome.final_damage
+                blocked_damage = outcome.blocked_damage
+                skill_messages = outcome.skill_messages
+                defender_messages = outcome.defender_messages
                 
                 # *** LEVEL 16 GRUDGE DAMAGE BOOST FOR REGULAR ATTACKS ***
                 if current_combatant in self.player_team.combatants and not current_combatant.is_pet:
@@ -4074,53 +3769,19 @@ class CouplesTowerBattle(TowerBattle):
                 # Add variance and apply armor
                 raw_damage += Decimal(damage_variance)
                 
-                # PROCESS PET SKILL EFFECTS ON ATTACK
-                skill_messages = []
-                if (current_combatant.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(current_combatant, target, raw_damage)
-                        # Set flag for turn processing (damage will be set after final calculation)
-                        setattr(current_combatant, 'attacked_this_turn', True)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Check for special damage types
-                ignore_armor = getattr(target, 'ignore_armor_this_hit', False)
-                true_damage = getattr(target, 'true_damage', False)
-                bypass_defenses = getattr(target, 'bypass_defenses', False)
-                ignore_all = getattr(target, 'ignore_all_defenses', False)
-                partial_true_damage = getattr(target, 'partial_true_damage', 0)
-                
-                if ignore_all or true_damage or ignore_armor or bypass_defenses:
-                    damage = raw_damage  # No armor reduction
-                    blocked_damage = Decimal('0')
-                elif partial_true_damage > 0:
-                    # Handle partial true damage: some bypasses armor, some doesn't
-                    normal_damage_after_armor = max(raw_damage - target.armor, Decimal('10'))
-                    damage = normal_damage_after_armor + Decimal(str(partial_true_damage))
-                    blocked_damage = min(raw_damage, target.armor)
-                else:
-                    blocked_damage = min(raw_damage, target.armor)  # Can't block more than the armor value
-                    damage = max(raw_damage - target.armor, Decimal('10'))  # Minimum 10 damage
-                
-                # Clear special damage flags
-                for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses', 'partial_true_damage']:
-                    if hasattr(target, flag):
-                        delattr(target, flag)
-                
-                # PROCESS PET SKILL EFFECTS ON DAMAGE TAKEN
-                defender_messages = []
-                if (target.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(target, current_combatant, damage)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Store the actual final damage dealt (for skills like Soul Drain)
-                if current_combatant.is_pet:
-                    setattr(current_combatant, 'last_damage_dealt', damage)
+
+                outcome = self.resolve_pet_attack_outcome(
+                    current_combatant,
+                    target,
+                    raw_damage,
+                    apply_element_mod=False,
+                    damage_variance=0,
+                    minimum_damage=Decimal('10'),
+                )
+                damage = outcome.final_damage
+                blocked_damage = outcome.blocked_damage
+                skill_messages = outcome.skill_messages
+                defender_messages = outcome.defender_messages
                 
                 # *** LEVEL 18 TEMPTATION DAMAGE REDUCTION FOR REGULAR ATTACKS ***
                 if is_tempted:
@@ -4398,53 +4059,19 @@ class CouplesTowerBattle(TowerBattle):
                 # Add variance and apply armor
                 raw_damage += Decimal(damage_variance)
                 
-                # PROCESS PET SKILL EFFECTS ON ATTACK
-                skill_messages = []
-                if (current_combatant.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(current_combatant, target, raw_damage)
-                        # Set flag for turn processing (damage will be set after final calculation)
-                        setattr(current_combatant, 'attacked_this_turn', True)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Check for special damage types
-                ignore_armor = getattr(target, 'ignore_armor_this_hit', False)
-                true_damage = getattr(target, 'true_damage', False)
-                bypass_defenses = getattr(target, 'bypass_defenses', False)
-                ignore_all = getattr(target, 'ignore_all_defenses', False)
-                partial_true_damage = getattr(target, 'partial_true_damage', 0)
-                
-                if ignore_all or true_damage or ignore_armor or bypass_defenses:
-                    damage = raw_damage  # No armor reduction
-                    blocked_damage = Decimal('0')
-                elif partial_true_damage > 0:
-                    # Handle partial true damage: some bypasses armor, some doesn't
-                    normal_damage_after_armor = max(raw_damage - target.armor, Decimal('10'))
-                    damage = normal_damage_after_armor + Decimal(str(partial_true_damage))
-                    blocked_damage = min(raw_damage, target.armor)
-                else:
-                    blocked_damage = min(raw_damage, target.armor)  # Can't block more than the armor value
-                    damage = max(raw_damage - target.armor, Decimal('10'))  # Minimum 10 damage
-                
-                # Clear special damage flags
-                for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses', 'partial_true_damage']:
-                    if hasattr(target, flag):
-                        delattr(target, flag)
-                
-                # PROCESS PET SKILL EFFECTS ON DAMAGE TAKEN
-                defender_messages = []
-                if (target.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(target, current_combatant, damage)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Store the actual final damage dealt (for skills like Soul Drain)
-                if current_combatant.is_pet:
-                    setattr(current_combatant, 'last_damage_dealt', damage)
+
+                outcome = self.resolve_pet_attack_outcome(
+                    current_combatant,
+                    target,
+                    raw_damage,
+                    apply_element_mod=False,
+                    damage_variance=0,
+                    minimum_damage=Decimal('10'),
+                )
+                damage = outcome.final_damage
+                blocked_damage = outcome.blocked_damage
+                skill_messages = outcome.skill_messages
+                defender_messages = outcome.defender_messages
                 
                 # *** LEVEL 19 CRITICAL HIT DAMAGE BOOST FOR REGULAR ATTACKS ***
                 if is_critical_hit:
@@ -4733,53 +4360,19 @@ class CouplesTowerBattle(TowerBattle):
                 # Add variance and apply armor
                 raw_damage += Decimal(damage_variance)
                 
-                # PROCESS PET SKILL EFFECTS ON ATTACK
-                skill_messages = []
-                if (current_combatant.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(current_combatant, target, raw_damage)
-                        # Set flag for turn processing (damage will be set after final calculation)
-                        setattr(current_combatant, 'attacked_this_turn', True)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Check for special damage types
-                ignore_armor = getattr(target, 'ignore_armor_this_hit', False)
-                true_damage = getattr(target, 'true_damage', False)
-                bypass_defenses = getattr(target, 'bypass_defenses', False)
-                ignore_all = getattr(target, 'ignore_all_defenses', False)
-                partial_true_damage = getattr(target, 'partial_true_damage', 0)
-                
-                if ignore_all or true_damage or ignore_armor or bypass_defenses:
-                    damage = raw_damage  # No armor reduction
-                    blocked_damage = Decimal('0')
-                elif partial_true_damage > 0:
-                    # Handle partial true damage: some bypasses armor, some doesn't
-                    normal_damage_after_armor = max(raw_damage - target.armor, Decimal('10'))
-                    damage = normal_damage_after_armor + Decimal(str(partial_true_damage))
-                    blocked_damage = min(raw_damage, target.armor)
-                else:
-                    blocked_damage = min(raw_damage, target.armor)  # Can't block more than the armor value
-                    damage = max(raw_damage - target.armor, Decimal('10'))  # Minimum 10 damage
-                
-                # Clear special damage flags
-                for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses', 'partial_true_damage']:
-                    if hasattr(target, flag):
-                        delattr(target, flag)
-                
-                # PROCESS PET SKILL EFFECTS ON DAMAGE TAKEN
-                defender_messages = []
-                if (target.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(target, current_combatant, damage)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Store the actual final damage dealt (for skills like Soul Drain)
-                if current_combatant.is_pet:
-                    setattr(current_combatant, 'last_damage_dealt', damage)
+
+                outcome = self.resolve_pet_attack_outcome(
+                    current_combatant,
+                    target,
+                    raw_damage,
+                    apply_element_mod=False,
+                    damage_variance=0,
+                    minimum_damage=Decimal('10'),
+                )
+                damage = outcome.final_damage
+                blocked_damage = outcome.blocked_damage
+                skill_messages = outcome.skill_messages
+                defender_messages = outcome.defender_messages
                 
                 # Level 22: Apply despair damage modifier to player attacks
                 if current_combatant in self.player_team.combatants:
@@ -5141,53 +4734,19 @@ class CouplesTowerBattle(TowerBattle):
                 # Add variance and apply armor
                 raw_damage += Decimal(damage_variance)
                 
-                # PROCESS PET SKILL EFFECTS ON ATTACK
-                skill_messages = []
-                if (current_combatant.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(current_combatant, target, raw_damage)
-                        # Set flag for turn processing (damage will be set after final calculation)
-                        setattr(current_combatant, 'attacked_this_turn', True)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Check for special damage types
-                ignore_armor = getattr(target, 'ignore_armor_this_hit', False)
-                true_damage = getattr(target, 'true_damage', False)
-                bypass_defenses = getattr(target, 'bypass_defenses', False)
-                ignore_all = getattr(target, 'ignore_all_defenses', False)
-                partial_true_damage = getattr(target, 'partial_true_damage', 0)
-                
-                if ignore_all or true_damage or ignore_armor or bypass_defenses:
-                    damage = raw_damage  # No armor reduction
-                    blocked_damage = Decimal('0')
-                elif partial_true_damage > 0:
-                    # Handle partial true damage: some bypasses armor, some doesn't
-                    normal_damage_after_armor = max(raw_damage - target.armor, Decimal('10'))
-                    damage = normal_damage_after_armor + Decimal(str(partial_true_damage))
-                    blocked_damage = min(raw_damage, target.armor)
-                else:
-                    blocked_damage = min(raw_damage, target.armor)  # Can't block more than the armor value
-                    damage = max(raw_damage - target.armor, Decimal('10'))  # Minimum 10 damage
-                
-                # Clear special damage flags
-                for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses', 'partial_true_damage']:
-                    if hasattr(target, flag):
-                        delattr(target, flag)
-                
-                # PROCESS PET SKILL EFFECTS ON DAMAGE TAKEN
-                defender_messages = []
-                if (target.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(target, current_combatant, damage)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Store the actual final damage dealt (for skills like Soul Drain)
-                if current_combatant.is_pet:
-                    setattr(current_combatant, 'last_damage_dealt', damage)
+
+                outcome = self.resolve_pet_attack_outcome(
+                    current_combatant,
+                    target,
+                    raw_damage,
+                    apply_element_mod=False,
+                    damage_variance=0,
+                    minimum_damage=Decimal('10'),
+                )
+                damage = outcome.final_damage
+                blocked_damage = outcome.blocked_damage
+                skill_messages = outcome.skill_messages
+                defender_messages = outcome.defender_messages
                 
                 # *** LEVEL 26 PAIN FURY DAMAGE BOOST FOR REGULAR ATTACKS ***
                 pain_bonus = self.pain_damage_bonuses.get(current_combatant.name, 0)
@@ -5929,6 +5488,7 @@ class CouplesTowerBattle(TowerBattle):
         # Randomize turn order every 3 rounds (existing mechanic)
         if self.turn_counter % 3 == 0:
             random.shuffle(self.turn_order)
+            self.turn_order = self.prioritize_turn_order(self.turn_order)
             await self.add_to_log("⚡ Order scrambled!")
             
         # Get current combatant
@@ -6061,53 +5621,19 @@ class CouplesTowerBattle(TowerBattle):
                 # Add chaos variance instead of normal variance
                 raw_damage += Decimal(chaos_variance)
                 
-                # PROCESS PET SKILL EFFECTS ON ATTACK
-                skill_messages = []
-                if (current_combatant.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(current_combatant, target, raw_damage)
-                        # Set flag for turn processing (damage will be set after final calculation)
-                        setattr(current_combatant, 'attacked_this_turn', True)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Check for special damage types
-                ignore_armor = getattr(target, 'ignore_armor_this_hit', False)
-                true_damage = getattr(target, 'true_damage', False)
-                bypass_defenses = getattr(target, 'bypass_defenses', False)
-                ignore_all = getattr(target, 'ignore_all_defenses', False)
-                partial_true_damage = getattr(target, 'partial_true_damage', 0)
-                
-                if ignore_all or true_damage or ignore_armor or bypass_defenses:
-                    damage = raw_damage  # No armor reduction
-                    blocked_damage = Decimal('0')
-                elif partial_true_damage > 0:
-                    # Handle partial true damage: some bypasses armor, some doesn't
-                    normal_damage_after_armor = max(raw_damage - target.armor, Decimal('10'))
-                    damage = normal_damage_after_armor + Decimal(str(partial_true_damage))
-                    blocked_damage = min(raw_damage, target.armor)
-                else:
-                    blocked_damage = min(raw_damage, target.armor)  # Can't block more than the armor value
-                    damage = max(raw_damage - target.armor, Decimal('10'))  # Minimum 10 damage
-                
-                # Clear special damage flags
-                for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses', 'partial_true_damage']:
-                    if hasattr(target, flag):
-                        delattr(target, flag)
-                
-                # PROCESS PET SKILL EFFECTS ON DAMAGE TAKEN
-                defender_messages = []
-                if (target.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    try:
-                        pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                        damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(target, current_combatant, damage)
-                    except (AttributeError, KeyError):
-                        pass  # Pet extension not available
-                
-                # Store the actual final damage dealt (for skills like Soul Drain)
-                if current_combatant.is_pet:
-                    setattr(current_combatant, 'last_damage_dealt', damage)
+
+                outcome = self.resolve_pet_attack_outcome(
+                    current_combatant,
+                    target,
+                    raw_damage,
+                    apply_element_mod=False,
+                    damage_variance=0,
+                    minimum_damage=Decimal('10'),
+                )
+                damage = outcome.final_damage
+                blocked_damage = outcome.blocked_damage
+                skill_messages = outcome.skill_messages
+                defender_messages = outcome.defender_messages
                 
                 # Apply chaos effects to damage
                 damage = await self.apply_chaos_effects_to_damage(current_combatant, damage)
@@ -7028,7 +6554,8 @@ class CouplesTowerBattle(TowerBattle):
         
         # Shuffle to randomize initial order
         import random
-        random.shuffle(self.turn_order) 
+        random.shuffle(self.turn_order)
+        self.turn_order = self.prioritize_turn_order(self.turn_order)
 
     async def can_combatant_act(self, combatant):
         """Check if combatant can act this turn with level-specific restrictions"""

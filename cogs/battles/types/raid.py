@@ -67,6 +67,7 @@ class RaidBattle(Battle):
         
         # Shuffle turn order randomly
         random.shuffle(self.turn_order)
+        self.turn_order = self.prioritize_turn_order(self.turn_order)
         
         # Create battle log
         await self.add_to_log(f"Raidbattle started between Team A and Team B!")
@@ -191,55 +192,18 @@ class RaidBattle(Battle):
                 
                 # Start with base damage
                 raw_damage = current_combatant.damage
-                
-                # Apply element effects to base damage if enabled
-                if self.config["element_effects"] and hasattr(self.ctx.bot.cogs["Battles"], "element_ext"):
-                    element_mod = self.ctx.bot.cogs["Battles"].element_ext.calculate_damage_modifier(
-                        self.ctx,
-                        self.resolve_attack_element(current_combatant),
-                        self.resolve_defense_element(target)
-                    )
-                    if element_mod != 0:
-                        raw_damage = raw_damage * (1 + Decimal(str(element_mod)))
-                
-                # Add variance and apply armor
-                raw_damage += Decimal(damage_variance)
-                
-                # PROCESS PET SKILL EFFECTS ON ATTACK
-                skill_messages = []
-                if (current_combatant.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                    raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(current_combatant, target, raw_damage)
-                    # Set flag for turn processing (damage will be set after final calculation)
-                    setattr(current_combatant, 'attacked_this_turn', True)
-                
-                # Check for special damage types
-                ignore_armor = getattr(target, 'ignore_armor_this_hit', False)
-                true_damage = getattr(target, 'true_damage', False)
-                bypass_defenses = getattr(target, 'bypass_defenses', False)
-                ignore_all = getattr(target, 'ignore_all_defenses', False)
-                
-                if ignore_all or true_damage or ignore_armor or bypass_defenses:
-                    damage = raw_damage  # No armor reduction
-                    blocked_damage = Decimal('0')
-                else:
-                    blocked_damage = min(raw_damage, target.armor)
-                    damage = max(raw_damage - target.armor, Decimal('10'))
-                
-                # Clear special damage flags
-                for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses']:
-                    if hasattr(target, flag):
-                        delattr(target, flag)
-                
-                # PROCESS PET SKILL EFFECTS ON DAMAGE TAKEN
-                defender_messages = []
-                if (target.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                    pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                    damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(target, current_combatant, damage)
-                
-                # Store the actual final damage dealt (for skills like Soul Drain)
-                if current_combatant.is_pet:
-                    setattr(current_combatant, 'last_damage_dealt', damage)
+
+                outcome = self.resolve_pet_attack_outcome(
+                    current_combatant,
+                    target,
+                    raw_damage,
+                    apply_element_mod=self.config["element_effects"],
+                    damage_variance=damage_variance,
+                    minimum_damage=Decimal("10"),
+                )
+                damage = outcome.final_damage
+                skill_messages = outcome.skill_messages
+                defender_messages = outcome.defender_messages
                 
                 target.take_damage(damage)
                 
@@ -276,11 +240,13 @@ class RaidBattle(Battle):
                         self.team_a.combatants.append(skeleton)
                         # Add to turn order as well
                         self.turn_order.append(skeleton)
+                        self.turn_order = self.prioritize_turn_order(self.turn_order)
                         message += f"\n💀 A skeleton warrior joins Team A!"
                     else:
                         self.team_b.combatants.append(skeleton)
                         # Add to turn order as well
                         self.turn_order.append(skeleton)
+                        self.turn_order = self.prioritize_turn_order(self.turn_order)
                         message += f"\n💀 A skeleton warrior joins Team B!"
                     
                     # Clear the summon flag

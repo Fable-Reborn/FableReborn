@@ -18,3 +18,5 @@ __pycache__/
 # Dev tools
 .vscode/
 .idea/
+tools/reports/pet_skill_mismatches.md
+tools/reports/pet_skill_audit.json

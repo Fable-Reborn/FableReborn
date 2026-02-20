@@ -765,25 +765,41 @@ class DragonBattle(Battle):
                     else:
                         element_message = f" ({player_element} is weak against {defender_element}!)"
         
-        # Use standard damage calculation system
-        # Check for special damage types
-        ignore_armor = getattr(target, 'ignore_armor_this_hit', False) if is_dragon_target else False
-        true_damage = getattr(target, 'true_damage', False) if is_dragon_target else False
-        bypass_defenses = getattr(target, 'bypass_defenses', False) if is_dragon_target else False
-        ignore_all = getattr(target, 'ignore_all_defenses', False) if is_dragon_target else False
-        
-        if ignore_all or true_damage or ignore_armor or bypass_defenses:
-            final_damage = damage  # No armor reduction
-            blocked_damage = Decimal('0')
+        # Use canonical pet damage resolver for pet attacks.
+        skill_messages = []
+        defender_messages = []
+        if player.is_pet:
+            outcome = self.resolve_pet_attack_outcome(
+                player,
+                target,
+                damage,
+                apply_element_mod=False,  # Already applied in this method.
+                damage_variance=0,
+                minimum_damage=Decimal("10"),
+            )
+            final_damage = outcome.final_damage
+            blocked_damage = outcome.blocked_damage
+            skill_messages = outcome.skill_messages
+            defender_messages = outcome.defender_messages
         else:
-            blocked_damage = min(damage, target.armor)
-            final_damage = max(damage - target.armor, Decimal('10'))
-        
-        # Clear special damage flags
-        if is_dragon_target:
-            for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses']:
-                if hasattr(target, flag):
-                    delattr(target, flag)
+            # Standard non-pet damage path.
+            ignore_armor = getattr(target, 'ignore_armor_this_hit', False) if is_dragon_target else False
+            true_damage = getattr(target, 'true_damage', False) if is_dragon_target else False
+            bypass_defenses = getattr(target, 'bypass_defenses', False) if is_dragon_target else False
+            ignore_all = getattr(target, 'ignore_all_defenses', False) if is_dragon_target else False
+
+            if ignore_all or true_damage or ignore_armor or bypass_defenses:
+                final_damage = damage  # No armor reduction
+                blocked_damage = Decimal('0')
+            else:
+                blocked_damage = min(damage, target.armor)
+                final_damage = max(damage - target.armor, Decimal('10'))
+
+            # Clear special damage flags for non-pet path.
+            if is_dragon_target:
+                for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses', 'partial_true_damage']:
+                    if hasattr(target, flag):
+                        delattr(target, flag)
         
         # Apply damage reduction from passive effects AFTER standard damage calculation
         damage_reduction = Decimal('0.0')
@@ -802,17 +818,9 @@ class DragonBattle(Battle):
         # Apply damage taken modifiers (e.g. Death Mark)
         final_damage = self._apply_damage_taken_modifiers(target, final_damage)
         
-        # PROCESS PET SKILL EFFECTS ON ATTACK  
-        skill_messages = []
-        if (player.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-            pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-            final_damage, skill_messages = pet_ext.process_skill_effects_on_attack(player, target, final_damage)
-            # Set flag for turn processing (damage will be set after final calculation)
-            setattr(player, 'attacked_this_turn', True)
-        
-        # Store the actual final damage dealt (for skills like Soul Drain)
-        if player.is_pet:
-            setattr(player, 'last_damage_dealt', final_damage)
+        # Include defender pet mitigation messages if present.
+        if defender_messages:
+            skill_messages.extend(defender_messages)
         
         # Apply Reality Bender passive effect (50% chance to negate attack)
         reality_bender_negated = False
@@ -1239,6 +1247,7 @@ class DragonBattle(Battle):
 
     def _refresh_player_turn_queue(self):
         alive = [c for c in self.player_team.combatants if c.is_alive()]
+        alive = self.prioritize_turn_order(alive)
         self._player_turn_queue = deque(alive)
 
     def _is_possessed(self, combatant):
