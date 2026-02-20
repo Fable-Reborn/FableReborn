@@ -1374,7 +1374,6 @@ class Profile(commands.Cog):
                 else:
                     adventure_name = None
                     adventure_time = None
-                badges = synced_badges.to_items_lowercase() if synced_badges else []
 
                 async with self.bot.pool.acquire() as conn:
                 # Get custom positions for this user  
@@ -1409,7 +1408,7 @@ class Profile(commands.Cog):
                     "god": profile["god"] or _("No God"),
                     "adventure_name": adventure_name,   # From user's snippet
                     "adventure_time": adventure_time,
-                    "badges": badges,
+                    "badges": [],
                     "positions": positions
                 }
                 
