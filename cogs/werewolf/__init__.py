@@ -399,8 +399,8 @@ class Werewolf(commands.Cog):
             {
                 "side": _("The Villagers"),
                 "members": (
-                    "Villager, Pure Soul, Seer, Witch, Doctor, Hunter, Healer, Amor,"
-                    " Knight,"
+                    "Villager, Pure Soul, Flower Child, Seer, Witch, Doctor, Hunter,"
+                    " Healer, Amor, Knight, Fortune Teller,"
                     f" Sister, Brother, The Old, Fox, Judge, Paragon - {restriction},"
                     f" Ritualist - {restriction}, Troublemaker - {restriction}, Lawyer"
                     f" - {restriction}, War Veteran - {restriction}"

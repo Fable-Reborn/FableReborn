@@ -85,6 +85,8 @@ class Role(Enum):
     JESTER = 32
     DOCTOR = 33
     HEAD_HUNTER = 34
+    FLOWER_CHILD = 35
+    FORTUNE_TELLER = 36
 
 
 class Side(Enum):
@@ -117,6 +119,10 @@ DESCRIPTIONS = {
         "Everyone knows you are not a Werewolf. Your goal is to keep the town safe from"
         " Wolves and kill them all - at the daily elections, many will hear your voice,"
         " they know you will be honest."
+    ),
+    Role.FLOWER_CHILD: _(
+        "You are the Flower Child. Once per game, you can protect one player from"
+        " being lynched by the village during the day."
     ),
     Role.SEER: _(
         "You are a villager with the special ability to view someone's identity every"
@@ -195,6 +201,10 @@ DESCRIPTIONS = {
     Role.MAID: _(
         "You are the Maid who raised the children. It would hurt you to see any of them"
         " die - after the daily election, you may take their identity role once."
+    ),
+    Role.FORTUNE_TELLER: _(
+        "You are the Fortune Teller. After the first night, you can give Revelation"
+        " Cards to other players at night. Card holders can reveal their own role."
     ),
     Role.FLUTIST: _(
         "You are the Flutist. Your goal is to enchant the players with your music to"
@@ -547,6 +557,26 @@ class Game:
                 )
             protected.protected_by_doctor = False
         return targets
+
+    async def offer_fortune_card_reveals(self) -> None:
+        card_holders = [
+            player
+            for player in self.alive_players
+            if player.fortune_cards > 0
+        ]
+        if not card_holders:
+            return
+
+        await self.ctx.send(
+            _("🔮 Players with Revelation Cards may choose to reveal their role.")
+        )
+        results = await asyncio.gather(
+            *(player.offer_fortune_card_reveal() for player in card_holders),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                await send_traceback(self.ctx, result)
 
     @property
     def winner(self) -> Player | None:
@@ -1023,6 +1053,7 @@ class Game:
         moon = "🌕" if white_wolf_ability else "🌘"
         await self._set_night_chat_lock(True)
         await self.ctx.send(moon + _(" 💤 **Night falls, the town is asleep...**"))
+        fortune_teller_acted = False
         if self.ex_maid and self.ex_maid.dead:
             self.ex_maid = None
         elif self.ex_maid:
@@ -1053,6 +1084,9 @@ class Game:
                     if player == self.ex_maid:
                         continue
                     await player.send_family_member_msg("brother", self.ex_maid)
+            elif self.ex_maid.role == Role.FORTUNE_TELLER:
+                await self.ex_maid.give_fortune_card()
+                fortune_teller_acted = True
             self.ex_maid = None
         if ritualist := self.get_player_with_role(Role.RITUALIST):
             await ritualist.resurrect()
@@ -1060,6 +1094,11 @@ class Game:
             await wolf_necro.resurrect_werewolf()
         if raider := self.get_player_with_role(Role.RAIDER):
             await raider.choose_to_raid()
+        if (
+            not fortune_teller_acted
+            and (fortune_teller := self.get_player_with_role(Role.FORTUNE_TELLER))
+        ):
+            await fortune_teller.give_fortune_card()
         await self.ensure_head_hunter_targets()
         if seer := self.get_player_with_role(Role.SEER):
             await seer.check_player_card()
@@ -1485,6 +1524,26 @@ class Game:
             )
         )
         to_kill = discord.utils.get(self.alive_players, user=to_kill)
+        if to_kill is None:
+            return
+
+        flower_child = self.get_player_with_role(Role.FLOWER_CHILD)
+        if (
+            flower_child
+            and not flower_child.dead
+            and flower_child.can_use_flower_child
+        ):
+            used_save = await flower_child.try_flower_child_save(to_kill)
+            if used_save:
+                flower_child.used_once_abilities.add(Role.FLOWER_CHILD)
+                to_kill.killed_by_lynch = False
+                await self.ctx.send(
+                    _(
+                        "🌸 A mystical bloom saved {target} from being lynched."
+                    ).format(target=to_kill.user.mention)
+                )
+                return
+
         to_kill.killed_by_lynch = True
         # Handle maid here
         if maid := self.get_player_with_role(Role.MAID):
@@ -1530,6 +1589,7 @@ class Game:
             return
         if self.winner is not None:
             return
+        await self.offer_fortune_card_reveals()
         to_kill, second_election = await self.election()
         if to_kill is not None:
             await self.handle_lynching(to_kill)
@@ -1689,6 +1749,9 @@ class Player:
         self.headhunter_target = None
         self.is_protected = False
         self.protected_by_doctor = False
+        self.fortune_cards = 0
+        self.fortune_cards_remaining = None
+        self.used_once_abilities: set[Role] = set()
         self.cursed = False
         self.revealed_roles = {}
 
@@ -1750,6 +1813,19 @@ class Player:
             return await self.user.send(*args, **kwargs)
         except (discord.Forbidden, discord.HTTPException):
             pass
+
+    @property
+    def can_use_flower_child(self) -> bool:
+        return (
+            self.role == Role.FLOWER_CHILD
+            and Role.FLOWER_CHILD not in self.used_once_abilities
+        )
+
+    def ensure_fortune_teller_cards(self) -> None:
+        if self.role != Role.FORTUNE_TELLER:
+            return
+        if self.fortune_cards_remaining is None:
+            self.fortune_cards_remaining = 1 if len(self.game.players) <= 7 else 2
 
     async def choose_users(
             self,
@@ -1906,6 +1982,129 @@ class Player:
                 " commit suicide once they die.\n{game_link}"
             ).format(lover=lover.user, game_link=self.game.game_link)
         await self.send(love_msg)
+
+    async def try_flower_child_save(self, to_save: Player) -> bool:
+        if not self.can_use_flower_child or to_save.dead:
+            return False
+        await self.send(
+            _(
+                "🌸 You may protect **{target}** from this lynch once per game."
+            ).format(target=to_save.user)
+        )
+        try:
+            choice = await self.choose_users(
+                _("Use Flower Child protection on this lynch?"),
+                list_of_users=[to_save],
+                amount=1,
+                required=False,
+            )
+        except asyncio.TimeoutError:
+            return False
+        if choice:
+            await self.send(
+                _(
+                    "You used your Flower Child protection to save **{target}**."
+                ).format(target=to_save.user)
+            )
+            return True
+        return False
+
+    async def give_fortune_card(self) -> None:
+        if self.role != Role.FORTUNE_TELLER or self.dead:
+            return
+        self.ensure_fortune_teller_cards()
+        if not self.fortune_cards_remaining or self.fortune_cards_remaining <= 0:
+            return
+
+        await self.game.ctx.send(
+            _("**The {role} awakes...**").format(role=self.role_name)
+        )
+        possible_targets = [p for p in self.game.alive_players if p != self]
+        if not possible_targets:
+            await self.send(
+                _("No valid target to receive a Revelation Card.\n{game_link}").format(
+                    game_link=self.game.game_link
+                )
+            )
+            return
+
+        try:
+            chosen = await self.choose_users(
+                _(
+                    "Choose a player to receive a Revelation Card. They can use it to"
+                    " reveal their role."
+                ),
+                list_of_users=possible_targets,
+                amount=1,
+                required=False,
+            )
+        except asyncio.TimeoutError:
+            chosen = []
+
+        if not chosen:
+            await self.send(
+                _(
+                    "You decided not to give a Revelation Card tonight.\n{game_link}"
+                ).format(game_link=self.game.game_link)
+            )
+            return
+
+        target = chosen[0]
+        target.fortune_cards += 1
+        self.fortune_cards_remaining = max(0, self.fortune_cards_remaining - 1)
+        await self.send(
+            _(
+                "You gave a Revelation Card to **{target}**. Remaining cards: {left}."
+            ).format(target=target.user, left=self.fortune_cards_remaining)
+        )
+        await target.send(
+            _(
+                "🔮 You received a Revelation Card from the **Fortune Teller**. At"
+                " dawn, you may choose to reveal your role.\n{game_link}"
+            ).format(game_link=self.game.game_link)
+        )
+
+    async def offer_fortune_card_reveal(self) -> bool:
+        if self.dead or self.fortune_cards <= 0:
+            return False
+        timeout = max(10, min(20, int(self.game.timer / 2)))
+        try:
+            choice = await self.game.ctx.bot.paginator.Choose(
+                entries=[
+                    _("Reveal your role now"),
+                    _("Keep card for later"),
+                ],
+                return_index=True,
+                title=_(
+                    "Use a Revelation Card? You currently have {cards}."
+                ).format(cards=self.fortune_cards),
+                timeout=timeout,
+            ).paginate(self.game.ctx, location=self.user)
+        except (
+            self.game.ctx.bot.paginator.NoChoice,
+            discord.Forbidden,
+            discord.HTTPException,
+        ):
+            return False
+
+        if choice != 0:
+            return False
+
+        self.fortune_cards -= 1
+        for player in self.game.players:
+            player.revealed_roles.update({self: self.role})
+        await self.game.ctx.send(
+            _(
+                "🔮 {player} used a Revelation Card and is revealed as a"
+                " **{role}**!"
+            ).format(player=self.user.mention, role=self.role_name)
+        )
+        await self.send(
+            _(
+                "Your role was revealed. Revelation Cards left: {cards}."
+            ).format(cards=self.fortune_cards)
+        )
+        return True
 
     async def choose_idol(self) -> None:
         await self.game.ctx.send(
@@ -3339,6 +3538,10 @@ class Player:
             return Side.WOLVES
         if self.role == Role.DOCTOR:
             return Side.VILLAGERS
+        if self.role == Role.FLOWER_CHILD:
+            return Side.VILLAGERS
+        if self.role == Role.FORTUNE_TELLER:
+            return Side.VILLAGERS
         if self.role == Role.HEAD_HUNTER:
             return Side.HEAD_HUNTER
         if 6 <= self.role.value <= 26:
@@ -3553,6 +3756,18 @@ def get_roles(number_of_players: int, mode: str = None) -> list[Role]:
     roles = random.shuffle(roles)
     roles = [
         random.choice([Role.WITCH, Role.DOCTOR]) if role == Role.WITCH else role
+        for role in roles
+    ]
+    roles = [
+        random.choice([Role.PURE_SOUL, Role.FLOWER_CHILD])
+        if role == Role.PURE_SOUL
+        else role
+        for role in roles
+    ]
+    roles = [
+        random.choice([Role.MAID, Role.FORTUNE_TELLER])
+        if role == Role.MAID
+        else role
         for role in roles
     ]
     if not any([1 <= role.value <= 5 for role in roles[:-2]]):
