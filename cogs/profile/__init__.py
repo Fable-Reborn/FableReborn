@@ -17,9 +17,11 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import asyncio
+import math
 import re
 from typing import Optional
 import json
+from pathlib import Path
 
 import discord
 import io
@@ -39,6 +41,7 @@ from cogs.adventure import ADVENTURE_NAMES
 from cogs.help import chunks
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from cogs.profilecustomization import ProfileCustomization
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 from utils import checks, colors, random
 from utils import misc as rpgtools
 from utils.checks import is_gm
@@ -169,6 +172,329 @@ class Profile(commands.Cog):
 
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
+        self._profile_font_cache = {}
+
+    @staticmethod
+    def _safe_int(value, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _compact_number(value: int) -> str:
+        number = int(value)
+        units = (
+            (1_000_000_000_000, "T"),
+            (1_000_000_000, "B"),
+            (1_000_000, "M"),
+            (1_000, "K"),
+        )
+        for amount, suffix in units:
+            if abs(number) >= amount:
+                compact = number / amount
+                if compact >= 100:
+                    return f"{compact:.0f}{suffix}"
+                if compact >= 10:
+                    return f"{compact:.1f}{suffix}"
+                return f"{compact:.2f}{suffix}"
+        return f"{number:,}"
+
+    def _profile_font(self, size: int) -> ImageFont.FreeTypeFont:
+        if size in self._profile_font_cache:
+            return self._profile_font_cache[size]
+
+        font_path_candidates = (
+            Path("EightBitDragon-anqx.ttf"),
+            Path("assets") / "EightBitDragon-anqx.ttf",
+        )
+        for font_path in font_path_candidates:
+            if font_path.exists():
+                try:
+                    font = ImageFont.truetype(str(font_path), size=size)
+                    self._profile_font_cache[size] = font
+                    return font
+                except OSError:
+                    continue
+
+        font = ImageFont.load_default()
+        self._profile_font_cache[size] = font
+        return font
+
+    def _find_class_icon(self, icon_name: str) -> Optional[Path]:
+        base = Path("assets") / "classes"
+        if not icon_name:
+            return None
+        for ext in (".png", ".webp", ".jpg", ".jpeg"):
+            candidate = base / f"{icon_name}{ext}"
+            if candidate.exists():
+                return candidate
+        return None
+
+    async def _resolve_profile_target_user(self, ctx: Context, raw_target: Optional[str]):
+        target = str(ctx.author.id) if not raw_target else raw_target.split()[0]
+        id_pattern = re.compile(r"^\d{17,19}$")
+        mention_pattern = re.compile(r"<@!?(\d{17,19})>")
+
+        try:
+            mention_match = mention_pattern.match(target)
+            if mention_match:
+                return await self.bot.fetch_user(int(mention_match.group(1)))
+
+            if id_pattern.match(target):
+                return await self.bot.fetch_user(int(target))
+
+            async with self.bot.pool.acquire() as conn:
+                user_id = await conn.fetchval(
+                    'SELECT "user" FROM profile WHERE discordtag = $1',
+                    target,
+                )
+            if user_id:
+                return await self.bot.fetch_user(int(user_id))
+        except Exception:
+            return None
+
+        return None
+
+    async def _fetch_avatar_image(self, user: discord.User, size: int = 512) -> Image.Image:
+        asset = user.display_avatar
+        avatar_url = asset.url
+        try:
+            avatar_url = asset.replace(size=size, format="png").url
+        except Exception:
+            try:
+                avatar_url = asset.with_size(size).with_format("png").url
+            except Exception:
+                avatar_url = asset.url
+
+        try:
+            async with self.bot.trusted_session.get(avatar_url) as resp:
+                data = await resp.read()
+                if resp.status == 200:
+                    image = Image.open(BytesIO(data)).convert("RGBA")
+                    return image
+        except Exception:
+            pass
+
+        return Image.new("RGBA", (size, size), (44, 52, 68, 255))
+
+    async def _build_profile_rpg_card(
+        self,
+        user: discord.User,
+        profile,
+        items,
+        rank_money,
+        rank_xp,
+        guild_name: Optional[str],
+        mission,
+        pet_name: str,
+        marriage_name: Optional[str],
+    ) -> BytesIO:
+        width, height = 1400, 860
+        canvas = Image.new("RGBA", (width, height), (10, 16, 28, 255))
+        draw = ImageDraw.Draw(canvas)
+        resample = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
+
+        for y in range(height):
+            blend = y / max(1, height - 1)
+            r = int(12 + (56 - 12) * blend)
+            g = int(20 + (32 - 20) * blend)
+            b = int(36 + (54 - 36) * blend)
+            draw.line([(0, y), (width, y)], fill=(r, g, b, 255))
+
+        glow_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        glow_draw = ImageDraw.Draw(glow_layer)
+        glow_draw.ellipse((40, -120, 500, 320), fill=(82, 167, 255, 95))
+        glow_draw.ellipse((920, 540, 1450, 1080), fill=(255, 116, 214, 90))
+        glow_draw.ellipse((620, 120, 1050, 560), fill=(94, 255, 193, 75))
+        glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(radius=48))
+        canvas.alpha_composite(glow_layer)
+
+        def panel(x1, y1, x2, y2, fill=(16, 26, 46, 192), outline=(188, 220, 255, 120)):
+            draw.rounded_rectangle((x1, y1, x2, y2), radius=26, fill=fill, outline=outline, width=2)
+
+        panel(36, 36, 1364, 824, fill=(8, 14, 28, 188), outline=(180, 218, 255, 132))
+        panel(56, 66, 380, 804, fill=(12, 24, 44, 210))
+        panel(406, 66, 1344, 354, fill=(12, 24, 44, 210))
+        panel(406, 376, 876, 804, fill=(12, 24, 44, 210))
+        panel(896, 376, 1344, 804, fill=(12, 24, 44, 210))
+
+        title_font = self._profile_font(54)
+        subtitle_font = self._profile_font(28)
+        heading_font = self._profile_font(32)
+        label_font = self._profile_font(24)
+        value_font = self._profile_font(26)
+        tiny_font = self._profile_font(20)
+
+        xp_value = self._safe_int(profile.get("xp"), 0)
+        level = rpgtools.xptolevel(xp_value)
+        level_floor = rpgtools.levels.get(level, 0)
+        level_ceiling = rpgtools.levels.get(min(level + 1, 100), level_floor)
+        if level >= 100 or level_ceiling <= level_floor:
+            xp_progress = 1.0
+        else:
+            xp_progress = max(0.0, min(1.0, (xp_value - level_floor) / (level_ceiling - level_floor)))
+
+        luck_raw = float(profile.get("luck") or 0.3)
+        if luck_raw <= 0.3:
+            luck_percent = 20.0
+        else:
+            luck_percent = ((luck_raw - 0.3) / (1.5 - 0.3)) * 80 + 20
+        luck_percent = round(max(0.0, min(100.0, luck_percent)), 2)
+
+        damage_total = sum(self._safe_int(item.get("damage"), 0) for item in items)
+        armor_total = sum(self._safe_int(item.get("armor"), 0) for item in items)
+        pvp_wins = self._safe_int(profile.get("pvpwins"), 0)
+        money = self._safe_int(profile.get("money"), 0)
+        power_score = max(1, damage_total * 4 + armor_total * 3 + int(luck_percent * 2) + level * 14 + pvp_wins * 2)
+
+        if level >= 90:
+            rarity_name, rarity_color = "Mythic", (255, 93, 175, 230)
+        elif level >= 70:
+            rarity_name, rarity_color = "Legendary", (255, 160, 75, 225)
+        elif level >= 50:
+            rarity_name, rarity_color = "Epic", (142, 122, 255, 225)
+        elif level >= 30:
+            rarity_name, rarity_color = "Rare", (76, 187, 255, 225)
+        else:
+            rarity_name, rarity_color = "Adventurer", (104, 220, 175, 225)
+
+        avatar = await self._fetch_avatar_image(user, size=512)
+        avatar = ImageOps.fit(avatar, (276, 276), method=resample)
+        avatar_mask = Image.new("L", (276, 276), 0)
+        ImageDraw.Draw(avatar_mask).ellipse((0, 0, 275, 275), fill=255)
+        ring = Image.new("RGBA", (300, 300), (0, 0, 0, 0))
+        ring_draw = ImageDraw.Draw(ring)
+        ring_draw.ellipse((0, 0, 299, 299), fill=(255, 255, 255, 22), outline=(207, 237, 255, 200), width=6)
+        canvas.alpha_composite(ring, (68, 102))
+        canvas.paste(avatar, (80, 114), avatar_mask)
+
+        card_name = str(profile.get("name") or user.display_name)
+        race_name = str(profile.get("race") or "Unknown")
+        class_list = profile.get("class") or []
+        if not isinstance(class_list, list):
+            class_list = [str(class_list)]
+        classes_text = " / ".join([str(c) for c in class_list if c]) or "No Class"
+        god_name = str(profile.get("god") or "No God")
+
+        draw.text((426, 88), f"{card_name}", font=title_font, fill=(232, 244, 255, 255))
+        draw.text((428, 160), f"{race_name} | {classes_text}", font=subtitle_font, fill=(179, 208, 236, 255))
+
+        ribbon_x1, ribbon_y1, ribbon_x2, ribbon_y2 = 1078, 82, 1328, 146
+        draw.rounded_rectangle((ribbon_x1, ribbon_y1, ribbon_x2, ribbon_y2), radius=18, fill=rarity_color)
+        draw.text((ribbon_x1 + 20, ribbon_y1 + 14), f"{rarity_name}", font=value_font, fill=(255, 255, 255, 255))
+
+        stars = max(1, min(5, math.ceil(level / 20)))
+        draw.text((428, 200), f"Tier {'*' * stars}", font=label_font, fill=(255, 224, 144, 255))
+        draw.text((730, 200), f"Power {power_score:,}", font=label_font, fill=(148, 255, 216, 255))
+
+        icon_x = 1014
+        icon_y = 176
+        for idx, class_name in enumerate(class_list[:3]):
+            class_obj = class_from_string(class_name) if class_name else None
+            icon_key = class_obj.get_class_line_name().lower() if class_obj else ""
+            icon_slot_x = icon_x + idx * 106
+            icon_slot = (icon_slot_x, icon_y, icon_slot_x + 90, icon_y + 90)
+            draw.rounded_rectangle(icon_slot, radius=16, fill=(20, 40, 72, 198), outline=(173, 214, 255, 176), width=2)
+            icon_path = self._find_class_icon(icon_key)
+            if icon_path:
+                try:
+                    icon_image = Image.open(icon_path).convert("RGBA")
+                    icon_image = ImageOps.fit(icon_image, (74, 74), method=resample)
+                    canvas.paste(icon_image, (icon_slot_x + 8, icon_y + 8), icon_image)
+                except Exception:
+                    draw.text((icon_slot_x + 30, icon_y + 28), icon_key[:1].upper(), font=heading_font, fill=(220, 240, 255, 255))
+            else:
+                draw.text((icon_slot_x + 30, icon_y + 28), icon_key[:1].upper() if icon_key else "?", font=heading_font, fill=(220, 240, 255, 255))
+
+        def draw_stat_bar(x, y, w, h, label, value, ratio, color):
+            draw.text((x, y - 32), label, font=label_font, fill=(190, 215, 244, 255))
+            draw.rounded_rectangle((x, y, x + w, y + h), radius=10, fill=(30, 46, 72, 255))
+            fill_w = int(max(0, min(1, ratio)) * w)
+            if fill_w > 0:
+                draw.rounded_rectangle((x, y, x + fill_w, y + h), radius=10, fill=color)
+            draw.text((x + w + 14, y - 2), value, font=value_font, fill=(236, 245, 255, 255))
+
+        draw.text((426, 256), "Core Stats", font=heading_font, fill=(219, 238, 255, 255))
+        draw_stat_bar(426, 306, 340, 24, "Level", f"{level}", level / 100, (103, 224, 255, 255))
+        draw_stat_bar(426, 346, 340, 24, "XP Progress", f"{xp_progress * 100:.1f}%", xp_progress, (149, 248, 190, 255))
+        draw_stat_bar(804, 306, 340, 24, "Damage", f"{damage_total:,}", min(1.0, damage_total / 500), (255, 116, 116, 255))
+        draw_stat_bar(804, 346, 340, 24, "Armor", f"{armor_total:,}", min(1.0, armor_total / 500), (126, 186, 255, 255))
+        draw_stat_bar(1184, 306, 140, 24, "Luck", f"{luck_percent:.2f}%", luck_percent / 100, (255, 214, 109, 255))
+
+        draw.text((426, 410), "Adventurer Ledger", font=heading_font, fill=(219, 238, 255, 255))
+        ledger_lines = [
+            ("Money", f"${self._compact_number(money)}"),
+            ("Guild", guild_name or "None"),
+            ("God", god_name),
+            ("PvP Wins", f"{pvp_wins:,}"),
+            ("Pet", pet_name or "None"),
+            ("Marriage", marriage_name or "None"),
+            ("Rich Rank", f"#{rank_money}" if rank_money else "N/A"),
+            ("XP Rank", f"#{rank_xp}" if rank_xp else "N/A"),
+        ]
+        y_cursor = 458
+        for label, value in ledger_lines:
+            draw.text((430, y_cursor), f"{label}:", font=label_font, fill=(160, 198, 233, 255))
+            draw.text((640, y_cursor), str(value)[:36], font=value_font, fill=(232, 244, 255, 255))
+            y_cursor += 40
+
+        right_hand, left_hand = None, None
+        any_count = sum(1 for item in items if item.get("hand") == "any")
+        if len(items) == 2 and any_count == 1 and items[0].get("hand") == "any":
+            items = [items[1], items[0]]
+        for item in items:
+            hand = item.get("hand")
+            if hand == "both":
+                right_hand = left_hand = item
+            elif hand == "left":
+                left_hand = item
+            elif hand == "right":
+                right_hand = item
+            elif hand == "any":
+                if not right_hand:
+                    right_hand = item
+                else:
+                    left_hand = item
+
+        def item_block(x, y, title, item):
+            draw.rounded_rectangle((x, y, x + 408, y + 110), radius=16, fill=(18, 34, 58, 228), outline=(136, 188, 243, 146), width=2)
+            draw.text((x + 18, y + 14), title, font=label_font, fill=(170, 203, 236, 255))
+            if item:
+                item_name = str(item.get("name", "Unknown"))
+                item_type = str(item.get("type", "Unknown"))
+                item_power = self._safe_int(item.get("damage"), 0) + self._safe_int(item.get("armor"), 0)
+                draw.text((x + 18, y + 46), item_name[:30], font=value_font, fill=(240, 248, 255, 255))
+                draw.text((x + 18, y + 78), f"{item_type}  |  Power {item_power}", font=tiny_font, fill=(166, 199, 231, 255))
+            else:
+                draw.text((x + 18, y + 58), "None Equipped", font=value_font, fill=(188, 203, 224, 255))
+
+        draw.text((914, 410), "Armory", font=heading_font, fill=(219, 238, 255, 255))
+        item_block(914, 458, "Right Hand", right_hand)
+        item_block(914, 586, "Left Hand", left_hand)
+
+        mission_text = "No active mission"
+        if mission:
+            mission_name = ADVENTURE_NAMES.get(mission[0], str(mission[0]))
+            mission_eta = "Finished" if mission[2] else str(mission[1]).split(".")[0]
+            mission_text = f"{mission_name} ({mission_eta})"
+        draw.rounded_rectangle((914, 724, 1322, 790), radius=16, fill=(20, 40, 67, 220), outline=(158, 203, 250, 146), width=2)
+        draw.text((930, 738), "Quest Tracker", font=label_font, fill=(175, 208, 240, 255))
+        draw.text((1110, 738), mission_text[:34], font=tiny_font, fill=(233, 246, 255, 255))
+
+        badge_value = Badge.from_db(profile.get("badges"))
+        badge_tokens = badge_value.to_items_lowercase() if badge_value else []
+        badge_text = ", ".join(badge_tokens[:5]) if badge_tokens else "No badges yet"
+        draw.text((74, 422), "Badge Collection", font=heading_font, fill=(219, 238, 255, 255))
+        draw.multiline_text((74, 466), badge_text, font=tiny_font, fill=(194, 221, 249, 255), spacing=6)
+
+        draw.text((72, 764), f"ID {user.id}", font=tiny_font, fill=(149, 181, 214, 255))
+        draw.text((1110, 794), "Fable Reborn RPG Card", font=tiny_font, fill=(145, 182, 220, 220))
+
+        output = BytesIO()
+        canvas.convert("RGB").save(output, format="PNG", optimize=True)
+        output.seek(0)
+        return output
 
     @classmethod
     def _preset_amulet_none_marker(cls) -> int:
@@ -1326,6 +1652,75 @@ class Profile(commands.Cog):
         embed.set_footer(text=f"User ID: {target_user.id}")
 
         await ctx.send(embed=embed)
+
+    @is_gm()
+    @commands.command(
+        name="profilerpg",
+        aliases=["prpg", "rpgprofile"],
+        brief=_("View someone's profile as an RPG stat card"),
+    )
+    @locale_doc
+    async def profilerpg(self, ctx, *, target: str = None):
+        _(
+            """`[target]` - The person whose profile card to view
+
+            Render a high-detail RPG profile card with avatar, progression, combat stats, gear, ranks, and quest info."""
+        )
+
+        user = await self._resolve_profile_target_user(ctx, target)
+        if not user:
+            return await ctx.send(_("Unknown User"))
+
+        rank_money, rank_xp = await self.bot.get_ranks_for(user)
+        items = await self.bot.get_equipped_items_for(user)
+
+        async with self.bot.pool.acquire() as conn:
+            profile_data = await conn.fetchrow(
+                'SELECT * FROM profile WHERE "user" = $1 OR discordtag = $2',
+                user.id,
+                user.display_name,
+            )
+            if not profile_data:
+                return await ctx.send(
+                    _("**{target}** does not have a character.").format(target=user)
+                )
+
+            mission = await self.bot.get_adventure(user)
+            guild_name = await conn.fetchval(
+                'SELECT name FROM guild WHERE "id" = $1;',
+                profile_data["guild"],
+            )
+            pet_name = await conn.fetchval(
+                'SELECT default_name FROM monster_pets WHERE "user_id" = $1 AND equipped = true;',
+                user.id,
+            ) or "None"
+
+        marriage_name = None
+        if profile_data.get("marriage"):
+            marriage_name = await rpgtools.lookup(
+                self.bot,
+                profile_data["marriage"],
+                return_none=True,
+            )
+
+        image_buffer = await self._build_profile_rpg_card(
+            user=user,
+            profile=profile_data,
+            items=items,
+            rank_money=rank_money,
+            rank_xp=rank_xp,
+            guild_name=guild_name,
+            mission=mission,
+            pet_name=pet_name,
+            marriage_name=marriage_name,
+        )
+        await ctx.send(
+            _("Your RPG Profile Card:"),
+            file=discord.File(
+                fp=image_buffer,
+                filename=f"profile_rpg_{user.id}.png",
+            ),
+        )
 
     @checks.has_char()
     @commands.command(brief=_("Show your current luck"))
