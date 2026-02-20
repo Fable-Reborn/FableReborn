@@ -521,22 +521,15 @@ class Profile(commands.Cog):
         draw.text((80, 404), clip(f"Level {level}  {rarity}", value_font, 286), font=value_font, fill=colors["border"])
         draw.text((80, 436), clip(race_name, tiny_font, 286), font=tiny_font, fill=colors["muted"])
         badge_value = self._badge_from_db_value(profile.get("badges"))
-        badges = badge_value.to_items_lowercase() if badge_value else []
-        badge_text = " | ".join(badges[:8]) if badges else "No badges yet"
-        parts, line = [], ""
-        for word in badge_text.split():
-            cand = f"{line} {word}".strip()
-            if tw(cand, tiny_font) <= 286:
-                line = cand
-            else:
-                parts.append(line)
-                line = word
-                if len(parts) >= 5:
-                    break
-        if line and len(parts) < 6:
-            parts.append(line)
+        badge_lines = badge_value.to_items_lowercase()[:6] if badge_value else ["No badges yet"]
         draw.text((80, 506), "Relics and Badges", font=label_font, fill=colors["border"])
-        draw.multiline_text((80, 542), "\n".join(parts) if parts else "No badges yet", font=tiny_font, fill=colors["muted"], spacing=6)
+        draw.multiline_text(
+            (80, 542),
+            "\n".join(badge_lines),
+            font=tiny_font,
+            fill=colors["muted"],
+            spacing=6,
+        )
         draw.text((80, 852), f"ID {user.id}", font=tiny_font, fill=colors["muted"])
 
         icon_size, icon_gap = 74, 10
@@ -1334,7 +1327,7 @@ class Profile(commands.Cog):
 
                     items = await self.bot.get_equipped_items_for(targetid, conn=conn)
                     mission = await self.bot.get_adventure(targetid)
-                    _ = await self._sync_auto_profile_badges(
+                    synced_badges = await self._sync_auto_profile_badges(
                         user_id=targetid,
                         badges_raw=profile["badges"],
                         conn=conn,
@@ -1381,6 +1374,7 @@ class Profile(commands.Cog):
                 else:
                     adventure_name = None
                     adventure_time = None
+                badges = synced_badges.to_items_lowercase() if synced_badges else []
 
                 async with self.bot.pool.acquire() as conn:
                 # Get custom positions for this user  
@@ -1415,7 +1409,7 @@ class Profile(commands.Cog):
                     "god": profile["god"] or _("No God"),
                     "adventure_name": adventure_name,   # From user's snippet
                     "adventure_time": adventure_time,
-                    "badges": [],
+                    "badges": badges,
                     "positions": positions
                 }
                 
@@ -1513,7 +1507,7 @@ class Profile(commands.Cog):
 
                     items = await self.bot.get_equipped_items_for(targetid, conn=conn)
                     mission = await self.bot.get_adventure(targetid)
-                    _ = await self._sync_auto_profile_badges(
+                    await self._sync_auto_profile_badges(
                         user_id=targetid,
                         badges_raw=profile["badges"],
                         conn=conn,
