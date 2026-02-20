@@ -324,6 +324,7 @@ class Profile(commands.Cog):
         aliases = {
             "lightning": "electric",
             "electricity": "electric",
+            "nature": "earth",
         }
         normalized = aliases.get(normalized, normalized)
 
@@ -625,7 +626,11 @@ class Profile(commands.Cog):
 
         for idx, weapon_item in enumerate(element_slots):
             raw_element = str(weapon_item.get("element") if weapon_item else "").strip()
-            element_name = raw_element.capitalize() if raw_element else "Unknown"
+            if raw_element:
+                element_key = raw_element.lower()
+                element_name = "Nature" if element_key == "earth" else element_key.capitalize()
+            else:
+                element_name = "Unknown"
             x = icon_start + idx * (icon_size + icon_gap)
             slot = (x, 146, x + icon_size, 146 + icon_size)
             draw.rounded_rectangle(slot, radius=14, fill=(70, 48, 28, 220), outline=colors["border_dim"], width=2)
@@ -795,17 +800,23 @@ class Profile(commands.Cog):
             pet_display_name = str(
                 pet_data.get("name") or pet_data.get("default_name") or pet_name or "Unknown"
             )
-            pet_level = max(1, self._safe_int(pet_data.get("level"), 1))
+            pet_level = max(1, min(100, self._safe_int(pet_data.get("level"), 1)))
             pet_stage = str(pet_data.get("growth_stage") or "Unknown").capitalize()
-            pet_element = str(pet_data.get("element") or "Unknown").capitalize()
+            pet_element_key = str(pet_data.get("element") or "").strip().lower()
+            pet_element = "Nature" if pet_element_key == "earth" else (pet_element_key.capitalize() if pet_element_key else "Unknown")
             pet_happiness = max(0, min(100, self._safe_int(pet_data.get("happiness"), 0)))
             pet_hunger = max(0, min(100, self._safe_int(pet_data.get("hunger"), 0)))
             pet_trust = max(0, min(100, self._safe_int(pet_data.get("trust_level"), 0)))
-            pet_hp = self._safe_int(pet_data.get("hp"), 0)
-            pet_attack = self._safe_int(pet_data.get("attack"), 0)
-            pet_defense = self._safe_int(pet_data.get("defense"), 0)
+            pet_hp_base = self._safe_float(pet_data.get("hp"), 0.0)
+            pet_attack_base = self._safe_float(pet_data.get("attack"), 0.0)
+            pet_defense_base = self._safe_float(pet_data.get("defense"), 0.0)
             pet_iv = self._safe_int(pet_data.get("IV"), 0)
             trust_name, trust_bonus = trust_tier(pet_trust)
+            level_multiplier = 1 + (pet_level * 0.01)
+            trust_multiplier = 1 + (trust_bonus / 100.0)
+            pet_hp = max(0, int(round(pet_hp_base * level_multiplier * trust_multiplier)))
+            pet_attack = max(0, int(round(pet_attack_base * level_multiplier * trust_multiplier)))
+            pet_defense = max(0, int(round(pet_defense_base * level_multiplier * trust_multiplier)))
 
             pet_img = await fetch_remote_image(str(pet_data.get("url") or ""))
             if pet_img:
