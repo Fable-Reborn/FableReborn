@@ -2115,7 +2115,6 @@ class Profile(commands.Cog):
 
         await ctx.send(embed=embed)
 
-    @is_gm()
     @commands.command(
         name="profilerpg",
         aliases=["prpg", "rpgprofile"],
