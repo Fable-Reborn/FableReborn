@@ -41,7 +41,7 @@ from cogs.adventure import ADVENTURE_NAMES
 from cogs.help import chunks
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from cogs.profilecustomization import ProfileCustomization
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps
 from utils import checks, colors, random
 from utils import misc as rpgtools
 from utils.checks import is_gm
@@ -289,141 +289,203 @@ class Profile(commands.Cog):
         mission,
         pet_name: str,
         marriage_name: Optional[str],
+        pet_data=None,
     ) -> BytesIO:
-        width, height = 1400, 860
-        canvas = Image.new("RGBA", (width, height), (10, 16, 28, 255))
+        width, height = 1660, 940
+        canvas = Image.new("RGBA", (width, height), (58, 38, 22, 255))
         draw = ImageDraw.Draw(canvas)
         resample = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
+        colors = {
+            "panel": (74, 49, 30, 220),
+            "panel_inner": (103, 72, 45, 180),
+            "border": (198, 156, 90, 255),
+            "border_dim": (132, 98, 54, 235),
+            "text": (247, 231, 196, 255),
+            "muted": (214, 186, 140, 255),
+            "bar_bg": (65, 48, 34, 255),
+        }
 
         for y in range(height):
-            blend = y / max(1, height - 1)
-            r = int(12 + (56 - 12) * blend)
-            g = int(20 + (32 - 20) * blend)
-            b = int(36 + (54 - 36) * blend)
+            t = y / max(1, height - 1)
+            r = int(44 + (150 - 44) * t)
+            g = int(30 + (111 - 30) * t)
+            b = int(18 + (72 - 18) * t)
             draw.line([(0, y), (width, y)], fill=(r, g, b, 255))
 
-        glow_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        glow_draw = ImageDraw.Draw(glow_layer)
-        glow_draw.ellipse((40, -120, 500, 320), fill=(82, 167, 255, 95))
-        glow_draw.ellipse((920, 540, 1450, 1080), fill=(255, 116, 214, 90))
-        glow_draw.ellipse((620, 120, 1050, 560), fill=(94, 255, 193, 75))
-        glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(radius=48))
-        canvas.alpha_composite(glow_layer)
+        if hasattr(Image, "effect_noise"):
+            try:
+                noise = Image.effect_noise((width, height), 14).convert("L")
+                tex = ImageOps.colorize(noise, (46, 31, 20), (170, 132, 86)).convert("RGBA")
+                tex.putalpha(42)
+                canvas.alpha_composite(tex)
+            except Exception:
+                pass
 
-        def panel(x1, y1, x2, y2, fill=(16, 26, 46, 192), outline=(188, 220, 255, 120)):
-            draw.rounded_rectangle((x1, y1, x2, y2), radius=26, fill=fill, outline=outline, width=2)
+        for path in (
+            Path("assets") / "other" / "dragon.webp",
+            Path("assets") / "other" / "dragon.jpg",
+            Path("assets") / "other" / "dragon.jpeg",
+        ):
+            if path.exists():
+                try:
+                    dragon = Image.open(path).convert("RGBA")
+                    dragon = ImageOps.fit(dragon, (1060, 680), method=resample)
+                    dragon = ImageOps.grayscale(dragon).convert("RGBA")
+                    tint = Image.new("RGBA", dragon.size, (210, 166, 100, 255))
+                    dragon = Image.blend(dragon, tint, 0.58)
+                    dragon.putalpha(dragon.split()[3].point(lambda p: int(p * 0.18)))
+                    canvas.alpha_composite(dragon, (480, 150))
+                    break
+                except Exception:
+                    continue
 
-        panel(36, 36, 1364, 824, fill=(8, 14, 28, 188), outline=(180, 218, 255, 132))
-        panel(56, 66, 380, 804, fill=(12, 24, 44, 210))
-        panel(406, 66, 1344, 354, fill=(12, 24, 44, 210))
-        panel(406, 376, 876, 804, fill=(12, 24, 44, 210))
-        panel(896, 376, 1344, 804, fill=(12, 24, 44, 210))
+        draw.rounded_rectangle((24, 24, width - 24, height - 24), radius=34, fill=(39, 24, 14, 242), outline=colors["border"], width=4)
+        draw.rounded_rectangle((40, 40, width - 40, height - 40), radius=30, outline=colors["border_dim"], width=2)
 
-        title_font = self._profile_font(54)
-        subtitle_font = self._profile_font(28)
-        heading_font = self._profile_font(32)
+        title_font = self._profile_font(44)
+        subtitle_font = self._profile_font(24)
+        heading_font = self._profile_font(31)
         label_font = self._profile_font(24)
-        value_font = self._profile_font(26)
+        value_font = self._profile_font(25)
         tiny_font = self._profile_font(20)
+        micro_font = self._profile_font(18)
+
+        def tw(text, font):
+            box = draw.textbbox((0, 0), str(text), font=font)
+            return max(0, box[2] - box[0])
+
+        def clip(text, font, max_w):
+            txt = str(text or "")
+            if max_w <= 0 or tw(txt, font) <= max_w:
+                return txt
+            while txt and tw(f"{txt}...", font) > max_w:
+                txt = txt[:-1]
+            return f"{txt}..." if txt else "..."
+
+        def panel(rect, title):
+            x1, y1, x2, y2 = rect
+            draw.rounded_rectangle(rect, radius=24, fill=colors["panel"], outline=colors["border_dim"], width=3)
+            draw.rounded_rectangle((x1 + 4, y1 + 4, x2 - 4, y2 - 4), radius=20, outline=colors["panel_inner"], width=1)
+            title_text = clip(title, heading_font, max(64, (x2 - x1) - 36))
+            draw.text((x1 + 18, y1 + 14), title_text, font=heading_font, fill=colors["border"])
+            draw.line((x1 + 18, y1 + 56, x2 - 18, y1 + 56), fill=colors["border_dim"], width=2)
+
+        left_rect = (56, 66, 390, 884)
+        header_rect = (412, 66, 1268, 450)
+        ledger_rect = (412, 470, 850, 884)
+        gear_rect = (868, 470, 1268, 884)
+        pet_rect = (1286, 66, width - 56, 884)
+        panel(left_rect, "Hero Sigil")
+        panel(header_rect, "Dragonforged Chronicle")
+        panel(ledger_rect, "Adventurer Ledger")
+        panel(gear_rect, "Armory and Quests")
+        panel(pet_rect, "Pet Status")
 
         xp_value = self._safe_int(profile.get("xp"), 0)
-        level = rpgtools.xptolevel(xp_value)
-        level_floor = rpgtools.levels.get(level, 0)
-        level_ceiling = rpgtools.levels.get(min(level + 1, 100), level_floor)
-        if level >= 100 or level_ceiling <= level_floor:
-            xp_progress = 1.0
-        else:
-            xp_progress = max(0.0, min(1.0, (xp_value - level_floor) / (level_ceiling - level_floor)))
-
+        level = int(rpgtools.xptolevel(xp_value))
+        floor = rpgtools.levels.get(level, 0)
+        ceil = rpgtools.levels.get(min(level + 1, 100), floor)
+        xp_progress = 1.0 if level >= 100 or ceil <= floor else max(0.0, min(1.0, (xp_value - floor) / (ceil - floor)))
         luck_raw = float(profile.get("luck") or 0.3)
-        if luck_raw <= 0.3:
-            luck_percent = 20.0
-        else:
-            luck_percent = ((luck_raw - 0.3) / (1.5 - 0.3)) * 80 + 20
+        luck_percent = 20.0 if luck_raw <= 0.3 else ((luck_raw - 0.3) / 1.2) * 80 + 20
         luck_percent = round(max(0.0, min(100.0, luck_percent)), 2)
-
-        damage_total = sum(self._safe_int(item.get("damage"), 0) for item in items)
-        armor_total = sum(self._safe_int(item.get("armor"), 0) for item in items)
+        damage_total = sum(self._safe_int(i.get("damage"), 0) for i in items)
+        armor_total = sum(self._safe_int(i.get("armor"), 0) for i in items)
         pvp_wins = self._safe_int(profile.get("pvpwins"), 0)
         money = self._safe_int(profile.get("money"), 0)
-        power_score = max(1, damage_total * 4 + armor_total * 3 + int(luck_percent * 2) + level * 14 + pvp_wins * 2)
-
-        if level >= 90:
-            rarity_name, rarity_color = "Mythic", (255, 93, 175, 230)
-        elif level >= 70:
-            rarity_name, rarity_color = "Legendary", (255, 160, 75, 225)
-        elif level >= 50:
-            rarity_name, rarity_color = "Epic", (142, 122, 255, 225)
-        elif level >= 30:
-            rarity_name, rarity_color = "Rare", (76, 187, 255, 225)
-        else:
-            rarity_name, rarity_color = "Adventurer", (104, 220, 175, 225)
-
-        avatar = await self._fetch_avatar_image(user, size=512)
-        avatar = ImageOps.fit(avatar, (276, 276), method=resample)
-        avatar_mask = Image.new("L", (276, 276), 0)
-        ImageDraw.Draw(avatar_mask).ellipse((0, 0, 275, 275), fill=255)
-        ring = Image.new("RGBA", (300, 300), (0, 0, 0, 0))
-        ring_draw = ImageDraw.Draw(ring)
-        ring_draw.ellipse((0, 0, 299, 299), fill=(255, 255, 255, 22), outline=(207, 237, 255, 200), width=6)
-        canvas.alpha_composite(ring, (68, 102))
-        canvas.paste(avatar, (80, 114), avatar_mask)
+        power = max(1, damage_total * 4 + armor_total * 3 + int(luck_percent * 2) + level * 14 + pvp_wins * 2)
+        rarity = "Mythic" if level >= 90 else "Legendary" if level >= 70 else "Epic" if level >= 50 else "Rare" if level >= 30 else "Adventurer"
 
         card_name = str(profile.get("name") or user.display_name)
         race_name = str(profile.get("race") or "Unknown")
         class_list = profile.get("class") or []
         if not isinstance(class_list, list):
             class_list = [str(class_list)]
-        classes_text = " / ".join([str(c) for c in class_list if c]) or "No Class"
+        classes = " / ".join([str(c) for c in class_list if c]) or "No Class"
         god_name = str(profile.get("god") or "No God")
 
-        draw.text((426, 88), f"{card_name}", font=title_font, fill=(232, 244, 255, 255))
-        draw.text((428, 160), f"{race_name} | {classes_text}", font=subtitle_font, fill=(179, 208, 236, 255))
+        avatar = await self._fetch_avatar_image(user, size=512)
+        avatar = ImageOps.fit(avatar, (212, 212), method=resample)
+        mask = Image.new("L", (212, 212), 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, 211, 211), fill=255)
+        ring = Image.new("RGBA", (238, 238), (0, 0, 0, 0))
+        rd = ImageDraw.Draw(ring)
+        rd.ellipse((0, 0, 237, 237), fill=(255, 241, 209, 12), outline=colors["border"], width=6)
+        rd.ellipse((13, 13, 224, 224), outline=colors["border_dim"], width=2)
+        canvas.alpha_composite(ring, (102, 146))
+        canvas.paste(avatar, (115, 159), mask)
 
-        ribbon_x1, ribbon_y1, ribbon_x2, ribbon_y2 = 1078, 82, 1328, 146
-        draw.rounded_rectangle((ribbon_x1, ribbon_y1, ribbon_x2, ribbon_y2), radius=18, fill=rarity_color)
-        draw.text((ribbon_x1 + 20, ribbon_y1 + 14), f"{rarity_name}", font=value_font, fill=(255, 255, 255, 255))
+        draw.text((80, 404), clip(f"Level {level}  {rarity}", value_font, 286), font=value_font, fill=colors["border"])
+        draw.text((80, 436), clip(race_name, tiny_font, 286), font=tiny_font, fill=colors["muted"])
+        badge_value = Badge.from_db(profile.get("badges"))
+        badges = badge_value.to_items_lowercase() if badge_value else []
+        badge_text = " | ".join(badges[:8]) if badges else "No badges yet"
+        parts, line = [], ""
+        for word in badge_text.split():
+            cand = f"{line} {word}".strip()
+            if tw(cand, tiny_font) <= 286:
+                line = cand
+            else:
+                parts.append(line)
+                line = word
+                if len(parts) >= 5:
+                    break
+        if line and len(parts) < 6:
+            parts.append(line)
+        draw.text((80, 506), "Relics and Badges", font=label_font, fill=colors["border"])
+        draw.multiline_text((80, 542), "\n".join(parts) if parts else "No badges yet", font=tiny_font, fill=colors["muted"], spacing=6)
+        draw.text((80, 852), f"ID {user.id}", font=tiny_font, fill=colors["muted"])
 
+        icon_size, icon_gap = 74, 10
+        icon_start = header_rect[2] - 22 - (icon_size * 3 + icon_gap * 2)
+        name_x = header_rect[0] + 22
+        name_max = max(80, icon_start - name_x - 20)
+        draw.text((name_x, 150), clip(card_name, title_font, name_max), font=title_font, fill=colors["text"])
+        draw.text((name_x, 208), clip(f"{race_name} | {classes}", subtitle_font, name_max), font=subtitle_font, fill=colors["muted"])
         stars = max(1, min(5, math.ceil(level / 20)))
-        draw.text((428, 200), f"Tier {'*' * stars}", font=label_font, fill=(255, 224, 144, 255))
-        draw.text((730, 200), f"Power {power_score:,}", font=label_font, fill=(148, 255, 216, 255))
+        ribbon = clip(f"{rarity} Tier {'*' * stars}", label_font, 420)
+        rw = tw(ribbon, label_font) + 34
+        draw.rounded_rectangle((name_x, 250, name_x + rw, 294), radius=16, fill=(164, 120, 64, 245), outline=colors["border"], width=2)
+        draw.text((name_x + 16, 260), ribbon, font=label_font, fill=colors["text"])
+        draw.text((name_x, 310), clip(f"Power {power:,}", value_font, 390), font=value_font, fill=colors["border"])
+        draw.text((name_x + 420, 310), clip(f"Luck Blessing {luck_percent:.2f}%", value_font, 320), font=value_font, fill=colors["muted"])
 
-        icon_x = 1014
-        icon_y = 176
-        for idx, class_name in enumerate(class_list[:3]):
-            class_obj = class_from_string(class_name) if class_name else None
-            icon_key = class_obj.get_class_line_name().lower() if class_obj else ""
-            icon_slot_x = icon_x + idx * 106
-            icon_slot = (icon_slot_x, icon_y, icon_slot_x + 90, icon_y + 90)
-            draw.rounded_rectangle(icon_slot, radius=16, fill=(20, 40, 72, 198), outline=(173, 214, 255, 176), width=2)
-            icon_path = self._find_class_icon(icon_key)
+        for idx, cname in enumerate(class_list[:3]):
+            try:
+                cobj = class_from_string(cname) if cname else None
+            except Exception:
+                cobj = None
+            key = cobj.get_class_line_name().lower().replace(" ", "_") if cobj else ""
+            x = icon_start + idx * (icon_size + icon_gap)
+            slot = (x, 146, x + icon_size, 146 + icon_size)
+            draw.rounded_rectangle(slot, radius=14, fill=(70, 48, 28, 220), outline=colors["border_dim"], width=2)
+            icon_path = self._find_class_icon(key)
             if icon_path:
                 try:
-                    icon_image = Image.open(icon_path).convert("RGBA")
-                    icon_image = ImageOps.fit(icon_image, (74, 74), method=resample)
-                    canvas.paste(icon_image, (icon_slot_x + 8, icon_y + 8), icon_image)
+                    icon = Image.open(icon_path).convert("RGBA")
+                    icon = ImageOps.fit(icon, (icon_size - 12, icon_size - 12), method=resample)
+                    canvas.paste(icon, (x + 6, 152), icon)
                 except Exception:
-                    draw.text((icon_slot_x + 30, icon_y + 28), icon_key[:1].upper(), font=heading_font, fill=(220, 240, 255, 255))
+                    draw.text((x + 25, 170), (key[:1] or "?").upper(), font=heading_font, fill=colors["text"])
             else:
-                draw.text((icon_slot_x + 30, icon_y + 28), icon_key[:1].upper() if icon_key else "?", font=heading_font, fill=(220, 240, 255, 255))
+                draw.text((x + 25, 170), (key[:1] or "?").upper(), font=heading_font, fill=colors["text"])
 
-        def draw_stat_bar(x, y, w, h, label, value, ratio, color):
-            draw.text((x, y - 32), label, font=label_font, fill=(190, 215, 244, 255))
-            draw.rounded_rectangle((x, y, x + w, y + h), radius=10, fill=(30, 46, 72, 255))
-            fill_w = int(max(0, min(1, ratio)) * w)
-            if fill_w > 0:
-                draw.rounded_rectangle((x, y, x + fill_w, y + h), radius=10, fill=color)
-            draw.text((x + w + 14, y - 2), value, font=value_font, fill=(236, 245, 255, 255))
+        def stat_bar(x, y, w, label, value, ratio, color):
+            v = clip(value, tiny_font, 120)
+            draw.text((x, y), clip(label, label_font, w - 120), font=label_font, fill=colors["muted"])
+            draw.text((x + w - tw(v, tiny_font), y + 3), v, font=tiny_font, fill=colors["text"])
+            by = y + 28
+            draw.rounded_rectangle((x, by, x + w, by + 16), radius=8, fill=colors["bar_bg"], outline=colors["border_dim"], width=1)
+            fw = int(max(0.0, min(1.0, ratio)) * (w - 2))
+            if fw > 0:
+                draw.rounded_rectangle((x + 1, by + 1, x + 1 + fw, by + 15), radius=7, fill=color)
 
-        draw.text((426, 256), "Core Stats", font=heading_font, fill=(219, 238, 255, 255))
-        draw_stat_bar(426, 306, 340, 24, "Level", f"{level}", level / 100, (103, 224, 255, 255))
-        draw_stat_bar(426, 346, 340, 24, "XP Progress", f"{xp_progress * 100:.1f}%", xp_progress, (149, 248, 190, 255))
-        draw_stat_bar(804, 306, 340, 24, "Damage", f"{damage_total:,}", min(1.0, damage_total / 500), (255, 116, 116, 255))
-        draw_stat_bar(804, 346, 340, 24, "Armor", f"{armor_total:,}", min(1.0, armor_total / 500), (126, 186, 255, 255))
-        draw_stat_bar(1184, 306, 140, 24, "Luck", f"{luck_percent:.2f}%", luck_percent / 100, (255, 214, 109, 255))
+        stat_bar(434, 340, 390, "Level", f"{level}", level / 100.0, (178, 133, 70, 255))
+        stat_bar(844, 340, 390, "Damage", f"{damage_total:,}", min(1.0, damage_total / 500.0), (171, 84, 64, 255))
+        stat_bar(434, 394, 390, "XP Progress", f"{xp_progress * 100:.1f}%", xp_progress, (112, 151, 93, 255))
+        stat_bar(844, 394, 390, "Armor", f"{armor_total:,}", min(1.0, armor_total / 500.0), (88, 118, 164, 255))
 
-        draw.text((426, 410), "Adventurer Ledger", font=heading_font, fill=(219, 238, 255, 255))
-        ledger_lines = [
+        ledger = [
             ("Money", f"${self._compact_number(money)}"),
             ("Guild", guild_name or "None"),
             ("God", god_name),
@@ -433,63 +495,318 @@ class Profile(commands.Cog):
             ("Rich Rank", f"#{rank_money}" if rank_money else "N/A"),
             ("XP Rank", f"#{rank_xp}" if rank_xp else "N/A"),
         ]
-        y_cursor = 458
-        for label, value in ledger_lines:
-            draw.text((430, y_cursor), f"{label}:", font=label_font, fill=(160, 198, 233, 255))
-            draw.text((640, y_cursor), str(value)[:36], font=value_font, fill=(232, 244, 255, 255))
-            y_cursor += 40
+        max_value = ledger_rect[2] - ledger_rect[0] - 224
+        y = 546
+        for k, v in ledger:
+            draw.text((ledger_rect[0] + 18, y), f"{k}:", font=label_font, fill=colors["muted"])
+            draw.text((ledger_rect[0] + 210, y), clip(v, value_font, max_value), font=value_font, fill=colors["text"])
+            y += 42
 
         right_hand, left_hand = None, None
-        any_count = sum(1 for item in items if item.get("hand") == "any")
+        any_count = sum(1 for i in items if i.get("hand") == "any")
         if len(items) == 2 and any_count == 1 and items[0].get("hand") == "any":
             items = [items[1], items[0]]
-        for item in items:
-            hand = item.get("hand")
-            if hand == "both":
-                right_hand = left_hand = item
-            elif hand == "left":
-                left_hand = item
-            elif hand == "right":
-                right_hand = item
-            elif hand == "any":
+        for i in items:
+            h = i.get("hand")
+            if h == "both":
+                right_hand = left_hand = i
+            elif h == "left":
+                left_hand = i
+            elif h == "right":
+                right_hand = i
+            elif h == "any":
                 if not right_hand:
-                    right_hand = item
+                    right_hand = i
                 else:
-                    left_hand = item
+                    left_hand = i
 
-        def item_block(x, y, title, item):
-            draw.rounded_rectangle((x, y, x + 408, y + 110), radius=16, fill=(18, 34, 58, 228), outline=(136, 188, 243, 146), width=2)
-            draw.text((x + 18, y + 14), title, font=label_font, fill=(170, 203, 236, 255))
-            if item:
-                item_name = str(item.get("name", "Unknown"))
-                item_type = str(item.get("type", "Unknown"))
-                item_power = self._safe_int(item.get("damage"), 0) + self._safe_int(item.get("armor"), 0)
-                draw.text((x + 18, y + 46), item_name[:30], font=value_font, fill=(240, 248, 255, 255))
-                draw.text((x + 18, y + 78), f"{item_type}  |  Power {item_power}", font=tiny_font, fill=(166, 199, 231, 255))
+        px1, py1, px2, py2 = pet_rect
+        pet_w = px2 - px1 - 28
+
+        async def fetch_remote_image(url: str) -> Optional[Image.Image]:
+            if not url:
+                return None
+            try:
+                async with self.bot.trusted_session.get(url) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.read()
+                return Image.open(BytesIO(data)).convert("RGBA")
+            except Exception:
+                return None
+
+        def trust_tier(value: int) -> tuple[str, int]:
+            if value >= 81:
+                return "Devoted", 10
+            if value >= 61:
+                return "Loyal", 8
+            if value >= 41:
+                return "Trusting", 5
+            if value >= 21:
+                return "Cautious", 0
+            return "Distrustful", -10
+
+        def pet_bar(y_pos: int, label: str, value: int, color: tuple[int, int, int, int]) -> int:
+            clamped = max(0, min(100, int(value)))
+            draw.text(
+                (px1 + 14, y_pos),
+                clip(f"{label} {clamped}%", micro_font, pet_w),
+                font=micro_font,
+                fill=colors["muted"],
+            )
+            bar_y = y_pos + 18
+            draw.rounded_rectangle(
+                (px1 + 14, bar_y, px2 - 14, bar_y + 12),
+                radius=6,
+                fill=colors["bar_bg"],
+                outline=colors["border_dim"],
+                width=1,
+            )
+            fill_w = int(((px2 - px1 - 30) * clamped) / 100)
+            if fill_w > 0:
+                draw.rounded_rectangle(
+                    (px1 + 15, bar_y + 1, px1 + 15 + fill_w, bar_y + 11),
+                    radius=5,
+                    fill=color,
+                )
+            return bar_y + 18
+
+        portrait_size = min(max(210, pet_w - 24), 320)
+        portrait_x = px1 + ((px2 - px1) - portrait_size) // 2
+        portrait_y = py1 + 78
+        draw.rounded_rectangle(
+            (portrait_x - 10, portrait_y - 10, portrait_x + portrait_size + 10, portrait_y + portrait_size + 10),
+            radius=18,
+            fill=(63, 41, 25, 235),
+            outline=colors["border_dim"],
+            width=2,
+        )
+
+        if pet_data:
+            pet_display_name = str(
+                pet_data.get("name") or pet_data.get("default_name") or pet_name or "Unknown"
+            )
+            pet_level = max(1, self._safe_int(pet_data.get("level"), 1))
+            pet_stage = str(pet_data.get("growth_stage") or "Unknown").capitalize()
+            pet_element = str(pet_data.get("element") or "Unknown").capitalize()
+            pet_happiness = max(0, min(100, self._safe_int(pet_data.get("happiness"), 0)))
+            pet_hunger = max(0, min(100, self._safe_int(pet_data.get("hunger"), 0)))
+            pet_trust = max(0, min(100, self._safe_int(pet_data.get("trust_level"), 0)))
+            pet_hp = self._safe_int(pet_data.get("hp"), 0)
+            pet_attack = self._safe_int(pet_data.get("attack"), 0)
+            pet_defense = self._safe_int(pet_data.get("defense"), 0)
+            pet_iv = self._safe_int(pet_data.get("IV"), 0)
+            trust_name, trust_bonus = trust_tier(pet_trust)
+
+            pet_img = await fetch_remote_image(str(pet_data.get("url") or ""))
+            if pet_img:
+                pet_img = ImageOps.fit(pet_img, (portrait_size, portrait_size), method=resample)
+                rounded_mask = Image.new("L", (portrait_size, portrait_size), 0)
+                ImageDraw.Draw(rounded_mask).rounded_rectangle(
+                    (0, 0, portrait_size - 1, portrait_size - 1), radius=14, fill=255
+                )
+                src_alpha = pet_img.split()[3]
+                combined_alpha = ImageChops.multiply(src_alpha, rounded_mask)
+                pet_img.putalpha(combined_alpha)
+                canvas.paste(pet_img, (portrait_x, portrait_y), pet_img)
             else:
-                draw.text((x + 18, y + 58), "None Equipped", font=value_font, fill=(188, 203, 224, 255))
+                draw.rounded_rectangle(
+                    (portrait_x, portrait_y, portrait_x + portrait_size, portrait_y + portrait_size),
+                    radius=14,
+                    fill=(82, 59, 38, 240),
+                    outline=colors["border_dim"],
+                    width=1,
+                )
+                draw.text(
+                    (portrait_x + 24, portrait_y + portrait_size // 2 - 16),
+                    "No Pet Image",
+                    font=tiny_font,
+                    fill=colors["muted"],
+                )
 
-        draw.text((914, 410), "Armory", font=heading_font, fill=(219, 238, 255, 255))
-        item_block(914, 458, "Right Hand", right_hand)
-        item_block(914, 586, "Left Hand", left_hand)
+            y_cursor = portrait_y + portrait_size + 20
+            draw.text(
+                (px1 + 14, y_cursor),
+                clip(pet_display_name, tiny_font, pet_w),
+                font=tiny_font,
+                fill=colors["text"],
+            )
+            y_cursor += 34
+            draw.text(
+                (px1 + 14, y_cursor),
+                clip(f"Lv {pet_level} | {pet_element}", micro_font, pet_w),
+                font=micro_font,
+                fill=colors["muted"],
+            )
+            y_cursor += 26
+            draw.text(
+                (px1 + 14, y_cursor),
+                clip(f"Stage: {pet_stage}", micro_font, pet_w),
+                font=micro_font,
+                fill=colors["muted"],
+            )
+            y_cursor += 26
+            draw.text(
+                (px1 + 14, y_cursor),
+                clip(f"Bond: {trust_name} ({trust_bonus:+d}%)", micro_font, pet_w),
+                font=micro_font,
+                fill=colors["muted"],
+            )
+            y_cursor += 22
+
+            y_cursor = pet_bar(y_cursor, "Happy", pet_happiness, (112, 151, 93, 255))
+            y_cursor = pet_bar(y_cursor + 10, "Hunger", pet_hunger, (171, 84, 64, 255))
+            y_cursor = pet_bar(y_cursor + 10, "Trust", pet_trust, (88, 118, 164, 255))
+
+            y_cursor += 14
+            draw.text(
+                (px1 + 14, y_cursor),
+                clip(f"HP {pet_hp}  ATK {pet_attack}", micro_font, pet_w),
+                font=micro_font,
+                fill=colors["muted"],
+            )
+            y_cursor += 24
+            draw.text(
+                (px1 + 14, y_cursor),
+                clip(f"DEF {pet_defense}  IV {pet_iv}%", micro_font, pet_w),
+                font=micro_font,
+                fill=colors["muted"],
+            )
+        else:
+            draw.rounded_rectangle(
+                (portrait_x, portrait_y, portrait_x + portrait_size, portrait_y + portrait_size),
+                radius=14,
+                fill=(82, 59, 38, 240),
+                outline=colors["border_dim"],
+                width=1,
+            )
+            draw.text(
+                (portrait_x + 24, portrait_y + portrait_size // 2 - 16),
+                "No Pet Equipped",
+                font=tiny_font,
+                fill=colors["muted"],
+            )
+            draw.text(
+                (px1 + 14, portrait_y + portrait_size + 24),
+                "Use $pets equip",
+                font=micro_font,
+                fill=colors["muted"],
+            )
+
+        def item_type_name(item) -> str:
+            if not item:
+                return ""
+            return str(item.get("type") or item.get("type_") or "").strip().title()
+
+        def combo_stance(right_item, left_item) -> str:
+            r_type = item_type_name(right_item)
+            l_type = item_type_name(left_item)
+            types = [t for t in (r_type, l_type) if t]
+
+            if not types:
+                return "Traveler's Poise"
+
+            if len(types) == 2 and r_type == l_type:
+                twin_map = {
+                    "Bow": "Eagle Volley",
+                    "Scythe": "Reaper's Arc",
+                    "Mace": "Titan Maul",
+                    "Shield": "Twin Aegis",
+                    "Sword": "Twinblade Dance",
+                    "Dagger": "Twin Fang",
+                    "Knife": "Twin Fang",
+                    "Wand": "Twin Sigils",
+                    "Axe": "Blood Reavers",
+                    "Hammer": "Stonebreak Pair",
+                    "Spear": "Dual Pike Drill",
+                }
+                return twin_map.get(r_type, f"Twin {r_type} Form")
+
+            # One shield + one weapon
+            if "Shield" in types and any(t != "Shield" for t in types):
+                weapon = next((t for t in types if t != "Shield"), "")
+                shield_map = {
+                    "Sword": "Guardian Knight",
+                    "Axe": "Bulwark Reaver",
+                    "Hammer": "Citadel Breaker",
+                    "Wand": "Arcane Bastion",
+                    "Spear": "Phalanx Pike",
+                    "Dagger": "Viper Bulwark",
+                    "Knife": "Viper Bulwark",
+                    "Bow": "Aegis Archer",
+                    "Scythe": "Gravewarden",
+                    "Mace": "Sanctified Bastion",
+                }
+                return shield_map.get(weapon, "Aegis Stance")
+
+            # Dual wield non-shields
+            if len(types) == 2 and all(t != "Shield" for t in types):
+                pair = tuple(sorted(types))
+                dual_map = {
+                    ("Dagger", "Knife"): "Shadow Fang",
+                    ("Axe", "Hammer"): "Ravager Pair",
+                    ("Dagger", "Sword"): "Duelist's Dance",
+                    ("Knife", "Sword"): "Duelist's Dance",
+                    ("Dagger", "Wand"): "Spellblade Tempo",
+                    ("Knife", "Wand"): "Spellblade Tempo",
+                    ("Spear", "Sword"): "Dragoon Cross",
+                }
+                return dual_map.get(pair, "Twinblade Tempo")
+
+            # Single weapon
+            single = types[0]
+            single_map = {
+                "Bow": "Ranger's Focus",
+                "Wand": "Arcanist Focus",
+                "Spear": "Lancer Reach",
+                "Dagger": "Assassin Veil",
+                "Knife": "Assassin Veil",
+                "Sword": "Duelist Guard",
+                "Axe": "Berserker Rush",
+                "Hammer": "Warden Crush",
+                "Scythe": "Reaper's Poise",
+                "Mace": "Crusader Weight",
+                "Shield": "Fortress Stance",
+            }
+            return single_map.get(single, "Balanced Form")
+
+        stance = combo_stance(right_hand, left_hand)
+        draw.text(
+            (gear_rect[0] + 20, 548),
+            clip(f"Battle Stance: {stance}", tiny_font, gear_rect[2] - gear_rect[0] - 40),
+            font=tiny_font,
+            fill=colors["muted"],
+        )
+
+        gear_x = gear_rect[0] + 16
+        gear_w = gear_rect[2] - gear_rect[0] - 32
+
+        def item_block(x, y, width_px, title, item):
+            draw.rounded_rectangle((x, y, x + width_px, y + 108), radius=14, fill=(76, 53, 32, 220), outline=colors["border_dim"], width=2)
+            draw.text((x + 14, y + 10), title, font=label_font, fill=colors["border"])
+            if item:
+                name = clip(str(item.get("name", "Unknown")), value_font, max(120, width_px - 28))
+                kind = clip(str(item.get("type", "Unknown")), tiny_font, max(80, width_px - 170))
+                power_val = self._safe_int(item.get("damage"), 0) + self._safe_int(item.get("armor"), 0)
+                draw.text((x + 14, y + 44), name, font=value_font, fill=colors["text"])
+                draw.text((x + 14, y + 76), f"{kind} | Power {power_val}", font=tiny_font, fill=colors["muted"])
+            else:
+                draw.text((x + 14, y + 52), "None Equipped", font=value_font, fill=colors["muted"])
+
+        item_block(gear_x, 580, gear_w, "Right Hand", right_hand)
+        item_block(gear_x, 708, gear_w, "Left Hand", left_hand)
 
         mission_text = "No active mission"
         if mission:
             mission_name = ADVENTURE_NAMES.get(mission[0], str(mission[0]))
             mission_eta = "Finished" if mission[2] else str(mission[1]).split(".")[0]
             mission_text = f"{mission_name} ({mission_eta})"
-        draw.rounded_rectangle((914, 724, 1322, 790), radius=16, fill=(20, 40, 67, 220), outline=(158, 203, 250, 146), width=2)
-        draw.text((930, 738), "Quest Tracker", font=label_font, fill=(175, 208, 240, 255))
-        draw.text((1110, 738), mission_text[:34], font=tiny_font, fill=(233, 246, 255, 255))
+        draw.rounded_rectangle((gear_x, 830, gear_x + gear_w, 876), radius=12, fill=(76, 53, 32, 230), outline=colors["border_dim"], width=2)
+        draw.text((gear_x + 16, 842), "Quest:", font=label_font, fill=colors["border"])
+        draw.text((gear_x + 118, 844), clip(mission_text, tiny_font, max(80, gear_w - 132)), font=tiny_font, fill=colors["text"])
 
-        badge_value = Badge.from_db(profile.get("badges"))
-        badge_tokens = badge_value.to_items_lowercase() if badge_value else []
-        badge_text = ", ".join(badge_tokens[:5]) if badge_tokens else "No badges yet"
-        draw.text((74, 422), "Badge Collection", font=heading_font, fill=(219, 238, 255, 255))
-        draw.multiline_text((74, 466), badge_text, font=tiny_font, fill=(194, 221, 249, 255), spacing=6)
-
-        draw.text((72, 764), f"ID {user.id}", font=tiny_font, fill=(149, 181, 214, 255))
-        draw.text((1110, 794), "Fable Reborn RPG Card", font=tiny_font, fill=(145, 182, 220, 220))
+        footer = "Fable Reborn - Dragon Chronicle"
+        draw.text((width - 12 - tw(footer, tiny_font), height - 22), footer, font=tiny_font, fill=colors["muted"])
 
         output = BytesIO()
         canvas.convert("RGB").save(output, format="PNG", optimize=True)
@@ -1690,10 +2007,15 @@ class Profile(commands.Cog):
                 'SELECT name FROM guild WHERE "id" = $1;',
                 profile_data["guild"],
             )
-            pet_name = await conn.fetchval(
-                'SELECT default_name FROM monster_pets WHERE "user_id" = $1 AND equipped = true;',
+            pet_data = await conn.fetchrow(
+                'SELECT * FROM monster_pets WHERE "user_id" = $1 AND equipped = true;',
                 user.id,
-            ) or "None"
+            )
+            pet_name = (
+                str(pet_data.get("name") or pet_data.get("default_name") or "None")
+                if pet_data
+                else "None"
+            )
 
         marriage_name = None
         if profile_data.get("marriage"):
@@ -1713,6 +2035,7 @@ class Profile(commands.Cog):
             mission=mission,
             pet_name=pet_name,
             marriage_name=marriage_name,
+            pet_data=pet_data,
         )
         await ctx.send(
             _("Your RPG Profile Card:"),
