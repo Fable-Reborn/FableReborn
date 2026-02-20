@@ -160,6 +160,7 @@ class RaidBattle(Battle):
         
         if hit_success:
             # Attack hits
+            blocked_damage = Decimal("0")
             
             # Special case for mage fireball
             used_fireball = False
@@ -202,6 +203,7 @@ class RaidBattle(Battle):
                     minimum_damage=Decimal("10"),
                 )
                 damage = outcome.final_damage
+                blocked_damage = outcome.blocked_damage
                 skill_messages = outcome.skill_messages
                 defender_messages = outcome.defender_messages
                 

@@ -490,11 +490,12 @@ class Profile(commands.Cog):
         )
         pvp_wins = self._safe_int(profile.get("pvpwins"), 0)
         money = self._safe_int(profile.get("money"), 0)
-        # Power is based on raid-facing combat values; raid stats and total health already
-        # include equipped amulet bonuses upstream.
-        attack_power = int(round(raid_attack_value * 0.65))
-        defense_power = int(round(raid_defense_value * 0.55))
-        health_power = int(round(total_health_value * 0.20))
+        # Power uses full raid-facing combat values. Attack/defense already include
+        # equipped amulet bonuses from get_raidstats(), and total health includes HP
+        # stat + level scaling + equipped amulet HP.
+        attack_power = raid_attack_value
+        defense_power = raid_defense_value
+        health_power = total_health_value
         progression_power = int(luck_percent * 2) + level * 12 + pvp_wins * 2
         power = max(1, attack_power + defense_power + health_power + progression_power)
         rarity = "Mythic" if level >= 90 else "Legendary" if level >= 70 else "Epic" if level >= 50 else "Rare" if level >= 30 else "Adventurer"

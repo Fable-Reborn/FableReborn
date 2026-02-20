@@ -102,6 +102,7 @@ class TeamBattle(Battle):
         
         if hit_success:
             # Attack hits
+            blocked_damage = Decimal("0")
             
             # Special case for mage fireball
             used_fireball = False
