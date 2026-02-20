@@ -893,9 +893,9 @@ class Profile(commands.Cog):
                 fill=colors["border"],
             )
             combat_y = combat_top + 40
-            combat_y = pet_combat_bar(combat_y, "HP", pet_hp, 20000, (112, 151, 93, 255))
-            combat_y = pet_combat_bar(combat_y + 4, "ATK", pet_attack, 5000, (171, 84, 64, 255))
-            pet_combat_bar(combat_y + 4, "DEF", pet_defense, 5000, (88, 118, 164, 255))
+            combat_y = pet_combat_bar(combat_y, "HP", pet_hp, 30000, (112, 151, 93, 255))
+            combat_y = pet_combat_bar(combat_y + 4, "ATK", pet_attack, 6000, (171, 84, 64, 255))
+            pet_combat_bar(combat_y + 4, "DEF", pet_defense, 6000, (88, 118, 164, 255))
         else:
             draw.rounded_rectangle(
                 (portrait_x, portrait_y, portrait_x + portrait_size, portrait_y + portrait_size),
