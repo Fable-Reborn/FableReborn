@@ -947,8 +947,7 @@ class Profile(commands.Cog):
         mission_text = "No active mission"
         if mission:
             mission_name = ADVENTURE_NAMES.get(mission[0], str(mission[0]))
-            mission_eta = "Finished" if mission[2] else str(mission[1]).split(".")[0]
-            mission_text = f"{mission_name} ({mission_eta})"
+            mission_text = mission_name
         draw.rounded_rectangle((gear_x, 830, gear_x + gear_w, 876), radius=12, fill=(76, 53, 32, 230), outline=colors["border_dim"], width=2)
         draw.text((gear_x + 16, 842), "Quest:", font=label_font, fill=colors["border"])
         draw.text((gear_x + 118, 844), clip(mission_text, tiny_font, max(80, gear_w - 132)), font=tiny_font, fill=colors["text"])

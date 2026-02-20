@@ -1674,14 +1674,30 @@ class Player:
             )
         )
         possible_idols = [p for p in self.game.alive_players if p != self]
+        if not possible_idols:
+            await self.send(
+                _("No valid idol could be chosen.\n{game_link}").format(
+                    game_link=self.game.game_link
+                )
+            )
+            return
         try:
-            idol = await self.choose_users(
+            idol_choices = await self.choose_users(
                 _("Choose your Idol. You will turn into a Werewolf if they die."),
                 list_of_users=possible_idols,
                 amount=1,
                 required=True,
             )
-            idol = idol[0]
+            if idol_choices:
+                idol = idol_choices[0]
+            else:
+                idol = random.choice(possible_idols)
+                await self.send(
+                    _(
+                        "You didn't choose anyone. A random player will be chosen for"
+                        " you."
+                    )
+                )
         except asyncio.TimeoutError:
             idol = random.choice(possible_idols)
             await self.send(
@@ -2319,6 +2335,13 @@ class Player:
                 role=self.role_name
             )
         )
+        if len(self.game.alive_players) < 2:
+            await self.send(
+                _("Not enough players to choose lovers.\n{game_link}").format(
+                    game_link=self.game.game_link
+                )
+            )
+            return
         try:
             lovers = await self.choose_users(
                 _(
