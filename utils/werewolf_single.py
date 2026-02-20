@@ -24,7 +24,7 @@ from discord.ext import commands
 
 from classes.context import Context
 from utils.i18n import _
-from utils.werewolf import Role, Side, Player  # reuse enums for naming / goal texts
+from utils.werewolf import Player, Role, Side, send_traceback  # reuse enums for naming / goal texts
 
 __all__ = ['SPGame', 'Role', 'Side']  # Explicitly export these symbols
 
@@ -736,6 +736,7 @@ class SPGame:
                     await self._debug(f"Night 1 returned no deaths")
             except Exception as e:
                 await self._debug(f"Night 1 error: {str(e)}")
+                await send_traceback(self.ctx, e)
                 deaths = []
 
             # Check if game ended during first night (shouldn't happen but for safety)
@@ -752,6 +753,7 @@ class SPGame:
                     await self._day_phase(day_no, deaths)
                 except Exception as e:
                     await self._debug(f"Day phase error: {str(e)}")
+                    await send_traceback(self.ctx, e)
 
                 if await self._check_game_end():
                     break
@@ -767,6 +769,7 @@ class SPGame:
                         await self._debug(f"Night {night_no} returned no deaths")
                 except Exception as e:
                     await self._debug(f"Night phase error: {str(e)}")
+                    await send_traceback(self.ctx, e)
                     deaths = []
 
                 if await self._check_game_end():
@@ -776,6 +779,7 @@ class SPGame:
 
         except Exception as e:
             await self._debug(f"Game error: {str(e)}")
+            await send_traceback(self.ctx, e)
             await self._try_send(_("The game has ended due to an unexpected error."))
 
     # ------------------------------------------------------------------
@@ -1117,6 +1121,7 @@ class SPGame:
 
         except Exception as e:
             await self._debug(f"Chat round error: {str(e)}")
+            await send_traceback(self.ctx, e)
 
         # Give clear voting instructions with a more detailed system
         await self._try_send(_("⏳ **Voting Phase!** You have 60 seconds to decide who to eliminate."))
@@ -1260,6 +1265,7 @@ class SPGame:
                         await asyncio.sleep(self.rnd.uniform(2.0, 3.0))
             except Exception as e:
                 await self._debug(f"Error in vote processing: {str(e)}")
+                await send_traceback(self.ctx, e)
 
             # Tiny sleep to prevent CPU hogging
             await asyncio.sleep(0.05)
@@ -1324,6 +1330,7 @@ class SPGame:
                     ))
             except Exception as e:
                 await self._debug(f"Error in last-chance vote processing: {str(e)}")
+                await send_traceback(self.ctx, e)
 
         # Make sure all ALIVE AIs have voted
         remaining_voters = [p for p in self._alive_ai() if p.user.id not in votes]
@@ -1672,6 +1679,7 @@ class SPGame:
 
             except Exception as e:
                 await self._debug(f"Error in Seer action: {str(e)}")
+                await send_traceback(self.ctx, e)
                 target = None
         # Process AI Seer if no human Seer
         elif ai_seer:
@@ -1822,6 +1830,7 @@ class SPGame:
                     victim = None
             except Exception as e:
                 await self._debug(f"Error in Werewolf action: {str(e)}")
+                await send_traceback(self.ctx, e)
                 victim = None
         # Process AI werewolf if no human werewolf
         elif ai_wolf:

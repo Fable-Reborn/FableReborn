@@ -31,6 +31,7 @@ from utils.joins import JoinView
 from utils.werewolf import DESCRIPTIONS as ROLE_DESC
 from utils.werewolf import Game
 from utils.werewolf import Role as ROLES
+from utils.werewolf import send_traceback
 from utils.werewolf_single import SPGame
 
 class Werewolf(commands.Cog):
@@ -235,11 +236,9 @@ class Werewolf(commands.Cog):
             self.games[ctx.channel.id] = game
             await game.run()
         except Exception as e:
-            await ctx.send(
-                _(f"An error happened during the Werewolf. Please try again! {e}")
-            )
+            await send_traceback(ctx, e)
             del self.games[ctx.channel.id]
-            raise e
+            raise
 
         try:
             del self.games[ctx.channel.id]

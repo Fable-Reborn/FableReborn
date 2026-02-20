@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import traceback
 
 from enum import Enum
 
@@ -253,6 +254,31 @@ DESCRIPTIONS = {
 }
 
 
+TRACEBACK_CHUNK_SIZE = 1900
+
+
+def _format_traceback(exc: BaseException) -> str:
+    return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).strip()
+
+
+async def send_traceback(ctx: Context, exc: BaseException) -> None:
+    tb_text = _format_traceback(exc) or repr(exc)
+    for i in range(0, len(tb_text), TRACEBACK_CHUNK_SIZE):
+        chunk = tb_text[i : i + TRACEBACK_CHUNK_SIZE]
+        try:
+            await ctx.send(f"```py\n{chunk}\n```")
+        except Exception:
+            print(tb_text)
+            break
+
+
+def schedule_traceback(ctx: Context, exc: BaseException) -> None:
+    try:
+        asyncio.get_running_loop().create_task(send_traceback(ctx, exc))
+    except RuntimeError:
+        print(_format_traceback(exc) or repr(exc))
+
+
 class Game:
     def __init__(
             self, ctx: Context, players: list[discord.Member], mode: str, speed: str
@@ -355,11 +381,10 @@ class Game:
                 return self.alive_players[0]
             elif len(self.alive_players) == 0:
                 return _("No one")
-                
+            
             return None
         except Exception as e:
-            # If any unexpected error occurs, log it and return a safe value
-            print(f"Error in winner property: {str(e)}")
+            schedule_traceback(self.ctx, e)
             return _("No one")
 
     @property
@@ -497,7 +522,7 @@ class Game:
                             except asyncio.TimeoutError:
                                 await werewolf.user.dm_channel.send("⏰ You took too long to vote.")
                             except Exception as e:
-                                print(f"An error occurred: {e}")
+                                await send_traceback(self.ctx, e)
 
                         # Append the task for the current werewolf to the list of tasks
                         voting_tasks.append(werewolf_vote(werewolf))
@@ -506,7 +531,7 @@ class Game:
                     await asyncio.gather(*voting_tasks)
 
                 except Exception as e:
-                    print(f"An error occurred: {e}")
+                    await send_traceback(self.ctx, e)
 
 
         except asyncio.TimeoutError:
@@ -1141,8 +1166,8 @@ class Game:
                             is_lacking_permission = True
                             continue
                         except Exception as e:
-                            self.ctx.send(_("An unexpected error occurred."))
-                            raise e
+                            await send_traceback(self.ctx, e)
+                            raise
             if len(nuisance_voters):
                 paginator = commands.Paginator(prefix="", suffix="")
                 for nuisance_voter in nuisance_voters:
@@ -1365,9 +1390,7 @@ class Game:
                     )
                 )
         except Exception as e:
-            # If an error occurs during winner determination, provide a fallback
-            print(f"Error determining winner: {str(e)}")
-            await self.ctx.send(_("The game has ended due to an unexpected error."))
+            await send_traceback(self.ctx, e)
             if self.task:
                 self.task.cancel()
 
@@ -1837,8 +1860,7 @@ class Player:
                     ))
                     return None
             except (IndexError, KeyError) as e:
-                # Log the error and return no target
-                print(f"Error during wolf voting: {str(e)}")
+                await send_traceback(self.game.ctx, e)
                 await self.ctx.send(embed=discord.Embed(
                     title=_("Wolves Confused"),
                     description=_("An error occurred during the werewolf vote."),
@@ -2288,7 +2310,7 @@ class Player:
                 )
             )
         except (IndexError, AttributeError) as e:
-            await self.send(f"Error displaying lovers: {str(e)}. Please report this bug.")
+            await send_traceback(self.game.ctx, e)
             # Safely continue the game
         try:
             # Safely add lovers to the game if they are not already lovers
@@ -2304,7 +2326,7 @@ class Player:
             else:
                 await self.send(_("Failed to set up lovers properly. The game will continue."))
         except (IndexError, AttributeError) as e:
-            await self.send(f"Error creating lovers: {str(e)}. The game will continue.")
+            await send_traceback(self.game.ctx, e)
 
     async def choose_to_raid(self) -> None:
         self.game.recent_deaths = list(
@@ -2546,7 +2568,7 @@ class Player:
             exchanged[1].role = role
             exchanged[0].lives, exchanged[1].lives = exchanged[1].lives, exchanged[0].lives
         except (IndexError, AttributeError) as e:
-            await self.send(f"Error exchanging roles: {str(e)}. The game will continue.")
+            await send_traceback(self.game.ctx, e)
             return
         await self.send(
             _(
