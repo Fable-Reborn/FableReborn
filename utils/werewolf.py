@@ -1673,7 +1673,13 @@ class Player:
                 role=self.role_name
             )
         )
+        # Prefer alive players, but fall back to the game roster if state gets
+        # desynced during reloads/interrupted interactions.
         possible_idols = [p for p in self.game.alive_players if p != self]
+        if not possible_idols:
+            possible_idols = [p for p in self.game.players if p != self and not p.dead]
+        if not possible_idols:
+            possible_idols = [p for p in self.game.players if p != self]
         if not possible_idols:
             await self.send(
                 _("No valid idol could be chosen.\n{game_link}").format(
