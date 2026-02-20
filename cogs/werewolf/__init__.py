@@ -399,7 +399,8 @@ class Werewolf(commands.Cog):
             {
                 "side": _("The Villagers"),
                 "members": (
-                    "Villager, Pure Soul, Seer, Witch, Hunter, Healer, Amor, Knight,"
+                    "Villager, Pure Soul, Seer, Witch, Doctor, Hunter, Healer, Amor,"
+                    " Knight,"
                     f" Sister, Brother, The Old, Fox, Judge, Paragon - {restriction},"
                     f" Ritualist - {restriction}, Troublemaker - {restriction}, Lawyer"
                     f" - {restriction}, War Veteran - {restriction}"
@@ -418,7 +419,10 @@ class Werewolf(commands.Cog):
                 "members": (
                     f"White Wolf - {_('Be the sole survivor')}, Flutist -"
                     f" {_('Must enchant every living inhabitants')}, Superspreader -"
-                    f" {_('Infect all the players with your virus')} {restriction}"
+                    f" {_('Infect all the players with your virus')} {restriction},"
+                    f" Jester -"
+                    f" {_('Die to win')}, Head Hunter -"
+                    f" {_('Get your assigned target lynched')}"
                 ),
                 "goal": _("Must complete their own objective"),
             },
