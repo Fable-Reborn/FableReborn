@@ -450,9 +450,9 @@ class Game:
         fmt.add_line("")
         fmt.add_line(
             _(
-                "**I will relay all messages you send to the other Werewolves. Send a"
-                " number to nominate them for killing (you can nominate up to 10"
-                " users), voting starts in {timer} seconds.**"
+                "**I will relay all messages you send to the other Werewolves. Use the"
+                " dropdown to nominate a victim for killing. Voting starts in {timer}"
+                " seconds.**"
             ).format(timer=self.timer)
         )
         fmt.add_line(
@@ -464,11 +464,6 @@ class Game:
             for page in fmt.pages:
                 await user.send(page)
         nominated = []
-        channels_ids = [
-            str(p.user.dm_channel.id)
-            for p in wolves
-            if p.user.dm_channel is not None
-        ]
 
         try:
             async with asyncio.timeout(self.timer):
@@ -487,40 +482,42 @@ class Game:
                     for werewolf in wolves:
                         # Define a task for each werewolf
                         async def werewolf_vote(werewolf):
-                            # Create a message with reactions for each possible target
-                            message = await werewolf.user.dm_channel.send("Please select your nomination:")
-                            for i, target in enumerate(possible_targets):
-                                await message.add_reaction(f"{i + 1}⃣")
-
-                            # Define a check function to ensure that the reaction is from the werewolf and is a valid choice
-                            def check(reaction, user):
-                                return (
-                                        user == werewolf.user
-                                        and reaction.message.id == message.id
-                                        and reaction.emoji in [f"{i + 1}⃣" for i in range(len(possible_targets))]
-                                )
-
                             try:
-                                # Wait for the werewolf to select a target
-                                reaction, user = await self.ctx.bot.wait_for("reaction_add", check=check,
-                                                                             timeout=self.timer)
+                                picked = await werewolf.choose_users(
+                                    _(
+                                        "Choose a victim to nominate with the dropdown."
+                                    ),
+                                    list_of_users=target_list,
+                                    amount=1,
+                                    required=False,
+                                )
+                            except Exception as e:
+                                await send_traceback(self.ctx, e)
+                                return
 
-                                # Get the index of the selected target
-                                index = int(reaction.emoji[0])
+                            if not picked:
+                                return
 
-                                # Get the selected target
-                                submitted_target = possible_targets[index]
-
+                            submitted_target = picked[0]
+                            try:
                                 if submitted_target in werewolf.own_lovers:
-                                    await werewolf.user.dm_channel.send("❌ You cannot nominate your Lover.")
+                                    await werewolf.send(_("❌ You cannot nominate your Lover."))
                                 else:
+                                    if (
+                                        submitted_target not in nominated
+                                        and len(set(nominated)) >= 10
+                                    ):
+                                        await werewolf.send(
+                                            _(
+                                                "Nomination cap reached (10 targets)."
+                                                " Your nomination was not added."
+                                            )
+                                        )
+                                        return
                                     nominated.append(submitted_target)
                                     text = f"**{werewolf.user}** nominated **{submitted_target.user}**"
-
-                                    for user in wolves:
-                                        await user.user.dm_channel.send(text)
-                            except asyncio.TimeoutError:
-                                await werewolf.user.dm_channel.send("⏰ You took too long to vote.")
+                                    for wolf_member in wolves:
+                                        await wolf_member.send(text)
                             except Exception as e:
                                 await send_traceback(self.ctx, e)
 
@@ -569,8 +566,8 @@ class Game:
                                 return_index=True,
                                 title=(
                                     _(
-                                        "React to vote for a target. You have {timer}"
-                                        " seconds."
+                                        "Use the dropdown to vote for a target. You"
+                                        " have {timer} seconds."
                                     ).format(timer=self.timer)
                                 ),
                                 timeout=self.timer,
@@ -1190,7 +1187,7 @@ class Game:
                     await self.ctx.send(page)
 
     async def handle_afk(self) -> None:
-        if self.winner() is not None:
+        if self.winner is not None:
             return
         if len(self.new_afk_players) < 1:
             return
@@ -1304,7 +1301,7 @@ class Game:
                 await self.handle_rusty_sword_effect()
         if len(self.alive_players) < 2:
             return
-        if self.winner() is not None:
+        if self.winner is not None:
             return
         to_kill, second_election = await self.election()
         if to_kill is not None:
@@ -1345,7 +1342,7 @@ class Game:
                     )
                 await self.ctx.send(day_count)
                 await self.day(deaths)
-                if self.winner() is not None:
+                if self.winner is not None:
                     break
                 if self.speed in ("Fast", "Blitz"):
                     if self.night_no == len(self.players) + 3:
@@ -1364,7 +1361,7 @@ class Game:
                 self.recent_deaths = []
             round_no += 1
 
-        winner = self.winner()
+        winner = self.winner
         if self.task:
             self.task.cancel()
         results_pretext = _("Werewolf {mode} results:").format(mode=self.mode)
@@ -1519,61 +1516,128 @@ class Player:
             amount: int,
             required: bool = True,
     ) -> list[Player]:
-        fmt = [
-            f"{idx}. {p.user} {p.user.mention} {self.game.get_role_name(self.revealed_roles[p]) if p in self.revealed_roles else ''}"
-            for idx, p in enumerate(list_of_users, 2)
-        ]
-        if not required:
-            fmt.insert(0, "1. Dismiss")
-            prompt_msg = f"**Type the number of the user to choose for this action. Type `1` to dismiss. You need to choose {amount} more.**"
-            start_num = 1
-        else:
-            prompt_msg = f"**Type the number of the user to choose for this action. You need to choose {amount} more.**"
-            start_num = 2
+        if not list_of_users or amount <= 0:
+            return []
 
-        paginator = commands.Paginator(prefix="", suffix="")
-        paginator.add_line(f"**{title}**")
-        for i in fmt:
-            paginator.add_line(i)
+        def build_entries(players: list[Player]) -> list[str]:
+            return [
+                f"{player.user} {player.user.mention} "
+                f"{self.game.get_role_name(self.revealed_roles[player]) if player in self.revealed_roles else ''}".strip()
+                for player in players
+            ]
 
-        for page in paginator.pages:
-            await self.send(page)
+        def build_choices(players: list[Player]) -> list[str]:
+            # Discord select labels are max 100 chars.
+            return [str(player.user)[:100] for player in players]
 
-        mymsg = await self.send(prompt_msg.format(amount=amount))
-        if mymsg is None:
-            await self.game.ctx.send(
-                "I couldn't send a DM to someone. All players should allow me to send Direct Messages to them.")
+        async def select_from_dropdown(
+            candidates: list[Player], *, can_dismiss: bool, header: str
+        ) -> Player | None:
+            if not candidates:
+                return None
+            menu_title = header[:250]
 
-        chosen = []
+            if len(candidates) == 1 and not can_dismiss:
+                return candidates[0]
+
+            max_players_per_menu = 24 if can_dismiss else 25
+            selected_pool = candidates
+
+            if len(candidates) > max_players_per_menu:
+                chunks = [
+                    candidates[i : i + max_players_per_menu]
+                    for i in range(0, len(candidates), max_players_per_menu)
+                ]
+                chunk_entries = [
+                    _("Players {start}-{end}").format(
+                        start=(index * max_players_per_menu) + 1,
+                        end=(index * max_players_per_menu) + len(chunk),
+                    )
+                    for index, chunk in enumerate(chunks)
+                ]
+                chunk_choices = [
+                    _("Group {num}").format(num=index + 1)
+                    for index in range(len(chunks))
+                ]
+
+                if can_dismiss:
+                    chunk_entries.insert(0, _("Dismiss"))
+                    chunk_choices.insert(0, _("Dismiss"))
+
+                chunk_index = await self.game.ctx.bot.paginator.Choose(
+                    entries=chunk_entries,
+                    choices=chunk_choices,
+                    return_index=True,
+                    title=menu_title,
+                    timeout=self.game.timer,
+                ).paginate(self.game.ctx, location=self.user)
+
+                if can_dismiss and chunk_index == 0:
+                    return None
+
+                selected_pool = chunks[chunk_index - 1 if can_dismiss else chunk_index]
+
+            menu_entries = build_entries(selected_pool)
+            menu_choices = build_choices(selected_pool)
+            if can_dismiss:
+                menu_entries.insert(0, _("Dismiss"))
+                menu_choices.insert(0, _("Dismiss"))
+
+            selection_index = await self.game.ctx.bot.paginator.Choose(
+                entries=menu_entries,
+                choices=menu_choices,
+                return_index=True,
+                title=menu_title,
+                timeout=self.game.timer,
+            ).paginate(self.game.ctx, location=self.user)
+
+            if can_dismiss and selection_index == 0:
+                return None
+            return selected_pool[selection_index - 1 if can_dismiss else selection_index]
+
+        chosen: list[Player] = []
         while len(chosen) < amount:
-            try:
-                response = await self.game.ctx.bot.wait_for(
-                    'message',
-                    check=lambda message: message.author == self.user and message.content.isdigit(),
-                    timeout=self.game.timer
-                )
-
-                choice = int(response.content)
-                if choice == 1 and not required:
-                    return []
-
-                if choice < start_num or choice > len(list_of_users) + 1:
-                    await self.send("Invalid choice. Please select a valid number.")
-                    continue
-
-                player = list_of_users[choice - 2]
-
-                if player in chosen:
-                    await self.send(f"🚫 You've chosen **{player.user}** already.")
-                else:
-                    if amount > 1:
-                        await self.send(f"**{player.user}** has been selected.")
-                    chosen.append(player)
-                    await mymsg.edit(content=prompt_msg.format(amount=amount - len(chosen)))
-
-            except asyncio.TimeoutError:
-                await self.send("Selection timed out.")
+            remaining = amount - len(chosen)
+            candidates = [user for user in list_of_users if user not in chosen]
+            if not candidates:
                 break
+
+            try:
+                selected_player = await select_from_dropdown(
+                    candidates,
+                    can_dismiss=not required,
+                    header=_("{title} ({remaining} choice(s) left)").format(
+                        title=title, remaining=remaining
+                    ),
+                )
+            except (
+                self.game.ctx.bot.paginator.NoChoice,
+                discord.Forbidden,
+                discord.HTTPException,
+            ):
+                await self.send(_("Selection timed out."))
+                break
+
+            if selected_player is None:
+                if not required and not chosen:
+                    return []
+                break
+
+            if selected_player in chosen:
+                await self.send(
+                    _("🚫 You've chosen **{player}** already.").format(
+                        player=selected_player.user
+                    )
+                )
+                continue
+
+            chosen.append(selected_player)
+            if amount > 1:
+                await self.send(
+                    _("**{player}** has been selected.").format(
+                        player=selected_player.user
+                    )
+                )
 
         return chosen
 
@@ -1814,10 +1878,19 @@ class Player:
             )
             return target
 
-    async def choose_villager_to_kill(self, targets: list[Player]) -> Player:
+    async def choose_villager_to_kill(self, targets: list[Player]) -> Player | None:
         await self.game.ctx.send(
             _("**The {role} awakes...**").format(role=self.role_name)
         )
+        if not targets:
+            await self.game.ctx.send(
+                embed=discord.Embed(
+                    title=_("Skipped Wolves Night"),
+                    description=_("No one was killed during the night."),
+                    color=discord.Color.blue(),
+                )
+            )
+            return None
         possible_targets = [
             p
             for p in self.game.alive_players
@@ -1832,42 +1905,6 @@ class Player:
             )
             return
         else:
-            if not targets:
-                await self.ctx.send(embed=discord.Embed(
-                    title=_("Skipped Wolves Night"),
-                    description=_("No one was killed during the night."),
-                    color=discord.Color.blue(),
-                ))
-                return None
-                
-            try:
-                if len(targets) >= 2:
-                    # Check the vote counts
-                    if nominated.get(targets[0], 0) > nominated.get(targets[1], 0):
-                        target = targets[0]
-                    else:
-                        # It is a tie
-                        target = random.choice([targets[0], targets[1]])
-                else:
-                    # Only one target
-                    target = list(nominated.keys())[0] if nominated else None
-                    
-                if not target:
-                    await self.ctx.send(embed=discord.Embed(
-                        title=_("Wolves Confused"),
-                        description=_("The wolves couldn't decide on a target."),
-                        color=discord.Color.blue(),
-                    ))
-                    return None
-            except (IndexError, KeyError) as e:
-                await send_traceback(self.game.ctx, e)
-                await self.ctx.send(embed=discord.Embed(
-                    title=_("Wolves Confused"),
-                    description=_("An error occurred during the werewolf vote."),
-                    color=discord.Color.blue(),
-                ))
-                return None
-                
             try:
                 target = await self.choose_users(
                     _("Choose a Villager to kill."),
@@ -2196,7 +2233,6 @@ class Player:
                 )
             )
             await self.send_information()
-            await self.send()
 
     async def check_3_werewolves(self) -> None:
         await self.game.ctx.send(

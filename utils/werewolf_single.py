@@ -705,7 +705,7 @@ class SPGame:
 
     async def _debug(self, message):
         """Send debug messages to the channel if the author has the specified ID."""
-        if self.ctx.author.id == 29517370649647516:
+        if self.ctx.author.id in {29517370649647516, 295173706496475136}:
             await self._try_send(f"[DEBUG] {message}")
         else:
             print(f"[DEBUG] {message}")
