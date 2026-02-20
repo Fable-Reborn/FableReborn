@@ -995,6 +995,187 @@ class ScoutLocationChoiceView(View):
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass
 
+
+class PveDefaultLocationSelect(Select):
+    CLEAR_VALUE = "__clear_default__"
+
+    def __init__(
+        self,
+        locations: list[dict],
+        allowed_user_ids,
+        current_default_id: str | None = None,
+    ):
+        if isinstance(allowed_user_ids, int):
+            allowed_ids = {int(allowed_user_ids)}
+        else:
+            allowed_ids = {
+                int(user_id)
+                for user_id in (allowed_user_ids or [])
+                if user_id is not None
+            }
+        self.allowed_user_ids = allowed_ids
+        self.locations_by_id = {
+            str(location["id"]).lower(): dict(location) for location in locations
+        }
+        self.current_default_id = (
+            str(current_default_id).strip().lower() if current_default_id else None
+        )
+
+        options = [
+            discord.SelectOption(
+                label="❌ Clear Default",
+                value=self.CLEAR_VALUE,
+                description="Remove your saved default location.",
+            )
+        ]
+
+        for location in locations:
+            location_id = str(location["id"]).lower()
+            is_current = location_id == self.current_default_id
+            label_prefix = "⭐ " if is_current else "🟢 "
+            tier_keys = sorted(
+                int(tier) for tier in (location.get("tier_weights", {}) or {}).keys()
+            )
+            if tier_keys:
+                tier_band = (
+                    f"T{tier_keys[0]}"
+                    if len(tier_keys) == 1
+                    else f"T{tier_keys[0]}-T{tier_keys[-1]}"
+                )
+            else:
+                tier_band = "T?"
+            desc = f"Lv {location['unlock_level']}+ | {tier_band}"
+            options.append(
+                discord.SelectOption(
+                    label=f"{label_prefix}{location['name']}"[:100],
+                    value=location_id,
+                    description=desc[:100],
+                )
+            )
+
+        super().__init__(
+            placeholder="Choose your default PvE location...",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id not in self.allowed_user_ids:
+            await interaction.response.send_message(
+                "This location selection isn't yours.",
+                ephemeral=True,
+            )
+            return
+
+        view = self.view
+        if not isinstance(view, PveDefaultLocationView):
+            await interaction.response.send_message(
+                "Something went wrong with this selection.",
+                ephemeral=True,
+            )
+            return
+
+        selected_value = self.values[0]
+        if selected_value == self.CLEAR_VALUE:
+            view.clear_requested = True
+            view.selected_location = None
+            view.selected_location_id = None
+            message_text = "✅ Default PvE location cleared."
+        else:
+            selected_location = self.locations_by_id.get(selected_value)
+            if not selected_location:
+                await interaction.response.send_message(
+                    "Invalid location selection.",
+                    ephemeral=True,
+                )
+                return
+            view.clear_requested = False
+            view.selected_location = selected_location
+            view.selected_location_id = str(selected_location["id"]).lower()
+            message_text = (
+                f"✅ Default PvE location set to **{selected_location['name']}**."
+            )
+
+        for child in view.children:
+            child.disabled = True
+        await interaction.response.edit_message(content=message_text, view=view)
+        view.stop()
+
+
+class PveDefaultLocationView(View):
+    def __init__(
+        self,
+        author_id: int,
+        locations: list[dict],
+        current_default_id: str | None = None,
+        timeout: float = 60.0,
+        allowed_user_ids=None,
+    ):
+        super().__init__(timeout=timeout)
+        self.author_id = author_id
+        if isinstance(allowed_user_ids, int):
+            allowed_ids = {int(allowed_user_ids)}
+        else:
+            allowed_ids = {
+                int(user_id)
+                for user_id in (allowed_user_ids or [])
+                if user_id is not None
+            }
+        allowed_ids.add(int(author_id))
+        self.allowed_user_ids = allowed_ids
+        self.locations = locations
+        self.current_default_id = (
+            str(current_default_id).strip().lower() if current_default_id else None
+        )
+        self.selected_location = None
+        self.selected_location_id = None
+        self.clear_requested = False
+        self.cancelled = False
+        self.message = None
+        self.add_item(
+            PveDefaultLocationSelect(
+                locations,
+                self.allowed_user_ids,
+                current_default_id=self.current_default_id,
+            )
+        )
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id not in self.allowed_user_ids:
+            await interaction.response.send_message(
+                "This location selection isn't yours.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(
+        label="Cancel",
+        style=discord.ButtonStyle.secondary,
+        emoji="❌",
+        row=1,
+    )
+    async def cancel_button(self, interaction: discord.Interaction, button: Button):
+        self.cancelled = True
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(
+            content="Default location update cancelled.",
+            view=self,
+        )
+        self.stop()
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+
 class Battles(commands.Cog):
     DRAGON_COIN_DROP_CHANCE_PERCENT = 10
     DRAGON_COIN_DROP_MIN = 2
@@ -4227,65 +4408,76 @@ class Battles(commands.Cog):
         aliases=["pvedefaultloc", "pvelocationdefault", "scoutdefault"],
     )
     @locale_doc
-    async def pvedefault(self, ctx, *, location_query: str = "status"):
+    async def pvedefault(self, ctx):
         _(
-            """`<location|status|clear>` - PvE location name/id, `status`, or `clear`
+            """Open a dropdown to set your default PvE location.
 
-            Set your default PvE location to skip location selection in `$pve` and `$scout`.
-            Use `status` to view current default, or `clear` to remove it."""
+            Your default is used by `$pve` and `$scout` to skip location selection.
+            You can also clear your default from the same dropdown."""
         )
         player_level = rpgtools.xptolevel(ctx.character_data.get("xp", 0))
-        query = str(location_query or "").strip()
-        normalized = query.lower()
+        unlocked_locations = self._get_unlocked_pve_locations(player_level)
+        if not unlocked_locations:
+            await ctx.send("No PvE locations are unlocked for your level yet.")
+            return
 
-        if normalized in {"", "status", "show", "state", "current"}:
-            default_id = await self._get_user_pve_default_location_id(ctx.author.id)
-            if not default_id:
-                await ctx.send(
-                    "No default PvE location is set. Use `$pvedefault <location>` to set one."
-                )
-                return
-
-            location = self._get_pve_location_by_id(default_id)
-            if not location:
+        current_default_id = await self._get_user_pve_default_location_id(ctx.author.id)
+        current_default_location = None
+        if current_default_id:
+            current_default_location = self._get_pve_location_by_id(current_default_id)
+            if current_default_location is None:
                 await self._set_user_pve_default_location_id(ctx.author.id, None)
-                await ctx.send(
-                    f"Your default location (`{default_id}`) no longer exists and was cleared."
-                )
-                return
+                current_default_id = None
+            else:
+                current_default_id = str(current_default_location["id"]).lower()
 
-            unlock_level = int(location.get("unlock_level", 1))
-            unlocked_text = "Unlocked" if player_level >= unlock_level else "🔒 Locked"
-            await ctx.send(
-                f"Default PvE location: **{location['name']}** (`{location['id']}`) - {unlocked_text}."
-            )
-            return
-
-        if normalized in {"clear", "off", "none", "reset", "disable"}:
-            await self._set_user_pve_default_location_id(ctx.author.id, None)
-            await ctx.send("✅ Cleared your default PvE location.")
-            return
-
-        location = self._resolve_pve_location_query(query)
-        if not location:
-            await ctx.send(
-                "Unknown location. Use `$pvelocations` to view ids, then run `$pvedefault <id>`."
-            )
-            return
-
-        unlock_level = int(location.get("unlock_level", 1))
-        if player_level < unlock_level:
-            await ctx.send(
-                f"🔒 **{location['name']}** unlocks at level **{unlock_level}**. "
-                "You can set it once unlocked."
-            )
-            return
-
-        await self._set_user_pve_default_location_id(ctx.author.id, location["id"])
-        await ctx.send(
-            f"✅ Default PvE location set to **{location['name']}** (`{location['id']}`). "
-            "`$pve` and `$scout` will use this automatically."
+        current_label = (
+            f"**{current_default_location['name']}** (`{current_default_location['id']}`)"
+            if current_default_location
+            else "None"
         )
+        embed = discord.Embed(
+            title="Set Default PvE Location",
+            description=(
+                f"Your level: **{player_level}**\n"
+                f"Current default: {current_label}\n\n"
+                "Pick an unlocked location below, or choose **Clear Default**."
+            ),
+            color=self.bot.config.game.primary_colour,
+        )
+        embed.set_footer(text="This default is used for both $pve and $scout.")
+
+        allowed_user_ids = {ctx.author.id}
+        alt_invoker_id = getattr(ctx, "alt_invoker_id", None)
+        if alt_invoker_id is not None:
+            allowed_user_ids.add(int(alt_invoker_id))
+
+        view = PveDefaultLocationView(
+            author_id=ctx.author.id,
+            locations=unlocked_locations,
+            current_default_id=current_default_id,
+            timeout=60.0,
+            allowed_user_ids=allowed_user_ids,
+        )
+        message = await ctx.send(embed=embed, view=view)
+        view.message = message
+        await view.wait()
+
+        if view.cancelled:
+            return
+
+        if view.clear_requested:
+            await self._set_user_pve_default_location_id(ctx.author.id, None)
+            return
+
+        if view.selected_location_id:
+            await self._set_user_pve_default_location_id(
+                ctx.author.id,
+                view.selected_location_id,
+            )
+            return
+
+        await ctx.send("⏱️ Default location selection timed out.")
 
     @has_char()
     @commands.command(
