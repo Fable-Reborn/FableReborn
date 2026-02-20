@@ -273,6 +273,7 @@ DESCRIPTIONS = {
 
 
 TRACEBACK_CHUNK_SIZE = 1900
+WW_NIGHT_LOCK_CHANNEL_ID = 1458644607893246024
 
 
 def _format_traceback(exc: BaseException) -> str:
@@ -318,6 +319,9 @@ class Game:
         self.rusty_sword_disease_night = None
         self.recent_deaths = []
         self.lovers = []
+        self._base_everyone_send_messages = None
+        self._night_chat_locked = False
+        self._chat_perm_warning_sent = False
         self.available_roles = get_roles(len(players), self.mode)
         self.available_roles, self.extra_roles = (
             self.available_roles[:-2],
@@ -392,6 +396,61 @@ class Game:
 
     def get_player_with_role(self, role: Role) -> Player | None:
         return discord.utils.get(self.alive_players, role=role)
+
+    def _can_manage_night_chat(self) -> bool:
+        return bool(
+            getattr(self.ctx, "guild", None)
+            and getattr(self.ctx.channel, "id", None) == WW_NIGHT_LOCK_CHANNEL_ID
+            and hasattr(self.ctx.channel, "overwrites_for")
+            and hasattr(self.ctx.channel, "set_permissions")
+        )
+
+    async def _set_night_chat_lock(self, lock: bool) -> None:
+        if not self._can_manage_night_chat():
+            return
+
+        guild = self.ctx.guild
+        channel = self.ctx.channel
+        everyone = guild.default_role
+        overwrite = channel.overwrites_for(everyone)
+
+        if self._base_everyone_send_messages is None:
+            self._base_everyone_send_messages = overwrite.send_messages
+
+        target_send_messages = False if lock else self._base_everyone_send_messages
+        if (
+            overwrite.send_messages == target_send_messages
+            and self._night_chat_locked == lock
+        ):
+            return
+
+        overwrite.send_messages = target_send_messages
+        reason = (
+            "Werewolf night chat lock"
+            if lock
+            else "Werewolf day/game-over chat unlock"
+        )
+        try:
+            await channel.set_permissions(everyone, overwrite=overwrite, reason=reason)
+            self._night_chat_locked = lock
+        except discord.Forbidden:
+            if not self._chat_perm_warning_sent:
+                self._chat_perm_warning_sent = True
+                await self.ctx.send(
+                    _(
+                        "I couldn't toggle @everyone chat permissions for night/day in"
+                        " this channel. Please grant me **Manage Channels**."
+                    )
+                )
+        except discord.HTTPException:
+            if not self._chat_perm_warning_sent:
+                self._chat_perm_warning_sent = True
+                await self.ctx.send(
+                    _(
+                        "I couldn't toggle @everyone chat permissions for night/day due"
+                        " to a Discord API error."
+                    )
+                )
 
     async def ensure_head_hunter_targets(self) -> None:
         head_hunters = [
@@ -902,6 +961,7 @@ class Game:
             )
             await player.send_information()
         await self.announce_sheriff()
+        await self._set_night_chat_lock(True)
         await self.ctx.send(_("🌘 💤 **Night falls, the town is asleep...**"))
         await asyncio.sleep(5)  # Give them time to read the rules and their roles
         await self.send_love_msgs()  # Send to lovers used on Valentines mode
@@ -961,6 +1021,7 @@ class Game:
 
     async def night(self, white_wolf_ability: bool) -> list[Player]:
         moon = "🌕" if white_wolf_ability else "🌘"
+        await self._set_night_chat_lock(True)
         await self.ctx.send(moon + _(" 💤 **Night falls, the town is asleep...**"))
         if self.ex_maid and self.ex_maid.dead:
             self.ex_maid = None
@@ -1454,6 +1515,7 @@ class Game:
         to_resurrect.killed_by_lynch = False
 
     async def day(self, deaths: list[Player]) -> None:
+        await self._set_night_chat_lock(False)
         await self.ctx.send(_("🌤️ **The sun rises...**"))
         if self.task:
             self.task.cancel()
@@ -1495,72 +1557,78 @@ class Game:
             await self.handle_afk()
 
     async def run(self):
-        # Handle thief etc and first night
-        round_no = 1
-        self.night_no = 1
-        deaths = await self.initial_preparation()
-        while True:
-            if round_no % 2 == 1:
-                if self.speed in ("Fast", "Blitz"):
-                    day_count = _("**Day {day_count:.0f} of {days_limit}**").format(
-                        day_count=self.night_no, days_limit=len(self.players) + 3
-                    )
-                else:
-                    day_count = _("**Day {day_count:.0f}**").format(
-                        day_count=self.night_no
-                    )
-                await self.ctx.send(day_count)
-                await self.day(deaths)
-                if self.winner is not None:
-                    break
-                if self.speed in ("Fast", "Blitz"):
-                    if self.night_no == len(self.players) + 3:
-                        await self.ctx.send(
-                            _(
-                                "{day_count:.0f} days have already passed. Stopping"
-                                " game..."
-                            ).format(day_count=self.night_no)
-                        )
-                        if self.task:
-                            self.task.cancel()
-                        break
-            else:
-                self.night_no += 1
-                deaths = await self.night(white_wolf_ability=self.night_no % 2 == 0)
-                self.recent_deaths = []
-            round_no += 1
-
-        winner = self.winner
-        if self.task:
-            self.task.cancel()
-        results_pretext = _("Werewolf {mode} results:").format(mode=self.mode)
-
         try:
-            if isinstance(winner, Player):
-                if not self.winning_side:
-                    self.winning_side = winner.role_name
-                paginator = commands.Paginator(prefix="", suffix="")
-                paginator.add_line(
-                    _(
-                        "{results_pretext} **The {winning_side} won!** 🎉 Congratulations:"
-                    ).format(
-                        results_pretext=results_pretext, winning_side=self.winning_side
-                    )
-                )
-                for page in paginator.pages:
-                    await self.ctx.send(page)
-                await self.reveal_others()
-            else:
-                # Display winner information
-                await self.ctx.send(
-                    _("{results_pretext} **{winner} won!**").format(
-                        results_pretext=results_pretext, winner=winner
-                    )
-                )
-        except Exception as e:
-            await send_traceback(self.ctx, e)
+            # Handle thief etc and first night
+            round_no = 1
+            self.night_no = 1
+            deaths = await self.initial_preparation()
+            while True:
+                if round_no % 2 == 1:
+                    if self.speed in ("Fast", "Blitz"):
+                        day_count = _("**Day {day_count:.0f} of {days_limit}**").format(
+                            day_count=self.night_no, days_limit=len(self.players) + 3
+                        )
+                    else:
+                        day_count = _("**Day {day_count:.0f}**").format(
+                            day_count=self.night_no
+                        )
+                    await self.ctx.send(day_count)
+                    await self.day(deaths)
+                    if self.winner is not None:
+                        break
+                    if self.speed in ("Fast", "Blitz"):
+                        if self.night_no == len(self.players) + 3:
+                            await self.ctx.send(
+                                _(
+                                    "{day_count:.0f} days have already passed. Stopping"
+                                    " game..."
+                                ).format(day_count=self.night_no)
+                            )
+                            if self.task:
+                                self.task.cancel()
+                            break
+                else:
+                    self.night_no += 1
+                    deaths = await self.night(white_wolf_ability=self.night_no % 2 == 0)
+                    self.recent_deaths = []
+                round_no += 1
+
+            winner = self.winner
             if self.task:
                 self.task.cancel()
+            results_pretext = _("Werewolf {mode} results:").format(mode=self.mode)
+
+            try:
+                if isinstance(winner, Player):
+                    if not self.winning_side:
+                        self.winning_side = winner.role_name
+                    paginator = commands.Paginator(prefix="", suffix="")
+                    paginator.add_line(
+                        _(
+                            "{results_pretext} **The {winning_side} won!** 🎉 Congratulations:"
+                        ).format(
+                            results_pretext=results_pretext, winning_side=self.winning_side
+                        )
+                    )
+                    for page in paginator.pages:
+                        await self.ctx.send(page)
+                    await self.reveal_others()
+                else:
+                    # Display winner information
+                    await self.ctx.send(
+                        _("{results_pretext} **{winner} won!**").format(
+                            results_pretext=results_pretext, winner=winner
+                        )
+                    )
+            except Exception as e:
+                await send_traceback(self.ctx, e)
+                if self.task:
+                    self.task.cancel()
+        finally:
+            try:
+                await self._set_night_chat_lock(False)
+            except Exception:
+                pass
 
     def get_players_roles(self, has_won: bool = False) -> list[str]:
         if len(self.alive_players) < 1:
