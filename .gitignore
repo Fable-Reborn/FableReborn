@@ -20,3 +20,4 @@ __pycache__/
 .idea/
 tools/reports/pet_skill_mismatches.md
 tools/reports/pet_skill_audit.json
+assets/data/veteran_badge_ids.txt
