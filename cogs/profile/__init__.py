@@ -630,13 +630,14 @@ class Profile(commands.Cog):
             slot = (x, 146, x + icon_size, 146 + icon_size)
             draw.rounded_rectangle(slot, radius=14, fill=(70, 48, 28, 220), outline=colors["border_dim"], width=2)
             if one_unique_element and idx == 1:
-                x_mark = "X"
-                x_box = draw.textbbox((0, 0), x_mark, font=title_font)
-                x_w = max(0, x_box[2] - x_box[0])
-                x_h = max(0, x_box[3] - x_box[1])
-                x_pos = x + ((icon_size - x_w) // 2)
-                y_pos = 146 + ((icon_size - x_h) // 2) - 2
-                draw.text((x_pos, y_pos), x_mark, font=title_font, fill=(196, 36, 36, 255))
+                pad = 18
+                x1, y1 = x + pad, 146 + pad
+                x2, y2 = x + icon_size - pad, 146 + icon_size - pad
+                # Draw a crisp outlined X so the placeholder is consistent across fonts.
+                draw.line((x1, y1, x2, y2), fill=(72, 16, 16, 255), width=10)
+                draw.line((x2, y1, x1, y2), fill=(72, 16, 16, 255), width=10)
+                draw.line((x1, y1, x2, y2), fill=(214, 42, 42, 255), width=6)
+                draw.line((x2, y1, x1, y2), fill=(214, 42, 42, 255), width=6)
                 continue
             icon_path = self._find_element_icon(element_name)
             if icon_path:
