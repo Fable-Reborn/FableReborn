@@ -3332,7 +3332,9 @@ class Player:
                 if player.side in (Side.WOLVES, Side.WHITE_WOLF)
             )
             villager_count = sum(
-                1 for player in alive_players if player.side == Side.VILLAGERS
+                1
+                for player in alive_players
+                if player.side in (Side.VILLAGERS, Side.JESTER, Side.HEAD_HUNTER)
             )
             # Overrun victory: wolves control the vote once they meet or exceed villagers.
             if (
