@@ -3066,15 +3066,20 @@ class Player:
             if len(self.game.alive_players) == 1 and not self.dead:
                 self.game.winning_side = "White Wolf"
                 return True
-        elif self.side == Side.WOLVES or self.side == Side.WHITE_WOLF:
+        elif self.side == Side.WOLVES:
+            alive_players = self.game.alive_players
+            wolf_count = sum(
+                1
+                for player in alive_players
+                if player.side in (Side.WOLVES, Side.WHITE_WOLF)
+            )
+            villager_count = sum(
+                1 for player in alive_players if player.side == Side.VILLAGERS
+            )
+            # Overrun victory: wolves control the vote once they meet or exceed villagers.
             if (
-                    all(
-                        [
-                            player.side == Side.WOLVES or player.side == Side.WHITE_WOLF
-                            for player in self.game.alive_players
-                        ]
-                    )
-                    and self.game.winning_side != "Flutist"
+                wolf_count >= villager_count
+                and self.game.winning_side != "Flutist"
             ):
                 self.game.winning_side = "Werewolves"
                 return True
