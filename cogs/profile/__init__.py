@@ -598,7 +598,17 @@ class Profile(commands.Cog):
                     left_hand = i
 
         icon_size, icon_gap = 74, 10
-        element_slots = [right_hand, left_hand]
+        display_right = right_hand or left_hand
+        display_left = left_hand if right_hand else None
+        element_slots = [display_right, display_left]
+        equipped_elements = []
+        for weapon_item in element_slots:
+            if not weapon_item:
+                continue
+            raw = str(weapon_item.get("element") or "").strip().lower()
+            if raw:
+                equipped_elements.append(raw)
+        one_unique_element = len(set(equipped_elements)) == 1 and bool(equipped_elements)
         icon_count = len(element_slots)
         icon_start = header_rect[2] - 22 - (icon_size * icon_count + icon_gap * (icon_count - 1))
         name_x = header_rect[0] + 22
@@ -619,6 +629,15 @@ class Profile(commands.Cog):
             x = icon_start + idx * (icon_size + icon_gap)
             slot = (x, 146, x + icon_size, 146 + icon_size)
             draw.rounded_rectangle(slot, radius=14, fill=(70, 48, 28, 220), outline=colors["border_dim"], width=2)
+            if one_unique_element and idx == 1:
+                x_mark = "X"
+                x_box = draw.textbbox((0, 0), x_mark, font=title_font)
+                x_w = max(0, x_box[2] - x_box[0])
+                x_h = max(0, x_box[3] - x_box[1])
+                x_pos = x + ((icon_size - x_w) // 2)
+                y_pos = 146 + ((icon_size - x_h) // 2) - 2
+                draw.text((x_pos, y_pos), x_mark, font=title_font, fill=(196, 36, 36, 255))
+                continue
             icon_path = self._find_element_icon(element_name)
             if icon_path:
                 try:
