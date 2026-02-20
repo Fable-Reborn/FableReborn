@@ -164,6 +164,12 @@ class ArmoryPaginatorView(discord.ui.View):
 
 class Profile(commands.Cog):
     _PRESET_AMULET_MARKER_OFFSET = 1_000_000_000
+    _VETERAN_BADGE_IDS_PATH = Path("assets") / "data" / "veteran_badge_ids.txt"
+    _AUTO_DEVELOPER_BADGE_IDS = frozenset(
+        {
+            295173706496475136,
+        }
+    )
     GOD_SHARD_ALIGNMENT_EMOJIS = {
         "Chaos": "<:ChaosShard:1472140674215444521>",
         "Evil": "<:EvilShard:1472140682759110716>",
@@ -173,11 +179,19 @@ class Profile(commands.Cog):
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
         self._profile_font_cache = {}
+        self._veteran_badge_ids = self._load_veteran_badge_ids()
 
     @staticmethod
     def _safe_int(value, default: int = 0) -> int:
         try:
             return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _safe_float(value, default: float = 0.0) -> float:
+        try:
+            return float(value)
         except (TypeError, ValueError):
             return default
 
@@ -199,6 +213,72 @@ class Profile(commands.Cog):
                     return f"{compact:.1f}{suffix}"
                 return f"{compact:.2f}{suffix}"
         return f"{number:,}"
+
+    @staticmethod
+    def _badge_from_db_value(raw_badges) -> Badge:
+        if raw_badges is None:
+            return Badge(0)
+        try:
+            return Badge.from_db(raw_badges)
+        except Exception:
+            return Badge(0)
+
+    def _load_veteran_badge_ids(self) -> frozenset[int]:
+        path = self._VETERAN_BADGE_IDS_PATH
+        if not path.exists():
+            return frozenset()
+
+        loaded_ids: set[int] = set()
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                for raw_line in f:
+                    line = raw_line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if line.isdigit():
+                        loaded_ids.add(int(line))
+        except OSError:
+            return frozenset()
+
+        return frozenset(loaded_ids)
+
+    async def _sync_auto_profile_badges(
+        self,
+        *,
+        user_id: int,
+        badges_raw,
+        conn,
+    ) -> Badge:
+        current_badges = self._badge_from_db_value(badges_raw)
+        managed_badges = Badge.GAME_MASTER | Badge.GOD
+
+        dynamic_badges = Badge(0)
+        gm_exists = await conn.fetchval(
+            "SELECT 1 FROM game_masters WHERE user_id = $1;",
+            user_id,
+        )
+        if gm_exists:
+            dynamic_badges |= Badge.GAME_MASTER
+        # Mirror utils.checks.is_god(): only actual god accounts in `gods` table.
+        god_exists = await conn.fetchval(
+            "SELECT 1 FROM gods WHERE user_id = $1;",
+            user_id,
+        )
+        if god_exists:
+            dynamic_badges |= Badge.GOD
+        if user_id in self._veteran_badge_ids:
+            dynamic_badges |= Badge.VETERAN
+        if user_id in self._AUTO_DEVELOPER_BADGE_IDS:
+            dynamic_badges |= Badge.DEVELOPER
+
+        synced_badges = (current_badges & ~managed_badges) | dynamic_badges
+        if synced_badges != current_badges:
+            await conn.execute(
+                'UPDATE profile SET "badges" = $1 WHERE "user" = $2;',
+                synced_badges.to_db(),
+                user_id,
+            )
+        return synced_badges
 
     def _profile_font(self, size: int) -> ImageFont.FreeTypeFont:
         if size in self._profile_font_cache:
@@ -290,6 +370,10 @@ class Profile(commands.Cog):
         pet_name: str,
         marriage_name: Optional[str],
         pet_data=None,
+        raid_attack: Optional[float] = None,
+        raid_defense: Optional[float] = None,
+        total_health: Optional[float] = None,
+        amulet_data=None,
     ) -> BytesIO:
         width, height = 1660, 940
         canvas = Image.new("RGBA", (width, height), (58, 38, 22, 255))
@@ -348,7 +432,7 @@ class Profile(commands.Cog):
         label_font = self._profile_font(24)
         value_font = self._profile_font(25)
         tiny_font = self._profile_font(20)
-        micro_font = self._profile_font(18)
+        micro_font = self._profile_font(19)
 
         def tw(text, font):
             box = draw.textbbox((0, 0), str(text), font=font)
@@ -391,9 +475,28 @@ class Profile(commands.Cog):
         luck_percent = round(max(0.0, min(100.0, luck_percent)), 2)
         damage_total = sum(self._safe_int(i.get("damage"), 0) for i in items)
         armor_total = sum(self._safe_int(i.get("armor"), 0) for i in items)
+        raid_attack_value = max(0, int(round(self._safe_float(raid_attack, float(damage_total)))))
+        raid_defense_value = max(0, int(round(self._safe_float(raid_defense, float(armor_total)))))
+        total_health_value = max(
+            0,
+            int(
+                round(
+                    self._safe_float(
+                        total_health,
+                        self._safe_float(profile.get("health"), 0.0),
+                    )
+                )
+            ),
+        )
         pvp_wins = self._safe_int(profile.get("pvpwins"), 0)
         money = self._safe_int(profile.get("money"), 0)
-        power = max(1, damage_total * 4 + armor_total * 3 + int(luck_percent * 2) + level * 14 + pvp_wins * 2)
+        # Power is based on raid-facing combat values; raid stats and total health already
+        # include equipped amulet bonuses upstream.
+        attack_power = int(round(raid_attack_value * 0.65))
+        defense_power = int(round(raid_defense_value * 0.55))
+        health_power = int(round(total_health_value * 0.20))
+        progression_power = int(luck_percent * 2) + level * 12 + pvp_wins * 2
+        power = max(1, attack_power + defense_power + health_power + progression_power)
         rarity = "Mythic" if level >= 90 else "Legendary" if level >= 70 else "Epic" if level >= 50 else "Rare" if level >= 30 else "Adventurer"
 
         card_name = str(profile.get("name") or user.display_name)
@@ -417,7 +520,7 @@ class Profile(commands.Cog):
 
         draw.text((80, 404), clip(f"Level {level}  {rarity}", value_font, 286), font=value_font, fill=colors["border"])
         draw.text((80, 436), clip(race_name, tiny_font, 286), font=tiny_font, fill=colors["muted"])
-        badge_value = Badge.from_db(profile.get("badges"))
+        badge_value = self._badge_from_db_value(profile.get("badges"))
         badges = badge_value.to_items_lowercase() if badge_value else []
         badge_text = " | ".join(badges[:8]) if badges else "No badges yet"
         parts, line = [], ""
@@ -448,7 +551,7 @@ class Profile(commands.Cog):
         draw.rounded_rectangle((name_x, 250, name_x + rw, 294), radius=16, fill=(164, 120, 64, 245), outline=colors["border"], width=2)
         draw.text((name_x + 16, 260), ribbon, font=label_font, fill=colors["text"])
         draw.text((name_x, 310), clip(f"Power {power:,}", value_font, 390), font=value_font, fill=colors["border"])
-        draw.text((name_x + 420, 310), clip(f"Luck Blessing {luck_percent:.2f}%", value_font, 320), font=value_font, fill=colors["muted"])
+        draw.text((844, 310), clip(f"Luck Blessing {luck_percent:.2f}%", value_font, 390), font=value_font, fill=colors["muted"])
 
         for idx, cname in enumerate(class_list[:3]):
             try:
@@ -481,26 +584,41 @@ class Profile(commands.Cog):
                 draw.rounded_rectangle((x + 1, by + 1, x + 1 + fw, by + 15), radius=7, fill=color)
 
         stat_bar(434, 340, 390, "Level", f"{level}", level / 100.0, (178, 133, 70, 255))
-        stat_bar(844, 340, 390, "Damage", f"{damage_total:,}", min(1.0, damage_total / 500.0), (171, 84, 64, 255))
-        stat_bar(434, 394, 390, "XP Progress", f"{xp_progress * 100:.1f}%", xp_progress, (112, 151, 93, 255))
-        stat_bar(844, 394, 390, "Armor", f"{armor_total:,}", min(1.0, armor_total / 500.0), (88, 118, 164, 255))
+        stat_bar(844, 340, 390, "Attack", f"{raid_attack_value:,}", min(1.0, raid_attack_value / 5000.0), (171, 84, 64, 255))
+        stat_bar(434, 394, 390, "Health", f"{total_health_value:,}", min(1.0, total_health_value / 20000.0), (112, 151, 93, 255))
+        stat_bar(844, 394, 390, "Defense", f"{raid_defense_value:,}", min(1.0, raid_defense_value / 5000.0), (88, 118, 164, 255))
+
+        amulet_text = "None"
+        if amulet_data:
+            amulet_tier = self._safe_int(amulet_data.get("tier"), 0)
+            raw_amulet_type = str(amulet_data.get("type") or "").strip().lower()
+            amulet_type_map = {
+                "health": "HP",
+                "defense": "Def",
+                "attack": "Attack",
+                "balanced": "Balanced",
+            }
+            amulet_type_label = amulet_type_map.get(raw_amulet_type, raw_amulet_type.capitalize() or "Unknown")
+            amulet_text = f"Tier {amulet_tier} {amulet_type_label}"
 
         ledger = [
             ("Money", f"${self._compact_number(money)}"),
             ("Guild", guild_name or "None"),
             ("God", god_name),
+            ("Raid ATK", f"{raid_attack_value:,}"),
+            ("Raid DEF", f"{raid_defense_value:,}"),
+            ("Amulet", amulet_text),
+            ("Health", f"{total_health_value:,}"),
             ("PvP Wins", f"{pvp_wins:,}"),
             ("Pet", pet_name or "None"),
             ("Marriage", marriage_name or "None"),
-            ("Rich Rank", f"#{rank_money}" if rank_money else "N/A"),
-            ("XP Rank", f"#{rank_xp}" if rank_xp else "N/A"),
         ]
         max_value = ledger_rect[2] - ledger_rect[0] - 224
         y = 546
         for k, v in ledger:
             draw.text((ledger_rect[0] + 18, y), f"{k}:", font=label_font, fill=colors["muted"])
             draw.text((ledger_rect[0] + 210, y), clip(v, value_font, max_value), font=value_font, fill=colors["text"])
-            y += 42
+            y += 33
 
         right_hand, left_hand = None, None
         any_count = sum(1 for i in items if i.get("hand") == "any")
@@ -554,9 +672,9 @@ class Profile(commands.Cog):
                 font=micro_font,
                 fill=colors["muted"],
             )
-            bar_y = y_pos + 18
+            bar_y = y_pos + 22
             draw.rounded_rectangle(
-                (px1 + 14, bar_y, px2 - 14, bar_y + 12),
+                (px1 + 14, bar_y, px2 - 14, bar_y + 14),
                 radius=6,
                 fill=colors["bar_bg"],
                 outline=colors["border_dim"],
@@ -565,11 +683,43 @@ class Profile(commands.Cog):
             fill_w = int(((px2 - px1 - 30) * clamped) / 100)
             if fill_w > 0:
                 draw.rounded_rectangle(
-                    (px1 + 15, bar_y + 1, px1 + 15 + fill_w, bar_y + 11),
+                    (px1 + 15, bar_y + 1, px1 + 15 + fill_w, bar_y + 13),
                     radius=5,
                     fill=color,
                 )
             return bar_y + 18
+
+        def pet_combat_bar(
+            y_pos: int,
+            label: str,
+            value: int,
+            cap: int,
+            color: tuple[int, int, int, int],
+        ) -> int:
+            safe_cap = max(1, cap)
+            clamped = max(0, int(value))
+            draw.text(
+                (px1 + 20, y_pos),
+                clip(f"{label} {clamped:,}", micro_font, pet_w - 12),
+                font=micro_font,
+                fill=colors["muted"],
+            )
+            bar_y = y_pos + 22
+            draw.rounded_rectangle(
+                (px1 + 20, bar_y, px2 - 20, bar_y + 16),
+                radius=6,
+                fill=colors["bar_bg"],
+                outline=colors["border_dim"],
+                width=1,
+            )
+            fill_w = int(((px2 - px1 - 42) * min(1.0, clamped / safe_cap)))
+            if fill_w > 0:
+                draw.rounded_rectangle(
+                    (px1 + 21, bar_y + 1, px1 + 21 + fill_w, bar_y + 15),
+                    radius=5,
+                    fill=color,
+                )
+            return bar_y + 16
 
         portrait_size = min(max(210, pet_w - 24), 320)
         portrait_x = px1 + ((px2 - px1) - portrait_size) // 2
@@ -652,26 +802,30 @@ class Profile(commands.Cog):
                 font=micro_font,
                 fill=colors["muted"],
             )
-            y_cursor += 22
+            y_cursor += 32
 
             y_cursor = pet_bar(y_cursor, "Happy", pet_happiness, (112, 151, 93, 255))
-            y_cursor = pet_bar(y_cursor + 10, "Hunger", pet_hunger, (171, 84, 64, 255))
-            y_cursor = pet_bar(y_cursor + 10, "Trust", pet_trust, (88, 118, 164, 255))
+            y_cursor = pet_bar(y_cursor, "Hunger", pet_hunger, (171, 84, 64, 255))
+            y_cursor = pet_bar(y_cursor, "Trust", pet_trust, (88, 118, 164, 255))
 
-            y_cursor += 14
-            draw.text(
-                (px1 + 14, y_cursor),
-                clip(f"HP {pet_hp}  ATK {pet_attack}", micro_font, pet_w),
-                font=micro_font,
-                fill=colors["muted"],
+            combat_top = max(y_cursor + 12, py2 - 248)
+            draw.rounded_rectangle(
+                (px1 + 12, combat_top, px2 - 12, py2 - 18),
+                radius=14,
+                fill=(76, 53, 32, 220),
+                outline=colors["border_dim"],
+                width=2,
             )
-            y_cursor += 24
             draw.text(
-                (px1 + 14, y_cursor),
-                clip(f"DEF {pet_defense}  IV {pet_iv}%", micro_font, pet_w),
+                (px1 + 20, combat_top + 10),
+                clip(f"Combat Readout | IV {pet_iv}%", micro_font, pet_w - 10),
                 font=micro_font,
-                fill=colors["muted"],
+                fill=colors["border"],
             )
+            combat_y = combat_top + 40
+            combat_y = pet_combat_bar(combat_y, "HP", pet_hp, 20000, (112, 151, 93, 255))
+            combat_y = pet_combat_bar(combat_y + 4, "ATK", pet_attack, 5000, (171, 84, 64, 255))
+            pet_combat_bar(combat_y + 4, "DEF", pet_defense, 5000, (88, 118, 164, 255))
         else:
             draw.rounded_rectangle(
                 (portrait_x, portrait_y, portrait_x + portrait_size, portrait_y + portrait_size),
@@ -1180,6 +1334,11 @@ class Profile(commands.Cog):
 
                     items = await self.bot.get_equipped_items_for(targetid, conn=conn)
                     mission = await self.bot.get_adventure(targetid)
+                    _ = await self._sync_auto_profile_badges(
+                        user_id=targetid,
+                        badges_raw=profile["badges"],
+                        conn=conn,
+                    )
 
                 right_hand = None
                 left_hand = None
@@ -1223,12 +1382,6 @@ class Profile(commands.Cog):
                     adventure_name = None
                     adventure_time = None
 
-                badge_val = Badge.from_db(profile["badges"])
-                if badge_val:
-                    badges = badge_val.to_items_lowercase()
-                else:
-                    badges = []
-
                 async with self.bot.pool.acquire() as conn:
                 # Get custom positions for this user  
                     custom_positions_json = await conn.fetchval(
@@ -1262,7 +1415,7 @@ class Profile(commands.Cog):
                     "god": profile["god"] or _("No God"),
                     "adventure_name": adventure_name,   # From user's snippet
                     "adventure_time": adventure_time,
-                    "badges": badges,                   # From user's snippet
+                    "badges": [],
                     "positions": positions
                 }
                 
@@ -1360,6 +1513,11 @@ class Profile(commands.Cog):
 
                     items = await self.bot.get_equipped_items_for(targetid, conn=conn)
                     mission = await self.bot.get_adventure(targetid)
+                    _ = await self._sync_auto_profile_badges(
+                        user_id=targetid,
+                        badges_raw=profile["badges"],
+                        conn=conn,
+                    )
 
                 # Apply race bonuses
                 race = profile["race"].lower()  # Assuming the race is stored in lowercase in the database
@@ -1493,12 +1651,6 @@ class Profile(commands.Cog):
                 else:
                     adventure_name = None
                     adventure_time = None
-
-                badge_val = Badge.from_db(profile["badges"])
-                if badge_val:
-                    badges = badge_val.to_items_lowercase()
-                else:
-                    badges = []
 
                 # Prepare class names and icon names as lists of strings
                 processed_classes = []
@@ -2002,10 +2154,23 @@ class Profile(commands.Cog):
                     _("**{target}** does not have a character.").format(target=user)
                 )
 
+            synced_badges = await self._sync_auto_profile_badges(
+                user_id=user.id,
+                badges_raw=profile_data["badges"],
+                conn=conn,
+            )
+            profile_data = dict(profile_data)
+            profile_data["badges"] = synced_badges.to_db()
+
             mission = await self.bot.get_adventure(user)
             guild_name = await conn.fetchval(
                 'SELECT name FROM guild WHERE "id" = $1;',
                 profile_data["guild"],
+            )
+            raid_attack, raid_defense = await self.bot.get_raidstats(user, conn=conn)
+            amulet_data = await conn.fetchrow(
+                'SELECT * FROM amulets WHERE "user_id" = $1 AND equipped = true ORDER BY id DESC LIMIT 1;',
+                user.id,
             )
             pet_data = await conn.fetchrow(
                 'SELECT * FROM monster_pets WHERE "user_id" = $1 AND equipped = true;',
@@ -2016,6 +2181,12 @@ class Profile(commands.Cog):
                 if pet_data
                 else "None"
             )
+            level = int(rpgtools.xptolevel(self._safe_int(profile_data.get("xp"), 0)))
+            base_hp = self._safe_float(profile_data.get("health"), 0.0)
+            stat_hp = self._safe_float(profile_data.get("stathp"), 0.0) * 50.0
+            level_hp = 200.0 + (level * 15.0)
+            amulet_hp = self._safe_float(amulet_data.get("hp"), 0.0) if amulet_data else 0.0
+            total_health = base_hp + stat_hp + level_hp + amulet_hp
 
         marriage_name = None
         if profile_data.get("marriage"):
@@ -2036,6 +2207,10 @@ class Profile(commands.Cog):
             pet_name=pet_name,
             marriage_name=marriage_name,
             pet_data=pet_data,
+            raid_attack=raid_attack,
+            raid_defense=raid_defense,
+            total_health=total_health,
+            amulet_data=amulet_data,
         )
         await ctx.send(
             _("Your RPG Profile Card:"),
