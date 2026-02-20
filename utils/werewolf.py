@@ -1378,6 +1378,8 @@ class Game:
                         results_pretext=results_pretext, winning_side=self.winning_side
                     )
                 )
+                for page in paginator.pages:
+                    await self.ctx.send(page)
                 await self.reveal_others()
             else:
                 # Display winner information
