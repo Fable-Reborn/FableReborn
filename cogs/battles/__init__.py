@@ -1329,6 +1329,9 @@ class Battles(commands.Cog):
                 );
                 """
             )
+            await conn.execute(
+                "ALTER TABLE pve_preferences ADD COLUMN IF NOT EXISTS default_location_id TEXT;"
+            )
             monster_pets_exists = await conn.fetchval(
                 "SELECT to_regclass('public.monster_pets') IS NOT NULL;"
             )
@@ -2414,6 +2417,35 @@ class Battles(commands.Cog):
                 """,
                 user_id,
                 bool(enabled),
+            )
+
+    async def _get_user_pve_default_location_id(self, user_id: int) -> str | None:
+        """Return user's default PvE location id, if set."""
+        async with self.bot.pool.acquire() as conn:
+            location_id = await conn.fetchval(
+                "SELECT default_location_id FROM pve_preferences WHERE user_id = $1;",
+                user_id,
+            )
+        if location_id is None:
+            return None
+        location_text = str(location_id).strip()
+        return location_text or None
+
+    async def _set_user_pve_default_location_id(self, user_id: int, location_id: str | None):
+        """Persist user's default PvE location id (or clear when None)."""
+        normalized = None if location_id is None else str(location_id).strip().lower()
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO pve_preferences (user_id, default_location_id, updated_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (user_id)
+                DO UPDATE
+                SET default_location_id = EXCLUDED.default_location_id,
+                    updated_at = NOW();
+                """,
+                user_id,
+                normalized,
             )
 
     async def _get_pve_monster_pool_for_user(
@@ -4191,6 +4223,72 @@ class Battles(commands.Cog):
 
     @has_char()
     @commands.command(
+        brief=_("Set a default PvE location for $pve and $scout"),
+        aliases=["pvedefaultloc", "pvelocationdefault", "scoutdefault"],
+    )
+    @locale_doc
+    async def pvedefault(self, ctx, *, location_query: str = "status"):
+        _(
+            """`<location|status|clear>` - PvE location name/id, `status`, or `clear`
+
+            Set your default PvE location to skip location selection in `$pve` and `$scout`.
+            Use `status` to view current default, or `clear` to remove it."""
+        )
+        player_level = rpgtools.xptolevel(ctx.character_data.get("xp", 0))
+        query = str(location_query or "").strip()
+        normalized = query.lower()
+
+        if normalized in {"", "status", "show", "state", "current"}:
+            default_id = await self._get_user_pve_default_location_id(ctx.author.id)
+            if not default_id:
+                await ctx.send(
+                    "No default PvE location is set. Use `$pvedefault <location>` to set one."
+                )
+                return
+
+            location = self._get_pve_location_by_id(default_id)
+            if not location:
+                await self._set_user_pve_default_location_id(ctx.author.id, None)
+                await ctx.send(
+                    f"Your default location (`{default_id}`) no longer exists and was cleared."
+                )
+                return
+
+            unlock_level = int(location.get("unlock_level", 1))
+            unlocked_text = "Unlocked" if player_level >= unlock_level else "🔒 Locked"
+            await ctx.send(
+                f"Default PvE location: **{location['name']}** (`{location['id']}`) - {unlocked_text}."
+            )
+            return
+
+        if normalized in {"clear", "off", "none", "reset", "disable"}:
+            await self._set_user_pve_default_location_id(ctx.author.id, None)
+            await ctx.send("✅ Cleared your default PvE location.")
+            return
+
+        location = self._resolve_pve_location_query(query)
+        if not location:
+            await ctx.send(
+                "Unknown location. Use `$pvelocations` to view ids, then run `$pvedefault <id>`."
+            )
+            return
+
+        unlock_level = int(location.get("unlock_level", 1))
+        if player_level < unlock_level:
+            await ctx.send(
+                f"🔒 **{location['name']}** unlocks at level **{unlock_level}**. "
+                "You can set it once unlocked."
+            )
+            return
+
+        await self._set_user_pve_default_location_id(ctx.author.id, location["id"])
+        await ctx.send(
+            f"✅ Default PvE location set to **{location['name']}** (`{location['id']}`). "
+            "`$pve` and `$scout` will use this automatically."
+        )
+
+    @has_char()
+    @commands.command(
         brief=_("Show PvE location unlocks and tier highlights"),
         aliases=["pvelocs", "pvemap"],
     )
@@ -4413,6 +4511,38 @@ class Battles(commands.Cog):
                 await self.bot.reset_cooldown(ctx)
                 return
 
+            if locationchoice_override:
+                override_id = str(locationchoice_override).strip().lower()
+                selected_location = next(
+                    (
+                        location
+                        for location in unlocked_locations
+                        if str(location.get("id", "")).lower() == override_id
+                    ),
+                    None,
+                )
+
+            if selected_location is None:
+                default_location_id = await self._get_user_pve_default_location_id(
+                    ctx.author.id
+                )
+                if default_location_id:
+                    default_id = default_location_id.lower()
+                    selected_location = next(
+                        (
+                            location
+                            for location in unlocked_locations
+                            if str(location.get("id", "")).lower() == default_id
+                        ),
+                        None,
+                    )
+                    if selected_location is None:
+                        default_exists = self._get_pve_location_by_id(default_location_id)
+                        if default_exists is None:
+                            await self._set_user_pve_default_location_id(
+                                ctx.author.id, None
+                            )
+
             def format_god_percent(value):
                 try:
                     return f"{float(value):g}%"
@@ -4507,32 +4637,39 @@ class Battles(commands.Cog):
                     text="Tip: Use `$pvelocations` for a quick overview of all zones."
                 )
 
-            allowed_location_users = {ctx.author.id}
-            alt_invoker_id = getattr(ctx, "alt_invoker_id", None)
-            if alt_invoker_id is not None:
-                allowed_location_users.add(int(alt_invoker_id))
+            if selected_location is None:
+                allowed_location_users = {ctx.author.id}
+                alt_invoker_id = getattr(ctx, "alt_invoker_id", None)
+                if alt_invoker_id is not None:
+                    allowed_location_users.add(int(alt_invoker_id))
 
-            location_view = PVELocationView(
-                author_id=ctx.author.id,
-                locations=all_locations,
-                timeout=60.0,
-                allowed_user_ids=allowed_location_users,
-            )
-            location_message = await ctx.send(embed=location_embed, view=location_view)
-            location_view.message = location_message
+                location_view = PVELocationView(
+                    author_id=ctx.author.id,
+                    locations=all_locations,
+                    timeout=60.0,
+                    allowed_user_ids=allowed_location_users,
+                )
+                location_message = await ctx.send(embed=location_embed, view=location_view)
+                location_view.message = location_message
 
-            await location_view.wait()
+                await location_view.wait()
 
-            if location_view.cancelled:
-                await self.bot.reset_cooldown(ctx)
-                return
+                if location_view.cancelled:
+                    await self.bot.reset_cooldown(ctx)
+                    return
 
-            if not location_view.selected_location:
-                await ctx.send(_("⏱️ Location selection timed out."))
-                await self.bot.reset_cooldown(ctx)
-                return
+                if not location_view.selected_location:
+                    await ctx.send(_("⏱️ Location selection timed out."))
+                    await self.bot.reset_cooldown(ctx)
+                    return
 
-            selected_location = location_view.selected_location
+                selected_location = location_view.selected_location
+            else:
+                await ctx.send(
+                    _("Using your default PvE location: **{location}**.").format(
+                        location=selected_location["name"]
+                    )
+                )
 
         # Send an embed indicating that the player is searching for a monster
         if selected_location:
@@ -5080,51 +5217,77 @@ class Battles(commands.Cog):
                 if alt_invoker_id is not None:
                     allowed_scout_user_ids.add(int(alt_invoker_id))
 
-                location_choice_embed = discord.Embed(
-                    title="Choose Scout Location",
-                    description=(
-                        "Pick a specific location to focus your scout rolls, or select "
-                        "**Random Unlocked** to keep randomizing between unlocked zones."
-                    ),
-                    color=self.bot.config.game.primary_colour,
+                forced_scout_location = None
+                default_location_id = await self._get_user_pve_default_location_id(
+                    ctx.author.id
                 )
-                location_choice_embed.add_field(
-                    name="Tip",
-                    value=(
-                        "Choosing one location prevents rerolls from landing in zones "
-                        "you don't want."
-                    ),
-                    inline=False,
-                )
+                if default_location_id:
+                    default_id = default_location_id.lower()
+                    forced_scout_location = next(
+                        (
+                            location
+                            for location in unlocked_locations
+                            if str(location.get("id", "")).lower() == default_id
+                        ),
+                        None,
+                    )
+                    if forced_scout_location is None:
+                        default_exists = self._get_pve_location_by_id(default_location_id)
+                        if default_exists is None:
+                            await self._set_user_pve_default_location_id(
+                                ctx.author.id, None
+                            )
 
-                location_choice_view = ScoutLocationChoiceView(
-                    author_id=ctx.author.id,
-                    locations=unlocked_locations,
-                    timeout=60.0,
-                    allowed_user_ids=allowed_scout_user_ids,
-                )
-                location_choice_message = await ctx.send(
-                    embed=location_choice_embed,
-                    view=location_choice_view,
-                )
-                location_choice_view.message = location_choice_message
+                if forced_scout_location is None:
+                    location_choice_embed = discord.Embed(
+                        title="Choose Scout Location",
+                        description=(
+                            "Pick a specific location to focus your scout rolls, or select "
+                            "**Random Unlocked** to keep randomizing between unlocked zones."
+                        ),
+                        color=self.bot.config.game.primary_colour,
+                    )
+                    location_choice_embed.add_field(
+                        name="Tip",
+                        value=(
+                            "Choosing one location prevents rerolls from landing in zones "
+                            "you don't want."
+                        ),
+                        inline=False,
+                    )
 
-                await location_choice_view.wait()
+                    location_choice_view = ScoutLocationChoiceView(
+                        author_id=ctx.author.id,
+                        locations=unlocked_locations,
+                        timeout=60.0,
+                        allowed_user_ids=allowed_scout_user_ids,
+                    )
+                    location_choice_message = await ctx.send(
+                        embed=location_choice_embed,
+                        view=location_choice_view,
+                    )
+                    location_choice_view.message = location_choice_message
 
-                if location_choice_view.cancelled:
-                    await self.bot.reset_cooldown(ctx)
-                    return
+                    await location_choice_view.wait()
 
-                if location_choice_view.use_random_location is None:
-                    await ctx.send("⏱️ Scout location selection timed out.")
-                    await self.bot.reset_cooldown(ctx)
-                    return
+                    if location_choice_view.cancelled:
+                        await self.bot.reset_cooldown(ctx)
+                        return
 
-                forced_scout_location = (
-                    None
-                    if location_choice_view.use_random_location
-                    else location_choice_view.selected_location
-                )
+                    if location_choice_view.use_random_location is None:
+                        await ctx.send("⏱️ Scout location selection timed out.")
+                        await self.bot.reset_cooldown(ctx)
+                        return
+
+                    forced_scout_location = (
+                        None
+                        if location_choice_view.use_random_location
+                        else location_choice_view.selected_location
+                    )
+                else:
+                    await ctx.send(
+                        f"Using your default scout location: **{forced_scout_location['name']}**."
+                    )
                 
                 # Create scouting view
                 class ScoutingView(discord.ui.View):
