@@ -391,7 +391,8 @@ class Werewolf(commands.Cog):
             {
                 "side": _("The Werewolves"),
                 "members": (
-                    "Werewolf, White Wolf, Cursed Wolf Father, Big Bad Wolf, Wolf"
+                    "Werewolf, Junior Werewolf, Wolf Seer, White Wolf, Cursed Wolf"
+                    " Father, Big Bad Wolf, Wolf"
                     f" Shaman - {restriction}, Wolf Necromancer - {restriction}"
                 ),
                 "goal": _("Must eliminate all other villagers"),
@@ -399,8 +400,9 @@ class Werewolf(commands.Cog):
             {
                 "side": _("The Villagers"),
                 "members": (
-                    "Villager, Pure Soul, Flower Child, Seer, Witch, Doctor, Hunter,"
-                    " Healer, Amor, Knight, Fortune Teller,"
+                    "Villager, Pure Soul, Flower Child, Seer, Aura Seer, Witch,"
+                    " Doctor, Bodyguard, Sheriff, Jailer, Hunter, Healer, Amor,"
+                    " Knight, Fortune Teller,"
                     f" Sister, Brother, The Old, Fox, Judge, Paragon - {restriction},"
                     f" Ritualist - {restriction}, Troublemaker - {restriction}, Lawyer"
                     f" - {restriction}, War Veteran - {restriction}"
@@ -427,6 +429,13 @@ class Werewolf(commands.Cog):
                 "goal": _("Must complete their own objective"),
             },
         ]
+
+        def has_role(group: dict[str, str], role_name: str) -> bool:
+            normalized_members = [
+                member.split(" - ")[0].strip().lower()
+                for member in group["members"].split(",")
+            ]
+            return role_name.lower() in normalized_members
 
         if role is None:
             em = discord.Embed(
@@ -472,7 +481,7 @@ class Werewolf(commands.Cog):
                     [
                         group["side"]
                         for group in role_groups
-                        if group["members"].find(role.title()) != -1
+                        if has_role(group, role.title())
                     ]
                 ),
                 inline=True,
@@ -483,7 +492,7 @@ class Werewolf(commands.Cog):
                     [
                         group["goal"]
                         for group in role_groups
-                        if group["members"].find(role.title()) != -1
+                        if has_role(group, role.title())
                     ]
                 ),
                 inline=True,
