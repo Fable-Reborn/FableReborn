@@ -366,6 +366,26 @@ SPECIAL_WOLF_ROLES = {
     Role.WHITE_WOLF,
 }
 
+# Mapped from Wolvesville unknown aura categories and nearest equivalents used here.
+UNKNOWN_AURA_ROLES = {
+    # Village roles that can kill/revive.
+    Role.WITCH,
+    Role.JAILER,
+    Role.RITUALIST,
+    Role.HUNTER,
+    Role.WAR_VETERAN,
+    # Solo/ambiguous roles that should not read as plain Good/Evil.
+    Role.JESTER,
+    Role.HEAD_HUNTER,
+    Role.WHITE_WOLF,
+    Role.FLUTIST,
+    Role.SUPERSPREADER,
+    Role.RAIDER,
+    Role.WILD_CHILD,
+    Role.THIEF,
+    Role.WOLFHOUND,
+}
+
 
 def target_wolf_count_for_players(player_count: int) -> int:
     return max(1, min(6, player_count // 4))
@@ -472,6 +492,17 @@ def enforce_wolf_ratio(roles: list[Role], requested_players: int) -> list[Role]:
                 break
 
     return available_roles + extra_roles
+
+
+def get_aura_alignment(player: Player) -> str:
+    # Cursed players join the wolves and should read Evil.
+    if player.cursed and player.role != Role.WHITE_WOLF:
+        return "Evil"
+    if player.role in UNKNOWN_AURA_ROLES:
+        return "Unknown"
+    if player.side in (Side.WOLVES, Side.WHITE_WOLF):
+        return "Evil"
+    return "Good"
 
 
 class Game:
@@ -3109,11 +3140,7 @@ class Player:
                 ).format(game_link=self.game.game_link)
             )
             return
-        aura = (
-            _("Evil")
-            if to_inspect.side in (Side.WOLVES, Side.WHITE_WOLF)
-            else _("Good")
-        )
+        aura = _(get_aura_alignment(to_inspect))
         await self.send(
             _("**{player}** has a **{aura} aura**.\n{game_link}").format(
                 player=to_inspect.user,
