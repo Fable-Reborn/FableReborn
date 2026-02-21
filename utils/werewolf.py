@@ -786,8 +786,21 @@ class Game:
         guild = self.ctx.guild
         channel = self.ctx.channel
         everyone = guild.default_role
+        dead_role = self._get_ww_dead_role()
+        dead_role_send_opened = False
 
         try:
+            if dead_role is not None and self._can_manage_ww_roles():
+                dead_overwrite = channel.overwrites_for(dead_role)
+                if dead_overwrite.send_messages is not True:
+                    dead_overwrite.send_messages = True
+                    await channel.set_permissions(
+                        dead_role,
+                        overwrite=dead_overwrite,
+                        reason="Werewolf post-game chat window open for WW Dead",
+                    )
+                dead_role_send_opened = True
+
             overwrite = channel.overwrites_for(everyone)
             if overwrite.send_messages is not True:
                 overwrite.send_messages = True
@@ -797,11 +810,15 @@ class Game:
                     reason="Werewolf post-game chat window open",
                 )
             self._everyone_chat_locked = False
+            end_at = datetime.datetime.now(
+                datetime.timezone.utc
+            ) + datetime.timedelta(seconds=duration_seconds)
+            end_ts = int(end_at.timestamp())
             await self.ctx.send(
                 _(
                     "🗣️ Post-game chat is open to **@everyone** for"
-                    " **{seconds} seconds**."
-                ).format(seconds=duration_seconds)
+                    " **{seconds} seconds** (until <t:{end_ts}:T>, <t:{end_ts}:R>)."
+                ).format(seconds=duration_seconds, end_ts=end_ts)
             )
             await asyncio.sleep(duration_seconds)
             await self.ctx.send(_("🔒 Post-game chat window ended."))
@@ -823,6 +840,19 @@ class Game:
                         " API error."
                     )
                 )
+        finally:
+            if dead_role_send_opened and dead_role is not None:
+                try:
+                    dead_overwrite = channel.overwrites_for(dead_role)
+                    if dead_overwrite.send_messages is not False:
+                        dead_overwrite.send_messages = False
+                        await channel.set_permissions(
+                            dead_role,
+                            overwrite=dead_overwrite,
+                            reason="Werewolf post-game chat window closed for WW Dead",
+                        )
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
 
     async def ensure_ww_dead_channel_lock(self) -> None:
         if not self._can_manage_ww_roles():
@@ -2938,12 +2968,24 @@ class Player:
                         title=title, remaining=remaining
                     ),
                 )
-            except (
-                self.game.ctx.bot.paginator.NoChoice,
-                discord.Forbidden,
-                discord.HTTPException,
-            ):
+            except self.game.ctx.bot.paginator.NoChoice:
                 await self.send(_("Selection timed out."))
+                break
+            except discord.Forbidden:
+                await self.send(
+                    _(
+                        "I couldn't DM you the selection menu. Please enable direct"
+                        " messages from server members."
+                    )
+                )
+                break
+            except discord.HTTPException:
+                await self.send(
+                    _(
+                        "The selection menu failed due to a Discord API error. Please"
+                        " try again."
+                    )
+                )
                 break
 
             if selected_player is None:
