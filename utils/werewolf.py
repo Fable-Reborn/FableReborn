@@ -513,6 +513,66 @@ def get_aura_alignment(player: Player) -> str:
     return "Good"
 
 
+class EndgameIdsView(discord.ui.View):
+    def __init__(self, winner_ids: list[int], all_ids: list[int], timeout: float = 900):
+        super().__init__(timeout=timeout)
+        self.winner_ids = winner_ids
+        self.all_ids = all_ids
+
+    @staticmethod
+    def _format_ids(user_ids: list[int]) -> str:
+        if not user_ids:
+            return "None"
+        return "\n".join(str(user_id) for user_id in user_ids)
+
+    async def _send_ids(
+            self, interaction: discord.Interaction, *, title: str, user_ids: list[int]
+    ) -> None:
+        payload = self._format_ids(user_ids)
+        message = f"{title}\n```text\n{payload}\n```"
+        if len(message) > 1900:
+            lines = payload.splitlines()
+            clipped = []
+            current_len = 0
+            for line in lines:
+                if current_len + len(line) + 1 > 1650:
+                    break
+                clipped.append(line)
+                current_len += len(line) + 1
+            clipped_payload = "\n".join(clipped) or "None"
+            message = (
+                f"{title}\n```text\n{clipped_payload}\n```\n"
+                "Output truncated due to Discord length limits."
+            )
+        await interaction.response.send_message(message, ephemeral=True)
+
+    @discord.ui.button(
+        label="Copy User ID Winners",
+        style=discord.ButtonStyle.success,
+    )
+    async def copy_winner_ids(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self._send_ids(
+            interaction,
+            title="Copy these winner user IDs:",
+            user_ids=self.winner_ids,
+        )
+
+    @discord.ui.button(
+        label="Copy User ID All",
+        style=discord.ButtonStyle.primary,
+    )
+    async def copy_all_ids(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self._send_ids(
+            interaction,
+            title="Copy these user IDs:",
+            user_ids=self.all_ids,
+        )
+
+
 class Game:
     def __init__(
             self, ctx: Context, players: list[discord.Member], mode: str, speed: str
@@ -2754,7 +2814,16 @@ class Game:
             value = "\n".join(entries) if entries else _("None")
             embed.add_field(name=heading, value=value[:1024], inline=False)
 
-        await self.ctx.send(embed=embed)
+        winner_ids = [player.user.id for player in self.players if player.has_won]
+        if not winner_ids and isinstance(winner, Player):
+            winner_ids = [winner.user.id]
+        winner_ids = list(dict.fromkeys(winner_ids))
+        all_ids = list(dict.fromkeys(player.user.id for player in self.players))
+
+        await self.ctx.send(
+            embed=embed,
+            view=EndgameIdsView(winner_ids=winner_ids, all_ids=all_ids),
+        )
 
 
 class Player:
