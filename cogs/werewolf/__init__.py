@@ -400,7 +400,7 @@ class Werewolf(commands.Cog):
             {
                 "side": _("The Villagers"),
                 "members": (
-                    "Villager, Pure Soul, Flower Child, Seer, Aura Seer, Witch,"
+                    "Villager, Cursed, Pure Soul, Flower Child, Seer, Aura Seer, Witch,"
                     " Doctor, Bodyguard, Sheriff, Jailer, Medium, Hunter, Healer, Amor,"
                     " Knight, Fortune Teller,"
                     f" Sister, Brother, The Old, Fox, Judge, Paragon - {restriction},"
@@ -412,7 +412,7 @@ class Werewolf(commands.Cog):
             {
                 "side": _("The Ambiguous"),
                 "members": (
-                    f"Thief, Wild Child, Maid, Wolfhound, Raider - {restriction}"
+                    f"Thief, Maid, Wolfhound, Raider - {restriction}"
                 ),
                 "goal": _("Make their side win"),
             },

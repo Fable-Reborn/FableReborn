@@ -68,7 +68,7 @@ class Role(Enum):
     JUDGE = 17
     KNIGHT = 18
     MAID = 19
-    WILD_CHILD = 20
+    CURSED = 20
     THIEF = 21
     PARAGON = 22
     RITUALIST = 23
@@ -115,7 +115,7 @@ DESCRIPTIONS = {
         "Your objective is to kill all villagers together with the other Werewolves."
         " Every night, you will get to choose one villager to kill together with them."
         " After that, you will wake up once more to kill an additional villager, but as"
-        " long as no Werewolf or Wild Child has been killed."
+        " long as no Werewolf has been killed."
     ),
     Role.VILLAGER: _(
         "You are an innocent soul. Your goal is to eradicate all Werewolves that are"
@@ -219,9 +219,10 @@ DESCRIPTIONS = {
         " later on in the night."
     ),
     Role.THIEF: _("You are the Thief and can choose your identity soon."),
-    Role.WILD_CHILD: _(
-        "You are the Wild Child and will choose an idol. Once it dies, you turn into a"
-        " Werewolf, but until then, you are a normal Villager..."
+    Role.CURSED: _(
+        "You are the Cursed. You are on the Villagers team and appear Good to Aura"
+        " checks. If a Werewolf attack targets you, you survive and turn into a"
+        " Werewolf instead."
     ),
     Role.WOLFHOUND: _(
         "You are something between a Werewolf and a Villager. Choose your side"
@@ -390,7 +391,6 @@ UNKNOWN_AURA_ROLES = {
     Role.FLUTIST,
     Role.SUPERSPREADER,
     Role.RAIDER,
-    Role.WILD_CHILD,
     Role.THIEF,
     Role.WOLFHOUND,
 }
@@ -607,6 +607,7 @@ class Game:
         self.medium_relay_task: asyncio.Task | None = None
         self.jailer_day_pick_task: asyncio.Task | None = None
         self.junior_day_mark_task: asyncio.Task | None = None
+        self.pending_night_resurrections: list[tuple[Player, Player, Role]] = []
         self.available_roles = get_roles(len(players), self.mode)
         self.available_roles, self.extra_roles = (
             self.available_roles[:-2],
@@ -1570,6 +1571,26 @@ class Game:
                 await bodyguard.kill()
         return targets
 
+    async def apply_cursed_conversion(self, targets: list[Player]) -> list[Player]:
+        # Cursed converts only when directly targeted by the werewolves' night attack.
+        for target in list(dict.fromkeys(targets)):
+            if target.dead or target.role != Role.CURSED:
+                continue
+            while target in targets:
+                targets.remove(target)
+            if target.initial_roles[-1] != target.role:
+                target.initial_roles.append(target.role)
+            target.role = Role.WEREWOLF
+            target.cursed = False
+            await target.send(
+                _(
+                    "You were attacked by the Werewolves, but instead of dying you"
+                    " transformed into a **Werewolf**.\n{game_link}"
+                ).format(game_link=self.game_link)
+            )
+            await target.send_information()
+        return targets
+
     async def offer_fortune_card_reveals(self) -> None:
         card_holders = [
             player
@@ -2069,8 +2090,6 @@ class Game:
                 await player.send_family_msg("brother", brothers)
         if troublemaker := self.get_player_with_role(Role.TROUBLEMAKER):
             await troublemaker.choose_2_to_exchange()
-        if wild_child := self.get_player_with_role(Role.WILD_CHILD):
-            await wild_child.choose_idol()
         await self.ensure_head_hunter_targets()
         if wolf_seer := self.get_player_with_role(Role.WOLF_SEER):
             await wolf_seer.check_wolf_seer_target()
@@ -2089,6 +2108,7 @@ class Game:
                     targets.append(target)
         if wolf_shaman := self.get_player_with_role(Role.WOLF_SHAMAN):
             await wolf_shaman.protect_werewolf()
+        targets = await self.apply_cursed_conversion(targets)
         targets = await self.apply_night_protection(targets)
         if knight := discord.utils.get(targets, role=Role.KNIGHT):
             knight.attacked_by_the_pact = True
@@ -2119,8 +2139,6 @@ class Game:
                 await self.announce_pure_soul(self.ex_maid)
             elif self.ex_maid.role == Role.TROUBLEMAKER:
                 await self.ex_maid.choose_2_to_exchange()
-            elif self.ex_maid.role == Role.WILD_CHILD:
-                await self.ex_maid.choose_idol()
             elif self.ex_maid.role == Role.JUDGE:
                 await self.ex_maid.get_judge_symbol()
             elif self.ex_maid.role == Role.SISTER:
@@ -2184,6 +2202,7 @@ class Game:
                     targets.append(target)
         if wolf_shaman := self.get_player_with_role(Role.WOLF_SHAMAN):
             await wolf_shaman.protect_werewolf()
+        targets = await self.apply_cursed_conversion(targets)
         targets = await self.apply_night_protection(targets)
         if knight := discord.utils.get(targets, role=Role.KNIGHT):
             knight.attacked_by_the_pact = True
@@ -2640,6 +2659,72 @@ class Game:
         await self.sync_player_ww_role(to_resurrect)
         await self._ensure_medium_relay()
 
+    async def queue_night_resurrection(
+            self, caster: Player, to_resurrect: Player
+    ) -> bool:
+        if to_resurrect.dead is False:
+            return False
+        if any(target == to_resurrect for _, target, _ in self.pending_night_resurrections):
+            return False
+        self.pending_night_resurrections.append((caster, to_resurrect, caster.role))
+        return True
+
+    async def resolve_night_resurrections(self) -> None:
+        if not self.pending_night_resurrections:
+            return
+
+        queued = self.pending_night_resurrections.copy()
+        self.pending_night_resurrections.clear()
+        for caster, to_resurrect, source_role in queued:
+            if not to_resurrect.dead:
+                continue
+
+            await self.handle_resurrection(to_resurrect)
+            if source_role == Role.RITUALIST:
+                await self.ctx.send(
+                    _("{player} has been resurrected!").format(
+                        player=to_resurrect.user.mention
+                    )
+                )
+                await to_resurrect.send(
+                    _("You have been resurrected as **{role}!**\n{game_link}").format(
+                        role=to_resurrect.role_name, game_link=self.game_link
+                    )
+                )
+            elif source_role == Role.WOLF_NECROMANCER:
+                await self.ctx.send(
+                    _("**{player}** came back to life!").format(
+                        player=to_resurrect.user.mention
+                    )
+                )
+                await to_resurrect.send(
+                    _("You came back to life as **{role}!**\n{game_link}").format(
+                        role=self.get_role_name(to_resurrect),
+                        game_link=self.game_link,
+                    )
+                )
+            elif source_role == Role.MEDIUM:
+                await self.ctx.send(
+                    _("🔮 **{player}** was resurrected by the **Medium**!").format(
+                        player=to_resurrect.user.mention
+                    )
+                )
+                await to_resurrect.send(
+                    _(
+                        "You have been resurrected by the **Medium** as **{role}**."
+                        "\n{game_link}"
+                    ).format(
+                        role=to_resurrect.role_name,
+                        game_link=self.game_link,
+                    )
+                )
+            else:
+                await self.ctx.send(
+                    _("{player} has been resurrected!").format(
+                        player=to_resurrect.user.mention
+                    )
+                )
+
     async def day(self, deaths: list[Player]) -> None:
         await self._set_night_chat_lock(False)
         await self.release_jailed_player()
@@ -2651,6 +2736,7 @@ class Game:
         try:
             for death in deaths:
                 await death.kill()
+            await self.resolve_night_resurrections()
             if self.rusty_sword_disease_night is not None:
                 if self.rusty_sword_disease_night == 0:
                     self.rusty_sword_disease_night += 1
@@ -4354,8 +4440,6 @@ class Player:
             await self.game.announce_pure_soul(self)
         elif self.role == Role.TROUBLEMAKER:
             await self.choose_2_to_exchange()
-        elif self.role == Role.WILD_CHILD:
-            await self.choose_idol()
         elif self.role == Role.JUDGE:
             await self.get_judge_symbol()
         elif self.role == Role.SISTER:
@@ -4379,7 +4463,7 @@ class Player:
         dead_non_wolves = [
             p
             for p in self.game.recent_deaths
-            if p.side != Side.WOLVES and p.side != Side.WHITE_WOLF
+            if p.dead and p.side != Side.WOLVES and p.side != Side.WHITE_WOLF
         ]
         if len(dead_non_wolves) == 0:
             return
@@ -4409,21 +4493,22 @@ class Player:
                 )
             )
             return
-        await self.game.handle_resurrection(to_resurrect)
+        queued = await self.game.queue_night_resurrection(self, to_resurrect)
+        if not queued:
+            await self.send(
+                _(
+                    "That player is already set to be resurrected at dawn."
+                    "\n{game_link}"
+                ).format(game_link=self.game.game_link)
+            )
+            return
         self.has_ritualist_ability = False
         await self.send(
             _(
                 "You're trying to resurrect **{to_resurrect}** by performing series of"
-                " rituals and prayers of ancient languages.\n{game_link}"
+                " rituals and prayers of ancient languages. If successful, they will"
+                " return at dawn.\n{game_link}"
             ).format(to_resurrect=to_resurrect.user, game_link=self.game.game_link)
-        )
-        await self.game.ctx.send(
-            _("{player} has been resurrected!").format(player=to_resurrect.user.mention)
-        )
-        await to_resurrect.send(
-            _("You have been resurrected as **{role}!**\n{game_link}").format(
-                role=to_resurrect.role_name, game_link=self.game.game_link
-            )
         )
 
     async def medium_resurrect(self) -> None:
@@ -4462,24 +4547,22 @@ class Player:
             )
             return
 
-        await self.game.handle_resurrection(to_resurrect)
+        queued = await self.game.queue_night_resurrection(self, to_resurrect)
+        if not queued:
+            await self.send(
+                _(
+                    "That player is already set to be resurrected at dawn."
+                    "\n{game_link}"
+                ).format(game_link=self.game.game_link)
+            )
+            return
         self.has_medium_revive_ability = False
         await self.send(
             _(
-                "You revived **{player}**. You cannot use your resurrection again this"
-                " game.\n{game_link}"
+                "You chose to revive **{player}**. They will return at dawn if"
+                " successful. You cannot use your resurrection again this game."
+                "\n{game_link}"
             ).format(player=to_resurrect.user, game_link=self.game.game_link)
-        )
-        await self.game.ctx.send(
-            _("🔮 **{player}** was resurrected by the **Medium**!").format(
-                player=to_resurrect.user.mention
-            )
-        )
-        await to_resurrect.send(
-            _("You have been resurrected by the **Medium** as **{role}**.\n{game_link}").format(
-                role=to_resurrect.role_name,
-                game_link=self.game.game_link,
-            )
         )
 
     async def resurrect_werewolf(self) -> None:
@@ -4488,7 +4571,7 @@ class Player:
         dead_wolves = [
             p
             for p in self.game.recent_deaths
-            if p.side == Side.WOLVES or p.side == Side.WHITE_WOLF
+            if p.dead and (p.side == Side.WOLVES or p.side == Side.WHITE_WOLF)
         ]
         if len(dead_wolves) == 0:
             return
@@ -4518,24 +4601,21 @@ class Player:
                 )
             )
             return
-        await self.game.handle_resurrection(to_resurrect)
+        queued = await self.game.queue_night_resurrection(self, to_resurrect)
+        if not queued:
+            await self.send(
+                _(
+                    "That player is already set to be resurrected at dawn."
+                    "\n{game_link}"
+                ).format(game_link=self.game.game_link)
+            )
+            return
         self.has_wolf_necro_ability = False
         await self.send(
             _(
                 "You used necromancy to bring **{to_resurrect}** back to"
-                " life.\n{game_link}"
+                " life. If successful, they will return at dawn.\n{game_link}"
             ).format(to_resurrect=to_resurrect.user, game_link=self.game.game_link)
-        )
-        await self.game.ctx.send(
-            _("**{player}** came back to life!").format(
-                player=to_resurrect.user.mention
-            )
-        )
-        await to_resurrect.send(
-            _("You came back to life as **{role}!**\n{game_link}").format(
-                role=self.game.get_role_name(to_resurrect),
-                game_link=self.game.game_link,
-            )
         )
 
     async def choose_2_to_exchange(self) -> None:
@@ -4909,26 +4989,6 @@ class Player:
                         user=self.user,
                     )
                 )
-            wild_child = discord.utils.find(
-                lambda x: x.idol is not None and x.role == Role.WILD_CHILD,
-                self.game.alive_players,
-            )
-            if wild_child and wild_child.idol == self:
-                if wild_child.initial_roles[-1] != wild_child.role:
-                    wild_child.initial_roles.append(wild_child.role)
-                wild_child.role = Role.WEREWOLF
-
-                await wild_child.send(
-                    _(
-                        "Your idol **{idol}** died, you turned into a"
-                        " **{new_role}**.\n{game_link}"
-                    ).format(
-                        idol=self.user,
-                        new_role=wild_child.role_name,
-                        game_link=self.game.game_link,
-                    )
-                )
-                await wild_child.send_information()
             additional_deaths = []
             if self.role == Role.HUNTER:
                 try:
@@ -5234,7 +5294,7 @@ ROLES_FOR_PLAYERS: list[Role] = [
     Role.HUNTER,
     Role.THIEF,
     Role.WEREWOLF,
-    Role.WILD_CHILD,
+    Role.CURSED,
     Role.PURE_SOUL,
     Role.MAID,
     Role.VILLAGER,
