@@ -170,8 +170,9 @@ DESCRIPTIONS = {
         " whether they appear suspicious."
     ),
     Role.JAILER: _(
-        "You are the Jailer. Every night, you may jail one player. Jailed players are"
-        " protected from werewolf attacks that night."
+        "You are the Jailer. During the day, choose one player to jail for the next"
+        " night. Jailed players cannot use abilities and are protected from werewolf"
+        " attacks that night. Once per game, you may execute your prisoner."
     ),
     Role.THE_OLD: _(
         "You are the oldest member of the community and the Werewolves have been"
@@ -532,6 +533,10 @@ class Game:
         self._night_chat_locked = False
         self._chat_perm_warning_sent = False
         self._role_perm_warning_sent = False
+        self.pending_jail_target: Player | None = None
+        self.current_jailed_target: Player | None = None
+        self.jail_relay_task: asyncio.Task | None = None
+        self.jailer_day_pick_task: asyncio.Task | None = None
         self.available_roles = get_roles(len(players), self.mode)
         self.available_roles, self.extra_roles = (
             self.available_roles[:-2],
@@ -905,6 +910,192 @@ class Game:
                 ).format(target=head_hunter.headhunter_target.user, game_link=self.game_link)
             )
 
+    def is_player_jailed(self, player: Player) -> bool:
+        return bool(self.current_jailed_target is not None and self.current_jailed_target == player)
+
+    async def relay_jail_messages(self, jailer: Player, jailed: Player) -> None:
+        allowed = {jailer.user.id, jailed.user.id}
+
+        def check(message: discord.Message) -> bool:
+            return (
+                message.author.id in allowed
+                and isinstance(message.channel, discord.DMChannel)
+            )
+
+        try:
+            while (
+                self.current_jailed_target == jailed
+                and not jailed.dead
+                and not jailer.dead
+            ):
+                message = await self.ctx.bot.wait_for("message", check=check)
+                if message.author.id == jailer.user.id:
+                    recipient = jailed.user
+                    prefix = _("🧑‍⚖️ Jailer")
+                else:
+                    recipient = jailer.user
+                    prefix = _("🔒 Prisoner")
+                await recipient.send(f"{prefix}: {message.content}")
+        except asyncio.CancelledError:
+            return
+
+    async def _stop_jail_relay(self) -> None:
+        if self.jail_relay_task:
+            self.jail_relay_task.cancel()
+            self.jail_relay_task = None
+
+    async def _prompt_jailer_execution(self, jailer: Player, jailed: Player) -> None:
+        if jailer.dead or jailed.dead or not jailer.has_jailer_execution_ability:
+            return
+        try:
+            action = await self.ctx.bot.paginator.Choose(
+                entries=[_("Execute"), _("Do not execute")],
+                return_index=True,
+                title=_(
+                    "You jailed **{target}**. Execute them now? (one-time ability)"
+                ).format(target=jailed.user),
+                timeout=self.timer,
+            ).paginate(self.ctx, location=jailer.user)
+        except self.ctx.bot.paginator.NoChoice:
+            return
+        except (discord.Forbidden, discord.HTTPException):
+            await self.ctx.send(
+                _("I couldn't send a DM to someone. Too bad they missed to use their power.")
+            )
+            return
+        if action != 0:
+            return
+
+        jailer.has_jailer_execution_ability = False
+        await self.ctx.send(
+            _(
+                "⚖️ The **Jailer** executed **{target}** in prison. Their role will now"
+                " be revealed."
+            ).format(target=jailed.user.mention)
+        )
+        await jailed.kill()
+        await self._stop_jail_relay()
+
+    async def activate_jail_for_night(self) -> None:
+        jailer = self.get_player_with_role(Role.JAILER)
+        self.current_jailed_target = None
+        await self._stop_jail_relay()
+        if jailer is None or jailer.dead:
+            self.pending_jail_target = None
+            return
+        if self.pending_jail_target is None:
+            return
+
+        if self.pending_jail_target.dead or self.pending_jail_target == jailer:
+            await jailer.send(
+                _(
+                    "Your selected jail target is no longer valid, so no one was jailed"
+                    " tonight.\n{game_link}"
+                ).format(game_link=self.game_link)
+            )
+            self.pending_jail_target = None
+            return
+
+        jailed = self.pending_jail_target
+        self.pending_jail_target = None
+        self.current_jailed_target = jailed
+        jailed.is_jailed = True
+        jailed.is_protected = True
+        jailed.protected_by_jailer = True
+
+        await jailer.send(
+            _(
+                "🔒 You jailed {jailed_mention} for tonight. A direct private line is"
+                " now open between you and {jailed_mention} until daybreak. Send any"
+                " DM message here during this time to talk."
+                "\n{game_link}"
+            ).format(
+                jailed_mention=jailed.user.mention,
+                game_link=self.game_link,
+            )
+        )
+        await jailed.send(
+            _(
+                "🔒 You were jailed for tonight by {jailer_mention}. You cannot use"
+                " your abilities and you are protected from werewolf attacks. A direct"
+                " private line is now open between you and {jailer_mention} until"
+                " daybreak. Send any DM message here during this time to talk."
+                "\n{game_link}"
+            ).format(
+                jailer_mention=jailer.user.mention,
+                game_link=self.game_link,
+            )
+        )
+
+        self.jail_relay_task = asyncio.create_task(self.relay_jail_messages(jailer, jailed))
+        await self._prompt_jailer_execution(jailer, jailed)
+
+    async def release_jailed_player(self) -> None:
+        jailed = self.current_jailed_target
+        self.current_jailed_target = None
+        await self._stop_jail_relay()
+        if jailed is None:
+            return
+        jailed.is_jailed = False
+        jailed.protected_by_jailer = False
+        if not jailed.dead:
+            await jailed.send(
+                _("🔓 You were released from jail as day begins.\n{game_link}").format(
+                    game_link=self.game_link
+                )
+            )
+
+    async def _collect_jailer_day_target(self, jailer: Player) -> None:
+        day_timeout = 3600
+        await jailer.send(
+            _(
+                "During the day, choose one player to jail for the next night."
+                " You can choose at any time before nightfall.\n{game_link}"
+            ).format(game_link=self.game_link)
+        )
+        try:
+            picked = await jailer.choose_users(
+                _("Choose a player to jail for next night."),
+                list_of_users=[p for p in self.alive_players if p != jailer],
+                amount=1,
+                required=False,
+                timeout=day_timeout,
+            )
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return
+        if (
+            not picked
+            or jailer.dead
+            or self.get_player_with_role(Role.JAILER) != jailer
+        ):
+            return
+        target = picked[0]
+        if target.dead or target == jailer:
+            return
+        self.pending_jail_target = target
+        await jailer.send(
+            _("You selected **{target}** to be jailed next night.\n{game_link}").format(
+                target=target.user, game_link=self.game_link
+            )
+        )
+
+    async def start_jailer_day_target_selection(self) -> None:
+        if self.jailer_day_pick_task:
+            self.jailer_day_pick_task.cancel()
+            self.jailer_day_pick_task = None
+        self.pending_jail_target = None
+        jailer = self.get_player_with_role(Role.JAILER)
+        if jailer is None or jailer.dead:
+            return
+        self.jailer_day_pick_task = asyncio.create_task(self._collect_jailer_day_target(jailer))
+
+    async def stop_jailer_day_target_selection(self) -> None:
+        if self.jailer_day_pick_task:
+            self.jailer_day_pick_task.cancel()
+            self.jailer_day_pick_task = None
+
     async def handle_head_hunter_target_death(self, dead_player: Player) -> None:
         head_hunters = [
             player
@@ -1075,8 +1266,6 @@ class Game:
     async def wolves(self) -> Player | None:
         if bodyguard := self.get_player_with_role(Role.BODYGUARD):
             await bodyguard.set_bodyguard_target()
-        if jailer := self.get_player_with_role(Role.JAILER):
-            await jailer.set_jailer_target()
         if healer := self.get_player_with_role(Role.HEALER):
             await healer.set_healer_target()
         if doctor := self.get_player_with_role(Role.DOCTOR):
@@ -1086,12 +1275,30 @@ class Game:
             for p in self.alive_players
             if p.side == Side.WOLVES or p.side == Side.WHITE_WOLF
         ]
+        all_wolves = wolves.copy()
+        jailed_wolves = [wolf for wolf in wolves if wolf.is_jailed]
+        wolves = [wolf for wolf in wolves if not wolf.is_jailed]
+        for jailed_wolf in jailed_wolves:
+            await jailed_wolf.send(
+                _(
+                    "You are jailed tonight and cannot participate in werewolf"
+                    " nominations, voting, or wolf chat relay.\n{game_link}"
+                ).format(game_link=self.game_link)
+            )
+
         if len(wolves) == 0:
+            if jailed_wolves:
+                await self.ctx.send(
+                    _(
+                        "All werewolves who could attack tonight were jailed. No one was"
+                        " killed by the werewolves."
+                    )
+                )
             return
         wolves_users = [str(p.user.id) for p in wolves]
         await self.ctx.send(_("**The Werewolves awake...**"))
         # Get target of wolves
-        target_list = [p for p in self.alive_players if p not in wolves]
+        target_list = [p for p in self.alive_players if p not in all_wolves]
         possible_targets = {idx: p for idx, p in enumerate(target_list, 1)}
         fmt = commands.Paginator(prefix="", suffix="")
         wolf_names = _("Hey **")
@@ -1564,6 +1771,7 @@ class Game:
         ):
             await fortune_teller.give_fortune_card()
         await self.ensure_head_hunter_targets()
+        await self.activate_jail_for_night()
         if seer := self.get_player_with_role(Role.SEER):
             await seer.check_player_card()
         if aura_seer := self.get_player_with_role(Role.AURA_SEER):
@@ -1609,13 +1817,14 @@ class Game:
         paginator = commands.Paginator(prefix="", suffix="")
         players = ""
         eligible_players_lines = []
-        for player in self.alive_players:
+        election_players = [player for player in self.alive_players if not player.is_jailed]
+        for player in election_players:
             if len(players + player.user.mention + " ") > 1900:
                 paginator.add_line(players)
                 eligible_players_lines.append(players)
                 players = ""
             players += player.user.mention + " "
-            if player == self.alive_players[-1]:
+            if player == election_players[-1]:
                 paginator.add_line(players[:-1])
                 eligible_players_lines.append(players[:-1])
         paginator.add_line(
@@ -1630,7 +1839,10 @@ class Game:
         nominated_by_paragon = []
         nominated = []
         second_election = False
-        eligible_players = [player.user for player in self.alive_players]
+        eligible_players = [player.user for player in election_players]
+        eligible_player_by_user = {player.user: player for player in election_players}
+        if not eligible_players:
+            return None, second_election
         try:
             async with asyncio.timeout(self.timer) as cm:
                 sneaky = False
@@ -1848,7 +2060,7 @@ class Game:
                 nominated[mapping[str(reaction.emoji)]] = sum(
                     [
                         2
-                        if self.alive_players[eligible_players.index(user)].is_sheriff
+                        if eligible_player_by_user[user].is_sheriff
                         else 1
                         async for user in reaction.users()
                         if user in eligible_players
@@ -2045,36 +2257,24 @@ class Game:
 
     async def day(self, deaths: list[Player]) -> None:
         await self._set_night_chat_lock(False)
+        await self.release_jailed_player()
         await self.ctx.send(_("🌤️ **The sun rises...**"))
         if self.task:
             self.task.cancel()
-        for death in deaths:
-            await death.kill()
-        if self.rusty_sword_disease_night is not None:
-            if self.rusty_sword_disease_night == 0:
-                self.rusty_sword_disease_night += 1
-            elif self.rusty_sword_disease_night == 1:
-                await self.handle_rusty_sword_effect()
-        if len(self.alive_players) < 2:
-            return
-        if self.winner is not None:
-            return
-        await self.offer_fortune_card_reveals()
-        to_kill, second_election = await self.election()
-        if to_kill is not None:
-            await self.handle_lynching(to_kill)
+        await self.start_jailer_day_target_selection()
+        try:
+            for death in deaths:
+                await death.kill()
+            if self.rusty_sword_disease_night is not None:
+                if self.rusty_sword_disease_night == 0:
+                    self.rusty_sword_disease_night += 1
+                elif self.rusty_sword_disease_night == 1:
+                    await self.handle_rusty_sword_effect()
+            if len(self.alive_players) < 2:
+                return
             if self.winner is not None:
                 return
-        else:
-            await self.ctx.send(_("Indecisively, the community has killed noone."))
-        await self.handle_afk()
-        if second_election:
-            await self.ctx.send(
-                _(
-                    "📢 **The Judge used the secret phrase to hold another election to"
-                    " lynch someone. The Judge's decision cannot be debated.**"
-                )
-            )
+            await self.offer_fortune_card_reveals()
             to_kill, second_election = await self.election()
             if to_kill is not None:
                 await self.handle_lynching(to_kill)
@@ -2082,9 +2282,28 @@ class Game:
                     return
             else:
                 await self.ctx.send(
-                    _("Indecisively, the community has not lynched anyone.")
+                    _("Indecisively, the community has killed noone.")
                 )
             await self.handle_afk()
+            if second_election:
+                await self.ctx.send(
+                    _(
+                        "📢 **The Judge used the secret phrase to hold another election to"
+                        " lynch someone. The Judge's decision cannot be debated.**"
+                    )
+                )
+                to_kill, second_election = await self.election()
+                if to_kill is not None:
+                    await self.handle_lynching(to_kill)
+                    if self.winner is not None:
+                        return
+                else:
+                    await self.ctx.send(
+                        _("Indecisively, the community has not lynched anyone.")
+                    )
+                await self.handle_afk()
+        finally:
+            await self.stop_jailer_day_target_selection()
 
     async def run(self):
         try:
@@ -2156,6 +2375,14 @@ class Game:
                     self.task.cancel()
         finally:
             try:
+                await self.stop_jailer_day_target_selection()
+            except Exception:
+                pass
+            try:
+                await self.release_jailed_player()
+            except Exception:
+                pass
+            try:
                 await self._set_night_chat_lock(False)
             except Exception:
                 pass
@@ -2225,6 +2452,7 @@ class Player:
         self.infected_with_virus = False
         self.idol = None
         self.headhunter_target = None
+        self.is_jailed = False
         self.is_protected = False
         self.protected_by_doctor = False
         self.protected_by_bodyguard: Player | None = None
@@ -2277,6 +2505,9 @@ class Player:
         # Wolf Necromancer
         self.has_wolf_necro_ability = True
 
+        # Jailer
+        self.has_jailer_execution_ability = True
+
         # AFK check
         self.afk_strikes = 0
         self.to_check_afk = False
@@ -2313,7 +2544,16 @@ class Player:
             list_of_users: list[Player],
             amount: int,
             required: bool = True,
+            timeout: int | None = None,
     ) -> list[Player]:
+        if self.is_jailed:
+            await self.send(
+                _(
+                    "🔒 You are jailed and cannot use your abilities right now."
+                    "\n{game_link}"
+                ).format(game_link=self.game.game_link)
+            )
+            return []
         if not list_of_users or amount <= 0:
             return []
 
@@ -2367,7 +2607,7 @@ class Player:
                     choices=chunk_choices,
                     return_index=True,
                     title=menu_title,
-                    timeout=self.game.timer,
+                    timeout=timeout if timeout is not None else self.game.timer,
                 ).paginate(self.game.ctx, location=self.user)
 
                 if can_dismiss and chunk_index == 0:
@@ -2386,7 +2626,7 @@ class Player:
                 choices=menu_choices,
                 return_index=True,
                 title=menu_title,
-                timeout=self.game.timer,
+                timeout=timeout if timeout is not None else self.game.timer,
             ).paginate(self.game.ctx, location=self.user)
 
             if can_dismiss and selection_index == 0:
@@ -3887,6 +4127,8 @@ class Player:
         )
 
     async def curse_target(self, target: Player) -> None:
+        if self.is_jailed:
+            return target
         if not self.has_cursed_wolf_father_ability or discord.utils.get(
                 self.game.players, cursed=True
         ):
