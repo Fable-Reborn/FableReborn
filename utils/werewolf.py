@@ -295,7 +295,8 @@ DESCRIPTIONS = {
     ),
     Role.JUNIOR_WEREWOLF: _(
         "Your objective is to kill all villagers together with the other Werewolves."
-        " If the village lynches you, you drag one villager down with you."
+        " During the day, you mark a villager. If you die (any cause), your latest"
+        " marked villager is dragged down with you."
     ),
     Role.WOLF_SEER: _(
         "Your objective is to kill all villagers together with the other Werewolves."
@@ -605,6 +606,7 @@ class Game:
         self.jail_relay_task: asyncio.Task | None = None
         self.medium_relay_task: asyncio.Task | None = None
         self.jailer_day_pick_task: asyncio.Task | None = None
+        self.junior_day_mark_task: asyncio.Task | None = None
         self.available_roles = get_roles(len(players), self.mode)
         self.available_roles, self.extra_roles = (
             self.available_roles[:-2],
@@ -1330,6 +1332,94 @@ class Game:
         if self.jailer_day_pick_task:
             self.jailer_day_pick_task.cancel()
             self.jailer_day_pick_task = None
+
+    def _junior_mark_candidates(self, junior: Player) -> list[Player]:
+        return [
+            player
+            for player in self.alive_players
+            if player != junior
+               and player.side == Side.VILLAGERS
+               and player not in junior.own_lovers
+        ]
+
+    async def _collect_junior_day_mark(self, junior: Player) -> None:
+        prompt_timeout = max(90, self.timer)
+        await junior.send(
+            _(
+                "During each day, mark one Villager to drag down if you die. You can"
+                " update this mark repeatedly until nightfall."
+                "\n{game_link}"
+            ).format(game_link=self.game_link)
+        )
+
+        while (
+            not junior.dead
+            and self.get_player_with_role(Role.JUNIOR_WEREWOLF) == junior
+        ):
+            candidates = self._junior_mark_candidates(junior)
+            if not candidates:
+                junior.junior_mark_target = None
+                return
+
+            current_mark = (
+                junior.junior_mark_target
+                if junior.junior_mark_target in candidates
+                else None
+            )
+            current_label = current_mark.user if current_mark else _("None")
+
+            try:
+                picked = await junior.choose_users(
+                    _(
+                        "Choose a Villager to mark. Current mark: **{current_mark}**."
+                    ).format(current_mark=current_label),
+                    list_of_users=candidates,
+                    amount=1,
+                    required=False,
+                    timeout=prompt_timeout,
+                )
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                return
+
+            if (
+                junior.dead
+                or self.get_player_with_role(Role.JUNIOR_WEREWOLF) != junior
+            ):
+                return
+
+            if picked:
+                junior.junior_mark_target = picked[0]
+                await junior.send(
+                    _(
+                        "🐺 You marked **{target}**. If you die, they will be dragged"
+                        " down. You can still change this mark before night."
+                        "\n{game_link}"
+                    ).format(
+                        target=junior.junior_mark_target.user,
+                        game_link=self.game_link,
+                    )
+                )
+                await asyncio.sleep(2)
+            else:
+                await asyncio.sleep(10)
+
+    async def start_junior_day_mark_selection(self) -> None:
+        if self.junior_day_mark_task:
+            self.junior_day_mark_task.cancel()
+            self.junior_day_mark_task = None
+        junior = self.get_player_with_role(Role.JUNIOR_WEREWOLF)
+        if junior is None or junior.dead:
+            return
+        self.junior_day_mark_task = asyncio.create_task(
+            self._collect_junior_day_mark(junior)
+        )
+
+    async def stop_junior_day_mark_selection(self) -> None:
+        if self.junior_day_mark_task:
+            self.junior_day_mark_task.cancel()
+            self.junior_day_mark_task = None
 
     async def handle_head_hunter_target_death(self, dead_player: Player) -> None:
         head_hunters = [
@@ -2557,6 +2647,7 @@ class Game:
         if self.task:
             self.task.cancel()
         await self.start_jailer_day_target_selection()
+        await self.start_junior_day_mark_selection()
         try:
             for death in deaths:
                 await death.kill()
@@ -2599,6 +2690,7 @@ class Game:
                 await self.handle_afk()
         finally:
             await self.stop_jailer_day_target_selection()
+            await self.stop_junior_day_mark_selection()
 
     async def run(self):
         try:
@@ -2672,6 +2764,10 @@ class Game:
         finally:
             try:
                 await self.stop_jailer_day_target_selection()
+            except Exception:
+                pass
+            try:
+                await self.stop_junior_day_mark_selection()
             except Exception:
                 pass
             try:
@@ -2896,6 +2992,9 @@ class Player:
 
         # Medium
         self.has_medium_revive_ability = True
+
+        # Junior Werewolf
+        self.junior_mark_target: Player | None = None
 
         # AFK check
         self.afk_strikes = 0
@@ -4878,17 +4977,21 @@ class Player:
                             " Rusty Sword before dying."
                         ).format(role=self.role_name)
                     )
-            elif self.role == Role.JUNIOR_WEREWOLF and self.killed_by_lynch:
+            elif self.role == Role.JUNIOR_WEREWOLF:
                 possible_targets = [
-                    p
-                    for p in self.game.alive_players
-                    if p.side == Side.VILLAGERS and p not in self.own_lovers
+                    player
+                    for player in self.game.alive_players
+                    if player.side == Side.VILLAGERS and player not in self.own_lovers
                 ]
                 if possible_targets:
-                    target = random.choice(possible_targets)
+                    target = (
+                        self.junior_mark_target
+                        if self.junior_mark_target in possible_targets
+                        else random.choice(possible_targets)
+                    )
                     await self.game.ctx.send(
                         _(
-                            "The **Junior Werewolf** was lynched and dragged"
+                            "The **Junior Werewolf** died and dragged"
                             " **{target}** down in revenge."
                         ).format(target=target.user.mention)
                     )
