@@ -3544,11 +3544,11 @@ class Battles(commands.Cog):
                     )
                     await ctx.send(embed=ending_embed)
 
-        # Door 4 bonus: if the run had all 3 keys, finale rewards are always doubled.
-        door4_double_rewards = (
-            selected_door_key == "door_4_freedom"
-            and bool(unlock_state.get("full_key_unlock"))
-        )
+        # Door 4 bonus: always double finale rewards when the hidden door is chosen.
+        # This includes both:
+        # - full key unlock (all 3 keys this run), and
+        # - resonance-meter unlock (pity path).
+        door4_double_rewards = selected_door_key == "door_4_freedom"
         reward_multiplier = 2 if door4_double_rewards else 1
 
         # Check prestige level
@@ -3629,7 +3629,18 @@ class Battles(commands.Cog):
 
         await ctx.send(f'This is the end for you... {ctx.author.mention}.. or is it..?')
         if door4_double_rewards:
-            await ctx.send("🔓 The hidden fourth door recognizes your 3 keys. Finale rewards are **doubled**.")
+            if unlock_state.get("full_key_unlock"):
+                await ctx.send(
+                    "🔓 The hidden fourth door recognizes your 3 keys. Finale rewards are **doubled**."
+                )
+            elif unlock_state.get("meter_unlock"):
+                await ctx.send(
+                    "🔓 Hidden-door resonance activates the pity system. Finale rewards are **doubled**."
+                )
+            else:
+                await ctx.send(
+                    "🔓 The hidden fourth door opens. Finale rewards are **doubled**."
+                )
         await ctx.send(reward_message)
 
         if not hidden_door_ready:
