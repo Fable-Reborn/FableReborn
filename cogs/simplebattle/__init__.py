@@ -1358,17 +1358,28 @@ class SimpleBattle(discord.ext.commands.Cog):
 
         # Create phase header
         header = f"⚔️ == {phase_name} == ⚔️"
+        continuation_header = f"{header} (cont.)"
+        max_content_len = 1900
 
         # If we need to create a new phase message
         if force_new or phase_name not in battle_ctx["phase_messages"]:
             if new_content:
-                content = f"{header}\n{new_content}"
+                first_limit = max_content_len - len(header) - 1
+                chunks = self._split_text_for_discord(new_content, first_limit)
+                content = f"{header}\n{chunks[0]}"
+                last_message = await ctx.send(content)
+                battle_ctx["phase_messages"][phase_name] = last_message
+                battle_ctx["phase_contents"][phase_name] = content
+
+                for extra_chunk in chunks[1:]:
+                    extra_content = f"{continuation_header}\n{extra_chunk}"
+                    last_message = await ctx.send(extra_content)
+                    battle_ctx["phase_messages"][phase_name] = last_message
+                    battle_ctx["phase_contents"][phase_name] = extra_content
             else:
                 content = header
-
-            # Create new message for this phase
-            battle_ctx["phase_messages"][phase_name] = await ctx.send(content)
-            battle_ctx["phase_contents"][phase_name] = content
+                battle_ctx["phase_messages"][phase_name] = await ctx.send(content)
+                battle_ctx["phase_contents"][phase_name] = content
 
         # If we're editing an existing phase message
         elif edit and new_content:
@@ -1376,10 +1387,25 @@ class SimpleBattle(discord.ext.commands.Cog):
             if phase_name not in battle_ctx["phase_contents"]:
                 battle_ctx["phase_contents"][phase_name] = header
 
-            battle_ctx["phase_contents"][phase_name] += f"\n{new_content}"
+            updated_content = battle_ctx["phase_contents"][phase_name] + f"\n{new_content}"
+            if len(updated_content) <= max_content_len:
+                battle_ctx["phase_contents"][phase_name] = updated_content
+                await battle_ctx["phase_messages"][phase_name].edit(content=updated_content)
+            else:
+                # Start continuation messages when we hit Discord's 2000-char limit.
+                chunk_limit = max_content_len - len(continuation_header) - 1
+                chunks = self._split_text_for_discord(new_content, chunk_limit)
 
-            # Edit the existing message
-            await battle_ctx["phase_messages"][phase_name].edit(content=battle_ctx["phase_contents"][phase_name])
+                first_content = f"{continuation_header}\n{chunks[0]}"
+                last_message = await ctx.send(first_content)
+                battle_ctx["phase_messages"][phase_name] = last_message
+                battle_ctx["phase_contents"][phase_name] = first_content
+
+                for extra_chunk in chunks[1:]:
+                    extra_content = f"{continuation_header}\n{extra_chunk}"
+                    last_message = await ctx.send(extra_content)
+                    battle_ctx["phase_messages"][phase_name] = last_message
+                    battle_ctx["phase_contents"][phase_name] = extra_content
 
         return battle_ctx["phase_messages"][phase_name]
 
@@ -1501,6 +1527,34 @@ class SimpleBattle(discord.ext.commands.Cog):
         if previous_zone in zones and len(zones) > 1:
             zones.remove(previous_zone)
         return random.choice(zones)
+
+    def _split_text_for_discord(self, text: str, limit: int = 1900) -> List[str]:
+        """Split long text into safe Discord-sized chunks."""
+        if len(text) <= limit:
+            return [text]
+
+        chunks = []
+        remaining = text
+        while remaining:
+            if len(remaining) <= limit:
+                chunks.append(remaining)
+                break
+
+            split_at = remaining.rfind("\n", 0, limit)
+            if split_at == -1:
+                split_at = remaining.rfind(" ", 0, limit)
+            if split_at == -1:
+                split_at = limit
+
+            chunk = remaining[:split_at].rstrip()
+            if not chunk:
+                chunk = remaining[:limit]
+                split_at = limit
+
+            chunks.append(chunk)
+            remaining = remaining[split_at:].lstrip()
+
+        return chunks
 
     @has_char()
     @user_cooldown(90)
