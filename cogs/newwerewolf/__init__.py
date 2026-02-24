@@ -2026,8 +2026,8 @@ class NewWerewolf(commands.Cog):
     async def newwerewolf(
         self,
         ctx,
-        mode: str.title | None = "Classic",
-        speed: str.title = "Normal",
+        mode: str | None = "Classic",
+        speed: str = "Normal",
         min_players: IntGreaterThan(1) = None,
     ):
         _(
