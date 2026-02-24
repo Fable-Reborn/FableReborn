@@ -83,6 +83,16 @@ class TutorialUser:
     async def send(self, *args, **kwargs):
         return None
 
+    async def add_roles(self, *roles, **kwargs):
+        for role in roles:
+            if role not in self.roles:
+                self.roles.append(role)
+
+    async def remove_roles(self, *roles, **kwargs):
+        for role in roles:
+            if role in self.roles:
+                self.roles.remove(role)
+
 
 async def _tutorial_npc_choose_users(
     self,
@@ -144,8 +154,6 @@ class TutorialGame(Game):
             player.role = role
             player.initial_roles = [role]
             player.lives = 2 if role == Role.THE_OLD else 1
-            player.dead = False
-            player.has_won = False
             player.non_villager_killer_group = None
             player.to_check_afk = False
             player.afk_strikes = 0
