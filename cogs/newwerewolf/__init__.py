@@ -39,8 +39,6 @@ from .core import role_level_from_xp
 from .core import send_traceback
 from .core import unavailable_roles_for_mode
 from .role_config import (
-    MAX_ROLE_LEVEL,
-    ROLE_XP_PER_LEVEL,
     ROLE_XP_CHANNEL_IDS,
     ROLE_XP_LONER_WIN,
     ROLE_XP_LOSS,
@@ -2432,16 +2430,6 @@ class NewWerewolf(commands.Cog):
             base_role_name = self._role_display_name(base_role)
             xp = xp_map.get(base_role.name.casefold(), 0)
             level = role_level_from_xp(xp)
-            max_level = max(1, int(MAX_ROLE_LEVEL))
-            xp_per_level = max(1, int(ROLE_XP_PER_LEVEL))
-            if level >= max_level:
-                next_level_text = _("Max level reached.")
-            else:
-                xp_target = level * xp_per_level
-                xp_to_next = max(0, xp_target - xp)
-                next_level_text = _("{xp} XP to level {level}.").format(
-                    xp=xp_to_next, level=level + 1
-                )
 
             unlock_tiers = sorted(
                 ADVANCED_ROLE_TIERS_BY_BASE.get(base_role, {}).items(),
@@ -2449,12 +2437,10 @@ class NewWerewolf(commands.Cog):
             )
             unlock_lines = []
             for unlock_level, advanced_role in unlock_tiers:
-                status = _("Unlocked") if level >= unlock_level else _("Locked")
                 unlock_lines.append(
-                    _("Lv {level}: {role} - {status}").format(
-                        level=unlock_level,
+                    _("{role} - unlocks level {level}").format(
                         role=self._role_display_name(advanced_role),
-                        status=status,
+                        level=unlock_level,
                     )
                 )
 
@@ -2471,29 +2457,26 @@ class NewWerewolf(commands.Cog):
                     requested=self._role_display_name(requested_role),
                 )
             else:
-                embed.description = _("Showing progression for **{role}**.").format(
+                embed.description = _("Showing progression for **{role}**.\n").format(
                     role=base_role_name
                 )
+            lines = [
+                _("{role}: Level {level} XP: {xp}").format(
+                    role=base_role_name,
+                    level=level,
+                    xp=xp,
+                )
+            ]
+            lines.extend(unlock_lines if unlock_lines else [_("No advanced unlocks.")])
             embed.add_field(
-                name=_("XP"),
-                value=_("{xp} XP | Level {level}/{max_level}").format(
-                    xp=xp, level=level, max_level=max_level
-                ),
-                inline=False,
-            )
-            embed.add_field(
-                name=_("Next Level"),
-                value=next_level_text,
-                inline=False,
-            )
-            embed.add_field(
-                name=_("Advanced Unlocks"),
-                value="\n".join(unlock_lines) if unlock_lines else _("None"),
+                name=_("Progress"),
+                value="\n".join(lines),
                 inline=False,
             )
             return await ctx.send(embed=embed)
 
-        summary_lines: list[str] = []
+        role_cards: list[tuple[str, str]] = []
+
         for base_role in base_roles:
             role_name = self._role_display_name(base_role)
             xp = xp_map.get(base_role.name.casefold(), 0)
@@ -2502,54 +2485,47 @@ class NewWerewolf(commands.Cog):
                 ADVANCED_ROLE_TIERS_BY_BASE.get(base_role, {}).items(),
                 key=lambda pair: pair[0],
             )
-            unlocked_roles = [
-                self._role_display_name(advanced_role)
-                for unlock_level, advanced_role in unlock_tiers
-                if level >= unlock_level
-            ]
-            next_unlock = next(
-                (
-                    (unlock_level, advanced_role)
-                    for unlock_level, advanced_role in unlock_tiers
-                    if level < unlock_level
-                ),
-                None,
-            )
-            unlocked_label = (
-                ", ".join(unlocked_roles) if unlocked_roles else _("none")
-            )
-            if next_unlock is None:
-                next_label = _("All unlock tiers reached")
-            else:
-                next_label = _("Lv {level} {role}").format(
-                    level=next_unlock[0],
-                    role=self._role_display_name(next_unlock[1]),
-                )
-            summary_lines.append(
-                _(
-                    "`{role}` - Lv {level} ({xp} XP) | Unlocked: {unlocked} | Next:"
-                    " {next_unlock}"
-                ).format(
-                    role=role_name,
-                    level=level,
-                    xp=xp,
-                    unlocked=unlocked_label,
-                    next_unlock=next_label,
-                )
-            )
 
-        chunks = self._chunk_lines(summary_lines)
+            unlock_lines = [
+                _("{role} - unlocks level {level}").format(
+                    role=self._role_display_name(advanced_role),
+                    level=unlock_level,
+                )
+                for unlock_level, advanced_role in unlock_tiers
+            ]
+            if not unlock_lines:
+                unlock_lines = [_("No advanced unlocks.")]
+
+            field_value = _(
+                "{role}: Level {level} XP: {xp}\n{unlock_lines}"
+            ).format(
+                role=role_name,
+                level=level,
+                xp=xp,
+                unlock_lines="\n".join(unlock_lines),
+            )
+            role_cards.append((role_name, field_value))
+
         embeds = []
-        for idx, chunk in enumerate(chunks, start=1):
+        roles_per_page = 6
+        total_pages = max(1, (len(role_cards) + roles_per_page - 1) // roles_per_page)
+        for idx in range(total_pages):
+            page_cards = role_cards[idx * roles_per_page : (idx + 1) * roles_per_page]
             embed = discord.Embed(
                 title=_("NewWerewolf Progress"),
-                description=chunk,
+                description=_(
+                    "Format: `Base role: Level X XP: Y` then unlock levels below."
+                ),
                 colour=self.bot.config.game.primary_colour,
             ).set_author(name=str(ctx.author), icon_url=ctx.author.display_avatar.url)
+            for role_name, field_value in page_cards:
+                embed.add_field(name=role_name, value=field_value, inline=False)
             embed.set_footer(
-                text=_("Page {page}/{total} | Use `{prefix}nww progress <role>` for details").format(
-                    page=idx,
-                    total=len(chunks),
+                text=_(
+                    "Page {page}/{total} | Use `{prefix}nww progress <role>` for details"
+                ).format(
+                    page=idx + 1,
+                    total=total_pages,
                     prefix=ctx.clean_prefix,
                 )
             )
