@@ -3962,7 +3962,7 @@ class Player:
             )
             return target
 
-    async def witch_actions(self, targets: list[Player]) -> Player:
+    async def witch_actions(self, targets: list[Player]) -> list[Player]:
         await self.game.ctx.send(
             _("**The {role} awakes...**").format(role=self.role_name)
         )
@@ -3984,13 +3984,30 @@ class Player:
                 )
                 if to_heal:
                     to_heal = to_heal[0]
-                    targets.remove(to_heal)
-                    self.can_heal = False
-                    if to_heal.role == Role.KNIGHT:
-                        to_heal.attacked_by_the_pact = False
-                    await self.send(
-                        _("You chose to heal **{healed}**.").format(healed=to_heal.user)
-                    )
+                    removed = False
+                    while to_heal in targets:
+                        targets.remove(to_heal)
+                        removed = True
+                    if not removed:
+                        healed_id = to_heal.user.id
+                        remaining_targets = [
+                            target for target in targets if target.user.id != healed_id
+                        ]
+                        removed = len(remaining_targets) != len(targets)
+                        targets = remaining_targets
+                    if removed:
+                        self.can_heal = False
+                        if to_heal.role == Role.KNIGHT:
+                            to_heal.attacked_by_the_pact = False
+                        await self.send(
+                            _("You chose to heal **{healed}**.").format(
+                                healed=to_heal.user
+                            )
+                        )
+                    else:
+                        await self.send(
+                            _("Your heal target was no longer marked to die tonight.")
+                        )
                 else:
                     await self.send(_("You didn't choose to heal anyone."))
             except asyncio.TimeoutError:
