@@ -3429,6 +3429,12 @@ class Player:
             if not candidates:
                 return None
             menu_title = header[:250]
+            group_placeholder = _("Choose a group")
+            player_placeholder = (
+                _("Choose a player or dismiss")
+                if can_dismiss
+                else _("Choose a player")
+            )
 
             if len(candidates) == 1 and not can_dismiss:
                 return candidates[0]
@@ -3462,6 +3468,7 @@ class Player:
                     choices=chunk_choices,
                     return_index=True,
                     title=menu_title,
+                    placeholder=group_placeholder,
                     timeout=timeout if timeout is not None else self.game.timer,
                 ).paginate(self.game.ctx, location=self.user)
 
@@ -3481,6 +3488,7 @@ class Player:
                 choices=menu_choices,
                 return_index=True,
                 title=menu_title,
+                placeholder=player_placeholder,
                 timeout=timeout if timeout is not None else self.game.timer,
             ).paginate(self.game.ctx, location=self.user)
 
