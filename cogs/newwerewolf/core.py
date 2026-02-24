@@ -305,8 +305,8 @@ DESCRIPTIONS = {
         " Villagers stay alive..."
     ),
     Role.DOCTOR: _(
-        "You are the Doctor. Every night, you may choose one player to protect from"
-        " attack for that night only."
+        "You are the Doctor. Every night, you may choose one other player to protect"
+        " from attack for that night only. You cannot protect yourself."
     ),
     Role.BODYGUARD: _(
         "You are the Bodyguard. Every night, you may guard one player from attacks."
@@ -6853,10 +6853,17 @@ class Player:
         await self.game.ctx.send(
             _("**The {role} awakes...**").format(role=self.role_name)
         )
-        available = [player for player in self.game.alive_players]
+        available = [player for player in self.game.alive_players if player != self]
+        if not available:
+            await self.send(
+                _(
+                    "There is no valid player to protect tonight.\n{game_link}"
+                ).format(game_link=self.game.game_link)
+            )
+            return
         try:
             target = await self.choose_users(
-                _("Choose a player to protect from attacks tonight."),
+                _("Choose another player to protect from attacks tonight."),
                 list_of_users=available,
                 amount=1,
                 required=False,

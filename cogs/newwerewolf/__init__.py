@@ -39,6 +39,9 @@ from .core import role_level_from_xp
 from .core import send_traceback
 from .core import unavailable_roles_for_mode
 from .tutorial_live import TutorialGame
+from .tutorial_live import TUTORIAL_VARIANT_SOLO_JESTER
+from .tutorial_live import TUTORIAL_VARIANT_VILLAGE_SEER
+from .tutorial_live import TUTORIAL_VARIANT_WEREWOLF_GUIDED
 from .role_config import (
     ROLE_XP_CHANNEL_IDS,
     ROLE_XP_LONER_WIN,
@@ -2564,9 +2567,45 @@ class NewWerewolf(commands.Cog):
                     " publicly in-channel like normal matches."
                 ).format(track=track.title())
             )
-            game = TutorialGame(ctx, track=track, learner=ctx.author)
-            self.games[ctx.channel.id] = game
-            await game.run()
+
+            async def run_tutorial_game(*, tutorial_variant: str | None = None) -> None:
+                game = TutorialGame(
+                    ctx,
+                    track=track,
+                    learner=ctx.author,
+                    tutorial_variant=tutorial_variant,
+                )
+                self.games[ctx.channel.id] = game
+                await game.run()
+
+            await run_tutorial_game()
+
+            if track == "village":
+                await ctx.send(
+                    _(
+                        "Tutorial Coach: We'll try another village round where you are"
+                        " **Seer**. Check the Werewolf at night, then call them out in"
+                        " public chat."
+                    )
+                )
+                await run_tutorial_game(tutorial_variant=TUTORIAL_VARIANT_VILLAGE_SEER)
+            elif track == "werewolf":
+                await ctx.send(
+                    _(
+                        "Tutorial Coach: We'll run another werewolf round focused on day"
+                        " manipulation. You kill Seer at night and push one suspect"
+                        " publicly."
+                    )
+                )
+                await run_tutorial_game(tutorial_variant=TUTORIAL_VARIANT_WEREWOLF_GUIDED)
+            elif track == "solo":
+                await ctx.send(
+                    _(
+                        "Tutorial Coach: We'll run a second solo round as **Jester**."
+                        " You must bait the village into lynching you."
+                    )
+                )
+                await run_tutorial_game(tutorial_variant=TUTORIAL_VARIANT_SOLO_JESTER)
         except Exception as e:
             await send_traceback(ctx, e)
             raise
