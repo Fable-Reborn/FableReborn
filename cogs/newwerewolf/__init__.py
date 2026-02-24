@@ -787,6 +787,760 @@ class NewWerewolf(commands.Cog):
                 )
             )
 
+    @staticmethod
+    def _tutorial_find_player(
+        roster: list[dict[str, object]], name: str
+    ) -> dict[str, object] | None:
+        needle = str(name).casefold()
+        for entry in roster:
+            if str(entry.get("name", "")).casefold() == needle:
+                return entry
+        return None
+
+    def _tutorial_is_alive(self, roster: list[dict[str, object]], name: str) -> bool:
+        player = self._tutorial_find_player(roster, name)
+        return bool(player and player.get("alive", False))
+
+    @staticmethod
+    def _tutorial_alive_names(
+        roster: list[dict[str, object]], *, exclude: set[str] | None = None
+    ) -> list[str]:
+        excluded = {name.casefold() for name in (exclude or set())}
+        return [
+            str(entry["name"])
+            for entry in roster
+            if bool(entry.get("alive", False))
+            and str(entry.get("name", "")).casefold() not in excluded
+        ]
+
+    async def _tutorial_dm_choose(
+        self,
+        ctx,
+        *,
+        title: str,
+        prompt: str,
+        options: list[str],
+        timeout: int = 180,
+    ) -> int | None:
+        try:
+            dm_channel = await ctx.author.create_dm()
+        except discord.Forbidden:
+            await ctx.send(
+                _(
+                    "I couldn't DM your night action prompt. Please enable DMs from this"
+                    " server for tutorials."
+                )
+            )
+            return None
+
+        option_lines = [f"{index}. {option}" for index, option in enumerate(options, 1)]
+        embed = discord.Embed(
+            title=_("Tutorial Night Action"),
+            description=f"**{title}**\n{prompt}\n\n" + "\n".join(option_lines),
+            colour=self.bot.config.game.primary_colour,
+        ).set_author(name=str(ctx.author), icon_url=ctx.author.display_avatar.url)
+        embed.set_footer(text=_("Reply with a number or `stop`."))
+        await dm_channel.send(embed=embed)
+        await ctx.send(_("📩 Check your DMs for your night action."))
+
+        while True:
+            try:
+                response = await self.bot.wait_for(
+                    "message",
+                    timeout=timeout,
+                    check=lambda message: (
+                        message.author.id == ctx.author.id
+                        and message.channel.id == dm_channel.id
+                    ),
+                )
+            except asyncio.TimeoutError:
+                await ctx.send(_("Tutorial ended due to DM inactivity."))
+                return None
+
+            token = response.content.strip().casefold()
+            if token in {"stop", "cancel", "quit", "exit", "end"}:
+                await ctx.send(_("Tutorial stopped."))
+                return None
+            try:
+                selected = int(token)
+            except ValueError:
+                await dm_channel.send(
+                    _("Send a number from 1 to {limit}, or `stop`.").format(
+                        limit=len(options)
+                    )
+                )
+                continue
+            if 1 <= selected <= len(options):
+                return selected - 1
+            await dm_channel.send(
+                _("Option out of range. Choose 1 to {limit}.").format(limit=len(options))
+            )
+
+    async def _tutorial_dm_info(self, ctx, *, title: str, text: str) -> None:
+        try:
+            dm_channel = await ctx.author.create_dm()
+        except discord.Forbidden:
+            return
+        embed = discord.Embed(
+            title=title,
+            description=text,
+            colour=self.bot.config.game.primary_colour,
+        )
+        await dm_channel.send(embed=embed)
+
+    async def _tutorial_play_chat(
+        self, ctx, *, lines: list[tuple[str, str]], delay: float = 1.1
+    ) -> None:
+        for speaker, message in lines:
+            await ctx.send(f"**{speaker}:** {message}")
+            await asyncio.sleep(delay)
+
+    async def _tutorial_coach_pause(
+        self,
+        ctx,
+        *,
+        track: str,
+        title: str,
+        text: str,
+    ) -> bool:
+        await ctx.send(
+            embed=discord.Embed(
+                title=_("Tutorial Coach [{track}] - {title}").format(
+                    track=track.title(),
+                    title=title,
+                ),
+                description=text,
+                colour=self.bot.config.game.primary_colour,
+            ).set_author(name=str(ctx.author), icon_url=ctx.author.display_avatar.url)
+        )
+        return await self._tutorial_wait_continue(ctx, timeout=300)
+
+    async def _run_tutorial_story_generic(self, ctx) -> bool:
+        user_name = str(ctx.author.display_name)
+        roster: list[dict[str, object]] = [
+            {"name": user_name, "role": "Seer", "alive": True, "revealed": True},
+            {"name": "Rowan (Bot)", "role": "Doctor", "alive": True, "revealed": False},
+            {"name": "Ivy (Bot)", "role": "Werewolf", "alive": True, "revealed": False},
+            {"name": "Noah (Bot)", "role": "Villager", "alive": True, "revealed": False},
+            {"name": "Luna (Bot)", "role": "Villager", "alive": True, "revealed": False},
+        ]
+
+        await self._tutorial_send_state_embed(
+            ctx,
+            track="generic",
+            phase=_("Match Start"),
+            objective=_("Play a full short match: night action, day talk, vote, outcome."),
+            summary=_(
+                "You are **Seer**. This tutorial now plays as a scripted match with live"
+                " phase flow."
+            ),
+            roster=roster,
+        )
+        await self._tutorial_dm_info(
+            ctx,
+            title=_("Your Role: Seer"),
+            text=_("Each night, inspect 1 player and learn their role."),
+        )
+
+        await self._tutorial_send_state_embed(
+            ctx,
+            track="generic",
+            phase=_("Night 1"),
+            objective=_("Use your Seer action from DM."),
+            summary=_("Night has started. Wolves are coordinating."),
+            roster=roster,
+        )
+        inspect_targets = self._tutorial_alive_names(roster, exclude={user_name})
+        inspect_choice = await self._tutorial_dm_choose(
+            ctx,
+            title=_("Night 1 - Seer Inspect"),
+            prompt=_("Who do you inspect?"),
+            options=inspect_targets,
+        )
+        if inspect_choice is None:
+            return False
+        inspected_name = inspect_targets[inspect_choice]
+        inspected_player = self._tutorial_find_player(roster, inspected_name)
+        inspected_role = str(inspected_player["role"]) if inspected_player else _("Unknown")
+        await self._tutorial_dm_info(
+            ctx,
+            title=_("Seer Result"),
+            text=_("You inspected **{target}** and found **{role}**.").format(
+                target=inspected_name,
+                role=inspected_role,
+            ),
+        )
+
+        dawn1_summary = _(
+            "Wolves attacked **{you}**, but Doctor protection blocked it. No one died."
+        ).format(you=user_name)
+        await self._tutorial_send_state_embed(
+            ctx,
+            track="generic",
+            phase=_("Dawn 1"),
+            objective=_("Turn private information into public voting value."),
+            summary=dawn1_summary,
+            roster=roster,
+        )
+        await self._tutorial_play_chat(
+            ctx,
+            lines=[
+                ("Rowan (Bot)", _("Night was clean. Let's use structure today.")),
+                ("Ivy (Bot)", _("Fast claims are fake half the time.")),
+                ("Noah (Bot)", _("Claim order first, then one vote target.")),
+                ("Luna (Bot)", _("Agreed. No split wagons without evidence.")),
+            ],
+        )
+
+        day1_choice_options = [
+            _("Claim your Seer result and lock one target."),
+            _("Soft-push without full claim."),
+            _("Stay quiet and follow table momentum."),
+        ]
+        day1_choice = await self._tutorial_choose_option(
+            ctx,
+            track="generic",
+            title=_("Day 1 - Your Move"),
+            prompt=_("How do you use your night result?"),
+            options=day1_choice_options,
+        )
+        if day1_choice is None:
+            return False
+
+        if inspected_role == "Werewolf" and day1_choice == 0:
+            self._tutorial_mark_dead(roster, "Ivy (Bot)")
+            if not await self._tutorial_coach_pause(
+                ctx,
+                track="generic",
+                title=_("Why This Worked"),
+                text=_(
+                    "You converted private info into structured public action immediately."
+                    " That is high-level village tempo."
+                ),
+            ):
+                return False
+            outcome = _(
+                "Village executed **Ivy** from a clean Seer claim line. Village wins."
+            )
+        else:
+            self._tutorial_mark_dead(roster, "Noah (Bot)")
+            await self._tutorial_send_state_embed(
+                ctx,
+                track="generic",
+                phase=_("Post-Vote 1"),
+                objective=_("Recover after a weak day."),
+                summary=_(
+                    "Village misvoted **Noah**. Wolves now control match tempo."
+                ),
+                roster=roster,
+            )
+            await self._tutorial_send_state_embed(
+                ctx,
+                track="generic",
+                phase=_("Night 2"),
+                objective=_("Try to salvage with a second check."),
+                summary=_("Night 2 started."),
+                roster=roster,
+            )
+            night2_targets = self._tutorial_alive_names(roster, exclude={user_name})
+            night2_choice = await self._tutorial_dm_choose(
+                ctx,
+                title=_("Night 2 - Seer Inspect"),
+                prompt=_("Who do you inspect now?"),
+                options=night2_targets,
+            )
+            if night2_choice is None:
+                return False
+            inspected2_name = night2_targets[night2_choice]
+            inspected2_player = self._tutorial_find_player(roster, inspected2_name)
+            inspected2_role = (
+                str(inspected2_player["role"]) if inspected2_player else _("Unknown")
+            )
+            await self._tutorial_dm_info(
+                ctx,
+                title=_("Seer Result"),
+                text=_("You inspected **{target}** and found **{role}**.").format(
+                    target=inspected2_name,
+                    role=inspected2_role,
+                ),
+            )
+            self._tutorial_mark_dead(roster, "Rowan (Bot)")
+            await self._tutorial_send_state_embed(
+                ctx,
+                track="generic",
+                phase=_("Dawn 2"),
+                objective=_("Final chance to force a correct vote."),
+                summary=_("Wolves killed **Rowan** during Night 2."),
+                roster=roster,
+            )
+            await self._tutorial_play_chat(
+                ctx,
+                lines=[
+                    ("Luna (Bot)", _("We need one precise wagon now.")),
+                    ("Ivy (Bot)", _("You're guessing, this isn't solved.")),
+                ],
+            )
+            final_choice = await self._tutorial_choose_option(
+                ctx,
+                track="generic",
+                title=_("Day 2 - Final Vote"),
+                prompt=_("Who do you push now?"),
+                options=[
+                    _("Push Ivy with your full info timeline."),
+                    _("Push Luna from behavior only."),
+                    _("No clear push."),
+                ],
+            )
+            if final_choice is None:
+                return False
+            if (
+                final_choice == 0
+                and (inspected_role == "Werewolf" or inspected2_role == "Werewolf")
+            ):
+                self._tutorial_mark_dead(roster, "Ivy (Bot)")
+                outcome = _(
+                    "Late recovery succeeded. **Ivy** was executed. Village wins narrowly."
+                )
+            else:
+                outcome = _(
+                    "Ivy survived to parity pressure. Werewolves win this scripted match."
+                )
+
+        await self._tutorial_send_state_embed(
+            ctx,
+            track="generic",
+            phase=_("Game Over"),
+            objective=_("Review how timing + claim clarity changed the whole game."),
+            summary=outcome,
+            roster=roster,
+        )
+        return True
+
+    async def _run_tutorial_story_village(self, ctx) -> bool:
+        user_name = str(ctx.author.display_name)
+        roster: list[dict[str, object]] = [
+            {"name": user_name, "role": "Doctor", "alive": True, "revealed": True},
+            {"name": "Mira (Bot)", "role": "Seer", "alive": True, "revealed": False},
+            {"name": "Nyx (Bot)", "role": "Werewolf", "alive": True, "revealed": False},
+            {"name": "Cole (Bot)", "role": "Villager", "alive": True, "revealed": False},
+            {"name": "Tara (Bot)", "role": "Villager", "alive": True, "revealed": False},
+        ]
+
+        await self._tutorial_send_state_embed(
+            ctx,
+            track="village",
+            phase=_("Match Start"),
+            objective=_("Protect information roles and convert claims into votes."),
+            summary=_("You are **Doctor**. Your night protection is sent through DM."),
+            roster=roster,
+        )
+        await self._tutorial_dm_info(
+            ctx,
+            title=_("Your Role: Doctor"),
+            text=_("Each night, choose one player to protect from the wolf attack."),
+        )
+
+        await self._tutorial_send_state_embed(
+            ctx,
+            track="village",
+            phase=_("Night 1"),
+            objective=_("Choose your protection target in DM."),
+            summary=_("Night 1 started."),
+            roster=roster,
+        )
+        protect_targets = self._tutorial_alive_names(roster)
+        protect_choice = await self._tutorial_dm_choose(
+            ctx,
+            title=_("Night 1 - Doctor Protect"),
+            prompt=_("Who do you protect?"),
+            options=protect_targets,
+        )
+        if protect_choice is None:
+            return False
+        protected_name = protect_targets[protect_choice]
+        wolves_target = "Mira (Bot)"
+        seer_alive = protected_name == wolves_target
+        if not seer_alive:
+            self._tutorial_mark_dead(roster, "Mira (Bot)")
+
+        dawn_text = (
+            _("Wolves attacked **Mira**, but your protection blocked it.")
+            if seer_alive
+            else _("Wolves killed **Mira**. Village lost Seer pressure.")
+        )
+        await self._tutorial_send_state_embed(
+            ctx,
+            track="village",
+            phase=_("Dawn 1"),
+            objective=_("Drive a structured vote from the available evidence."),
+            summary=dawn_text,
+            roster=roster,
+        )
+        chat_lines = (
+            [
+                ("Mira (Bot)", _("Seer claim. Nyx is wolf from Night 1.")),
+                ("Nyx (Bot)", _("Fake claim. That's fabricated.")),
+                ("Cole (Bot)", _("Resolve claims before voting.")),
+            ]
+            if seer_alive
+            else [
+                ("Cole (Bot)", _("Seer died. Read the kill value.")),
+                ("Nyx (Bot)", _("No hard info, don't force a wagon.")),
+                ("Tara (Bot)", _("Who benefited most from Seer dying?")),
+            ]
+        )
+        await self._tutorial_play_chat(ctx, lines=chat_lines)
+
+        vote_options = (
+            [
+                _("Vote Nyx from Seer claim + claim consistency."),
+                _("Split to Cole from tone."),
+                _("No commitment."),
+            ]
+            if seer_alive
+            else [
+                _("Pressure Nyx from kill-value logic."),
+                _("Vote Tara randomly."),
+                _("No commitment."),
+            ]
+        )
+        vote_choice = await self._tutorial_choose_option(
+            ctx,
+            track="village",
+            title=_("Day 1 - Vote"),
+            prompt=_("Choose your day vote line."),
+            options=vote_options,
+        )
+        if vote_choice is None:
+            return False
+
+        if vote_choice == 0:
+            self._tutorial_mark_dead(roster, "Nyx (Bot)")
+            outcome = _(
+                "Village executed **Nyx** and removed wolf pressure. Village wins."
+            )
+        else:
+            if seer_alive:
+                self._tutorial_mark_dead(roster, "Cole (Bot)")
+            else:
+                self._tutorial_mark_dead(roster, "Tara (Bot)")
+            await self._tutorial_send_state_embed(
+                ctx,
+                track="village",
+                phase=_("Night 2"),
+                objective=_("One last defensive cycle."),
+                summary=_("Wolves still alive. Night 2 began."),
+                roster=roster,
+            )
+            n2_targets = self._tutorial_alive_names(roster)
+            n2_choice = await self._tutorial_dm_choose(
+                ctx,
+                title=_("Night 2 - Doctor Protect"),
+                prompt=_("Who do you protect now?"),
+                options=n2_targets,
+            )
+            if n2_choice is None:
+                return False
+            n2_protected = n2_targets[n2_choice]
+            wolves_target_n2 = user_name
+            if n2_protected != wolves_target_n2:
+                self._tutorial_mark_dead(roster, user_name)
+            await self._tutorial_send_state_embed(
+                ctx,
+                track="village",
+                phase=_("Game Over"),
+                objective=_("Understand why first-day vote discipline matters."),
+                summary=_(
+                    "Wolves closed the game through tempo advantage after the day miss."
+                ),
+                roster=roster,
+            )
+            return True
+
+        await self._tutorial_send_state_embed(
+            ctx,
+            track="village",
+            phase=_("Game Over"),
+            objective=_("Protection + claim resolution + vote discipline."),
+            summary=outcome,
+            roster=roster,
+        )
+        return True
+
+    async def _run_tutorial_story_werewolf(self, ctx) -> bool:
+        user_name = str(ctx.author.display_name)
+        roster: list[dict[str, object]] = [
+            {"name": user_name, "role": "Werewolf", "alive": True, "revealed": True},
+            {"name": "Fang (Bot)", "role": "Werewolf", "alive": True, "revealed": False},
+            {"name": "Iris (Bot)", "role": "Seer", "alive": True, "revealed": False},
+            {"name": "Theo (Bot)", "role": "Doctor", "alive": True, "revealed": False},
+            {"name": "Mila (Bot)", "role": "Villager", "alive": True, "revealed": False},
+        ]
+
+        await self._tutorial_send_state_embed(
+            ctx,
+            track="werewolf",
+            phase=_("Match Start"),
+            objective=_("Use wolf night kills + day narrative to reach parity."),
+            summary=_("You are **Werewolf** with Fang. Night kill choice is sent in DM."),
+            roster=roster,
+        )
+        await self._tutorial_dm_info(
+            ctx,
+            title=_("Your Role: Werewolf"),
+            text=_("At night, coordinate kill priority. During day, keep one coherent line."),
+        )
+
+        await self._tutorial_send_state_embed(
+            ctx,
+            track="werewolf",
+            phase=_("Night 1"),
+            objective=_("Choose your first wolf kill in DM."),
+            summary=_("Night 1 started."),
+            roster=roster,
+        )
+        kill_targets = self._tutorial_alive_names(roster, exclude={user_name, "Fang (Bot)"})
+        kill_choice = await self._tutorial_dm_choose(
+            ctx,
+            title=_("Night 1 - Wolf Kill"),
+            prompt=_("Who should the wolves attack?"),
+            options=kill_targets,
+        )
+        if kill_choice is None:
+            return False
+        killed_name = kill_targets[kill_choice]
+        if killed_name == "Theo (Bot)":
+            self._tutorial_mark_dead(roster, "Theo (Bot)")
+        elif killed_name == "Iris (Bot)":
+            self._tutorial_mark_dead(roster, "Iris (Bot)")
+        else:
+            self._tutorial_mark_dead(roster, "Mila (Bot)")
+
+        await self._tutorial_send_state_embed(
+            ctx,
+            track="werewolf",
+            phase=_("Dawn 1"),
+            objective=_("Control the day story before village organizes."),
+            summary=_("Night kill resolved: **{target}** died.").format(target=killed_name),
+            roster=roster,
+        )
+        await self._tutorial_play_chat(
+            ctx,
+            lines=[
+                ("Mila (Bot)", _("That kill gives us alignment clues.")),
+                ("Theo (Bot)", _("Let's anchor this day with consistency checks.")),
+                ("Fang (Bot)", _("Too early to lock anyone.")),
+            ],
+        )
+        day_choice_options = [
+            _("Push one villager with consistent reasoning."),
+            _("Spam conflicting pushes."),
+            _("Over-defend Fang under pressure."),
+        ]
+        day_choice = await self._tutorial_choose_option(
+            ctx,
+            track="werewolf",
+            title=_("Day 1 - Wolf Day Play"),
+            prompt=_("How do you run the day?"),
+            options=day_choice_options,
+        )
+        if day_choice is None:
+            return False
+
+        if day_choice == 0:
+            target = "Mila (Bot)" if self._tutorial_is_alive(roster, "Mila (Bot)") else "Theo (Bot)"
+            self._tutorial_mark_dead(roster, target)
+        else:
+            self._tutorial_mark_dead(roster, "Fang (Bot)")
+
+        await self._tutorial_send_state_embed(
+            ctx,
+            track="werewolf",
+            phase=_("Night 2"),
+            objective=_("Finish parity if wolf position remains strong."),
+            summary=_("Night 2 started."),
+            roster=roster,
+        )
+        if not self._tutorial_is_alive(roster, user_name):
+            return False
+        alive_n2_targets = self._tutorial_alive_names(
+            roster, exclude={user_name, "Fang (Bot)"}
+        )
+        if not alive_n2_targets:
+            return False
+        n2_choice = await self._tutorial_dm_choose(
+            ctx,
+            title=_("Night 2 - Wolf Kill"),
+            prompt=_("Final kill target?"),
+            options=alive_n2_targets,
+        )
+        if n2_choice is None:
+            return False
+        n2_target = alive_n2_targets[n2_choice]
+        self._tutorial_mark_dead(roster, n2_target)
+
+        wolves_alive = sum(
+            1
+            for entry in roster
+            if bool(entry.get("alive"))
+            and str(entry.get("role")).casefold() == "werewolf"
+        )
+        others_alive = sum(
+            1
+            for entry in roster
+            if bool(entry.get("alive"))
+            and str(entry.get("role")).casefold() != "werewolf"
+        )
+        if wolves_alive >= others_alive and wolves_alive > 0:
+            outcome = _(
+                "Wolves reached parity/control. Werewolf team wins this scripted match."
+            )
+        else:
+            outcome = _(
+                "Wolves failed to secure parity in time. Village survives and wins."
+            )
+
+        await self._tutorial_send_state_embed(
+            ctx,
+            track="werewolf",
+            phase=_("Game Over"),
+            objective=_("Night priority and coherent day pressure decide wolf games."),
+            summary=outcome,
+            roster=roster,
+        )
+        return True
+
+    async def _run_tutorial_story_solo(self, ctx) -> bool:
+        user_name = str(ctx.author.display_name)
+        target_name = "Aria (Bot)"
+        roster: list[dict[str, object]] = [
+            {"name": user_name, "role": "Head Hunter", "alive": True, "revealed": True},
+            {"name": target_name, "role": "Villager (Target)", "alive": True, "revealed": False},
+            {"name": "Sven (Bot)", "role": "Werewolf", "alive": True, "revealed": False},
+            {"name": "Mira (Bot)", "role": "Seer", "alive": True, "revealed": False},
+            {"name": "Kade (Bot)", "role": "Doctor", "alive": True, "revealed": False},
+        ]
+
+        await self._tutorial_send_state_embed(
+            ctx,
+            track="solo",
+            phase=_("Match Start"),
+            objective=_("Get your target lynched without exposing your true objective."),
+            summary=_("You are **Head Hunter**. Target is hidden from others."),
+            roster=roster,
+        )
+        await self._tutorial_dm_info(
+            ctx,
+            title=_("Your Secret Objective"),
+            text=_("Your target is **{target}**. Win by getting them lynched.").format(
+                target=target_name
+            ),
+        )
+
+        await self._tutorial_send_state_embed(
+            ctx,
+            track="solo",
+            phase=_("Day 1"),
+            objective=_("Shape vote pressure without obvious tunnel behavior."),
+            summary=_("Discussion phase started."),
+            roster=roster,
+        )
+        await self._tutorial_play_chat(
+            ctx,
+            lines=[
+                ("Mira (Bot)", _("We need claim consistency and vote discipline.")),
+                ("Sven (Bot)", _("Fast wagons usually miss wolves.")),
+                ("Aria (Bot)", _("Anyone hard-pushing me this early is suspicious.")),
+            ],
+        )
+        day1_choice = await self._tutorial_choose_option(
+            ctx,
+            track="solo",
+            title=_("Day 1 - Solo Pressure"),
+            prompt=_("How do you push your target?"),
+            options=[
+                _("Build a measured case with concrete contradictions."),
+                _("Hard tunnel your target with weak evidence."),
+                _("Stay fully passive."),
+            ],
+        )
+        if day1_choice is None:
+            return False
+        vote1_choice = await self._tutorial_choose_option(
+            ctx,
+            track="solo",
+            title=_("Day 1 - Vote"),
+            prompt=_("Who does your vote push most?"),
+            options=[
+                _(f"{target_name}"),
+                _("Kade (Bot)"),
+                _("No clear vote"),
+            ],
+        )
+        if vote1_choice is None:
+            return False
+
+        if day1_choice == 0 and vote1_choice == 0:
+            self._tutorial_mark_dead(roster, target_name)
+            outcome = _(
+                "Target lynched on Day 1. Solo objective complete. Head Hunter wins."
+            )
+            await self._tutorial_send_state_embed(
+                ctx,
+                track="solo",
+                phase=_("Game Over"),
+                objective=_("Controlled pressure wins solo games."),
+                summary=outcome,
+                roster=roster,
+            )
+            return True
+
+        if vote1_choice == 1:
+            self._tutorial_mark_dead(roster, "Kade (Bot)")
+        self._tutorial_mark_dead(roster, "Mira (Bot)")
+
+        await self._tutorial_send_state_embed(
+            ctx,
+            track="solo",
+            phase=_("Dawn 2"),
+            objective=_("Second chance to close your objective."),
+            summary=_("Night kill: **Mira** died. The table is more volatile now."),
+            roster=roster,
+        )
+        final_choice = await self._tutorial_choose_option(
+            ctx,
+            track="solo",
+            title=_("Day 2 - Final Push"),
+            prompt=_("Commit to your endgame line."),
+            options=[
+                _(f"Commit vote pressure on {target_name}."),
+                _("Pivot to another wagon."),
+                _("Stay vague."),
+            ],
+        )
+        if final_choice is None:
+            return False
+
+        if final_choice == 0:
+            self._tutorial_mark_dead(roster, target_name)
+            outcome = _(
+                "Target lynched on Day 2. Head Hunter objective complete. Solo wins."
+            )
+        else:
+            outcome = _(
+                "Target survived. Solo objective failed and major teams close the game."
+            )
+
+        await self._tutorial_send_state_embed(
+            ctx,
+            track="solo",
+            phase=_("Game Over"),
+            objective=_("Solo success requires objective discipline over comfort votes."),
+            summary=outcome,
+            roster=roster,
+        )
+        return True
+
     async def _run_tutorial_sim_generic(self, ctx) -> bool:
         you_name = str(ctx.author.display_name)
         roster: list[dict[str, object]] = [
@@ -1799,11 +2553,11 @@ class NewWerewolf(commands.Cog):
             return
 
         tutorial_total_steps = {
-            "generic": 9,
-            "village": 9,
-            "werewolf": 9,
-            "solo": 9,
-        }.get(track, 9)
+            "generic": 14,
+            "village": 13,
+            "werewolf": 13,
+            "solo": 11,
+        }.get(track, 12)
 
         self.tutorial_sessions[ctx.channel.id] = ctx.author.id
         self.tutorial_progress[ctx.channel.id] = {"step": 0, "total": tutorial_total_steps}
@@ -1811,19 +2565,20 @@ class NewWerewolf(commands.Cog):
         try:
             await ctx.send(
                 _(
-                    "Starting interactive **{track}** tutorial.\nType `continue` to"
-                    " advance, `pause` to hold, `resume` to continue, or `stop` to end."
-                    "\nProgress is shown as **Step X/{total}**."
+                    "Starting scripted match tutorial for **{track}**.\n"
+                    "Night actions are sent by DM when needed.\n"
+                    "Coach pauses can be resumed with `continue`.\n"
+                    "Progress is shown as **Step X/{total}**."
                 ).format(track=track.title(), total=tutorial_total_steps)
             )
             if track == "generic":
-                finished = await self._run_tutorial_sim_generic(ctx)
+                finished = await self._run_tutorial_story_generic(ctx)
             elif track == "village":
-                finished = await self._run_tutorial_sim_village(ctx)
+                finished = await self._run_tutorial_story_village(ctx)
             elif track == "werewolf":
-                finished = await self._run_tutorial_sim_werewolf(ctx)
+                finished = await self._run_tutorial_story_werewolf(ctx)
             elif track == "solo":
-                finished = await self._run_tutorial_sim_solo(ctx)
+                finished = await self._run_tutorial_story_solo(ctx)
             else:
                 await ctx.send(_("Unknown tutorial track."))
                 finished = False
@@ -2246,8 +3001,8 @@ class NewWerewolf(commands.Cog):
                     "- `werewolf` - kill priority and day narrative control\n"
                     "- `solo` - objective-driven survival and endgame planning\n\n"
                     "**Modes:**\n"
-                    "- default/`interactive`/`sim` - play a step-by-step scenario with"
-                    " pause/resume prompts\n"
+                    "- default/`interactive`/`sim` - play a scripted mini-match with"
+                    " real night/day flow and DM actions\n"
                     "- `text` - read static guide pages\n\n"
                     "**Examples:**\n"
                     "`{prefix}nww tutorial generic`\n"
