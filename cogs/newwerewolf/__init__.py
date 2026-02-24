@@ -2560,7 +2560,8 @@ class NewWerewolf(commands.Cog):
                     "Starting **{track}** tutorial match.\n"
                     "This uses the real NewWerewolf night/day game loop with bot"
                     " players.\n"
-                    "Night actions are sent by DM exactly like normal matches."
+                    "Night actions are sent by DM, while nomination/voting are handled"
+                    " publicly in-channel like normal matches."
                 ).format(track=track.title())
             )
             game = TutorialGame(ctx, track=track, learner=ctx.author)
@@ -2986,7 +2987,8 @@ class NewWerewolf(commands.Cog):
                     "- `solo` - objective-driven survival and endgame planning\n\n"
                     "**Modes:**\n"
                     "- default/`interactive`/`sim` - play a live tutorial match that"
-                    " uses the same NewWerewolf night/day engine with bot players\n"
+                    " uses the same NewWerewolf night/day engine with bot players"
+                    " (DM night actions + public day nomination/voting)\n"
                     "- `text` - read static guide pages\n\n"
                     "**Examples:**\n"
                     "`{prefix}nww tutorial generic`\n"
