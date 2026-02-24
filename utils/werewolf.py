@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import re
 import traceback
 
 from enum import Enum
@@ -106,6 +107,42 @@ class Side(Enum):
     SUPERSPREADER = 5
     JESTER = 6
     HEAD_HUNTER = 7
+
+
+def _normalize_role_token(token: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", token.casefold())
+
+
+ROLE_TOKEN_TO_ROLE: dict[str, Role] = {
+    _normalize_role_token(role.name): role for role in Role
+}
+ROLE_TOKEN_TO_ROLE.update(
+    {_normalize_role_token(role.name.replace("_", " ")): role for role in Role}
+)
+ROLE_TOKEN_TO_ROLE.update(
+    {
+        "ww": Role.WEREWOLF,
+        "wolfnecro": Role.WOLF_NECROMANCER,
+        "juniorwolf": Role.JUNIOR_WEREWOLF,
+        "old": Role.THE_OLD,
+    }
+)
+
+
+def parse_custom_roles(raw_roles: str) -> tuple[list[Role], list[str]]:
+    tokens = [token.strip() for token in raw_roles.replace(";", ",").split(",")]
+    tokens = [token for token in tokens if token]
+    parsed: list[Role] = []
+    invalid: list[str] = []
+
+    for token in tokens:
+        role = ROLE_TOKEN_TO_ROLE.get(_normalize_role_token(token))
+        if role is None:
+            invalid.append(token)
+            continue
+        parsed.append(role)
+
+    return parsed, invalid
 
 
 DESCRIPTIONS = {
@@ -375,6 +412,22 @@ def is_wolf_aligned_role(role: Role) -> bool:
     return is_wolf_team_role(role) or role == Role.WHITE_WOLF
 
 
+def is_villager_team_role(role: Role) -> bool:
+    return (
+        not is_wolf_aligned_role(role)
+        and role
+        not in {
+            Role.FLUTIST,
+            Role.SUPERSPREADER,
+            Role.JESTER,
+            Role.HEAD_HUNTER,
+            Role.RAIDER,
+            Role.WOLFHOUND,
+            Role.THIEF,
+        }
+    )
+
+
 SPECIAL_WOLF_ROLES = {
     Role.BIG_BAD_WOLF,
     Role.CURSED_WOLF_FATHER,
@@ -587,7 +640,12 @@ class EndgameIdsView(discord.ui.View):
 
 class Game:
     def __init__(
-            self, ctx: Context, players: list[discord.Member], mode: str, speed: str
+            self,
+            ctx: Context,
+            players: list[discord.Member],
+            mode: str,
+            speed: str,
+            custom_roles: list[Role] | None = None,
     ) -> None:
         self.ctx = ctx
         self.mode = mode
@@ -624,7 +682,11 @@ class Game:
         self.avenger_mark_player_id: int | None = None
         self.after_first_night = False
         self.pending_night_resurrections: list[tuple[Player, Player, Role]] = []
-        self.available_roles = get_roles(len(players), self.mode)
+        self.custom_roles = custom_roles.copy() if custom_roles is not None else None
+        if self.custom_roles is None:
+            self.available_roles = get_roles(len(players), self.mode)
+        else:
+            self.available_roles = get_custom_roles(len(players), self.custom_roles)
         self.available_roles, self.extra_roles = (
             self.available_roles[:-2],
             self.available_roles[-2:],
@@ -5716,6 +5778,88 @@ def get_roles(number_of_players: int, mode: str = None) -> list[Role]:
     roles = available_roles + extra_roles
     roles = cap_special_werewolves(roles, requested_players=requested_players)
     roles = enforce_wolf_ratio(roles, requested_players=requested_players)
+    return roles
+
+
+def _ensure_team_requirements_in_available(roles: list[Role]) -> list[Role]:
+    available_roles = roles[:-2]
+    extra_roles = roles[-2:]
+    if not available_roles:
+        return roles
+
+    if not any(is_wolf_team_role(role) for role in available_roles):
+        wolf_extra_idx = next(
+            (
+                idx
+                for idx, role in enumerate(extra_roles)
+                if is_wolf_team_role(role)
+            ),
+            None,
+        )
+        if wolf_extra_idx is not None:
+            available_roles[0], extra_roles[wolf_extra_idx] = (
+                extra_roles[wolf_extra_idx],
+                available_roles[0],
+            )
+        else:
+            available_roles[0] = Role.WEREWOLF
+
+    if not any(is_villager_team_role(role) for role in available_roles):
+        villager_extra_idx = next(
+            (
+                idx
+                for idx, role in enumerate(extra_roles)
+                if is_villager_team_role(role)
+            ),
+            None,
+        )
+        replace_idx = next(
+            (
+                idx
+                for idx, role in enumerate(available_roles)
+                if not is_wolf_team_role(role)
+            ),
+            1 if len(available_roles) > 1 else 0,
+        )
+        if villager_extra_idx is not None:
+            available_roles[replace_idx], extra_roles[villager_extra_idx] = (
+                extra_roles[villager_extra_idx],
+                available_roles[replace_idx],
+            )
+        else:
+            available_roles[replace_idx] = Role.VILLAGER
+
+    return available_roles + extra_roles
+
+
+def get_custom_roles(number_of_players: int, custom_roles: list[Role]) -> list[Role]:
+    total_slots = number_of_players + 2
+    if len(custom_roles) > total_slots:
+        raise ValueError(
+            f"Too many custom roles: {len(custom_roles)} provided for {total_slots} slots."
+        )
+
+    generated_roles = get_roles(number_of_players)
+    available_roles = custom_roles[:number_of_players].copy()
+    extra_roles = custom_roles[number_of_players : number_of_players + 2].copy()
+
+    for role in random.shuffle(generated_roles):
+        if len(available_roles) < number_of_players:
+            available_roles.append(role)
+        elif len(extra_roles) < 2:
+            extra_roles.append(role)
+        if len(available_roles) == number_of_players and len(extra_roles) == 2:
+            break
+
+    while len(available_roles) < number_of_players:
+        available_roles.append(
+            Role.WEREWOLF if len(available_roles) % 2 == 0 else Role.VILLAGER
+        )
+    while len(extra_roles) < 2:
+        extra_roles.append(Role.VILLAGER)
+
+    roles = random.shuffle(available_roles) + random.shuffle(extra_roles)
+    roles = _ensure_team_requirements_in_available(roles)
     return roles
 
 
