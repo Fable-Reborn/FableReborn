@@ -185,8 +185,9 @@ DESCRIPTIONS = {
         " die once their beloved one bites the dust."
     ),
     Role.WITCH: _(
-        "You are a powerful villager with two special brews: One will kill, one will"
-        " heal. Use them wisely to influence the game in your favor."
+        "You are the Witch. You have two one-time potions: a poison and a protection."
+        " The poison cannot be used on the first night. The protection potion is only"
+        " consumed if your chosen player is attacked that night."
     ),
     Role.HUNTER: _(
         "You are the Hunter. Do your best to protect the Community and your precise"
@@ -3311,8 +3312,8 @@ class Player:
         self.avenger_target: Player | None = None
 
         # Witch
-        self.can_heal = True
-        self.can_kill = True
+        self.witch_protect_potion_available = True
+        self.witch_poison_potion_available = True
 
         # Healer
         self.last_target = None
@@ -3398,6 +3399,7 @@ class Player:
             amount: int,
             required: bool = True,
             timeout: int | None = None,
+            traceback_on_http_error: bool = False,
     ) -> list[Player]:
         if self.is_jailed:
             await self.send(
@@ -3512,13 +3514,15 @@ class Player:
                     )
                 )
                 break
-            except discord.HTTPException:
+            except discord.HTTPException as error:
                 await self.send(
                     _(
                         "The selection menu failed due to a Discord API error. Please"
                         " try again."
                     )
                 )
+                if traceback_on_http_error:
+                    await send_traceback(self.game.ctx, error)
                 break
 
             if selected_player is None:
@@ -4028,97 +4032,124 @@ class Player:
         await self.game.ctx.send(
             _("**The {role} awakes...**").format(role=self.role_name)
         )
-        if not self.can_heal and not self.can_kill:
+        if (
+            not self.witch_protect_potion_available
+            and not self.witch_poison_potion_available
+        ):
             # Delay is given here so that the Witch will not be accused of using up all the abilities already
             await asyncio.sleep(random.randint(5, int(self.game.timer / 2)))
             return targets
-        if any(targets) and self.can_heal:
+        protected_target: Player | None = None
+        if self.witch_protect_potion_available:
             try:
-                to_heal = await self.choose_users(
+                to_protect = await self.choose_users(
                     _(
-                        "Choose someone to heal 🧪. You can rescue a player attacked by"
-                        " the wolves once throughout the game. You can opt not to use"
-                        " this ability for now."
+                        "Choose someone to protect 🛡️. If they are attacked tonight,"
+                        " they survive and your protection potion is consumed. If they"
+                        " are not attacked, your potion stays available."
                     ),
-                    list_of_users=targets,
+                    list_of_users=self.game.alive_players,
                     amount=1,
                     required=False,
+                    traceback_on_http_error=True,
                 )
-                if to_heal:
-                    to_heal = to_heal[0]
-                    removed = False
-                    while to_heal in targets:
-                        targets.remove(to_heal)
-                        removed = True
-                    if not removed:
-                        healed_id = to_heal.user.id
+                if to_protect:
+                    protected_target = to_protect[0]
+                    was_attacked = False
+                    while protected_target in targets:
+                        targets.remove(protected_target)
+                        was_attacked = True
+                    if not was_attacked:
+                        protected_id = protected_target.user.id
                         remaining_targets = [
-                            target for target in targets if target.user.id != healed_id
+                            target for target in targets if target.user.id != protected_id
                         ]
-                        removed = len(remaining_targets) != len(targets)
+                        was_attacked = len(remaining_targets) != len(targets)
                         targets = remaining_targets
-                    if removed:
-                        self.can_heal = False
-                        if to_heal.role == Role.KNIGHT:
-                            to_heal.attacked_by_the_pact = False
+                    if was_attacked:
+                        self.witch_protect_potion_available = False
+                        if protected_target.role == Role.KNIGHT:
+                            protected_target.attacked_by_the_pact = False
                         await self.send(
-                            _("You chose to heal **{healed}**.").format(
-                                healed=to_heal.user
+                            _(
+                                "You protected **{protected}**. They were attacked, so"
+                                " your protection potion was consumed."
+                            ).format(
+                                protected=protected_target.user
                             )
                         )
                     else:
                         await self.send(
-                            _("Your heal target was no longer marked to die tonight.")
+                            _(
+                                "You protected **{protected}**, but they were not"
+                                " attacked. Your protection potion remains available."
+                            ).format(protected=protected_target.user)
                         )
                 else:
-                    await self.send(_("You didn't choose to heal anyone."))
+                    await self.send(_("You didn't choose to protect anyone."))
             except asyncio.TimeoutError:
                 await self.send(
-                    _(
-                        "You didn't choose to heal anyone from the list, slowpoke."
-                        " They're likely to die."
-                    )
+                    _("You didn't choose anyone to protect in time, slowpoke.")
                 )
-        if self.can_kill:
-            possible_targets = [
-                p
-                for p in self.game.alive_players
-                if p != self and p not in targets + self.own_lovers
-            ]
-            try:
-                to_kill = await self.choose_users(
-                    _(
-                        "Choose someone to poison ☠️. You can kill a"
-                        " player once throughout the game. You can opt not to use this"
-                        " ability for now."
-                    ),
-                    list_of_users=possible_targets,
-                    amount=1,
-                    required=False,
+            except Exception as error:
+                await self.send(
+                    _("An unexpected error occurred while trying to use your protection.")
                 )
-                if to_kill:
-                    to_kill = to_kill[0]
-                    if to_kill.role == Role.THE_OLD:
-                        # Bad choice
-                        to_kill.died_from_villagers = True
-                        to_kill.lives = 1
-                    targets.append(to_kill)
-                    self.can_kill = False
-                    await self.send(
-                        _("You've decided to poison **{poisoned}**.").format(
-                            poisoned=to_kill.user
-                        )
-                    )
+                await send_traceback(self.game.ctx, error)
+        if self.witch_poison_potion_available:
+            if self.game.night_no <= 1:
+                await self.send(
+                    _("You cannot use your poison potion on the first night.")
+                )
+            else:
+                possible_targets = [
+                    p
+                    for p in self.game.alive_players
+                    if p != self and p not in self.own_lovers
+                ]
+                if protected_target and protected_target in possible_targets:
+                    possible_targets.remove(protected_target)
+                if not possible_targets:
+                    await self.send(_("There is no valid target to poison tonight."))
                 else:
-                    await self.send(_("You didn't choose to poison anyone."))
-            except asyncio.TimeoutError:
-                await self.send(
-                    _("You've ran out of time and missed to poison anyone, slowpoke.")
-                )
-        else:
-            # Delay is given here so that the Witch will not be accused of using up all the abilities already
-            await asyncio.sleep(random.randint(5, int(self.game.timer / 2)))
-            return targets
+                    try:
+                        to_kill = await self.choose_users(
+                            _(
+                                "Choose someone to poison ☠️. You can use this once and"
+                                " cannot use it on the first night."
+                            ),
+                            list_of_users=possible_targets,
+                            amount=1,
+                            required=False,
+                            traceback_on_http_error=True,
+                        )
+                        if to_kill:
+                            to_kill = to_kill[0]
+                            if to_kill.role == Role.THE_OLD:
+                                # Bad choice
+                                to_kill.died_from_villagers = True
+                                to_kill.lives = 1
+                            targets.append(to_kill)
+                            self.witch_poison_potion_available = False
+                            await self.send(
+                                _("You've decided to poison **{poisoned}**.").format(
+                                    poisoned=to_kill.user
+                                )
+                            )
+                        else:
+                            await self.send(_("You didn't choose to poison anyone."))
+                    except asyncio.TimeoutError:
+                        await self.send(
+                            _("You've run out of time and missed to poison anyone.")
+                        )
+                    except Exception as error:
+                        await self.send(
+                            _(
+                                "An unexpected error occurred while trying to use your"
+                                " poison."
+                            )
+                        )
+                        await send_traceback(self.game.ctx, error)
         await self.send(self.game.game_link)
         return targets
 
