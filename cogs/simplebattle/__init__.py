@@ -1225,8 +1225,11 @@ class SimpleBattle(discord.ext.commands.Cog):
         if (force_new or
                 not battle_ctx["current_battle_message"] or
                 battle_ctx["message_counter"] >= 3 or
-                len((battle_ctx["current_content"] + "\n\n" + new_content) if battle_ctx[
-                    "current_content"] else new_content) > 1800):
+                self._discord_content_length(
+                    (battle_ctx["current_content"] + "\n\n" + new_content)
+                    if battle_ctx["current_content"]
+                    else new_content
+                ) > 1800):
 
             # Create a new message
             battle_ctx["current_content"] = new_content
@@ -1240,6 +1243,27 @@ class SimpleBattle(discord.ext.commands.Cog):
             battle_ctx["message_counter"] += 1
 
         return battle_ctx["current_battle_message"]
+
+    def _discord_content_length(self, text: str) -> int:
+        """Return Discord message length in UTF-16 code units."""
+        return len(text.encode("utf-16-le")) // 2
+
+    def _truncate_to_discord_limit(self, text: str, limit: int) -> str:
+        """Trim text so its Discord UTF-16 length does not exceed `limit`."""
+        if limit <= 0:
+            return ""
+        if self._discord_content_length(text) <= limit:
+            return text
+
+        low = 0
+        high = len(text)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if self._discord_content_length(text[:mid]) <= limit:
+                low = mid
+            else:
+                high = mid - 1
+        return text[:low]
 
     async def get_weapon_info(self, ctx, user_id) -> Dict:
         """Get the weapon information of a user based on their equipped items."""
@@ -1364,7 +1388,8 @@ class SimpleBattle(discord.ext.commands.Cog):
         # If we need to create a new phase message
         if force_new or phase_name not in battle_ctx["phase_messages"]:
             if new_content:
-                first_limit = max_content_len - len(header) - 1
+                first_limit = max_content_len - self._discord_content_length(f"{header}\n")
+                first_limit = max(1, first_limit)
                 chunks = self._split_text_for_discord(new_content, first_limit)
                 content = f"{header}\n{chunks[0]}"
                 last_message = await ctx.send(content)
@@ -1388,12 +1413,13 @@ class SimpleBattle(discord.ext.commands.Cog):
                 battle_ctx["phase_contents"][phase_name] = header
 
             updated_content = battle_ctx["phase_contents"][phase_name] + f"\n{new_content}"
-            if len(updated_content) <= max_content_len:
+            if self._discord_content_length(updated_content) <= max_content_len:
                 battle_ctx["phase_contents"][phase_name] = updated_content
                 await battle_ctx["phase_messages"][phase_name].edit(content=updated_content)
             else:
                 # Start continuation messages when we hit Discord's 2000-char limit.
-                chunk_limit = max_content_len - len(continuation_header) - 1
+                chunk_limit = max_content_len - self._discord_content_length(f"{continuation_header}\n")
+                chunk_limit = max(1, chunk_limit)
                 chunks = self._split_text_for_discord(new_content, chunk_limit)
 
                 first_content = f"{continuation_header}\n{chunks[0]}"
@@ -1409,15 +1435,15 @@ class SimpleBattle(discord.ext.commands.Cog):
 
         return battle_ctx["phase_messages"][phase_name]
 
-    def _format_endurance_bar(self, current: float, maximum: float, length: int = 12) -> str:
-        """Create a compact text bar for battle status updates."""
+    def _format_endurance_bar(self, current: float, maximum: float, length: int = 20) -> str:
+        """Create a raid-style endurance bar."""
         if maximum <= 0:
-            return "[" + ("-" * length) + "]"
+            return "░" * length
 
         ratio = max(0.0, min(1.0, current / maximum))
         filled = int(round(ratio * length))
         filled = max(0, min(length, filled))
-        return "[" + ("#" * filled) + ("-" * (length - filled)) + "]"
+        return ("█" * filled) + ("░" * (length - filled))
 
     def _determine_fighter_style(self, total_stats: float, weapon_info: Dict, god_name: Optional[str]) -> str:
         """Assign a fighter archetype to shape automated pacing and narration."""
@@ -1530,31 +1556,33 @@ class SimpleBattle(discord.ext.commands.Cog):
 
     def _split_text_for_discord(self, text: str, limit: int = 1900) -> List[str]:
         """Split long text into safe Discord-sized chunks."""
-        if len(text) <= limit:
+        if limit <= 0:
+            return [""]
+        if self._discord_content_length(text) <= limit:
             return [text]
 
         chunks = []
         remaining = text
         while remaining:
-            if len(remaining) <= limit:
+            if self._discord_content_length(remaining) <= limit:
                 chunks.append(remaining)
                 break
 
-            split_at = remaining.rfind("\n", 0, limit)
-            if split_at == -1:
-                split_at = remaining.rfind(" ", 0, limit)
-            if split_at == -1:
-                split_at = limit
+            safe_slice = self._truncate_to_discord_limit(remaining, limit)
+            if not safe_slice:
+                break
 
-            chunk = remaining[:split_at].rstrip()
+            split_at = safe_slice.rfind("\n")
+            if split_at == -1:
+                split_at = safe_slice.rfind(" ")
+            chunk = safe_slice[:split_at].rstrip() if split_at > 0 else safe_slice
             if not chunk:
-                chunk = remaining[:limit]
-                split_at = limit
+                chunk = safe_slice
 
             chunks.append(chunk)
-            remaining = remaining[split_at:].lstrip()
+            remaining = remaining[len(chunk):].lstrip()
 
-        return chunks
+        return chunks if chunks else [self._truncate_to_discord_limit(text, limit)]
 
     @has_char()
     @user_cooldown(90)
@@ -2587,10 +2615,10 @@ class SimpleBattle(discord.ext.commands.Cog):
                             momentum = f"{enemy_.display_name} has gained a {lead} advantage in the battle!"
 
                         status_line = (
-                            f"{ctx.author.display_name} "
+                            f"{ctx.author.display_name}: "
                             f"{self._format_endurance_bar(player_endurance[0], player_endurance_max[0])} "
-                            f"{player_endurance[0]:.0f}/{player_endurance_max[0]:.0f} | "
-                            f"{enemy_.display_name} "
+                            f"{player_endurance[0]:.0f}/{player_endurance_max[0]:.0f}\n"
+                            f"{enemy_.display_name}: "
                             f"{self._format_endurance_bar(player_endurance[1], player_endurance_max[1])} "
                             f"{player_endurance[1]:.0f}/{player_endurance_max[1]:.0f}"
                         )
@@ -2603,7 +2631,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                             (
                                 f"⚖️ **Battle Momentum:** {momentum}\n"
                                 f"🎬 **Current Beat:** {beat_labels[current_beat]} | 🔥 **Crowd Heat:** {crowd_heat}/100\n"
-                                f"📊 **Endurance:** {status_line}"
+                                f"📊 **Endurance:**\n{status_line}"
                             ),
                             edit=True
                         )
@@ -2895,7 +2923,20 @@ class SimpleBattle(discord.ext.commands.Cog):
             # Handle any exceptions that occur during battle
             import traceback
             error_traceback = traceback.format_exc()
-            error_message = f"An error occurred during the battle:\n```{str(e)}```"
+            print(error_traceback)
+
+            error_prefix = "An error occurred during the battle:\n```"
+            error_suffix = "```"
+            truncation_note = "\n... (truncated)"
+            max_error_len = 1900
+            max_body_len = max_error_len - self._discord_content_length(error_prefix + error_suffix)
+
+            error_body = str(e)
+            if self._discord_content_length(error_body) > max_body_len:
+                safe_body_len = max(0, max_body_len - self._discord_content_length(truncation_note))
+                error_body = self._truncate_to_discord_limit(error_body, safe_body_len) + truncation_note
+
+            error_message = f"{error_prefix}{error_body}{error_suffix}"
 
             await ctx.send(error_message)
 
