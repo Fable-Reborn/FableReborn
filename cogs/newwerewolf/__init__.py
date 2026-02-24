@@ -38,6 +38,7 @@ from .core import parse_custom_roles
 from .core import role_level_from_xp
 from .core import send_traceback
 from .core import unavailable_roles_for_mode
+from .tutorial_live import TutorialGame
 from .role_config import (
     ROLE_XP_CHANNEL_IDS,
     ROLE_XP_LONER_WIN,
@@ -2534,7 +2535,7 @@ class NewWerewolf(commands.Cog):
             await ctx.send(
                 _(
                     "Finish the current NewWerewolf game in this channel before"
-                    " starting an interactive tutorial."
+                    " starting a tutorial match."
                 )
             )
             return
@@ -2552,52 +2553,35 @@ class NewWerewolf(commands.Cog):
             await ctx.send(_("You already have a tutorial running in this channel."))
             return
 
-        tutorial_total_steps = {
-            "generic": 14,
-            "village": 13,
-            "werewolf": 13,
-            "solo": 11,
-        }.get(track, 12)
-
         self.tutorial_sessions[ctx.channel.id] = ctx.author.id
-        self.tutorial_progress[ctx.channel.id] = {"step": 0, "total": tutorial_total_steps}
-        finished = False
         try:
             await ctx.send(
                 _(
-                    "Starting scripted match tutorial for **{track}**.\n"
-                    "Night actions are sent by DM when needed.\n"
-                    "Coach pauses can be resumed with `continue`.\n"
-                    "Progress is shown as **Step X/{total}**."
-                ).format(track=track.title(), total=tutorial_total_steps)
+                    "Starting **{track}** tutorial match.\n"
+                    "This uses the real NewWerewolf night/day game loop with bot"
+                    " players.\n"
+                    "Night actions are sent by DM exactly like normal matches."
+                ).format(track=track.title())
             )
-            if track == "generic":
-                finished = await self._run_tutorial_story_generic(ctx)
-            elif track == "village":
-                finished = await self._run_tutorial_story_village(ctx)
-            elif track == "werewolf":
-                finished = await self._run_tutorial_story_werewolf(ctx)
-            elif track == "solo":
-                finished = await self._run_tutorial_story_solo(ctx)
-            else:
-                await ctx.send(_("Unknown tutorial track."))
-                finished = False
+            game = TutorialGame(ctx, track=track, learner=ctx.author)
+            self.games[ctx.channel.id] = game
+            await game.run()
         except Exception as e:
             await send_traceback(ctx, e)
             raise
         finally:
+            if self.games.get(ctx.channel.id) is not None:
+                del self.games[ctx.channel.id]
             if self.tutorial_sessions.get(ctx.channel.id) == ctx.author.id:
                 del self.tutorial_sessions[ctx.channel.id]
-            if ctx.channel.id in self.tutorial_progress:
-                del self.tutorial_progress[ctx.channel.id]
+            self.tutorial_progress.pop(ctx.channel.id, None)
 
-        if finished:
-            await ctx.send(
-                _(
-                    "Interactive tutorial finished. Use `{prefix}nww tutorial {track}"
-                    " text` to read the static guide pages."
-                ).format(prefix=ctx.clean_prefix, track=track)
-            )
+        await ctx.send(
+            _(
+                "Tutorial match ended. Use `{prefix}nww tutorial {track} text` for"
+                " the static guide pages."
+            ).format(prefix=ctx.clean_prefix, track=track)
+        )
 
     async def _start_multiplayer_game(
         self,
@@ -3001,8 +2985,8 @@ class NewWerewolf(commands.Cog):
                     "- `werewolf` - kill priority and day narrative control\n"
                     "- `solo` - objective-driven survival and endgame planning\n\n"
                     "**Modes:**\n"
-                    "- default/`interactive`/`sim` - play a scripted mini-match with"
-                    " real night/day flow and DM actions\n"
+                    "- default/`interactive`/`sim` - play a live tutorial match that"
+                    " uses the same NewWerewolf night/day engine with bot players\n"
                     "- `text` - read static guide pages\n\n"
                     "**Examples:**\n"
                     "`{prefix}nww tutorial generic`\n"
