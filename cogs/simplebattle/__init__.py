@@ -1208,6 +1208,10 @@ class SimpleBattle(discord.ext.commands.Cog):
             },
         }
 
+        # Readability pacing controls for battle narration.
+        self.battle_pace_multiplier = 1.45
+        self.battle_reading_wps = 2.8
+
     async def manage_battle_message(self, ctx, battle_id, new_content, event_counter=0, force_new=False):
         """Create a new message or edit existing one based on event count and content length"""
         # Get battle context
@@ -1264,6 +1268,32 @@ class SimpleBattle(discord.ext.commands.Cog):
             else:
                 high = mid - 1
         return text[:low]
+
+    def _estimate_read_duration(self, text: Optional[str]) -> float:
+        """Estimate minimum seconds needed to read a message comfortably."""
+        if not text:
+            return 0.0
+        words = len(text.split())
+        lines = text.count("\n")
+        wps = max(0.5, float(self.battle_reading_wps))
+        # Give extra weight to multiline updates and keep cap sane.
+        estimate = (words / wps) + (lines * 0.18)
+        return min(7.5, estimate)
+
+    async def _battle_sleep(
+        self,
+        seconds: float,
+        *,
+        text: Optional[str] = None,
+        min_seconds: float = 2.25,
+        max_seconds: float = 9.0,
+    ) -> None:
+        """Sleep with global pace multiplier and optional readability floor."""
+        duration = float(seconds) * float(self.battle_pace_multiplier)
+        if text:
+            duration = max(duration, self._estimate_read_duration(text))
+        duration = max(min_seconds, min(max_seconds, duration))
+        await asyncio.sleep(duration)
 
     async def get_weapon_info(self, ctx, user_id) -> Dict:
         """Get the weapon information of a user based on their equipped items."""
@@ -1876,7 +1906,7 @@ class SimpleBattle(discord.ext.commands.Cog):
 
             # Send the battle embed
             await ctx.send(embed=battle_embed)
-            await asyncio.sleep(3)  # Wait 3 seconds before starting
+            await self._battle_sleep(3)  # Wait 3 seconds before starting
 
             # Pre-defined options for commentaries
             announcer_lines = [
@@ -1942,12 +1972,12 @@ class SimpleBattle(discord.ext.commands.Cog):
             # ========== PREPARATION PHASE ==========
             # Create a separate message for the preparation phase
             await self.manage_phase_message(ctx, battle_id, "PREPARATION PHASE")
-            await asyncio.sleep(1.5)  # Pause after section header
+            await self._battle_sleep(1.5)  # Pause after section header
             
             # Create pre-battle atmosphere with arena announcements
             atmosphere = random.choice(announcer_lines)
             await self.manage_phase_message(ctx, battle_id, "PREPARATION PHASE", f"**Arena Atmosphere:** {atmosphere}", edit=True)
-            await asyncio.sleep(2.5)
+            await self._battle_sleep(2.5)
 
             await self.manage_phase_message(
                 ctx,
@@ -1956,7 +1986,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                 f"**Style Clash:** {ctx.author.display_name} enters as a **{player_style_profiles[0]['name']}**, while {enemy_.display_name} fights like a **{player_style_profiles[1]['name']}**.",
                 edit=True
             )
-            await asyncio.sleep(2)
+            await self._battle_sleep(2)
 
             await self.manage_phase_message(
                 ctx,
@@ -1965,21 +1995,21 @@ class SimpleBattle(discord.ext.commands.Cog):
                 f"**Rivalry Ledger:** {rivalry_line}",
                 edit=True
             )
-            await asyncio.sleep(2)
+            await self._battle_sleep(2)
             
             # Send entrance messages
             p1_entrance = random.choice(p1_entrance_options)
             await self.manage_phase_message(ctx, battle_id, "PREPARATION PHASE", f"**Challenger:** {p1_entrance}", edit=True)
-            await asyncio.sleep(2.5)
+            await self._battle_sleep(2.5)
             
             p2_entrance = random.choice(p2_entrance_options)
             await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"**Opponent:** {p2_entrance}", edit=True)
-            await asyncio.sleep(2.5)
+            await self._battle_sleep(2.5)
             
             # Announcer introduces the fighters formally
             formal_intro = random.choice(announcer_intros)
             await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"**Arena Master:** {formal_intro}", edit=True)
-            await asyncio.sleep(2.5)
+            await self._battle_sleep(2.5)
             
             # Add a Fablelands reference
             fablelands_ref = random.choice(self.commentaries["fablelands_references"]).format(
@@ -1987,7 +2017,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                 p2=enemy_.display_name
             )
             await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"**Fablelands Lore:** {fablelands_ref}", edit=True)
-            await asyncio.sleep(2.5)
+            await self._battle_sleep(2.5)
             
             # Show weapon style commentary for each player
             if p1_weapon_info["handed"] == 2:
@@ -2001,7 +2031,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                     player=ctx.author.display_name
                 )
                 await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"**Shield Style:** {style_comment}", edit=True)
-            await asyncio.sleep(2.5)
+            await self._battle_sleep(2.5)
             
             if p2_weapon_info["handed"] == 2:
                 style_comment = random.choice(self.commentaries["two_handed_comments"]).format(
@@ -2014,7 +2044,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                     player=enemy_.display_name
                 )
                 await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"**Shield Style:** {style_comment}", edit=True)
-            await asyncio.sleep(2.5)
+            await self._battle_sleep(2.5)
             
             # Show weapon advantage if there is one
             if advantage != 0:
@@ -2036,7 +2066,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                         god=p2_god_display
                     )
                     await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"**Tactical Advantage:** {advantage_text}", edit=True)
-                await asyncio.sleep(2.5)
+                await self._battle_sleep(2.5)
 
             # Check if there's a significant difference in base stats
             # Get the base stats including 2-handed bonuses but before weapon advantages
@@ -2108,14 +2138,14 @@ class SimpleBattle(discord.ext.commands.Cog):
                 
                 # Add to preparation phase
                 await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"**Battle Odds:** {dominance_message} {courage_message}", edit=True)
-                await asyncio.sleep(2.5)
+                await self._battle_sleep(2.5)
 
 
             # Battle commencement signal
             commencement = random.choice(commencement_options)
             await self.manage_phase_message(ctx, battle_id, "BATTLE BEGINS")
             await self.manage_phase_message(ctx, battle_id,  "BATTLE BEGINS", f"**Battle Begins:** {commencement}", edit=True)
-            await asyncio.sleep(3)
+            await self._battle_sleep(3)
             
             # Battle events
             event_min, event_max = tone_profile.get("event_count_range", (6, 9))
@@ -2181,7 +2211,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                     current_beat = beat
                     await ctx.send(embed=self._build_beat_embed(current_beat, beat_labels[current_beat], crowd_heat))
                     event_counter += 1
-                    await asyncio.sleep(2.5)
+                    await self._battle_sleep(2.5)
 
                     cinematic_cuts = tone_profile.get("cinematic_cuts", [])
                     if cinematic_cuts:
@@ -2193,7 +2223,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                             edit=True
                         )
                         event_counter += 1
-                        await asyncio.sleep(2)
+                        await self._battle_sleep(2)
 
                     if current_beat == "climax":
                         climax_calls = tone_profile.get("climax_calls", [])
@@ -2206,7 +2236,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                                 edit=True
                             )
                             event_counter += 1
-                            await asyncio.sleep(2.5)
+                            await self._battle_sleep(2.5)
                 
                 # Determine which player is featured in this event
                 if i < 2:
@@ -2298,7 +2328,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                             edit=True
                         )
                         event_counter += 1
-                        await asyncio.sleep(1.5)  # Wait before showing the result
+                        await self._battle_sleep(1.5)  # Wait before showing the result
                         
                         # Determine attack success with moderate influence from stats and current endurance.
                         stat_diff = player_stats[player_idx] - player_stats[opponent_idx]
@@ -2498,7 +2528,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                                 player=player.display_name,
                                 god=player_gods[player_idx] or "the gods"
                             )
-                            await asyncio.sleep(2.5)  # Wait before showing comeback
+                            await self._battle_sleep(2.5)  # Wait before showing comeback
                             await self.manage_phase_message(ctx, battle_id, "BATTLE BEGINS", comeback, edit=True)
                             
                             player_endurance[player_idx] = min(
@@ -2557,7 +2587,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                             consecutive_wins[player_idx]
                         )
                         
-                        await asyncio.sleep(2.5)  # Wait before showing effect
+                        await self._battle_sleep(2.5)  # Wait before showing effect
                         endurance_snapshot = self._format_endurance_snapshot(
                             players[0].display_name,
                             max(0.0, min(player_endurance_max[0], player_endurance[0])),
@@ -2710,7 +2740,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                     reaction_scale = max(80.0, float(tone_profile.get("crowd_reaction_scale_divisor", 220.0)))
                     crowd_reaction_chance = min(0.65, reaction_base + (crowd_heat / reaction_scale))
                     if random.random() < crowd_reaction_chance:
-                        await asyncio.sleep(1.5)  # Wait before showing crowd reaction
+                        await self._battle_sleep(1.5)  # Wait before showing crowd reaction
                         crowd_reaction = random.choice(self.commentaries["crowd_reactions"])
                         await self.manage_phase_message(ctx, battle_id, "BATTLE BEGINS", f"*Crowd:* {crowd_reaction}", edit=True)
                         event_counter += 1
@@ -2741,7 +2771,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                             lead = "slight" if endurance_gap < 10 else "strong"
                             momentum = f"{enemy_.display_name} has gained a {lead} advantage in the battle!"
 
-                        await asyncio.sleep(1.5)
+                        await self._battle_sleep(1.5)
                         await self.manage_phase_message(
                             ctx,
                             battle_id,
@@ -2761,7 +2791,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                     event_counter += 1
                 
                 # Wait between events - longer pause for better readability
-                await asyncio.sleep(2)
+                await self._battle_sleep(2)
             
             # Final clamping before deciding winner
             victory_points = [max(0, points) for points in victory_points]
@@ -2818,7 +2848,7 @@ class SimpleBattle(discord.ext.commands.Cog):
             # ========== DECISIVE MOMENT ==========
             # Create a separate message for the decisive moment
             await self.manage_phase_message(ctx, battle_id,  "DECISIVE MOMENT")
-            await asyncio.sleep(3)  # Longer pause before climax
+            await self._battle_sleep(3)  # Longer pause before climax
             
             # Final decisive moment - customize based on how the battle went
             decisive_moments = []
@@ -2853,7 +2883,7 @@ class SimpleBattle(discord.ext.commands.Cog):
             
             decisive_moment = random.choice(decisive_moments)
             await self.manage_phase_message(ctx, battle_id,  "DECISIVE MOMENT", f"**Decisive Moment:** {decisive_moment}", edit=True)
-            await asyncio.sleep(4)  # Longer pause after decisive moment
+            await self._battle_sleep(4)  # Longer pause after decisive moment
             
             # Final commentary - customize based on battle narrative
             if is_comeback:
@@ -2886,13 +2916,13 @@ class SimpleBattle(discord.ext.commands.Cog):
             
             finisher = random.choice(finishers)
             await self.manage_phase_message(ctx, battle_id,  "DECISIVE MOMENT", f"**Victory:** {finisher}", edit=True)
-            await asyncio.sleep(4)  # Longer pause after victory
+            await self._battle_sleep(4)  # Longer pause after victory
             
             # ========== EMPEROR'S JUDGMENT ==========
             # [Emperor's judgment section remains largely unchanged]
             # Create a separate message for the emperor's judgment
             await self.manage_phase_message(ctx, battle_id,  "EMPEROR'S JUDGMENT")
-            await asyncio.sleep(3)  # Longer pause before judgment
+            await self._battle_sleep(3)  # Longer pause before judgment
             
             # Crowd anticipation
             anticipation_messages = [
@@ -2906,12 +2936,12 @@ class SimpleBattle(discord.ext.commands.Cog):
             ]
             anticipation = random.choice(anticipation_messages)
             await self.manage_phase_message(ctx, battle_id,  "EMPEROR'S JUDGMENT", f"**Emperor's Decision:** {anticipation}", edit=True)
-            await asyncio.sleep(4)  # Longer pause before verdict
+            await self._battle_sleep(4)  # Longer pause before verdict
             
             # Emperor's verdict
             judgment = random.choice(self.commentaries["emperor_signals"])
             await self.manage_phase_message(ctx, battle_id,  "EMPEROR'S JUDGMENT", f"**Emperor:** {judgment}", edit=True)
-            await asyncio.sleep(5)  # Extended dramatic pause
+            await self._battle_sleep(5)  # Extended dramatic pause
             
             # Make mercy more likely for close battles, less likely for dominant victories
             mercy_chance = 0.5
@@ -2936,7 +2966,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                     f"A relieved {loser.display_name} makes the traditional gesture of gratitude toward the Emperor's box."
                 ]
                 mercy_reaction = random.choice(mercy_reactions)
-                await asyncio.sleep(4)
+                await self._battle_sleep(4)
                 await self.manage_phase_message(ctx, battle_id,  "EMPEROR'S JUDGMENT", f"**Mercy:** {mercy_reaction}", edit=True)
             else:  # Death
                 death = random.choice(self.commentaries["emperor_death"]).format(
@@ -2954,7 +2984,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                     winner=winner.display_name,
                     loser=loser.display_name
                 )
-                await asyncio.sleep(4)
+                await self._battle_sleep(4)
                 await self.manage_phase_message(ctx, battle_id,  "EMPEROR'S JUDGMENT", f"**Execution:** {finishing_move}", edit=True)
                 
                 # Add death aftermath
@@ -2966,13 +2996,13 @@ class SimpleBattle(discord.ext.commands.Cog):
                     f"The priests of Elysia intone the final rites as {loser.display_name}'s journey in the arena comes to its end."
                 ]
                 aftermath = random.choice(death_aftermath)
-                await asyncio.sleep(4)
+                await self._battle_sleep(4)
                 await self.manage_phase_message(ctx, battle_id,  "EMPEROR'S JUDGMENT", f"**Aftermath:** {aftermath}", edit=True)
             
             # ========== BATTLE CONCLUSION ==========
             # Create a separate message for battle conclusion
             await self.manage_phase_message(ctx, battle_id,  "BATTLE CONCLUSION")
-            await asyncio.sleep(3)  # Pause after section header
+            await self._battle_sleep(3)  # Pause after section header
             
             # Victor celebration
             victor_celebrations = [
@@ -2984,7 +3014,7 @@ class SimpleBattle(discord.ext.commands.Cog):
             ]
             celebration = random.choice(victor_celebrations)
             await self.manage_phase_message(ctx, battle_id,  "BATTLE CONCLUSION", f"**Victory Celebration:** {celebration}", edit=True)
-            await asyncio.sleep(3)  # Final pause before results
+            await self._battle_sleep(3)  # Final pause before results
 
             summary_embed = discord.Embed(
                 title="Battle Chronicle",
@@ -3029,7 +3059,7 @@ class SimpleBattle(discord.ext.commands.Cog):
             )
             summary_embed.add_field(name="Turning Point", value=turning_point_line, inline=False)
             await ctx.send(embed=summary_embed)
-            await asyncio.sleep(2.5)
+            await self._battle_sleep(2.5)
             
             # Final result message
             if money > 0:
