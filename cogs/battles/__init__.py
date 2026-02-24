@@ -6175,7 +6175,17 @@ class Battles(commands.Cog):
                                 
                                 # Only update message every 5 turns to reduce spam
                                 if turn_count % 5 == 0:
-                                    await battle_msg.edit(content=f"⚔️ Battle in progress - Turn {turn_count} - The dragon and party continue to battle...")
+                                    try:
+                                        await battle_msg.edit(content=f"⚔️ Battle in progress - Turn {turn_count} - The dragon and party continue to battle...")
+                                    except discord.DiscordServerError:
+                                        # Transient Discord upstream failure; continue battle loop.
+                                        pass
+                                    except discord.HTTPException as edit_error:
+                                        # Retry behavior for this message is handled on next cycle.
+                                        if getattr(edit_error, "status", None) is None or edit_error.status >= 500:
+                                            pass
+                                        else:
+                                            raise
                                 
                                 await asyncio.sleep(1)  # 1 second delay between turns for faster battles
                             except Exception as e:

@@ -8,19 +8,61 @@ class PetExtension:
     """Extension for pet integration in battles"""
     PET_MAX_LEVEL = 100
     PET_LEVEL_STAT_BONUS = 0.01
+
+    @staticmethod
+    def _extract_user_id(entity):
+        """Resolve a Discord user ID from combatant/user/raw-id values."""
+        if entity is None:
+            return None
+
+        # Combatants store the discord user object in `user`.
+        if hasattr(entity, 'user'):
+            entity = getattr(entity, 'user', None)
+
+        user_id = getattr(entity, 'id', None)
+        if user_id is not None:
+            return user_id
+
+        if isinstance(entity, int):
+            return entity
+
+        if isinstance(entity, str):
+            cleaned = entity.strip()
+            if cleaned.isdigit():
+                return int(cleaned)
+
+        return None
     
     def find_owner_combatant(self, pet_combatant):
-        """Find the owner combatant object from the same team as the pet"""
-        if not hasattr(pet_combatant, 'owner') or not hasattr(pet_combatant, 'team'):
+        """Find and cache the owner combatant object associated with a pet."""
+        if not hasattr(pet_combatant, 'owner'):
             return None
-            
-        # Look for the owner in the same team
-        for combatant in pet_combatant.team.combatants:
-            if (not combatant.is_pet and 
-                hasattr(combatant, 'user') and 
-                hasattr(pet_combatant, 'owner') and
-                combatant.user.id == pet_combatant.owner.id):
-                return combatant
+
+        owner_id = self._extract_user_id(getattr(pet_combatant, 'owner', None))
+        if owner_id is None:
+            # Fallback to pet user id in case owner was serialized oddly.
+            owner_id = self._extract_user_id(getattr(pet_combatant, 'user', None))
+
+        teams_to_search = []
+        team = getattr(pet_combatant, 'team', None)
+        enemy_team = getattr(pet_combatant, 'enemy_team', None)
+
+        if hasattr(team, 'combatants'):
+            teams_to_search.append(team)
+        if hasattr(enemy_team, 'combatants') and enemy_team is not team:
+            teams_to_search.append(enemy_team)
+
+        for team_ref in teams_to_search:
+            for combatant in team_ref.combatants:
+                if getattr(combatant, 'is_pet', False):
+                    continue
+
+                combatant_id = self._extract_user_id(combatant)
+                if owner_id is not None and combatant_id == owner_id:
+                    # Normalize owner reference to the runtime combatant object.
+                    pet_combatant.owner = combatant
+                    return combatant
+
         return None
     
     def get_trust_bonus(self, trust_level):
@@ -2251,8 +2293,9 @@ class PetExtension:
                     else:  # reality_distort
                         # Create beneficial reality distortion
                         setattr(pet_combatant, 'reality_master', 2)  # 2 turns of reality control
-                        if hasattr(pet_combatant, 'owner'):
-                            pet_combatant.owner.damage *= Decimal('1.3')  # 30% damage boost
+                        owner_combatant = self.find_owner_combatant(pet_combatant)
+                        if owner_combatant and hasattr(owner_combatant, 'damage'):
+                            owner_combatant.damage *= Decimal('1.3')  # 30% damage boost
                         messages.append(f"Void Mastery bends reality to {pet_combatant.name}'s will!")
                         
         # Void Lord - enhanced battlefield control
@@ -2276,9 +2319,10 @@ class PetExtension:
                     messages.append(f"Void Lord dominates {dominated_enemies} enemies - they serve the void!")
                     
             # Grant battlefield control powers
-            if hasattr(pet_combatant, 'owner'):
-                setattr(pet_combatant.owner, 'void_lord_blessed', True)
-                pet_combatant.owner.damage *= Decimal('1.4')  # +40% damage for owner
+            owner_combatant = self.find_owner_combatant(pet_combatant)
+            if owner_combatant and hasattr(owner_combatant, 'damage'):
+                setattr(owner_combatant, 'void_lord_blessed', True)
+                owner_combatant.damage *= Decimal('1.4')  # +40% damage for owner
                 
             messages.append(f"{pet_combatant.name}'s Void Lord power reshapes the battlefield!")
             
@@ -2424,10 +2468,17 @@ class PetExtension:
             if (hasattr(pet_combatant, 'skill_effects') and 
                 'symbiotic_bond' in pet_combatant.skill_effects and 
                 hasattr(pet_combatant, 'owner')):
-                share_percent = Decimal(str(pet_combatant.skill_effects['symbiotic_bond']['share_percent']))
-                shared_heal = heal_amount * share_percent
-                pet_combatant.owner.heal(shared_heal)
-                messages.append(f"Symbiotic Bond shares **{shared_heal:.2f} regeneration** with {pet_combatant.owner.user.display_name}!")
+                owner_combatant = self.find_owner_combatant(pet_combatant)
+                if owner_combatant and hasattr(owner_combatant, 'heal'):
+                    share_percent = Decimal(str(pet_combatant.skill_effects['symbiotic_bond']['share_percent']))
+                    shared_heal = heal_amount * share_percent
+                    owner_combatant.heal(shared_heal)
+                    owner_name = getattr(
+                        getattr(owner_combatant, 'user', None),
+                        'display_name',
+                        getattr(owner_combatant, 'name', 'their owner')
+                    )
+                    messages.append(f"Symbiotic Bond shares **{shared_heal:.2f} regeneration** with {owner_name}!")
             
             # Countdown duration
             setattr(pet_combatant, 'immortal_growth_duration', immortal_growth_duration - 1)

@@ -1151,10 +1151,41 @@ class DragonBattle(Battle):
     async def update_display(self):
         """Update the battle display"""
         embed = await self.create_battle_embed()
-        if self.battle_message:
-            await self.battle_message.edit(embed=embed)
-        else:
-            self.battle_message = await self.ctx.send(embed=embed)
+        max_attempts = 3
+        retry_delay_seconds = 1
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                if self.battle_message:
+                    await self.battle_message.edit(embed=embed)
+                else:
+                    self.battle_message = await self.ctx.send(embed=embed)
+                return True
+            except discord.NotFound:
+                # Message was deleted or invalid; recreate it on next attempt.
+                self.battle_message = None
+            except discord.Forbidden as exc:
+                # Missing permissions is not recoverable here; keep battle running.
+                print(f"[DragonBattle] update_display forbidden: {exc}")
+                return False
+            except discord.DiscordServerError as exc:
+                # Discord-side transient outage (e.g. 5xx) - retry.
+                if attempt < max_attempts:
+                    await asyncio.sleep(retry_delay_seconds * attempt)
+                    continue
+                print(f"[DragonBattle] update_display server error after retries: {exc}")
+                return False
+            except discord.HTTPException as exc:
+                status = getattr(exc, "status", None)
+                # Retry on transient upstream/network-side failures.
+                if status is not None and status >= 500 and attempt < max_attempts:
+                    await asyncio.sleep(retry_delay_seconds * attempt)
+                    continue
+                # Non-transient HTTP errors should not crash the entire battle.
+                print(f"[DragonBattle] update_display HTTP error (status={status}): {exc}")
+                return False
+
+        return False
             
     async def end_battle(self):
         """End the battle and determine outcome"""
