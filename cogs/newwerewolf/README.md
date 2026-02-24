@@ -9,8 +9,15 @@
 - `__init__.py`: `nww` command surface and lobby/start flow.
 - `core.py`: ported legacy multiplayer engine (`Game`, `Player`, role logic, day/night loop).
 - `engine.py`: compatibility shim exporting `NewWerewolfGame` as an alias to `core.Game`.
+- `role_config.py`: role availability configuration (global disable + per-mode allowlists).
 - `lobby.py`, `models.py`, `roles.py`, `role_pool.py`, `settings.py`: retained for compatibility/history.
 
 ## Scope
 - Multiplayer parity only.
 - Single-player is intentionally not wired through `nww`.
+
+## Role Availability
+- Edit `cogs/newwerewolf/role_config.py`.
+- `DISABLED_ROLES`: disable role tokens globally.
+- `ROLE_MODE_ALLOWLIST`: restrict role tokens to explicit modes.
+- `nww custom` validates requested roles against this config.

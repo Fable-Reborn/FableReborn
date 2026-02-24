@@ -24,20 +24,206 @@ from discord.enums import ButtonStyle
 from discord.ext import commands
 from discord.ui.button import Button
 
-from classes.converters import IntGreaterThan, WerewolfMode
+from classes.converters import IntGreaterThan
 from utils import random
 from utils.i18n import _, locale_doc
 from utils.joins import JoinView
 from .core import DESCRIPTIONS as ROLE_DESC
+from .core import ADVANCED_BASE_ROLE_BY_ADVANCED
+from .core import ADVANCED_ROLE_TIERS_BY_BASE
 from .core import Game
 from .core import Role as ROLES
+from .core import Side as WW_SIDE
 from .core import parse_custom_roles
+from .core import role_level_from_xp
 from .core import send_traceback
+from .core import unavailable_roles_for_mode
+from .role_config import (
+    MAX_ROLE_LEVEL,
+    ROLE_XP_PER_LEVEL,
+    ROLE_XP_CHANNEL_IDS,
+    ROLE_XP_LONER_WIN,
+    ROLE_XP_LOSS,
+    ROLE_XP_REQUIRE_GM_START,
+    ROLE_XP_WIN,
+    ROLE_XP_WIN_ALIVE,
+)
 
 class NewWerewolf(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.games = {}
+        self._role_xp_tables_ready = False
+        self._role_xp_table_lock = asyncio.Lock()
+        self.bot.loop.create_task(self._warm_role_xp_tables())
+
+    async def _warm_role_xp_tables(self) -> None:
+        try:
+            await self._ensure_role_xp_tables()
+        except Exception:
+            # Do not fail cog load on startup DB race; tables are retried on game start.
+            pass
+
+    async def _ensure_role_xp_tables(self) -> None:
+        if self._role_xp_tables_ready:
+            return
+        async with self._role_xp_table_lock:
+            if self._role_xp_tables_ready:
+                return
+            async with self.bot.pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS newwerewolf_role_xp (
+                        user_id bigint NOT NULL,
+                        role_name text NOT NULL,
+                        xp integer NOT NULL DEFAULT 0 CHECK (xp >= 0),
+                        updated_at timestamp with time zone NOT NULL DEFAULT now(),
+                        CONSTRAINT newwerewolf_role_xp_pk PRIMARY KEY (user_id, role_name)
+                    );
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS newwerewolf_role_xp_user_idx
+                    ON newwerewolf_role_xp (user_id);
+                    """
+                )
+            self._role_xp_tables_ready = True
+
+    async def _is_gm_user(self, user_id: int) -> bool:
+        config_gms = set(getattr(self.bot.config.game, "game_masters", []) or [])
+        if user_id in config_gms:
+            return True
+        try:
+            async with self.bot.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT 1 FROM game_masters WHERE user_id = $1",
+                    user_id,
+                )
+        except Exception:
+            return False
+        return row is not None
+
+    def _get_role_xp_channel_ids(self) -> set[int]:
+        configured_channel_ids = {int(channel_id) for channel_id in ROLE_XP_CHANNEL_IDS}
+        if configured_channel_ids:
+            return configured_channel_ids
+        official_channel = getattr(
+            self.bot.config.game,
+            "official_tournament_channel_id",
+            None,
+        )
+        if official_channel is None:
+            return set()
+        return {int(official_channel)}
+
+    async def _is_role_xp_eligible_match(self, ctx) -> bool:
+        channel_ids = self._get_role_xp_channel_ids()
+        if not channel_ids:
+            return False
+        if ctx.channel.id not in channel_ids:
+            return False
+        if ROLE_XP_REQUIRE_GM_START and not await self._is_gm_user(ctx.author.id):
+            return False
+        return True
+
+    async def _award_role_xp(self, game: Game, *, eligible: bool) -> None:
+        if not eligible:
+            return
+        if not hasattr(self.bot, "pool"):
+            return
+
+        updates: list[tuple[int, str, int]] = []
+        loner_win_sides = {
+            WW_SIDE.WHITE_WOLF,
+            WW_SIDE.FLUTIST,
+            WW_SIDE.SUPERSPREADER,
+            WW_SIDE.JESTER,
+            WW_SIDE.HEAD_HUNTER,
+        }
+        for player in game.players:
+            if not player.initial_roles:
+                role_for_xp = player.role
+            else:
+                role_for_xp = player.initial_roles[0]
+            if player.has_won:
+                if player.side in loner_win_sides:
+                    gained_xp = ROLE_XP_LONER_WIN
+                elif not player.dead:
+                    gained_xp = ROLE_XP_WIN_ALIVE
+                else:
+                    gained_xp = ROLE_XP_WIN
+            else:
+                gained_xp = ROLE_XP_LOSS
+            updates.append((player.user.id, role_for_xp.name.casefold(), gained_xp))
+
+        if not updates:
+            return
+
+        async with self.bot.pool.acquire() as conn:
+            await conn.executemany(
+                """
+                INSERT INTO newwerewolf_role_xp (user_id, role_name, xp)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (user_id, role_name)
+                DO UPDATE SET
+                    xp = newwerewolf_role_xp.xp + EXCLUDED.xp,
+                    updated_at = now()
+                """,
+                updates,
+            )
+
+        await game.ctx.send(_("📈 Role XP was granted for this GM game."))
+
+    @staticmethod
+    def _role_display_name(role: ROLES) -> str:
+        return role.name.title().replace("_", " ")
+
+    async def _fetch_user_role_xp_map(self, user_id: int) -> dict[str, int]:
+        if not hasattr(self.bot, "pool"):
+            return {}
+        try:
+            await self._ensure_role_xp_tables()
+        except Exception:
+            pass
+        try:
+            async with self.bot.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT role_name, xp
+                    FROM newwerewolf_role_xp
+                    WHERE user_id = $1
+                    """,
+                    user_id,
+                )
+        except Exception:
+            return {}
+
+        xp_map: dict[str, int] = {}
+        for row in rows:
+            role_name = str(row["role_name"]).strip().casefold()
+            try:
+                xp_value = max(0, int(row["xp"] or 0))
+            except (TypeError, ValueError):
+                continue
+            xp_map[role_name] = xp_value
+        return xp_map
+
+    @staticmethod
+    def _chunk_lines(lines: list[str], *, max_chars: int = 3800) -> list[str]:
+        chunks: list[str] = []
+        current: list[str] = []
+        current_len = 0
+        for line in lines:
+            if current and current_len + len(line) + 1 > max_chars:
+                chunks.append("\n".join(current))
+                current = []
+                current_len = 0
+            current.append(line)
+            current_len += len(line) + 1
+        if current:
+            chunks.append("\n".join(current))
+        return chunks
 
     async def _start_multiplayer_game(
         self,
@@ -61,6 +247,12 @@ class NewWerewolf(commands.Cog):
                 ).format(prefix=ctx.clean_prefix)
             )
             return
+
+        try:
+            await self._ensure_role_xp_tables()
+        except Exception:
+            # Progression DB failures should not block playing the game.
+            pass
 
         self.games[ctx.channel.id] = "forming"
 
@@ -186,11 +378,13 @@ class NewWerewolf(commands.Cog):
                 )
                 return
 
+        role_xp_eligible = await self._is_role_xp_eligible_match(ctx)
         players = random.shuffle(players)
         try:
             game = Game(ctx, players, mode, speed, custom_roles=custom_roles)
             self.games[ctx.channel.id] = game
             await game.run()
+            await self._award_role_xp(game, eligible=role_xp_eligible)
         except Exception as e:
             await send_traceback(ctx, e)
             del self.games[ctx.channel.id]
@@ -211,7 +405,7 @@ class NewWerewolf(commands.Cog):
     async def newwerewolf(
         self,
         ctx,
-        mode: WerewolfMode | None = "Classic",
+        mode: str.title | None = "Classic",
         speed: str.title = "Normal",
         min_players: IntGreaterThan(1) = None,
     ):
@@ -247,6 +441,7 @@ class NewWerewolf(commands.Cog):
             "Valentines",
             "Idlerpg",
         ]
+        game_speeds = ["Normal", "Extended", "Fast", "Blitz"]
         minimum_players = {
             "Classic": 5,
             "Imbalanced": 5,
@@ -256,23 +451,43 @@ class NewWerewolf(commands.Cog):
             "IdleRPG": 5,
         }
 
-        if mode not in game_modes:
+        mode_token = str(mode or "Classic").strip().title()
+        speed_token = str(speed or "Normal").strip().title()
+
+        # Support shorthand like `nww Blitz` and keep roster behavior tied to mode.
+        # Blitz/Fast/Extended/Normal are speeds, not separate role rosters.
+        if mode_token in game_speeds:
+            inferred_speed = mode_token
+            inferred_mode = "Classic"
+            if speed_token in game_modes:
+                inferred_mode = speed_token
+            elif speed_token.isdigit() and min_players is None:
+                parsed_min_players = int(speed_token)
+                if parsed_min_players <= 1:
+                    return await ctx.send(
+                        _("Minimum players must be greater than 1.")
+                    )
+                min_players = parsed_min_players
+            mode_token = inferred_mode
+            speed_token = inferred_speed
+
+        if mode_token not in game_modes:
             return await ctx.send(
                 _(
                     "Invalid game mode. Use `{prefix}help nww` to get help on this"
                     " command."
                 ).format(prefix=ctx.clean_prefix)
             )
-        if mode == "Idlerpg":
-            mode = "IdleRPG"
+        if mode_token == "Idlerpg":
+            mode_token = "IdleRPG"
 
         if not min_players:
-            min_players = minimum_players.get(mode, 5)
+            min_players = minimum_players.get(mode_token, 5)
 
         await self._start_multiplayer_game(
             ctx,
-            mode=mode,
-            speed=speed,
+            mode=mode_token,
+            speed=speed_token,
             min_players=min_players,
         )
 
@@ -313,6 +528,25 @@ class NewWerewolf(commands.Cog):
                     " custom witch, werewolf, jester`"
                 ).format(prefix=ctx.clean_prefix)
             )
+        unavailable = unavailable_roles_for_mode(parsed_roles, "Custom")
+        if unavailable:
+            unique_unavailable: list[ROLES] = []
+            seen: set[ROLES] = set()
+            for role in unavailable:
+                if role in seen:
+                    continue
+                seen.add(role)
+                unique_unavailable.append(role)
+            unavailable_display = ", ".join(
+                f"`{role.name.replace('_', ' ').title()}`" for role in unique_unavailable
+            )
+            return await ctx.send(
+                _(
+                    "These roles are disabled or not allowed in **Custom** mode:"
+                    " {roles}\nEdit `cogs/newwerewolf/role_config.py` to change role"
+                    " availability."
+                ).format(roles=unavailable_display)
+            )
 
         await self._start_multiplayer_game(
             ctx,
@@ -337,7 +571,7 @@ class NewWerewolf(commands.Cog):
 `Huntergame`: Only Hunters and Werewolves are available.
 `Villagergame`: No special roles, only Villagers and Werewolves are available.
 `Valentines`: There are multiple lovers or couples randomly chosen at the start of the game. A chain of lovers might exist upon the Amor's arrows. If the remaining players are in a single chain of lovers, they all win.
-`IdleRPG`: (based on Imbalanced mode) New roles are available: Paragon, Raider, Ritualist, Lawyer, Troublemaker, War Veteran, Wolf Shaman, Wolf Necromancer, Superspreader.
+`IdleRPG`: (based on Imbalanced mode) New roles are available: Paragon, Raider, Lawyer, Troublemaker, War Veteran, Wolf Shaman, Wolf Necromancer, Alpha Werewolf, Guardian Wolf, Superspreader, Red Lady, Priest, Pacifist, Grumpy Grandma, Nightmare Werewolf. (`Ritualist`, `Ghost Lady`, `Marksman`, `Forger`, `Serial Killer`, `Cannibal`, `Wolf Summoner`, `Sorcerer`, and `Voodoo Werewolf` are advanced unlocks.)
 `Custom`: Use `{prefix}nww custom <role1, role2, ...>` to seed exact roles (duplicates allowed). Remaining slots are filled with normal balance."""
                 ).format(prefix=ctx.clean_prefix),
                 colour=self.bot.config.game.primary_colour,
@@ -357,7 +591,8 @@ class NewWerewolf(commands.Cog):
 `Normal`: All major action timers are limited to 60 seconds and number of days to play is unlimited.
 `Extended`: All major action timers are limited to 90 seconds and number of days to play is unlimited.
 `Fast`: All major action timers are limited to 45 seconds and number of days to play is dependent on the number of players plus 3 days. This means not killing anyone every night or every election will likely end the game with no winners.
-`Blitz`: Warning: This is a faster game speed suitable for experienced players. All action timers are limited to 30 seconds and number of days to play is dependent on the number of players plus 3 days. This means not killing anyone every night or every election will likely end the game with no winners."""
+`Blitz`: Warning: This is a faster game speed suitable for experienced players. All action timers are limited to 30 seconds and number of days to play is dependent on the number of players plus 3 days. This means not killing anyone every night or every election will likely end the game with no winners.
+`Note`: Speed does not change the role roster. `Blitz` uses the same roster as the selected mode (for example, `Classic` roster on `Blitz`)."""
                 ),
                 colour=self.bot.config.game.primary_colour,
             ).set_author(name=str(ctx.author), icon_url=ctx.author.display_avatar.url)
@@ -435,6 +670,184 @@ class NewWerewolf(commands.Cog):
                         )
                     )
 
+    @newwerewolf.command(
+        name="progress",
+        aliases=["xp", "levels"],
+        brief=_("View role XP and advanced unlock progress"),
+    )
+    @locale_doc
+    async def progress(self, ctx, *, role: str = None):
+        _(
+            """View your NewWerewolf role XP progress and advanced unlock status.
+
+            `{prefix}nww progress`
+            `{prefix}nww progress bodyguard`
+            """
+        )
+        if not hasattr(self.bot, "pool"):
+            return await ctx.send(
+                _("Role XP is unavailable right now (no database connection).")
+            )
+
+        xp_map = await self._fetch_user_role_xp_map(ctx.author.id)
+        base_roles = sorted(
+            ADVANCED_ROLE_TIERS_BY_BASE.keys(),
+            key=lambda role_obj: self._role_display_name(role_obj).lower(),
+        )
+        if not base_roles:
+            return await ctx.send(_("No advanced role progression is configured yet."))
+
+        if role is not None:
+            parsed_roles, invalid_tokens = parse_custom_roles(role)
+            if invalid_tokens or not parsed_roles:
+                return await ctx.send(
+                    _(
+                        "I couldn't recognize that role. Use `{prefix}nww roles` to"
+                        " see valid role names."
+                    ).format(prefix=ctx.clean_prefix)
+                )
+            if len(parsed_roles) != 1:
+                return await ctx.send(_("Please specify exactly one role."))
+
+            requested_role = parsed_roles[0]
+            base_role = ADVANCED_BASE_ROLE_BY_ADVANCED.get(requested_role, requested_role)
+            if base_role not in ADVANCED_ROLE_TIERS_BY_BASE:
+                return await ctx.send(
+                    _("**{role}** has no advanced unlock path configured.").format(
+                        role=self._role_display_name(base_role)
+                    )
+                )
+
+            base_role_name = self._role_display_name(base_role)
+            xp = xp_map.get(base_role.name.casefold(), 0)
+            level = role_level_from_xp(xp)
+            max_level = max(1, int(MAX_ROLE_LEVEL))
+            xp_per_level = max(1, int(ROLE_XP_PER_LEVEL))
+            if level >= max_level:
+                next_level_text = _("Max level reached.")
+            else:
+                xp_target = level * xp_per_level
+                xp_to_next = max(0, xp_target - xp)
+                next_level_text = _("{xp} XP to level {level}.").format(
+                    xp=xp_to_next, level=level + 1
+                )
+
+            unlock_tiers = sorted(
+                ADVANCED_ROLE_TIERS_BY_BASE.get(base_role, {}).items(),
+                key=lambda pair: pair[0],
+            )
+            unlock_lines = []
+            for unlock_level, advanced_role in unlock_tiers:
+                status = _("Unlocked") if level >= unlock_level else _("Locked")
+                unlock_lines.append(
+                    _("Lv {level}: {role} - {status}").format(
+                        level=unlock_level,
+                        role=self._role_display_name(advanced_role),
+                        status=status,
+                    )
+                )
+
+            embed = discord.Embed(
+                title=_("NewWerewolf Progress"),
+                colour=self.bot.config.game.primary_colour,
+            ).set_author(name=str(ctx.author), icon_url=ctx.author.display_avatar.url)
+            if requested_role != base_role:
+                embed.description = _(
+                    "Showing base-role progression for **{base}** (requested role:"
+                    " **{requested}**)."
+                ).format(
+                    base=base_role_name,
+                    requested=self._role_display_name(requested_role),
+                )
+            else:
+                embed.description = _("Showing progression for **{role}**.").format(
+                    role=base_role_name
+                )
+            embed.add_field(
+                name=_("XP"),
+                value=_("{xp} XP | Level {level}/{max_level}").format(
+                    xp=xp, level=level, max_level=max_level
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name=_("Next Level"),
+                value=next_level_text,
+                inline=False,
+            )
+            embed.add_field(
+                name=_("Advanced Unlocks"),
+                value="\n".join(unlock_lines) if unlock_lines else _("None"),
+                inline=False,
+            )
+            return await ctx.send(embed=embed)
+
+        summary_lines: list[str] = []
+        for base_role in base_roles:
+            role_name = self._role_display_name(base_role)
+            xp = xp_map.get(base_role.name.casefold(), 0)
+            level = role_level_from_xp(xp)
+            unlock_tiers = sorted(
+                ADVANCED_ROLE_TIERS_BY_BASE.get(base_role, {}).items(),
+                key=lambda pair: pair[0],
+            )
+            unlocked_roles = [
+                self._role_display_name(advanced_role)
+                for unlock_level, advanced_role in unlock_tiers
+                if level >= unlock_level
+            ]
+            next_unlock = next(
+                (
+                    (unlock_level, advanced_role)
+                    for unlock_level, advanced_role in unlock_tiers
+                    if level < unlock_level
+                ),
+                None,
+            )
+            unlocked_label = (
+                ", ".join(unlocked_roles) if unlocked_roles else _("none")
+            )
+            if next_unlock is None:
+                next_label = _("All unlock tiers reached")
+            else:
+                next_label = _("Lv {level} {role}").format(
+                    level=next_unlock[0],
+                    role=self._role_display_name(next_unlock[1]),
+                )
+            summary_lines.append(
+                _(
+                    "`{role}` - Lv {level} ({xp} XP) | Unlocked: {unlocked} | Next:"
+                    " {next_unlock}"
+                ).format(
+                    role=role_name,
+                    level=level,
+                    xp=xp,
+                    unlocked=unlocked_label,
+                    next_unlock=next_label,
+                )
+            )
+
+        chunks = self._chunk_lines(summary_lines)
+        embeds = []
+        for idx, chunk in enumerate(chunks, start=1):
+            embed = discord.Embed(
+                title=_("NewWerewolf Progress"),
+                description=chunk,
+                colour=self.bot.config.game.primary_colour,
+            ).set_author(name=str(ctx.author), icon_url=ctx.author.display_avatar.url)
+            embed.set_footer(
+                text=_("Page {page}/{total} | Use `{prefix}nww progress <role>` for details").format(
+                    page=idx,
+                    total=len(chunks),
+                    prefix=ctx.clean_prefix,
+                )
+            )
+            embeds.append(embed)
+
+        if len(embeds) == 1:
+            return await ctx.send(embed=embeds[0])
+        return await self.bot.paginator.Paginator(extras=embeds).paginate(ctx)
+
     @newwerewolf.command(brief=_("View descriptions of game roles"))
     @locale_doc
     async def roles(self, ctx, *, role=None):
@@ -449,21 +862,37 @@ class NewWerewolf(commands.Cog):
             {
                 "side": _("The Werewolves"),
                 "members": (
-                    "Werewolf, Junior Werewolf, Wolf Seer, White Wolf, Cursed Wolf"
+                    "Werewolf, Junior Werewolf, Wolf Seer, Sorcerer - Advanced"
+                    " unlock, White Wolf, Cursed Wolf"
                     " Father, Big Bad Wolf, Wolf"
-                    f" Shaman - {restriction}, Wolf Necromancer - {restriction}"
+                    f" Shaman - {restriction}, Wolf Necromancer - {restriction},"
+                    f" Alpha Werewolf - {restriction}, Wolf Summoner - Advanced unlock,"
+                    " Wolf Trickster - Advanced unlock,"
+                    f" Guardian Wolf - {restriction}, Nightmare Werewolf - {restriction},"
+                    " Voodoo Werewolf - Advanced unlock, Wolf Pacifist - Advanced"
+                    " unlock"
                 ),
                 "goal": _("Must eliminate all other villagers"),
             },
             {
                 "side": _("The Villagers"),
                 "members": (
-                    "Villager, Cursed, Pure Soul, Flower Child, Seer, Aura Seer, Witch,"
+                    "Villager, Cursed, Pure Soul, Flower Child, Seer, Aura Seer,"
+                    " Gambler - Advanced unlock, Witch,"
+                    " Forger - Advanced unlock,"
                     " Doctor, Bodyguard, Sheriff, Jailer, Medium, Loudmouth, Avenger,"
-                    " Healer, Amor, Knight, Fortune Teller, Hunter - Huntergame only,"
+                    f" Red Lady - {restriction}, Ghost Lady - Advanced unlock, Priest - {restriction}, Marksman - Advanced unlock, Pacifist -"
+                    f" {restriction}, Grumpy Grandma - {restriction}, Detective,"
+                    " Mortician - Advanced unlock, Warden -"
+                    " Advanced unlock, Seer Apprentice - Advanced unlock, Tough Guy -"
+                    " Advanced unlock,"
+                    " Healer, Amor,"
+                    " Knight, Fortune Teller, Hunter -"
+                    " Huntergame only,"
                     f" Sister, Brother, The Old, Fox, Judge, Paragon - {restriction},"
-                    f" Ritualist - {restriction}, Troublemaker - {restriction}, Lawyer"
-                    f" - {restriction}, War Veteran - {restriction}"
+                    " Ritualist - Advanced unlock,"
+                    f" Troublemaker - {restriction}, Lawyer - {restriction},"
+                    f" War Veteran - {restriction}"
                 ),
                 "goal": _("Must find and eliminate the werewolves"),
             },
@@ -482,7 +911,9 @@ class NewWerewolf(commands.Cog):
                     f" {_('Infect all the players with your virus')} {restriction},"
                     f" Jester -"
                     f" {_('Die to win')}, Head Hunter -"
-                    f" {_('Get your assigned target lynched')}"
+                    f" {_('Get your assigned target lynched')},"
+                    f" Serial Killer - {_('Be the sole survivor')} (Advanced unlock),"
+                    f" Cannibal - {_('Be the sole survivor')} (Advanced unlock)"
                 ),
                 "goal": _("Must complete their own objective"),
             },

@@ -15,9 +15,12 @@ MODULE_FUNCTIONS = [
     "max_special_wolves_for_player_count",
     "cap_special_werewolves",
     "enforce_wolf_ratio",
+    "force_role",
+]
+
+CONFIG_EXTENDED_FUNCTIONS = [
     "get_roles",
     "get_custom_roles",
-    "force_role",
 ]
 
 GAME_METHODS = [
@@ -104,6 +107,21 @@ def main() -> int:
         all_ok = _compare_and_report(
             f"function::{function_name}", legacy_fn, new_fn
         ) and all_ok
+
+    for function_name in CONFIG_EXTENDED_FUNCTIONS:
+        legacy_fn = _get_module_function_source(
+            legacy_tree, legacy_source, function_name
+        )
+        new_fn = _get_module_function_source(new_tree, new_source, function_name)
+        if legacy_fn is None or new_fn is None:
+            print(f"[MISSING] function {function_name}")
+            all_ok = False
+            continue
+        if "_apply_role_availability(" in new_fn:
+            print(f"[OK] function::{function_name} (config-extended)")
+        else:
+            print(f"[DIFF] function::{function_name} missing config extension")
+            all_ok = False
 
     for method_name in GAME_METHODS:
         legacy_method = _get_class_method_source(
