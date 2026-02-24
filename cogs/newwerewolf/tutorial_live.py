@@ -7,7 +7,6 @@ from utils import random
 from utils.i18n import _
 from .core import Game
 from .core import Role
-from .core import side_from_role
 
 
 TRACK_ROLES: dict[str, list[Role]] = {
@@ -143,7 +142,6 @@ class TutorialGame(Game):
         role_plan = TRACK_ROLES.get(track, TRACK_ROLES["generic"])
         for player, role in zip(self.players, role_plan):
             player.role = role
-            player.side = side_from_role(role)
             player.initial_roles = [role]
             player.lives = 2 if role == Role.THE_OLD else 1
             player.dead = False
