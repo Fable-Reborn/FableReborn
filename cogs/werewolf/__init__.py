@@ -339,7 +339,7 @@ class Werewolf(commands.Cog):
             ctx,
             mode="Custom",
             speed="Normal",
-            min_players=5,
+            min_players=3,
             custom_roles=parsed_roles,
         )
 
