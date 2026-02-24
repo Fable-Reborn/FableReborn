@@ -99,6 +99,16 @@ def _interaction_allowed_for_view(
     return False
 
 
+def _safe_select_placeholder(text: str | None) -> str:
+    # Discord select placeholders are limited to 150 characters.
+    if text is None:
+        return "Choose an option"
+    value = str(text).strip()
+    if not value:
+        return "Choose an option"
+    return value[:150]
+
+
 class TextPaginator:
     __slots__ = ("ctx", "reactions", "_paginator", "current", "message", "update_lock")
 
@@ -532,7 +542,7 @@ class ChoosePaginator:
     ):
         self.extras = extras
         self.entries = entries
-        self.placeholder = placeholder or title
+        self.placeholder = _safe_select_placeholder(placeholder or title)
         self.title = title
         self.footer = footer
         self.choices = choices or entries
@@ -670,7 +680,7 @@ class Choose:
         return_index: bool = False,
     ):
         self.entries = entries
-        self.placeholder = placeholder or title
+        self.placeholder = _safe_select_placeholder(placeholder or title)
         self.choices = choices if choices is not None else entries
         self.title = title
         self.footer = footer
