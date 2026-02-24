@@ -1225,8 +1225,11 @@ class SimpleBattle(discord.ext.commands.Cog):
         if (force_new or
                 not battle_ctx["current_battle_message"] or
                 battle_ctx["message_counter"] >= 3 or
-                len((battle_ctx["current_content"] + "\n\n" + new_content) if battle_ctx[
-                    "current_content"] else new_content) > 1800):
+                self._discord_content_length(
+                    (battle_ctx["current_content"] + "\n\n" + new_content)
+                    if battle_ctx["current_content"]
+                    else new_content
+                ) > 1800):
 
             # Create a new message
             battle_ctx["current_content"] = new_content
@@ -1240,6 +1243,27 @@ class SimpleBattle(discord.ext.commands.Cog):
             battle_ctx["message_counter"] += 1
 
         return battle_ctx["current_battle_message"]
+
+    def _discord_content_length(self, text: str) -> int:
+        """Return Discord message length in UTF-16 code units."""
+        return len(text.encode("utf-16-le")) // 2
+
+    def _truncate_to_discord_limit(self, text: str, limit: int) -> str:
+        """Trim text so its Discord UTF-16 length does not exceed `limit`."""
+        if limit <= 0:
+            return ""
+        if self._discord_content_length(text) <= limit:
+            return text
+
+        low = 0
+        high = len(text)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if self._discord_content_length(text[:mid]) <= limit:
+                low = mid
+            else:
+                high = mid - 1
+        return text[:low]
 
     async def get_weapon_info(self, ctx, user_id) -> Dict:
         """Get the weapon information of a user based on their equipped items."""
@@ -1356,68 +1380,115 @@ class SimpleBattle(discord.ext.commands.Cog):
             battle_ctx["phase_messages"] = {}
             battle_ctx["phase_contents"] = {}
 
-        # Create phase header
-        header = f"⚔️ == {phase_name} == ⚔️"
-        continuation_header = f"{header} (cont.)"
         max_content_len = 1900
 
         # If we need to create a new phase message
         if force_new or phase_name not in battle_ctx["phase_messages"]:
             if new_content:
-                first_limit = max_content_len - len(header) - 1
+                first_limit = max_content_len
                 chunks = self._split_text_for_discord(new_content, first_limit)
-                content = f"{header}\n{chunks[0]}"
-                last_message = await ctx.send(content)
+                phase_embed = self._build_phase_embed(phase_name)
+                last_message = await ctx.send(chunks[0], embed=phase_embed)
                 battle_ctx["phase_messages"][phase_name] = last_message
-                battle_ctx["phase_contents"][phase_name] = content
+                battle_ctx["phase_contents"][phase_name] = chunks[0]
 
                 for extra_chunk in chunks[1:]:
-                    extra_content = f"{continuation_header}\n{extra_chunk}"
-                    last_message = await ctx.send(extra_content)
+                    last_message = await ctx.send(extra_chunk)
                     battle_ctx["phase_messages"][phase_name] = last_message
-                    battle_ctx["phase_contents"][phase_name] = extra_content
+                    battle_ctx["phase_contents"][phase_name] = extra_chunk
             else:
-                content = header
-                battle_ctx["phase_messages"][phase_name] = await ctx.send(content)
-                battle_ctx["phase_contents"][phase_name] = content
+                phase_embed = self._build_phase_embed(phase_name)
+                battle_ctx["phase_messages"][phase_name] = await ctx.send(embed=phase_embed)
+                battle_ctx["phase_contents"][phase_name] = ""
 
         # If we're editing an existing phase message
         elif edit and new_content:
             # Update content for this phase
             if phase_name not in battle_ctx["phase_contents"]:
-                battle_ctx["phase_contents"][phase_name] = header
+                battle_ctx["phase_contents"][phase_name] = ""
 
-            updated_content = battle_ctx["phase_contents"][phase_name] + f"\n{new_content}"
-            if len(updated_content) <= max_content_len:
+            previous_content = battle_ctx["phase_contents"][phase_name]
+            updated_content = (
+                f"{previous_content}\n{new_content}" if previous_content else new_content
+            )
+            if self._discord_content_length(updated_content) <= max_content_len:
                 battle_ctx["phase_contents"][phase_name] = updated_content
                 await battle_ctx["phase_messages"][phase_name].edit(content=updated_content)
             else:
                 # Start continuation messages when we hit Discord's 2000-char limit.
-                chunk_limit = max_content_len - len(continuation_header) - 1
+                chunk_limit = max_content_len
                 chunks = self._split_text_for_discord(new_content, chunk_limit)
 
-                first_content = f"{continuation_header}\n{chunks[0]}"
-                last_message = await ctx.send(first_content)
+                last_message = await ctx.send(chunks[0])
                 battle_ctx["phase_messages"][phase_name] = last_message
-                battle_ctx["phase_contents"][phase_name] = first_content
+                battle_ctx["phase_contents"][phase_name] = chunks[0]
 
                 for extra_chunk in chunks[1:]:
-                    extra_content = f"{continuation_header}\n{extra_chunk}"
-                    last_message = await ctx.send(extra_content)
+                    last_message = await ctx.send(extra_chunk)
                     battle_ctx["phase_messages"][phase_name] = last_message
-                    battle_ctx["phase_contents"][phase_name] = extra_content
+                    battle_ctx["phase_contents"][phase_name] = extra_chunk
 
         return battle_ctx["phase_messages"][phase_name]
 
-    def _format_endurance_bar(self, current: float, maximum: float, length: int = 12) -> str:
-        """Create a compact text bar for battle status updates."""
+    def _build_phase_embed(self, phase_name: str) -> discord.Embed:
+        """Create a compact embed for phase transitions."""
+        phase_colors = {
+            "PREPARATION PHASE": discord.Color.blue(),
+            "BATTLE BEGINS": discord.Color.red(),
+            "DECISIVE MOMENT": discord.Color.orange(),
+            "EMPEROR'S JUDGMENT": discord.Color.gold(),
+            "BATTLE CONCLUSION": discord.Color.green(),
+        }
+        phase_descriptions = {
+            "PREPARATION PHASE": "Weapons drawn. Stakes set. The crowd leans in.",
+            "BATTLE BEGINS": "Steel meets steel. The arena decides who bends first.",
+            "DECISIVE MOMENT": "One opening. One mistake. One winner.",
+            "EMPEROR'S JUDGMENT": "All eyes on the imperial verdict.",
+            "BATTLE CONCLUSION": "The sand settles. Glory is counted.",
+        }
+        return discord.Embed(
+            title=phase_name,
+            description=phase_descriptions.get(phase_name, "The fight evolves."),
+            color=phase_colors.get(phase_name, discord.Color.dark_grey()),
+        )
+
+    def _build_beat_embed(self, beat_key: str, beat_label: str, crowd_heat: int) -> discord.Embed:
+        """Create a beat-transition embed for opening/pressure/climax."""
+        beat_colors = {
+            "opening": discord.Color.dark_teal(),
+            "pressure": discord.Color.orange(),
+            "climax": discord.Color.dark_red(),
+        }
+        return discord.Embed(
+            title=beat_label,
+            description=f"Crowd Heat: **{crowd_heat}/100**",
+            color=beat_colors.get(beat_key, discord.Color.dark_grey()),
+        )
+
+    def _format_endurance_bar(self, current: float, maximum: float, length: int = 20) -> str:
+        """Create a raid-style endurance bar."""
         if maximum <= 0:
-            return "[" + ("-" * length) + "]"
+            return "░" * length
 
         ratio = max(0.0, min(1.0, current / maximum))
         filled = int(round(ratio * length))
         filled = max(0, min(length, filled))
-        return "[" + ("#" * filled) + ("-" * (length - filled)) + "]"
+        return ("█" * filled) + ("░" * (length - filled))
+
+    def _format_endurance_snapshot(
+        self,
+        p1_name: str,
+        p1_current: float,
+        p1_max: float,
+        p2_name: str,
+        p2_current: float,
+        p2_max: float,
+    ) -> str:
+        """Create a two-line endurance snapshot for both fighters."""
+        return (
+            f"{p1_name}: {self._format_endurance_bar(p1_current, p1_max)} {p1_current:.0f}/{p1_max:.0f}\n"
+            f"{p2_name}: {self._format_endurance_bar(p2_current, p2_max)} {p2_current:.0f}/{p2_max:.0f}"
+        )
 
     def _determine_fighter_style(self, total_stats: float, weapon_info: Dict, god_name: Optional[str]) -> str:
         """Assign a fighter archetype to shape automated pacing and narration."""
@@ -1530,31 +1601,33 @@ class SimpleBattle(discord.ext.commands.Cog):
 
     def _split_text_for_discord(self, text: str, limit: int = 1900) -> List[str]:
         """Split long text into safe Discord-sized chunks."""
-        if len(text) <= limit:
+        if limit <= 0:
+            return [""]
+        if self._discord_content_length(text) <= limit:
             return [text]
 
         chunks = []
         remaining = text
         while remaining:
-            if len(remaining) <= limit:
+            if self._discord_content_length(remaining) <= limit:
                 chunks.append(remaining)
                 break
 
-            split_at = remaining.rfind("\n", 0, limit)
-            if split_at == -1:
-                split_at = remaining.rfind(" ", 0, limit)
-            if split_at == -1:
-                split_at = limit
+            safe_slice = self._truncate_to_discord_limit(remaining, limit)
+            if not safe_slice:
+                break
 
-            chunk = remaining[:split_at].rstrip()
+            split_at = safe_slice.rfind("\n")
+            if split_at == -1:
+                split_at = safe_slice.rfind(" ")
+            chunk = safe_slice[:split_at].rstrip() if split_at > 0 else safe_slice
             if not chunk:
-                chunk = remaining[:limit]
-                split_at = limit
+                chunk = safe_slice
 
             chunks.append(chunk)
-            remaining = remaining[split_at:].lstrip()
+            remaining = remaining[len(chunk):].lstrip()
 
-        return chunks
+        return chunks if chunks else [self._truncate_to_discord_limit(text, limit)]
 
     @has_char()
     @user_cooldown(90)
@@ -1624,21 +1697,21 @@ class SimpleBattle(discord.ext.commands.Cog):
             # Create battle invitation message
             if not enemy:
                 if money > 0:
-                    text = _("⚔️ {author} steps up to the arena gates seeking glory! The prize: **${money}**.").format(
+                    text = _("{author} steps up to the arena gates seeking glory! The prize: **${money}**.").format(
                         author=ctx.author.mention, money=money
                     )
                 else:
-                    text = _("⚔️ {author} steps up to the arena gates seeking glory and honor!").format(
+                    text = _("{author} steps up to the arena gates seeking glory and honor!").format(
                         author=ctx.author.mention
                     )
             else:
                 if money > 0:
                     text = _(
-                        "⚔️ {author} calls out {enemy} before the arena master! The stakes: **${money}**."
+                        "{author} calls out {enemy} before the arena master! The stakes: **${money}**."
                     ).format(author=ctx.author.mention, enemy=enemy.mention, money=money)
                 else:
                     text = _(
-                        "⚔️ {author} calls out {enemy} before the arena master!"
+                        "{author} calls out {enemy} before the arena master!"
                     ).format(author=ctx.author.mention, enemy=enemy.mention)
 
             # Check if joining player has enough money
@@ -1759,7 +1832,7 @@ class SimpleBattle(discord.ext.commands.Cog):
 
             # Create battle embed
             battle_embed = discord.Embed(
-                title=f"⚔️ ARENA BATTLE - {arena_theme['name']} ⚔️",
+                title=f"ARENA BATTLE - {arena_theme['name']}",
                 description=intro,
                 color=0xe74c3c
             )
@@ -1869,52 +1942,52 @@ class SimpleBattle(discord.ext.commands.Cog):
             # ========== PREPARATION PHASE ==========
             # Create a separate message for the preparation phase
             await self.manage_phase_message(ctx, battle_id, "PREPARATION PHASE")
-            await asyncio.sleep(2)  # Pause after section header
+            await asyncio.sleep(1.5)  # Pause after section header
             
             # Create pre-battle atmosphere with arena announcements
             atmosphere = random.choice(announcer_lines)
-            await self.manage_phase_message(ctx, battle_id, "PREPARATION PHASE", f"🏟️ **Arena Atmosphere:** {atmosphere}", edit=True)
-            await asyncio.sleep(4)
+            await self.manage_phase_message(ctx, battle_id, "PREPARATION PHASE", f"**Arena Atmosphere:** {atmosphere}", edit=True)
+            await asyncio.sleep(2.5)
 
             await self.manage_phase_message(
                 ctx,
                 battle_id,
                 "PREPARATION PHASE",
-                f"🎭 **Style Clash:** {ctx.author.display_name} enters as a **{player_style_profiles[0]['name']}**, while {enemy_.display_name} fights like a **{player_style_profiles[1]['name']}**.",
+                f"**Style Clash:** {ctx.author.display_name} enters as a **{player_style_profiles[0]['name']}**, while {enemy_.display_name} fights like a **{player_style_profiles[1]['name']}**.",
                 edit=True
             )
-            await asyncio.sleep(3)
+            await asyncio.sleep(2)
 
             await self.manage_phase_message(
                 ctx,
                 battle_id,
                 "PREPARATION PHASE",
-                f"📜 **Rivalry Ledger:** {rivalry_line}",
+                f"**Rivalry Ledger:** {rivalry_line}",
                 edit=True
             )
-            await asyncio.sleep(3)
+            await asyncio.sleep(2)
             
             # Send entrance messages
             p1_entrance = random.choice(p1_entrance_options)
-            await self.manage_phase_message(ctx, battle_id, "PREPARATION PHASE", f"🥇 **Challenger:** {p1_entrance}", edit=True)
-            await asyncio.sleep(4)
+            await self.manage_phase_message(ctx, battle_id, "PREPARATION PHASE", f"**Challenger:** {p1_entrance}", edit=True)
+            await asyncio.sleep(2.5)
             
             p2_entrance = random.choice(p2_entrance_options)
-            await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"🥈 **Opponent:** {p2_entrance}", edit=True)
-            await asyncio.sleep(4)
+            await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"**Opponent:** {p2_entrance}", edit=True)
+            await asyncio.sleep(2.5)
             
             # Announcer introduces the fighters formally
             formal_intro = random.choice(announcer_intros)
-            await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"📣 **Arena Master:** {formal_intro}", edit=True)
-            await asyncio.sleep(4)
+            await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"**Arena Master:** {formal_intro}", edit=True)
+            await asyncio.sleep(2.5)
             
             # Add a Fablelands reference
             fablelands_ref = random.choice(self.commentaries["fablelands_references"]).format(
                 p1=ctx.author.display_name,
                 p2=enemy_.display_name
             )
-            await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"🌍 **Fablelands Lore:** {fablelands_ref}", edit=True)
-            await asyncio.sleep(4)
+            await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"**Fablelands Lore:** {fablelands_ref}", edit=True)
+            await asyncio.sleep(2.5)
             
             # Show weapon style commentary for each player
             if p1_weapon_info["handed"] == 2:
@@ -1922,26 +1995,26 @@ class SimpleBattle(discord.ext.commands.Cog):
                     player=ctx.author.display_name,
                     weapon=p1_weapon_info["type"]
                 )
-                await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"🗡️ **Weapon Style:** {style_comment}", edit=True)
+                await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"**Weapon Style:** {style_comment}", edit=True)
             elif p1_weapon_info["style"] == "shield":
                 style_comment = random.choice(self.commentaries["shield_comments"]).format(
                     player=ctx.author.display_name
                 )
-                await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"🛡️ **Shield Style:** {style_comment}", edit=True)
-            await asyncio.sleep(4)
+                await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"**Shield Style:** {style_comment}", edit=True)
+            await asyncio.sleep(2.5)
             
             if p2_weapon_info["handed"] == 2:
                 style_comment = random.choice(self.commentaries["two_handed_comments"]).format(
                     player=enemy_.display_name,
                     weapon=p2_weapon_info["type"]
                 )
-                await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"🗡️ **Weapon Style:** {style_comment}", edit=True)
+                await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"**Weapon Style:** {style_comment}", edit=True)
             elif p2_weapon_info["style"] == "shield":
                 style_comment = random.choice(self.commentaries["shield_comments"]).format(
                     player=enemy_.display_name
                 )
-                await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"🛡️ **Shield Style:** {style_comment}", edit=True)
-            await asyncio.sleep(4)
+                await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"**Shield Style:** {style_comment}", edit=True)
+            await asyncio.sleep(2.5)
             
             # Show weapon advantage if there is one
             if advantage != 0:
@@ -1953,7 +2026,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                         weapon2=p2_weapon_info["name"],
                         god=p1_god_display
                     )
-                    await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"⚡ **Tactical Advantage:** {advantage_text}", edit=True)
+                    await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"**Tactical Advantage:** {advantage_text}", edit=True)
                 else:
                     advantage_text = random.choice(self.commentaries["advantages"]).format(
                         p1=enemy_.display_name, 
@@ -1962,8 +2035,8 @@ class SimpleBattle(discord.ext.commands.Cog):
                         weapon2=p1_weapon_info["name"],
                         god=p2_god_display
                     )
-                    await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"⚡ **Tactical Advantage:** {advantage_text}", edit=True)
-                await asyncio.sleep(4)
+                    await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"**Tactical Advantage:** {advantage_text}", edit=True)
+                await asyncio.sleep(2.5)
 
             # Check if there's a significant difference in base stats
             # Get the base stats including 2-handed bonuses but before weapon advantages
@@ -2034,14 +2107,15 @@ class SimpleBattle(discord.ext.commands.Cog):
                 courage_message = random.choice(underdog_courage_messages)
                 
                 # Add to preparation phase
-                await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"⚔️ **Battle Odds:** {dominance_message} {courage_message}", edit=True)
-                await asyncio.sleep(4)
+                await self.manage_phase_message(ctx, battle_id,  "PREPARATION PHASE", f"**Battle Odds:** {dominance_message} {courage_message}", edit=True)
+                await asyncio.sleep(2.5)
 
-            
+
             # Battle commencement signal
             commencement = random.choice(commencement_options)
-            await self.manage_phase_message(ctx, battle_id,  "BATTLE BEGINS", f"⚔️ **Battle Begins:** {commencement}", edit=True)
-            await asyncio.sleep(4)
+            await self.manage_phase_message(ctx, battle_id, "BATTLE BEGINS")
+            await self.manage_phase_message(ctx, battle_id,  "BATTLE BEGINS", f"**Battle Begins:** {commencement}", edit=True)
+            await asyncio.sleep(3)
             
             # Battle events
             event_min, event_max = tone_profile.get("event_count_range", (6, 9))
@@ -2095,33 +2169,19 @@ class SimpleBattle(discord.ext.commands.Cog):
             
             # Track events for grouping
             event_counter = 0
-            need_blank_line = False  # Flag to determine if we need a blank line before next event
             last_actor_idx = None
             actor_streak = 0
             
             for i in range(event_count):
-                # Every 3 events, add a blank line for better readability
                 if event_counter >= 3:
-                    need_blank_line = True
                     event_counter = 0
-                
-                # Add blank line if needed
-                if need_blank_line:
-                    await self.manage_phase_message(ctx, battle_id,  "BATTLE BEGINS", " ", edit=True)
-                    need_blank_line = False
 
                 beat = self._determine_battle_beat(i, event_count)
                 if beat != current_beat:
                     current_beat = beat
-                    await self.manage_phase_message(
-                        ctx,
-                        battle_id,
-                        "BATTLE BEGINS",
-                        f"🎬 **Fight Director:** {beat_labels[current_beat]} begins. Crowd heat: **{crowd_heat}/100**.",
-                        edit=True
-                    )
+                    await ctx.send(embed=self._build_beat_embed(current_beat, beat_labels[current_beat], crowd_heat))
                     event_counter += 1
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(2.5)
 
                     cinematic_cuts = tone_profile.get("cinematic_cuts", [])
                     if cinematic_cuts:
@@ -2129,7 +2189,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                             ctx,
                             battle_id,
                             "BATTLE BEGINS",
-                            f"🎥 **Cinematic Cut:** {random.choice(cinematic_cuts)}",
+                            f"*{random.choice(cinematic_cuts)}*",
                             edit=True
                         )
                         event_counter += 1
@@ -2142,11 +2202,11 @@ class SimpleBattle(discord.ext.commands.Cog):
                                 ctx,
                                 battle_id,
                                 "BATTLE BEGINS",
-                                f"🩸 **Climax Call:** {random.choice(climax_calls)}",
+                                f"**{random.choice(climax_calls)}**",
                                 edit=True
                             )
                             event_counter += 1
-                            await asyncio.sleep(2)
+                            await asyncio.sleep(2.5)
                 
                 # Determine which player is featured in this event
                 if i < 2:
@@ -2234,11 +2294,11 @@ class SimpleBattle(discord.ext.commands.Cog):
                             ctx,
                             battle_id,
                             "BATTLE BEGINS",
-                            f"⚔️ **Attack:** {attack} Target: **{target_zone}**.{style_hook}",
+                            f"{attack} Target: **{target_zone}**.{style_hook}",
                             edit=True
                         )
                         event_counter += 1
-                        await asyncio.sleep(3)  # Wait before showing the result
+                        await asyncio.sleep(1.5)  # Wait before showing the result
                         
                         # Determine attack success with moderate influence from stats and current endurance.
                         stat_diff = player_stats[player_idx] - player_stats[opponent_idx]
@@ -2295,10 +2355,46 @@ class SimpleBattle(discord.ext.commands.Cog):
                                 injury = random.choice(self.commentaries["brutal_injuries"]).format(
                                     victim=opponent.display_name
                                 )
-                                await self.manage_phase_message(ctx, battle_id,  "BATTLE BEGINS", f"🩸 **Brutal Injury:** {injury}", edit=True)
+                                endurance_snapshot = self._format_endurance_snapshot(
+                                    players[0].display_name,
+                                    max(0.0, min(player_endurance_max[0], player_endurance[0])),
+                                    player_endurance_max[0],
+                                    players[1].display_name,
+                                    max(0.0, min(player_endurance_max[1], player_endurance[1])),
+                                    player_endurance_max[1],
+                                )
+                                await self.manage_phase_message(
+                                    ctx,
+                                    battle_id,
+                                    "BATTLE BEGINS",
+                                    (
+                                        f"{player.display_name} drives through {opponent.display_name}'s guard for "
+                                        f"**{damage_points} endurance**.\n"
+                                        f"🩸 {injury}\n"
+                                        f"**Endurance:**\n{endurance_snapshot}"
+                                    ),
+                                    edit=True,
+                                )
                                 crowd_heat += int(round(4 * heat_gain_mult))
                             else:
-                                await self.manage_phase_message(ctx, battle_id,  "BATTLE BEGINS", f"💥 **Hit:** The strike lands true! {opponent.display_name} staggers back!", edit=True)
+                                endurance_snapshot = self._format_endurance_snapshot(
+                                    players[0].display_name,
+                                    max(0.0, min(player_endurance_max[0], player_endurance[0])),
+                                    player_endurance_max[0],
+                                    players[1].display_name,
+                                    max(0.0, min(player_endurance_max[1], player_endurance[1])),
+                                    player_endurance_max[1],
+                                )
+                                await self.manage_phase_message(
+                                    ctx,
+                                    battle_id,
+                                    "BATTLE BEGINS",
+                                    (
+                                        f"{player.display_name} connects cleanly for **{damage_points} endurance**.\n"
+                                        f"**Endurance:**\n{endurance_snapshot}"
+                                    ),
+                                    edit=True,
+                                )
                         else:
                             # Attack is defended - use weapon-specific defense
                             defender_weapon = player_info[opponent_idx]["type"]
@@ -2324,7 +2420,24 @@ class SimpleBattle(discord.ext.commands.Cog):
                                     weapon=player_info[opponent_idx]["name"]
                                 )
                             defense_suffix = f" {player.display_name} is clipped in the exchange." if chip_damage else ""
-                            await self.manage_phase_message(ctx, battle_id,  "BATTLE BEGINS", f"🛡️ **Defense:** {defense}{defense_suffix}", edit=True)
+                            defense_line = f"{defense}{defense_suffix}"
+                            if chip_damage:
+                                endurance_snapshot = self._format_endurance_snapshot(
+                                    players[0].display_name,
+                                    max(0.0, min(player_endurance_max[0], player_endurance[0])),
+                                    player_endurance_max[0],
+                                    players[1].display_name,
+                                    max(0.0, min(player_endurance_max[1], player_endurance[1])),
+                                    player_endurance_max[1],
+                                )
+                                defense_line = f"{defense_line}\n**Endurance:**\n{endurance_snapshot}"
+                            await self.manage_phase_message(
+                                ctx,
+                                battle_id,
+                                "BATTLE BEGINS",
+                                defense_line,
+                                edit=True,
+                            )
                             heat_gain_mult = tone_profile.get("crowd_heat_gain_multiplier", 1.0)
                             crowd_heat += int(round((2 if chip_damage else 1) * heat_gain_mult))
                         event_counter += 1
@@ -2338,7 +2451,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                             player=player.display_name,
                             weapon=player_info[player_idx]["name"]
                         )
-                        await self.manage_phase_message(ctx, battle_id,  "BATTLE BEGINS", f"🌟 **Special Event:** {event_text}", edit=True)
+                        await self.manage_phase_message(ctx, battle_id, "BATTLE BEGINS", event_text, edit=True)
                         event_counter += 1
                         
                         # Special events influence battle flow without deciding the whole fight alone.
@@ -2385,8 +2498,8 @@ class SimpleBattle(discord.ext.commands.Cog):
                                 player=player.display_name,
                                 god=player_gods[player_idx] or "the gods"
                             )
-                            await asyncio.sleep(3)  # Wait before showing comeback
-                            await self.manage_phase_message(ctx, battle_id,  "BATTLE BEGINS", f"💪 **Comeback:** {comeback}", edit=True)
+                            await asyncio.sleep(2.5)  # Wait before showing comeback
+                            await self.manage_phase_message(ctx, battle_id, "BATTLE BEGINS", comeback, edit=True)
                             
                             player_endurance[player_idx] = min(
                                 player_endurance_max[player_idx],
@@ -2415,7 +2528,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                             god=player_gods[player_idx] or "the gods"
                         )
                         
-                        await self.manage_phase_message(ctx, battle_id,  "BATTLE BEGINS", f"✨ **Special Move:** {special_move}", edit=True)
+                        await self.manage_phase_message(ctx, battle_id, "BATTLE BEGINS", special_move, edit=True)
                         event_counter += 1
                         
                         # Special moves are high impact but still bounded.
@@ -2444,8 +2557,25 @@ class SimpleBattle(discord.ext.commands.Cog):
                             consecutive_wins[player_idx]
                         )
                         
-                        await asyncio.sleep(3)  # Wait before showing effect
-                        await self.manage_phase_message(ctx, battle_id,  "BATTLE BEGINS", f"💥 **Effect:** A devastating technique! {opponent.display_name} suffers greatly!", edit=True)
+                        await asyncio.sleep(2.5)  # Wait before showing effect
+                        endurance_snapshot = self._format_endurance_snapshot(
+                            players[0].display_name,
+                            max(0.0, min(player_endurance_max[0], player_endurance[0])),
+                            player_endurance_max[0],
+                            players[1].display_name,
+                            max(0.0, min(player_endurance_max[1], player_endurance[1])),
+                            player_endurance_max[1],
+                        )
+                        await self.manage_phase_message(
+                            ctx,
+                            battle_id,
+                            "BATTLE BEGINS",
+                            (
+                                f"{opponent.display_name} absorbs **{impact} endurance** from the special technique.\n"
+                                f"**Endurance:**\n{endurance_snapshot}"
+                            ),
+                            edit=True,
+                        )
                         event_counter += 1
                     
                     elif event_type == "arena_event":
@@ -2457,7 +2587,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                             new_condition=random.choice(theme_conditions)
                         )
                         
-                        await self.manage_phase_message(ctx, battle_id,  "BATTLE BEGINS", f"🏟️ **Arena Event:** {event_text}", edit=True)
+                        await self.manage_phase_message(ctx, battle_id, "BATTLE BEGINS", event_text, edit=True)
                         event_counter += 1
                         
                         # Event affects both fighters but usually benefits one more
@@ -2495,7 +2625,13 @@ class SimpleBattle(discord.ext.commands.Cog):
                             weapon=player_info[player_idx]["name"]
                         )
                         
-                        await self.manage_phase_message(ctx, battle_id,  "BATTLE BEGINS", f"🔮 **Divine Intervention:** {intervention}", edit=True)
+                        await self.manage_phase_message(
+                            ctx,
+                            battle_id,
+                            "BATTLE BEGINS",
+                            f"Divine intervention: {intervention}",
+                            edit=True,
+                        )
                         event_counter += 1
                         
                         god_impact = random.randint(3, 5)
@@ -2516,6 +2652,25 @@ class SimpleBattle(discord.ext.commands.Cog):
                         battle_highlights["longest_streak"][player_idx] = max(
                             battle_highlights["longest_streak"][player_idx],
                             consecutive_wins[player_idx]
+                        )
+                        endurance_snapshot = self._format_endurance_snapshot(
+                            players[0].display_name,
+                            max(0.0, min(player_endurance_max[0], player_endurance[0])),
+                            player_endurance_max[0],
+                            players[1].display_name,
+                            max(0.0, min(player_endurance_max[1], player_endurance[1])),
+                            player_endurance_max[1],
+                        )
+                        await self.manage_phase_message(
+                            ctx,
+                            battle_id,
+                            "BATTLE BEGINS",
+                            (
+                                f"{player.display_name} is empowered by divine favor. "
+                                f"{opponent.display_name} loses **{god_impact} endurance**.\n"
+                                f"**Endurance:**\n{endurance_snapshot}"
+                            ),
+                            edit=True,
                         )
 
                     # Clamp state after each event to keep probabilities stable and readable.
@@ -2555,9 +2710,9 @@ class SimpleBattle(discord.ext.commands.Cog):
                     reaction_scale = max(80.0, float(tone_profile.get("crowd_reaction_scale_divisor", 220.0)))
                     crowd_reaction_chance = min(0.65, reaction_base + (crowd_heat / reaction_scale))
                     if random.random() < crowd_reaction_chance:
-                        await asyncio.sleep(2)  # Wait before showing crowd reaction
+                        await asyncio.sleep(1.5)  # Wait before showing crowd reaction
                         crowd_reaction = random.choice(self.commentaries["crowd_reactions"])
-                        await self.manage_phase_message(ctx, battle_id,  "BATTLE BEGINS", f"👥 **Crowd:** {crowd_reaction}", edit=True)
+                        await self.manage_phase_message(ctx, battle_id, "BATTLE BEGINS", f"*Crowd:* {crowd_reaction}", edit=True)
                         event_counter += 1
                         
                     # Show momentum updates strategically
@@ -2570,7 +2725,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                         if consecutive_wins[0] >= 3 or consecutive_wins[1] >= 3:
                             streak_player = 0 if consecutive_wins[0] >= 3 else 1
                             streak_msg = f"{players[streak_player].display_name} is on a devastating streak, landing blow after blow!"
-                            await self.manage_phase_message(ctx, battle_id,  "BATTLE BEGINS", f"🔥 **Battle Streak:** {streak_msg}", edit=True)
+                            await self.manage_phase_message(ctx, battle_id, "BATTLE BEGINS", streak_msg, edit=True)
                             consecutive_wins = [0, 0]
                             event_counter += 1
                         
@@ -2586,24 +2741,14 @@ class SimpleBattle(discord.ext.commands.Cog):
                             lead = "slight" if endurance_gap < 10 else "strong"
                             momentum = f"{enemy_.display_name} has gained a {lead} advantage in the battle!"
 
-                        status_line = (
-                            f"{ctx.author.display_name} "
-                            f"{self._format_endurance_bar(player_endurance[0], player_endurance_max[0])} "
-                            f"{player_endurance[0]:.0f}/{player_endurance_max[0]:.0f} | "
-                            f"{enemy_.display_name} "
-                            f"{self._format_endurance_bar(player_endurance[1], player_endurance_max[1])} "
-                            f"{player_endurance[1]:.0f}/{player_endurance_max[1]:.0f}"
-                        )
-                        
-                        await asyncio.sleep(2)
+                        await asyncio.sleep(1.5)
                         await self.manage_phase_message(
                             ctx,
                             battle_id,
                             "BATTLE BEGINS",
                             (
-                                f"⚖️ **Battle Momentum:** {momentum}\n"
-                                f"🎬 **Current Beat:** {beat_labels[current_beat]} | 🔥 **Crowd Heat:** {crowd_heat}/100\n"
-                                f"📊 **Endurance:** {status_line}"
+                                f"**Battle Momentum:** {momentum}\n"
+                                f"**Current Beat:** {beat_labels[current_beat]} | **Crowd Heat:** {crowd_heat}/100"
                             ),
                             edit=True
                         )
@@ -2612,11 +2757,11 @@ class SimpleBattle(discord.ext.commands.Cog):
                 except Exception as event_error:
                     # If an individual event fails, log it but continue with the battle
                     print(f"Error in event {i+1}: {event_error}")
-                    await self.manage_phase_message(ctx, battle_id,  "BATTLE BEGINS", "👥 **Crowd:** The crowd's roar drowns out a moment of the battle...", edit=True)
+                    await self.manage_phase_message(ctx, battle_id, "BATTLE BEGINS", "*Crowd:* The roar drowns out a moment of the battle...", edit=True)
                     event_counter += 1
                 
                 # Wait between events - longer pause for better readability
-                await asyncio.sleep(4)
+                await asyncio.sleep(2)
             
             # Final clamping before deciding winner
             victory_points = [max(0, points) for points in victory_points]
@@ -2669,15 +2814,6 @@ class SimpleBattle(discord.ext.commands.Cog):
                 biggest_hit_line = "No single exchange defined the fight; pressure accumulated over time."
 
             turning_point_line = combat_memory["turning_point"] or "No dramatic momentum flip - this fight was decided through steady execution."
-            highlight_card = (
-                f"🎞️ Tone: {self.active_tone.replace('_', ' ').title()}\n"
-                f"🔥 Crowd Peak: {battle_highlights['peak_crowd_heat']}/100\n"
-                f"🎯 Biggest Hit: {biggest_hit_line}\n"
-                f"⚡ Specials: {players[0].display_name} {battle_highlights['special_moves'][0]} | {players[1].display_name} {battle_highlights['special_moves'][1]}\n"
-                f"🛐 Divine Interventions: {players[0].display_name} {battle_highlights['divine_interventions'][0]} | {players[1].display_name} {battle_highlights['divine_interventions'][1]}\n"
-                f"📈 Longest Streak: {players[0].display_name} {battle_highlights['longest_streak'][0]} | {players[1].display_name} {battle_highlights['longest_streak'][1]}\n"
-                f"🧭 Turning Point: {turning_point_line}"
-            )
             
             # ========== DECISIVE MOMENT ==========
             # Create a separate message for the decisive moment
@@ -2716,7 +2852,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                 decisive_moments.append(override.format(winner=winner.display_name, loser=loser.display_name))
             
             decisive_moment = random.choice(decisive_moments)
-            await self.manage_phase_message(ctx, battle_id,  "DECISIVE MOMENT", f"⚡ **Decisive Moment:** {decisive_moment}", edit=True)
+            await self.manage_phase_message(ctx, battle_id,  "DECISIVE MOMENT", f"**Decisive Moment:** {decisive_moment}", edit=True)
             await asyncio.sleep(4)  # Longer pause after decisive moment
             
             # Final commentary - customize based on battle narrative
@@ -2749,7 +2885,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                 finishers.append(override.format(winner=winner.display_name, loser=loser.display_name))
             
             finisher = random.choice(finishers)
-            await self.manage_phase_message(ctx, battle_id,  "DECISIVE MOMENT", f"🏆 **Victory:** {finisher}", edit=True)
+            await self.manage_phase_message(ctx, battle_id,  "DECISIVE MOMENT", f"**Victory:** {finisher}", edit=True)
             await asyncio.sleep(4)  # Longer pause after victory
             
             # ========== EMPEROR'S JUDGMENT ==========
@@ -2769,12 +2905,12 @@ class SimpleBattle(discord.ext.commands.Cog):
                 f"Blood-soaked sand darkens beneath {loser.display_name} as they await the Emperor's decision..."
             ]
             anticipation = random.choice(anticipation_messages)
-            await self.manage_phase_message(ctx, battle_id,  "EMPEROR'S JUDGMENT", f"👑 **Emperor's Decision:** {anticipation}", edit=True)
+            await self.manage_phase_message(ctx, battle_id,  "EMPEROR'S JUDGMENT", f"**Emperor's Decision:** {anticipation}", edit=True)
             await asyncio.sleep(4)  # Longer pause before verdict
             
             # Emperor's verdict
             judgment = random.choice(self.commentaries["emperor_signals"])
-            await self.manage_phase_message(ctx, battle_id,  "EMPEROR'S JUDGMENT", f"👑 **Emperor:** {judgment}", edit=True)
+            await self.manage_phase_message(ctx, battle_id,  "EMPEROR'S JUDGMENT", f"**Emperor:** {judgment}", edit=True)
             await asyncio.sleep(5)  # Extended dramatic pause
             
             # Make mercy more likely for close battles, less likely for dominant victories
@@ -2789,7 +2925,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                 mercy = random.choice(self.commentaries["emperor_mercy"]).format(
                     loser=loser.display_name
                 )
-                await self.manage_phase_message(ctx, battle_id,  "EMPEROR'S JUDGMENT", f"👑 **Emperor:** {judgment}\n\n**JUDGMENT:** {mercy}", edit=True)
+                await self.manage_phase_message(ctx, battle_id,  "EMPEROR'S JUDGMENT", f"**Emperor:** {judgment}\n\n**Judgment:** {mercy}", edit=True)
                 
                 # Add mercy reaction
                 mercy_reactions = [
@@ -2801,13 +2937,13 @@ class SimpleBattle(discord.ext.commands.Cog):
                 ]
                 mercy_reaction = random.choice(mercy_reactions)
                 await asyncio.sleep(4)
-                await self.manage_phase_message(ctx, battle_id,  "EMPEROR'S JUDGMENT", f"🤝 **Mercy:** {mercy_reaction}", edit=True)
+                await self.manage_phase_message(ctx, battle_id,  "EMPEROR'S JUDGMENT", f"**Mercy:** {mercy_reaction}", edit=True)
             else:  # Death
                 death = random.choice(self.commentaries["emperor_death"]).format(
                     winner=winner.display_name,
                     loser=loser.display_name
                 )
-                await self.manage_phase_message(ctx, battle_id,  "EMPEROR'S JUDGMENT", f"👑 **Emperor:** {judgment}\n\n**JUDGMENT:** {death}", edit=True)
+                await self.manage_phase_message(ctx, battle_id,  "EMPEROR'S JUDGMENT", f"**Emperor:** {judgment}\n\n**Judgment:** {death}", edit=True)
                 
                 # Add execution details
                 weapon_type = player_info[winner_idx]["type"]
@@ -2819,7 +2955,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                     loser=loser.display_name
                 )
                 await asyncio.sleep(4)
-                await self.manage_phase_message(ctx, battle_id,  "EMPEROR'S JUDGMENT", f"☠️ **Execution:** {finishing_move}", edit=True)
+                await self.manage_phase_message(ctx, battle_id,  "EMPEROR'S JUDGMENT", f"**Execution:** {finishing_move}", edit=True)
                 
                 # Add death aftermath
                 death_aftermath = [
@@ -2831,7 +2967,7 @@ class SimpleBattle(discord.ext.commands.Cog):
                 ]
                 aftermath = random.choice(death_aftermath)
                 await asyncio.sleep(4)
-                await self.manage_phase_message(ctx, battle_id,  "EMPEROR'S JUDGMENT", f"⚰️ **Aftermath:** {aftermath}", edit=True)
+                await self.manage_phase_message(ctx, battle_id,  "EMPEROR'S JUDGMENT", f"**Aftermath:** {aftermath}", edit=True)
             
             # ========== BATTLE CONCLUSION ==========
             # Create a separate message for battle conclusion
@@ -2847,24 +2983,59 @@ class SimpleBattle(discord.ext.commands.Cog):
                 f"{winner.display_name} stands tall amid the roaring approval of thousands, bathed in the golden light of victory!"
             ]
             celebration = random.choice(victor_celebrations)
-            await self.manage_phase_message(ctx, battle_id,  "BATTLE CONCLUSION", f"🏆 **Victory Celebration:** {celebration}", edit=True)
-            await asyncio.sleep(4)  # Final pause before results
+            await self.manage_phase_message(ctx, battle_id,  "BATTLE CONCLUSION", f"**Victory Celebration:** {celebration}", edit=True)
+            await asyncio.sleep(3)  # Final pause before results
 
-            await self.manage_phase_message(
-                ctx,
-                battle_id,
-                "BATTLE CONCLUSION",
-                f"📜 **Battle Chronicle:**\n{highlight_card}",
-                edit=True
+            summary_embed = discord.Embed(
+                title="Battle Chronicle",
+                color=discord.Color.gold(),
             )
-            await asyncio.sleep(3)
+            summary_embed.add_field(name="Winner", value=winner.mention, inline=True)
+            summary_embed.add_field(
+                name="Gold Awarded",
+                value=f"${money * 2}" if money > 0 else "No wager (honor match)",
+                inline=True,
+            )
+            summary_embed.add_field(name="Final Tally", value=final_scoreboard, inline=False)
+            summary_embed.add_field(name="Biggest Hit", value=biggest_hit_line, inline=False)
+            summary_embed.add_field(
+                name="Peak Crowd Heat",
+                value=f"{battle_highlights['peak_crowd_heat']}/100",
+                inline=True,
+            )
+            summary_embed.add_field(
+                name="Special Moves",
+                value=(
+                    f"{players[0].display_name}: {battle_highlights['special_moves'][0]}\n"
+                    f"{players[1].display_name}: {battle_highlights['special_moves'][1]}"
+                ),
+                inline=True,
+            )
+            summary_embed.add_field(
+                name="Divine Interventions",
+                value=(
+                    f"{players[0].display_name}: {battle_highlights['divine_interventions'][0]}\n"
+                    f"{players[1].display_name}: {battle_highlights['divine_interventions'][1]}"
+                ),
+                inline=True,
+            )
+            summary_embed.add_field(
+                name="Longest Streak",
+                value=(
+                    f"{players[0].display_name}: {battle_highlights['longest_streak'][0]}\n"
+                    f"{players[1].display_name}: {battle_highlights['longest_streak'][1]}"
+                ),
+                inline=True,
+            )
+            summary_embed.add_field(name="Turning Point", value=turning_point_line, inline=False)
+            await ctx.send(embed=summary_embed)
+            await asyncio.sleep(2.5)
             
             # Final result message
             if money > 0:
                 result = _(f"**Arena Master:** The battle is decided! {winner.mention} defeats {loser.mention} in glorious combat! {money * 2} gold has been awarded to the victor!")
             else:
                 result = _(f"**Arena Master:** The battle is decided! {winner.mention} defeats {loser.mention} in glorious combat! The victor claims honor and glory this day!")
-            result = f"{result}\n📊 **Final Tally:** {final_scoreboard}"
             
             await self.manage_phase_message(ctx, battle_id,  "BATTLE CONCLUSION", result, edit=True)
 
@@ -2895,7 +3066,20 @@ class SimpleBattle(discord.ext.commands.Cog):
             # Handle any exceptions that occur during battle
             import traceback
             error_traceback = traceback.format_exc()
-            error_message = f"An error occurred during the battle:\n```{str(e)}```"
+            print(error_traceback)
+
+            error_prefix = "An error occurred during the battle:\n```"
+            error_suffix = "```"
+            truncation_note = "\n... (truncated)"
+            max_error_len = 1900
+            max_body_len = max_error_len - self._discord_content_length(error_prefix + error_suffix)
+
+            error_body = str(e)
+            if self._discord_content_length(error_body) > max_body_len:
+                safe_body_len = max(0, max_body_len - self._discord_content_length(truncation_note))
+                error_body = self._truncate_to_discord_limit(error_body, safe_body_len) + truncation_note
+
+            error_message = f"{error_prefix}{error_body}{error_suffix}"
 
             await ctx.send(error_message)
 
