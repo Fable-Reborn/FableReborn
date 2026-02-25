@@ -1188,6 +1188,49 @@ class Battles(commands.Cog):
     PVE_LEGENDARY_SPAWN_CHANCE = 0.01
     PVE_SPLICE_SAMPLE_PER_GENERATION = 75
     PVE_SPLICE_GENERATIONS = (0,)
+    OMNITHRONE_SANCTUM_LOCATION_ID = "omnithrone_sanctum"
+    OMNITHRONE_CINEMATIC_SCENES = (
+        {
+            "title": "Omnithrone Sanctum: The Descent",
+            "description": (
+                "The vault ceiling fractures into a blinding rift as the end-world "
+                "wyrm descends into the sanctum."
+            ),
+            "image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_ChatGPT_Image_Feb_19_2026_09_33_42_PM.png",
+            "color": 0x4B4F66,
+            "delay": 3.5,
+        },
+        {
+            "title": "Omnithrone Sanctum: Confrontation",
+            "description": (
+                "You step forward and meet the God of Gods in silence. The throne "
+                "realm trembles as both sides prepare to strike."
+            ),
+            "image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_ChatGPT_Image_Feb_19_2026_09_39_13_PM.png",
+            "color": 0x7A1E1E,
+            "delay": 3.5,
+        },
+        {
+            "title": "Omnithrone Sanctum: The First Roar",
+            "description": (
+                "A beam of pure annihilation erupts from its maw. You raise your "
+                "shield and hold the line as the sanctum floor splits beneath you."
+            ),
+            "image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_ChatGPT_Image_Feb_19_2026_09_34_08_PM.png",
+            "color": 0xCC5C12,
+            "delay": 4.0,
+        },
+        {
+            "title": "Omnithrone Sanctum: Oath of the Three",
+            "description": (
+                "The spirits of Elysia, Sepulchure, and Drakath stand beside you. "
+                "Their power converges against the God of Gods."
+            ),
+            "image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_ChatGPT_Image_Feb_19_2026_09_58_05_PM.png",
+            "color": 0xBFA24A,
+            "delay": 4.0,
+        },
+    )
     PVE_LOCATIONS = (
         {
             "id": "verdant_outskirts",
@@ -2305,6 +2348,31 @@ class Battles(commands.Cog):
         if not matches:
             return None
         return matches[0]
+
+    async def _play_omnithrone_sanctum_cinematic(self, ctx, monster_name: str | None = None):
+        """Play a multi-scene pre-fight cinematic for Omnithrone Sanctum encounters."""
+        cinematic_message = None
+        total_scenes = len(self.OMNITHRONE_CINEMATIC_SCENES)
+        boss_name = monster_name or "The God of Gods"
+
+        for idx, scene in enumerate(self.OMNITHRONE_CINEMATIC_SCENES, start=1):
+            embed = discord.Embed(
+                title=scene["title"],
+                description=scene["description"].replace("God of Gods", boss_name),
+                color=scene["color"],
+            )
+            embed.set_image(url=scene["image_url"])
+            embed.set_footer(text=f"Omnithrone Sanctum • Scene {idx}/{total_scenes}")
+
+            if cinematic_message is None:
+                cinematic_message = await ctx.send(embed=embed)
+            else:
+                try:
+                    await cinematic_message.edit(embed=embed)
+                except Exception:
+                    cinematic_message = await ctx.send(embed=embed)
+
+            await asyncio.sleep(scene["delay"])
 
     async def _get_godofgods_monster_data(self) -> dict | None:
         """Fetch the real tier-12 monster data from database storage."""
@@ -5004,6 +5072,17 @@ class Battles(commands.Cog):
         )
         await searching_message.edit(embed=found_embed)
         await asyncio.sleep(4)
+
+        selected_location_id = (
+            str(selected_location.get("id", "")).lower() if selected_location else ""
+        )
+        is_omnithrone_encounter = (
+            selected_location_id == self.OMNITHRONE_SANCTUM_LOCATION_ID
+            or int(levelchoice) == 12
+            or int(monster.get("pve_tier", 0) or 0) == 12
+        )
+        if is_omnithrone_encounter:
+            await self._play_omnithrone_sanctum_cinematic(ctx, monster.get("name"))
 
         # Check for macro penalty
         macro_penalty_level = self.get_pve_macro_penalty_level(ctx.author.id)
