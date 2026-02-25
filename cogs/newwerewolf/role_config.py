@@ -100,8 +100,13 @@ ADVANCED_ROLE_TIERS: dict[str, dict[int, str]] = {
     "cursed": {5: "grave_robber"},
     "loudmouth": {5: "fortune_teller"},
     "aura_seer": {5: "gambler"},
+    "seer": {5: "analyst"},
+    "junior_werewolf": {5: "kitten_wolf"},
+    "grumpy_grandma": {5: "preacher"},
+    "avenger": {5: "oathkeeper"},
     "alpha_werewolf": {5: "wolf_summoner"},
     "witch": {5: "forger"},
+    "doctor": {5: "butcher"},
     "head_hunter": {5: "serial_killer"},
     "jester": {5: "cannibal"},
 }
