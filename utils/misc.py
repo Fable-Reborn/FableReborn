@@ -131,6 +131,7 @@ levels = {
     99: 129013829,
     100: 132625263,
 }
+MAX_LEVEL = max(levels)
 
 
 def random_token(id_):
@@ -156,12 +157,12 @@ def xptolevel(xp):
             return level
         elif xp < point:
             return level - 1
-    return 50
+    return MAX_LEVEL
 
 
 def xptonextlevel(xp):
     level = xptolevel(xp)
-    if level == 100:
+    if level >= MAX_LEVEL:
         return "Infinity"
     else:
         nextxp = levels[level + 1]

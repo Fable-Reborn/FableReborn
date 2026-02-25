@@ -1857,6 +1857,11 @@ class Profile(commands.Cog):
 
                 current_level = rpgtools.xptolevel(profile['xp'])
                 current_xp = profile['xp']
+                max_level = max(rpgtools.levels)
+                if current_level >= max_level:
+                    await ctx.send(f"You are already at max level ({max_level}).")
+                    await self.bot.reset_cooldown(ctx)
+                    return
 
                 async with self.bot.pool.acquire() as conn:
                     # Consume the candy
@@ -1892,6 +1897,11 @@ class Profile(commands.Cog):
 
                 current_level = rpgtools.xptolevel(profile['xp'])
                 current_xp = profile['xp']
+                max_level = max(rpgtools.levels)
+                if current_level >= max_level:
+                    await ctx.send(f"You are already at max level ({max_level}).")
+                    await self.bot.reset_cooldown(ctx)
+                    return
 
                 async with self.bot.pool.acquire() as conn:
                     # Consume the candy
