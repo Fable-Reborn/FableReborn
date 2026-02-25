@@ -1189,6 +1189,11 @@ class Battles(commands.Cog):
     PVE_SPLICE_SAMPLE_PER_GENERATION = 75
     PVE_SPLICE_GENERATIONS = (0,)
     OMNITHRONE_SANCTUM_LOCATION_ID = "omnithrone_sanctum"
+    OMNITHRONE_SEARCH_DELAY_RANGE = (7, 12)
+    OMNITHRONE_FOUND_DELAY_SECONDS = 6
+    OMNITHRONE_CINEMATIC_CACHE_DIR = os.path.join(
+        "assets", "other", "omnithrone_cinematic"
+    )
     OMNITHRONE_CINEMATIC_SCENES = (
         {
             "title": "Omnithrone Sanctum: The Descent",
@@ -1197,6 +1202,7 @@ class Battles(commands.Cog):
                 "wyrm descends into the sanctum."
             ),
             "image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_ChatGPT_Image_Feb_19_2026_09_33_42_PM.png",
+            "cache_filename": "omnithrone_scene_1_descent.png",
             "color": 0x4B4F66,
             "delay": 3.5,
         },
@@ -1207,6 +1213,7 @@ class Battles(commands.Cog):
                 "realm trembles as both sides prepare to strike."
             ),
             "image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_ChatGPT_Image_Feb_19_2026_09_39_13_PM.png",
+            "cache_filename": "omnithrone_scene_2_confrontation.png",
             "color": 0x7A1E1E,
             "delay": 3.5,
         },
@@ -1217,6 +1224,7 @@ class Battles(commands.Cog):
                 "shield and hold the line as the sanctum floor splits beneath you."
             ),
             "image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_ChatGPT_Image_Feb_19_2026_09_34_08_PM.png",
+            "cache_filename": "omnithrone_scene_3_first_roar.png",
             "color": 0xCC5C12,
             "delay": 4.0,
         },
@@ -1227,6 +1235,7 @@ class Battles(commands.Cog):
                 "Their power converges against the God of Gods."
             ),
             "image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_ChatGPT_Image_Feb_19_2026_09_58_05_PM.png",
+            "cache_filename": "omnithrone_scene_4_oath_of_three.png",
             "color": 0xBFA24A,
             "delay": 4.0,
         },
@@ -2349,11 +2358,47 @@ class Battles(commands.Cog):
             return None
         return matches[0]
 
+    async def _cache_omnithrone_cinematic_assets(self) -> dict[str, str]:
+        """Download cinematic art once and reuse local files for faster subsequent runs."""
+        cached_paths: dict[str, str] = {}
+        session = getattr(self.bot, "session", None)
+        if session is None:
+            return cached_paths
+
+        os.makedirs(self.OMNITHRONE_CINEMATIC_CACHE_DIR, exist_ok=True)
+
+        for scene in self.OMNITHRONE_CINEMATIC_SCENES:
+            cache_filename = scene.get("cache_filename")
+            if not cache_filename:
+                continue
+            cache_path = os.path.join(self.OMNITHRONE_CINEMATIC_CACHE_DIR, cache_filename)
+
+            if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
+                cached_paths[cache_filename] = cache_path
+                continue
+
+            try:
+                async with session.get(scene["image_url"], timeout=20) as response:
+                    if response.status != 200:
+                        continue
+                    payload = await response.read()
+                if not payload:
+                    continue
+                with open(cache_path, "wb") as cache_file:
+                    cache_file.write(payload)
+                if os.path.getsize(cache_path) > 0:
+                    cached_paths[cache_filename] = cache_path
+            except Exception:
+                continue
+
+        return cached_paths
+
     async def _play_omnithrone_sanctum_cinematic(self, ctx, monster_name: str | None = None):
         """Play a multi-scene pre-fight cinematic for Omnithrone Sanctum encounters."""
         cinematic_message = None
         total_scenes = len(self.OMNITHRONE_CINEMATIC_SCENES)
         boss_name = monster_name or "The God of Gods"
+        cached_assets = await self._cache_omnithrone_cinematic_assets()
 
         for idx, scene in enumerate(self.OMNITHRONE_CINEMATIC_SCENES, start=1):
             embed = discord.Embed(
@@ -2361,16 +2406,33 @@ class Battles(commands.Cog):
                 description=scene["description"].replace("God of Gods", boss_name),
                 color=scene["color"],
             )
-            embed.set_image(url=scene["image_url"])
             embed.set_footer(text=f"Omnithrone Sanctum • Scene {idx}/{total_scenes}")
 
+            cache_filename = scene.get("cache_filename")
+            cached_path = cached_assets.get(cache_filename) if cache_filename else None
+            scene_file = None
+            if cached_path and os.path.exists(cached_path):
+                embed.set_image(url=f"attachment://{cache_filename}")
+                scene_file = discord.File(cached_path, filename=cache_filename)
+            else:
+                embed.set_image(url=scene["image_url"])
+
             if cinematic_message is None:
-                cinematic_message = await ctx.send(embed=embed)
+                if scene_file:
+                    cinematic_message = await ctx.send(embed=embed, file=scene_file)
+                else:
+                    cinematic_message = await ctx.send(embed=embed)
             else:
                 try:
-                    await cinematic_message.edit(embed=embed)
+                    if scene_file:
+                        await cinematic_message.edit(embed=embed, attachments=[scene_file])
+                    else:
+                        await cinematic_message.edit(embed=embed, attachments=[])
                 except Exception:
-                    cinematic_message = await ctx.send(embed=embed)
+                    if scene_file:
+                        cinematic_message = await ctx.send(embed=embed, file=scene_file)
+                    else:
+                        cinematic_message = await ctx.send(embed=embed)
 
             await asyncio.sleep(scene["delay"])
 
@@ -4958,11 +5020,21 @@ class Battles(commands.Cog):
             color=self.bot.config.game.primary_colour,
         )
         searching_message = await ctx.send(embed=searching_embed)
+        selected_location_id = (
+            str(selected_location.get("id", "")).lower() if selected_location else ""
+        )
+        is_omnithrone_location = (
+            selected_location_id == self.OMNITHRONE_SANCTUM_LOCATION_ID
+        )
 
         # Determine monster to fight
         if not monster_override:
             # Simulate searching time
-            await asyncio.sleep(random.randint(3, 8))
+            if is_omnithrone_location:
+                min_delay, max_delay = self.OMNITHRONE_SEARCH_DELAY_RANGE
+            else:
+                min_delay, max_delay = 3, 8
+            await asyncio.sleep(random.randint(min_delay, max_delay))
             levelchoice = self._roll_pve_tier_for_location(selected_location)
             monster_pool = monsters.get(levelchoice, [])
             if not monster_pool:
@@ -5027,10 +5099,27 @@ class Battles(commands.Cog):
                 }
 
         encounter_level = int(monster.get("encounter_level", levelchoice))
+        selected_location_id = (
+            str(selected_location.get("id", "")).lower() if selected_location else ""
+        )
+        is_omnithrone_encounter = (
+            selected_location_id == self.OMNITHRONE_SANCTUM_LOCATION_ID
+            or int(levelchoice) == 12
+            or int(monster.get("pve_tier", 0) or 0) == 12
+        )
 
         # Update embed with found monster
         is_splice_pool = monster.get("pve_pool") == "splice"
-        if selected_location:
+        if is_omnithrone_encounter:
+            found_description = _(
+                "In **Omnithrone Sanctum**, Level {level} **{monster}** has manifested upon the Final Throne.\n\n"
+                "The vault goes silent. Ancient sigils ignite. The world itself feels one heartbeat away from collapse.\n"
+                "Stand your ground and face the end-world sovereign."
+            ).format(
+                level=encounter_level,
+                monster=monster["name"],
+            )
+        elif selected_location:
             found_description = (
                 _(
                     "In **{location}**, a Spliced Level {level} **{monster}** has appeared! Prepare to fight.."
@@ -5071,16 +5160,10 @@ class Battles(commands.Cog):
             color=self.bot.config.game.primary_colour,
         )
         await searching_message.edit(embed=found_embed)
-        await asyncio.sleep(4)
-
-        selected_location_id = (
-            str(selected_location.get("id", "")).lower() if selected_location else ""
-        )
-        is_omnithrone_encounter = (
-            selected_location_id == self.OMNITHRONE_SANCTUM_LOCATION_ID
-            or int(levelchoice) == 12
-            or int(monster.get("pve_tier", 0) or 0) == 12
-        )
+        if is_omnithrone_encounter:
+            await asyncio.sleep(self.OMNITHRONE_FOUND_DELAY_SECONDS)
+        else:
+            await asyncio.sleep(4)
         if is_omnithrone_encounter:
             await self._play_omnithrone_sanctum_cinematic(ctx, monster.get("name"))
 
