@@ -1469,9 +1469,9 @@
         },
         {
             "name": "Donkguin",
-            "hp": 1000,
+            "hp": 1100,
             "attack": 1200,
-            "defense": 700,
+            "defense": 900,
             "element": "Dark",
             "url": "https://image2url.com/r2/default/images/1768569992080-9ebca168-69c4-4473-8b75-3d2d251c7a06.jpg",
             "ispublic": true
