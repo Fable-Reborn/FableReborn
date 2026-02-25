@@ -2761,6 +2761,10 @@ class Profile(commands.Cog):
             "hp": "stathp",
         }
 
+        if amount <= 0:
+            await ctx.send(_("Amount must be greater than 0."))
+            return
+
         if type not in valid_types:
             await ctx.send(
                 _("Invalid type specified. Please use 'def', 'defense', 'attack', 'atk', 'health', or 'hp'."))
