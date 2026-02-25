@@ -2733,62 +2733,50 @@ class GameMaster(commands.Cog):
                 level = rpgtools.xptolevel(row['xp'])
                 expected_total_statpoints = max(0, level // 2)
 
-                current_unallocated = row['statpoints']
-                current_allocated = row['stathp'] + row['statatk'] + row['statdef']
-                current_total = current_unallocated + current_allocated
+                original_statpoints = row['statpoints']
+                original_stathp = row['stathp']
+                original_statatk = row['statatk']
+                original_statdef = row['statdef']
 
-                if expected_total_statpoints != current_total:
-                    difference = expected_total_statpoints - current_total
+                # Clamp invalid negative allocations before recalculating totals.
+                new_stathp = max(0, original_stathp)
+                new_statatk = max(0, original_statatk)
+                new_statdef = max(0, original_statdef)
 
-                    if difference > 0:
-                        new_statpoints = current_unallocated + difference
-                        await conn.execute(
-                            'UPDATE profile SET statpoints = $1 WHERE profile.user = $2;',
-                            new_statpoints, row['user']
-                        )
-                        messages.append(f"Added {difference} points to {row['name']}'s ({row['user']}) unallocated stat points. " +
-                                        f"Now has {new_statpoints} unallocated (Level {level}).")
+                allocated_total = new_stathp + new_statatk + new_statdef
+                overflow = max(0, allocated_total - expected_total_statpoints)
 
-                    else:
-                        points_to_deduct = abs(difference)
-                        new_stathp = row['stathp']
-                        new_statatk = row['statatk']
-                        new_statdef = row['statdef']
-                        new_statpoints = row['statpoints']
+                if overflow > 0:
+                    deduct_from_hp = min(new_stathp, overflow)
+                    new_stathp -= deduct_from_hp
+                    overflow -= deduct_from_hp
 
-                        if new_statpoints > 0:
-                            deduct_from_statpoints = min(new_statpoints, points_to_deduct)
-                            new_statpoints -= deduct_from_statpoints
-                            points_to_deduct -= deduct_from_statpoints
+                    deduct_from_atk = min(new_statatk, overflow)
+                    new_statatk -= deduct_from_atk
+                    overflow -= deduct_from_atk
 
-                        stats_modified = []
+                    deduct_from_def = min(new_statdef, overflow)
+                    new_statdef -= deduct_from_def
 
-                        if points_to_deduct > 0 and new_stathp > 0:
-                            deduct_from_hp = min(new_stathp, points_to_deduct)
-                            new_stathp -= deduct_from_hp
-                            points_to_deduct -= deduct_from_hp
-                            stats_modified.append(f"HP -{deduct_from_hp}")
+                new_statpoints = expected_total_statpoints - (new_stathp + new_statatk + new_statdef)
 
-                        if points_to_deduct > 0 and new_statatk > 0:
-                            deduct_from_atk = min(new_statatk, points_to_deduct)
-                            new_statatk -= deduct_from_atk
-                            points_to_deduct -= deduct_from_atk
-                            stats_modified.append(f"ATK -{deduct_from_atk}")
-
-                        if points_to_deduct > 0 and new_statdef > 0:
-                            deduct_from_def = min(new_statdef, points_to_deduct)
-                            new_statdef -= deduct_from_def
-                            points_to_deduct -= deduct_from_def
-                            stats_modified.append(f"DEF -{deduct_from_def}")
-
-                        await conn.execute(
-                            'UPDATE profile SET statpoints = $1, stathp = $2, statatk = $3, statdef = $4 WHERE profile.user = $5;',
-                            new_statpoints, new_stathp, new_statatk, new_statdef, row['user']
-                        )
-
-                        stats_message = ", ".join(stats_modified) if stats_modified else "no allocated stats changed"
-                        messages.append(f"Deducted {abs(difference)} points from {row['name']} ({row['user']}) " +
-                                        f"({stats_message}). Now has {new_statpoints} unallocated (Level {level}).")
+                if (
+                    new_statpoints != original_statpoints
+                    or new_stathp != original_stathp
+                    or new_statatk != original_statatk
+                    or new_statdef != original_statdef
+                ):
+                    await conn.execute(
+                        'UPDATE profile SET statpoints = $1, stathp = $2, statatk = $3, statdef = $4 WHERE profile.user = $5;',
+                        new_statpoints, new_stathp, new_statatk, new_statdef, row['user']
+                    )
+                    messages.append(
+                        f"Fixed {row['name']} ({row['user']}): "
+                        f"SP {original_statpoints}->{new_statpoints}, "
+                        f"HP {original_stathp}->{new_stathp}, "
+                        f"ATK {original_statatk}->{new_statatk}, "
+                        f"DEF {original_statdef}->{new_statdef} (Level {level})."
+                    )
 
                 if len(messages) >= 5:
                     await ctx.send("\n".join(messages))
@@ -2798,7 +2786,7 @@ class GameMaster(commands.Cog):
             if messages:
                 await ctx.send("\n".join(messages))
             else:
-                await ctx.send("All players have the correct number of stat points.")
+                await ctx.send("All players already have valid stat allocations and stat point totals.")
 
     @is_gm()
     @commands.command(
