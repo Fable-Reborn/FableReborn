@@ -1384,11 +1384,9 @@ class Game:
         self.medium_relay_task: asyncio.Task | None = None
         self.alpha_day_wolf_relay_task: asyncio.Task | None = None
         self.jailer_day_pick_task: asyncio.Task | None = None
-        self.junior_day_mark_task: asyncio.Task | None = None
-        self.loudmouth_mark_task: asyncio.Task | None = None
-        self.loudmouth_mark_player_id: int | None = None
-        self.avenger_mark_task: asyncio.Task | None = None
-        self.avenger_mark_player_id: int | None = None
+        self.junior_day_mark_tasks: dict[int, asyncio.Task] = {}
+        self.loudmouth_mark_tasks: dict[int, asyncio.Task] = {}
+        self.avenger_mark_tasks: dict[int, asyncio.Task] = {}
         self.after_first_night = False
         self.is_night_phase = False
         self.pending_night_resurrections: list[
@@ -3270,7 +3268,8 @@ class Game:
 
         while (
             not junior.dead
-            and self.get_player_with_role(Role.JUNIOR_WEREWOLF) == junior
+            and junior in self.alive_players
+            and junior.role == Role.JUNIOR_WEREWOLF
         ):
             candidates = self._junior_mark_candidates(junior)
             if not candidates:
@@ -3301,7 +3300,8 @@ class Game:
 
             if (
                 junior.dead
-                or self.get_player_with_role(Role.JUNIOR_WEREWOLF) != junior
+                or junior not in self.alive_players
+                or junior.role != Role.JUNIOR_WEREWOLF
             ):
                 return
 
@@ -3322,20 +3322,38 @@ class Game:
                 await asyncio.sleep(10)
 
     async def start_junior_day_mark_selection(self) -> None:
-        if self.junior_day_mark_task:
-            self.junior_day_mark_task.cancel()
-            self.junior_day_mark_task = None
-        junior = self.get_player_with_role(Role.JUNIOR_WEREWOLF)
-        if junior is None or junior.dead:
-            return
-        self.junior_day_mark_task = asyncio.create_task(
-            self._collect_junior_day_mark(junior)
-        )
+        juniors = [
+            player
+            for player in self.alive_players
+            if player.role == Role.JUNIOR_WEREWOLF
+        ]
+        active_ids = {player.user.id for player in juniors}
 
-    async def stop_junior_day_mark_selection(self) -> None:
-        if self.junior_day_mark_task:
-            self.junior_day_mark_task.cancel()
-            self.junior_day_mark_task = None
+        for player_id, task in list(self.junior_day_mark_tasks.items()):
+            if task.done() or player_id not in active_ids:
+                task.cancel()
+                self.junior_day_mark_tasks.pop(player_id, None)
+
+        for junior in juniors:
+            existing = self.junior_day_mark_tasks.get(junior.user.id)
+            if existing and not existing.done():
+                continue
+            self.junior_day_mark_tasks[junior.user.id] = asyncio.create_task(
+                self._collect_junior_day_mark(junior)
+            )
+
+    async def stop_junior_day_mark_selection(
+        self, junior: Player | None = None
+    ) -> None:
+        if junior is not None:
+            task = self.junior_day_mark_tasks.pop(junior.user.id, None)
+            if task:
+                task.cancel()
+            return
+
+        for task in self.junior_day_mark_tasks.values():
+            task.cancel()
+        self.junior_day_mark_tasks.clear()
 
     def queue_kitten_wolf_conversion(self) -> None:
         # Conversion can be attempted only on the night after the Kitten Wolf dies.
@@ -3369,7 +3387,8 @@ class Game:
         prompt_timeout = 3600
         while (
                 not loudmouth.dead
-                and self.get_player_with_role(Role.LOUDMOUTH) == loudmouth
+                and loudmouth in self.alive_players
+                and loudmouth.role == Role.LOUDMOUTH
         ):
             if loudmouth.is_jailed:
                 await asyncio.sleep(5)
@@ -3401,7 +3420,8 @@ class Game:
 
             if (
                     loudmouth.dead
-                    or self.get_player_with_role(Role.LOUDMOUTH) != loudmouth
+                    or loudmouth not in self.alive_players
+                    or loudmouth.role != Role.LOUDMOUTH
             ):
                 return
 
@@ -3422,27 +3442,38 @@ class Game:
                 await asyncio.sleep(5)
 
     async def start_loudmouth_target_selection(self) -> None:
-        loudmouth = self.get_player_with_role(Role.LOUDMOUTH)
-        if loudmouth is None or loudmouth.dead:
-            await self.stop_loudmouth_target_selection()
-            return
-        if (
-                self.loudmouth_mark_task
-                and not self.loudmouth_mark_task.done()
-                and self.loudmouth_mark_player_id == loudmouth.user.id
-        ):
-            return
-        await self.stop_loudmouth_target_selection()
-        self.loudmouth_mark_player_id = loudmouth.user.id
-        self.loudmouth_mark_task = asyncio.create_task(
-            self._collect_loudmouth_target(loudmouth)
-        )
+        loudmouths = [
+            player
+            for player in self.alive_players
+            if player.role == Role.LOUDMOUTH
+        ]
+        active_ids = {player.user.id for player in loudmouths}
 
-    async def stop_loudmouth_target_selection(self) -> None:
-        if self.loudmouth_mark_task:
-            self.loudmouth_mark_task.cancel()
-            self.loudmouth_mark_task = None
-        self.loudmouth_mark_player_id = None
+        for player_id, task in list(self.loudmouth_mark_tasks.items()):
+            if task.done() or player_id not in active_ids:
+                task.cancel()
+                self.loudmouth_mark_tasks.pop(player_id, None)
+
+        for loudmouth in loudmouths:
+            existing = self.loudmouth_mark_tasks.get(loudmouth.user.id)
+            if existing and not existing.done():
+                continue
+            self.loudmouth_mark_tasks[loudmouth.user.id] = asyncio.create_task(
+                self._collect_loudmouth_target(loudmouth)
+            )
+
+    async def stop_loudmouth_target_selection(
+        self, loudmouth: Player | None = None
+    ) -> None:
+        if loudmouth is not None:
+            task = self.loudmouth_mark_tasks.pop(loudmouth.user.id, None)
+            if task:
+                task.cancel()
+            return
+
+        for task in self.loudmouth_mark_tasks.values():
+            task.cancel()
+        self.loudmouth_mark_tasks.clear()
 
     def _avenger_mark_candidates(self, avenger: Player) -> list[Player]:
         if avenger.role == Role.OATHKEEPER:
@@ -3574,34 +3605,38 @@ class Game:
                 await asyncio.sleep(5)
 
     async def start_avenger_target_selection(self) -> None:
-        avenger = next(
-            (
-                player
-                for player in self.alive_players
-                if player.role in (Role.AVENGER, Role.OATHKEEPER)
-            ),
-            None,
-        )
-        if avenger is None or avenger.dead:
-            await self.stop_avenger_target_selection()
-            return
-        if (
-                self.avenger_mark_task
-                and not self.avenger_mark_task.done()
-                and self.avenger_mark_player_id == avenger.user.id
-        ):
-            return
-        await self.stop_avenger_target_selection()
-        self.avenger_mark_player_id = avenger.user.id
-        self.avenger_mark_task = asyncio.create_task(
-            self._collect_avenger_target(avenger)
-        )
+        avengers = [
+            player
+            for player in self.alive_players
+            if player.role in (Role.AVENGER, Role.OATHKEEPER)
+        ]
+        active_ids = {player.user.id for player in avengers}
 
-    async def stop_avenger_target_selection(self) -> None:
-        if self.avenger_mark_task:
-            self.avenger_mark_task.cancel()
-            self.avenger_mark_task = None
-        self.avenger_mark_player_id = None
+        for player_id, task in list(self.avenger_mark_tasks.items()):
+            if task.done() or player_id not in active_ids:
+                task.cancel()
+                self.avenger_mark_tasks.pop(player_id, None)
+
+        for avenger in avengers:
+            existing = self.avenger_mark_tasks.get(avenger.user.id)
+            if existing and not existing.done():
+                continue
+            self.avenger_mark_tasks[avenger.user.id] = asyncio.create_task(
+                self._collect_avenger_target(avenger)
+            )
+
+    async def stop_avenger_target_selection(
+        self, avenger: Player | None = None
+    ) -> None:
+        if avenger is not None:
+            task = self.avenger_mark_tasks.pop(avenger.user.id, None)
+            if task:
+                task.cancel()
+            return
+
+        for task in self.avenger_mark_tasks.values():
+            task.cancel()
+        self.avenger_mark_tasks.clear()
 
     async def handle_head_hunter_target_death(self, dead_player: Player) -> None:
         head_hunters = [
@@ -10006,7 +10041,7 @@ class Player:
             )
             await self.game.handle_seer_apprentice_promotion(self)
             if self.role == Role.LOUDMOUTH:
-                await self.game.stop_loudmouth_target_selection()
+                await self.game.stop_loudmouth_target_selection(self)
                 if self.loudmouth_target and self.loudmouth_target != self:
                     loudmouth_reveal_role = self.game.get_observed_role(
                         self.loudmouth_target
@@ -10029,7 +10064,7 @@ class Player:
                         _("📣 The **Loudmouth** died without marking anyone.")
                     )
             if self.role in (Role.AVENGER, Role.OATHKEEPER):
-                await self.game.stop_avenger_target_selection()
+                await self.game.stop_avenger_target_selection(self)
             if (
                 self.role == Role.JESTER
                 and self.killed_by_lynch
