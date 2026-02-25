@@ -714,6 +714,85 @@ def unavailable_roles_for_mode(roles: list[Role], mode: str | None) -> list[Role
     return [role for role in roles if not _is_role_available_in_mode(role, mode)]
 
 
+VILLAGER_FILLER_WEIGHTS: tuple[tuple[Role, int], ...] = (
+    (Role.CURSED, 60),
+    (Role.LOUDMOUTH, 30),
+    (Role.FLOWER_CHILD, 10),
+)
+
+
+def _pick_villager_filler_role(mode: str | None) -> Role:
+    weighted_candidates = [
+        (role, weight)
+        for role, weight in VILLAGER_FILLER_WEIGHTS
+        if weight > 0 and _is_role_available_in_mode(role, mode)
+    ]
+    if not weighted_candidates:
+        return Role.VILLAGER
+
+    total_weight = sum(weight for _, weight in weighted_candidates)
+    roll = random.randint(1, total_weight)
+    running = 0
+    for role, weight in weighted_candidates:
+        running += weight
+        if roll <= running:
+            return role
+    return weighted_candidates[-1][0]
+
+
+SIX_PLAYER_CLASSIC_VARIETY_WEIGHTS: tuple[tuple[Role, int], ...] = (
+    (Role.CURSED, 65),
+    (Role.LOUDMOUTH, 35),
+)
+
+
+def _pick_six_player_classic_variety_role(mode: str | None) -> Role | None:
+    weighted_candidates = [
+        (role, weight)
+        for role, weight in SIX_PLAYER_CLASSIC_VARIETY_WEIGHTS
+        if weight > 0 and _is_role_available_in_mode(role, mode)
+    ]
+    if not weighted_candidates:
+        return None
+
+    total_weight = sum(weight for _, weight in weighted_candidates)
+    roll = random.randint(1, total_weight)
+    running = 0
+    for role, weight in weighted_candidates:
+        running += weight
+        if roll <= running:
+            return role
+    return weighted_candidates[-1][0]
+
+
+def enforce_six_player_classic_variety(
+    roles: list[Role], *, requested_players: int, mode: str | None
+) -> list[Role]:
+    if requested_players != 6:
+        return roles
+    if _normalize_mode_token(mode) != "classic":
+        return roles
+
+    available_roles = roles[:-2]
+    extra_roles = roles[-2:]
+    if available_roles.count(Role.VILLAGER) < 2:
+        return roles
+    if any(role in (Role.CURSED, Role.LOUDMOUTH) for role in available_roles):
+        return roles
+
+    replacement = _pick_six_player_classic_variety_role(mode)
+    if replacement is None:
+        return roles
+
+    villager_slots = [
+        idx for idx, role in enumerate(available_roles) if role == Role.VILLAGER
+    ]
+    if not villager_slots:
+        return roles
+    available_roles[random.choice(villager_slots)] = replacement
+    return available_roles + extra_roles
+
+
 def _preferred_replacement_role(forbidden_role: Role, mode: str | None) -> Role:
     if is_wolf_aligned_role(forbidden_role):
         wolf_candidates = [Role.WEREWOLF] + [
@@ -726,10 +805,11 @@ def _preferred_replacement_role(forbidden_role: Role, mode: str | None) -> Role:
                 return candidate
         return Role.WEREWOLF
 
-    villager_candidates = [Role.VILLAGER] + [
+    preferred_filler = _pick_villager_filler_role(mode)
+    villager_candidates = [preferred_filler, Role.VILLAGER] + [
         role
         for role in Role
-        if role != Role.VILLAGER and is_villager_team_role(role)
+        if role not in (Role.VILLAGER, preferred_filler) and is_villager_team_role(role)
     ]
     for candidate in villager_candidates:
         if _is_role_available_in_mode(candidate, mode):
@@ -965,7 +1045,9 @@ def cap_special_werewolves(roles: list[Role], requested_players: int) -> list[Ro
     return roles
 
 
-def enforce_wolf_ratio(roles: list[Role], requested_players: int) -> list[Role]:
+def enforce_wolf_ratio(
+    roles: list[Role], requested_players: int, mode: str | None = None
+) -> list[Role]:
     target_wolves = target_wolf_count_for_players(requested_players)
     available_roles = roles[:-2]
     extra_roles = roles[-2:]
@@ -998,7 +1080,7 @@ def enforce_wolf_ratio(roles: list[Role], requested_players: int) -> list[Role]:
         keep_set = set(keep[:target_wolves])
         for idx in wolf_indices:
             if idx not in keep_set:
-                available_roles[idx] = Role.VILLAGER
+                available_roles[idx] = _pick_villager_filler_role(mode)
 
     elif len(wolf_indices) < target_wolves:
         needed = target_wolves - len(wolf_indices)
@@ -1231,6 +1313,7 @@ class Game:
         self._chat_perm_warning_sent = False
         self._role_perm_warning_sent = False
         self._grumpy_perm_warning_sent = False
+        self.endgame_summary_message: discord.Message | None = None
         self.pending_jail_targets: list[Player] = []
         self.current_jailed_targets: list[Player] = []
         self.previous_jailed_player_ids: set[int] = set()
@@ -6199,7 +6282,7 @@ class Game:
         winner_ids = list(dict.fromkeys(winner_ids))
         all_ids = list(dict.fromkeys(player.user.id for player in self.players))
 
-        await self.ctx.send(
+        self.endgame_summary_message = await self.ctx.send(
             embed=embed,
             view=EndgameIdsView(winner_ids=winner_ids, all_ids=all_ids),
         )
@@ -9798,7 +9881,7 @@ def get_roles(number_of_players: int, mode: str = None) -> list[Role]:
             if i % 2 == 0:
                 roles.append(Role.WEREWOLF)
             else:
-                roles.append(Role.VILLAGER)
+                roles.append(_pick_villager_filler_role(mode))
     else:
         roles = roles_to_give[:number_of_players]
     roles = random.shuffle(roles)
@@ -9854,11 +9937,11 @@ def get_roles(number_of_players: int, mode: str = None) -> list[Role]:
     if roles.count(Role.SISTER) > 0 and available_roles.count(Role.SISTER) < 2:
         for idx, role in enumerate(roles):
             if role == Role.SISTER:
-                roles[idx] = Role.VILLAGER
+                roles[idx] = _pick_villager_filler_role(mode)
     if roles.count(Role.BROTHER) > 0 and available_roles.count(Role.BROTHER) < 2:
         for idx, role in enumerate(roles):
             if role == Role.BROTHER:
-                roles[idx] = Role.VILLAGER
+                roles[idx] = _pick_villager_filler_role(mode)
     available_roles = roles[:-2]
     extra_roles = roles[-2:]
     for idx, role in enumerate(available_roles):
@@ -9868,14 +9951,21 @@ def get_roles(number_of_players: int, mode: str = None) -> list[Role]:
     roles = available_roles + extra_roles
     roles = _replace_unlock_only_advanced_roles_with_base(roles)
     roles = cap_special_werewolves(roles, requested_players=requested_players)
-    roles = enforce_wolf_ratio(roles, requested_players=requested_players)
+    roles = enforce_wolf_ratio(roles, requested_players=requested_players, mode=mode)
     roles = _apply_role_availability(roles, mode=mode)
-    roles = _ensure_team_requirements_in_available(roles)
+    roles = _ensure_team_requirements_in_available(roles, mode=mode)
     roles = enforce_wolf_pack_profile(roles, mode=mode)
+    roles = enforce_six_player_classic_variety(
+        roles,
+        requested_players=requested_players,
+        mode=mode,
+    )
     return roles
 
 
-def _ensure_team_requirements_in_available(roles: list[Role]) -> list[Role]:
+def _ensure_team_requirements_in_available(
+    roles: list[Role], mode: str | None = None
+) -> list[Role]:
     available_roles = roles[:-2]
     extra_roles = roles[-2:]
     if not available_roles:
@@ -9921,7 +10011,7 @@ def _ensure_team_requirements_in_available(roles: list[Role]) -> list[Role]:
                 available_roles[replace_idx],
             )
         else:
-            available_roles[replace_idx] = Role.VILLAGER
+            available_roles[replace_idx] = _pick_villager_filler_role(mode)
 
     return available_roles + extra_roles
 
@@ -9955,7 +10045,7 @@ def get_custom_roles(number_of_players: int, custom_roles: list[Role]) -> list[R
     roles = random.shuffle(available_roles) + random.shuffle(extra_roles)
     roles = _replace_unlock_only_advanced_roles_with_base(roles)
     roles = _apply_role_availability(roles, mode="Custom")
-    roles = _ensure_team_requirements_in_available(roles)
+    roles = _ensure_team_requirements_in_available(roles, mode="Custom")
     return roles
 
 

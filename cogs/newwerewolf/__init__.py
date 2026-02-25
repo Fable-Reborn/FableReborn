@@ -24,6 +24,7 @@ from discord.enums import ButtonStyle
 from discord.ext import commands
 from discord.ui.button import Button
 
+from classes.badges import Badge
 from classes.converters import IntGreaterThan
 from utils import random
 from utils.i18n import _, locale_doc
@@ -46,12 +47,24 @@ from .role_config import (
     ROLE_XP_CHANNEL_IDS,
     ROLE_XP_LONER_WIN,
     ROLE_XP_LOSS,
+    ROLE_XP_PER_LEVEL,
     ROLE_XP_REQUIRE_GM_START,
     ROLE_XP_WIN,
     ROLE_XP_WIN_ALIVE,
 )
 
 class NewWerewolf(commands.Cog):
+    TUTORIAL_TRACK_COLUMNS: dict[str, str] = {
+        "village": "village_completed",
+        "werewolf": "werewolf_completed",
+        "solo": "solo_completed",
+    }
+    TUTORIAL_TRACK_LABELS: dict[str, str] = {
+        "village": "Village",
+        "werewolf": "Werewolf",
+        "solo": "Solo",
+    }
+
     def __init__(self, bot):
         self.bot = bot
         self.games = {}
@@ -92,7 +105,238 @@ class NewWerewolf(commands.Cog):
                     ON newwerewolf_role_xp (user_id);
                     """
                 )
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS newwerewolf_tutorial_completion (
+                        user_id bigint PRIMARY KEY,
+                        village_completed boolean NOT NULL DEFAULT FALSE,
+                        werewolf_completed boolean NOT NULL DEFAULT FALSE,
+                        solo_completed boolean NOT NULL DEFAULT FALSE,
+                        completed_all_at timestamp with time zone,
+                        updated_at timestamp with time zone NOT NULL DEFAULT now()
+                    );
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS newwerewolf_tutorial_completion_all_idx
+                    ON newwerewolf_tutorial_completion (completed_all_at)
+                    WHERE completed_all_at IS NOT NULL;
+                    """
+                )
             self._role_xp_tables_ready = True
+
+    async def _fetch_tutorial_completion_row(self, user_id: int) -> dict[str, object]:
+        empty_progress = {
+            "village_completed": False,
+            "werewolf_completed": False,
+            "solo_completed": False,
+            "completed_all": False,
+            "completed_all_at": None,
+        }
+        if not hasattr(self.bot, "pool"):
+            return empty_progress
+        try:
+            await self._ensure_role_xp_tables()
+        except Exception:
+            return empty_progress
+
+        try:
+            async with self.bot.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT village_completed, werewolf_completed, solo_completed, completed_all_at
+                    FROM newwerewolf_tutorial_completion
+                    WHERE user_id = $1
+                    """,
+                    user_id,
+                )
+        except Exception:
+            return empty_progress
+
+        if row is None:
+            return empty_progress
+
+        village_completed = bool(row["village_completed"])
+        werewolf_completed = bool(row["werewolf_completed"])
+        solo_completed = bool(row["solo_completed"])
+        completed_all = village_completed and werewolf_completed and solo_completed
+        return {
+            "village_completed": village_completed,
+            "werewolf_completed": werewolf_completed,
+            "solo_completed": solo_completed,
+            "completed_all": completed_all,
+            "completed_all_at": row["completed_all_at"],
+        }
+
+    async def _mark_tutorial_track_completed(
+        self, *, user_id: int, track: str
+    ) -> tuple[dict[str, object], bool]:
+        track_column = self.TUTORIAL_TRACK_COLUMNS.get(track)
+        current = await self._fetch_tutorial_completion_row(user_id)
+        if track_column is None:
+            return current, False
+        if not hasattr(self.bot, "pool"):
+            return current, False
+        try:
+            await self._ensure_role_xp_tables()
+        except Exception:
+            return current, False
+
+        newly_completed_all = False
+        try:
+            async with self.bot.pool.acquire() as conn:
+                await conn.execute(
+                    f"""
+                    INSERT INTO newwerewolf_tutorial_completion (user_id, {track_column}, updated_at)
+                    VALUES ($1, TRUE, now())
+                    ON CONFLICT (user_id)
+                    DO UPDATE SET
+                        {track_column} = TRUE,
+                        updated_at = now()
+                    """,
+                    user_id,
+                )
+
+                row = await conn.fetchrow(
+                    """
+                    SELECT village_completed, werewolf_completed, solo_completed, completed_all_at
+                    FROM newwerewolf_tutorial_completion
+                    WHERE user_id = $1
+                    """,
+                    user_id,
+                )
+                if row is not None:
+                    completed_all = bool(
+                        row["village_completed"]
+                        and row["werewolf_completed"]
+                        and row["solo_completed"]
+                    )
+                    if completed_all and row["completed_all_at"] is None:
+                        newly_completed_all = True
+                        await conn.execute(
+                            """
+                            UPDATE newwerewolf_tutorial_completion
+                            SET completed_all_at = now(), updated_at = now()
+                            WHERE user_id = $1
+                            """,
+                            user_id,
+                        )
+        except Exception:
+            return current, False
+
+        updated = await self._fetch_tutorial_completion_row(user_id)
+        return updated, newly_completed_all
+
+    async def _grant_junior_werewolf_badge(self, user_id: int) -> str:
+        if not hasattr(self.bot, "pool"):
+            return "db_unavailable"
+
+        try:
+            async with self.bot.pool.acquire() as conn:
+                profile_row = await conn.fetchrow(
+                    'SELECT "badges" FROM profile WHERE "user" = $1;',
+                    user_id,
+                )
+                if profile_row is None:
+                    return "no_profile"
+
+                raw_badges = profile_row["badges"]
+                try:
+                    current_badges = (
+                        Badge(0) if raw_badges is None else Badge.from_db(raw_badges)
+                    )
+                except Exception:
+                    current_badges = Badge(0)
+
+                if bool(current_badges & Badge.JUNIOR_WEREWOLF):
+                    return "already"
+
+                new_badges = current_badges | Badge.JUNIOR_WEREWOLF
+                await conn.execute(
+                    'UPDATE profile SET "badges" = $1 WHERE "user" = $2;',
+                    new_badges.to_db(),
+                    user_id,
+                )
+                return "granted"
+        except Exception:
+            return "error"
+
+    async def _user_has_badge(self, user_id: int, badge: Badge) -> bool | None:
+        if not hasattr(self.bot, "pool"):
+            return None
+        try:
+            async with self.bot.pool.acquire() as conn:
+                profile_row = await conn.fetchrow(
+                    'SELECT "badges" FROM profile WHERE "user" = $1;',
+                    user_id,
+                )
+        except Exception:
+            return None
+
+        if profile_row is None:
+            return None
+        raw_badges = profile_row["badges"]
+        try:
+            current_badges = Badge(0) if raw_badges is None else Badge.from_db(raw_badges)
+        except Exception:
+            current_badges = Badge(0)
+        return bool(current_badges & badge)
+
+    async def _update_tutorial_completion_and_badge(self, ctx, *, track: str) -> None:
+        if track not in self.TUTORIAL_TRACK_COLUMNS:
+            return
+
+        progress, newly_completed_all = await self._mark_tutorial_track_completed(
+            user_id=ctx.author.id,
+            track=track,
+        )
+        completed_labels = [
+            label
+            for key, label in self.TUTORIAL_TRACK_LABELS.items()
+            if bool(progress.get(self.TUTORIAL_TRACK_COLUMNS[key], False))
+        ]
+        done_count = len(completed_labels)
+        if completed_labels:
+            completion_text = ", ".join(completed_labels)
+        else:
+            completion_text = _("None")
+
+        await ctx.send(
+            _(
+                "Tutorial progress saved: **{done}/3** completed"
+                " (`{completion_text}`)."
+            ).format(
+                done=done_count,
+                completion_text=completion_text,
+            )
+        )
+
+        if not newly_completed_all:
+            return
+
+        badge_outcome = await self._grant_junior_werewolf_badge(ctx.author.id)
+        if badge_outcome == "granted":
+            await ctx.send(
+                _(
+                    "🏅 You completed all three tutorial tracks and earned the"
+                    " **Junior Werewolf** profile badge. It now appears on `prpg`."
+                )
+            )
+        elif badge_outcome == "already":
+            await ctx.send(
+                _(
+                    "🏅 You completed all three tutorial tracks. Your **Junior"
+                    " Werewolf** badge was already unlocked."
+                )
+            )
+        elif badge_outcome == "no_profile":
+            await ctx.send(
+                _(
+                    "You completed all three tutorial tracks, but no RPG profile was"
+                    " found to attach the **Junior Werewolf** badge."
+                )
+            )
 
     async def _is_gm_user(self, user_id: int) -> bool:
         config_gms = set(getattr(self.bot.config.game, "game_masters", []) or [])
@@ -138,6 +382,17 @@ class NewWerewolf(commands.Cog):
             return
 
         updates: list[tuple[int, str, int]] = []
+        xp_events: list[tuple] = []
+        winner_ids: set[int] = {
+            player.user.id for player in game.players if player.has_won
+        }
+        winner = game.winner
+        if getattr(winner, "user", None) is not None:
+            winner_ids.add(winner.user.id)
+        forced_winner = getattr(game, "forced_winner", None)
+        if forced_winner is not None and getattr(forced_winner, "user", None) is not None:
+            winner_ids.add(forced_winner.user.id)
+
         loner_win_sides = {
             WW_SIDE.WHITE_WOLF,
             WW_SIDE.FLUTIST,
@@ -150,7 +405,9 @@ class NewWerewolf(commands.Cog):
                 role_for_xp = player.role
             else:
                 role_for_xp = player.initial_roles[0]
-            if player.has_won:
+            role_for_xp = ADVANCED_BASE_ROLE_BY_ADVANCED.get(role_for_xp, role_for_xp)
+            has_won_match = player.user.id in winner_ids
+            if has_won_match:
                 if player.side in loner_win_sides:
                     gained_xp = ROLE_XP_LONER_WIN
                 elif not player.dead:
@@ -159,12 +416,30 @@ class NewWerewolf(commands.Cog):
                     gained_xp = ROLE_XP_WIN
             else:
                 gained_xp = ROLE_XP_LOSS
-            updates.append((player.user.id, role_for_xp.name.casefold(), gained_xp))
+            role_key = role_for_xp.name.casefold()
+            updates.append((player.user.id, role_key, gained_xp))
+            xp_events.append((player, role_for_xp, role_key, gained_xp))
 
         if not updates:
             return
 
+        user_ids = list(dict.fromkeys(player.user.id for player, *_ in xp_events))
+        existing_xp: dict[tuple[int, str], int] = {}
+
         async with self.bot.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT user_id, role_name, xp
+                FROM newwerewolf_role_xp
+                WHERE user_id = ANY($1::bigint[])
+                """,
+                user_ids,
+            )
+            for row in rows:
+                existing_xp[(int(row["user_id"]), str(row["role_name"]).casefold())] = (
+                    max(0, int(row["xp"] or 0))
+                )
+
             await conn.executemany(
                 """
                 INSERT INTO newwerewolf_role_xp (user_id, role_name, xp)
@@ -177,11 +452,125 @@ class NewWerewolf(commands.Cog):
                 updates,
             )
 
-        await game.ctx.send(_("📈 Role XP was granted for this GM game."))
+        xp_lines: list[str] = []
+        level_lines: list[str] = []
+        for player, role_for_xp, role_key, gained_xp in xp_events:
+            player_id = player.user.id
+            before_xp = existing_xp.get((player_id, role_key), 0)
+            after_xp = before_xp + gained_xp
+            before_level = role_level_from_xp(before_xp)
+            after_level = role_level_from_xp(after_xp)
+
+            xp_lines.append(
+                _("{player} +{xp} XP ({role})").format(
+                    player=getattr(player.user, "display_name", str(player.user)),
+                    xp=gained_xp,
+                    role=self._role_display_name(role_for_xp),
+                )
+            )
+
+            if after_level <= before_level:
+                continue
+
+            unlock_tiers = ADVANCED_ROLE_TIERS_BY_BASE.get(role_for_xp, {})
+            unlocked_now = [
+                advanced_role
+                for unlock_level, advanced_role in sorted(
+                    unlock_tiers.items(), key=lambda pair: pair[0]
+                )
+                if before_level < unlock_level <= after_level
+            ]
+            if unlocked_now:
+                mode_locked_unlocks = set(unavailable_roles_for_mode(unlocked_now, game.mode))
+                unlock_labels: list[str] = []
+                for unlocked_role in unlocked_now:
+                    unlocked_name = self._role_display_name(unlocked_role)
+                    if unlocked_role in mode_locked_unlocks:
+                        unlocked_name = _("{role} (available in other modes)").format(
+                            role=unlocked_name
+                        )
+                    unlock_labels.append(unlocked_name)
+                level_lines.append(
+                    _(
+                        "{player} leveled **{role}** to **Level {level}** and unlocked:"
+                        " **{unlocks}**."
+                    ).format(
+                        player=player.user.mention,
+                        role=self._role_display_name(role_for_xp),
+                        level=after_level,
+                        unlocks=", ".join(unlock_labels),
+                    )
+                )
+            else:
+                level_lines.append(
+                    _("{player} leveled **{role}** to **Level {level}**.").format(
+                        player=player.user.mention,
+                        role=self._role_display_name(role_for_xp),
+                        level=after_level,
+                    )
+                )
+
+        winner_embed_updated = await self._append_xp_to_winner_embed(game, xp_lines)
+        if not winner_embed_updated and xp_lines:
+            await self._send_role_xp_summary_embed(game, xp_lines)
+        if level_lines:
+            await self._send_level_up_summary_embed(game, level_lines)
+
+    async def _append_xp_to_winner_embed(self, game: Game, xp_lines: list[str]) -> bool:
+        endgame_message = getattr(game, "endgame_summary_message", None)
+        if endgame_message is None or not xp_lines:
+            return False
+        if not getattr(endgame_message, "embeds", None):
+            return False
+
+        try:
+            embed = endgame_message.embeds[0].copy()
+            for idx, chunk in enumerate(self._chunk_lines(xp_lines, max_chars=1000)):
+                field_name = _("Role XP Earned")
+                if idx > 0:
+                    field_name = _("Role XP Earned (cont.)")
+                embed.add_field(name=field_name, value=chunk, inline=False)
+            await endgame_message.edit(embed=embed)
+            return True
+        except (discord.Forbidden, discord.HTTPException):
+            return False
+
+    async def _send_role_xp_summary_embed(self, game: Game, xp_lines: list[str]) -> None:
+        chunks = self._chunk_lines(xp_lines, max_chars=3800)
+        for idx, chunk in enumerate(chunks, start=1):
+            embed = discord.Embed(
+                title=_("Role XP Earned"),
+                description=chunk,
+                colour=self.bot.config.game.primary_colour,
+            )
+            if len(chunks) > 1:
+                embed.set_footer(text=_("Page {page}/{total}").format(page=idx, total=len(chunks)))
+            await game.ctx.send(embed=embed)
+
+    async def _send_level_up_summary_embed(self, game: Game, level_lines: list[str]) -> None:
+        chunks = self._chunk_lines(level_lines, max_chars=3800)
+        for idx, chunk in enumerate(chunks, start=1):
+            embed = discord.Embed(
+                title=_("Role Level Ups"),
+                description=chunk,
+                colour=self.bot.config.game.primary_colour,
+            )
+            if len(chunks) > 1:
+                embed.set_footer(text=_("Page {page}/{total}").format(page=idx, total=len(chunks)))
+            await game.ctx.send(embed=embed)
 
     @staticmethod
     def _role_display_name(role: ROLES) -> str:
         return role.name.title().replace("_", " ")
+
+    @staticmethod
+    def _xp_progress_fraction(xp: int) -> tuple[int, int]:
+        xp_value = max(0, int(xp or 0))
+        xp_per_level = max(1, int(ROLE_XP_PER_LEVEL))
+        if xp_value == 0:
+            return 0, xp_per_level
+        # Keep progress aligned with current role_level_from_xp thresholds.
+        return ((xp_value - 1) % xp_per_level) + 1, xp_per_level
 
     async def _fetch_user_role_xp_map(self, user_id: int) -> dict[str, int]:
         if not hasattr(self.bot, "pool"):
@@ -2606,6 +2995,8 @@ class NewWerewolf(commands.Cog):
                     )
                 )
                 await run_tutorial_game(tutorial_variant=TUTORIAL_VARIANT_SOLO_JESTER)
+
+            await self._update_tutorial_completion_and_badge(ctx, track=track)
         except Exception as e:
             await send_traceback(ctx, e)
             raise
@@ -3087,6 +3478,146 @@ class NewWerewolf(commands.Cog):
             return await ctx.send(embed=embeds[0])
         return await self.bot.paginator.Paginator(extras=embeds).paginate(ctx)
 
+    @newwerewolf.command(
+        name="tutorialstatus",
+        aliases=["tutorialprogress", "tutstatus", "tutprogress"],
+        brief=_("View NewWerewolf tutorial completion status"),
+    )
+    @locale_doc
+    async def tutorialstatus(self, ctx, user: discord.User = None):
+        _(
+            """View NewWerewolf tutorial completion status.
+
+            `[user]` - Optional user to inspect, defaults to yourself
+
+            `{prefix}nww tutorialstatus`
+            `{prefix}nww tutorialstatus @user`
+            """
+        )
+        target = user or ctx.author
+        progress = await self._fetch_tutorial_completion_row(target.id)
+        completed_labels = [
+            label
+            for key, label in self.TUTORIAL_TRACK_LABELS.items()
+            if bool(progress.get(self.TUTORIAL_TRACK_COLUMNS[key], False))
+        ]
+        remaining_labels = [
+            label
+            for key, label in self.TUTORIAL_TRACK_LABELS.items()
+            if not bool(progress.get(self.TUTORIAL_TRACK_COLUMNS[key], False))
+        ]
+        done_count = len(completed_labels)
+
+        badge_state = await self._user_has_badge(target.id, Badge.JUNIOR_WEREWOLF)
+        if bool(progress.get("completed_all")) and badge_state is False:
+            badge_outcome = await self._grant_junior_werewolf_badge(target.id)
+            if badge_outcome in ("granted", "already"):
+                badge_state = True
+            elif badge_outcome == "no_profile":
+                badge_state = None
+        if badge_state is True:
+            badge_text = _("Unlocked")
+        elif badge_state is False:
+            badge_text = _("Not unlocked")
+        else:
+            badge_text = _("Unavailable (no profile or database)")
+
+        embed = discord.Embed(
+            title=_("NewWerewolf Tutorial Status"),
+            colour=self.bot.config.game.primary_colour,
+            description=_("Progress for {user}: **{done}/3** tracks completed.").format(
+                user=target.mention,
+                done=done_count,
+            ),
+        )
+        embed.add_field(
+            name=_("Completed"),
+            value=", ".join(completed_labels) if completed_labels else _("None"),
+            inline=False,
+        )
+        embed.add_field(
+            name=_("Remaining"),
+            value=", ".join(remaining_labels) if remaining_labels else _("None"),
+            inline=False,
+        )
+        embed.add_field(
+            name=_("Junior Werewolf Badge"),
+            value=badge_text,
+            inline=False,
+        )
+        return await ctx.send(embed=embed)
+
+    @newwerewolf.command(
+        name="tutorialgraduates",
+        aliases=["tutorialgrads", "tutgrads", "tutorialcomplete"],
+        brief=_("List users who completed all 3 NewWerewolf tutorials"),
+    )
+    @locale_doc
+    async def tutorialgraduates(self, ctx):
+        _(
+            """List users who completed all three NewWerewolf tutorial tracks.
+
+            `{prefix}nww tutorialgraduates`
+            """
+        )
+        if not hasattr(self.bot, "pool"):
+            return await ctx.send(
+                _("Tutorial tracking is unavailable right now (no database connection).")
+            )
+        try:
+            await self._ensure_role_xp_tables()
+            async with self.bot.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT user_id, completed_all_at
+                    FROM newwerewolf_tutorial_completion
+                    WHERE village_completed = TRUE
+                      AND werewolf_completed = TRUE
+                      AND solo_completed = TRUE
+                    ORDER BY completed_all_at DESC NULLS LAST, updated_at DESC
+                    LIMIT 100
+                    """
+                )
+        except Exception:
+            return await ctx.send(_("Couldn't load tutorial completion data right now."))
+
+        if not rows:
+            return await ctx.send(_("No players have completed all three tutorials yet."))
+
+        lines: list[str] = []
+        for row in rows:
+            user_id = int(row["user_id"])
+            completed_at = row["completed_all_at"]
+            if completed_at is not None:
+                try:
+                    completed_text = f"<t:{int(completed_at.timestamp())}:R>"
+                except Exception:
+                    completed_text = _("unknown time")
+            else:
+                completed_text = _("unknown time")
+            lines.append(f"<@{user_id}> - {completed_text}")
+
+        chunks = self._chunk_lines(lines, max_chars=3800)
+        embeds = []
+        for idx, chunk in enumerate(chunks, start=1):
+            embed = discord.Embed(
+                title=_("NewWerewolf Tutorial Graduates"),
+                description=chunk,
+                colour=self.bot.config.game.primary_colour,
+            )
+            if len(chunks) > 1:
+                embed.set_footer(
+                    text=_("Page {page}/{total}").format(
+                        page=idx,
+                        total=len(chunks),
+                    )
+                )
+            embeds.append(embed)
+
+        if len(embeds) == 1:
+            return await ctx.send(embed=embeds[0])
+        return await self.bot.paginator.Paginator(extras=embeds).paginate(ctx)
+
     @newwerewolf.command(brief=_("Check your werewolf role"))
     @locale_doc
     async def myrole(self, ctx):
@@ -3210,6 +3741,7 @@ class NewWerewolf(commands.Cog):
             base_role_name = self._role_display_name(base_role)
             xp = xp_map.get(base_role.name.casefold(), 0)
             level = role_level_from_xp(xp)
+            xp_current, xp_needed = self._xp_progress_fraction(xp)
 
             unlock_tiers = sorted(
                 ADVANCED_ROLE_TIERS_BY_BASE.get(base_role, {}).items(),
@@ -3241,9 +3773,11 @@ class NewWerewolf(commands.Cog):
                     role=base_role_name
                 )
             lines = [
-                _("{role}: Level {level} XP: {xp}").format(
+                _("{role}: Level {level} XP: {current}/{needed} (Total: {xp})").format(
                     role=base_role_name,
                     level=level,
+                    current=xp_current,
+                    needed=xp_needed,
                     xp=xp,
                 )
             ]
@@ -3261,6 +3795,7 @@ class NewWerewolf(commands.Cog):
             role_name = self._role_display_name(base_role)
             xp = xp_map.get(base_role.name.casefold(), 0)
             level = role_level_from_xp(xp)
+            xp_current, xp_needed = self._xp_progress_fraction(xp)
             unlock_tiers = sorted(
                 ADVANCED_ROLE_TIERS_BY_BASE.get(base_role, {}).items(),
                 key=lambda pair: pair[0],
@@ -3277,10 +3812,13 @@ class NewWerewolf(commands.Cog):
                 unlock_lines = [_("No advanced unlocks.")]
 
             field_value = _(
-                "{role}: Level {level} XP: {xp}\n{unlock_lines}"
+                "{role}: Level {level} XP: {current}/{needed} (Total: {xp})\n"
+                "{unlock_lines}"
             ).format(
                 role=role_name,
                 level=level,
+                current=xp_current,
+                needed=xp_needed,
                 xp=xp,
                 unlock_lines="\n".join(unlock_lines),
             )
@@ -3294,7 +3832,8 @@ class NewWerewolf(commands.Cog):
             embed = discord.Embed(
                 title=_("NewWerewolf Progress"),
                 description=_(
-                    "Format: `Base role: Level X XP: Y` then unlock levels below."
+                    "Format: `Base role: Level X XP: current/needed (Total: Y)` then"
+                    " unlock levels below."
                 ),
                 colour=self.bot.config.game.primary_colour,
             ).set_author(name=str(ctx.author), icon_url=ctx.author.display_avatar.url)

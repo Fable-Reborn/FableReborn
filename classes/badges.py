@@ -36,6 +36,7 @@ class Badge(IntFlag):
     TESTER = 64
     VETERAN = 128
     GOD = 256
+    JUNIOR_WEREWOLF = 512
 
     @classmethod
     def from_string(cls, string: str) -> Badge | None:
