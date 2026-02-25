@@ -569,11 +569,13 @@ class Profile(commands.Cog):
         draw.text((80, 404), clip(f"Level {level}  {rarity}", value_font, 286), font=value_font, fill=colors["border"])
         draw.text((80, 436), clip(race_name, tiny_font, 286), font=tiny_font, fill=colors["muted"])
         badge_value = self._badge_from_db_value(profile.get("badges"))
-        badge_lines = badge_value.to_items_lowercase()[:6] if badge_value else ["No badges yet"]
-        badge_lines = [
-            "Junior Werewolf" if badge == "juniorwerewolf" else badge
-            for badge in badge_lines
-        ]
+        if badge_value:
+            badge_lines = [
+                str(badge_name).replace("_", " ").title()
+                for badge_name in badge_value.to_items()[:6]
+            ]
+        else:
+            badge_lines = ["No badges yet"]
         draw.text((80, 506), "Relics and Badges", font=label_font, fill=colors["border"])
         draw.multiline_text(
             (80, 542),

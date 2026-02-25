@@ -20,6 +20,7 @@ import asyncio
 
 import discord
 
+from asyncpg.types import BitString
 from discord.enums import ButtonStyle
 from discord.ext import commands
 from discord.ui.button import Button
@@ -54,6 +55,7 @@ from .role_config import (
 )
 
 class NewWerewolf(commands.Cog):
+    JUNIOR_WEREWOLF_BADGE_BIT: int = 512
     TUTORIAL_TRACK_COLUMNS: dict[str, str] = {
         "village": "village_completed",
         "werewolf": "werewolf_completed",
@@ -228,10 +230,18 @@ class NewWerewolf(commands.Cog):
         updated = await self._fetch_tutorial_completion_row(user_id)
         return updated, newly_completed_all
 
+    @classmethod
+    def _junior_werewolf_badge_mask(cls) -> int:
+        try:
+            return int(Badge.JUNIOR_WEREWOLF)
+        except Exception:
+            return cls.JUNIOR_WEREWOLF_BADGE_BIT
+
     async def _grant_junior_werewolf_badge(self, user_id: int) -> str:
         if not hasattr(self.bot, "pool"):
             return "db_unavailable"
 
+        badge_mask = self._junior_werewolf_badge_mask()
         try:
             async with self.bot.pool.acquire() as conn:
                 profile_row = await conn.fetchrow(
@@ -243,27 +253,33 @@ class NewWerewolf(commands.Cog):
 
                 raw_badges = profile_row["badges"]
                 try:
-                    current_badges = (
-                        Badge(0) if raw_badges is None else Badge.from_db(raw_badges)
+                    current_bits = (
+                        0
+                        if raw_badges is None
+                        else int.from_bytes(raw_badges.bytes, byteorder="big")
                     )
                 except Exception:
-                    current_badges = Badge(0)
+                    current_bits = 0
 
-                if bool(current_badges & Badge.JUNIOR_WEREWOLF):
+                if current_bits & badge_mask:
                     return "already"
 
-                new_badges = current_badges | Badge.JUNIOR_WEREWOLF
+                new_bits = current_bits | badge_mask
                 await conn.execute(
                     'UPDATE profile SET "badges" = $1 WHERE "user" = $2;',
-                    new_badges.to_db(),
+                    BitString.from_int(new_bits, 16),
                     user_id,
                 )
                 return "granted"
         except Exception:
             return "error"
 
-    async def _user_has_badge(self, user_id: int, badge: Badge) -> bool | None:
+    async def _user_has_badge(self, user_id: int, badge: Badge | int) -> bool | None:
         if not hasattr(self.bot, "pool"):
+            return None
+        try:
+            badge_mask = int(badge)
+        except Exception:
             return None
         try:
             async with self.bot.pool.acquire() as conn:
@@ -278,10 +294,14 @@ class NewWerewolf(commands.Cog):
             return None
         raw_badges = profile_row["badges"]
         try:
-            current_badges = Badge(0) if raw_badges is None else Badge.from_db(raw_badges)
+            current_bits = (
+                0
+                if raw_badges is None
+                else int.from_bytes(raw_badges.bytes, byteorder="big")
+            )
         except Exception:
-            current_badges = Badge(0)
-        return bool(current_badges & badge)
+            current_bits = 0
+        return bool(current_bits & badge_mask)
 
     async def _update_tutorial_completion_and_badge(self, ctx, *, track: str) -> None:
         if track not in self.TUTORIAL_TRACK_COLUMNS:
@@ -3508,7 +3528,10 @@ class NewWerewolf(commands.Cog):
         ]
         done_count = len(completed_labels)
 
-        badge_state = await self._user_has_badge(target.id, Badge.JUNIOR_WEREWOLF)
+        badge_state = await self._user_has_badge(
+            target.id,
+            self._junior_werewolf_badge_mask(),
+        )
         if bool(progress.get("completed_all")) and badge_state is False:
             badge_outcome = await self._grant_junior_werewolf_badge(target.id)
             if badge_outcome in ("granted", "already"):
