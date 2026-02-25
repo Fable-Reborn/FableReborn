@@ -1201,7 +1201,6 @@ class Battles(commands.Cog):
                 "The vault ceiling fractures into a blinding rift as the end-world "
                 "wyrm descends into the sanctum."
             ),
-            "image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_ChatGPT_Image_Feb_19_2026_09_33_42_PM.png",
             "cache_filename": "omnithrone_scene_1_descent.png",
             "color": 0x4B4F66,
             "delay": 3.5,
@@ -1212,7 +1211,6 @@ class Battles(commands.Cog):
                 "You step forward and meet the God of Gods in silence. The throne "
                 "realm trembles as both sides prepare to strike."
             ),
-            "image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_ChatGPT_Image_Feb_19_2026_09_39_13_PM.png",
             "cache_filename": "omnithrone_scene_2_confrontation.png",
             "color": 0x7A1E1E,
             "delay": 3.5,
@@ -1223,7 +1221,6 @@ class Battles(commands.Cog):
                 "A beam of pure annihilation erupts from its maw. You raise your "
                 "shield and hold the line as the sanctum floor splits beneath you."
             ),
-            "image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_ChatGPT_Image_Feb_19_2026_09_34_08_PM.png",
             "cache_filename": "omnithrone_scene_3_first_roar.png",
             "color": 0xCC5C12,
             "delay": 4.0,
@@ -1234,7 +1231,6 @@ class Battles(commands.Cog):
                 "The spirits of Elysia, Sepulchure, and Drakath stand beside you. "
                 "Their power converges against the God of Gods."
             ),
-            "image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_ChatGPT_Image_Feb_19_2026_09_58_05_PM.png",
             "cache_filename": "omnithrone_scene_4_oath_of_three.png",
             "color": 0xBFA24A,
             "delay": 4.0,
@@ -2359,12 +2355,8 @@ class Battles(commands.Cog):
         return matches[0]
 
     async def _cache_omnithrone_cinematic_assets(self) -> dict[str, str]:
-        """Download cinematic art once and reuse local files for faster subsequent runs."""
+        """Load cached cinematic art from disk."""
         cached_paths: dict[str, str] = {}
-        session = getattr(self.bot, "session", None)
-        if session is None:
-            return cached_paths
-
         os.makedirs(self.OMNITHRONE_CINEMATIC_CACHE_DIR, exist_ok=True)
 
         for scene in self.OMNITHRONE_CINEMATIC_SCENES:
@@ -2375,21 +2367,6 @@ class Battles(commands.Cog):
 
             if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
                 cached_paths[cache_filename] = cache_path
-                continue
-
-            try:
-                async with session.get(scene["image_url"], timeout=20) as response:
-                    if response.status != 200:
-                        continue
-                    payload = await response.read()
-                if not payload:
-                    continue
-                with open(cache_path, "wb") as cache_file:
-                    cache_file.write(payload)
-                if os.path.getsize(cache_path) > 0:
-                    cached_paths[cache_filename] = cache_path
-            except Exception:
-                continue
 
         return cached_paths
 
@@ -2415,7 +2392,15 @@ class Battles(commands.Cog):
                 embed.set_image(url=f"attachment://{cache_filename}")
                 scene_file = discord.File(cached_path, filename=cache_filename)
             else:
-                embed.set_image(url=scene["image_url"])
+                if cache_filename:
+                    embed.add_field(
+                        name="Scene Art Missing",
+                        value=(
+                            "Missing local image: "
+                            f"`{os.path.join(self.OMNITHRONE_CINEMATIC_CACHE_DIR, cache_filename)}`"
+                        ),
+                        inline=False,
+                    )
 
             if cinematic_message is None:
                 if scene_file:
