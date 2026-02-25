@@ -849,6 +849,24 @@ SPECIAL_WOLF_ROLES = {
     Role.WHITE_WOLF,
 }
 
+# "Special" wolves for pack composition excludes Alpha so one slot can remain
+# base Werewolf/Alpha according to requested behavior.
+PACK_SPECIAL_WOLF_ROLES = {
+    Role.BIG_BAD_WOLF,
+    Role.CURSED_WOLF_FATHER,
+    Role.WOLF_SHAMAN,
+    Role.WOLF_NECROMANCER,
+    Role.GUARDIAN_WOLF,
+    Role.WOLF_SUMMONER,
+    Role.WOLF_TRICKSTER,
+    Role.NIGHTMARE_WEREWOLF,
+    Role.VOODOO_WEREWOLF,
+    Role.JUNIOR_WEREWOLF,
+    Role.WOLF_SEER,
+    Role.SORCERER,
+    Role.WOLF_PACIFIST,
+}
+
 # Mapped from Wolvesville unknown aura categories and nearest equivalents used here.
 UNKNOWN_AURA_ROLES = {
     # Village roles that can kill/revive.
@@ -1019,6 +1037,60 @@ def enforce_wolf_ratio(roles: list[Role], requested_players: int) -> list[Role]:
             if role == Role.WHITE_WOLF:
                 available_roles[idx] = Role.WEREWOLF
                 break
+
+    return available_roles + extra_roles
+
+
+def _choose_base_wolf_role(mode: str | None) -> Role:
+    if _is_role_available_in_mode(Role.ALPHA_WEREWOLF, mode) and random.randint(1, 100) <= 50:
+        return Role.ALPHA_WEREWOLF
+    return Role.WEREWOLF
+
+
+def enforce_wolf_pack_profile(roles: list[Role], mode: str | None) -> list[Role]:
+    """
+    Force generated wolf composition profile:
+    - 1 wolf  -> 50/50 Werewolf or Alpha Werewolf
+    - 2 wolves -> 1 special + 1 base (Werewolf/Alpha)
+    - 3 wolves -> 2 special + 1 base (Werewolf/Alpha)
+    - N wolves -> N-1 special + 1 base (Werewolf/Alpha), if specials are available
+    """
+    available_roles = roles[:-2]
+    extra_roles = roles[-2:]
+
+    wolf_indices = [
+        idx for idx, role in enumerate(available_roles) if is_wolf_team_role(role)
+    ]
+    wolf_count = len(wolf_indices)
+    if wolf_count == 0:
+        return roles
+
+    if wolf_count == 1:
+        available_roles[wolf_indices[0]] = _choose_base_wolf_role(mode)
+        return available_roles + extra_roles
+
+    special_pool = [
+        role
+        for role in PACK_SPECIAL_WOLF_ROLES
+        if _is_role_available_in_mode(role, mode)
+    ]
+    target_special = max(0, wolf_count - 1)
+    special_count = min(target_special, len(special_pool))
+
+    shuffled_wolf_slots = random.shuffle(wolf_indices.copy())
+    special_slots = shuffled_wolf_slots[:special_count]
+    base_slots = shuffled_wolf_slots[special_count:]
+
+    shuffled_special_roles = random.shuffle(special_pool.copy())
+    for idx, slot in enumerate(special_slots):
+        if idx < len(shuffled_special_roles):
+            chosen_special = shuffled_special_roles[idx]
+        else:
+            chosen_special = random.choice(special_pool)
+        available_roles[slot] = chosen_special
+
+    for slot in base_slots:
+        available_roles[slot] = _choose_base_wolf_role(mode)
 
     return available_roles + extra_roles
 
@@ -9799,6 +9871,7 @@ def get_roles(number_of_players: int, mode: str = None) -> list[Role]:
     roles = enforce_wolf_ratio(roles, requested_players=requested_players)
     roles = _apply_role_availability(roles, mode=mode)
     roles = _ensure_team_requirements_in_available(roles)
+    roles = enforce_wolf_pack_profile(roles, mode=mode)
     return roles
 
 

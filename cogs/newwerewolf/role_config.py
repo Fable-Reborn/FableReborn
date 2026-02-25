@@ -121,4 +121,4 @@ ROLE_XP_LONER_WIN: int = 50
 # - and only in configured channels. If ROLE_XP_CHANNEL_IDS is empty, NewWerewolf
 #   falls back to config.game.official_tournament_channel_id.
 ROLE_XP_REQUIRE_GM_START: bool = True
-ROLE_XP_CHANNEL_IDS: set[int] = set()
+ROLE_XP_CHANNEL_IDS: set[int] = {1458644607893246024}
