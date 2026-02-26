@@ -196,6 +196,12 @@ class GameMaster(commands.Cog):
             return ""
         return " ".join(alias.lower().replace("_", " ").replace("-", " ").split())
 
+    async def _safe_ctx_send(self, ctx, *args, **kwargs):
+        try:
+            return await ctx.send(*args, **kwargs)
+        except (discord.Forbidden, discord.HTTPException):
+            return None
+
     @is_gm()
     @commands.command(brief=_("Publish an announcement"))
     @locale_doc
@@ -258,7 +264,7 @@ class GameMaster(commands.Cog):
                 amount,
                 id_,
             )
-        await ctx.send(f"You granted **{other} {amount}** favor.")
+        await self._safe_ctx_send(ctx, f"You granted **{other} {amount}** favor.")
         with handle_message_parameters(
                 content="**{gm}** granted **{other}** {amount} favor.".format(
                     gm=ctx.author,
@@ -487,7 +493,7 @@ class GameMaster(commands.Cog):
             self.bot.bans.add(id_)
             await self.bot.reload_bans()
 
-            await ctx.send(_("Banned: {other}").format(other=other))
+            await self._safe_ctx_send(ctx, _("Banned: {other}").format(other=other))
 
             with handle_message_parameters(
                     content="**{gm}** banned **{other}**.\n\nReason: *{reason}*".format(
@@ -540,7 +546,7 @@ class GameMaster(commands.Cog):
             self.bot.bans.remove(id_)
             await self.bot.reload_bans()
 
-            await ctx.send(_("Unbanned: {other}").format(other=other))
+            await self._safe_ctx_send(ctx, _("Unbanned: {other}").format(other=other))
 
             with handle_message_parameters(
                     content="**{gm}** unbanned **{other}**.\n\nReason: *{reason}*".format(
@@ -584,7 +590,7 @@ class GameMaster(commands.Cog):
         )
 
         # Send a confirmation message to the context
-        await ctx.send(f"{member.display_name} now has {new_value} weapon tokens!")
+        await self._safe_ctx_send(ctx, f"{member.display_name} now has {new_value} weapon tokens!")
 
         with handle_message_parameters(
                 content="**{gm}** gave **{tokens}** to **{member}**.\n\nReason: *{reason}*".format(
@@ -628,7 +634,8 @@ class GameMaster(commands.Cog):
                 await self.bot.pool.execute(
                     'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;', money, other.id
                 )
-                await ctx.send(
+                await self._safe_ctx_send(
+                    ctx,
                     _(
                         "Successfully gave **${money}** without a loss for you to **{other}**."
                     ).format(money=money, other=other)
@@ -648,7 +655,7 @@ class GameMaster(commands.Cog):
                     )
 
         except Exception as e:
-            await ctx.send(e)
+            await self._safe_ctx_send(ctx, e)
 
     @is_gm()
     @commands.command(hidden=True, brief=_("Create money for multiple users"))
@@ -686,7 +693,8 @@ class GameMaster(commands.Cog):
                     updated_users.append(str(other))
 
                 # Send a single summary message
-                await ctx.send(
+                await self._safe_ctx_send(
+                    ctx,
                     _(
                         "Successfully gave **${money}** to the following users without a loss for you: {users}."
                     ).format(money=money, users=", ".join(updated_users))
@@ -707,7 +715,7 @@ class GameMaster(commands.Cog):
                     )
 
         except Exception as e:
-            await ctx.send(e)
+            await self._safe_ctx_send(ctx, e)
 
     @commands.is_owner()
     @commands.command(hidden=True, brief=_("Emergancy Shutdown"))
@@ -846,7 +854,8 @@ class GameMaster(commands.Cog):
             await self.bot.pool.execute(
                 'UPDATE profile SET "eastereggs"="eastereggs"+$1 WHERE "user"=$2;', eggs, other.id
             )
-            await ctx.send(
+            await self._safe_ctx_send(
+                ctx,
                 _(
                     "Successfully gave **{money} eggs** without a loss for you to **{other}**."
                 ).format(money=eggs, other=other)
@@ -888,7 +897,8 @@ class GameMaster(commands.Cog):
         await self.bot.pool.execute(
             'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;', money, other.id
         )
-        await ctx.send(
+        await self._safe_ctx_send(
+            ctx,
             _("Successfully removed **${money}** from **{other}**.").format(
                 money=money, other=other
             )
@@ -948,7 +958,7 @@ class GameMaster(commands.Cog):
                 other.id,
             )
             await self.bot.delete_profile(other.id, conn=conn)
-        await ctx.send(_("Successfully deleted the character."))
+        await self._safe_ctx_send(ctx, _("Successfully deleted the character."))
 
         with handle_message_parameters(
                 content="**{gm}** deleted **{other}**.\n\nReason: *{reason}*".format(
@@ -975,7 +985,8 @@ class GameMaster(commands.Cog):
         if target.id in ctx.bot.config.game.game_masters:  # preserve renaming of admins
             return await ctx.send(_("Very funny..."))
 
-        await ctx.send(
+        await self._safe_ctx_send(
+            ctx,
             _("What shall the character's name be? (min. 3 letters, max. 20)")
         )
 
@@ -990,12 +1001,12 @@ class GameMaster(commands.Cog):
         try:
             name = await self.bot.wait_for("message", timeout=60, check=mycheck)
         except asyncio.TimeoutError:
-            return await ctx.send(_("Timeout expired."))
+            return await self._safe_ctx_send(ctx, _("Timeout expired."))
 
         await self.bot.pool.execute(
             'UPDATE profile SET "name"=$1 WHERE "user"=$2;', name.content, target.id
         )
-        await ctx.send(_("Renamed."))
+        await self._safe_ctx_send(ctx, _("Renamed."))
 
         with handle_message_parameters(
                 content="**{gm}** renamed **{target}** to **{name}**.\n\nReason: *{reason}*".format(
@@ -1045,7 +1056,7 @@ class GameMaster(commands.Cog):
             return await ctx.send(_("Invalid stat."))
 
 
-        await ctx.send(_("Done."))
+        await self._safe_ctx_send(ctx, _("Done."))
 
         try:
             hand = item_type.get_hand().value
@@ -1060,7 +1071,7 @@ class GameMaster(commands.Cog):
                 element=element,
             )
         except Exception as e:
-            await ctx.send(f"Error has occured {e}")
+            await self._safe_ctx_send(ctx, f"Error has occured {e}")
 
         message = "{gm} created a {item_type} with name {name} and stat {stat}.\n\nReason: *{reason}*".format(
             gm=ctx.author,
@@ -1148,7 +1159,8 @@ class GameMaster(commands.Cog):
                 consumable_type,
             )
 
-        await ctx.send(
+        await self._safe_ctx_send(
+            ctx,
             _(
                 "Granted **{amount}x {item_name}** to **{target}**. New quantity: **{quantity}**."
             ).format(amount=amount, item_name=display_name, target=target, quantity=new_quantity)
@@ -1196,7 +1208,8 @@ class GameMaster(commands.Cog):
             amount,
             target.id,
         )
-        await ctx.send(
+        await self._safe_ctx_send(
+            ctx,
             _("Successfully gave **{amount}** {rarity} crates to **{target}**.").format(
                 amount=amount, target=target, rarity=rarity
             )
@@ -1261,7 +1274,10 @@ class GameMaster(commands.Cog):
                 return
                 
             resource_display_name = resource_type.replace('_', ' ').title()
-            await ctx.send(_("🎲 No resource specified, giving random resource: **{resource}**").format(resource=resource_display_name))
+            await self._safe_ctx_send(
+                ctx,
+                _("🎲 No resource specified, giving random resource: **{resource}**").format(resource=resource_display_name),
+            )
         else:
             # Normalize the resource name
             resource_type = amulet_cog.normalize_resource_name(resource_type)
@@ -1274,9 +1290,12 @@ class GameMaster(commands.Cog):
         success = await amulet_cog.give_crafting_resource(target.id, resource_type, amount)
         
         if success:
-            await ctx.send(_("✅ Successfully gave **{amount}x {resource}** to {target}!").format(
-                amount=amount, resource=resource_display_name, target=target.mention
-            ))
+            await self._safe_ctx_send(
+                ctx,
+                _("✅ Successfully gave **{amount}x {resource}** to {target}!").format(
+                    amount=amount, resource=resource_display_name, target=target.mention
+                ),
+            )
 
             # Log the action using the proper GM logging system
             with handle_message_parameters(
@@ -1390,9 +1409,12 @@ class GameMaster(commands.Cog):
         # Send summary
         if success_count > 0:
             resource_display = resource_type.replace('_', ' ').title() if resource_type else "Random Resources"
-            await ctx.send(_("✅ Successfully gave **{amount}x {resource}** to **{count}** players!").format(
-                amount=amount, resource=resource_display, count=success_count
-            ))
+            await self._safe_ctx_send(
+                ctx,
+                _("✅ Successfully gave **{amount}x {resource}** to **{count}** players!").format(
+                    amount=amount, resource=resource_display, count=success_count
+                ),
+            )
 
             # Log the batch action using the proper GM logging system
             user_list = ", ".join([str(user) for user in users[:success_count]])
@@ -1474,7 +1496,8 @@ class GameMaster(commands.Cog):
 
         # Send a summary message
         if success_count > 0:
-            await ctx.send(
+            await self._safe_ctx_send(
+                ctx,
                 _("Successfully gave **{amount}** {rarity} crates to **{count}** users.").format(
                     amount=amount, count=success_count, rarity=rarity
                 )
@@ -1486,7 +1509,7 @@ class GameMaster(commands.Cog):
                 failed_msg += _(": {ids}").format(ids=', '.join(failed_ids))
             else:
                 failed_msg += _(": {ids}...").format(ids=', '.join(failed_ids[:10]))
-            await ctx.send(failed_msg)
+            await self._safe_ctx_send(ctx, failed_msg)
 
         # Log the action to the GM log channel
         with handle_message_parameters(
@@ -1525,7 +1548,8 @@ class GameMaster(commands.Cog):
         await self.bot.pool.execute(
             'UPDATE profile SET "xp"="xp"+$1 WHERE "user"=$2;', amount, target.id
         )
-        await ctx.send(
+        await self._safe_ctx_send(
+            ctx,
             _("Successfully gave **{amount}** XP to **{target}**.").format(
                 amount=amount, target=target
             )
@@ -1979,9 +2003,9 @@ class GameMaster(commands.Cog):
             stat_point_received = False
 
             new_level = int(rpgtools.xptolevel(int(xp)))
-            await ctx.send(new_level)
+            await self._safe_ctx_send(ctx, new_level)
             if new_level % 2 == 0 and new_level > 0:
-                await ctx.send("breaker")
+                await self._safe_ctx_send(ctx, "breaker")
                 # Increment statpoints directly in the database and fetch the updated value
                 update_query = 'UPDATE profile SET "statpoints" = "statpoints" + 1 WHERE "user" = $1 RETURNING "statpoints";'
                 new_statpoints = await conn.fetchval(update_query, target.id)
@@ -2072,7 +2096,8 @@ class GameMaster(commands.Cog):
             if local:
                 await self.bot.pool.release(conn)
 
-            await ctx.send(
+            await self._safe_ctx_send(
+                ctx,
                 _(
                     "You reached a new level: **{new_level}** :star:! You received {reward} "
                     "as a reward :tada:! {additional}"
@@ -2082,7 +2107,7 @@ class GameMaster(commands.Cog):
             import traceback
             error_message = f"Error occurred: {e}\n"
             error_message += traceback.format_exc()
-            await ctx.send(error_message)
+            await self._safe_ctx_send(ctx, error_message)
             print(error_message)
 
 
@@ -2119,7 +2144,8 @@ class GameMaster(commands.Cog):
                 'UPDATE guild SET "memberlimit"=$1 WHERE "leader"=$2;', 50, target.id
             )
 
-        await ctx.send(
+        await self._safe_ctx_send(
+            ctx,
             _(
                 "Successfully reset {target}'s background, class, item names and guild"
                 " member limit."
@@ -2155,7 +2181,7 @@ class GameMaster(commands.Cog):
             target.id,
         )
 
-        await ctx.send(_("Successfully reset {target}'s class.").format(target=target))
+        await self._safe_ctx_send(ctx, _("Successfully reset {target}'s class.").format(target=target))
 
         with handle_message_parameters(
                 content="**{gm}** reset **{target}**'s class.\n\nReason: *{reason}*".format(
@@ -2307,7 +2333,7 @@ class GameMaster(commands.Cog):
         await self.bot.pool.execute(
             'UPDATE allitems SET "signature"=$1 WHERE "id"=$2;', text, itemid
         )
-        await ctx.send(_("Item successfully signed."))
+        await self._safe_ctx_send(ctx, _("Item successfully signed."))
 
         with handle_message_parameters(
                 content="**{gm}** signed {itemid} with *{text}*.\n\nReason: *{reason}*".format(
@@ -2540,7 +2566,7 @@ class GameMaster(commands.Cog):
         result = await self.bot.redis.execute_command("DEL", f"cd:{user_id}:{command}")
 
         if result == 1:
-            await ctx.send(_("The cooldown has been updated!"))
+            await self._safe_ctx_send(ctx, _("The cooldown has been updated!"))
             if not self.protected_user_id or ctx.author.id != self.protected_user_id:
                 with handle_message_parameters(
                         content="**{gm}** reset **{user}**'s cooldown for the {command} command.\n\nReason: *{reason}*".format(
@@ -2865,7 +2891,7 @@ class GameMaster(commands.Cog):
                 'UPDATE profile SET "luck"=1.0 WHERE "god" IS NULL RETURNING "user";'
             )
             all_ids.extend([u["user"] for u in ids])
-        await ctx.send("\n".join(text_collection))
+        await self._safe_ctx_send(ctx, "\n".join(text_collection))
 
         with handle_message_parameters(
                 content=f"**{ctx.author}** updated the global luck"
@@ -3420,7 +3446,10 @@ class GameMaster(commands.Cog):
         main_name = main_user.name if main_user else str(link["main"])
         alt_name = alt_user.name if alt_user else str(link["alt"])
 
-        await ctx.send(f"Removed alt link: **{main_name}** (main) ↔ **{alt_name}** (alt)")
+        await self._safe_ctx_send(
+            ctx,
+            f"Removed alt link: **{main_name}** (main) ↔ **{alt_name}** (alt)",
+        )
 
         with handle_message_parameters(
                 content="**{gm}** removed alt link: **{main}** ↔ **{alt}**.\n\nReason: *{reason}*".format(
