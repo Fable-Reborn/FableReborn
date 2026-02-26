@@ -1072,7 +1072,7 @@ class GameMaster(commands.Cog):
 
         with handle_message_parameters(content=message) as params:
             await self.bot.http.send_message(
-                self.bot.config.game.gm_log_channel, params=params
+                self.bot.config.game.gm_log_weapon_channel, params=params
             )
 
         for user in self.bot.owner_ids:
@@ -2318,7 +2318,7 @@ class GameMaster(commands.Cog):
                 )
         ) as params:
             await self.bot.http.send_message(
-                self.bot.config.game.gm_log_channel,
+                self.bot.config.game.gm_log_weapon_channel,
                 params=params,
             )
 
