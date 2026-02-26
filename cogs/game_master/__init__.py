@@ -1043,6 +1043,10 @@ class GameMaster(commands.Cog):
             return await ctx.send(_("Invalid item type."))
         if not -100 <= stat <= 201:
             return await ctx.send(_("Invalid stat."))
+
+
+        await ctx.send(_("Done."))
+
         try:
             hand = item_type.get_hand().value
             await self.bot.create_item(
@@ -1065,8 +1069,6 @@ class GameMaster(commands.Cog):
             stat=stat,
             reason=reason or f"<{ctx.message.jump_url}>",
         )
-
-        await ctx.send(_("Done."))
 
         with handle_message_parameters(content=message) as params:
             await self.bot.http.send_message(

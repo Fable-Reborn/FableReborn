@@ -2773,6 +2773,7 @@ class Profile(commands.Cog):
 
         if amount <= 0:
             await ctx.send(_("Amount must be greater than 0."))
+            await self.bot.reset_cooldown(ctx)
             return
 
         if type not in valid_types:

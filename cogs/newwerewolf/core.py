@@ -754,13 +754,51 @@ def unavailable_roles_for_mode(roles: list[Role], mode: str | None) -> list[Role
 
 
 VILLAGER_FILLER_WEIGHTS: tuple[tuple[Role, int], ...] = (
-    (Role.CURSED, 60),
-    (Role.LOUDMOUTH, 30),
+    (Role.CURSED, 24),
+    (Role.LOUDMOUTH, 18),
     (Role.FLOWER_CHILD, 10),
+    (Role.PRIEST, 14),
+    (Role.JAILER, 12),
+    (Role.MEDIUM, 8),
+    (Role.SHERIFF, 6),
+    (Role.DOCTOR, 5),
+    (Role.BODYGUARD, 3),
 )
 
 
-def _pick_villager_filler_role(mode: str | None) -> Role:
+CLASSIC_VILLAGER_FILLER_ROLE_CAPS: dict[Role, int] = {
+    Role.CURSED: 1,
+    Role.LOUDMOUTH: 1,
+    Role.FLOWER_CHILD: 1,
+    Role.PRIEST: 1,
+    Role.JAILER: 1,
+    Role.MEDIUM: 1,
+    Role.SHERIFF: 1,
+    Role.DOCTOR: 1,
+    Role.BODYGUARD: 1,
+}
+
+
+def _pick_weighted_role(weighted_candidates: list[tuple[Role, int]]) -> Role | None:
+    if not weighted_candidates:
+        return None
+
+    total_weight = sum(weight for _, weight in weighted_candidates)
+    if total_weight <= 0:
+        return None
+
+    roll = random.randint(1, total_weight)
+    running = 0
+    for role, weight in weighted_candidates:
+        running += weight
+        if roll <= running:
+            return role
+    return weighted_candidates[-1][0]
+
+
+def _pick_villager_filler_role(
+    mode: str | None, *, existing_roles: list[Role] | None = None
+) -> Role:
     weighted_candidates = [
         (role, weight)
         for role, weight in VILLAGER_FILLER_WEIGHTS
@@ -769,14 +807,21 @@ def _pick_villager_filler_role(mode: str | None) -> Role:
     if not weighted_candidates:
         return Role.VILLAGER
 
-    total_weight = sum(weight for _, weight in weighted_candidates)
-    roll = random.randint(1, total_weight)
-    running = 0
-    for role, weight in weighted_candidates:
-        running += weight
-        if roll <= running:
-            return role
-    return weighted_candidates[-1][0]
+    if existing_roles and _normalize_mode_token(mode) == "classic":
+        capped_candidates = [
+            (role, weight)
+            for role, weight in weighted_candidates
+            if existing_roles.count(role)
+            < CLASSIC_VILLAGER_FILLER_ROLE_CAPS.get(role, 9999)
+        ]
+        chosen = _pick_weighted_role(capped_candidates)
+        if chosen is not None:
+            return chosen
+
+    chosen = _pick_weighted_role(weighted_candidates)
+    if chosen is not None:
+        return chosen
+    return Role.VILLAGER
 
 
 SIX_PLAYER_CLASSIC_VARIETY_WEIGHTS: tuple[tuple[Role, int], ...] = (
@@ -832,7 +877,12 @@ def enforce_six_player_classic_variety(
     return available_roles + extra_roles
 
 
-def _preferred_replacement_role(forbidden_role: Role, mode: str | None) -> Role:
+def _preferred_replacement_role(
+    forbidden_role: Role,
+    mode: str | None,
+    *,
+    existing_roles: list[Role] | None = None,
+) -> Role:
     if is_wolf_aligned_role(forbidden_role):
         wolf_candidates = [Role.WEREWOLF] + [
             role
@@ -844,7 +894,10 @@ def _preferred_replacement_role(forbidden_role: Role, mode: str | None) -> Role:
                 return candidate
         return Role.WEREWOLF
 
-    preferred_filler = _pick_villager_filler_role(mode)
+    preferred_filler = _pick_villager_filler_role(
+        mode,
+        existing_roles=existing_roles,
+    )
     villager_candidates = [preferred_filler] + [
         role
         for role in Role
@@ -861,10 +914,95 @@ def _minimize_plain_villagers(roles: list[Role], mode: str | None) -> list[Role]
     for idx, role in enumerate(minimized):
         if role != Role.VILLAGER:
             continue
-        replacement = _pick_villager_filler_role(mode)
+        replacement = _pick_villager_filler_role(mode, existing_roles=minimized)
         if replacement != Role.VILLAGER:
             minimized[idx] = replacement
     return minimized
+
+
+CLASSIC_SUPPORT_ROLE_WEIGHTS: tuple[tuple[Role, int], ...] = (
+    (Role.PRIEST, 55),
+    (Role.JAILER, 45),
+)
+
+
+def _pick_classic_support_role(existing_roles: list[Role], mode: str | None) -> Role | None:
+    weighted_candidates = [
+        (role, weight)
+        for role, weight in CLASSIC_SUPPORT_ROLE_WEIGHTS
+        if weight > 0 and _is_role_available_in_mode(role, mode)
+    ]
+    if not weighted_candidates:
+        return None
+
+    unseen_candidates = [
+        (role, weight) for role, weight in weighted_candidates if role not in existing_roles
+    ]
+    chosen = _pick_weighted_role(unseen_candidates or weighted_candidates)
+    return chosen
+
+
+def _rebalance_classic_role_variety(
+    roles: list[Role], *, requested_players: int, mode: str | None
+) -> list[Role]:
+    if _normalize_mode_token(mode) != "classic":
+        return roles
+
+    available_roles = roles[:-2]
+    extra_roles = roles[-2:]
+    max_dense_duplicates = 1 if requested_players <= 12 else 2
+
+    for dense_role in (Role.CURSED, Role.LOUDMOUTH):
+        dense_indices = [
+            idx for idx, role in enumerate(available_roles) if role == dense_role
+        ]
+        while len(dense_indices) > max_dense_duplicates:
+            replace_idx = dense_indices.pop()
+            replacement = _pick_villager_filler_role(
+                mode,
+                existing_roles=available_roles,
+            )
+            if replacement in (dense_role, Role.VILLAGER):
+                fallback_candidates = [
+                    role
+                    for role in (
+                        Role.PRIEST,
+                        Role.JAILER,
+                        Role.MEDIUM,
+                        Role.SHERIFF,
+                        Role.DOCTOR,
+                        Role.BODYGUARD,
+                        Role.FLOWER_CHILD,
+                    )
+                    if _is_role_available_in_mode(role, mode) and role != dense_role
+                ]
+                replacement = (
+                    random.choice(fallback_candidates)
+                    if fallback_candidates
+                    else Role.VILLAGER
+                )
+            available_roles[replace_idx] = replacement
+
+    if (
+        requested_players >= 9
+        and not any(role in (Role.PRIEST, Role.JAILER) for role in available_roles)
+    ):
+        replace_candidates = [
+            idx
+            for idx, role in enumerate(available_roles)
+            if role in (Role.CURSED, Role.LOUDMOUTH, Role.VILLAGER, Role.FLOWER_CHILD)
+        ]
+        if not replace_candidates:
+            replace_candidates = [
+                idx
+                for idx, role in enumerate(available_roles)
+                if is_villager_team_role(role) and not is_wolf_aligned_role(role)
+            ]
+        support_role = _pick_classic_support_role(available_roles, mode)
+        if replace_candidates and support_role is not None:
+            available_roles[random.choice(replace_candidates)] = support_role
+
+    return available_roles + extra_roles
 
 
 def _apply_role_availability(roles: list[Role], mode: str | None) -> list[Role]:
@@ -873,7 +1011,13 @@ def _apply_role_availability(roles: list[Role], mode: str | None) -> list[Role]:
         if _is_role_available_in_mode(role, mode):
             adjusted_roles.append(role)
         else:
-            adjusted_roles.append(_preferred_replacement_role(role, mode))
+            adjusted_roles.append(
+                _preferred_replacement_role(
+                    role,
+                    mode,
+                    existing_roles=adjusted_roles,
+                )
+            )
     return adjusted_roles
 
 
@@ -1135,7 +1279,10 @@ def enforce_wolf_ratio(
         keep_set = set(keep[:target_wolves])
         for idx in wolf_indices:
             if idx not in keep_set:
-                available_roles[idx] = _pick_villager_filler_role(mode)
+                available_roles[idx] = _pick_villager_filler_role(
+                    mode,
+                    existing_roles=available_roles,
+                )
 
     elif len(wolf_indices) < target_wolves:
         needed = target_wolves - len(wolf_indices)
@@ -10584,7 +10731,9 @@ def get_roles(number_of_players: int, mode: str = None) -> list[Role]:
             if i % 2 == 0:
                 roles.append(Role.WEREWOLF)
             else:
-                roles.append(_pick_villager_filler_role(mode))
+                roles.append(
+                    _pick_villager_filler_role(mode, existing_roles=roles)
+                )
     else:
         roles = roles_to_give[:number_of_players]
     roles = random.shuffle(roles)
@@ -10640,11 +10789,17 @@ def get_roles(number_of_players: int, mode: str = None) -> list[Role]:
     if roles.count(Role.SISTER) > 0 and available_roles.count(Role.SISTER) < 2:
         for idx, role in enumerate(roles):
             if role == Role.SISTER:
-                roles[idx] = _pick_villager_filler_role(mode)
+                roles[idx] = _pick_villager_filler_role(
+                    mode,
+                    existing_roles=roles,
+                )
     if roles.count(Role.BROTHER) > 0 and available_roles.count(Role.BROTHER) < 2:
         for idx, role in enumerate(roles):
             if role == Role.BROTHER:
-                roles[idx] = _pick_villager_filler_role(mode)
+                roles[idx] = _pick_villager_filler_role(
+                    mode,
+                    existing_roles=roles,
+                )
     available_roles = roles[:-2]
     extra_roles = roles[-2:]
     for idx, role in enumerate(available_roles):
@@ -10664,6 +10819,11 @@ def get_roles(number_of_players: int, mode: str = None) -> list[Role]:
         mode=mode,
     )
     roles = _minimize_plain_villagers(roles, mode)
+    roles = _rebalance_classic_role_variety(
+        roles,
+        requested_players=requested_players,
+        mode=mode,
+    )
     return roles
 
 
@@ -10715,7 +10875,10 @@ def _ensure_team_requirements_in_available(
                 available_roles[replace_idx],
             )
         else:
-            available_roles[replace_idx] = _pick_villager_filler_role(mode)
+            available_roles[replace_idx] = _pick_villager_filler_role(
+                mode,
+                existing_roles=available_roles,
+            )
 
     return available_roles + extra_roles
 
@@ -10743,10 +10906,15 @@ def get_custom_roles(number_of_players: int, custom_roles: list[Role]) -> list[R
         available_roles.append(
             Role.WEREWOLF
             if len(available_roles) % 2 == 0
-            else _pick_villager_filler_role("Custom")
+            else _pick_villager_filler_role("Custom", existing_roles=available_roles)
         )
     while len(extra_roles) < 2:
-        extra_roles.append(_pick_villager_filler_role("Custom"))
+        extra_roles.append(
+            _pick_villager_filler_role(
+                "Custom",
+                existing_roles=available_roles + extra_roles,
+            )
+        )
 
     roles = random.shuffle(available_roles) + random.shuffle(extra_roles)
     roles = _replace_unlock_only_advanced_roles_with_base(roles)
