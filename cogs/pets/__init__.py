@@ -2548,7 +2548,7 @@ class Pets(commands.Cog):
             # used by other "all" commands.
             for command_id in command_ids:
                 await ctx.bot.redis.set(
-                    f"cd:{ctx.author.id}:{command_id}",
+                    f"cd:{ctx.author.id}:pets {command_id}",
                     command_id,
                     ex=action["cooldown"],
                 )
