@@ -159,6 +159,8 @@ class GameSection:
         "support_server_id",
         "raid_channel",
         "gm_log_channel",
+        "gm_log_createmonster_channel",
+        "gm_log_weapon_channel",
         "helpme_channel",
         "official_tournament_channel_id",
         "bot_event_channel",
@@ -173,6 +175,8 @@ class GameSection:
         self.support_server_id = data.get("support_server_id", None)
         self.raid_channel = data.get("raid_channel", None)
         self.gm_log_channel = data.get("gm_log_channel", None)
+        self.gm_log_createmonster_channel = data.get("gm_log_createmonster_channel", None)
+        self.gm_log_weapon_channel = data.get("gm_log_weapon_channel", None)
         self.helpme_channel = data.get("helpme_channel", None)
         self.official_tournament_channel_id = data.get(
             "official_tournament_channel_id", None

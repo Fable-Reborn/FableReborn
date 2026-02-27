@@ -33,3 +33,12 @@ Complete adventures to earn **Lunar Lanterns** 🏮 - the more challenging the a
 
 *Gong Xi Fa Cai!* 🐉✨
 ```
+First ever event run had the following quantaties but was only for lack of 2025 events:
+    lnyuncommon   = 1000,
+    lnyrare       = 50,
+    lnymagic      = 30,
+    lnylegendary  = 20,
+    lnyfortune    = 5,
+    lnydivine     = 2,
+    lnytoken      = 5,
+    lnybag        = 10
