@@ -483,7 +483,7 @@ class PremiumShop(commands.Cog):
         
         return True, success_message
 
-    @user_cooldown(2764800)  # 40 days cooldown (1 month + 5 days)
+    @user_cooldown(2764800)  # 32 days cooldown
     @has_char()
     @commands.command(hidden=True, brief=_("Redeem dragon coins based on your tier"))
     @locale_doc
@@ -507,6 +507,7 @@ class PremiumShop(commands.Cog):
             )
             
             if not profile:
+                await self.bot.reset_cooldown(ctx)
                 return await ctx.send(_("You don't have a character profile."))
             
             tier = profile['tier'] or 0
@@ -521,6 +522,7 @@ class PremiumShop(commands.Cog):
         }
         
         if tier not in tier_rewards:
+            await self.bot.reset_cooldown(ctx)
             return await ctx.send(_("You need to be at least Tier 1 to redeem dragon coins."))
         
         coins_to_add = tier_rewards[tier]
@@ -590,7 +592,7 @@ class PremiumShop(commands.Cog):
                 "• **Tier 4:** 3000 <:dragoncoin:1398714322372395008>\n\n"
                 "**Your Current Tier:** {tier}\n"
                 "**Command:** `{prefix}redeemcoins`\n"
-                "**Cooldown:** 40 days (1 month + 5 days)"
+                "**Cooldown:** 32 days"
             ).format(tier=tier, prefix=ctx.clean_prefix),
             colour=discord.Colour.gold(),
             timestamp=datetime.datetime.utcnow()
