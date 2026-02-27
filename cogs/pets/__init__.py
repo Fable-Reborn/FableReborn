@@ -2461,48 +2461,71 @@ class Pets(commands.Cog):
             if not command:
                 status_messages.append(f"`{action['name']}`: command unavailable")
                 continue
-            available_actions.append((action, command))
+            # Keep both identifiers for compatibility. Some cooldown keys in the codebase
+            # use qualified names (e.g. "pets feed"), while others may rely on command name.
+            command_ids = [command.qualified_name]
+            if command.name not in command_ids:
+                command_ids.append(command.name)
+            available_actions.append((action, command, command_ids))
 
         # Read all action cooldowns in one Redis pipeline.
-        cooldowns = []
+        flat_cooldowns = []
         if available_actions:
             async with ctx.bot.redis.pipeline() as pipe:
-                for _, command in available_actions:
-                    pipe.ttl(f"cd:{ctx.author.id}:{command.qualified_name}")
-                cooldowns = await pipe.execute()
+                for _, _, command_ids in available_actions:
+                    for command_id in command_ids:
+                        pipe.ttl(f"cd:{ctx.author.id}:{command_id}")
+                flat_cooldowns = await pipe.execute()
 
         runnable_actions = []
-        for (action, command), current_cooldown in zip(available_actions, cooldowns):
-            if current_cooldown != -2:
+        ttl_index = 0
+        for action, command, command_ids in available_actions:
+            raw_ttls = flat_cooldowns[ttl_index: ttl_index + len(command_ids)]
+            ttl_index += len(command_ids)
+
+            normalized_ttls = []
+            for ttl in raw_ttls:
+                try:
+                    normalized_ttls.append(int(ttl))
+                except (TypeError, ValueError):
+                    normalized_ttls.append(-2)
+
+            active_ttls = [ttl for ttl in normalized_ttls if ttl != -2]
+            if active_ttls:
+                if -1 in active_ttls:
+                    status_messages.append(f"`{action['name']}`: cooldown active")
+                    continue
                 status_messages.append(
-                    f"`{action['name']}`: {format_ttl(current_cooldown)} cooldown remaining"
+                    f"`{action['name']}`: {format_ttl(max(active_ttls))} cooldown remaining"
                 )
                 continue
 
             # Pre-lock cooldown keys before invoking, matching the batching style
             # used by other "all" commands.
-            await ctx.bot.redis.set(
-                f"cd:{ctx.author.id}:{command.qualified_name}",
-                command.qualified_name,
-                ex=action["cooldown"],
-            )
-            runnable_actions.append((action, command))
+            for command_id in command_ids:
+                await ctx.bot.redis.set(
+                    f"cd:{ctx.author.id}:{command_id}",
+                    command_id,
+                    ex=action["cooldown"],
+                )
+            runnable_actions.append((action, command, command_ids))
 
-        for action, command in runnable_actions:
+        for action, command, command_ids in runnable_actions:
             try:
                 await ctx.invoke(command, **action["kwargs"])
             except Exception as e:
                 # If a subcommand fails, clear only that cooldown lock so the user
                 # can retry it immediately.
-                await ctx.bot.redis.execute_command(
-                    "DEL",
-                    f"cd:{ctx.author.id}:{command.qualified_name}",
-                )
+                for command_id in command_ids:
+                    await ctx.bot.redis.execute_command(
+                        "DEL",
+                        f"cd:{ctx.author.id}:{command_id}",
+                    )
                 status_messages.append(f"`{action['name']}`: failed ({e})")
 
         if status_messages:
             await ctx.send(
-                _("Pets all status:\n{status_report}").format(
+                _("Status Report:\n{status_report}").format(
                     status_report="\n".join(status_messages)
                 )
             )
