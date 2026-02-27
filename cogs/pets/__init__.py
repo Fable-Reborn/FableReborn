@@ -3473,17 +3473,24 @@ class Pets(commands.Cog):
                     await ctx.send(f"❌ **{pet['name']}** must be at least in the **young** growth stage to be equipped.")
                     return
 
-                    # Unequip the currently equipped pet, if any
-                await conn.execute(
-                            "UPDATE monster_pets SET equipped = FALSE WHERE user_id = $1 AND equipped = TRUE;",
-                            ctx.author.id
-                        )
-
-                    # Equip the selected pet
-                await conn.execute(
-                    "UPDATE monster_pets SET equipped = TRUE WHERE id = $1;",
+                # Atomically set equipped state for this user's pets only.
+                equip_result = await conn.execute(
+                    """
+                    UPDATE monster_pets
+                    SET equipped = (id = $2)
+                    WHERE user_id = $1
+                      AND EXISTS (
+                          SELECT 1
+                          FROM monster_pets
+                          WHERE user_id = $1 AND id = $2
+                      );
+                    """,
+                    ctx.author.id,
                     pet_id
                 )
+                if equip_result == "UPDATE 0":
+                    await ctx.send("❌ This pet is no longer in your collection. Please try again.")
+                    return
 
             # Create success embed
             trust_info = self.get_trust_level_info(pet['trust_level'])
