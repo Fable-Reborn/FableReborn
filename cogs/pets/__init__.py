@@ -2478,6 +2478,46 @@ class Pets(commands.Cog):
                         pipe.ttl(f"cd:{ctx.author.id}:{command_id}")
                 flat_cooldowns = await pipe.execute()
 
+        # Fallback lookup for legacy or alternate key formats.
+        # This prevents silent misses when cooldown IDs differ from command.name / qualified_name.
+        fallback_ttls_by_action = {action["name"]: [] for action in action_plan}
+        try:
+            user_cd_prefix = f"cd:{ctx.author.id}:"
+            raw_cd_keys = await ctx.bot.redis.execute_command("KEYS", f"{user_cd_prefix}*")
+            decoded_cd_keys = []
+            for key in raw_cd_keys or []:
+                if isinstance(key, (bytes, bytearray)):
+                    decoded_cd_keys.append(key.decode("utf-8", errors="ignore"))
+                else:
+                    decoded_cd_keys.append(str(key))
+
+            if decoded_cd_keys:
+                async with ctx.bot.redis.pipeline() as pipe:
+                    for key in decoded_cd_keys:
+                        pipe.ttl(key)
+                    decoded_key_ttls = await pipe.execute()
+
+                for key, ttl in zip(decoded_cd_keys, decoded_key_ttls):
+                    if not key.startswith(user_cd_prefix):
+                        continue
+                    cmd_id = key[len(user_cd_prefix):].strip().lower()
+                    try:
+                        ttl_value = int(ttl)
+                    except (TypeError, ValueError):
+                        continue
+                    if ttl_value == -2:
+                        continue
+
+                    for action_name in fallback_ttls_by_action:
+                        if cmd_id in {
+                            action_name,
+                            f"pets {action_name}",
+                            f"pet {action_name}",
+                        }:
+                            fallback_ttls_by_action[action_name].append(ttl_value)
+        except Exception as e:
+            self.bot.logger.error(f"Failed fallback cooldown scan for pets all: {e}")
+
         runnable_actions = []
         ttl_index = 0
         for action, command, command_ids in available_actions:
@@ -2492,6 +2532,8 @@ class Pets(commands.Cog):
                     normalized_ttls.append(-2)
 
             active_ttls = [ttl for ttl in normalized_ttls if ttl != -2]
+            if not active_ttls:
+                active_ttls = fallback_ttls_by_action.get(action["name"], [])
             if active_ttls:
                 positive_ttls = [ttl for ttl in active_ttls if ttl > 0]
                 if positive_ttls:
@@ -2534,6 +2576,8 @@ class Pets(commands.Cog):
             )
         if status_messages:
             await ctx.send("\n".join(status_messages))
+        if not cooldown_messages and not status_messages and not runnable_actions:
+            await ctx.send(_("Status Report:\nNo active pet command cooldowns found."))
 
     @user_cooldown(3600)
     @pets.command(brief=_("Feed your pet with specific food types"))
