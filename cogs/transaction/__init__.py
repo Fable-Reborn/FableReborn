@@ -50,7 +50,7 @@ class TradeDecisionView(discord.ui.View):
         self,
         trans: dict,
         participant_actor_ids: dict[int, set[int]],
-        timeout: float = 60.0,
+        timeout: float = 120.0,
     ):
         super().__init__(timeout=timeout)
         self.trans = trans
@@ -58,6 +58,14 @@ class TradeDecisionView(discord.ui.View):
         self.accepted_participants: set[int] = set()
         self.result: str | None = None
         self.declined_by: discord.abc.User | None = None
+        self.participant_order = [
+            int(user.id) for user in trans.get("content", {}).keys()
+        ]
+        self.participant_mentions = {
+            int(user.id): user.mention for user in trans.get("content", {}).keys()
+        }
+        base = trans.get("base")
+        self.base_content = base.content if base and base.content else ""
 
     def resolve_participant_id(self, user_id: int) -> int | None:
         normalized_user_id = int(user_id)
@@ -74,14 +82,41 @@ class TradeDecisionView(discord.ui.View):
             return False
         return True
 
-    async def _disable_buttons(self):
-        for child in self.children:
-            child.disabled = True
+    def _build_status_block(self) -> str:
+        lines = [_("**Trade Confirmation Status**")]
+        for participant_id in self.participant_order:
+            mention = self.participant_mentions.get(participant_id, f"<@{participant_id}>")
+            status = (
+                _("✅ Accepted")
+                if participant_id in self.accepted_participants
+                else _("⏳ Pending")
+            )
+            lines.append(f"{mention}: {status}")
+        return "\n".join(lines)
+
+    def _compose_content(self, footer_message: str | None = None) -> str:
+        parts = []
+        if self.base_content:
+            parts.append(self.base_content)
+        parts.append(self._build_status_block())
+        if footer_message:
+            parts.append(footer_message)
+        content = "\n\n".join(parts)
+        if len(content) > 2000:
+            content = content[:1997] + "..."
+        return content
+
+    async def _update_message(
+        self, *, disable_buttons: bool = False, footer_message: str | None = None
+    ):
+        if disable_buttons:
+            for child in self.children:
+                child.disabled = True
         base = self.trans.get("base")
         if base is None:
             return
         try:
-            await base.edit(view=self)
+            await base.edit(content=self._compose_content(footer_message), view=self)
         except (discord.NotFound, discord.HTTPException):
             pass
 
@@ -91,6 +126,12 @@ class TradeDecisionView(discord.ui.View):
     async def accept_trade(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
+        if self.result is not None:
+            await interaction.response.send_message(
+                _("This trade has already been resolved."), ephemeral=True
+            )
+            return
+
         participant_id = self.resolve_participant_id(interaction.user.id)
         if participant_id is None:
             await interaction.response.send_message(
@@ -105,13 +146,16 @@ class TradeDecisionView(discord.ui.View):
 
         self.accepted_participants.add(participant_id)
 
-        if len(self.accepted_participants) >= 2:
+        if len(self.accepted_participants) >= len(self.participant_order):
             self.result = "accepted"
             await interaction.response.send_message(
                 _("✅ You accepted. Both participants accepted the trade."),
                 ephemeral=True,
             )
-            await self._disable_buttons()
+            await self._update_message(
+                disable_buttons=True,
+                footer_message=_("✅ Trade accepted by both participants. Processing now..."),
+            )
             self.stop()
             return
 
@@ -119,6 +163,7 @@ class TradeDecisionView(discord.ui.View):
             _("✅ You accepted. Waiting for the other participant."),
             ephemeral=True,
         )
+        await self._update_message()
 
     @discord.ui.button(
         label="Decline Trade", style=discord.ButtonStyle.danger, emoji="❌"
@@ -126,20 +171,41 @@ class TradeDecisionView(discord.ui.View):
     async def decline_trade(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
+        if self.result is not None:
+            await interaction.response.send_message(
+                _("This trade has already been resolved."), ephemeral=True
+            )
+            return
+
+        participant_id = self.resolve_participant_id(interaction.user.id)
+        if participant_id is None:
+            await interaction.response.send_message(
+                _("You are not part of this trade."), ephemeral=True
+            )
+            return
+
         self.result = "declined"
         self.declined_by = interaction.user
         await interaction.response.send_message(
             _("❌ You declined. Trade cancelled."),
             ephemeral=True,
         )
-        await self._disable_buttons()
+        await self._update_message(
+            disable_buttons=True,
+            footer_message=_("❌ Trade cancelled by {user}.").format(
+                user=interaction.user.mention
+            ),
+        )
         self.stop()
 
     async def on_timeout(self):
         if self.result is not None:
             return
         self.result = "timeout"
-        await self._disable_buttons()
+        await self._update_message(
+            disable_buttons=True,
+            footer_message=_("⌛ Trade timed out. No changes were made."),
+        )
         self.stop()
 
 
@@ -268,10 +334,10 @@ class Transaction(commands.Cog):
         view = TradeDecisionView(
             trans=trans,
             participant_actor_ids=participant_actor_ids,
-            timeout=60.0,
+            timeout=120.0,
         )
         try:
-            await msg.edit(view=view)
+            await view._update_message()
             await view.wait()
         except asyncio.CancelledError:
             view.stop()
@@ -286,19 +352,11 @@ class Transaction(commands.Cog):
             return
 
         if view.result == "declined":
-            declined_mention = (
-                view.declined_by.mention if view.declined_by else _("A participant")
-            )
-            await msg.delete()
             del self.transactions[key]
-            await msg.channel.send(
-                _("{user} stopped the trade.").format(user=declined_mention)
-            )
             return
 
-        await msg.delete()
         del self.transactions[key]
-        await msg.channel.send(_("Trade timed out."))
+        return
 
     async def transact(self, trans):
         chan = (base := trans["base"]).channel
@@ -591,6 +649,7 @@ class Transaction(commands.Cog):
             - Use `{prefix}amulet resources` to see your available resources
 
             To accept the trade, both players need to click the **Accept Trade** button.
+            Either player can click **Decline Trade** to cancel immediately.
             Accepting the trade will transfer all items in the trade session to the other player.
 
             You cannot trade with yourself, or have more than one trade session open at once.
