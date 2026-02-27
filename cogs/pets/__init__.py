@@ -2452,6 +2452,7 @@ class Pets(commands.Cog):
 
         available_actions = []
         status_messages = []
+        cooldown_messages = []
         for action in action_plan:
             if action["name"] == "feed" and feed_block_reason:
                 status_messages.append(f"`feed`: {feed_block_reason}")
@@ -2493,9 +2494,9 @@ class Pets(commands.Cog):
             active_ttls = [ttl for ttl in normalized_ttls if ttl != -2]
             if active_ttls:
                 if -1 in active_ttls:
-                    status_messages.append(f"`{action['name']}`: cooldown active")
+                    cooldown_messages.append(f"`{action['name']}`: cooldown active")
                     continue
-                status_messages.append(
+                cooldown_messages.append(
                     f"`{action['name']}`: {format_ttl(max(active_ttls))} cooldown remaining"
                 )
                 continue
@@ -2523,10 +2524,12 @@ class Pets(commands.Cog):
                     )
                 status_messages.append(f"`{action['name']}`: failed ({e})")
 
-        if status_messages:
+        status_lines = cooldown_messages + status_messages
+        if status_lines:
+            status_report = "\n".join(status_lines)
             await ctx.send(
                 _("Status Report:\n{status_report}").format(
-                    status_report="\n".join(status_messages)
+                    status_report=status_report
                 )
             )
 
