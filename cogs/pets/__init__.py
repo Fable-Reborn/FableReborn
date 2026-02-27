@@ -1790,12 +1790,23 @@ class Pets(commands.Cog):
 
                 try:
                     async with conn.transaction():
-                        # Transfer the item
-                        await conn.execute(
-                            f"UPDATE {your_table} SET user_id = $1 WHERE id = $2;",
-                            buyer.id,
-                            your_item_id
+                        # Transfer the item. Sold pets are always unequipped on transfer.
+                        transfer_query = (
+                            f"UPDATE {your_table} SET user_id = $1, equipped = FALSE "
+                            "WHERE id = $2 AND user_id = $3;"
+                            if item_type == "pet"
+                            else f"UPDATE {your_table} SET user_id = $1 "
+                                 "WHERE id = $2 AND user_id = $3;"
                         )
+                        transfer_result = await conn.execute(
+                            transfer_query,
+                            buyer.id,
+                            your_item_id,
+                            ctx.author.id,
+                        )
+                        if transfer_result != "UPDATE 1":
+                            raise RuntimeError("Item ownership changed before sale confirmation.")
+
                         # Transfer money
                         await conn.execute(
                             "UPDATE profile SET money = money - $1 WHERE \"user\" = $2;",
