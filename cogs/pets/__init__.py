@@ -2493,12 +2493,13 @@ class Pets(commands.Cog):
 
             active_ttls = [ttl for ttl in normalized_ttls if ttl != -2]
             if active_ttls:
-                if -1 in active_ttls:
+                positive_ttls = [ttl for ttl in active_ttls if ttl > 0]
+                if positive_ttls:
+                    cooldown_messages.append(
+                        f"`{action['name']}`: {format_ttl(max(positive_ttls))} cooldown remaining"
+                    )
+                else:
                     cooldown_messages.append(f"`{action['name']}`: cooldown active")
-                    continue
-                cooldown_messages.append(
-                    f"`{action['name']}`: {format_ttl(max(active_ttls))} cooldown remaining"
-                )
                 continue
 
             # Pre-lock cooldown keys before invoking, matching the batching style
@@ -2524,14 +2525,15 @@ class Pets(commands.Cog):
                     )
                 status_messages.append(f"`{action['name']}`: failed ({e})")
 
-        status_lines = cooldown_messages + status_messages
-        if status_lines:
-            status_report = "\n".join(status_lines)
+        if cooldown_messages:
+            status_report = "\n".join(cooldown_messages)
             await ctx.send(
                 _("Status Report:\n{status_report}").format(
                     status_report=status_report
                 )
             )
+        if status_messages:
+            await ctx.send("\n".join(status_messages))
 
     @user_cooldown(3600)
     @pets.command(brief=_("Feed your pet with specific food types"))
