@@ -214,6 +214,20 @@ class Transaction(commands.Cog):
         self.bot = bot
         self.transactions = {}
 
+    @staticmethod
+    def _has_offer_content(offer: dict) -> bool:
+        if offer.get("money", 0) > 0:
+            return True
+        if offer.get("items"):
+            return True
+        if any(amount > 0 for amount in offer.get("crates", {}).values()):
+            return True
+        if any(amount > 0 for amount in offer.get("resources", {}).values()):
+            return True
+        if any(amount > 0 for amount in offer.get("consumables", {}).values()):
+            return True
+        return False
+
     def get_transaction(self, user, return_id=False):
         id_ = str(user.id)
         if not (key := discord.utils.find(lambda x: id_ in x, self.transactions)):
@@ -360,11 +374,21 @@ class Transaction(commands.Cog):
 
     async def transact(self, trans):
         chan = (base := trans["base"]).channel
+        (user1, user1_gives), (user2, user2_gives) = trans["content"].items()
+
+        if not self._has_offer_content(user1_gives) and not self._has_offer_content(
+            user2_gives
+        ):
+            try:
+                await base.delete()
+            except (discord.NotFound, discord.HTTPException):
+                pass
+            return await chan.send(_("Trade cancelled. Nothing is being traded."))
+
         await base.delete()
         async with self.bot.pool.acquire() as conn:
             async with conn.transaction():
                 # Lock both users for now
-                (user1, user1_gives), (user2, user2_gives) = trans["content"].items()
                 user1_item_ids = [i["id"] for i in user1_gives["items"]]
                 user2_item_ids = [i["id"] for i in user2_gives["items"]]
                 user1_row = await conn.fetchrow(
