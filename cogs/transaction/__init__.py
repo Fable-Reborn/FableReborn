@@ -45,6 +45,104 @@ def has_transaction():
     return commands.check(predicate)
 
 
+class TradeDecisionView(discord.ui.View):
+    def __init__(
+        self,
+        trans: dict,
+        participant_actor_ids: dict[int, set[int]],
+        timeout: float = 60.0,
+    ):
+        super().__init__(timeout=timeout)
+        self.trans = trans
+        self.participant_actor_ids = participant_actor_ids
+        self.accepted_participants: set[int] = set()
+        self.result: str | None = None
+        self.declined_by: discord.abc.User | None = None
+
+    def resolve_participant_id(self, user_id: int) -> int | None:
+        normalized_user_id = int(user_id)
+        for participant_id, actor_ids in self.participant_actor_ids.items():
+            if normalized_user_id in actor_ids:
+                return participant_id
+        return None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if self.resolve_participant_id(interaction.user.id) is None:
+            await interaction.response.send_message(
+                _("You are not part of this trade."), ephemeral=True
+            )
+            return False
+        return True
+
+    async def _disable_buttons(self):
+        for child in self.children:
+            child.disabled = True
+        base = self.trans.get("base")
+        if base is None:
+            return
+        try:
+            await base.edit(view=self)
+        except (discord.NotFound, discord.HTTPException):
+            pass
+
+    @discord.ui.button(
+        label="Accept Trade", style=discord.ButtonStyle.success, emoji="✅"
+    )
+    async def accept_trade(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        participant_id = self.resolve_participant_id(interaction.user.id)
+        if participant_id is None:
+            await interaction.response.send_message(
+                _("You are not part of this trade."), ephemeral=True
+            )
+            return
+        if participant_id in self.accepted_participants:
+            await interaction.response.send_message(
+                _("You already accepted this trade."), ephemeral=True
+            )
+            return
+
+        self.accepted_participants.add(participant_id)
+
+        if len(self.accepted_participants) >= 2:
+            self.result = "accepted"
+            await interaction.response.send_message(
+                _("✅ You accepted. Both participants accepted the trade."),
+                ephemeral=True,
+            )
+            await self._disable_buttons()
+            self.stop()
+            return
+
+        await interaction.response.send_message(
+            _("✅ You accepted. Waiting for the other participant."),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Decline Trade", style=discord.ButtonStyle.danger, emoji="❌"
+    )
+    async def decline_trade(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        self.result = "declined"
+        self.declined_by = interaction.user
+        await interaction.response.send_message(
+            _("❌ You declined. Trade cancelled."),
+            ephemeral=True,
+        )
+        await self._disable_buttons()
+        self.stop()
+
+    async def on_timeout(self):
+        if self.result is not None:
+            return
+        self.result = "timeout"
+        await self._disable_buttons()
+        self.stop()
+
+
 class Transaction(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -167,47 +265,40 @@ class Transaction(commands.Cog):
                 int(actor_id) for actor_id in extra_actor_ids
             )
 
-        def resolve_participant_id(user_id: int) -> int | None:
-            normalized_user_id = int(user_id)
-            for participant_id, actor_ids in participant_actor_ids.items():
-                if normalized_user_id in actor_ids:
-                    return participant_id
-            return None
+        view = TradeDecisionView(
+            trans=trans,
+            participant_actor_ids=participant_actor_ids,
+            timeout=60.0,
+        )
+        try:
+            await msg.edit(view=view)
+            await view.wait()
+        except asyncio.CancelledError:
+            view.stop()
+            return
 
-        acc = set()
-        reacts = ["\U0000274e", "\U00002705"]
-        for r in reacts:
-            await msg.add_reaction(r)
+        if key not in self.transactions:
+            return
 
-        def check(r, u):
-            participant_id = resolve_participant_id(u.id)
-            return (
-                participant_id is not None
-                and r.emoji in reacts
-                and r.message.id == msg.id
-                and participant_id not in acc
+        if view.result == "accepted":
+            del self.transactions[key]
+            await self.transact(trans)
+            return
+
+        if view.result == "declined":
+            declined_mention = (
+                view.declined_by.mention if view.declined_by else _("A participant")
             )
+            await msg.delete()
+            del self.transactions[key]
+            await msg.channel.send(
+                _("{user} stopped the trade.").format(user=declined_mention)
+            )
+            return
 
-        while len(acc) < 2:
-            try:
-                r, u = await self.bot.wait_for("reaction_add", check=check, timeout=60)
-            except asyncio.TimeoutError:
-                await msg.delete()
-                del self.transactions[key]
-                return await msg.channel.send(_("Trade timed out."))
-            participant_id = resolve_participant_id(u.id)
-            if participant_id is None:
-                continue
-            if reacts.index(r.emoji):
-                acc.add(participant_id)
-            else:
-                await msg.delete()
-                del self.transactions[key]
-                return await msg.channel.send(
-                    _("{user} stopped the trade.").format(user=u.mention)
-                )
+        await msg.delete()
         del self.transactions[key]
-        await self.transact(trans)
+        await msg.channel.send(_("Trade timed out."))
 
     async def transact(self, trans):
         chan = (base := trans["base"]).channel
@@ -499,7 +590,7 @@ class Transaction(commands.Cog):
             - Level restrictions apply: higher-level players cannot trade resources that lower-level players cannot obtain
             - Use `{prefix}amulet resources` to see your available resources
 
-            To accept the trade, both players need to react with the ✅ emoji.
+            To accept the trade, both players need to click the **Accept Trade** button.
             Accepting the trade will transfer all items in the trade session to the other player.
 
             You cannot trade with yourself, or have more than one trade session open at once.
