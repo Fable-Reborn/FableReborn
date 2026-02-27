@@ -189,6 +189,7 @@ class Miscellaneous(commands.Cog):
             'cratesdaily': {'cooldown': 12 * 3600},  # 12 hours
             'daily': {'cooldown': self.time_until_midnight()},
             'boosterdaily': {'cooldown': self.time_until_midnight()},
+            'steal': {'cooldown': 60 * 60, 'class_requirement': 'Thief'},  # 1 hour, thief-only
             'date': {'cooldown': 12 * 3600},  # 12 hours
             'pray': {'cooldown': self.time_until_midnight()},
             'familyevent': {'cooldown': 30 * 60}  # 30 minutes
