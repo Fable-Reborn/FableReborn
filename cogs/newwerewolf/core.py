@@ -5492,9 +5492,7 @@ class Game:
     async def dm_sheriff_info(self) -> None:
         await self.sheriff.send(
             _(
-                "You became the 🎖 **Mayor. Your vote counts as double. If you died or"
-                " exchanged roles using Maid's ability, you must choose a new"
-                " Mayor.**"
+                "You became the 🎖 **Mayor. Your vote counts as double.**"
             )
         )
         await asyncio.sleep(5)  # Give them time to read
@@ -7561,8 +7559,6 @@ class Player:
                 " roles with {dying_one}."
             ).format(maid=self.user, role=death.role_name, dying_one=death.user.mention)
         )
-        if self.is_sheriff:
-            await self.choose_new_sheriff(exclude=death)
         await self.send(self.game.game_link)
 
     async def set_healer_target(self) -> Player:
@@ -10123,7 +10119,7 @@ class Player:
             else:
                 initial_role_info = ""
             if self.is_sheriff:
-                await self.choose_new_sheriff()
+                self.is_sheriff = False
             self.game.recent_deaths.append(self)
             await self.game.sync_player_ww_role(self)
             whisperer = self.game._get_active_medium()
@@ -10589,72 +10585,6 @@ class Player:
                 self.game.winning_side = "Werewolves"
                 return True
         return False
-
-    async def choose_new_sheriff(self, exclude: Player = None) -> None:
-        possible_sheriff = [
-            p for p in self.game.alive_players if p != self and p != exclude
-        ]
-        if not len(possible_sheriff):
-            return
-        if self.dead:
-            await self.send(
-                _("You are going to die. Use your last breath to choose a new Mayor.")
-            )
-        elif exclude is not None:
-            await self.send(
-                _(
-                    "You exchanged roles with **{dying_user}**. You should choose the"
-                    " new Mayor."
-                ).format(dying_user=exclude.user)
-            )
-        self.is_sheriff = False
-        await self.game.ctx.send(
-            _("The **Mayor {sheriff}** should choose their successor.").format(
-                sheriff=self.user
-            )
-        )
-        msg = None
-        randomize = False
-        try:
-            sheriff = await self.choose_users(
-                _("Choose the new 🎖 Mayor️."),
-                list_of_users=possible_sheriff,
-                amount=1,
-                required=False,
-            )
-            if sheriff:
-                sheriff = sheriff[0]
-            else:
-                randomize = True
-        except asyncio.TimeoutError:
-            randomize = True
-        if randomize:
-            await self.send(
-                _(
-                    "You didn't choose anyone. A random player will be chosen to be"
-                    " your successor."
-                )
-            )
-            sheriff = random.choice(possible_sheriff)
-            msg = _(
-                "📢 **{ex_sheriff}** didn't choose anyone. {sheriff} got randomly chosen"
-                " to be the new 🎖️ **Mayor**. **The vote of the Mayor counts as"
-                " double.**"
-            ).format(ex_sheriff=self.user, sheriff=sheriff.user.mention)
-        sheriff.is_sheriff = True
-        await self.send(
-            _("**{sheriff}** became the new Mayor.").format(
-                sheriff=sheriff.user.mention
-            )
-        )
-        if not msg:
-            msg = _(
-                "📢 {sheriff} got chosen to be the new 🎖️ **Mayor**. **The vote of the"
-                " Mayor counts as double.**"
-            ).format(sheriff=sheriff.user.mention)
-        await self.game.ctx.send(msg)
-        await self.game.dm_sheriff_info()
-
 
 # A list of roles to give depending on the number of total players
 # Rule of thumb is to have 50+% of villagers, whereas thief etc count
