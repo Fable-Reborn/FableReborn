@@ -2288,6 +2288,214 @@ class Pets(commands.Cog):
         embed = view.get_embed()
         view.message = await ctx.send(embed=embed, view=view)
 
+    @pets.command(name="all", brief=_("[Tier 1+] Run feed, pet, play, treat, and train in one command"))
+    async def pets_all(self, ctx, pet_id_or_food: str | None = None, *, food_type: str = "basic food"):
+        """
+        Run feed, pet, play, treat, and train on one selected pet.
+
+        Usage:
+        - $pets all
+        - $pets all <id|alias>
+        - $pets all <id|alias> <food_type>
+        - $pets all <food_type>
+        """
+
+        def format_ttl(seconds: int) -> str:
+            seconds = max(0, int(seconds))
+            hours, remainder = divmod(seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            return f"{hours:02}:{minutes:02}:{seconds:02}"
+
+        target_pet_id = None
+        parsed_food_type = food_type
+        feed_block_reason = None
+
+        # Resolve all prerequisite state in a single DB pass:
+        # Patreon tier gate, target pet selection, and feed food validation.
+        async with self.bot.pool.acquire() as conn:
+            tier = await conn.fetchval(
+                'SELECT tier FROM profile WHERE "user" = $1;',
+                ctx.author.id
+            )
+            if tier is None or tier < 1:
+                await ctx.send("❌ `pets all` is reserved for Patreon users with tier 1 or higher.")
+                return
+
+            if pet_id_or_food is not None:
+                first_arg = str(pet_id_or_food).strip()
+                if first_arg:
+                    if first_arg.isdigit():
+                        target_pet_id = int(first_arg)
+                        owned = await conn.fetchval(
+                            "SELECT 1 FROM monster_pets WHERE user_id = $1 AND id = $2;",
+                            ctx.author.id,
+                            target_pet_id,
+                        )
+                        if not owned:
+                            await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_id_or_food}`.")
+                            return
+                    else:
+                        resolved_id = await self.resolve_pet_id(conn, ctx.author.id, first_arg)
+                        if resolved_id is not None:
+                            target_pet_id = int(resolved_id)
+                        else:
+                            # If first arg is not a pet ref, treat it as part of the food type.
+                            if parsed_food_type == "basic food":
+                                parsed_food_type = first_arg
+                            else:
+                                parsed_food_type = f"{first_arg} {parsed_food_type}".strip()
+
+            if target_pet_id is None:
+                # Default target behavior mirrors other pet commands:
+                # equipped pet first, else the only pet if exactly one exists.
+                equipped_pet_id = await conn.fetchval(
+                    "SELECT id FROM monster_pets WHERE user_id = $1 AND equipped = TRUE ORDER BY id ASC LIMIT 1;",
+                    ctx.author.id,
+                )
+                if equipped_pet_id is not None:
+                    target_pet_id = int(equipped_pet_id)
+                else:
+                    owned_pets = await conn.fetch(
+                        "SELECT id FROM monster_pets WHERE user_id = $1 ORDER BY id ASC;",
+                        ctx.author.id,
+                    )
+                    if not owned_pets:
+                        await ctx.send("❌ You don't have any pets.")
+                        return
+                    if len(owned_pets) == 1:
+                        target_pet_id = int(owned_pets[0]["id"])
+                    else:
+                        await ctx.send(
+                            "❌ You don't have an equipped pet. Equip one or use `$pets all <id|alias> [food_type]`."
+                        )
+                        return
+
+            normalized_food = str(parsed_food_type).lower().strip()
+            if normalized_food in self.FOOD_ALIASES:
+                feed_food_key = self.FOOD_ALIASES[normalized_food]
+            elif parsed_food_type in self.FOOD_TYPES:
+                feed_food_key = parsed_food_type
+            else:
+                valid_foods = ", ".join(self.FOOD_ALIASES.keys())
+                await ctx.send(f"❌ Invalid food type. Valid types: {valid_foods}")
+                return
+
+            food_data = self.FOOD_TYPES[feed_food_key]
+            if food_data.get("tier_required") and tier < food_data["tier_required"]:
+                await ctx.send(
+                    f"❌ Elemental food requires **Legendary tier** (Tier {food_data['tier_required']}) or higher. "
+                    f"Your current tier: {tier or 0}"
+                )
+                return
+
+            # Pre-check feed affordability so we can still run the non-feed actions
+            # instead of failing the whole batch.
+            user_money = await conn.fetchval(
+                'SELECT "money" FROM profile WHERE "user" = $1;',
+                ctx.author.id
+            )
+            if user_money is None or user_money < food_data["cost"]:
+                feed_block_reason = f"not enough money (need ${food_data['cost']:,})"
+
+        feed_food_argument = feed_food_key.replace("_", " ")
+        pet_ref = str(target_pet_id)
+
+        pets_group = self.bot.get_command("pets")
+        if not pets_group:
+            await ctx.send("❌ Pets command group is unavailable.")
+            return
+
+        # Keep per-action metadata in one place so cooldowns/arguments stay explicit.
+        action_plan = [
+            {
+                "name": "feed",
+                "command_name": "feed",
+                "cooldown": 3600,
+                "kwargs": {"pet_id_or_food": pet_ref, "food_type": feed_food_argument},
+            },
+            {
+                "name": "pet",
+                "command_name": "pet",
+                "cooldown": 300,
+                "kwargs": {"pet_ref": pet_ref},
+            },
+            {
+                "name": "play",
+                "command_name": "play",
+                "cooldown": 300,
+                "kwargs": {"pet_ref": pet_ref},
+            },
+            {
+                "name": "treat",
+                "command_name": "treat",
+                "cooldown": 600,
+                "kwargs": {"pet_ref": pet_ref},
+            },
+            {
+                "name": "train",
+                "command_name": "train",
+                "cooldown": 1800,
+                "kwargs": {"pet_ref": pet_ref},
+            },
+        ]
+
+        available_actions = []
+        status_messages = []
+        for action in action_plan:
+            if action["name"] == "feed" and feed_block_reason:
+                status_messages.append(f"`feed`: {feed_block_reason}")
+                continue
+
+            command = pets_group.get_command(action["command_name"])
+            if not command:
+                status_messages.append(f"`{action['name']}`: command unavailable")
+                continue
+            available_actions.append((action, command))
+
+        # Read all action cooldowns in one Redis pipeline.
+        cooldowns = []
+        if available_actions:
+            async with ctx.bot.redis.pipeline() as pipe:
+                for _, command in available_actions:
+                    pipe.ttl(f"cd:{ctx.author.id}:{command.qualified_name}")
+                cooldowns = await pipe.execute()
+
+        runnable_actions = []
+        for (action, command), current_cooldown in zip(available_actions, cooldowns):
+            if current_cooldown != -2:
+                status_messages.append(
+                    f"`{action['name']}`: {format_ttl(current_cooldown)} cooldown remaining"
+                )
+                continue
+
+            # Pre-lock cooldown keys before invoking, matching the batching style
+            # used by other "all" commands.
+            await ctx.bot.redis.set(
+                f"cd:{ctx.author.id}:{command.qualified_name}",
+                command.qualified_name,
+                ex=action["cooldown"],
+            )
+            runnable_actions.append((action, command))
+
+        for action, command in runnable_actions:
+            try:
+                await ctx.invoke(command, **action["kwargs"])
+            except Exception as e:
+                # If a subcommand fails, clear only that cooldown lock so the user
+                # can retry it immediately.
+                await ctx.bot.redis.execute_command(
+                    "DEL",
+                    f"cd:{ctx.author.id}:{command.qualified_name}",
+                )
+                status_messages.append(f"`{action['name']}`: failed ({e})")
+
+        if status_messages:
+            await ctx.send(
+                _("Pets all status:\n{status_report}").format(
+                    status_report="\n".join(status_messages)
+                )
+            )
+
     @user_cooldown(3600)
     @pets.command(brief=_("Feed your pet with specific food types"))
     async def feed(self, ctx, pet_id_or_food: str | None = None, *, food_type: str = "basic food"):
