@@ -2430,14 +2430,34 @@ class ProcessSplice(commands.Cog):
                 
                 # Base prompt with highly specific creativity elements
                 prompt = (
-                    f"Create a single, unified {art_style} {creature_type} hybrid creature by intricately fusing two monsters. "
+                    f"Create a single, unified {art_style} {creature_type} hybrid entity formed by seamlessly fusing two beings into one evolved lifeform. "
                     f"This is creature design #{unique_seed}. "
-                    f"Include a distinctive {anatomical_feature} as its most striking feature. "
-                    "Artfully integrate the most distinctive anatomical elements, textures, and coloration from both parent creatures. "
-                    "The fusion MUST appear as a single, cohesive, evolved being - NOT a simple combination or mashup. "
-                    "Show the ENTIRE creature in a dynamic pose that highlights its unique anatomy. "
-                    f"The result should exude a {special_trait}, otherworldly quality. "
-                    "Create a fucking sick background for it. "
+
+                    f"The creature's most defining feature is a distinctive {anatomical_feature}. "
+
+                    "Integrate anatomical structures, textures, materials, and energy traits from both parent beings into one cohesive organism. "
+                    "The result must feel naturally evolved or supernaturally ascended — NEVER a simple combination or collage. "
+
+                    "The entity may embody aspects of nature, supernatural forces, cosmic energy, elemental power, divine presence, or alien biology. "
+                    "It should feel mythological, believable, and internally consistent within its own existence. "
+
+                    "Show the ENTIRE creature in a powerful dynamic pose emphasizing silhouette readability and anatomical clarity. "
+
+                    f"The being radiates a strong sense of {special_trait}, conveying intelligence, power, and presence. "
+
+                    "Design should combine organic, mystical, and fantastical elements while maintaining visual cohesion and balance. "
+
+                    "Ultra high contrast cinematic lighting with deep shadows and luminous highlights. "
+                    "Clean digital rendering with crisp edges, smooth gradients, and refined detailing. "
+                    "Highly polished AAA game splash art quality. "
+                    "No painterly texture, no brush strokes, no canvas grain, no sketch lines, no messy shading. "
+                    "Sharp focus, high dynamic range, studio-quality clarity. "
+                    "Hard-surface detailing combined with organic realism where appropriate. "
+
+                    "Cinematic composition with dramatic perspective and strong visual hierarchy. "
+                    "Volumetric lighting, atmospheric effects, glowing energy interactions, environmental storytelling. "
+
+                    "Create an epic, immersive background appropriate to the creature’s nature — whether natural, supernatural, cosmic, elemental, or otherworldly — enhancing scale, mood, and narrative impact."
                     f"Guidelines: {selected_guidelines[0]} {selected_guidelines[1]} {selected_guidelines[2]}"
                 )
                 
