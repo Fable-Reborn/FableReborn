@@ -67,12 +67,43 @@ class TradeDecisionView(discord.ui.View):
         base = trans.get("base")
         self.base_content = base.content if base and base.content else ""
 
-    def resolve_participant_id(self, user_id: int) -> int | None:
+    def _matching_participant_ids(self, user_id: int) -> list[int]:
         normalized_user_id = int(user_id)
-        for participant_id, actor_ids in self.participant_actor_ids.items():
+        ordered_participant_ids = list(self.participant_order)
+        ordered_participant_ids.extend(
+            participant_id
+            for participant_id in self.participant_actor_ids
+            if participant_id not in ordered_participant_ids
+        )
+
+        matches: list[int] = []
+        for participant_id in ordered_participant_ids:
+            actor_ids = self.participant_actor_ids.get(participant_id, set())
             if normalized_user_id in actor_ids:
-                return participant_id
-        return None
+                matches.append(participant_id)
+        return matches
+
+    def resolve_participant_id(
+        self, user_id: int, *, prefer_pending: bool = False
+    ) -> int | None:
+        normalized_user_id = int(user_id)
+        matches = self._matching_participant_ids(normalized_user_id)
+        if not matches:
+            return None
+
+        if prefer_pending:
+            if (
+                normalized_user_id in matches
+                and normalized_user_id not in self.accepted_participants
+            ):
+                return normalized_user_id
+            for participant_id in matches:
+                if participant_id not in self.accepted_participants:
+                    return participant_id
+
+        if normalized_user_id in matches:
+            return normalized_user_id
+        return matches[0]
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if self.resolve_participant_id(interaction.user.id) is None:
@@ -132,7 +163,9 @@ class TradeDecisionView(discord.ui.View):
             )
             return
 
-        participant_id = self.resolve_participant_id(interaction.user.id)
+        participant_id = self.resolve_participant_id(
+            interaction.user.id, prefer_pending=True
+        )
         if participant_id is None:
             await interaction.response.send_message(
                 _("You are not part of this trade."), ephemeral=True
