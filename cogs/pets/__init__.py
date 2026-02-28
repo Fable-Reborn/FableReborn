@@ -2462,19 +2462,27 @@ class Pets(commands.Cog):
             if not command:
                 status_messages.append(f"`{action['name']}`: command unavailable")
                 continue
-            # Keep both identifiers for compatibility. Some cooldown keys in the codebase
-            # use qualified names (e.g. "pets feed"), while others may rely on command name.
-            command_ids = [command.qualified_name]
-            if command.name not in command_ids:
-                command_ids.append(command.name)
-            available_actions.append((action, command, command_ids))
+            # Use the same key format as the cooldown decorator on subcommands.
+            # Keep legacy IDs for read-compatibility only.
+            primary_command_id = command.qualified_name
+            lookup_command_ids = [primary_command_id]
+            if command.name not in lookup_command_ids:
+                lookup_command_ids.append(command.name)
+            available_actions.append(
+                (action, command, primary_command_id, lookup_command_ids)
+            )
 
         # Read all action cooldowns in one Redis pipeline.
         flat_cooldowns = []
         if available_actions:
             async with ctx.bot.redis.pipeline() as pipe:
-                for action_item, command_item, command_ids in available_actions:
-                    for command_id in command_ids:
+                for (
+                    action_item,
+                    command_item,
+                    primary_command_id,
+                    lookup_command_ids,
+                ) in available_actions:
+                    for command_id in lookup_command_ids:
                         pipe.ttl(f"cd:{ctx.author.id}:{command_id}")
                 flat_cooldowns = await pipe.execute()
 
@@ -2513,6 +2521,7 @@ class Pets(commands.Cog):
                             action_name,
                             f"pets {action_name}",
                             f"pet {action_name}",
+                            f"pets pets {action_name}",
                         }:
                             fallback_ttls_by_action[action_name].append(ttl_value)
         except Exception as e:
@@ -2520,9 +2529,11 @@ class Pets(commands.Cog):
 
         runnable_actions = []
         ttl_index = 0
-        for action, command, command_ids in available_actions:
-            raw_ttls = flat_cooldowns[ttl_index: ttl_index + len(command_ids)]
-            ttl_index += len(command_ids)
+        for action, command, primary_command_id, lookup_command_ids in available_actions:
+            raw_ttls = flat_cooldowns[
+                ttl_index: ttl_index + len(lookup_command_ids)
+            ]
+            ttl_index += len(lookup_command_ids)
 
             normalized_ttls = []
             for ttl in raw_ttls:
@@ -2544,22 +2555,34 @@ class Pets(commands.Cog):
                     cooldown_messages.append(f"`{action['name']}`: cooldown active")
                 continue
 
-            # Do not create synthetic cooldown keys here. Each invoked command
-            # handles its own cooldown key through the shared cooldown checks.
-            runnable_actions.append((action, command, command_ids))
+            runnable_actions.append((action, command, primary_command_id))
 
-        for action, command, command_ids in runnable_actions:
+        for action, command, primary_command_id in runnable_actions:
+            # ctx.invoke bypasses checks/cooldowns, so set the canonical
+            # subcommand cooldown key explicitly and invoke with the command
+            # context switched so reset_cooldown() inside subcommands targets
+            # the correct key.
+            await ctx.bot.redis.execute_command(
+                "SET",
+                f"cd:{ctx.author.id}:{primary_command_id}",
+                primary_command_id,
+                "EX",
+                action["cooldown"],
+            )
+            previous_command = ctx.command
+            ctx.command = command
             try:
                 await ctx.invoke(command, **action["kwargs"])
             except Exception as e:
                 # If a subcommand fails, clear only that cooldown lock so the user
                 # can retry it immediately.
-                for command_id in command_ids:
-                    await ctx.bot.redis.execute_command(
-                        "DEL",
-                        f"cd:{ctx.author.id}:{command_id}",
-                    )
+                await ctx.bot.redis.execute_command(
+                    "DEL",
+                    f"cd:{ctx.author.id}:{primary_command_id}",
+                )
                 status_messages.append(f"`{action['name']}`: failed ({e})")
+            finally:
+                ctx.command = previous_command
 
         if cooldown_messages:
             status_report = "\n".join(cooldown_messages)
