@@ -2544,14 +2544,8 @@ class Pets(commands.Cog):
                     cooldown_messages.append(f"`{action['name']}`: cooldown active")
                 continue
 
-            # Pre-lock cooldown keys before invoking, matching the batching style
-            # used by other "all" commands.
-            for command_id in command_ids:
-                await ctx.bot.redis.set(
-                    f"cd:{ctx.author.id}:pets {command_id}",
-                    command_id,
-                    ex=action["cooldown"],
-                )
+            # Do not create synthetic cooldown keys here. Each invoked command
+            # handles its own cooldown key through the shared cooldown checks.
             runnable_actions.append((action, command, command_ids))
 
         for action, command, command_ids in runnable_actions:

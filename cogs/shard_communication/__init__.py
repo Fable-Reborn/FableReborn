@@ -465,13 +465,35 @@ class Sharding(commands.Cog):
                 )
                 await ctx.send(embed=embed)
             else:
-                max_length = 0  # Initialize the maximum length
-                message_lengths = []
+                def normalize_cmd_id(raw_cmd: str) -> str:
+                    cmd = raw_cmd.strip().lower()
+                    # Legacy malformed keys from older pets batching logic:
+                    # "pets pets train" -> "pets train"
+                    while cmd.startswith("pets pets "):
+                        cmd = f"pets {cmd[len('pets pets '):]}"
+                    # Treat legacy singular prefix as plural command group.
+                    if cmd.startswith("pet "):
+                        cmd = f"pets {cmd[4:]}"
+                    return cmd
+
+                normalized_cooldowns: dict[str, int] = {}
                 for key in cooldowns:
                     key = key.decode()
                     cooldown = await self.bot.redis.execute_command("TTL", key)
-                    cmd = key.replace(f"cd:{ctx.author.id}:", "").lower()  # Use lowercase for comparison
-                    formatted_time = timedelta(seconds=int(cooldown))
+                    try:
+                        cooldown_seconds = int(cooldown)
+                    except (TypeError, ValueError):
+                        continue
+                    if cooldown_seconds <= 0:
+                        continue
+                    raw_cmd = key.replace(f"cd:{ctx.author.id}:", "")
+                    cmd = normalize_cmd_id(raw_cmd)
+                    old_seconds = normalized_cooldowns.get(cmd)
+                    if old_seconds is None or cooldown_seconds > old_seconds:
+                        normalized_cooldowns[cmd] = cooldown_seconds
+
+                for cmd, cooldown_seconds in normalized_cooldowns.items():
+                    formatted_time = timedelta(seconds=cooldown_seconds)
 
                     # Check the category of the cooldown and add it to the respective list
                     if cmd in ["battle", "raidbattle", "tournament", "raidtournament"]:
@@ -493,11 +515,6 @@ class Sharding(commands.Cog):
                     # Format each cooldown message with an emoji and the command name
                     cooldown_message = f"{emoji} • **`{cmd.capitalize()}`** is on cooldown and will be available after {formatted_time}"
                     category_cooldowns.append(cooldown_message)
-
-                    # Append the length of the current message to the message_lengths list
-                    message_lengths.append(len(cooldown_message))
-
-                    max_message_length = max(message_lengths)
 
                 embed = discord.Embed(
                     title=_("Cooldowns"),
