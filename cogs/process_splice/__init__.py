@@ -305,22 +305,51 @@ class PetEditView(View):
         
         try:
             msg = await self.ctx.bot.wait_for('message', check=check, timeout=120)
+            process_cog = self.ctx.bot.get_cog("ProcessSplice")
             
             if msg.attachments:
                 # Handle file upload
                 attachment = msg.attachments[0]
                 if attachment.height:  # Verify it's an image
-                    self.pet['url'] = attachment.url
+                    if process_cog:
+                        image_bytes = await attachment.read()
+                        suffix = (pathlib.Path(attachment.filename or "").suffix or "").lower()
+                        if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+                            suffix = ".png"
+                        safe_name = process_cog._sanitize_storage_name(self.pet.get("name", "pet"))
+                        key = (
+                            f"pets/splices/{self.ctx.author.id}/{datetime.datetime.utcnow().strftime('%Y%m%d')}/"
+                            f"edit_{safe_name}_{secrets.token_hex(6)}{suffix}"
+                        )
+                        self.pet['url'] = await process_cog._r2_upload_bytes(
+                            image_bytes,
+                            key,
+                            content_type=attachment.content_type or mimetypes.guess_type(attachment.filename or "")[0] or "image/png",
+                        )
+                    else:
+                        self.pet['url'] = attachment.url
                     await self.ctx.send(f"✅ Image updated for **{self.pet['name']}**!")
                 else:
                     await self.ctx.send("❌ Invalid image file.")
             else:
                 # Handle URL
-                self.pet['url'] = msg.content.strip()
-                await self.ctx.send(f"✅ Image URL updated for **{self.pet['name']}**!")
+                new_url = msg.content.strip()
+                if process_cog:
+                    self.pet['url'] = await process_cog._ensure_pet_image_on_r2(
+                        image_url=new_url,
+                        user_id=self.ctx.author.id,
+                        pet_name=self.pet.get("name", "pet"),
+                        source_tag="edit",
+                    )
+                    await self.ctx.send(f"✅ Image URL imported to Cloudflare for **{self.pet['name']}**!")
+                else:
+                    self.pet['url'] = new_url
+                    await self.ctx.send(f"✅ Image URL updated for **{self.pet['name']}**!")
                 
         except asyncio.TimeoutError:
             await self.ctx.send("⏰ Timed out. Image not changed.")
+        except Exception as e:
+            await self.ctx.send(f"❌ Failed to update image: {e}")
         
         # Return to review
         embed = await self.parent_view.get_review_embed()
@@ -604,6 +633,68 @@ class ProcessSplice(commands.Cog):
             Bucket=self._r2_bucket,
             Key=object_key,
         )
+
+    @staticmethod
+    def _sanitize_storage_name(value: str, *, fallback: str = "pet") -> str:
+        cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", (value or "").strip())
+        cleaned = cleaned.strip("._")
+        return cleaned[:80] or fallback
+
+    def _is_r2_public_url(self, url: str) -> bool:
+        normalized_url = (url or "").strip()
+        base = (self._r2_public_base_url or "").rstrip("/")
+        return bool(base and normalized_url.startswith(f"{base}/"))
+
+    async def _download_image_bytes(self, url: str, *, timeout_seconds: int = 30) -> bytes:
+        normalized_url = (url or "").strip()
+        if not normalized_url:
+            raise RuntimeError("Cannot download image: empty URL.")
+
+        timeout = aiohttp.ClientTimeout(total=timeout_seconds, connect=15, sock_connect=15, sock_read=timeout_seconds)
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        }
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(normalized_url, headers=headers, allow_redirects=True) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"Image download failed with status {response.status}.")
+                data = await response.read()
+                if not data:
+                    raise RuntimeError("Image download returned empty bytes.")
+                return data
+
+    async def _ensure_pet_image_on_r2(
+        self,
+        *,
+        image_url: Optional[str],
+        user_id: int,
+        pet_name: str,
+        source_tag: str,
+    ) -> str:
+        """
+        Ensure pet image URLs persisted in DB are Cloudflare R2-hosted.
+        If URL is not already on configured public R2 base, download and re-upload.
+        """
+        normalized_url = (image_url or "").strip()
+        self._get_r2_client()  # ensure config/client are available
+
+        if normalized_url and self._is_r2_public_url(normalized_url):
+            return normalized_url
+
+        image_bytes = await self._download_image_bytes(normalized_url)
+        parsed_path = normalized_url.split("?", 1)[0].split("#", 1)[0]
+        suffix = (pathlib.Path(parsed_path).suffix or "").lower()
+        if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+            suffix = ".png"
+
+        safe_name = self._sanitize_storage_name(pet_name, fallback="pet")
+        key = (
+            f"pets/splices/{int(user_id)}/{datetime.datetime.utcnow().strftime('%Y%m%d')}/"
+            f"{source_tag}_{safe_name}_{secrets.token_hex(6)}{suffix}"
+        )
+        content_type = mimetypes.guess_type(f"file{suffix}")[0] or "image/png"
+        return await self._r2_upload_bytes(image_bytes, key, content_type=content_type)
 
     def _get_pixelcut_key(self) -> str:
         external = getattr(self.bot.config, "external", None)
@@ -2141,25 +2232,6 @@ class ProcessSplice(commands.Cog):
                 async with s.get(url) as r:
                     return await r.read()
 
-        async def has_transparency(image_bytes: bytes) -> bool:
-            """Check if image has transparency"""
-            return self._image_has_transparency(image_bytes)
-
-        async def remove_background(
-                ctx: commands.Context,
-                *,
-                img_url: str | None = None,
-                img_bytes: bytes | None = None,
-                filename: str = "temp.png",
-        ) -> bytes:
-            return await self._remove_background_with_fallback(
-                ctx,
-                img_url=img_url,
-                img_bytes=img_bytes,
-                filename=filename,
-                attempts_per_source=4,
-            )
-
         async def storage_upload(data: bytes, filename: str) -> str:
             return await self._r2_upload_bytes(data, filename)
 
@@ -2365,7 +2437,7 @@ class ProcessSplice(commands.Cog):
                     "The fusion MUST appear as a single, cohesive, evolved being - NOT a simple combination or mashup. "
                     "Show the ENTIRE creature in a dynamic pose that highlights its unique anatomy. "
                     f"The result should exude a {special_trait}, otherworldly quality. "
-                    "Create on pure white/transparent background with NO environment elements. "
+                    "Create a fucking sick background for it. "
                     f"Guidelines: {selected_guidelines[0]} {selected_guidelines[1]} {selected_guidelines[2]}"
                 )
                 
@@ -2425,16 +2497,8 @@ class ProcessSplice(commands.Cog):
                 result = await asyncio.to_thread(_edit)
                 img_b64 = result.data[0].b64_json
                 gen_bytes = base64.b64decode(img_b64)
-
-                # Check for transparency and remove background if needed
-                if not "[SPECIAL]" in pet["name"].upper():
-                    if not await has_transparency(gen_bytes):
-                        try:
-                            await ctx.send(f"🎭 Removing background for {pet['name']}...")
-                            gen_bytes = await remove_background(ctx, img_bytes=gen_bytes, filename="ai.png")
-                            await ctx.send(f"✅ Background removed for {pet['name']}.")
-                        except Exception as e:
-                            await ctx.send(f"⚠️ Background removal failed: {e}")
+                # PixelCut background removal intentionally disabled for auto_splice.
+                # We keep generated image bytes as-is and persist directly to R2.
 
                 # Upload to R2
                 pet["url"] = await storage_upload(
@@ -2711,6 +2775,14 @@ class ProcessSplice(commands.Cog):
         completed = []
         for pet in pets:
             try:
+                # Guarantee DB-persisted pet image URLs are Cloudflare R2-hosted.
+                pet["url"] = await self._ensure_pet_image_on_r2(
+                    image_url=pet.get("url"),
+                    user_id=pet["user_id"],
+                    pet_name=pet["name"],
+                    source_tag="auto",
+                )
+
                 iv_pct = random.uniform(30, 70)
                 iv_pts = (iv_pct / 100) * 100
                 hp_iv, atk_iv, def_iv = await self.allocate_iv_points(iv_pts)
@@ -2893,6 +2965,14 @@ class ProcessSplice(commands.Cog):
         completed = []
         for pet in pets:
             try:
+                # Guarantee DB-persisted pet image URLs are Cloudflare R2-hosted.
+                pet["url"] = await self._ensure_pet_image_on_r2(
+                    image_url=pet.get("url"),
+                    user_id=pet["user_id"],
+                    pet_name=pet["name"],
+                    source_tag="resume",
+                )
+
                 iv_pct = random.uniform(30, 70)
                 iv_pts = (iv_pct / 100) * 100
                 hp_iv, atk_iv, def_iv = await self.allocate_iv_points(iv_pts)
