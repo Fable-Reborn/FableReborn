@@ -116,10 +116,10 @@ MAX_ROLE_LEVEL: int = 10
 FIRST_ADVANCED_UNLOCK_LEVEL: int = 5
 SECOND_ADVANCED_UNLOCK_LEVEL: int = 10
 ROLE_XP_PER_LEVEL: int = 100
-ROLE_XP_WIN: int = 35
-ROLE_XP_WIN_ALIVE: int = 40
-ROLE_XP_LOSS: int = 10
-ROLE_XP_LONER_WIN: int = 60
+ROLE_XP_WIN: int = 90
+ROLE_XP_WIN_ALIVE: int = 100
+ROLE_XP_LOSS: int = 20
+ROLE_XP_LONER_WIN: int = 150
 
 # XP grant policy:
 # - XP is granted only for GM-started games (if ROLE_XP_REQUIRE_GM_START=True)
