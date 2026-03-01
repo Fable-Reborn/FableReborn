@@ -2199,8 +2199,8 @@ class Game:
         await self.ctx.send(
             _(
                 "{role_ping} ⚠️ **New nomination system is active:** use `nom @player`"
-                " or `nominate @player` exactly, or reply to a player's message with"
-                " exactly `nom`."
+                " or `nominate @player` (not case-sensitive), or reply to a player's"
+                " message with only `nom` (also not case-sensitive)."
             ).format(role_ping=role_ping),
             allowed_mentions=discord.AllowedMentions(
                 roles=True, users=False, everyone=False
@@ -6075,15 +6075,16 @@ class Game:
 
     @staticmethod
     def _normalize_day_nomination_content(content: str) -> str:
-        return re.sub(r"\s+", " ", (content or "").strip().lower())
+        # Keep nomination parsing case-insensitive while staying strict on format.
+        return re.sub(r"\s+", " ", str(content or "").strip().casefold())
 
     async def _extract_day_nomination_nominee(
             self, msg: discord.Message, eligible_player_ids: set[int]
     ) -> discord.abc.User | None:
         """
         Accept only:
-        1) exact `nom @user` or `nominate @user`
-        2) reply with exact `nom`
+        1) `nom @user` or `nominate @user` (case-insensitive)
+        2) reply with only `nom` (case-insensitive)
         """
         normalized = self._normalize_day_nomination_content(msg.content)
 
@@ -6141,8 +6142,9 @@ class Game:
             _(
                 "You may now submit someone (up to 10 total) for the election who to"
                 " lynch. Use `nom @player` or `nominate @player` exactly, or reply to"
-                " a player's message with exactly `nom`. You have {timer} seconds of"
-                " discussion during this time."
+                " a player's message with `nom` only. `nom`/`nominate` are not"
+                " case-sensitive. You have {timer} seconds of discussion during this"
+                " time."
             ).format(timer=self.timer)
         )
         for page in paginator.pages:
