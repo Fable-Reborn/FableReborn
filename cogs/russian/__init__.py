@@ -40,6 +40,7 @@ from utils.checks import has_char
 from utils.i18n import _, locale_doc
 
 SETTINGS_FILE = Path(__file__).parent / "rr_settings.json"
+SETTINGS_TABLE = "russian_roulette_settings"
 
 DEFAULT_GIFS = {
     "round_start": "https://media.tenor.com/fklGVnlUSFQAAAAd/russian-roulette.gif",
@@ -2087,6 +2088,26 @@ class Russian(commands.Cog):
         self._message_cycles: dict[str, dict[str, list[str]]] = {}
         self._settings_lock = threading.Lock()
         self._settings: dict[str, dict] = self.load_settings()
+        self._settings_store_ready = False
+
+    async def cog_load(self):
+        await self._initialize_settings_store()
+
+    async def _initialize_settings_store(self) -> None:
+        # Keep file-based settings as fallback, but migrate to DB-backed storage
+        # so settings survive process restarts and multi-instance deployments.
+        if not hasattr(self.bot, "pool"):
+            return
+        try:
+            await self._ensure_settings_table()
+            db_settings = await self._load_settings_from_db()
+            merged = {**self._settings, **db_settings}
+            self._settings = merged
+            await self._bulk_upsert_settings_to_db(merged)
+            self._settings_store_ready = True
+            self.save_settings()
+        except Exception:
+            self._settings_store_ready = False
 
     @contextlib.contextmanager
     def _settings_file_lock(self, timeout: float = 2.0):
@@ -2156,6 +2177,77 @@ class Russian(commands.Cog):
             tmp_path.write_text(payload, encoding="utf-8")
             tmp_path.replace(SETTINGS_FILE)
 
+    async def _ensure_settings_table(self) -> None:
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {SETTINGS_TABLE} (
+                    user_id BIGINT PRIMARY KEY,
+                    settings JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+
+    async def _load_settings_from_db(self) -> dict[str, dict]:
+        async with self.bot.pool.acquire() as conn:
+            rows = await conn.fetch(f"SELECT user_id, settings FROM {SETTINGS_TABLE};")
+
+        loaded: dict[str, dict] = {}
+        for row in rows:
+            raw = row.get("settings")
+            parsed: dict = {}
+            if isinstance(raw, dict):
+                parsed = raw
+            elif isinstance(raw, str):
+                try:
+                    decoded = json.loads(raw)
+                    if isinstance(decoded, dict):
+                        parsed = decoded
+                except json.JSONDecodeError:
+                    parsed = {}
+            loaded[str(row["user_id"])] = parsed
+        return loaded
+
+    async def _upsert_settings_to_db(self, user_id: int, settings: dict) -> None:
+        if not hasattr(self.bot, "pool"):
+            return
+        payload = json.dumps(settings)
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                f"""
+                INSERT INTO {SETTINGS_TABLE} (user_id, settings, updated_at)
+                VALUES ($1, $2::jsonb, NOW())
+                ON CONFLICT (user_id)
+                DO UPDATE SET settings = EXCLUDED.settings, updated_at = NOW();
+                """,
+                user_id,
+                payload,
+            )
+
+    async def _bulk_upsert_settings_to_db(self, settings_by_user: dict[str, dict]) -> None:
+        if not hasattr(self.bot, "pool") or not settings_by_user:
+            return
+        records: list[tuple[int, str]] = []
+        for user_id, settings in settings_by_user.items():
+            try:
+                parsed_user_id = int(user_id)
+            except (TypeError, ValueError):
+                continue
+            records.append((parsed_user_id, json.dumps(settings)))
+        if not records:
+            return
+        async with self.bot.pool.acquire() as conn:
+            await conn.executemany(
+                f"""
+                INSERT INTO {SETTINGS_TABLE} (user_id, settings, updated_at)
+                VALUES ($1, $2::jsonb, NOW())
+                ON CONFLICT (user_id)
+                DO UPDATE SET settings = EXCLUDED.settings, updated_at = NOW();
+                """,
+                records,
+            )
+
     def get_user_settings(self, user_id: int) -> RRSettings:
         defaults = asdict(RRSettings())
         raw = self._settings.get(str(user_id), {})
@@ -2214,9 +2306,14 @@ class Russian(commands.Cog):
 
         return RRSettings(**merged)
 
-    def set_user_settings(self, user_id: int, settings: RRSettings):
+    async def set_user_settings(self, user_id: int, settings: RRSettings):
         self._settings[str(user_id)] = asdict(settings)
         self.save_settings()
+        try:
+            await self._upsert_settings_to_db(user_id, asdict(settings))
+        except Exception:
+            # File storage still keeps settings if DB write fails.
+            pass
 
     def ensure_stats(self, game: Game, user_id: int):
         if user_id not in game.stats:
@@ -2943,7 +3040,7 @@ class Russian(commands.Cog):
 
             settings.gif_overrides = self.normalize_gif_overrides(settings.gif_overrides)
             settings.gif_overrides.setdefault(theme_key, {})[slot_key] = direct_url
-            self.set_user_settings(ctx.author.id, settings)
+            await self.set_user_settings(ctx.author.id, settings)
             label = GIF_SLOT_LABELS.get(slot_key, slot_key)
             return await ctx.send(f"Saved {label} GIF for theme `{theme_key}`.")
 
@@ -2966,7 +3063,7 @@ class Russian(commands.Cog):
             if slot and slot.strip().lower() in {"all", "*"}:
                 if theme_key in settings.gif_overrides:
                     del settings.gif_overrides[theme_key]
-                    self.set_user_settings(ctx.author.id, settings)
+                    await self.set_user_settings(ctx.author.id, settings)
                 return await ctx.send(f"Cleared all GIFs for theme `{theme_key}`.")
 
             slot_key = self.normalize_gif_slot(slot or "")
@@ -2980,7 +3077,7 @@ class Russian(commands.Cog):
                 del settings.gif_overrides[theme_key][slot_key]
                 if not settings.gif_overrides[theme_key]:
                     del settings.gif_overrides[theme_key]
-                self.set_user_settings(ctx.author.id, settings)
+                await self.set_user_settings(ctx.author.id, settings)
                 label = GIF_SLOT_LABELS.get(slot_key, slot_key)
                 return await ctx.send(f"Cleared {label} GIF for theme `{theme_key}`.")
 
@@ -3201,7 +3298,7 @@ class Russian(commands.Cog):
         else:
             return await ctx.send("Unsupported setting type.")
 
-        self.set_user_settings(ctx.author.id, settings)
+        await self.set_user_settings(ctx.author.id, settings)
         await ctx.send(f"Updated `{attr}` to `{getattr(settings, attr)}`.")
 
     @has_char()
