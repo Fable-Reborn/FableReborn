@@ -780,6 +780,19 @@ CLASSIC_VILLAGER_FILLER_ROLE_CAPS: dict[Role, int] = {
     Role.BODYGUARD: 1,
 }
 
+INFORMATION_GUARANTEE_ROLES: tuple[Role, ...] = (
+    Role.SEER,
+    Role.AURA_SEER,
+)
+
+PROTECTION_GUARANTEE_ROLES: tuple[Role, ...] = (
+    Role.DOCTOR,
+    Role.BODYGUARD,
+    Role.HEALER,
+    Role.JAILER,
+    Role.WITCH,
+)
+
 
 def _pick_weighted_role(weighted_candidates: list[tuple[Role, int]]) -> Role | None:
     if not weighted_candidates:
@@ -10889,6 +10902,7 @@ def get_roles(number_of_players: int, mode: str = None) -> list[Role]:
 def _ensure_team_requirements_in_available(
     roles: list[Role], mode: str | None = None
 ) -> list[Role]:
+    mode_token = _normalize_mode_token(mode)
     available_roles = roles[:-2]
     extra_roles = roles[-2:]
     if not available_roles:
@@ -10938,6 +10952,66 @@ def _ensure_team_requirements_in_available(
                 mode,
                 existing_roles=available_roles,
             )
+
+    # Huntergame/Villagergame intentionally overwrite village roles later.
+    if mode_token in {"huntergame", "villagergame"}:
+        return available_roles + extra_roles
+
+    def _available_from_candidates(candidates: tuple[Role, ...]) -> list[Role]:
+        return [
+            role for role in candidates if _is_role_available_in_mode(role, mode)
+        ]
+
+    def _pick_replace_idx(avoid_roles: set[Role]) -> int:
+        return next(
+            (
+                idx
+                for idx, role in enumerate(available_roles)
+                if not is_wolf_team_role(role) and role not in avoid_roles
+            ),
+            next(
+                (
+                    idx
+                    for idx, role in enumerate(available_roles)
+                    if not is_wolf_team_role(role)
+                ),
+                1 if len(available_roles) > 1 else 0,
+            ),
+        )
+
+    def _ensure_role_family_present(
+        required_roles: tuple[Role, ...], *, avoid_roles_for_replacement: set[Role]
+    ) -> None:
+        if any(role in required_roles for role in available_roles):
+            return
+
+        candidates = _available_from_candidates(required_roles)
+        if not candidates:
+            return
+
+        replacement_role = random.choice(candidates)
+        extra_idx = next(
+            (idx for idx, role in enumerate(extra_roles) if role in candidates),
+            None,
+        )
+        replace_idx = _pick_replace_idx(avoid_roles_for_replacement)
+
+        if extra_idx is not None:
+            available_roles[replace_idx], extra_roles[extra_idx] = (
+                extra_roles[extra_idx],
+                available_roles[replace_idx],
+            )
+        else:
+            available_roles[replace_idx] = replacement_role
+
+    _ensure_role_family_present(
+        INFORMATION_GUARANTEE_ROLES,
+        avoid_roles_for_replacement=set(PROTECTION_GUARANTEE_ROLES),
+    )
+    _ensure_role_family_present(
+        PROTECTION_GUARANTEE_ROLES,
+        avoid_roles_for_replacement=set(INFORMATION_GUARANTEE_ROLES),
+    )
 
     return available_roles + extra_roles
 
