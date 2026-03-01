@@ -162,6 +162,7 @@ ROLE_TOKEN_TO_ROLE.update(
 ROLE_TOKEN_TO_ROLE.update(
     {
         "ww": Role.WEREWOLF,
+        "mayor": Role.SHERIFF,
         "wolfnecro": Role.WOLF_NECROMANCER,
         "juniorwolf": Role.JUNIOR_WEREWOLF,
         "old": Role.THE_OLD,
@@ -334,8 +335,9 @@ DESCRIPTIONS = {
         " target), you survive. The second time, you die."
     ),
     Role.SHERIFF: _(
-        "You are the Sheriff. Every night, you may investigate one player to learn"
-        " whether they appear suspicious."
+        "You are the Mayor. Your role is hidden at first. During any day, you may"
+        " reveal yourself in DM to activate your ability. Once revealed, your vote"
+        " counts as double."
     ),
     Role.JAILER: _(
         "You are the Jailer. During the day, choose one player to jail for the next"
@@ -1176,7 +1178,6 @@ INHERITABLE_INFORMATION_ROLES = {
     Role.AURA_SEER,
     Role.DETECTIVE,
     Role.MORTICIAN,
-    Role.SHERIFF,
     Role.FOX,
     Role.FORTUNE_TELLER,
 }
@@ -1190,7 +1191,6 @@ SORCERER_INFORMER_ROLES = {
     Role.SEER_APPRENTICE,
     Role.AURA_SEER,
     Role.DETECTIVE,
-    Role.SHERIFF,
     Role.MORTICIAN,
     Role.FORTUNE_TELLER,
     Role.GAMBLER,
@@ -1534,6 +1534,7 @@ class Game:
         self.junior_day_mark_tasks: dict[int, asyncio.Task] = {}
         self.loudmouth_mark_tasks: dict[int, asyncio.Task] = {}
         self.avenger_mark_tasks: dict[int, asyncio.Task] = {}
+        self.mayor_reveal_tasks: dict[int, asyncio.Task] = {}
         self.after_first_night = False
         self.is_night_phase = False
         self.pending_night_resurrections: list[
@@ -1585,11 +1586,6 @@ class Game:
             for couple in lovers:
                 if len(couple) == 2:
                     self.lovers.append(set(couple))
-        random.choice(self.players).is_sheriff = True
-
-    @property
-    def sheriff(self) -> Player:
-        return discord.utils.get(self.alive_players, is_sheriff=True)
 
     @property
     def alive_players(self) -> list[Player]:
@@ -1610,7 +1606,10 @@ class Game:
                     role_name = "Cursed "
         else:
             raise TypeError("Wrong type: player_or_role. Only Player or Role allowed")
-        role_name += role.name.title().replace("_", " ")
+        if role == Role.SHERIFF:
+            role_name += "Mayor"
+        else:
+            role_name += role.name.title().replace("_", " ")
         return role_name
 
     def _observer_can_see_sorcerer_disguise(
@@ -2193,6 +2192,44 @@ class Game:
         )
         embed.set_image(url=WW_DAY_ANNOUNCEMENT_IMAGE_URL)
         await self.ctx.send(embed=embed)
+
+    async def announce_new_nomination_system(self) -> None:
+        alive_role = self._get_ww_alive_role()
+        role_ping = alive_role.mention if alive_role else _("Players")
+        await self.ctx.send(
+            _(
+                "{role_ping} ⚠️ **New nomination system is active:** use `nom @player`"
+                " or `nominate @player` exactly, or reply to a player's message with"
+                " exactly `nom`."
+            ).format(role_ping=role_ping),
+            allowed_mentions=discord.AllowedMentions(
+                roles=True, users=False, everyone=False
+            ),
+        )
+
+    async def send_public_full_role_roster(self, *, day_label: str | None = None) -> None:
+        paginator = commands.Paginator(prefix="", suffix="")
+        if day_label:
+            paginator.add_line(
+                _("**{day_label}: Full Role Roster (Alive + Dead)**").format(
+                    day_label=day_label
+                )
+            )
+        else:
+            paginator.add_line(_("**Full Role Roster (Alive + Dead)**"))
+
+        for player in self.players:
+            status = _("Alive") if not player.dead else _("Dead")
+            public_role = self.get_role_name(player)
+            paginator.add_line(
+                _("• **{role}** ({status})").format(
+                    role=public_role,
+                    status=status,
+                )
+            )
+
+        for page in paginator.pages:
+            await self.ctx.send(page)
 
     def _get_ww_alive_role(self) -> discord.Role | None:
         guild = getattr(self.ctx, "guild", None)
@@ -3785,6 +3822,107 @@ class Game:
             task.cancel()
         self.avenger_mark_tasks.clear()
 
+    async def _collect_mayor_reveal(self, mayor: Player) -> None:
+        await mayor.send(
+            _(
+                "🎖️ As **Mayor**, your role starts hidden. During the day, reveal"
+                " yourself to activate double voting power. You can choose when to"
+                " reveal.\n{game_link}"
+            ).format(game_link=self.game_link)
+        )
+        prompt_timeout = 3600
+        while (
+            not mayor.dead
+            and mayor in self.alive_players
+            and mayor.role == Role.SHERIFF
+            and not mayor.is_sheriff
+        ):
+            if self.is_night_phase:
+                await asyncio.sleep(3)
+                continue
+            if mayor.is_jailed:
+                await asyncio.sleep(5)
+                continue
+
+            try:
+                choice = await mayor.choose_users(
+                    _(
+                        "Reveal as **Mayor** now? Revealing makes your vote count as"
+                        " double for the rest of the game."
+                    ),
+                    list_of_users=[mayor],
+                    amount=1,
+                    required=False,
+                    timeout=prompt_timeout,
+                )
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                schedule_traceback(self.ctx, e)
+                return
+
+            if (
+                mayor.dead
+                or mayor not in self.alive_players
+                or mayor.role != Role.SHERIFF
+                or mayor.is_sheriff
+            ):
+                return
+
+            if choice:
+                mayor.is_sheriff = True
+                for player in self.players:
+                    player.revealed_roles.update({mayor: mayor.role})
+                await mayor.send(
+                    _(
+                        "📣 You revealed as **Mayor**. Your vote now counts as"
+                        " double.\n{game_link}"
+                    ).format(game_link=self.game_link)
+                )
+                await self.ctx.send(
+                    _(
+                        "📣 **{mayor}** has revealed as **Mayor**. Their vote now"
+                        " counts as double."
+                    ).format(mayor=mayor.user.mention)
+                )
+                return
+
+            await asyncio.sleep(10)
+
+    async def start_mayor_reveal_selection(self) -> None:
+        mayors = [
+            player
+            for player in self.alive_players
+            if player.role == Role.SHERIFF and not player.is_sheriff
+        ]
+        active_ids = {player.user.id for player in mayors}
+
+        for player_id, task in list(self.mayor_reveal_tasks.items()):
+            if task.done() or player_id not in active_ids:
+                task.cancel()
+                self.mayor_reveal_tasks.pop(player_id, None)
+
+        for mayor in mayors:
+            existing = self.mayor_reveal_tasks.get(mayor.user.id)
+            if existing and not existing.done():
+                continue
+            self.mayor_reveal_tasks[mayor.user.id] = asyncio.create_task(
+                self._collect_mayor_reveal(mayor)
+            )
+
+    async def stop_mayor_reveal_selection(
+        self, mayor: Player | None = None
+    ) -> None:
+        if mayor is not None:
+            task = self.mayor_reveal_tasks.pop(mayor.user.id, None)
+            if task:
+                task.cancel()
+            return
+
+        for task in self.mayor_reveal_tasks.values():
+            task.cancel()
+        self.mayor_reveal_tasks.clear()
+
     async def handle_head_hunter_target_death(self, dead_player: Player) -> None:
         head_hunters = [
             player
@@ -4882,7 +5020,7 @@ class Game:
         return False
 
     def _day_vote_weight(self, player: Player) -> int:
-        weight = 2 if player.is_sheriff else 1
+        weight = 2 if (player.role == Role.SHERIFF and player.is_sheriff) else 1
         if player.role == Role.PREACHER and player.preacher_revealed:
             weight += max(0, min(3, int(player.preacher_extra_votes or 0)))
         return weight
@@ -5480,23 +5618,6 @@ class Game:
             )
         )
 
-    async def announce_sheriff(self) -> None:
-        await self.ctx.send(
-            _(
-                "📢 {sheriff} got randomly chosen as the new 🎖 **Mayor**️. **The vote"
-                " of the Mayor counts as double.**"
-            ).format(sheriff=self.sheriff.user.mention)
-        )
-        await self.dm_sheriff_info()
-
-    async def dm_sheriff_info(self) -> None:
-        await self.sheriff.send(
-            _(
-                "You became the 🎖 **Mayor. Your vote counts as double.**"
-            )
-        )
-        await asyncio.sleep(5)  # Give them time to read
-
     async def send_love_msgs(self) -> None:
         for couple in self.lovers:
             couple = list(couple)
@@ -5551,6 +5672,7 @@ class Game:
         )
         for page in paginator.pages:
             await self.ctx.send(page)
+        await self.announce_new_nomination_system()
 
         await self.apply_advanced_role_choices()
         await self.resolve_sorcerer_auto_conversion()
@@ -5642,7 +5764,6 @@ class Game:
         await self._ensure_medium_relay()
         await self.start_loudmouth_target_selection()
         await self.start_avenger_target_selection()
-        await self.announce_sheriff()
         await self._set_night_chat_lock(True)
         await self.send_night_announcement("🌘")
         await self.apply_nightmare_sleep_for_night()
@@ -5684,8 +5805,6 @@ class Game:
         morticians = self.get_players_with_role(Role.MORTICIAN)
         for mortician in morticians:
             await mortician.mortician_autopsy()
-        if sheriff_role := self.get_player_with_role(Role.SHERIFF):
-            await sheriff_role.check_sheriff_target()
         if fox := self.get_player_with_role(Role.FOX):
             await fox.check_3_werewolves()
         if judge := self.get_player_with_role(Role.JUDGE):
@@ -5868,8 +5987,6 @@ class Game:
         morticians = self.get_players_with_role(Role.MORTICIAN)
         for mortician in morticians:
             await mortician.mortician_autopsy()
-        if sheriff_role := self.get_player_with_role(Role.SHERIFF):
-            await sheriff_role.check_sheriff_target()
         if fox := self.get_player_with_role(Role.FOX):
             await fox.check_3_werewolves()
         wolf_informers = [
@@ -5956,6 +6073,52 @@ class Game:
             await superspreader.infect_virus()
         return targets
 
+    @staticmethod
+    def _normalize_day_nomination_content(content: str) -> str:
+        return re.sub(r"\s+", " ", (content or "").strip().lower())
+
+    async def _extract_day_nomination_nominee(
+            self, msg: discord.Message, eligible_player_ids: set[int]
+    ) -> discord.abc.User | None:
+        """
+        Accept only:
+        1) exact `nom @user` or `nominate @user`
+        2) reply with exact `nom`
+        """
+        normalized = self._normalize_day_nomination_content(msg.content)
+
+        # Explicit command form: nom @user / nominate @user (and nothing else)
+        explicit_match = re.fullmatch(r"(nom|nominate)\s+<@!?(\d+)>", normalized)
+        if explicit_match:
+            nominee_id = int(explicit_match.group(2))
+            if nominee_id not in eligible_player_ids:
+                return None
+            if len(msg.mentions) != 1:
+                return None
+            nominee = msg.mentions[0]
+            return nominee if nominee.id == nominee_id else None
+
+        # Reply form: reply to a player's message with just `nom`
+        if normalized == "nom" and msg.reference and msg.reference.message_id:
+            replied_message = None
+            if isinstance(msg.reference.resolved, discord.Message):
+                replied_message = msg.reference.resolved
+            elif isinstance(msg.reference.cached_message, discord.Message):
+                replied_message = msg.reference.cached_message
+
+            if replied_message is None:
+                try:
+                    replied_message = await msg.channel.fetch_message(
+                        msg.reference.message_id
+                    )
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    replied_message = None
+
+            if replied_message and replied_message.author.id in eligible_player_ids:
+                return replied_message.author
+
+        return None
+
     async def election(self) -> discord.Member | None:
         paginator = commands.Paginator(prefix="", suffix="")
         players = ""
@@ -5977,7 +6140,8 @@ class Game:
         paginator.add_line(
             _(
                 "You may now submit someone (up to 10 total) for the election who to"
-                " lynch by mentioning their name below. You have {timer} seconds of"
+                " lynch. Use `nom @player` or `nominate @player` exactly, or reply to"
+                " a player's message with exactly `nom`. You have {timer} seconds of"
                 " discussion during this time."
             ).format(timer=self.timer)
         )
@@ -5988,6 +6152,7 @@ class Game:
         second_election = False
         eligible_players = [player.user for player in election_players]
         eligible_player_by_user = {player.user: player for player in election_players}
+        eligible_player_ids = {player.id for player in eligible_players}
         if not eligible_players:
             return None, second_election
         try:
@@ -5998,14 +6163,7 @@ class Game:
                     msg = await self.ctx.bot.wait_for(
                         "message",
                         check=lambda x: x.author in eligible_players
-                                        and x.channel.id == self.ctx.channel.id
-                                        and (
-                                                len(x.mentions) > 0
-                                                or (
-                                                        x.content == self.judge_symbol and not self.judge_spoken
-                                                )
-                                                or ("objection" in x.content.lower())
-                                        ),
+                                        and x.channel.id == self.ctx.channel.id,
                     )
                     if "objection" in msg.content.lower() and discord.utils.get(
                             self.alive_players,
@@ -6036,57 +6194,61 @@ class Game:
                                 " election after this."
                             )
                         )
+                    nominee = await self._extract_day_nomination_nominee(
+                        msg, eligible_player_ids
+                    )
+                    if nominee is None:
+                        continue
                     paragon = discord.utils.get(
                         self.alive_players, role=Role.PARAGON, user=msg.author
                     )
-                    for user in msg.mentions:
-                        if user in eligible_players and (
-                                (user not in nominated and len(nominated) < 10)
-                                or (
-                                        user not in nominated_by_paragon
-                                        and len(nominated_by_paragon) < 10
-                                        and paragon
+                    if nominee in eligible_players and (
+                            (nominee not in nominated and len(nominated) < 10)
+                            or (
+                                    nominee not in nominated_by_paragon
+                                    and len(nominated_by_paragon) < 10
+                                    and paragon
+                            )
+                    ):
+                        if paragon:
+                            nominated_by_paragon.append(nominee)
+                            announce = _(
+                                "**{role} {player}** nominated **{nominee}**."
+                            ).format(
+                                role=paragon.role_name,
+                                player=msg.author,
+                                nominee=nominee,
+                            )
+                            if nominee not in nominated:
+                                nominated.append(nominee)
+                        else:
+                            nominated.append(nominee)
+                            announce = _(
+                                "**{player}** nominated **{nominee}**."
+                            ).format(player=msg.author, nominee=nominee)
+                        if len(nominated) == 1:
+                            mention_time = datetime.datetime.utcnow()
+                            if (mention_time - start) >= datetime.timedelta(
+                                    seconds=self.timer - 10
+                            ):
+                                # Seems sneaky, extend talk time when there's only 10 seconds left
+                                time_to_add = int(self.timer / 2)
+                                finaltime = self.timer + time_to_add
+                                await self.ctx.send(
+                                    _(
+                                        "{finaltime}"
+                                    ).format(finaltime=finaltime)
                                 )
-                        ):
-                            if paragon:
-                                nominated_by_paragon.append(user)
-                                announce = _(
-                                    "**{role} {player}** nominated **{nominee}**."
-                                ).format(
-                                    role=paragon.role_name,
-                                    player=msg.author,
-                                    nominee=user,
-                                )
-                                if user not in nominated:
-                                    nominated.append(user)
-                            else:
-                                nominated.append(user)
-                                announce = _(
-                                    "**{player}** nominated **{nominee}**."
-                                ).format(player=msg.author, nominee=user)
-                            if len(nominated) == 1:
-                                mention_time = datetime.datetime.utcnow()
-                                if (mention_time - start) >= datetime.timedelta(
-                                        seconds=self.timer - 10
-                                ):
-                                    # Seems sneaky, extend talk time when there's only 10 seconds left
-                                    time_to_add = int(self.timer / 2)
-                                    finaltime = self.timer + time_to_add
-                                    await self.ctx.send(
-                                        _(
-                                            "{finaltime}"
-                                        ).format(finaltime=finaltime)
-                                    )
-                                    sneaky = True
+                                sneaky = True
 
-                                    await self.ctx.send(
+                                await self.ctx.send(
+                                    _(
                                         _(
-                                            _(
-                                                "Seems sneaky, I added {time_to_add}"
-                                                " seconds talk time."
-                                            ).format(time_to_add=time_to_add)
-                                        ))
-                            await self.ctx.send(announce)
+                                            "Seems sneaky, I added {time_to_add}"
+                                            " seconds talk time."
+                                        ).format(time_to_add=time_to_add)
+                                    ))
+                        await self.ctx.send(announce)
         except asyncio.TimeoutError:
 
             pass
@@ -6099,14 +6261,7 @@ class Game:
                         msg = await self.ctx.bot.wait_for(
                             "message",
                             check=lambda x: x.author in eligible_players
-                                            and x.channel.id == self.ctx.channel.id
-                                            and (
-                                                    len(x.mentions) > 0
-                                                    or (
-                                                            x.content == self.judge_symbol and not self.judge_spoken
-                                                    )
-                                                    or ("objection" in x.content.lower())
-                                            ),
+                                            and x.channel.id == self.ctx.channel.id,
                         )
                         if "objection" in msg.content.lower() and discord.utils.get(
                                 self.alive_players,
@@ -6137,36 +6292,40 @@ class Game:
                                     " election after this."
                                 )
                             )
+                        nominee = await self._extract_day_nomination_nominee(
+                            msg, eligible_player_ids
+                        )
+                        if nominee is None:
+                            continue
                         paragon = discord.utils.get(
                             self.alive_players, role=Role.PARAGON, user=msg.author
                         )
-                        for user in msg.mentions:
-                            if user in eligible_players and (
-                                    (user not in nominated and len(nominated) < 10)
-                                    or (
-                                            user not in nominated_by_paragon
-                                            and len(nominated_by_paragon) < 10
-                                            and paragon
-                                    )
-                            ):
-                                if paragon:
-                                    nominated_by_paragon.append(user)
-                                    announce = _(
-                                        "**{role} {player}** nominated **{nominee}**."
-                                    ).format(
-                                        role=paragon.role_name,
-                                        player=msg.author,
-                                        nominee=user,
-                                    )
-                                    if user not in nominated:
-                                        nominated.append(user)
-                                else:
-                                    nominated.append(user)
-                                    announce = _(
-                                        "**{player}** nominated **{nominee}**."
-                                    ).format(player=msg.author, nominee=user)
+                        if nominee in eligible_players and (
+                                (nominee not in nominated and len(nominated) < 10)
+                                or (
+                                        nominee not in nominated_by_paragon
+                                        and len(nominated_by_paragon) < 10
+                                        and paragon
+                                )
+                        ):
+                            if paragon:
+                                nominated_by_paragon.append(nominee)
+                                announce = _(
+                                    "**{role} {player}** nominated **{nominee}**."
+                                ).format(
+                                    role=paragon.role_name,
+                                    player=msg.author,
+                                    nominee=nominee,
+                                )
+                                if nominee not in nominated:
+                                    nominated.append(nominee)
+                            else:
+                                nominated.append(nominee)
+                                announce = _(
+                                    "**{player}** nominated **{nominee}**."
+                                ).format(player=msg.author, nominee=nominee)
 
-                                await self.ctx.send(announce)
+                            await self.ctx.send(announce)
             except asyncio.TimeoutError:
 
                 pass
@@ -6545,6 +6704,7 @@ class Game:
         await self.start_junior_day_mark_selection()
         await self.start_loudmouth_target_selection()
         await self.start_avenger_target_selection()
+        await self.start_mayor_reveal_selection()
         await self.start_alpha_day_wolf_relay()
         try:
             for death in unique_night_deaths:
@@ -6557,6 +6717,9 @@ class Game:
                 self.after_first_night = True
             await self.resolve_grave_robber_role_steals()
             await self.resolve_night_resurrections()
+            await self.send_public_full_role_roster(
+                day_label=_("Day {day_count:.0f}").format(day_count=self.night_no)
+            )
             if self.rusty_sword_disease_night is not None:
                 if self.rusty_sword_disease_night == 0:
                     self.rusty_sword_disease_night += 1
@@ -6627,6 +6790,7 @@ class Game:
             await self.clear_grumpy_grandma_day_silence()
             await self.stop_jailer_day_target_selection()
             await self.stop_junior_day_mark_selection()
+            await self.stop_mayor_reveal_selection()
             await self.resolve_tough_guy_delayed_deaths()
 
     async def run(self):
@@ -6713,6 +6877,10 @@ class Game:
                 pass
             try:
                 await self.stop_avenger_target_selection()
+            except Exception:
+                pass
+            try:
+                await self.stop_mayor_reveal_selection()
             except Exception:
                 pass
             try:
@@ -8598,47 +8766,6 @@ class Player:
                 result=_("Correct") if is_correct else _("Wrong"),
                 actual=actual_label,
                 left=self.gambler_village_guesses_left,
-                game_link=self.game.game_link,
-            )
-        )
-
-    async def check_sheriff_target(self) -> None:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
-        try:
-            to_inspect = await self.choose_users(
-                _("🕵️ Choose someone to investigate."),
-                list_of_users=[p for p in self.game.alive_players if p != self],
-                amount=1,
-                required=False,
-            )
-            if to_inspect:
-                to_inspect = to_inspect[0]
-            else:
-                await self.send(
-                    _(
-                        "You didn't want to investigate anyone.\n{game_link}"
-                    ).format(game_link=self.game.game_link)
-                )
-                return
-        except asyncio.TimeoutError:
-            await self.send(
-                _(
-                    "You've ran out of time and missed your investigation,"
-                    " slowpoke.\n{game_link}"
-                ).format(game_link=self.game.game_link)
-            )
-            return
-        suspicious = self.game.get_observed_side(to_inspect, observer=self) in (
-            Side.WOLVES,
-            Side.WHITE_WOLF,
-        )
-        verdict = _("Suspicious") if suspicious else _("Not suspicious")
-        await self.send(
-            _("**{player}** is **{verdict}**.\n{game_link}").format(
-                player=to_inspect.user,
-                verdict=verdict,
                 game_link=self.game.game_link,
             )
         )
