@@ -956,6 +956,7 @@ class CouplesTowerBattle(TowerBattle):
                     4: 1.50,  # 150%
                     5: 1.75,  # 175%
                     6: 2.00,  # 200%
+                    7: 2.10,  # 210%
                 }.get(evolution_level, 1.0)
                 
                 from decimal import Decimal
@@ -1234,6 +1235,7 @@ class CouplesTowerBattle(TowerBattle):
                     4: 1.50,  # 150%
                     5: 1.75,  # 175%
                     6: 2.00,  # 200%
+                    7: 2.10,  # 210%
                 }.get(evolution_level, 1.0)
                 
                 from decimal import Decimal
@@ -1536,6 +1538,7 @@ class CouplesTowerBattle(TowerBattle):
                     4: 1.50,  # 150%
                     5: 1.75,  # 175%
                     6: 2.00,  # 200%
+                    7: 2.10,  # 210%
                 }.get(evolution_level, 1.0)
                 
                 from decimal import Decimal
@@ -1815,6 +1818,7 @@ class CouplesTowerBattle(TowerBattle):
                     4: 1.50,  # 150%
                     5: 1.75,  # 175%
                     6: 2.00,  # 200%
+                    7: 2.10,  # 210%
                 }.get(evolution_level, 1.0)
                 
                 from decimal import Decimal
@@ -2244,6 +2248,7 @@ class CouplesTowerBattle(TowerBattle):
                     4: 1.50,  # 150%
                     5: 1.75,  # 175%
                     6: 2.00,  # 200%
+                    7: 2.10,  # 210%
                 }.get(evolution_level, 1.0)
                 
                 from decimal import Decimal
@@ -2543,6 +2548,7 @@ class CouplesTowerBattle(TowerBattle):
                     4: 1.50,  # 150%
                     5: 1.75,  # 175%
                     6: 2.00,  # 200%
+                    7: 2.10,  # 210%
                 }.get(evolution_level, 1.0)
                 
                 from decimal import Decimal
@@ -2825,6 +2831,7 @@ class CouplesTowerBattle(TowerBattle):
                     4: 1.50,  # 150%
                     5: 1.75,  # 175%
                     6: 2.00,  # 200%
+                    7: 2.10,  # 210%
                 }.get(evolution_level, 1.0)
                 
                 from decimal import Decimal
@@ -3113,6 +3120,7 @@ class CouplesTowerBattle(TowerBattle):
                     4: 1.50,  # 150%
                     5: 1.75,  # 175%
                     6: 2.00,  # 200%
+                    7: 2.10,  # 210%
                 }.get(evolution_level, 1.0)
                 
                 from decimal import Decimal
@@ -3423,6 +3431,7 @@ class CouplesTowerBattle(TowerBattle):
                     4: 1.50,  # 150%
                     5: 1.75,  # 175%
                     6: 2.00,  # 200%
+                    7: 2.10,  # 210%
                 }.get(evolution_level, 1.0)
                 
                 from decimal import Decimal
@@ -3729,6 +3738,7 @@ class CouplesTowerBattle(TowerBattle):
                     4: 1.50,  # 150%
                     5: 1.75,  # 175%
                     6: 2.00,  # 200%
+                    7: 2.10,  # 210%
                 }.get(evolution_level, 1.0)
                 
                 from decimal import Decimal
@@ -4019,6 +4029,7 @@ class CouplesTowerBattle(TowerBattle):
                     4: 1.50,  # 150%
                     5: 1.75,  # 175%
                     6: 2.00,  # 200%
+                    7: 2.10,  # 210%
                 }.get(evolution_level, 1.0)
                 
                 from decimal import Decimal
@@ -4322,6 +4333,7 @@ class CouplesTowerBattle(TowerBattle):
                     4: 1.50,  # 150%
                     5: 1.75,  # 175%
                     6: 2.00,  # 200%
+                    7: 2.10,  # 210%
                 }.get(evolution_level, 1.0)
                 
                 from decimal import Decimal
@@ -4690,6 +4702,7 @@ class CouplesTowerBattle(TowerBattle):
                     4: 1.50,  # 150%
                     5: 1.75,  # 175%
                     6: 2.00,  # 200%
+                    7: 2.10,  # 210%
                 }.get(evolution_level, 1.0)
                 
                 from decimal import Decimal
@@ -5582,6 +5595,7 @@ class CouplesTowerBattle(TowerBattle):
                     4: 1.50,  # 150%
                     5: 1.75,  # 175%
                     6: 2.00,  # 200%
+                    7: 2.10,  # 210%
                 }.get(evolution_level, 1.0)
                 
                 from decimal import Decimal
@@ -6787,3 +6801,4 @@ class CouplesTowerBattle(TowerBattle):
         embed.set_footer(text=f"Battle ID: {self.battle_id}")
         
         return embed
+

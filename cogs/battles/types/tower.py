@@ -257,6 +257,7 @@ class TowerBattle(Battle):
                     4: 1.50,  # 150%
                     5: 1.75,  # 175%
                     6: 2.00,  # 200%
+                    7: 2.10,  # 210%
                 }.get(evolution_level, 1.0)
                 
                 damage = (current_combatant.damage + Decimal(random.randint(0, 100)) - target.armor) * Decimal(str(damage_multiplier))
@@ -617,3 +618,4 @@ class TowerBattle(Battle):
             return True
                 
         return False
+
