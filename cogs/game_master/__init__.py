@@ -1526,6 +1526,97 @@ class GameMaster(commands.Cog):
             )
 
     @is_gm()
+    @commands.command(
+        hidden=True,
+        aliases=["gmdragoncoinsbatch", "gmdcbatch"],
+        brief=_("Give dragon coins to multiple users"),
+    )
+    @locale_doc
+    async def gmdragoncoinbatch(
+            self,
+            ctx,
+            amount: int,
+            *,
+            id_text: str,
+    ):
+        _(
+            """`<amount>` - the amount of Dragon Coins to give each user, can be negative
+            `<id_text>` - Comma or space separated list of Discord user IDs
+
+            Give a set amount of Dragon Coins to multiple users at once.
+
+            Only Game Masters can use this command."""
+        )
+        # Parse the user IDs from the input text
+        user_ids = []
+        for id_part in id_text.replace(',', ' ').split():
+            id_part = id_part.strip()
+            if id_part.isdigit():
+                user_ids.append(int(id_part))
+
+        if not user_ids:
+            await ctx.send(_("No valid user IDs provided."))
+            return
+
+        success_count = 0
+        failed_ids = []
+
+        # Process each user ID
+        for user_id in user_ids:
+            try:
+                # Check if the user has a character in the game
+                has_character = await self.bot.pool.fetchval(
+                    'SELECT EXISTS(SELECT 1 FROM profile WHERE "user"=$1);',
+                    user_id,
+                )
+
+                if not has_character:
+                    failed_ids.append(str(user_id))
+                    continue
+
+                # Update the user's Dragon Coins
+                await self.bot.pool.execute(
+                    'UPDATE profile SET dragoncoins = dragoncoins + $1 WHERE "user"=$2;',
+                    amount,
+                    user_id,
+                )
+                success_count += 1
+            except Exception as e:
+                failed_ids.append(str(user_id))
+                print(f"Error giving Dragon Coins to user ID {user_id}: {e}")
+
+        # Send a summary message
+        if success_count > 0:
+            await self._safe_ctx_send(
+                ctx,
+                _("Successfully gave **{amount}** Dragon Coins to **{count}** users.").format(
+                    amount=amount,
+                    count=success_count,
+                ),
+            )
+
+        if failed_ids:
+            failed_msg = _("Failed to add Dragon Coins to {count} users").format(count=len(failed_ids))
+            if len(failed_ids) <= 10:
+                failed_msg += _(": {ids}").format(ids=', '.join(failed_ids))
+            else:
+                failed_msg += _(": {ids}...").format(ids=', '.join(failed_ids[:10]))
+            await self._safe_ctx_send(ctx, failed_msg)
+
+        # Log the action to the GM log channel
+        with handle_message_parameters(
+                content="**{gm}** gave **{amount}** Dragon Coins to **{count}** users in batch mode.\n\nReason: Batch distribution".format(
+                    gm=ctx.author,
+                    amount=amount,
+                    count=success_count,
+                )
+        ) as params:
+            await self.bot.http.send_message(
+                self.bot.config.game.gm_log_channel,
+                params=params,
+            )
+
+    @is_gm()
     @commands.command(hidden=True, brief=_("Generate XP"))
     @locale_doc
     async def gmxp(
