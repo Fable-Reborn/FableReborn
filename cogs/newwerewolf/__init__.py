@@ -587,10 +587,9 @@ class NewWerewolf(commands.Cog):
     def _xp_progress_fraction(xp: int) -> tuple[int, int]:
         xp_value = max(0, int(xp or 0))
         xp_per_level = max(1, int(ROLE_XP_PER_LEVEL))
-        if xp_value == 0:
-            return 0, xp_per_level
-        # Keep progress aligned with current role_level_from_xp thresholds.
-        return ((xp_value - 1) % xp_per_level) + 1, xp_per_level
+        # Keep progress aligned with role_level_from_xp():
+        # 0..99 -> L1, 100..199 -> L2, etc (with xp_per_level=100).
+        return xp_value % xp_per_level, xp_per_level
 
     async def _fetch_user_role_xp_map(self, user_id: int) -> dict[str, int]:
         if not hasattr(self.bot, "pool"):

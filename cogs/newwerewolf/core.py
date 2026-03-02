@@ -1158,7 +1158,12 @@ def role_level_from_xp(role_xp: int) -> int:
     xp_value = max(0, int(role_xp or 0))
     xp_per_level = max(1, int(ROLE_XP_PER_LEVEL))
     max_level = max(1, int(MAX_ROLE_LEVEL))
-    level = max(1, (xp_value + xp_per_level - 1) // xp_per_level)
+    # Level thresholds:
+    # - Level 1:   0 .. xp_per_level-1
+    # - Level 2:   xp_per_level .. (2*xp_per_level)-1
+    # - ...
+    # So exactly 100/100 reaches the next level when ROLE_XP_PER_LEVEL is 100.
+    level = max(1, (xp_value // xp_per_level) + 1)
     return min(max_level, level)
 
 
