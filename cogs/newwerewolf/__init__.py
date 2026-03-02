@@ -3733,10 +3733,7 @@ class NewWerewolf(commands.Cog):
             )
 
         xp_map = await self._fetch_user_role_xp_map(ctx.author.id)
-        base_roles = sorted(
-            ADVANCED_ROLE_TIERS_BY_BASE.keys(),
-            key=lambda role_obj: self._role_display_name(role_obj).lower(),
-        )
+        base_roles = list(ADVANCED_ROLE_TIERS_BY_BASE.keys())
         if not base_roles:
             return await ctx.send(_("No advanced role progression is configured yet."))
 
@@ -3814,7 +3811,15 @@ class NewWerewolf(commands.Cog):
 
         role_cards: list[tuple[str, str]] = []
 
-        for base_role in base_roles:
+        sorted_base_roles = sorted(
+            base_roles,
+            key=lambda role_obj: (
+                -xp_map.get(role_obj.name.casefold(), 0),
+                self._role_display_name(role_obj).lower(),
+            ),
+        )
+
+        for base_role in sorted_base_roles:
             role_name = self._role_display_name(base_role)
             xp = xp_map.get(base_role.name.casefold(), 0)
             level = role_level_from_xp(xp)

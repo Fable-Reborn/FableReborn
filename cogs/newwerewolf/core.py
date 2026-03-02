@@ -1036,6 +1036,52 @@ def _apply_role_availability(roles: list[Role], mode: str | None) -> list[Role]:
     return adjusted_roles
 
 
+def enforce_single_mayor(roles: list[Role], mode: str | None = None) -> list[Role]:
+    mayor_indices = [idx for idx, role in enumerate(roles) if role == Role.SHERIFF]
+    if len(mayor_indices) <= 1:
+        return roles
+
+    available_count = max(0, len(roles) - 2)
+    keep_idx = next((idx for idx in mayor_indices if idx < available_count), mayor_indices[0])
+
+    fallback_candidates = [
+        role
+        for role in (
+            Role.FLOWER_CHILD,
+            Role.LOUDMOUTH,
+            Role.CURSED,
+            Role.PRIEST,
+            Role.JAILER,
+            Role.MEDIUM,
+            Role.DOCTOR,
+            Role.BODYGUARD,
+            Role.SEER,
+            Role.AURA_SEER,
+            Role.DETECTIVE,
+            Role.HEALER,
+            Role.WITCH,
+            Role.VILLAGER,
+        )
+        if role != Role.SHERIFF and _is_role_available_in_mode(role, mode)
+    ]
+
+    adjusted_roles = roles.copy()
+    for idx in mayor_indices:
+        if idx == keep_idx:
+            continue
+
+        replacement = _pick_villager_filler_role(mode, existing_roles=adjusted_roles)
+        if replacement == Role.SHERIFF:
+            replacement = (
+                random.choice(fallback_candidates)
+                if fallback_candidates
+                else Role.VILLAGER
+            )
+        adjusted_roles[idx] = replacement
+
+    return adjusted_roles
+
+
 def _normalized_advanced_role_tiers() -> dict[Role, dict[int, Role]]:
     normalized: dict[Role, dict[int, Role]] = {}
     for base_token, tier_map in ADVANCED_ROLE_TIERS.items():
@@ -10896,6 +10942,7 @@ def get_roles(number_of_players: int, mode: str = None) -> list[Role]:
         requested_players=requested_players,
         mode=mode,
     )
+    roles = enforce_single_mayor(roles, mode=mode)
     return roles
 
 
@@ -11053,6 +11100,7 @@ def get_custom_roles(number_of_players: int, custom_roles: list[Role]) -> list[R
     roles = _replace_unlock_only_advanced_roles_with_base(roles)
     roles = _apply_role_availability(roles, mode="Custom")
     roles = _ensure_team_requirements_in_available(roles, mode="Custom")
+    roles = enforce_single_mayor(roles, mode="Custom")
     return roles
 
 
