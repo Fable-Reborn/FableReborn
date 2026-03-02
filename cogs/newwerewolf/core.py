@@ -47,6 +47,7 @@ from cogs.help import chunks
 from utils import random
 from utils.i18n import _
 from .role_config import (
+    ADVANCED_ROLE_MIN_PLAYERS,
     ADVANCED_ROLE_TIERS,
     DISABLED_ROLES,
     FIRST_ADVANCED_UNLOCK_LEVEL,
@@ -1676,6 +1677,47 @@ class Game:
             role_name += role.name.title().replace("_", " ")
         return role_name
 
+    @staticmethod
+    def _is_public_maskable_advanced_role(role: Role) -> bool:
+        base_role = ADVANCED_BASE_ROLE_BY_ADVANCED.get(role)
+        if base_role is None:
+            return False
+        # Keep side-shifting advanced roles visible publicly
+        # (example: Jester -> Cannibal).
+        return side_from_role(base_role) == side_from_role(role)
+
+    def _get_public_role(self, role: Role) -> Role:
+        if not self._is_public_maskable_advanced_role(role):
+            return role
+        return ADVANCED_BASE_ROLE_BY_ADVANCED.get(role, role)
+
+    def _is_role_publicly_revealed(self, player: Player) -> bool:
+        if player.dead:
+            return True
+        if not self.players:
+            return False
+        return all(player in observer.revealed_roles for observer in self.players)
+
+    def get_public_role(self, player_or_role: Player | Role) -> Role:
+        if isinstance(player_or_role, Role):
+            return self._get_public_role(player_or_role)
+        if not isinstance(player_or_role, Player):
+            raise TypeError("Wrong type: player_or_role. Only Player or Role allowed")
+        if self._is_role_publicly_revealed(player_or_role):
+            return player_or_role.role
+        return self._get_public_role(player_or_role.role)
+
+    def get_public_role_name(self, player_or_role: Player | Role) -> str:
+        if isinstance(player_or_role, Role):
+            return self.get_role_name(self.get_public_role(player_or_role))
+        if not isinstance(player_or_role, Player):
+            raise TypeError("Wrong type: player_or_role. Only Player or Role allowed")
+
+        public_role = self.get_public_role(player_or_role)
+        if player_or_role.cursed and not is_wolf_aligned_role(public_role):
+            return f"Cursed {self.get_role_name(public_role)}"
+        return self.get_role_name(public_role)
+
     def _observer_can_see_sorcerer_disguise(
         self,
         observer: Player | None,
@@ -2168,6 +2210,8 @@ class Game:
     async def apply_advanced_role_choices(self) -> None:
         if not ADVANCED_ROLE_TIERS_BY_BASE:
             return
+        if len(self.players) < max(0, int(ADVANCED_ROLE_MIN_PLAYERS)):
+            return
 
         for player in self.players:
             base_role = player.role
@@ -2284,7 +2328,7 @@ class Game:
 
         for player in self.players:
             status = _("Alive") if not player.dead else _("Dead")
-            public_role = self.get_role_name(player)
+            public_role = self.get_public_role_name(player)
             paginator.add_line(
                 _("• **{role}** ({status})").format(
                     role=public_role,
@@ -5744,15 +5788,16 @@ class Game:
 
         role_counts: dict[Role, int] = {}
         for player in self.players:
-            role_counts[player.role] = role_counts.get(player.role, 0) + 1
+            public_role = self.get_public_role(player)
+            role_counts[public_role] = role_counts.get(public_role, 0) + 1
 
         roles_paginator = commands.Paginator(prefix="", suffix="")
         roles_paginator.add_line(_("**Roles in this match:**"))
         role_entries = []
         for role, count in sorted(
-            role_counts.items(), key=lambda item: self.get_role_name(item[0]).lower()
+            role_counts.items(), key=lambda item: self.get_public_role_name(item[0]).lower()
         ):
-            role_name = self.get_role_name(role)
+            role_name = self.get_public_role_name(role)
             if count > 1:
                 role_entries.append(_("{count}x {role}").format(count=count, role=role_name))
             else:
@@ -5772,8 +5817,8 @@ class Game:
 
         if any(player.role == Role.THIEF for player in self.players) and self.extra_roles:
             reserve = ", ".join(
-                self.get_role_name(role) for role in sorted(
-                    self.extra_roles, key=lambda role: self.get_role_name(role).lower()
+                self.get_public_role_name(role) for role in sorted(
+                    self.extra_roles, key=lambda role: self.get_public_role_name(role).lower()
                 )
             )
             roles_paginator.add_line(

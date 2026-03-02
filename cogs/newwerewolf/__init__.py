@@ -45,6 +45,7 @@ from .tutorial_live import TUTORIAL_VARIANT_SOLO_JESTER
 from .tutorial_live import TUTORIAL_VARIANT_VILLAGE_SEER
 from .tutorial_live import TUTORIAL_VARIANT_WEREWOLF_GUIDED
 from .role_config import (
+    ADVANCED_ROLE_MIN_PLAYERS,
     ROLE_XP_CHANNEL_IDS,
     ROLE_XP_LONER_WIN,
     ROLE_XP_LOSS,
@@ -473,7 +474,7 @@ class NewWerewolf(commands.Cog):
             )
 
         xp_lines: list[str] = []
-        level_lines: list[str] = []
+        private_level_lines: dict[int, list[str]] = {}
         for player, role_for_xp, role_key, gained_xp in xp_events:
             player_id = player.user.id
             before_xp = existing_xp.get((player_id, role_key), 0)
@@ -510,21 +511,19 @@ class NewWerewolf(commands.Cog):
                             role=unlocked_name
                         )
                     unlock_labels.append(unlocked_name)
-                level_lines.append(
+                private_level_lines.setdefault(player_id, []).append(
                     _(
-                        "{player} leveled **{role}** to **Level {level}** and unlocked:"
+                        "You leveled **{role}** to **Level {level}** and unlocked:"
                         " **{unlocks}**."
                     ).format(
-                        player=player.user.mention,
                         role=self._role_display_name(role_for_xp),
                         level=after_level,
                         unlocks=", ".join(unlock_labels),
                     )
                 )
             else:
-                level_lines.append(
-                    _("{player} leveled **{role}** to **Level {level}**.").format(
-                        player=player.user.mention,
+                private_level_lines.setdefault(player_id, []).append(
+                    _("You leveled **{role}** to **Level {level}**.").format(
                         role=self._role_display_name(role_for_xp),
                         level=after_level,
                     )
@@ -533,8 +532,8 @@ class NewWerewolf(commands.Cog):
         winner_embed_updated = await self._append_xp_to_winner_embed(game, xp_lines)
         if not winner_embed_updated and xp_lines:
             await self._send_role_xp_summary_embed(game, xp_lines)
-        if level_lines:
-            await self._send_level_up_summary_embed(game, level_lines)
+        if private_level_lines:
+            await self._send_level_up_summary_embed(game, private_level_lines)
 
     async def _append_xp_to_winner_embed(self, game: Game, xp_lines: list[str]) -> bool:
         endgame_message = getattr(game, "endgame_summary_message", None)
@@ -567,17 +566,22 @@ class NewWerewolf(commands.Cog):
                 embed.set_footer(text=_("Page {page}/{total}").format(page=idx, total=len(chunks)))
             await game.ctx.send(embed=embed)
 
-    async def _send_level_up_summary_embed(self, game: Game, level_lines: list[str]) -> None:
-        chunks = self._chunk_lines(level_lines, max_chars=3800)
-        for idx, chunk in enumerate(chunks, start=1):
-            embed = discord.Embed(
-                title=_("Role Level Ups"),
-                description=chunk,
-                colour=self.bot.config.game.primary_colour,
+    async def _send_level_up_summary_embed(
+        self,
+        game: Game,
+        level_lines: dict[int, list[str]],
+    ) -> None:
+        for player in game.players:
+            player_lines = level_lines.get(player.user.id)
+            if not player_lines:
+                continue
+            message = _(
+                "🎉 **Role Level Up**\n{lines}\n{game_link}"
+            ).format(
+                lines="\n".join(f"• {line}" for line in player_lines),
+                game_link=game.game_link,
             )
-            if len(chunks) > 1:
-                embed.set_footer(text=_("Page {page}/{total}").format(page=idx, total=len(chunks)))
-            await game.ctx.send(embed=embed)
+            await player.send(message)
 
     @staticmethod
     def _role_display_name(role: ROLES) -> str:
@@ -3732,6 +3736,10 @@ class NewWerewolf(commands.Cog):
             )
 
         xp_map = await self._fetch_user_role_xp_map(ctx.author.id)
+        min_players_for_advanced = max(0, int(ADVANCED_ROLE_MIN_PLAYERS))
+        advanced_role_match_note = _(
+            "Advanced role choices are available in matches with **{min_players}+ players**."
+        ).format(min_players=min_players_for_advanced)
         base_roles = list(ADVANCED_ROLE_TIERS_BY_BASE.keys())
         if not base_roles:
             return await ctx.send(_("No advanced role progression is configured yet."))
@@ -3782,15 +3790,16 @@ class NewWerewolf(commands.Cog):
             if requested_role != base_role:
                 embed.description = _(
                     "Showing base-role progression for **{base}** (requested role:"
-                    " **{requested}**)."
+                    " **{requested}**).\n{note}"
                 ).format(
                     base=base_role_name,
                     requested=self._role_display_name(requested_role),
+                    note=advanced_role_match_note,
                 )
             else:
-                embed.description = _("Showing progression for **{role}**.\n").format(
-                    role=base_role_name
-                )
+                embed.description = _(
+                    "Showing progression for **{role}**.\n{note}"
+                ).format(role=base_role_name, note=advanced_role_match_note)
             lines = [
                 _("{role}: Level {level} XP: {current}/{needed} (Total: {xp})").format(
                     role=base_role_name,
@@ -3860,8 +3869,8 @@ class NewWerewolf(commands.Cog):
                 title=_("NewWerewolf Progress"),
                 description=_(
                     "Format: `Base role: Level X XP: current/needed (Total: Y)` then"
-                    " unlock levels below."
-                ),
+                    " unlock levels below.\n{note}"
+                ).format(note=advanced_role_match_note),
                 colour=self.bot.config.game.primary_colour,
             ).set_author(name=str(ctx.author), icon_url=ctx.author.display_avatar.url)
             for role_name, field_value in page_cards:
