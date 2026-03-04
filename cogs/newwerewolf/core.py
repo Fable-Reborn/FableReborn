@@ -539,10 +539,10 @@ DESCRIPTIONS = {
     ),
     Role.WOLF_SHAMAN: _(
         "Your objective is to kill all villagers together with the other Werewolves."
-        " Every night, you will get to choose one villager to kill together with them."
-        " Additionally, you have the ability to summon an ancient werewolf spirit that"
-        " will guard and protect a fellow werewolf to block one death and mask them as"
-        " a Villager to checks for that night."
+        " At night, you can talk and vote with the other Werewolves to decide the kill."
+        " During the day, you can enchant one player. That player appears as a"
+        " **Wolf Shaman** to Seer, Aura Seer, Detective, Gambler, Violinist (if"
+        " available), and Analyst checks on the next night."
     ),
     Role.WOLF_NECROMANCER: _(
         "Your objective is to kill all villagers together with the other Werewolves."
@@ -1269,6 +1269,19 @@ SORCERER_DISGUISE_EXCLUDED_ROLES = {
     Role.RED_LADY,
 }
 
+# Wolf Shaman enchant logic:
+# - During the day, Wolf Shaman can choose one player to enchant.
+# - On the next night, that player appears as Wolf Shaman to these roles' checks.
+WOLF_SHAMAN_ENCHANT_INFORMER_ROLES = {
+    Role.SEER,
+    Role.AURA_SEER,
+    Role.DETECTIVE,
+    Role.GAMBLER,
+    Role.ANALYST,
+}
+if hasattr(Role, "VIOLINIST"):
+    WOLF_SHAMAN_ENCHANT_INFORMER_ROLES.add(Role.VIOLINIST)
+
 
 def target_wolf_count_for_players(player_count: int) -> int:
     return max(1, min(6, player_count // 4))
@@ -1726,6 +1739,14 @@ class Game:
             return False
         return observer.role in SORCERER_INFORMER_ROLES
 
+    def _observer_can_see_wolf_shaman_enchant(
+        self,
+        observer: Player | None,
+    ) -> bool:
+        if observer is None or observer.dead:
+            return False
+        return observer.role in WOLF_SHAMAN_ENCHANT_INFORMER_ROLES
+
     def _is_last_alive_wolf_team_member(self, player: Player) -> bool:
         if player.dead:
             return False
@@ -1821,9 +1842,12 @@ class Game:
         player: Player,
         observer: Player | None = None,
     ) -> Role:
-        # Wolf Trickster disguise: checks should read the disguised role.
-        if player.wolf_shaman_mask_active:
-            return Role.VILLAGER
+        # Wolf Shaman enchant: selected target appears as Wolf Shaman to informer checks.
+        if (
+            player.wolf_shaman_mask_active
+            and self._observer_can_see_wolf_shaman_enchant(observer)
+        ):
+            return Role.WOLF_SHAMAN
         if (
             player.role == Role.WOLF_TRICKSTER
             and player.wolf_trickster_disguise_role is not None
@@ -1946,6 +1970,27 @@ class Game:
                     game_link=self.game_link,
                 )
             )
+
+    async def handle_wolf_shaman_day_enchant(self) -> None:
+        shamans = [
+            shaman
+            for shaman in self.alive_players
+            if shaman.role == Role.WOLF_SHAMAN
+        ]
+        for shaman in shamans:
+            await shaman.queue_wolf_shaman_enchant()
+
+    def activate_wolf_shaman_enchants_for_night(self) -> None:
+        # Consume all queued Wolf Shaman day enchants, even if the shaman died after
+        # choosing during the day.
+        for shaman in self.players:
+            if shaman.role != Role.WOLF_SHAMAN:
+                continue
+            target = shaman.wolf_shaman_enchant_target
+            shaman.wolf_shaman_enchant_target = None
+            if target is None or target.dead:
+                continue
+            target.wolf_shaman_mask_active = True
 
     def get_players_with_role(self, role: Role) -> list[Player]:
         return [player for player in self.alive_players if player.role == role]
@@ -5854,6 +5899,7 @@ class Game:
             player.wolf_shaman_mask_active = False
             player.is_sleeping_tonight = False
         self.active_sleeping_player_ids.clear()
+        self.activate_wolf_shaman_enchants_for_night()
         if medium := self.get_player_with_role(Role.MEDIUM):
             await medium.send(
                 _(
@@ -5892,8 +5938,6 @@ class Game:
         wolf_summoners = self.get_players_with_role(Role.WOLF_SUMMONER)
         for wolf_summoner in wolf_summoners:
             await wolf_summoner.summon_werewolf()
-        if wolf_shaman := self.get_player_with_role(Role.WOLF_SHAMAN):
-            await wolf_shaman.protect_werewolf()
         if seer := self.get_player_with_role(Role.SEER):
             await seer.check_player_card()
         detectives = self.get_players_with_role(Role.DETECTIVE)
@@ -6013,6 +6057,7 @@ class Game:
             player.wolf_shaman_mask_active = False
             player.is_sleeping_tonight = False
         self.active_sleeping_player_ids.clear()
+        self.activate_wolf_shaman_enchants_for_night()
         await self._set_night_chat_lock(True)
         await self.send_night_announcement(moon)
         await self.apply_nightmare_sleep_for_night()
@@ -6074,8 +6119,6 @@ class Game:
             await fortune_teller.give_fortune_card()
         await self.ensure_head_hunter_targets()
         await self.activate_jail_for_night()
-        if wolf_shaman := self.get_player_with_role(Role.WOLF_SHAMAN):
-            await wolf_shaman.protect_werewolf()
         if seer := self.get_player_with_role(Role.SEER):
             await seer.check_player_card()
         detectives = self.get_players_with_role(Role.DETECTIVE)
@@ -6847,6 +6890,7 @@ class Game:
             await self.handle_priest_holy_water()
             await self.handle_marksman_day_action()
             await self.handle_forger_sword_actions()
+            await self.handle_wolf_shaman_day_enchant()
             await self.handle_wolf_trickster_day_mark()
             await self.handle_nightmare_werewolf_day_actions()
             await self.handle_preacher_reveal()
@@ -7195,6 +7239,7 @@ class Player:
         self.wolf_trickster_mark_target: Player | None = None
         self.wolf_trickster_disguise_role: Role | None = None
         self.wolf_trickster_death_reveal_role: Role | None = None
+        self.wolf_shaman_enchant_target: Player | None = None
         self.wolf_shaman_mask_active = False
         self.sorcerer_disguise_role: Role | None = None
         self.sorcerer_has_resigned = False
@@ -7261,9 +7306,6 @@ class Player:
 
         # lawyer
         self.has_objected = False
-
-        # Wolf Shaman
-        self.has_wolf_shaman_ability = True
 
         # Wolf Trickster
         self.has_wolf_trickster_steal_ability = True
@@ -10134,58 +10176,43 @@ class Player:
         await self.game.start_loudmouth_target_selection()
         await self.game.start_avenger_target_selection()
 
-    async def protect_werewolf(self) -> None:
-        if not self.has_wolf_shaman_ability:
+    async def queue_wolf_shaman_enchant(self) -> None:
+        if self.dead or self.role != Role.WOLF_SHAMAN:
             return
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
-        wolves = [
-            p
-            for p in self.game.alive_players
-            if p.side == Side.WOLVES or p.side == Side.WHITE_WOLF
+        possible_targets = [
+            player for player in self.game.alive_players if player != self
         ]
-        try:
-            protected = await self.choose_users(
-                _(
-                    "Choose a Werewolf to send a spiritual protection to block death"
-                    " for one time."
-                ),
-                list_of_users=wolves,
-                amount=1,
-                required=False,
-            )
-            if protected:
-                protected = protected[0]
-            else:
-                await self.send(
-                    _("You didn't want to use your ability.\n{game_link}").format(
-                        game_link=self.game.game_link
-                    )
-                )
-                return
-        except asyncio.TimeoutError:
+        if not possible_targets:
+            return
+        chosen_target = await self.choose_users(
+            _(
+                "Choose one player to enchant for the next night. They will appear as"
+                " **Wolf Shaman** to Seer, Aura Seer, Detective, Gambler, Violinist"
+                " (if available), and Analyst checks."
+            ),
+            list_of_users=possible_targets,
+            amount=1,
+            required=False,
+        )
+        if not chosen_target:
             await self.send(
-                _("You didn't choose anyone, slowpoke.\n{game_link}").format(
+                _("You chose not to enchant anyone today.\n{game_link}").format(
                     game_link=self.game.game_link
                 )
             )
+            self.wolf_shaman_enchant_target = None
             return
-        protected.lives = 2
-        protected.wolf_shaman_mask_active = True
-        self.has_wolf_shaman_ability = False
+
+        self.wolf_shaman_enchant_target = chosen_target[0]
         await self.send(
             _(
-                "**{protected}** is now protected to block one death and will appear"
-                " as a Villager to checks tonight.\n{game_link}"
-            ).format(protected=protected.user, game_link=self.game.game_link)
-        )
-        await protected.send(
-            _(
-                "The **{role}** sent you a spiritual protection to block one death."
-                " You will also appear as a Villager to checks tonight."
-                "\n{game_link}"
-            ).format(role=self.role_name, game_link=self.game.game_link)
+                "🪄 You enchanted **{target}**. They will appear as **Wolf Shaman** to"
+                " Seer, Aura Seer, Detective, Gambler, Violinist (if available), and"
+                " Analyst checks on the next night.\n{game_link}"
+            ).format(
+                target=self.wolf_shaman_enchant_target.user,
+                game_link=self.game.game_link,
+            )
         )
 
     async def curse_target(self, target: Player) -> None:

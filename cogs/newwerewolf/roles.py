@@ -143,8 +143,9 @@ ROLE_DEFS: dict[RoleId, RoleDef] = {
         display_name="Wolf Shaman",
         team=Team.WOLVES,
         description=(
-            "Can shield one wolf from one death once per game and make that wolf"
-            " appear as Villager to checks for that night."
+            "At night talks and votes with the wolf team. During the day enchants"
+            " one player to appear as Wolf Shaman to Seer, Aura Seer, Detective,"
+            " Gambler, Violinist (if available), and Analyst checks on the next night."
         ),
         implemented=True,
     ),
