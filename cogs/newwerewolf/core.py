@@ -554,8 +554,8 @@ DESCRIPTIONS = {
     ),
     Role.JUNIOR_WEREWOLF: _(
         "Your objective is to kill all villagers together with the other Werewolves."
-        " During the day, you mark a villager. If you die (any cause), your latest"
-        " marked villager is dragged down with you."
+        " During the day, you mark a Villager or loner. If you die (any cause), your"
+        " latest marked target is dragged down with you."
     ),
     Role.KITTEN_WOLF: _(
         "You are the Kitten Wolf, an advanced Junior Werewolf role. You are a normal"
@@ -3596,20 +3596,39 @@ class Game:
             self.jailer_day_pick_task.cancel()
             self.jailer_day_pick_task = None
 
+    @staticmethod
+    def _is_junior_mark_target_side(side: Side) -> bool:
+        return side in {
+            Side.VILLAGERS,
+            Side.WHITE_WOLF,
+            Side.FLUTIST,
+            Side.SUPERSPREADER,
+            Side.JESTER,
+            Side.HEAD_HUNTER,
+            Side.SERIAL_KILLER,
+            Side.CANNIBAL,
+        }
+
+    def _is_valid_junior_mark_target(self, junior: Player, player: Player) -> bool:
+        return (
+            player != junior
+            and player not in junior.own_lovers
+            and self._is_junior_mark_target_side(player.side)
+        )
+
     def _junior_mark_candidates(self, junior: Player) -> list[Player]:
         return [
             player
             for player in self.alive_players
-            if player != junior
-               and player.side == Side.VILLAGERS
-               and player not in junior.own_lovers
+            if self._is_valid_junior_mark_target(junior, player)
         ]
 
     async def _collect_junior_day_mark(self, junior: Player) -> None:
         prompt_timeout = max(90, self.timer)
         await junior.send(
             _(
-                "During each day, mark one Villager to drag down if you die. You can"
+                "During each day, mark one Villager or loner to drag down if you"
+                " die. You can"
                 " update this mark repeatedly until nightfall."
                 "\n{game_link}"
             ).format(game_link=self.game_link)
@@ -3635,7 +3654,8 @@ class Game:
             try:
                 picked = await junior.choose_users(
                     _(
-                        "Choose a Villager to mark. Current mark: **{current_mark}**."
+                        "Choose a Villager or loner to mark. Current mark:"
+                        " **{current_mark}**."
                     ).format(current_mark=current_label),
                     list_of_users=candidates,
                     amount=1,
@@ -10606,7 +10626,7 @@ class Player:
                 possible_targets = [
                     player
                     for player in self.game.alive_players
-                    if player.side == Side.VILLAGERS and player not in self.own_lovers
+                    if self.game._is_valid_junior_mark_target(self, player)
                 ]
                 if possible_targets:
                     target = (
