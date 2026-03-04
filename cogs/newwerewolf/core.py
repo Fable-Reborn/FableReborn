@@ -1284,7 +1284,7 @@ if hasattr(Role, "VIOLINIST"):
 
 
 def target_wolf_count_for_players(player_count: int) -> int:
-    return max(1, min(6, player_count // 3))
+    return max(1, min(4, player_count // 3))
 
 
 def max_special_wolves_for_player_count(player_count: int) -> int:
