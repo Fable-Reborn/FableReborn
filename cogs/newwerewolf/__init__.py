@@ -3075,7 +3075,12 @@ class NewWerewolf(commands.Cog):
             " game modes and speeds."
         ).format(prefix=ctx.clean_prefix)
 
-        mode_emojis = {"Huntergame": "🔫", "Valentines": "💕", "Custom": "🧩"}
+        mode_emojis = {
+            "Huntergame": "🔫",
+            "Avengergame": "🗡️",
+            "Valentines": "💕",
+            "Custom": "🧩",
+        }
         mode_emoji = mode_emojis.get(mode, "")
         mode_label = mode_emoji + mode + mode_emoji
 
@@ -3225,11 +3230,11 @@ class NewWerewolf(commands.Cog):
             """
             `[mode]` - The mode to play, see below for available options. (optional and defaults to Classic)
             `[speed]` - The game speed to play, see below available options. (optional and defaults to Normal)
-            `[min_players]` - The minimum players needed to play. (optional and defaults depending on the game mode: Classic: 5, Imbalanced: 5, Huntergame: 8, Villagergame: 5, Valentines: 8, IdleRPG: 5)
+            `[min_players]` - The minimum players needed to play. (optional and defaults depending on the game mode: Classic: 5, Imbalanced: 5, Huntergame: 8, Villagergame: 5, Avengergame: 5, Valentines: 8, IdleRPG: 5)
 
             Starts a game of NewWerewolf. Find the werewolves, before they find you!
             Your goal to win is indicated on the role you have.
-            **Game modes:** `Classic` (default), `Imbalanced`, `Huntergame`, `Villagergame`, `Valentines`, `IdleRPG`. Use `{prefix}nww modes` for detailed info.
+            **Game modes:** `Classic` (default), `Imbalanced`, `Huntergame`, `Villagergame`, `Avengergame`, `Valentines`, `IdleRPG`. Use `{prefix}nww modes` for detailed info.
             **Game speeds** (in seconds): `Normal`: 60 (default), `Extended`: 90, `Fast`: 45, `Blitz`: 30. Use `{prefix}nww speeds` for detailed info.
             **Aliases:**
             `nww`
@@ -3238,6 +3243,7 @@ class NewWerewolf(commands.Cog):
             `{prefix}nww Imbalanced` for Imbalanced mode on Normal speed
             `{prefix}nww Valentines Extended` for Valentines mode on Extended speed
             `{prefix}nww Huntergame Fast` for Huntergame mode on Fast speed
+            `{prefix}nww Avengergame` for Avengergame mode on Normal speed
             """
         )
         # TODO:
@@ -3250,6 +3256,7 @@ class NewWerewolf(commands.Cog):
             "Imbalanced",
             "Huntergame",
             "Villagergame",
+            "Avengergame",
             "Valentines",
             "Idlerpg",
         ]
@@ -3259,6 +3266,7 @@ class NewWerewolf(commands.Cog):
             "Imbalanced": 5,
             "Huntergame": 8,
             "Villagergame": 5,
+            "Avengergame": 5,
             "Valentines": 8,
             "IdleRPG": 5,
         }
@@ -3377,11 +3385,12 @@ class NewWerewolf(commands.Cog):
                 title=_("Werewolf Game Modes"),
                 description=_(
                     """\
-**Game modes:** `Classic` (default), `Imbalanced`, `Huntergame`, `Villagergame`, `Valentines`, `IdleRPG`, `Custom`.
+**Game modes:** `Classic` (default), `Imbalanced`, `Huntergame`, `Villagergame`, `Avengergame`, `Valentines`, `IdleRPG`, `Custom`.
 `Classic`: Play the classic werewolf game. (default)
 `Imbalanced`: Some roles that are only available in larger games have chances to join even in smaller games. (The size of the game being referred here is about the number of players, i.e. 5-player game is small)
 `Huntergame`: Only Hunters and Werewolves are available.
 `Villagergame`: No special roles, only Villagers and Werewolves are available.
+`Avengergame`: Every village-side role is replaced with Avenger.
 `Valentines`: There are multiple lovers or couples randomly chosen at the start of the game. A chain of lovers might exist upon the Amor's arrows. If the remaining players are in a single chain of lovers, they all win.
 `IdleRPG`: (based on Imbalanced mode) New roles are available: Paragon, Raider, Lawyer, Troublemaker, War Veteran, Wolf Shaman, Wolf Necromancer, Alpha Werewolf, Guardian Wolf, Superspreader, Red Lady, Priest, Pacifist, Grumpy Grandma, Nightmare Werewolf. (`Ritualist`, `Ghost Lady`, `Marksman`, `Forger`, `Serial Killer`, `Cannibal`, `Wolf Summoner`, `Sorcerer`, and `Voodoo Werewolf` are advanced unlocks.)
 `Custom`: Use `{prefix}nww custom <role1, role2, ...>` to seed exact roles (duplicates allowed). Remaining slots are filled with normal balance."""

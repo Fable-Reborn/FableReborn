@@ -215,6 +215,7 @@ class WerewolfMode(commands.Converter):
             "Imbalanced",
             "Huntergame",
             "Villagergame",
+            "Avengergame",
             "Valentines",
             "Idlerpg",
         ]

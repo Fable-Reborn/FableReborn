@@ -16,6 +16,7 @@ Valid mode tokens:
 - imbalanced
 - huntergame
 - villagergame
+- avengergame
 - valentines
 - idlerpg
 - custom
@@ -37,6 +38,7 @@ NON_CLASSIC_MODES: set[str] = {
     "imbalanced",
     "huntergame",
     "villagergame",
+    "avengergame",
     "valentines",
     "idlerpg",
     "custom",

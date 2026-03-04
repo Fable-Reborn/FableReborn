@@ -12,7 +12,12 @@ from utils.joins import JoinView
 
 
 def _build_mode_label(mode: str) -> str:
-    mode_emojis = {"Huntergame": "🔫", "Valentines": "💕", "Custom": "🧩"}
+    mode_emojis = {
+        "Huntergame": "🔫",
+        "Avengergame": "🗡️",
+        "Valentines": "💕",
+        "Custom": "🧩",
+    }
     mode_emoji = mode_emojis.get(mode, "")
     return mode_emoji + mode + mode_emoji
 

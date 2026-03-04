@@ -707,6 +707,13 @@ class Game:
                     continue
                 if not is_wolf_aligned_role(role):
                     self.available_roles[idx] = Role.VILLAGER
+        elif self.mode == "Avengergame":
+            # Replace all non-Werewolf to Avengers
+            for idx, role in enumerate(self.available_roles):
+                if role in (Role.JESTER, Role.HEAD_HUNTER):
+                    continue
+                if not is_wolf_aligned_role(role):
+                    self.available_roles[idx] = Role.AVENGER
 
         self.players: list[Player] = [
             Player(role, user, self)
@@ -2216,7 +2223,7 @@ class Game:
         await self._set_everyone_chat_lock(True)
         await self.ensure_ww_dead_channel_lock()
         await self.setup_ww_player_roles()
-        mode_emojis = {"Huntergame": "🔫", "Valentines": "💕"}
+        mode_emojis = {"Huntergame": "🔫", "Avengergame": "🗡️", "Valentines": "💕"}
         mode_emoji = mode_emojis.get(self.mode, "")
         paginator = commands.Paginator(prefix="", suffix="")
         paginator.add_line(
