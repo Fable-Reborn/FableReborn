@@ -437,6 +437,16 @@ class GameBase:
             for player_id, kills in top
         )
 
+    def _single_team_left(self, killed_this_round: set | None = None) -> bool:
+        if killed_this_round is None:
+            survivors = list(self.players)
+        else:
+            survivors = [p for p in self.players if p not in killed_this_round]
+        if len(survivors) < 2:
+            return False
+        team_ids = {self.team_by_player_id.get(player.id) for player in survivors}
+        return len(team_ids) == 1
+
     async def _send_round_report(self, round_lines: list[str], killed_this_round: set) -> None:
         killed_names = (
             nice_join([f"**{p.display_name}**" for p in killed_this_round])
@@ -489,7 +499,12 @@ class GameBase:
             round_lines.append(f"**{actor.display_name}** {summary}")
 
         await self._resolve_arena_event(killed_this_round, round_lines)
-        if not killed_this_round and len(self.players) > 2 and self.round >= 2:
+        if (
+            not killed_this_round
+            and len(self.players) > 2
+            and self.round >= 2
+            and not self._single_team_left(killed_this_round)
+        ):
             self._force_showdown(killed_this_round, round_lines)
 
         for dead in list(killed_this_round):
@@ -556,11 +571,25 @@ class GameBase:
     async def main(self):
         self.round = 1
         await self.send_cast()
-        while len(self.players) > 1:
+        while len(self.players) > 1 and not self._single_team_left():
             await self.get_inputs()
             await asyncio.sleep(2)
 
-        if len(self.players) == 1:
+        if len(self.players) > 1 and self._single_team_left():
+            team_id = self.team_by_player_id.get(self.players[0].id)
+            winners = list(self.players)
+            embed = discord.Embed(
+                title=_("Hunger Games Results"),
+                color=discord.Color.blurple(),
+                description=_("Team #{team} wins together!").format(team=team_id),
+            )
+            embed.add_field(
+                name=_("Survivors"),
+                value=nice_join([winner.mention for winner in winners]),
+                inline=False,
+            )
+            embed.set_thumbnail(url=winners[0].display_avatar.url)
+        elif len(self.players) == 1:
             winner = self.players[0]
             embed = discord.Embed(
                 title=_("Hunger Games Results"),
