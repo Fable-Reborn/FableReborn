@@ -35,6 +35,7 @@ from utils.misc import nice_join
 class GameBase:
     ALLIANCE_LOCK_ROUNDS = 3
     PLAYER_CONTROL_CHANCE = 30
+    ACTION_TIMEOUT_SECONDS = 60
     REPORT_SECTION_DELAY_SECONDS = 3
     REPORT_TRIBUTE_DELAY_SECONDS = 2
 
@@ -52,6 +53,20 @@ class GameBase:
         self.kills: dict[int, int] = {p.id: 0 for p in self.players}
         self.traps: dict[int, int] = {p.id: 0 for p in self.players}
         self.hidden_ids: set[int] = set()
+        self.game_channel_link = self._build_game_channel_link()
+
+    def _build_game_channel_link(self) -> str:
+        channel = getattr(self.ctx, "channel", None)
+        jump_url = getattr(channel, "jump_url", None)
+        if isinstance(jump_url, str) and jump_url:
+            return jump_url
+        channel_id = getattr(channel, "id", None)
+        if channel_id is None:
+            return ""
+        guild_id = getattr(getattr(self.ctx, "guild", None), "id", None)
+        if guild_id is None:
+            return f"https://discord.com/channels/@me/{channel_id}"
+        return f"https://discord.com/channels/{guild_id}/{channel_id}"
 
     def _alive_target(self, target_id: int | None, killed_this_round: set) -> discord.Member | None:
         if target_id is None:
@@ -172,7 +187,10 @@ class GameBase:
             idx = await self.ctx.bot.paginator.Choose(
                 entries=[choice["label"] for choice in choices],
                 return_index=True,
-                title=_("Choose your action"),
+                title=_("Choose your action\nBack to game: {link}").format(
+                    link=self.game_channel_link
+                ),
+                timeout=self.ACTION_TIMEOUT_SECONDS,
             ).paginate(self.ctx, location=actor)
             return choices[idx]
         except (
@@ -846,6 +864,7 @@ class RegionGame(GameBase):
     PLAYER_CONTROL_CHANCE = 100
     REPORT_SECTION_DELAY_SECONDS = 1.0
     REPORT_TRIBUTE_DELAY_SECONDS = 0.75
+    STALEMATE_ROUNDS = 3
     REGIONS: tuple[str, ...] = (
         "Cornucopia",
         "Forest Ridge",
@@ -870,6 +889,7 @@ class RegionGame(GameBase):
         self.active_toxic_regions: set[str] = set()
         self.next_toxic_regions: set[str] = set()
         self.fog_stage = 1
+        self.no_kill_rounds = 0
         self._assign_initial_regions()
 
     def _assign_initial_regions(self) -> None:
@@ -1086,7 +1106,10 @@ class RegionGame(GameBase):
             idx = await self.ctx.bot.paginator.Choose(
                 entries=[choice["label"] for choice in choices],
                 return_index=True,
-                title=_("Choose your arena action"),
+                title=_("Choose your arena action\nBack to game: {link}").format(
+                    link=self.game_channel_link
+                ),
+                timeout=self.ACTION_TIMEOUT_SECONDS,
             ).paginate(self.ctx, location=actor)
             return choices[idx]
         except (
@@ -1211,6 +1234,77 @@ class RegionGame(GameBase):
             )
         )
 
+    def _force_showdown(
+        self,
+        killed_this_round: set,
+        round_lines: list[str],
+        elimination_log: dict[int, dict],
+    ) -> None:
+        # In region mode, forced showdowns only happen between tributes in
+        # the same region.
+        contested_regions = [
+            region
+            for region in self.REGIONS
+            if len(self._players_in_region(region, killed_this_round=killed_this_round)) >= 2
+        ]
+        if not contested_regions:
+            return
+
+        region = random.choice(contested_regions)
+        contenders = self._players_in_region(region, killed_this_round=killed_this_round)
+        if len(contenders) < 2:
+            return
+        left, right = random.sample(contenders, 2)
+        left_roll = self.gear_score[left.id] + random.randint(1, 4)
+        right_roll = self.gear_score[right.id] + random.randint(1, 4)
+        winner, loser = (left, right) if left_roll >= right_roll else (right, left)
+        self._mark_kill(
+            winner,
+            loser,
+            killed_this_round,
+            elimination_log=elimination_log,
+            cause=_("lost a forced showdown in **{region}** to **{killer}**").format(
+                region=region,
+                killer=winner.display_name,
+            ),
+        )
+        round_lines.append(
+            _(
+                "💥 The silence breaks in **{region}**. **{winner}** wins a forced"
+                " showdown against **{loser}**."
+            ).format(
+                region=region,
+                winner=winner.display_name,
+                loser=loser.display_name,
+            )
+        )
+
+    def _resolve_stalemate(
+        self,
+        killed_this_round: set,
+        round_lines: list[str],
+        elimination_log: dict[int, dict],
+    ) -> None:
+        if self.no_kill_rounds < self.STALEMATE_ROUNDS:
+            return
+        survivors = [p for p in self.players if p not in killed_this_round]
+        if len(survivors) <= 1:
+            return
+
+        round_lines.append(
+            _(
+                "🕛 {rounds} bloodless rounds. The Gamemakers trigger Sudden Death."
+            ).format(rounds=self.no_kill_rounds)
+        )
+        for survivor in survivors:
+            self.player_region[survivor.id] = "Cornucopia"
+        round_lines.append(
+            _(
+                "🚨 Sirens blare. Remaining tributes are forced into **Cornucopia**."
+            )
+        )
+        self._force_showdown(killed_this_round, round_lines, elimination_log)
+
     def _apply_toxic_fog(
         self,
         killed_this_round: set,
@@ -1324,15 +1418,48 @@ class RegionGame(GameBase):
         self.next_toxic_regions = self._pick_next_toxic_regions()
         await self._send_region_brief()
 
-        turn_order = self.players.copy()
+        # Everyone receives action choices at once, then we resolve in random initiative.
+        actors = [actor for actor in self.players if actor not in killed_this_round]
+        choices_by_actor_id: dict[int, list[dict]] = {}
+        for actor in actors:
+            choices = self._build_action_choices(actor, killed_this_round)
+            if choices:
+                choices_by_actor_id[actor.id] = choices
+
+        async def choose_for_actor(
+            actor: discord.Member, choices: list[dict]
+        ) -> tuple[discord.Member, dict | None]:
+            if not choices:
+                return actor, None
+            action = await self._choose_action(actor, choices)
+            return actor, action
+
+        selected_actions_by_actor_id: dict[int, dict] = {}
+        choose_tasks = [
+            choose_for_actor(actor, choices_by_actor_id.get(actor.id, []))
+            for actor in actors
+            if actor.id in choices_by_actor_id
+        ]
+        if choose_tasks:
+            await self.ctx.send(
+                _("📩 Action prompts sent to all tributes. Choices lock together.")
+            )
+            for actor, action in await asyncio.gather(*choose_tasks):
+                if action is not None:
+                    selected_actions_by_actor_id[actor.id] = action
+            await self.ctx.send(_("⏳ Action phase closed. Resolving round..."))
+
+        turn_order = actors.copy()
         random.shuffle(turn_order)
         for actor in turn_order:
             if actor not in self.players or actor in killed_this_round:
                 continue
-            choices = self._build_action_choices(actor, killed_this_round)
-            if not choices:
-                continue
-            action = await self._choose_action(actor, choices)
+            action = selected_actions_by_actor_id.get(actor.id)
+            if action is None:
+                fallback_choices = choices_by_actor_id.get(actor.id, [])
+                if not fallback_choices:
+                    continue
+                action = random.choice(fallback_choices)
             summary = self._resolve_action(actor, action, killed_this_round, elimination_log)
             round_lines.append(f"**{actor.display_name}** {summary}")
 
@@ -1345,6 +1472,14 @@ class RegionGame(GameBase):
             and not self._single_team_left(killed_this_round)
         ):
             self._force_showdown(killed_this_round, round_lines, elimination_log)
+
+        if killed_this_round:
+            self.no_kill_rounds = 0
+        else:
+            self.no_kill_rounds += 1
+            self._resolve_stalemate(killed_this_round, round_lines, elimination_log)
+            if killed_this_round:
+                self.no_kill_rounds = 0
 
         for dead in list(killed_this_round):
             try:
