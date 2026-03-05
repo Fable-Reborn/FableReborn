@@ -15,6 +15,7 @@ class Team(str, Enum):
 class RoleId(str, Enum):
     WEREWOLF = "werewolf"
     BIG_BAD_WOLF = "big_bad_wolf"
+    RAVAGER_WOLF = "ravager_wolf"
     CURSED_WOLF_FATHER = "cursed_wolf_father"
     WOLF_SHAMAN = "wolf_shaman"
     WOLF_NECROMANCER = "wolf_necromancer"
@@ -125,6 +126,18 @@ ROLE_DEFS: dict[RoleId, RoleDef] = {
         description=(
             "Joins wolf attack and may perform an additional villager kill while no"
             " wolf-aligned player has died."
+        ),
+        implemented=True,
+    ),
+    RoleId.RAVAGER_WOLF: RoleDef(
+        role=RoleId.RAVAGER_WOLF,
+        display_name="Ravager Wolf",
+        team=Team.WOLVES,
+        description=(
+            "Advanced Big Bad Wolf role. Once per game (not on night one) can"
+            " ravage the wolves' chosen target to pierce Doctor/Healer/Jailer/Witch"
+            " protection. Forged shields and Bodyguard/Tough Guy interception still"
+            " work."
         ),
         implemented=True,
     ),
@@ -673,6 +686,8 @@ ROLE_TOKEN_TO_ROLE.update(
         "forger": RoleId.FORGER,
         "sk": RoleId.SERIAL_KILLER,
         "fool": RoleId.JESTER,
+        "ravager": RoleId.RAVAGER_WOLF,
+        "ravagerwolf": RoleId.RAVAGER_WOLF,
     }
 )
 

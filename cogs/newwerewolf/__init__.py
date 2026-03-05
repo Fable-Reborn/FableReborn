@@ -3392,7 +3392,7 @@ class NewWerewolf(commands.Cog):
 `Villagergame`: No special roles, only Villagers and Werewolves are available.
 `Avengergame`: Every village-side role is replaced with Avenger.
 `Valentines`: There are multiple lovers or couples randomly chosen at the start of the game. A chain of lovers might exist upon the Amor's arrows. If the remaining players are in a single chain of lovers, they all win.
-`IdleRPG`: (based on Imbalanced mode) New roles are available: Paragon, Raider, Lawyer, Troublemaker, War Veteran, Wolf Shaman, Wolf Necromancer, Alpha Werewolf, Guardian Wolf, Superspreader, Red Lady, Priest, Pacifist, Grumpy Grandma, Nightmare Werewolf. (`Ritualist`, `Ghost Lady`, `Marksman`, `Forger`, `Serial Killer`, `Cannibal`, `Wolf Summoner`, `Sorcerer`, and `Voodoo Werewolf` are advanced unlocks.)
+`IdleRPG`: (based on Imbalanced mode) New roles are available: Paragon, Raider, Lawyer, Troublemaker, War Veteran, Wolf Shaman, Wolf Necromancer, Alpha Werewolf, Guardian Wolf, Superspreader, Red Lady, Priest, Pacifist, Grumpy Grandma, Nightmare Werewolf. (`Ritualist`, `Ghost Lady`, `Marksman`, `Forger`, `Serial Killer`, `Cannibal`, `Wolf Summoner`, `Sorcerer`, `Voodoo Werewolf`, and `Ravager Wolf` are advanced unlocks.)
 `Custom`: Use `{prefix}nww custom <role1, role2, ...>` to seed exact roles (duplicates allowed). Remaining slots are filled with normal balance."""
                 ).format(prefix=ctx.clean_prefix),
                 colour=self.bot.config.game.primary_colour,
@@ -3915,7 +3915,7 @@ class NewWerewolf(commands.Cog):
                 "members": (
                     "Werewolf, Junior Werewolf, Wolf Seer, Sorcerer - Advanced"
                     " unlock, White Wolf, Cursed Wolf"
-                    " Father, Big Bad Wolf, Wolf"
+                    " Father, Big Bad Wolf, Ravager Wolf - Advanced unlock, Wolf"
                     f" Shaman - {restriction}, Wolf Necromancer - {restriction},"
                     f" Alpha Werewolf - {restriction}, Wolf Summoner - Advanced unlock,"
                     " Wolf Trickster - Advanced unlock,"

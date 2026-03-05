@@ -191,12 +191,21 @@ class GameBase:
         killer: discord.Member | None,
         victim: discord.Member,
         killed_this_round: set,
+        *,
+        elimination_log: dict[int, dict] | None = None,
+        cause: str | None = None,
     ) -> bool:
         if victim not in self.players or victim in killed_this_round:
             return False
         killed_this_round.add(victim)
         if killer is not None and killer.id in self.kills:
             self.kills[killer.id] += 1
+        if elimination_log is not None:
+            elimination_log[victim.id] = {
+                "victim": victim,
+                "killer": killer,
+                "cause": cause or _("eliminated in the chaos"),
+            }
         return True
 
     def _check_trap_trigger(
@@ -204,6 +213,7 @@ class GameBase:
         attacker: discord.Member,
         defender: discord.Member,
         killed_this_round: set,
+        elimination_log: dict[int, dict],
     ) -> bool:
         trap_count = self.traps.get(defender.id, 0)
         if trap_count <= 0:
@@ -212,7 +222,15 @@ class GameBase:
         if random.randint(1, 100) > trigger_chance:
             return False
         self.traps[defender.id] = max(0, trap_count - 1)
-        self._mark_kill(defender, attacker, killed_this_round)
+        self._mark_kill(
+            defender,
+            attacker,
+            killed_this_round,
+            elimination_log=elimination_log,
+            cause=_("triggered a trap set by **{killer}**").format(
+                killer=defender.display_name
+            ),
+        )
         return True
 
     def _resolve_action(
@@ -220,6 +238,7 @@ class GameBase:
         actor: discord.Member,
         action: dict,
         killed_this_round: set,
+        elimination_log: dict[int, dict],
     ) -> str:
         kind = action["kind"]
 
@@ -259,13 +278,29 @@ class GameBase:
                 return _("hesitates. Alliances are still locked this round.")
             success_chance = min(90, 45 + self.gear_score[actor.id] * 7)
             if random.randint(1, 100) <= success_chance:
-                self._mark_kill(actor, target, killed_this_round)
+                self._mark_kill(
+                    actor,
+                    target,
+                    killed_this_round,
+                    elimination_log=elimination_log,
+                    cause=_("was betrayed by **{killer}**").format(
+                        killer=actor.display_name
+                    ),
+                )
                 self.gear_score[actor.id] = min(10, self.gear_score[actor.id] + 1)
                 return _("betrays **{ally}** and takes their loot.").format(
                     ally=target.display_name
                 )
             if random.randint(1, 100) <= 50:
-                self._mark_kill(target, actor, killed_this_round)
+                self._mark_kill(
+                    target,
+                    actor,
+                    killed_this_round,
+                    elimination_log=elimination_log,
+                    cause=_("was executed by **{killer}** during a failed betrayal").format(
+                        killer=target.display_name
+                    ),
+                )
                 return _("tries to betray **{ally}**, but gets executed first.").format(
                     ally=target.display_name
                 )
@@ -273,7 +308,7 @@ class GameBase:
                 ally=target.display_name
             )
 
-        if self._check_trap_trigger(actor, target, killed_this_round):
+        if self._check_trap_trigger(actor, target, killed_this_round, elimination_log):
             return _("charges **{target}** but triggers their trap and dies.").format(
                 target=target.display_name
             )
@@ -284,13 +319,29 @@ class GameBase:
                 chance -= 18
             chance = max(12, min(90, chance))
             if random.randint(1, 100) <= chance:
-                self._mark_kill(actor, target, killed_this_round)
+                self._mark_kill(
+                    actor,
+                    target,
+                    killed_this_round,
+                    elimination_log=elimination_log,
+                    cause=_("was hunted down by **{killer}**").format(
+                        killer=actor.display_name
+                    ),
+                )
                 return _("hunts down **{target}** cleanly.").format(
                     target=target.display_name
                 )
             counter_chance = min(60, 18 + self.gear_score[target.id] * 5)
             if random.randint(1, 100) <= counter_chance:
-                self._mark_kill(target, actor, killed_this_round)
+                self._mark_kill(
+                    target,
+                    actor,
+                    killed_this_round,
+                    elimination_log=elimination_log,
+                    cause=_("was counter-killed by **{killer}**").format(
+                        killer=target.display_name
+                    ),
+                )
                 return _("misses **{target}** and gets counter-killed.").format(
                     target=target.display_name
                 )
@@ -304,9 +355,23 @@ class GameBase:
                 chance -= 14
             chance = max(10, min(85, chance))
             if random.randint(1, 100) <= chance:
-                self._mark_kill(actor, target, killed_this_round)
+                self._mark_kill(
+                    actor,
+                    target,
+                    killed_this_round,
+                    elimination_log=elimination_log,
+                    cause=_("was killed in a brawl by **{killer}**").format(
+                        killer=actor.display_name
+                    ),
+                )
                 if random.randint(1, 100) <= 35:
-                    self._mark_kill(None, actor, killed_this_round)
+                    self._mark_kill(
+                        None,
+                        actor,
+                        killed_this_round,
+                        elimination_log=elimination_log,
+                        cause=_("bled out after a reckless brawl"),
+                    )
                     return _("rushes **{target}**, kills them, then bleeds out.").format(
                         target=target.display_name
                     )
@@ -314,7 +379,15 @@ class GameBase:
                     target=target.display_name
                 )
             if random.randint(1, 100) <= 40:
-                self._mark_kill(target, actor, killed_this_round)
+                self._mark_kill(
+                    target,
+                    actor,
+                    killed_this_round,
+                    elimination_log=elimination_log,
+                    cause=_("was dropped by **{killer}** in a rush attempt").format(
+                        killer=target.display_name
+                    ),
+                )
                 return _("rushes **{target}** and gets dropped instantly.").format(
                     target=target.display_name
                 )
@@ -324,7 +397,12 @@ class GameBase:
 
         return _("does something chaotic but pointless.")
 
-    async def _resolve_arena_event(self, killed_this_round: set, round_lines: list[str]) -> None:
+    async def _resolve_arena_event(
+        self,
+        killed_this_round: set,
+        round_lines: list[str],
+        elimination_log: dict[int, dict],
+    ) -> None:
         survivors = [p for p in self.players if p not in killed_this_round]
         if len(survivors) <= 1:
             return
@@ -345,7 +423,13 @@ class GameBase:
         if roll <= 58:
             candidates = [p for p in survivors if p.id not in self.hidden_ids] or survivors
             victim = random.choice(candidates)
-            self._mark_kill(None, victim, killed_this_round)
+            self._mark_kill(
+                None,
+                victim,
+                killed_this_round,
+                elimination_log=elimination_log,
+                cause=_("was torn apart by mutts"),
+            )
             round_lines.append(
                 _("🐺 Mutts swarm **{victim}** in the dark.").format(
                     victim=victim.display_name
@@ -357,7 +441,13 @@ class GameBase:
             vulnerable = [p for p in survivors if self.gear_score[p.id] <= 1]
             if vulnerable and random.randint(1, 100) <= 55:
                 victim = random.choice(vulnerable)
-                self._mark_kill(None, victim, killed_this_round)
+                self._mark_kill(
+                    None,
+                    victim,
+                    killed_this_round,
+                    elimination_log=elimination_log,
+                    cause=_("was consumed by toxic fog"),
+                )
                 round_lines.append(
                     _("☣️ Toxic fog rolls in. **{victim}** doesn't make it out.").format(
                         victim=victim.display_name
@@ -378,7 +468,15 @@ class GameBase:
             left_roll = self.gear_score[left.id] + random.randint(0, 3)
             right_roll = self.gear_score[right.id] + random.randint(0, 3)
             winner, loser = (left, right) if left_roll >= right_roll else (right, left)
-            self._mark_kill(winner, loser, killed_this_round)
+            self._mark_kill(
+                winner,
+                loser,
+                killed_this_round,
+                elimination_log=elimination_log,
+                cause=_("fell in an arena-event duel to **{killer}**").format(
+                    killer=winner.display_name
+                ),
+            )
             round_lines.append(
                 _("⚔️ Arena event: **{winner}** wins a sudden duel against **{loser}**.").format(
                     winner=winner.display_name,
@@ -386,7 +484,12 @@ class GameBase:
                 )
             )
 
-    def _force_showdown(self, killed_this_round: set, round_lines: list[str]) -> None:
+    def _force_showdown(
+        self,
+        killed_this_round: set,
+        round_lines: list[str],
+        elimination_log: dict[int, dict],
+    ) -> None:
         survivors = [p for p in self.players if p not in killed_this_round]
         if len(survivors) < 2:
             return
@@ -394,7 +497,15 @@ class GameBase:
         left_roll = self.gear_score[left.id] + random.randint(1, 4)
         right_roll = self.gear_score[right.id] + random.randint(1, 4)
         winner, loser = (left, right) if left_roll >= right_roll else (right, left)
-        self._mark_kill(winner, loser, killed_this_round)
+        self._mark_kill(
+            winner,
+            loser,
+            killed_this_round,
+            elimination_log=elimination_log,
+            cause=_("lost a forced showdown to **{killer}**").format(
+                killer=winner.display_name
+            ),
+        )
         round_lines.append(
             _("💥 The silence breaks. **{winner}** wins a forced showdown against **{loser}**.").format(
                 winner=winner.display_name,
@@ -447,35 +558,113 @@ class GameBase:
         team_ids = {self.team_by_player_id.get(player.id) for player in survivors}
         return len(team_ids) == 1
 
-    async def _send_round_report(self, round_lines: list[str], killed_this_round: set) -> None:
-        killed_names = (
-            nice_join([f"**{p.display_name}**" for p in killed_this_round])
-            if killed_this_round
-            else _("Nobody")
+    def _district_name(self, player: discord.Member) -> str:
+        district = self.team_by_player_id.get(player.id)
+        if district is None:
+            return _("Unknown District")
+        return _("District {district}").format(district=district)
+
+    def _alive_districts_text(self) -> str:
+        districts = sorted(
+            {
+                self.team_by_player_id.get(player.id)
+                for player in self.players
+                if self.team_by_player_id.get(player.id) is not None
+            }
         )
+        if not districts:
+            return _("None")
+        return ", ".join(f"#{district}" for district in districts)
+
+    async def _send_round_report(
+        self,
+        round_lines: list[str],
+        killed_this_round: set,
+        elimination_log: dict[int, dict],
+    ) -> None:
         lock_state = (
             _("active until round {round}").format(round=self.ALLIANCE_LOCK_ROUNDS + 1)
             if self.round <= self.ALLIANCE_LOCK_ROUNDS
             else _("broken")
         )
-        lines = [f"• {line}" for line in round_lines]
-        lines.append(_("☠️ Eliminated: {killed}").format(killed=killed_names))
-        lines.append(_("🧍 Alive now: **{alive}**").format(alive=len(self.players)))
-        lines.append(_("🤝 Alliance lock: **{state}**").format(state=lock_state))
-        lines.append(_("🏆 Kill leaders: {leaders}").format(leaders=self._top_killers_text()))
 
-        pages = self._split_report(lines)
-        total_pages = len(pages)
-        for idx, page in enumerate(pages, start=1):
-            title = _("Hunger Games - Round {round}").format(round=self.round)
-            if total_pages > 1:
-                title = f"{title} ({idx}/{total_pages})"
-            embed = discord.Embed(
-                title=title,
-                description=page,
-                color=discord.Color.orange(),
+        event_lines = [f"{idx}. {line}" for idx, line in enumerate(round_lines, start=1)]
+        event_pages = self._split_report(event_lines)
+        for idx, page in enumerate(event_pages, start=1):
+            title = _("Hunger Games - Round {round} Arena Log").format(round=self.round)
+            if len(event_pages) > 1:
+                title = f"{title} ({idx}/{len(event_pages)})"
+            await self.ctx.send(
+                embed=discord.Embed(
+                    title=title,
+                    description=page,
+                    color=discord.Color.orange(),
+                )
             )
-            await self.ctx.send(embed=embed)
+
+        if killed_this_round:
+            cannon_intro = _(
+                "💥 **{shots} cannon shot(s)** were heard in the arena."
+            ).format(shots=len(killed_this_round))
+            fallen_lines: list[str] = [cannon_intro, ""]
+            for data in elimination_log.values():
+                victim = data.get("victim")
+                if not isinstance(victim, discord.Member):
+                    continue
+                killer = data.get("killer")
+                cause = str(data.get("cause", _("eliminated in the chaos")))
+                killer_text = (
+                    _("Killer: **{killer}**").format(killer=killer.display_name)
+                    if isinstance(killer, discord.Member)
+                    else _("Killer: Arena/Event")
+                )
+                fallen_lines.extend(
+                    [
+                        _("• **{victim}** ({district})").format(
+                            victim=victim.display_name,
+                            district=self._district_name(victim),
+                        ),
+                        _("  Cause: {cause}").format(cause=cause),
+                        f"  {killer_text}",
+                        _("  PFP: {pfp}").format(pfp=victim.display_avatar.url),
+                        "",
+                    ]
+                )
+            fallen_pages = self._split_report(fallen_lines, max_chars=3400)
+            for idx, page in enumerate(fallen_pages, start=1):
+                title = _("🔔 Cannon Shots - Round {round}").format(round=self.round)
+                if len(fallen_pages) > 1:
+                    title = f"{title} ({idx}/{len(fallen_pages)})"
+                await self.ctx.send(
+                    embed=discord.Embed(
+                        title=title,
+                        description=page,
+                        color=discord.Color.red(),
+                    )
+                )
+        else:
+            await self.ctx.send(
+                embed=discord.Embed(
+                    title=_("🔔 Cannon Shots - Round {round}").format(round=self.round),
+                    description=_("No cannon shots tonight. No one fell."),
+                    color=discord.Color.red(),
+                )
+            )
+
+        status_lines = [
+            _("🧍 Alive now: **{alive}**").format(alive=len(self.players)),
+            _("🏙️ Districts still standing: {districts}").format(
+                districts=self._alive_districts_text()
+            ),
+            _("🤝 Alliance lock: **{state}**").format(state=lock_state),
+        ]
+        await self.ctx.send(
+            embed=discord.Embed(
+                title=_("Round {round} Status").format(round=self.round),
+                description="\n".join(status_lines),
+                color=discord.Color.blurple(),
+            )
+        )
 
     async def get_inputs(self):
         status = await self.ctx.send(
@@ -485,6 +674,7 @@ class GameBase:
         self.hidden_ids = set()
         killed_this_round: set[discord.Member] = set()
         round_lines: list[str] = []
+        elimination_log: dict[int, dict] = {}
 
         turn_order = self.players.copy()
         random.shuffle(turn_order)
@@ -495,17 +685,17 @@ class GameBase:
             if not choices:
                 continue
             action = await self._choose_action(actor, choices)
-            summary = self._resolve_action(actor, action, killed_this_round)
+            summary = self._resolve_action(actor, action, killed_this_round, elimination_log)
             round_lines.append(f"**{actor.display_name}** {summary}")
 
-        await self._resolve_arena_event(killed_this_round, round_lines)
+        await self._resolve_arena_event(killed_this_round, round_lines, elimination_log)
         if (
             not killed_this_round
             and len(self.players) > 2
             and self.round >= 2
             and not self._single_team_left(killed_this_round)
         ):
-            self._force_showdown(killed_this_round, round_lines)
+            self._force_showdown(killed_this_round, round_lines, elimination_log)
 
         for dead in list(killed_this_round):
             try:
@@ -517,7 +707,7 @@ class GameBase:
             await status.delete()
         except discord.NotFound:
             pass
-        await self._send_round_report(round_lines, killed_this_round)
+        await self._send_round_report(round_lines, killed_this_round, elimination_log)
         self.round += 1
 
     async def send_cast(self):
@@ -535,7 +725,7 @@ class GameBase:
         lines = []
         for idx, team in enumerate(self.cast, start=1):
             mentions = " ".join(member.mention for member in team)
-            lines.append(f"**Team #{idx}:** {mentions}")
+            lines.append(f"**District #{idx}:** {mentions}")
 
         pages = self._split_report(lines)
         for idx, page in enumerate(pages, start=1):
@@ -550,7 +740,7 @@ class GameBase:
             if idx == 1:
                 embed.set_footer(
                     text=_(
-                        "Alliances are protected until round {round}. Betrayals unlock after that."
+                        "District alliances are protected until round {round}. Betrayals unlock after that."
                     ).format(round=self.ALLIANCE_LOCK_ROUNDS)
                 )
             await self.ctx.send(embed=embed)
@@ -581,7 +771,7 @@ class GameBase:
             embed = discord.Embed(
                 title=_("Hunger Games Results"),
                 color=discord.Color.blurple(),
-                description=_("Team #{team} wins together!").format(team=team_id),
+                description=_("District #{team} wins together!").format(team=team_id),
             )
             embed.add_field(
                 name=_("Survivors"),

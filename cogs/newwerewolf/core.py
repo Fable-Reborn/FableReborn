@@ -61,6 +61,7 @@ from .role_config import (
 class Role(Enum):
     WEREWOLF = 1
     BIG_BAD_WOLF = 2
+    RAVAGER_WOLF = 75
     CURSED_WOLF_FATHER = 3
     WOLF_SHAMAN = 4
     WOLF_NECROMANCER = 5
@@ -185,6 +186,8 @@ ROLE_TOKEN_TO_ROLE.update(
         "sk": Role.SERIAL_KILLER,
         "fool": Role.JESTER,
         "kittenwolf": Role.KITTEN_WOLF,
+        "ravager": Role.RAVAGER_WOLF,
+        "ravagerwolf": Role.RAVAGER_WOLF,
         "preacher": Role.PREACHER,
         "oathkeeper": Role.OATHKEEPER,
     }
@@ -224,6 +227,13 @@ DESCRIPTIONS = {
         " Every night, you will get to choose one villager to kill together with them."
         " After that, you will wake up once more to kill an additional villager, but as"
         " long as no Werewolf has been killed."
+    ),
+    Role.RAVAGER_WOLF: _(
+        "You are the Ravager Wolf, an advanced Big Bad Wolf role. You fight with the"
+        " werewolves at night and may use **Ravage** once per game (not on the first"
+        " night). Ravage pierces Doctor/Healer/Jailer/Witch protection on the wolves'"
+        " chosen target, but forged shields and Bodyguard/Tough Guy interceptions still"
+        " work."
     ),
     Role.ALPHA_WEREWOLF: _(
         "Your objective is to kill all villagers together with the other Werewolves."
@@ -650,6 +660,7 @@ def is_wolf_team_role(role: Role) -> bool:
     return role in {
         Role.WEREWOLF,
         Role.BIG_BAD_WOLF,
+        Role.RAVAGER_WOLF,
         Role.CURSED_WOLF_FATHER,
         Role.WOLF_SHAMAN,
         Role.WOLF_NECROMANCER,
@@ -1174,6 +1185,7 @@ NIGHT_KILLER_GROUP_SOLO = "solo"
 
 SPECIAL_WOLF_ROLES = {
     Role.BIG_BAD_WOLF,
+    Role.RAVAGER_WOLF,
     Role.CURSED_WOLF_FATHER,
     Role.WOLF_SHAMAN,
     Role.WOLF_NECROMANCER,
@@ -1195,6 +1207,7 @@ SPECIAL_WOLF_ROLES = {
 # base Werewolf/Alpha according to requested behavior.
 PACK_SPECIAL_WOLF_ROLES = {
     Role.BIG_BAD_WOLF,
+    Role.RAVAGER_WOLF,
     Role.CURSED_WOLF_FATHER,
     Role.WOLF_SHAMAN,
     Role.WOLF_NECROMANCER,
@@ -1598,6 +1611,7 @@ class Game:
         self.current_jailed_targets: list[Player] = []
         self.previous_jailed_player_ids: set[int] = set()
         self.pending_night_killer_group_by_player_id: dict[int, str] = {}
+        self.pending_ravager_pierce_target_ids: set[int] = set()
         self.kitten_wolf_conversion_pending_night: int | None = None
         self.pending_grumpy_silence_targets: dict[int, Player] = {}
         self.pending_voodoo_silence_targets: dict[int, Player] = {}
@@ -4235,13 +4249,70 @@ class Game:
             attack_source = self.pending_night_killer_group_by_player_id.get(
                 protected.user.id
             )
+            guardian = protected.protected_by_bodyguard
+            guardian_is_alive = guardian is not None and not guardian.dead
+            ravaged_wolf_attack = (
+                was_attacked
+                and attack_source == NIGHT_KILLER_GROUP_WOLVES
+                and protected.user.id in self.pending_ravager_pierce_target_ids
+            )
+            bypass_direct_protection = ravaged_wolf_attack and not guardian_is_alive
             protected.is_protected = False
-            while protected in targets:
-                targets.remove(protected)
-            self.pending_night_killer_group_by_player_id.pop(protected.user.id, None)
+            if not bypass_direct_protection:
+                while protected in targets:
+                    targets.remove(protected)
+                self.pending_night_killer_group_by_player_id.pop(protected.user.id, None)
+
+            if bypass_direct_protection:
+                if protected.protected_by_doctor:
+                    protector = protected.protected_by_doctor
+                    protector_role = _("Doctor")
+                    if protector:
+                        protector_role = self.get_role_name(protector.role)
+                    if protector and not protector.dead:
+                        await protector.send(
+                            _(
+                                "🩸🐺 Your protection on **{saved}** was torn apart by a"
+                                " brutal werewolf attack.\n{game_link}"
+                            ).format(saved=protected.user, game_link=self.game_link)
+                        )
+                    await protected.send(
+                        _(
+                            "🩸🐺 You were attacked tonight. The werewolves tore through"
+                            " your **{protector_role}** protection.\n{game_link}"
+                        ).format(
+                            protector_role=protector_role,
+                            game_link=self.game_link,
+                        )
+                    )
+                elif protected.protected_by_jailer:
+                    jailer = self._get_jail_controller()
+                    if jailer:
+                        await jailer.send(
+                            _(
+                                "🩸🐺 Your prison protection on **{saved}** was broken by"
+                                " a brutal werewolf attack.\n{game_link}"
+                            ).format(saved=protected.user, game_link=self.game_link)
+                        )
+                    await protected.send(
+                        _(
+                            "🩸🐺 You were attacked tonight. The werewolves broke through"
+                            " your jail protection.\n{game_link}"
+                        ).format(game_link=self.game_link)
+                    )
+                else:
+                    await protected.send(
+                        _(
+                            "🩸🐺 You were attacked tonight. The werewolves tore through"
+                            " your protection.\n{game_link}"
+                        ).format(game_link=self.game_link)
+                    )
+                protected.protected_by_doctor = None
+                protected.protected_by_bodyguard = None
+                protected.protected_by_jailer = False
+                continue
 
             if was_attacked and protected.protected_by_bodyguard:
-                guardian = protected.protected_by_bodyguard
                 if guardian and not guardian.dead:
                     if guardian.role == Role.TOUGH_GUY:
                         await self._mark_tough_guy_injury(
@@ -5422,6 +5493,7 @@ class Game:
 
     async def wolves(self, *, kitten_conversion_mode: bool = False) -> Player | None:
         self.pending_grumpy_silence_targets.clear()
+        self.pending_ravager_pierce_target_ids.clear()
         guardians = [
             player
             for player in self.alive_players
@@ -5782,6 +5854,66 @@ class Game:
                 and (cursed_wolf_father := self.get_player_with_role(Role.CURSED_WOLF_FATHER))
             ):
                 target = await cursed_wolf_father.curse_target(target)
+            if not kitten_conversion_mode and target is not None:
+                ravagers = [
+                    wolf
+                    for wolf in wolves
+                    if wolf.role == Role.RAVAGER_WOLF
+                    and wolf.has_ravager_pierce_ability
+                ]
+                for ravager in ravagers:
+                    if self.night_no <= 1:
+                        await ravager.send(
+                            _(
+                                "Your **Ravage** cannot be used on the first night."
+                                "\n{game_link}"
+                            ).format(game_link=self.game_link)
+                        )
+                        continue
+                    try:
+                        choice = await self.ctx.bot.paginator.Choose(
+                            entries=[
+                                _("Use Ravage"),
+                                _("Skip"),
+                            ],
+                            return_index=True,
+                            title=_(
+                                "Use **Ravage** on **{target}** tonight? It pierces"
+                                " Doctor/Healer/Jailer/Witch protection, but not forged"
+                                " shields or Bodyguard/Tough Guy interception."
+                            ).format(target=target.user),
+                            timeout=self.timer,
+                        ).paginate(self.ctx, location=ravager.user)
+                    except self.ctx.bot.paginator.NoChoice:
+                        await ravager.send(
+                            _("You didn't choose in time. Ravage was not used.")
+                        )
+                        continue
+                    except (discord.Forbidden, discord.HTTPException):
+                        continue
+
+                    if choice == 0:
+                        ravager.has_ravager_pierce_ability = False
+                        self.pending_ravager_pierce_target_ids.add(target.user.id)
+                        await ravager.send(
+                            _(
+                                "🩸 You used **Ravage** on **{target}**."
+                                "\n{game_link}"
+                            ).format(
+                                target=target.user,
+                                game_link=self.game_link,
+                            )
+                        )
+                        for wolf_member in wolf_chat_recipients:
+                            if wolf_member == ravager:
+                                continue
+                            await wolf_member.send(
+                                _(
+                                    "🩸 The **Ravager Wolf** used **Ravage** on"
+                                    " **{target}**."
+                                ).format(target=target.user)
+                            )
+                        break
         await asyncio.sleep(5)  # Give them time to read
         if self.task:
             self.task.cancel()
@@ -6899,6 +7031,7 @@ class Game:
                 )
                 await death.kill()
             self.pending_night_killer_group_by_player_id.clear()
+            self.pending_ravager_pierce_target_ids.clear()
             if not self.after_first_night and self.night_no == 1:
                 self.after_first_night = True
             await self.resolve_grave_robber_role_steals()
@@ -7345,6 +7478,7 @@ class Player:
         # Wolf Necromancer
         self.has_wolf_necro_ability = True
         self.has_wolf_summoner_ability = True
+        self.has_ravager_pierce_ability = True
 
         # Guardian Wolf
         self.has_guardian_wolf_save_ability = True
@@ -8210,36 +8344,55 @@ class Player:
                 )
                 if to_protect:
                     protected_target = to_protect[0]
-                    was_attacked = False
-                    while protected_target in targets:
-                        targets.remove(protected_target)
-                        was_attacked = True
-                    if not was_attacked:
-                        protected_id = protected_target.user.id
-                        remaining_targets = [
-                            target for target in targets if target.user.id != protected_id
-                        ]
-                        was_attacked = len(remaining_targets) != len(targets)
-                        targets = remaining_targets
-                    if was_attacked:
-                        self.witch_protect_potion_available = False
-                        if protected_target.role == Role.KNIGHT:
-                            protected_target.attacked_by_the_pact = False
-                        await self.send(
-                            _(
-                                "You protected **{protected}**. They were attacked, so"
-                                " your protection potion was consumed."
-                            ).format(
-                                protected=protected_target.user
-                            )
+                    ravaged_wolf_attack = (
+                        protected_target in targets
+                        and protected_target.user.id
+                        in self.game.pending_ravager_pierce_target_ids
+                        and self.game.pending_night_killer_group_by_player_id.get(
+                            protected_target.user.id
                         )
-                    else:
+                        == NIGHT_KILLER_GROUP_WOLVES
+                    )
+                    if ravaged_wolf_attack:
+                        self.witch_protect_potion_available = False
                         await self.send(
                             _(
-                                "You protected **{protected}**, but they were not"
-                                " attacked. Your protection potion remains available."
+                                "You protected **{protected}**, but a brutal werewolf"
+                                " attack tore through your potion. The protection"
+                                " potion was consumed."
                             ).format(protected=protected_target.user)
                         )
+                    else:
+                        was_attacked = False
+                        while protected_target in targets:
+                            targets.remove(protected_target)
+                            was_attacked = True
+                        if not was_attacked:
+                            protected_id = protected_target.user.id
+                            remaining_targets = [
+                                target for target in targets if target.user.id != protected_id
+                            ]
+                            was_attacked = len(remaining_targets) != len(targets)
+                            targets = remaining_targets
+                        if was_attacked:
+                            self.witch_protect_potion_available = False
+                            if protected_target.role == Role.KNIGHT:
+                                protected_target.attacked_by_the_pact = False
+                            await self.send(
+                                _(
+                                    "You protected **{protected}**. They were attacked,"
+                                    " so your protection potion was consumed."
+                                ).format(
+                                    protected=protected_target.user
+                                )
+                            )
+                        else:
+                            await self.send(
+                                _(
+                                    "You protected **{protected}**, but they were not"
+                                    " attacked. Your protection potion remains available."
+                                ).format(protected=protected_target.user)
+                            )
                 else:
                     await self.send(_("You didn't choose to protect anyone."))
             except asyncio.TimeoutError:
