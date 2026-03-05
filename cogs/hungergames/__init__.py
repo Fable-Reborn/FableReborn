@@ -35,6 +35,8 @@ from utils.misc import nice_join
 class GameBase:
     ALLIANCE_LOCK_ROUNDS = 3
     PLAYER_CONTROL_CHANCE = 30
+    REPORT_SECTION_DELAY_SECONDS = 3
+    REPORT_TRIBUTE_DELAY_SECONDS = 2
 
     def __init__(self, ctx, players: list):
         self.ctx = ctx
@@ -601,47 +603,68 @@ class GameBase:
                     color=discord.Color.orange(),
                 )
             )
+            if idx < len(event_pages):
+                await asyncio.sleep(self.REPORT_SECTION_DELAY_SECONDS)
+
+        await asyncio.sleep(self.REPORT_SECTION_DELAY_SECONDS)
 
         if killed_this_round:
             cannon_intro = _(
                 "💥 **{shots} cannon shot(s)** were heard in the arena."
             ).format(shots=len(killed_this_round))
-            fallen_lines: list[str] = [cannon_intro, ""]
-            for data in elimination_log.values():
-                victim = data.get("victim")
-                if not isinstance(victim, discord.Member):
-                    continue
+            await self.ctx.send(
+                embed=discord.Embed(
+                    title=_("🔔 Cannon Shots - Round {round}").format(round=self.round),
+                    description=cannon_intro,
+                    color=discord.Color.red(),
+                )
+            )
+            await asyncio.sleep(self.REPORT_SECTION_DELAY_SECONDS)
+
+            fallen_entries = [
+                data
+                for data in elimination_log.values()
+                if isinstance(data.get("victim"), discord.Member)
+            ]
+            total_fallen = len(fallen_entries)
+            for idx, data in enumerate(fallen_entries, start=1):
+                victim = data["victim"]
                 killer = data.get("killer")
                 cause = str(data.get("cause", _("eliminated in the chaos")))
                 killer_text = (
-                    _("Killer: **{killer}**").format(killer=killer.display_name)
+                    killer.display_name
                     if isinstance(killer, discord.Member)
-                    else _("Killer: Arena/Event")
+                    else _("the arena")
                 )
-                fallen_lines.extend(
-                    [
-                        _("• **{victim}** ({district})").format(
-                            victim=victim.display_name,
-                            district=self._district_name(victim),
-                        ),
-                        _("  Cause: {cause}").format(cause=cause),
-                        f"  {killer_text}",
-                        _("  PFP: {pfp}").format(pfp=victim.display_avatar.url),
-                        "",
-                    ]
+
+                tribute_embed = discord.Embed(
+                    title=_("☠️ {victim} has fallen").format(
+                        victim=victim.display_name
+                    ),
+                    description=_(
+                        "**{district}**\n"
+                        "**Cause:** {cause}\n"
+                        "**Felled by:** {killer}"
+                    ).format(
+                        district=self._district_name(victim),
+                        cause=cause,
+                        killer=killer_text,
+                    ),
+                    color=discord.Color.dark_red(),
                 )
-            fallen_pages = self._split_report(fallen_lines, max_chars=3400)
-            for idx, page in enumerate(fallen_pages, start=1):
-                title = _("🔔 Cannon Shots - Round {round}").format(round=self.round)
-                if len(fallen_pages) > 1:
-                    title = f"{title} ({idx}/{len(fallen_pages)})"
-                await self.ctx.send(
-                    embed=discord.Embed(
-                        title=title,
-                        description=page,
-                        color=discord.Color.red(),
+                tribute_embed.set_thumbnail(url=victim.display_avatar.url)
+                tribute_embed.set_footer(
+                    text=_("Round {round} • Tribute {idx}/{total}").format(
+                        round=self.round,
+                        idx=idx,
+                        total=total_fallen,
                     )
                 )
+                await self.ctx.send(
+                    embed=tribute_embed
+                )
+                if idx < total_fallen:
+                    await asyncio.sleep(self.REPORT_TRIBUTE_DELAY_SECONDS)
         else:
             await self.ctx.send(
                 embed=discord.Embed(
@@ -650,6 +673,8 @@ class GameBase:
                     color=discord.Color.red(),
                 )
             )
+
+        await asyncio.sleep(self.REPORT_SECTION_DELAY_SECONDS)
 
         status_lines = [
             _("🧍 Alive now: **{alive}**").format(alive=len(self.players)),
