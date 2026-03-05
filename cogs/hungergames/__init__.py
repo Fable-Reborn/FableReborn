@@ -842,6 +842,524 @@ class GameBase:
         await self.ctx.send(embed=embed)
 
 
+class RegionGame(GameBase):
+    PLAYER_CONTROL_CHANCE = 100
+    REPORT_SECTION_DELAY_SECONDS = 1.0
+    REPORT_TRIBUTE_DELAY_SECONDS = 0.75
+    REGIONS: tuple[str, ...] = (
+        "Cornucopia",
+        "Forest Ridge",
+        "Riverbank",
+        "Ruined Mill",
+        "Stone Quarry",
+        "Underground Tunnels",
+    )
+    REGION_ADJACENCY: dict[str, tuple[str, ...]] = {
+        "Cornucopia": ("Forest Ridge", "Riverbank", "Ruined Mill"),
+        "Forest Ridge": ("Cornucopia", "Stone Quarry"),
+        "Riverbank": ("Cornucopia", "Underground Tunnels"),
+        "Ruined Mill": ("Cornucopia", "Stone Quarry", "Underground Tunnels"),
+        "Stone Quarry": ("Forest Ridge", "Ruined Mill"),
+        "Underground Tunnels": ("Riverbank", "Ruined Mill"),
+    }
+
+    def __init__(self, ctx, players: list):
+        super().__init__(ctx, players)
+        self.player_region: dict[int, str] = {}
+        self.region_drops: dict[str, int] = {}
+        self.active_toxic_regions: set[str] = set()
+        self.next_toxic_regions: set[str] = set()
+        self.fog_stage = 1
+        self._assign_initial_regions()
+
+    def _assign_initial_regions(self) -> None:
+        pool = list(self.REGIONS)
+        for player in self.players:
+            if not pool:
+                pool = list(self.REGIONS)
+            region = random.choice(pool)
+            pool.remove(region)
+            self.player_region[player.id] = region
+
+    def _region_for(self, player: discord.Member) -> str:
+        if player.id not in self.player_region:
+            self.player_region[player.id] = random.choice(list(self.REGIONS))
+        return self.player_region[player.id]
+
+    def _players_in_region(
+        self, region: str, *, killed_this_round: set | None = None
+    ) -> list[discord.Member]:
+        killed_this_round = killed_this_round or set()
+        return [
+            player
+            for player in self.players
+            if player not in killed_this_round and self._region_for(player) == region
+        ]
+
+    def _eligible_targets(
+        self,
+        actor: discord.Member,
+        killed_this_round: set,
+        *,
+        allow_allies: bool = False,
+    ) -> list[discord.Member]:
+        actor_region = self._region_for(actor)
+        base_targets = super()._eligible_targets(
+            actor, killed_this_round, allow_allies=allow_allies
+        )
+        return [target for target in base_targets if self._region_for(target) == actor_region]
+
+    def _alive_allies(
+        self,
+        actor: discord.Member,
+        killed_this_round: set,
+    ) -> list[discord.Member]:
+        actor_region = self._region_for(actor)
+        allies = super()._alive_allies(actor, killed_this_round)
+        return [ally for ally in allies if self._region_for(ally) == actor_region]
+
+    def _spawn_region_drops(self) -> None:
+        self.region_drops.clear()
+        available_regions = [
+            region for region in self.REGIONS if region not in self.active_toxic_regions
+        ]
+        if not available_regions:
+            return
+        alive = len(self.players)
+        if alive >= 10:
+            base_drop_count = 3
+        elif alive >= 6:
+            base_drop_count = 2
+        else:
+            base_drop_count = 1
+        pressure_penalty = 1 if len(self.active_toxic_regions) >= 2 else 0
+        drop_count = max(1, base_drop_count - pressure_penalty)
+        picked = random.sample(
+            available_regions, k=min(drop_count, len(available_regions))
+        )
+        early_round = self.round <= 3
+        for region in picked:
+            self.region_drops[region] = random.randint(1, 2) if early_round else random.randint(2, 3)
+
+    def _pick_next_toxic_regions(self) -> set[str]:
+        safe_regions = [
+            region for region in self.REGIONS if region not in self.active_toxic_regions
+        ]
+        if len(safe_regions) <= 1:
+            return set()
+        alive = len(self.players)
+        if self.round <= 2:
+            toxic_count = 1
+        elif alive >= 9:
+            toxic_count = 2
+        elif alive >= 5:
+            toxic_count = 1
+        else:
+            toxic_count = 2
+        toxic_count = min(toxic_count, len(safe_regions) - 1)
+        return set(random.sample(safe_regions, toxic_count))
+
+    async def _send_region_brief(self) -> None:
+        lines = []
+        for region in self.REGIONS:
+            alive_count = len(self._players_in_region(region))
+            status_bits = [f"👥 {alive_count}"]
+            if region in self.region_drops:
+                status_bits.append("📦 Drop")
+            if region in self.active_toxic_regions:
+                status_bits.append("☣️ Toxic Now")
+            elif region in self.next_toxic_regions:
+                status_bits.append("⚠️ Toxic Next")
+            status = " • ".join(status_bits)
+            lines.append(f"**{region}**: {status}")
+
+        active_toxic = (
+            ", ".join(sorted(self.active_toxic_regions))
+            if self.active_toxic_regions
+            else _("None")
+        )
+        next_toxic = (
+            ", ".join(sorted(self.next_toxic_regions))
+            if self.next_toxic_regions
+            else _("None")
+        )
+
+        embed = discord.Embed(
+            title=_("🗺️ Arena Regions - Round {round}").format(round=self.round),
+            description="\n".join(lines),
+            color=discord.Color.dark_gold(),
+        )
+        embed.add_field(name=_("Toxic Now"), value=active_toxic, inline=False)
+        embed.add_field(name=_("Prewarned Next Round"), value=next_toxic, inline=False)
+        embed.set_footer(
+            text=_(
+                "Move between connected regions, loot drops, and survive the advancing fog."
+            )
+        )
+        await self.ctx.send(embed=embed)
+
+    def _build_action_choices(
+        self,
+        actor: discord.Member,
+        killed_this_round: set,
+    ) -> list[dict]:
+        current_region = self._region_for(actor)
+        choices: list[dict] = [
+            {"label": _("Scavenge for weapons in {region}").format(region=current_region), "kind": "scavenge"},
+            {"label": _("Hide in {region}").format(region=current_region), "kind": "hide"},
+            {"label": _("Set a trap in {region}").format(region=current_region), "kind": "trap"},
+        ]
+
+        neighbors = list(self.REGION_ADJACENCY.get(current_region, ()))
+        for region in neighbors:
+            choices.append(
+                {
+                    "label": _("Move to {region}").format(region=region),
+                    "kind": "move",
+                    "region": region,
+                }
+            )
+
+        if current_region in self.region_drops:
+            choices.append(
+                {
+                    "label": _("Loot the supply drop in {region}").format(
+                        region=current_region
+                    ),
+                    "kind": "lootdrop",
+                }
+            )
+
+        targets = self._eligible_targets(actor, killed_this_round)
+        if targets:
+            hunt_target = random.choice(targets)
+            rush_target = random.choice(targets)
+            choices.append(
+                {
+                    "label": _("Hunt down {target} in {region}").format(
+                        target=hunt_target.display_name, region=current_region
+                    ),
+                    "kind": "hunt",
+                    "target_id": hunt_target.id,
+                }
+            )
+            choices.append(
+                {
+                    "label": _("Rush {target} in {region}").format(
+                        target=rush_target.display_name, region=current_region
+                    ),
+                    "kind": "rush",
+                    "target_id": rush_target.id,
+                }
+            )
+
+        allies = self._alive_allies(actor, killed_this_round)
+        if allies:
+            ally = random.choice(allies)
+            choices.append(
+                {
+                    "label": _("Coordinate with {ally} in {region}").format(
+                        ally=ally.display_name,
+                        region=current_region,
+                    ),
+                    "kind": "teamup",
+                    "target_id": ally.id,
+                }
+            )
+            if self.round > self.ALLIANCE_LOCK_ROUNDS:
+                choices.append(
+                    {
+                        "label": _("Betray {ally} in {region}").format(
+                            ally=ally.display_name,
+                            region=current_region,
+                        ),
+                        "kind": "betray",
+                        "target_id": ally.id,
+                    }
+                )
+
+        sample_size = min(4, len(choices))
+        return random.sample(choices, sample_size)
+
+    async def _choose_action(self, actor: discord.Member, choices: list[dict]) -> dict:
+        try:
+            idx = await self.ctx.bot.paginator.Choose(
+                entries=[choice["label"] for choice in choices],
+                return_index=True,
+                title=_("Choose your arena action"),
+            ).paginate(self.ctx, location=actor)
+            return choices[idx]
+        except (
+            self.ctx.bot.paginator.NoChoice,
+            discord.Forbidden,
+            asyncio.TimeoutError,
+        ):
+            await self.ctx.send(
+                _(
+                    "{user} didn't choose in time. The arena decides their move."
+                ).format(user=actor.mention),
+                delete_after=20,
+            )
+            return random.choice(choices)
+
+    def _resolve_action(
+        self,
+        actor: discord.Member,
+        action: dict,
+        killed_this_round: set,
+        elimination_log: dict[int, dict],
+    ) -> str:
+        kind = action["kind"]
+        actor_region = self._region_for(actor)
+
+        if kind == "move":
+            new_region = str(action.get("region") or "")
+            if new_region not in self.REGION_ADJACENCY.get(actor_region, ()):
+                return _("tries to move, but gets turned around in the arena.")
+            self.player_region[actor.id] = new_region
+            return _("moves from **{old}** to **{new}**.").format(
+                old=actor_region,
+                new=new_region,
+            )
+
+        if kind == "lootdrop":
+            if actor_region not in self.region_drops:
+                return _("searches for a drop in **{region}**, but it's gone.").format(
+                    region=actor_region
+                )
+            gain = self.region_drops.pop(actor_region)
+            self.gear_score[actor.id] = min(10, self.gear_score[actor.id] + gain)
+            return _("claims the supply drop in **{region}** and upgrades gear.").format(
+                region=actor_region
+            )
+
+        if kind in {"hunt", "rush", "teamup", "betray"}:
+            target = self._alive_target(action.get("target_id"), killed_this_round)
+            if target is None:
+                return _("finds no valid target and wastes the move.")
+            if self._region_for(target) != actor_region:
+                return _("targets **{target}**, but they already moved away from **{region}**.").format(
+                    target=target.display_name,
+                    region=actor_region,
+                )
+
+        return super()._resolve_action(actor, action, killed_this_round, elimination_log)
+
+    async def _resolve_arena_event(
+        self,
+        killed_this_round: set,
+        round_lines: list[str],
+        elimination_log: dict[int, dict],
+    ) -> None:
+        survivors = [p for p in self.players if p not in killed_this_round]
+        if len(survivors) <= 1:
+            return
+
+        roll = random.randint(1, 100)
+        if roll <= 45:
+            candidate_regions = [
+                region for region in self.REGIONS if self._players_in_region(region, killed_this_round=killed_this_round)
+            ]
+            if not candidate_regions:
+                return
+            region = random.choice(candidate_regions)
+            existing = self.region_drops.get(region, 0)
+            self.region_drops[region] = max(existing, random.randint(2, 3))
+            round_lines.append(
+                _("🎁 A sponsor drone drops fresh supplies in **{region}**.").format(
+                    region=region
+                )
+            )
+            return
+
+        if roll <= 78:
+            crowded_regions = [
+                region
+                for region in self.REGIONS
+                if len(self._players_in_region(region, killed_this_round=killed_this_round)) >= 2
+            ]
+            if not crowded_regions:
+                return
+            region = random.choice(crowded_regions)
+            candidates = self._players_in_region(region, killed_this_round=killed_this_round)
+            victim = random.choice(candidates)
+            self._mark_kill(
+                None,
+                victim,
+                killed_this_round,
+                elimination_log=elimination_log,
+                cause=_("was torn apart by mutts in **{region}**").format(region=region),
+            )
+            round_lines.append(
+                _("🐺 Mutts ambush **{victim}** in **{region}**.").format(
+                    victim=victim.display_name,
+                    region=region,
+                )
+            )
+            return
+
+        region = random.choice(list(self.REGIONS))
+        impacted = self._players_in_region(region, killed_this_round=killed_this_round)
+        if not impacted:
+            return
+        victim = random.choice(impacted)
+        self.gear_score[victim.id] = max(0, self.gear_score[victim.id] - 1)
+        round_lines.append(
+            _("🌧️ Acid rain lashes **{region}**. **{victim}** loses gear.").format(
+                region=region,
+                victim=victim.display_name,
+            )
+        )
+
+    def _apply_toxic_fog(
+        self,
+        killed_this_round: set,
+        round_lines: list[str],
+        elimination_log: dict[int, dict],
+    ) -> None:
+        if not self.active_toxic_regions:
+            return
+        for player in list(self.players):
+            if player in killed_this_round:
+                continue
+            region = self._region_for(player)
+            if region not in self.active_toxic_regions:
+                continue
+            alive = len(self.players)
+            chance = 10 + self.fog_stage * 8
+            if alive <= 4:
+                chance += 14
+            elif alive <= 6:
+                chance += 8
+            elif alive <= 8:
+                chance += 4
+            if player.id in self.hidden_ids:
+                chance = max(5, chance - 8)
+            chance = max(5, chance - min(14, self.gear_score[player.id] * 2))
+            chance = min(88, chance)
+
+            if random.randint(1, 100) <= chance:
+                self._mark_kill(
+                    None,
+                    player,
+                    killed_this_round,
+                    elimination_log=elimination_log,
+                    cause=_("succumbed to toxic fog in **{region}**").format(
+                        region=region
+                    ),
+                )
+                round_lines.append(
+                    _("☣️ Toxic fog engulfs **{victim}** in **{region}**.").format(
+                        victim=player.display_name,
+                        region=region,
+                    )
+                )
+            else:
+                self.gear_score[player.id] = max(0, self.gear_score[player.id] - 1)
+                round_lines.append(
+                    _("☣️ **{survivor}** escapes the fog in **{region}**, but loses gear.").format(
+                        survivor=player.display_name,
+                        region=region,
+                    )
+                )
+
+    async def _send_round_report(
+        self,
+        round_lines: list[str],
+        killed_this_round: set,
+        elimination_log: dict[int, dict],
+    ) -> None:
+        await super()._send_round_report(round_lines, killed_this_round, elimination_log)
+        extra = discord.Embed(
+            title=_("Arena Hazard Update"),
+            description=_(
+                "☣️ Toxic now: {active}\n"
+                "⚠️ Prewarned next round: {next_regions}\n"
+                "📦 Active drops: {drops}"
+            ).format(
+                active=", ".join(sorted(self.active_toxic_regions))
+                if self.active_toxic_regions
+                else _("None"),
+                next_regions=", ".join(sorted(self.next_toxic_regions))
+                if self.next_toxic_regions
+                else _("None"),
+                drops=", ".join(
+                    f"{region} (+{bonus})"
+                    for region, bonus in sorted(self.region_drops.items())
+                )
+                if self.region_drops
+                else _("None"),
+            ),
+            color=discord.Color.dark_teal(),
+        )
+        await self.ctx.send(embed=extra)
+
+    async def send_cast(self):
+        await super().send_cast()
+        await self.ctx.send(
+            embed=discord.Embed(
+                title=_("Region Rules"),
+                description=_(
+                    "Each tribute starts in a region. You can move only to connected"
+                    " regions, fight only in your current region, and race for sponsor"
+                    " drops. Toxic fog zones are prewarned one round early."
+                ),
+                color=discord.Color.gold(),
+            )
+        )
+
+    async def get_inputs(self):
+        status = await self.ctx.send(
+            _("🔥 **Round {round}** begins...").format(round=self.round),
+            delete_after=45,
+        )
+        self.hidden_ids = set()
+        killed_this_round: set[discord.Member] = set()
+        round_lines: list[str] = []
+        elimination_log: dict[int, dict] = {}
+
+        self.active_toxic_regions = set(self.next_toxic_regions)
+        self.fog_stage = max(1, min(6, 1 + (self.round - 1) // 2))
+        self._spawn_region_drops()
+        self.next_toxic_regions = self._pick_next_toxic_regions()
+        await self._send_region_brief()
+
+        turn_order = self.players.copy()
+        random.shuffle(turn_order)
+        for actor in turn_order:
+            if actor not in self.players or actor in killed_this_round:
+                continue
+            choices = self._build_action_choices(actor, killed_this_round)
+            if not choices:
+                continue
+            action = await self._choose_action(actor, choices)
+            summary = self._resolve_action(actor, action, killed_this_round, elimination_log)
+            round_lines.append(f"**{actor.display_name}** {summary}")
+
+        await self._resolve_arena_event(killed_this_round, round_lines, elimination_log)
+        self._apply_toxic_fog(killed_this_round, round_lines, elimination_log)
+        if (
+            not killed_this_round
+            and len(self.players) > 2
+            and self.round >= 2
+            and not self._single_team_left(killed_this_round)
+        ):
+            self._force_showdown(killed_this_round, round_lines, elimination_log)
+
+        for dead in list(killed_this_round):
+            try:
+                self.players.remove(dead)
+            except ValueError:
+                pass
+
+        try:
+            await status.delete()
+        except discord.NotFound:
+            pass
+        await self._send_round_report(round_lines, killed_this_round, elimination_log)
+        self.round += 1
+
+
 class HungerGames(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -850,19 +1368,39 @@ class HungerGames(commands.Cog):
 
     @commands.command(aliases=["hg"], brief=_("Play the hunger games"))
     @locale_doc
-    async def hungergames(self, ctx):
+    async def hungergames(self, ctx, *, mode: str | None = None):
         _(
             """Starts the hunger games
 
             Players will be able to join via the :shallow_pan_of_food: emoji.
-            Teams are formed at the start and alliance protection lasts for a few rounds before betrayals unlock.
+            District teams are formed at the start and alliance protection lasts for a few rounds before betrayals unlock.
             The game mixes random outcomes with player-selected actions.
             Players may get direct messages to choose actions; if no action is chosen, the bot picks one.
 
-            Not every player will receive a direct action prompt every round."""
+            Modes:
+            - `classic` (default): current round-based battle system
+            - `regions`: movement between regions, sponsor drops, and prewarned toxic fog zones
+
+            Usage:
+            - `{prefix}hungergames`
+            - `{prefix}hungergames regions`"""
         )
         if self.games.get(ctx.channel.id):
             return await ctx.send(_("There is already a game in here!"))
+
+        normalized_mode = (mode or "classic").strip().casefold()
+        if normalized_mode in {"classic", "default", ""}:
+            game_factory = GameBase
+            mode_label = _("Classic")
+        elif normalized_mode in {"regions", "region", "arena", "pubg"}:
+            game_factory = RegionGame
+            mode_label = _("Regions")
+        else:
+            return await ctx.send(
+                _(
+                    "Unknown mode `{mode}`. Valid modes: `classic`, `regions`."
+                ).format(mode=mode or "")
+            )
 
         self.games[ctx.channel.id] = "forming"
 
@@ -877,7 +1415,10 @@ class HungerGames(commands.Cog):
                 timeout=60 * 10,
             )
             await ctx.send(
-                f"{ctx.author.mention} started a mass-game of Hunger Games!",
+                _("{author} started a mass-game of Hunger Games (**{mode}** mode)!").format(
+                    author=ctx.author.mention,
+                    mode=mode_label,
+                ),
                 view=view,
             )
             await asyncio.sleep(60 * 10)
@@ -894,8 +1435,11 @@ class HungerGames(commands.Cog):
                 timeout=60 * 2,
             )
             view.joined.add(ctx.author)
-            text = _("{author} started a game of Hunger Games!")
-            await ctx.send(text.format(author=ctx.author.mention), view=view)
+            text = _("{author} started a game of Hunger Games (**{mode}** mode)!")
+            await ctx.send(
+                text.format(author=ctx.author.mention, mode=mode_label),
+                view=view,
+            )
             await asyncio.sleep(60 * 2)
             view.stop()
             players = list(view.joined)
@@ -905,7 +1449,7 @@ class HungerGames(commands.Cog):
             await self.bot.reset_cooldown(ctx)
             return await ctx.send(_("Not enough players joined..."))
 
-        game = GameBase(ctx, players=players)
+        game = game_factory(ctx, players=players)
         self.games[ctx.channel.id] = game
         try:
             await game.main()
