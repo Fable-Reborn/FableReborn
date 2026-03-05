@@ -1495,6 +1495,1272 @@ class RegionGame(GameBase):
         self.round += 1
 
 
+class RegionIdeasGame(RegionGame):
+    HAZARD_LABELS: dict[str, str] = {
+        "wildfire": "Wildfire",
+        "mutt_migration": "Mutt Migration",
+        "tracker_jackers": "Tracker-Jacker Swarm",
+    }
+    NOISE_REVEAL_THRESHOLD = 2
+    COMBAT_KINDS = {"hunt", "rush", "betray", "ambush"}
+
+    def __init__(self, ctx, players: list):
+        super().__init__(ctx, players)
+        self.noise_by_player_id: dict[int, int] = {p.id: 0 for p in self.players}
+        self.revealed_noisy_ids: set[int] = set()
+        self.slow_next_round_ids: set[int] = set()
+        self.round_slow_ids: set[int] = set()
+        self.tunnel_hidden_ids: set[int] = set()
+        self.combat_bonus_by_player_id: dict[int, int] = {p.id: 0 for p in self.players}
+        self.fog_resistance_rounds: dict[int, int] = {p.id: 0 for p in self.players}
+        self.active_contracts: dict[int, dict] = {}
+        self.round_action_kind_by_player_id: dict[int, str] = {}
+        self.round_kill_events: list[dict] = []
+        self.active_region_hazards: dict[str, str] = {}
+        self.next_region_hazards: dict[str, str] = {}
+        self.region_control_owner: dict[str, int | None] = {
+            region: None for region in self.REGIONS
+        }
+        self.region_control_streak: dict[str, int] = {
+            region: 0 for region in self.REGIONS
+        }
+        self.collapse_announced = False
+
+    def _is_collapse_mode(self) -> bool:
+        return len(self.players) <= 4
+
+    def _adjust_noise(self, player_id: int, delta: int) -> None:
+        current = self.noise_by_player_id.get(player_id, 0)
+        self.noise_by_player_id[player_id] = max(0, min(8, current + delta))
+
+    def _hazard_display(self, hazard_key: str | None) -> str:
+        if not hazard_key:
+            return _("Unknown hazard")
+        return _(self.HAZARD_LABELS.get(hazard_key, hazard_key))
+
+    def _mark_kill(
+        self,
+        killer: discord.Member | None,
+        victim: discord.Member,
+        killed_this_round: set,
+        *,
+        elimination_log: dict[int, dict] | None = None,
+        cause: str | None = None,
+    ) -> bool:
+        killed = super()._mark_kill(
+            killer,
+            victim,
+            killed_this_round,
+            elimination_log=elimination_log,
+            cause=cause,
+        )
+        if not killed:
+            return False
+        self.round_kill_events.append(
+            {
+                "killer_id": killer.id if isinstance(killer, discord.Member) else None,
+                "victim_id": victim.id,
+                "region": self.player_region.get(victim.id),
+            }
+        )
+        if isinstance(killer, discord.Member):
+            self._adjust_noise(killer.id, 1)
+        return True
+
+    def _spawn_region_drops(self) -> None:
+        if self._is_collapse_mode():
+            self.region_drops.clear()
+            self.region_drops["Cornucopia"] = random.randint(3, 4)
+            return
+        super()._spawn_region_drops()
+
+    def _pick_next_toxic_regions(self) -> set[str]:
+        if self._is_collapse_mode():
+            return {region for region in self.REGIONS if region != "Cornucopia"}
+        return super()._pick_next_toxic_regions()
+
+    def _pick_next_region_hazards(self) -> dict[str, str]:
+        if self._is_collapse_mode():
+            return {"Cornucopia": random.choice(list(self.HAZARD_LABELS.keys()))}
+
+        candidates = [
+            region for region in self.REGIONS if region not in self.next_toxic_regions
+        ]
+        if not candidates:
+            candidates = list(self.REGIONS)
+        hazard_count = 2 if len(self.players) >= 8 else 1
+        picked = random.sample(candidates, k=min(hazard_count, len(candidates)))
+        return {
+            region: random.choice(list(self.HAZARD_LABELS.keys()))
+            for region in picked
+        }
+
+    def _contract_prompt_line(self, contract: dict | None) -> str:
+        if not contract:
+            return _("No sponsor contract this round.")
+        contract_type = contract.get("type")
+        region = str(contract.get("region", _("Unknown Region")))
+        reward = str(contract.get("reward", "gear"))
+        reward_text = {
+            "gear": _("Gear Package (+2 gear)"),
+            "fog_resist": _("Fog Shield (2 rounds)"),
+            "trap_kit": _("Trap Kit (+1 trap)"),
+        }.get(reward, _("Unknown reward"))
+
+        if contract_type == "hold":
+            objective = _("Hold {region} until round end.").format(region=region)
+        else:
+            objective = _("Eliminate someone in {region}.").format(region=region)
+        return _("{objective} Reward: {reward}").format(
+            objective=objective, reward=reward_text
+        )
+
+    def _assign_sponsor_contracts(self) -> None:
+        self.active_contracts.clear()
+        rewards = ("gear", "fog_resist", "trap_kit")
+        for player in self.players:
+            contract_type = random.choice(("hold", "eliminate"))
+            if contract_type == "eliminate":
+                live_regions = [
+                    region
+                    for region in self.REGIONS
+                    if self._players_in_region(region)
+                ]
+                target_region = random.choice(live_regions or list(self.REGIONS))
+            else:
+                target_region = random.choice(list(self.REGIONS))
+            self.active_contracts[player.id] = {
+                "type": contract_type,
+                "region": target_region,
+                "reward": random.choice(rewards),
+            }
+
+    def _apply_contract_reward(self, player: discord.Member, reward: str) -> str:
+        if reward == "gear":
+            self.gear_score[player.id] = min(10, self.gear_score[player.id] + 2)
+            return _("gear upgraded")
+        if reward == "fog_resist":
+            self.fog_resistance_rounds[player.id] = min(
+                4, self.fog_resistance_rounds.get(player.id, 0) + 2
+            )
+            return _("fog shield online")
+        self.traps[player.id] = min(4, self.traps[player.id] + 1)
+        return _("received a trap kit")
+
+    def _resolve_contracts(
+        self,
+        killed_this_round: set,
+        round_lines: list[str],
+    ) -> None:
+        for player in self.players:
+            if player in killed_this_round:
+                continue
+            contract = self.active_contracts.get(player.id)
+            if not contract:
+                continue
+
+            contract_type = contract.get("type")
+            target_region = str(contract.get("region", ""))
+            success = False
+            if contract_type == "hold":
+                success = self._region_for(player) == target_region
+            elif contract_type == "eliminate":
+                success = any(
+                    event.get("killer_id") == player.id
+                    and event.get("region") == target_region
+                    for event in self.round_kill_events
+                )
+
+            if not success:
+                continue
+            reward_text = self._apply_contract_reward(
+                player, str(contract.get("reward", "gear"))
+            )
+            round_lines.append(
+                _(
+                    "🎯 Sponsor contract complete: **{player}** fulfilled a mission in"
+                    " **{region}** and {reward}."
+                ).format(
+                    player=player.display_name,
+                    region=target_region,
+                    reward=reward_text,
+                )
+            )
+
+        self.active_contracts.clear()
+
+    def _update_noise_visibility(self) -> None:
+        alive_ids = {player.id for player in self.players}
+        for player_id in list(self.noise_by_player_id):
+            if player_id not in alive_ids:
+                self.noise_by_player_id[player_id] = 0
+                continue
+            self.noise_by_player_id[player_id] = max(
+                0, self.noise_by_player_id[player_id] - 1
+            )
+        self.revealed_noisy_ids = {
+            player_id
+            for player_id in alive_ids
+            if self.noise_by_player_id.get(player_id, 0) >= self.NOISE_REVEAL_THRESHOLD
+        }
+
+    def _update_tunnel_slow_state(self) -> None:
+        self.slow_next_round_ids = {
+            player.id
+            for player in self.players
+            if self._region_for(player) == "Underground Tunnels"
+        }
+
+    def _decrement_fog_shields(self) -> None:
+        for player in self.players:
+            current = self.fog_resistance_rounds.get(player.id, 0)
+            if current > 0:
+                self.fog_resistance_rounds[player.id] = current - 1
+
+    def _update_region_control_points(self, round_lines: list[str]) -> None:
+        for region in self.REGIONS:
+            occupants = self._players_in_region(region)
+            district_ids = {
+                self.team_by_player_id.get(player.id)
+                for player in occupants
+                if self.team_by_player_id.get(player.id) is not None
+            }
+            if len(district_ids) != 1 or not occupants:
+                self.region_control_owner[region] = None
+                self.region_control_streak[region] = 0
+                continue
+
+            district = next(iter(district_ids))
+            if self.region_control_owner.get(region) == district:
+                self.region_control_streak[region] += 1
+            else:
+                self.region_control_owner[region] = district
+                self.region_control_streak[region] = 1
+
+            streak = self.region_control_streak[region]
+            if streak >= 2 and streak % 2 == 0:
+                for player in occupants:
+                    self.gear_score[player.id] = min(10, self.gear_score[player.id] + 1)
+                round_lines.append(
+                    _(
+                        "🏴 District #{district} controls **{region}** for {streak}"
+                        " rounds and gains a control bonus."
+                    ).format(
+                        district=district,
+                        region=region,
+                        streak=streak,
+                    )
+                )
+
+    def _apply_riverbank_recovery(
+        self,
+        killed_this_round: set,
+        round_lines: list[str],
+    ) -> None:
+        for player in self.players:
+            if player in killed_this_round:
+                continue
+            if self._region_for(player) != "Riverbank":
+                continue
+            action_kind = self.round_action_kind_by_player_id.get(player.id)
+            if action_kind in self.COMBAT_KINDS:
+                continue
+            before = self.gear_score[player.id]
+            self.gear_score[player.id] = min(10, before + 1)
+            if self.gear_score[player.id] > before:
+                round_lines.append(
+                    _(
+                        "🌊 **{player}** regroups at **Riverbank** and recovers gear."
+                    ).format(player=player.display_name)
+                )
+
+    def _apply_cornucopia_conflict(
+        self,
+        killed_this_round: set,
+        round_lines: list[str],
+        elimination_log: dict[int, dict],
+    ) -> None:
+        contenders = self._players_in_region(
+            "Cornucopia", killed_this_round=killed_this_round
+        )
+        if len(contenders) < 2:
+            return
+        chance = min(75, 20 + len(contenders) * 12)
+        if random.randint(1, 100) > chance:
+            return
+
+        left, right = random.sample(contenders, 2)
+        left_roll = (
+            self.gear_score[left.id]
+            + self.combat_bonus_by_player_id.get(left.id, 0) // 4
+            + random.randint(1, 4)
+        )
+        right_roll = (
+            self.gear_score[right.id]
+            + self.combat_bonus_by_player_id.get(right.id, 0) // 4
+            + random.randint(1, 4)
+        )
+        winner, loser = (left, right) if left_roll >= right_roll else (right, left)
+        self._mark_kill(
+            winner,
+            loser,
+            killed_this_round,
+            elimination_log=elimination_log,
+            cause=_("fell in a Cornucopia clash against **{killer}**").format(
+                killer=winner.display_name
+            ),
+        )
+        round_lines.append(
+            _(
+                "⚔️ Cornucopia erupts. **{winner}** overwhelms **{loser}** in the chaos."
+            ).format(
+                winner=winner.display_name,
+                loser=loser.display_name,
+            )
+        )
+
+    async def _send_region_brief(self) -> None:
+        lines = []
+        for region in self.REGIONS:
+            alive_count = len(self._players_in_region(region))
+            status_bits = [f"👥 {alive_count}"]
+            if region in self.region_drops:
+                status_bits.append("📦 Drop")
+            if region in self.active_toxic_regions:
+                status_bits.append("☣️ Toxic Now")
+            elif region in self.next_toxic_regions:
+                status_bits.append("⚠️ Toxic Next")
+            hazard = self.active_region_hazards.get(region)
+            if hazard:
+                status_bits.append(f"🔥 {self._hazard_display(hazard)}")
+            control_owner = self.region_control_owner.get(region)
+            control_streak = self.region_control_streak.get(region, 0)
+            if control_owner is not None and control_streak > 0:
+                status_bits.append(f"🏴 D{control_owner} x{control_streak}")
+
+            noisy_names = [
+                player.display_name
+                for player in self._players_in_region(region)
+                if player.id in self.revealed_noisy_ids
+            ]
+            if noisy_names:
+                preview = ", ".join(noisy_names[:2])
+                if len(noisy_names) > 2:
+                    preview += f" +{len(noisy_names) - 2}"
+                status_bits.append(f"🔊 {preview}")
+
+            lines.append(f"**{region}**: {' • '.join(status_bits)}")
+
+        active_toxic = (
+            ", ".join(sorted(self.active_toxic_regions))
+            if self.active_toxic_regions
+            else _("None")
+        )
+        next_toxic = (
+            ", ".join(sorted(self.next_toxic_regions))
+            if self.next_toxic_regions
+            else _("None")
+        )
+        active_hazards = (
+            ", ".join(
+                f"{region} ({self._hazard_display(hazard)})"
+                for region, hazard in sorted(self.active_region_hazards.items())
+            )
+            if self.active_region_hazards
+            else _("None")
+        )
+        next_hazards = (
+            ", ".join(
+                f"{region} ({self._hazard_display(hazard)})"
+                for region, hazard in sorted(self.next_region_hazards.items())
+            )
+            if self.next_region_hazards
+            else _("None")
+        )
+
+        embed = discord.Embed(
+            title=_("🗺️ Arena Regions - Round {round}").format(round=self.round),
+            description="\n".join(lines),
+            color=discord.Color.dark_gold(),
+        )
+        embed.add_field(name=_("Toxic Now"), value=active_toxic, inline=False)
+        embed.add_field(name=_("Prewarned Toxic"), value=next_toxic, inline=False)
+        embed.add_field(name=_("Active Hazards"), value=active_hazards, inline=False)
+        embed.add_field(name=_("Prewarned Hazards"), value=next_hazards, inline=False)
+        if self._is_collapse_mode():
+            embed.add_field(
+                name=_("Endgame Collapse"),
+                value=_("Cornucopia is now the central safe focus."),
+                inline=False,
+            )
+        embed.set_footer(
+            text=_(
+                "Scout adjacent regions, manage noise, and complete sponsor contracts."
+            )
+        )
+        await self.ctx.send(embed=embed)
+
+    def _build_action_choices(
+        self,
+        actor: discord.Member,
+        killed_this_round: set,
+    ) -> list[dict]:
+        current_region = self._region_for(actor)
+        choices: list[dict] = [
+            {
+                "label": _("Scavenge for weapons in {region}").format(
+                    region=current_region
+                ),
+                "kind": "scavenge",
+            },
+            {
+                "label": _("Hide in {region}").format(region=current_region),
+                "kind": "hide",
+            },
+            {
+                "label": _("Set a trap in {region}").format(region=current_region),
+                "kind": "trap",
+            },
+        ]
+
+        neighbors = list(self.REGION_ADJACENCY.get(current_region, ()))
+        random.shuffle(neighbors)
+        for region in neighbors[:2]:
+            choices.append(
+                {
+                    "label": _("Move to {region}").format(region=region),
+                    "kind": "move",
+                    "region": region,
+                }
+            )
+
+        if neighbors:
+            scout_region = random.choice(neighbors)
+            choices.append(
+                {
+                    "label": _("Scout {region}").format(region=scout_region),
+                    "kind": "scout",
+                    "region": scout_region,
+                }
+            )
+
+        if current_region in self.region_drops:
+            choices.append(
+                {
+                    "label": _("Loot the supply drop in {region}").format(
+                        region=current_region
+                    ),
+                    "kind": "lootdrop",
+                }
+            )
+
+        targets = self._eligible_targets(actor, killed_this_round)
+        if targets:
+            hunt_target = random.choice(targets)
+            rush_target = random.choice(targets)
+            choices.append(
+                {
+                    "label": _("Hunt down {target} in {region}").format(
+                        target=hunt_target.display_name,
+                        region=current_region,
+                    ),
+                    "kind": "hunt",
+                    "target_id": hunt_target.id,
+                }
+            )
+            choices.append(
+                {
+                    "label": _("Rush {target} in {region}").format(
+                        target=rush_target.display_name,
+                        region=current_region,
+                    ),
+                    "kind": "rush",
+                    "target_id": rush_target.id,
+                }
+            )
+
+        allies = self._alive_allies(actor, killed_this_round)
+        if allies:
+            ally = random.choice(allies)
+            choices.append(
+                {
+                    "label": _("Coordinate with {ally} in {region}").format(
+                        ally=ally.display_name,
+                        region=current_region,
+                    ),
+                    "kind": "teamup",
+                    "target_id": ally.id,
+                }
+            )
+            choices.append(
+                {
+                    "label": _("Cover fire for {ally}").format(
+                        ally=ally.display_name
+                    ),
+                    "kind": "coverfire",
+                    "target_id": ally.id,
+                }
+            )
+            choices.append(
+                {
+                    "label": _("Use a shared medkit with {ally}").format(
+                        ally=ally.display_name
+                    ),
+                    "kind": "sharedmedkit",
+                    "target_id": ally.id,
+                }
+            )
+            if targets:
+                enemy = random.choice(targets)
+                choices.append(
+                    {
+                        "label": _("Ambush {enemy} with {ally}").format(
+                            enemy=enemy.display_name,
+                            ally=ally.display_name,
+                        ),
+                        "kind": "ambush",
+                        "target_id": enemy.id,
+                        "ally_id": ally.id,
+                    }
+                )
+            if self.round > self.ALLIANCE_LOCK_ROUNDS:
+                choices.append(
+                    {
+                        "label": _("Betray {ally} in {region}").format(
+                            ally=ally.display_name,
+                            region=current_region,
+                        ),
+                        "kind": "betray",
+                        "target_id": ally.id,
+                    }
+                )
+
+        if len(choices) <= 8:
+            return choices
+        core = choices[:3]
+        extras = random.sample(choices[3:], k=5)
+        return core + extras
+
+    async def _choose_action(self, actor: discord.Member, choices: list[dict]) -> dict:
+        contract_line = self._contract_prompt_line(self.active_contracts.get(actor.id))
+        try:
+            idx = await self.ctx.bot.paginator.Choose(
+                entries=[choice["label"] for choice in choices],
+                return_index=True,
+                title=_(
+                    "Choose your arena action\nContract: {contract}\nBack to game:"
+                    " {link}"
+                ).format(
+                    contract=contract_line,
+                    link=self.game_channel_link,
+                ),
+                timeout=self.ACTION_TIMEOUT_SECONDS,
+            ).paginate(self.ctx, location=actor)
+            return choices[idx]
+        except (
+            self.ctx.bot.paginator.NoChoice,
+            discord.Forbidden,
+            asyncio.TimeoutError,
+        ):
+            await self.ctx.send(
+                _(
+                    "{user} didn't choose in time. The arena decides their move."
+                ).format(user=actor.mention),
+                delete_after=20,
+            )
+            return random.choice(choices)
+
+    def _resolve_action(
+        self,
+        actor: discord.Member,
+        action: dict,
+        killed_this_round: set,
+        elimination_log: dict[int, dict],
+    ) -> str:
+        kind = action["kind"]
+        actor_region = self._region_for(actor)
+        self.round_action_kind_by_player_id[actor.id] = kind
+
+        noise_delta = {
+            "hunt": 2,
+            "rush": 2,
+            "betray": 2,
+            "ambush": 2,
+            "lootdrop": 2,
+            "scavenge": 1,
+            "trap": 1,
+            "teamup": 1,
+            "coverfire": 1,
+            "sharedmedkit": -1,
+            "hide": -2,
+            "scout": -1,
+        }.get(kind, 0)
+        if noise_delta:
+            self._adjust_noise(actor.id, noise_delta)
+
+        if kind == "move":
+            new_region = str(action.get("region") or "")
+            if new_region not in self.REGION_ADJACENCY.get(actor_region, ()):
+                return _("tries to move, but gets turned around in the arena.")
+            slowed = actor.id in self.round_slow_ids
+            self.round_slow_ids.discard(actor.id)
+            if slowed and random.randint(1, 100) <= 45:
+                return _(
+                    "tries to move from **{old}**, but tunnel fatigue slows them down."
+                ).format(old=actor_region)
+            self.player_region[actor.id] = new_region
+            return _("moves from **{old}** to **{new}**.").format(
+                old=actor_region,
+                new=new_region,
+            )
+
+        if kind == "scout":
+            region = str(action.get("region") or "")
+            if region not in self.REGION_ADJACENCY.get(actor_region, ()):
+                return _("tries to scout, but picks the wrong direction.")
+            seen = self._players_in_region(region, killed_this_round=killed_this_round)
+            has_drop = region in self.region_drops
+            has_trap = any(self.traps.get(player.id, 0) > 0 for player in seen)
+            drop_text = _("drop visible") if has_drop else _("no drop")
+            trap_text = _("traps detected") if has_trap else _("no trap signs")
+            self._adjust_noise(actor.id, -1)
+            return _(
+                "scouts **{region}**: 👥 {count} tribute(s), {drop}, {traps}."
+            ).format(region=region, count=len(seen), drop=drop_text, traps=trap_text)
+
+        if kind == "lootdrop":
+            if actor_region not in self.region_drops:
+                return _("searches for a drop in **{region}**, but it's gone.").format(
+                    region=actor_region
+                )
+            gain = self.region_drops.pop(actor_region)
+            if actor_region == "Cornucopia":
+                gain += 1
+            self.gear_score[actor.id] = min(10, self.gear_score[actor.id] + gain)
+            return _("claims the supply drop in **{region}** and upgrades gear.").format(
+                region=actor_region
+            )
+
+        target = None
+        if kind in {"hunt", "rush", "teamup", "betray", "coverfire", "sharedmedkit"}:
+            target = self._alive_target(action.get("target_id"), killed_this_round)
+            if target is None:
+                return _("finds no valid target and wastes the move.")
+            if self._region_for(target) != actor_region:
+                return _(
+                    "targets **{target}**, but they already moved away from **{region}**."
+                ).format(target=target.display_name, region=actor_region)
+
+        if kind == "ambush":
+            target = self._alive_target(action.get("target_id"), killed_this_round)
+            ally = self._alive_target(action.get("ally_id"), killed_this_round)
+            if target is None or ally is None or ally in {target, actor}:
+                return _("can't coordinate the ambush and loses the chance.")
+            if self._region_for(target) != actor_region or self._region_for(ally) != actor_region:
+                return _("tries to set an ambush, but the formation collapses.")
+            if self._check_trap_trigger(actor, target, killed_this_round, elimination_log):
+                return _("walks into **{target}**'s trap while setting the ambush.").format(
+                    target=target.display_name
+                )
+            chance = (
+                55
+                + self.gear_score[actor.id] * 5
+                + self.gear_score[ally.id] * 3
+                + self.combat_bonus_by_player_id.get(actor.id, 0)
+                + self.combat_bonus_by_player_id.get(ally.id, 0) // 2
+            )
+            if actor_region == "Stone Quarry":
+                chance += 10
+            elif actor_region == "Cornucopia":
+                chance += 6
+            if target.id in self.hidden_ids:
+                chance -= 12
+            if target.id in self.tunnel_hidden_ids:
+                chance -= 8
+            chance = max(20, min(96, chance))
+            if random.randint(1, 100) <= chance:
+                self._mark_kill(
+                    actor,
+                    target,
+                    killed_this_round,
+                    elimination_log=elimination_log,
+                    cause=_("was eliminated in a district ambush by **{killer}**").format(
+                        killer=actor.display_name
+                    ),
+                )
+                return _("ambushes **{target}** with **{ally}** and secures the kill.").format(
+                    target=target.display_name, ally=ally.display_name
+                )
+            if random.randint(1, 100) <= 35:
+                self._mark_kill(
+                    target,
+                    actor,
+                    killed_this_round,
+                    elimination_log=elimination_log,
+                    cause=_("was counter-killed by **{killer}** during an ambush").format(
+                        killer=target.display_name
+                    ),
+                )
+                return _("attempts an ambush on **{target}**, but gets counter-killed.").format(
+                    target=target.display_name
+                )
+            return _("sets an ambush on **{target}**, but they slip away.").format(
+                target=target.display_name
+            )
+
+        if kind == "scavenge":
+            gain = random.randint(1, 2)
+            if self.round == 1 and random.randint(1, 100) <= 30:
+                gain += 1
+            if actor_region == "Cornucopia":
+                gain += 1
+            self.gear_score[actor.id] = min(10, self.gear_score[actor.id] + gain)
+            return _("scavenges and upgrades to {gear}.").format(
+                gear=self._weapon_name(self.gear_score[actor.id])
+            )
+
+        if kind == "hide":
+            self.hidden_ids.add(actor.id)
+            if actor_region == "Underground Tunnels":
+                self.tunnel_hidden_ids.add(actor.id)
+                return _("vanishes deep in the tunnels and becomes hard to track.")
+            return _("vanishes into cover and stays hidden.")
+
+        if kind == "trap":
+            self.traps[actor.id] = min(4, self.traps[actor.id] + 1)
+            return _("sets a trap. ({count} trap(s) active)").format(
+                count=self.traps[actor.id]
+            )
+
+        if kind == "teamup" and target is not None:
+            self.gear_score[actor.id] = min(10, self.gear_score[actor.id] + 1)
+            self.gear_score[target.id] = min(10, self.gear_score[target.id] + 1)
+            self.hidden_ids.discard(target.id)
+            return _("teams up with **{ally}** and both leave stronger.").format(
+                ally=target.display_name
+            )
+
+        if kind == "coverfire" and target is not None:
+            self.combat_bonus_by_player_id[actor.id] = min(
+                20, self.combat_bonus_by_player_id.get(actor.id, 0) + 6
+            )
+            self.combat_bonus_by_player_id[target.id] = min(
+                20, self.combat_bonus_by_player_id.get(target.id, 0) + 10
+            )
+            return _("lays down cover fire for **{ally}**. District combat odds improve.").format(
+                ally=target.display_name
+            )
+
+        if kind == "sharedmedkit" and target is not None:
+            self.gear_score[actor.id] = min(10, self.gear_score[actor.id] + 1)
+            self.gear_score[target.id] = min(10, self.gear_score[target.id] + 1)
+            self.fog_resistance_rounds[actor.id] = min(
+                4, self.fog_resistance_rounds.get(actor.id, 0) + 1
+            )
+            self.fog_resistance_rounds[target.id] = min(
+                4, self.fog_resistance_rounds.get(target.id, 0) + 1
+            )
+            return _(
+                "shares a medkit with **{ally}**. Both recover and gain light fog protection."
+            ).format(ally=target.display_name)
+
+        if kind == "betray" and target is not None:
+            if self.round <= self.ALLIANCE_LOCK_ROUNDS:
+                return _("hesitates. Alliances are still locked this round.")
+            bonus = self.combat_bonus_by_player_id.get(actor.id, 0) // 2
+            if actor_region == "Stone Quarry":
+                bonus += 6
+            success_chance = min(93, 45 + self.gear_score[actor.id] * 7 + bonus)
+            if random.randint(1, 100) <= success_chance:
+                self._mark_kill(
+                    actor,
+                    target,
+                    killed_this_round,
+                    elimination_log=elimination_log,
+                    cause=_("was betrayed by **{killer}**").format(
+                        killer=actor.display_name
+                    ),
+                )
+                self.gear_score[actor.id] = min(10, self.gear_score[actor.id] + 1)
+                return _("betrays **{ally}** and takes their loot.").format(
+                    ally=target.display_name
+                )
+            if random.randint(1, 100) <= 50:
+                self._mark_kill(
+                    target,
+                    actor,
+                    killed_this_round,
+                    elimination_log=elimination_log,
+                    cause=_("was executed by **{killer}** during a failed betrayal").format(
+                        killer=target.display_name
+                    ),
+                )
+                return _("tries to betray **{ally}**, but gets executed first.").format(
+                    ally=target.display_name
+                )
+            return _("tries to betray **{ally}**, but the moment passes.").format(
+                ally=target.display_name
+            )
+
+        if target is None:
+            return _("does something chaotic but pointless.")
+
+        if self._check_trap_trigger(actor, target, killed_this_round, elimination_log):
+            return _("charges **{target}** but triggers their trap and dies.").format(
+                target=target.display_name
+            )
+
+        regional_bonus = 12 if actor_region == "Stone Quarry" else 6 if actor_region == "Cornucopia" else 0
+        hidden_penalty = 0
+        if target.id in self.hidden_ids:
+            hidden_penalty += 18
+        if target.id in self.tunnel_hidden_ids:
+            hidden_penalty += 8
+        actor_bonus = self.combat_bonus_by_player_id.get(actor.id, 0)
+        target_bonus = self.combat_bonus_by_player_id.get(target.id, 0)
+
+        if kind == "hunt":
+            chance = (
+                35
+                + self.gear_score[actor.id] * 8
+                + min(18, self.round * 2)
+                + actor_bonus
+                + regional_bonus
+                - hidden_penalty
+            )
+            chance = max(10, min(95, chance))
+            if random.randint(1, 100) <= chance:
+                self._mark_kill(
+                    actor,
+                    target,
+                    killed_this_round,
+                    elimination_log=elimination_log,
+                    cause=_("was hunted down by **{killer}**").format(
+                        killer=actor.display_name
+                    ),
+                )
+                return _("hunts down **{target}** cleanly.").format(
+                    target=target.display_name
+                )
+            counter_chance = min(68, 18 + self.gear_score[target.id] * 5 + target_bonus // 3)
+            if random.randint(1, 100) <= counter_chance:
+                self._mark_kill(
+                    target,
+                    actor,
+                    killed_this_round,
+                    elimination_log=elimination_log,
+                    cause=_("was counter-killed by **{killer}**").format(
+                        killer=target.display_name
+                    ),
+                )
+                return _("misses **{target}** and gets counter-killed.").format(
+                    target=target.display_name
+                )
+            return _("tracks **{target}** but loses them in the terrain.").format(
+                target=target.display_name
+            )
+
+        if kind == "rush":
+            chance = (
+                40
+                + self.gear_score[actor.id] * 6
+                + min(12, self.round)
+                + actor_bonus // 2
+                + regional_bonus
+                - hidden_penalty
+            )
+            chance = max(10, min(90, chance))
+            if random.randint(1, 100) <= chance:
+                self._mark_kill(
+                    actor,
+                    target,
+                    killed_this_round,
+                    elimination_log=elimination_log,
+                    cause=_("was killed in a brawl by **{killer}**").format(
+                        killer=actor.display_name
+                    ),
+                )
+                bleed_chance = 35 + (8 if actor_region == "Stone Quarry" else 0)
+                if random.randint(1, 100) <= bleed_chance:
+                    self._mark_kill(
+                        None,
+                        actor,
+                        killed_this_round,
+                        elimination_log=elimination_log,
+                        cause=_("bled out after a reckless brawl"),
+                    )
+                    return _("rushes **{target}**, kills them, then bleeds out.").format(
+                        target=target.display_name
+                    )
+                return _("rushes **{target}** and wins the brawl.").format(
+                    target=target.display_name
+                )
+            if random.randint(1, 100) <= 40:
+                self._mark_kill(
+                    target,
+                    actor,
+                    killed_this_round,
+                    elimination_log=elimination_log,
+                    cause=_("was dropped by **{killer}** in a rush attempt").format(
+                        killer=target.display_name
+                    ),
+                )
+                return _("rushes **{target}** and gets dropped instantly.").format(
+                    target=target.display_name
+                )
+            return _("rushes **{target}** but neither can finish it.").format(
+                target=target.display_name
+            )
+
+        return _("does something chaotic but pointless.")
+
+    def _apply_dynamic_hazards(
+        self,
+        killed_this_round: set,
+        round_lines: list[str],
+        elimination_log: dict[int, dict],
+    ) -> None:
+        for region, hazard in self.active_region_hazards.items():
+            impacted = self._players_in_region(region, killed_this_round=killed_this_round)
+            if not impacted:
+                continue
+
+            if hazard == "wildfire":
+                burned_names = []
+                killed_names = []
+                for player in list(impacted):
+                    if player in killed_this_round:
+                        continue
+                    chance = 24 + self.fog_stage * 4
+                    if random.randint(1, 100) <= chance:
+                        self._mark_kill(
+                            None,
+                            player,
+                            killed_this_round,
+                            elimination_log=elimination_log,
+                            cause=_("was consumed by wildfire in **{region}**").format(
+                                region=region
+                            ),
+                        )
+                        killed_names.append(player.display_name)
+                    else:
+                        self.gear_score[player.id] = max(0, self.gear_score[player.id] - 1)
+                        burned_names.append(player.display_name)
+                if killed_names:
+                    round_lines.append(
+                        _("🔥 Wildfire sweeps **{region}**. Fallen: {fallen}.").format(
+                            region=region,
+                            fallen=nice_join([f"**{name}**" for name in killed_names]),
+                        )
+                    )
+                elif burned_names:
+                    round_lines.append(
+                        _(
+                            "🔥 Wildfire scorches **{region}**. {names} lose gear."
+                        ).format(
+                            region=region,
+                            names=nice_join([f"**{name}**" for name in burned_names]),
+                        )
+                    )
+                continue
+
+            if hazard == "mutt_migration":
+                candidates = [p for p in impacted if p.id not in self.hidden_ids] or impacted
+                victim = random.choice(candidates)
+                if random.randint(1, 100) <= 62:
+                    self._mark_kill(
+                        None,
+                        victim,
+                        killed_this_round,
+                        elimination_log=elimination_log,
+                        cause=_("was mauled during mutt migration in **{region}**").format(
+                            region=region
+                        ),
+                    )
+                    round_lines.append(
+                        _("🐺 Mutts migrate through **{region}** and tear apart **{victim}**.").format(
+                            region=region,
+                            victim=victim.display_name,
+                        )
+                    )
+                else:
+                    self.gear_score[victim.id] = max(0, self.gear_score[victim.id] - 1)
+                    round_lines.append(
+                        _("🐺 Mutts flood **{region}**. **{victim}** escapes but loses gear.").format(
+                            region=region,
+                            victim=victim.display_name,
+                        )
+                    )
+                continue
+
+            targets = random.sample(impacted, k=min(2, len(impacted)))
+            downed = []
+            stung = []
+            for player in targets:
+                if player in killed_this_round:
+                    continue
+                self._adjust_noise(player.id, 2)
+                if random.randint(1, 100) <= 26:
+                    self._mark_kill(
+                        None,
+                        player,
+                        killed_this_round,
+                        elimination_log=elimination_log,
+                        cause=_("was overwhelmed by tracker-jackers in **{region}**").format(
+                            region=region
+                        ),
+                    )
+                    downed.append(player.display_name)
+                else:
+                    self.gear_score[player.id] = max(0, self.gear_score[player.id] - 1)
+                    stung.append(player.display_name)
+            if downed:
+                round_lines.append(
+                    _("🐝 Tracker-jackers descend on **{region}**. Fallen: {names}.").format(
+                        region=region,
+                        names=nice_join([f"**{name}**" for name in downed]),
+                    )
+                )
+            elif stung:
+                round_lines.append(
+                    _("🐝 Tracker-jackers swarm **{region}**. {names} panic and lose gear.").format(
+                        region=region,
+                        names=nice_join([f"**{name}**" for name in stung]),
+                    )
+                )
+
+    def _apply_toxic_fog(
+        self,
+        killed_this_round: set,
+        round_lines: list[str],
+        elimination_log: dict[int, dict],
+    ) -> None:
+        if not self.active_toxic_regions:
+            return
+        for player in list(self.players):
+            if player in killed_this_round:
+                continue
+            region = self._region_for(player)
+            if region not in self.active_toxic_regions:
+                continue
+
+            alive = len(self.players)
+            chance = 10 + self.fog_stage * 8
+            if alive <= 4:
+                chance += 14
+            elif alive <= 6:
+                chance += 8
+            elif alive <= 8:
+                chance += 4
+            if player.id in self.hidden_ids:
+                chance = max(5, chance - 8)
+            if player.id in self.tunnel_hidden_ids:
+                chance = max(5, chance - 6)
+            if self.fog_resistance_rounds.get(player.id, 0) > 0:
+                chance = max(5, chance - 18)
+            if region == "Stone Quarry":
+                chance += 12
+            chance = max(5, chance - min(14, self.gear_score[player.id] * 2))
+            chance = min(92, chance)
+
+            if random.randint(1, 100) <= chance:
+                self._mark_kill(
+                    None,
+                    player,
+                    killed_this_round,
+                    elimination_log=elimination_log,
+                    cause=_("succumbed to toxic fog in **{region}**").format(
+                        region=region
+                    ),
+                )
+                round_lines.append(
+                    _("☣️ Toxic fog engulfs **{victim}** in **{region}**.").format(
+                        victim=player.display_name,
+                        region=region,
+                    )
+                )
+            else:
+                loss = 2 if region == "Stone Quarry" else 1
+                self.gear_score[player.id] = max(0, self.gear_score[player.id] - loss)
+                round_lines.append(
+                    _("☣️ **{survivor}** escapes fog in **{region}**, but loses gear.").format(
+                        survivor=player.display_name,
+                        region=region,
+                    )
+                )
+
+    async def _send_round_report(
+        self,
+        round_lines: list[str],
+        killed_this_round: set,
+        elimination_log: dict[int, dict],
+    ) -> None:
+        await super()._send_round_report(round_lines, killed_this_round, elimination_log)
+
+        noisy = [
+            self.member_by_id[player_id].display_name
+            for player_id in self.revealed_noisy_ids
+            if player_id in self.member_by_id and self.member_by_id[player_id] in self.players
+        ]
+        control_lines = [
+            f"{region}: District #{owner} ({self.region_control_streak.get(region, 0)})"
+            for region, owner in self.region_control_owner.items()
+            if owner is not None and self.region_control_streak.get(region, 0) > 0
+        ]
+        extra = discord.Embed(
+            title=_("Region-Ideas Systems"),
+            description=_(
+                "🔊 Revealed noisy tributes next round: {noisy}\n"
+                "🏴 Control streaks: {control}\n"
+                "⚠️ Prewarned hazards: {hazards}"
+            ).format(
+                noisy=", ".join(noisy) if noisy else _("None"),
+                control=", ".join(control_lines) if control_lines else _("None"),
+                hazards=", ".join(
+                    f"{region} ({self._hazard_display(hazard)})"
+                    for region, hazard in sorted(self.next_region_hazards.items())
+                )
+                if self.next_region_hazards
+                else _("None"),
+            ),
+            color=discord.Color.dark_purple(),
+        )
+        await self.ctx.send(embed=extra)
+
+    async def send_cast(self):
+        await super().send_cast()
+        await self.ctx.send(
+            embed=discord.Embed(
+                title=_("Region-Ideas Rules"),
+                description=_(
+                    "Advanced region systems are active: region passives, noise reveals,"
+                    " scouting, sponsor contracts, district combo actions, dynamic"
+                    " hazards, control-point bonuses, and endgame collapse pressure."
+                ),
+                color=discord.Color.gold(),
+            )
+        )
+
+    async def get_inputs(self):
+        status = await self.ctx.send(
+            _("🔥 **Round {round}** begins...").format(round=self.round),
+            delete_after=45,
+        )
+        self.hidden_ids = set()
+        self.tunnel_hidden_ids = set()
+        self.round_action_kind_by_player_id = {}
+        self.round_kill_events = []
+        self.combat_bonus_by_player_id = {player.id: 0 for player in self.players}
+        killed_this_round: set[discord.Member] = set()
+        round_lines: list[str] = []
+        elimination_log: dict[int, dict] = {}
+
+        self.round_slow_ids = set(self.slow_next_round_ids)
+        self.active_toxic_regions = set(self.next_toxic_regions)
+        self.active_region_hazards = dict(self.next_region_hazards)
+        self.fog_stage = max(1, min(6, 1 + (self.round - 1) // 2))
+        self._spawn_region_drops()
+        self.next_toxic_regions = self._pick_next_toxic_regions()
+        self.next_region_hazards = self._pick_next_region_hazards()
+        self._assign_sponsor_contracts()
+
+        if self._is_collapse_mode() and not self.collapse_announced:
+            self.collapse_announced = True
+            await self.ctx.send(
+                _(
+                    "🚨 Endgame collapse engaged. Outer regions are being sealed."
+                    " Cornucopia is becoming the final battlefield."
+                )
+            )
+
+        await self._send_region_brief()
+
+        actors = [actor for actor in self.players if actor not in killed_this_round]
+        choices_by_actor_id: dict[int, list[dict]] = {}
+        for actor in actors:
+            choices = self._build_action_choices(actor, killed_this_round)
+            if choices:
+                choices_by_actor_id[actor.id] = choices
+
+        async def choose_for_actor(
+            actor: discord.Member, choices: list[dict]
+        ) -> tuple[discord.Member, dict | None]:
+            if not choices:
+                return actor, None
+            action = await self._choose_action(actor, choices)
+            return actor, action
+
+        selected_actions_by_actor_id: dict[int, dict] = {}
+        choose_tasks = [
+            choose_for_actor(actor, choices_by_actor_id.get(actor.id, []))
+            for actor in actors
+            if actor.id in choices_by_actor_id
+        ]
+        if choose_tasks:
+            await self.ctx.send(
+                _("📩 Action prompts sent to all tributes. Choices lock together.")
+            )
+            for actor, action in await asyncio.gather(*choose_tasks):
+                if action is not None:
+                    selected_actions_by_actor_id[actor.id] = action
+            await self.ctx.send(_("⏳ Action phase closed. Resolving round..."))
+
+        turn_order = actors.copy()
+        random.shuffle(turn_order)
+        for actor in turn_order:
+            if actor not in self.players or actor in killed_this_round:
+                continue
+            action = selected_actions_by_actor_id.get(actor.id)
+            if action is None:
+                fallback_choices = choices_by_actor_id.get(actor.id, [])
+                if not fallback_choices:
+                    continue
+                action = random.choice(fallback_choices)
+            summary = self._resolve_action(actor, action, killed_this_round, elimination_log)
+            round_lines.append(f"**{actor.display_name}** {summary}")
+
+        self._apply_riverbank_recovery(killed_this_round, round_lines)
+        self._apply_cornucopia_conflict(killed_this_round, round_lines, elimination_log)
+        await self._resolve_arena_event(killed_this_round, round_lines, elimination_log)
+        self._apply_dynamic_hazards(killed_this_round, round_lines, elimination_log)
+        self._resolve_contracts(killed_this_round, round_lines)
+        self._apply_toxic_fog(killed_this_round, round_lines, elimination_log)
+
+        if (
+            not killed_this_round
+            and len(self.players) > 2
+            and self.round >= 2
+            and not self._single_team_left(killed_this_round)
+        ):
+            self._force_showdown(killed_this_round, round_lines, elimination_log)
+
+        if killed_this_round:
+            self.no_kill_rounds = 0
+        else:
+            self.no_kill_rounds += 1
+            self._resolve_stalemate(killed_this_round, round_lines, elimination_log)
+            if killed_this_round:
+                self.no_kill_rounds = 0
+
+        for dead in list(killed_this_round):
+            try:
+                self.players.remove(dead)
+            except ValueError:
+                pass
+
+        self._decrement_fog_shields()
+        self._update_noise_visibility()
+        self._update_tunnel_slow_state()
+        self._update_region_control_points(round_lines)
+
+        try:
+            await status.delete()
+        except discord.NotFound:
+            pass
+        await self._send_round_report(round_lines, killed_this_round, elimination_log)
+        self.round += 1
+
+
 class HungerGames(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -1515,10 +2781,12 @@ class HungerGames(commands.Cog):
             Modes:
             - `classic` (default): current round-based battle system
             - `regions`: movement between regions, sponsor drops, and prewarned toxic fog zones
+            - `region-ideas`: advanced region systems (passives, scouting, contracts, hazards, control points, collapse)
 
             Usage:
             - `{prefix}hungergames`
-            - `{prefix}hungergames regions`"""
+            - `{prefix}hungergames regions`
+            - `{prefix}hungergames region-ideas`"""
         )
         if self.games.get(ctx.channel.id):
             return await ctx.send(_("There is already a game in here!"))
@@ -1530,10 +2798,13 @@ class HungerGames(commands.Cog):
         elif normalized_mode in {"regions", "region", "arena", "pubg"}:
             game_factory = RegionGame
             mode_label = _("Regions")
+        elif normalized_mode in {"region-ideas", "regionideas", "ideas"}:
+            game_factory = RegionIdeasGame
+            mode_label = _("Region-Ideas")
         else:
             return await ctx.send(
                 _(
-                    "Unknown mode `{mode}`. Valid modes: `classic`, `regions`."
+                    "Unknown mode `{mode}`. Valid modes: `classic`, `regions`, `region-ideas`."
                 ).format(mode=mode or "")
             )
 
