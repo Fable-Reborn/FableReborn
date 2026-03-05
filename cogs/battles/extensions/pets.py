@@ -648,6 +648,8 @@ class PetExtension:
         modified_damage = Decimal(str(damage))  # Convert to Decimal to handle all operations
         effects = pet_combatant.skill_effects
         messages = []
+        countered_skill_name = None
+        countered_skill_effect = None
 
         # Decrement internal balance cooldowns before evaluating new procs.
         for cooldown_attr in (
@@ -660,6 +662,44 @@ class PetExtension:
             turns_left = int(getattr(pet_combatant, cooldown_attr, 0))
             if turns_left > 0:
                 setattr(pet_combatant, cooldown_attr, turns_left - 1)
+
+        # Light's Guidance is a defensive counter: the defender can negate one attacker skill this hit.
+        target_effects = getattr(target, 'skill_effects', {}) if hasattr(target, 'skill_effects') else {}
+        if 'lights_guidance' in target_effects and effects and random.random() < 0.25:
+            non_attack_types = {
+                'on_damage_taken',
+                'block_attack',
+                'shield',
+                'resistance',
+                'revive',
+                'sacrifice_save',
+                'owner_immortality',
+                'damage_transfer',
+                'team_heal_per_turn',
+                'team_cleanse_per_turn',
+                'enhanced_vision',
+                'team_protection',
+            }
+            candidate_skills = []
+            for skill_name, skill_data in effects.items():
+                if skill_name == 'lights_guidance':
+                    continue
+                if isinstance(skill_data, dict) and skill_data.get('type') in non_attack_types:
+                    continue
+                candidate_skills.append(skill_name)
+
+            if not candidate_skills:
+                candidate_skills = [skill_name for skill_name in effects.keys() if skill_name != 'lights_guidance']
+
+            if candidate_skills:
+                countered_skill_name = random.choice(candidate_skills)
+                countered_skill_effect = effects.pop(countered_skill_name, None)
+                if countered_skill_effect is not None:
+                    pretty_skill_name = countered_skill_name.replace('_', ' ')
+                    messages.append(
+                        f"{target.name}'s Light's Guidance counters {pet_combatant.name}'s {pretty_skill_name}!"
+                    )
+                    setattr(target, 'lights_guidance_last_counter', countered_skill_name)
         
 
         
@@ -1274,16 +1314,6 @@ class PetExtension:
                     delattr(target, attr)
             messages.append(f"{pet_combatant.name}'s Divine Wrath dispels enemy buffs!")
             
-        # Light's Guidance - counter abilities (reflect skills back at attacker)
-        if ('lights_guidance' in effects and hasattr(target, 'skill_effects') and 
-            random.random() < 0.25):  # 25% chance to counter
-            # Copy one random skill effect from target to pet_combatant temporarily
-            target_skills = list(target.skill_effects.keys())
-            if target_skills:
-                countered_skill = random.choice(target_skills)
-                setattr(pet_combatant, f'countered_{countered_skill}', True)
-                messages.append(f"{pet_combatant.name}'s Light's Guidance counters {countered_skill}!")
-
         # 🌀 NEW CORRUPTED SKILLS - ATTACK EFFECTS
         # Void Touch - corrupt enemy stats permanently
         if 'void_touch' in effects:
@@ -1404,6 +1434,10 @@ class PetExtension:
             
         if 'corrupted_affinity' in effects:
             modified_damage *= (Decimal('1') + Decimal(str(effects['corrupted_affinity']['universal_damage'])))
+
+        # Restore any temporarily countered attacker skill for future attacks.
+        if countered_skill_name and countered_skill_effect is not None:
+            effects[countered_skill_name] = countered_skill_effect
             
         return modified_damage, messages
     
