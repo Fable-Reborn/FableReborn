@@ -1980,6 +1980,7 @@ class Game:
         self.lobby_open = True
         self.lobby_message: Optional[discord.Message] = None
         self.lobby_view: Optional[View] = None
+        self.lobby_ends_at: Optional[float] = None
         self.join_lock = asyncio.Lock()
         self.chambers: list[bool] = []
         self.current_index = 0
@@ -2374,6 +2375,21 @@ class Russian(commands.Cog):
                 levels[user_id] = 0
         game.levels = levels
 
+    def _lobby_seconds_left(self, game: Game) -> int:
+        if game.lobby_ends_at is None:
+            return game.settings.join_timeout
+        return max(0, int(game.lobby_ends_at - time.monotonic()))
+
+    def _lobby_players_text(self, game: Game) -> str:
+        if not game.participants:
+            return "None yet"
+        preview_limit = 20
+        preview = ", ".join(player.mention for player in game.participants[:preview_limit])
+        extra = len(game.participants) - preview_limit
+        if extra > 0:
+            return f"{preview}, and {extra} more"
+        return preview
+
     def build_lobby_embed(self, game: Game) -> discord.Embed:
         pot = f"${game.bettotal}" if game.bet > 0 else "No bet"
         entry = f"${game.bet}" if game.bet > 0 else "Free"
@@ -2386,13 +2402,15 @@ class Russian(commands.Cog):
         taunts_label = "On" if game.settings.allow_taunts else "Off"
         theme_label = game.settings.theme if game.settings.allow_taunts else "Off"
         double_label = "On" if game.settings.allow_double_down else "Off"
+        seconds_left = self._lobby_seconds_left(game)
+        minutes, seconds = divmod(seconds_left, 60)
 
         embed = discord.Embed(
             title="Russian Roulette Lobby",
             color=discord.Color.dark_red(),
             description=(
                 "One bullet. Six chambers. No mercy.\n"
-                f"Lobby closes in **{game.settings.join_timeout}s**."
+                f"Lobby closes in **{minutes:02d}:{seconds:02d}**."
             ),
         )
         embed.add_field(
@@ -2408,6 +2426,11 @@ class Russian(commands.Cog):
                 f"Double Down: **{double_label}**\n"
                 f"Taunts: **{taunts_label}** | Theme: **{theme_label}**"
             ),
+            inline=False,
+        )
+        embed.add_field(
+            name=f"Joined ({len(game.participants)})",
+            value=self._lobby_players_text(game),
             inline=False,
         )
         embed.set_image(url="https://c.tenor.com/SMl9YoM-OEsAAAAC/tenor.gif")
@@ -3339,15 +3362,25 @@ class Russian(commands.Cog):
                 view.message = message
                 game.lobby_message = message
                 game.lobby_view = view
+                game.lobby_ends_at = time.monotonic() + settings.join_timeout
+                await self.update_lobby_message(game)
 
-                try:
-                    await asyncio.wait_for(view.wait(), timeout=settings.join_timeout)
-                except asyncio.TimeoutError:
-                    view.stop()
+                while not view.is_finished():
+                    remaining = self._lobby_seconds_left(game)
+                    if remaining <= 0:
+                        break
+                    try:
+                        await asyncio.wait_for(view.wait(), timeout=min(5, remaining))
+                    except asyncio.TimeoutError:
+                        await self.update_lobby_message(game)
+                        continue
+                    break
+                game.lobby_open = False
+                game.lobby_ends_at = None
+                view.stop()
                 for item in view.children:
                     item.disabled = True
                 await message.edit(view=view)
-                game.lobby_open = False
 
                 if len(game.participants) < settings.min_players:
                     await ctx.send("Not enough players to start the game.")

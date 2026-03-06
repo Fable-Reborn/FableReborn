@@ -253,6 +253,25 @@ class GameBase:
         )
         return True
 
+    def _mutt_lethality_chance(
+        self,
+        victim: discord.Member,
+        *,
+        base_chance: int = 72,
+        min_chance: int = 20,
+    ) -> int:
+        gear = self.gear_score.get(victim.id, 0)
+        chance = base_chance - min(40, gear * 4)
+        if victim.id in self.hidden_ids:
+            chance -= 8
+        return max(min_chance, min(95, chance))
+
+    def _apply_mutt_gear_loss(self, victim: discord.Member) -> int:
+        current_gear = self.gear_score.get(victim.id, 0)
+        loss = 2 if current_gear >= 6 and random.randint(1, 100) <= 45 else 1
+        self.gear_score[victim.id] = max(0, current_gear - loss)
+        return loss
+
     def _resolve_action(
         self,
         actor: discord.Member,
@@ -333,8 +352,12 @@ class GameBase:
                 target=target.display_name
             )
 
+        attacker_gear = self.gear_score[actor.id]
+        target_gear = self.gear_score[target.id]
+
         if kind == "hunt":
-            chance = 35 + self.gear_score[actor.id] * 8 + min(18, self.round * 2)
+            chance = 35 + attacker_gear * 8 + min(18, self.round * 2)
+            chance -= min(24, target_gear * 3)
             if target.id in self.hidden_ids:
                 chance -= 18
             chance = max(12, min(90, chance))
@@ -351,7 +374,7 @@ class GameBase:
                 return _("hunts down **{target}** cleanly.").format(
                     target=target.display_name
                 )
-            counter_chance = min(60, 18 + self.gear_score[target.id] * 5)
+            counter_chance = min(60, 18 + target_gear * 5)
             if random.randint(1, 100) <= counter_chance:
                 self._mark_kill(
                     target,
@@ -370,7 +393,8 @@ class GameBase:
             )
 
         if kind == "rush":
-            chance = 40 + self.gear_score[actor.id] * 6 + min(12, self.round)
+            chance = 40 + attacker_gear * 6 + min(12, self.round)
+            chance -= min(16, target_gear * 2)
             if target.id in self.hidden_ids:
                 chance -= 14
             chance = max(10, min(85, chance))
@@ -398,7 +422,9 @@ class GameBase:
                 return _("rushes **{target}** and wins the brawl.").format(
                     target=target.display_name
                 )
-            if random.randint(1, 100) <= 40:
+            counter_chance = 30 + target_gear * 3 - attacker_gear * 2
+            counter_chance = max(18, min(62, counter_chance))
+            if random.randint(1, 100) <= counter_chance:
                 self._mark_kill(
                     target,
                     actor,
@@ -443,18 +469,29 @@ class GameBase:
         if roll <= 58:
             candidates = [p for p in survivors if p.id not in self.hidden_ids] or survivors
             victim = random.choice(candidates)
-            self._mark_kill(
-                None,
-                victim,
-                killed_this_round,
-                elimination_log=elimination_log,
-                cause=_("was torn apart by mutts"),
+            lethality = self._mutt_lethality_chance(
+                victim, base_chance=72, min_chance=22
             )
-            round_lines.append(
-                _("🐺 Mutts swarm **{victim}** in the dark.").format(
-                    victim=victim.display_name
+            if random.randint(1, 100) <= lethality:
+                self._mark_kill(
+                    None,
+                    victim,
+                    killed_this_round,
+                    elimination_log=elimination_log,
+                    cause=_("was torn apart by mutts"),
                 )
-            )
+                round_lines.append(
+                    _("🐺 Mutts swarm **{victim}** in the dark.").format(
+                        victim=victim.display_name
+                    )
+                )
+            else:
+                loss = self._apply_mutt_gear_loss(victim)
+                round_lines.append(
+                    _(
+                        "🐺 Mutts swarm **{victim}**, but they fight them off and lose {loss} gear level(s)."
+                    ).format(victim=victim.display_name, loss=loss)
+                )
             return
 
         if roll <= 82:
@@ -1206,19 +1243,34 @@ class RegionGame(GameBase):
             region = random.choice(crowded_regions)
             candidates = self._players_in_region(region, killed_this_round=killed_this_round)
             victim = random.choice(candidates)
-            self._mark_kill(
-                None,
-                victim,
-                killed_this_round,
-                elimination_log=elimination_log,
-                cause=_("was torn apart by mutts in **{region}**").format(region=region),
+            lethality = self._mutt_lethality_chance(
+                victim, base_chance=76, min_chance=24
             )
-            round_lines.append(
-                _("🐺 Mutts ambush **{victim}** in **{region}**.").format(
-                    victim=victim.display_name,
-                    region=region,
+            if random.randint(1, 100) <= lethality:
+                self._mark_kill(
+                    None,
+                    victim,
+                    killed_this_round,
+                    elimination_log=elimination_log,
+                    cause=_("was torn apart by mutts in **{region}**").format(region=region),
                 )
-            )
+                round_lines.append(
+                    _("🐺 Mutts ambush **{victim}** in **{region}**.").format(
+                        victim=victim.display_name,
+                        region=region,
+                    )
+                )
+            else:
+                loss = self._apply_mutt_gear_loss(victim)
+                round_lines.append(
+                    _(
+                        "🐺 Mutts ambush **{victim}** in **{region}**, but they escape and lose {loss} gear level(s)."
+                    ).format(
+                        victim=victim.display_name,
+                        region=region,
+                        loss=loss,
+                    )
+                )
             return
 
         region = random.choice(list(self.REGIONS))
@@ -2310,6 +2362,8 @@ class RegionIdeasGame(RegionGame):
                 target=target.display_name
             )
 
+        actor_gear = self.gear_score[actor.id]
+        target_gear = self.gear_score[target.id]
         regional_bonus = 12 if actor_region == "Stone Quarry" else 6 if actor_region == "Cornucopia" else 0
         hidden_penalty = 0
         if target.id in self.hidden_ids:
@@ -2322,11 +2376,12 @@ class RegionIdeasGame(RegionGame):
         if kind == "hunt":
             chance = (
                 35
-                + self.gear_score[actor.id] * 8
+                + actor_gear * 8
                 + min(18, self.round * 2)
                 + actor_bonus
                 + regional_bonus
                 - hidden_penalty
+                - min(24, target_gear * 3)
             )
             chance = max(10, min(95, chance))
             if random.randint(1, 100) <= chance:
@@ -2342,7 +2397,7 @@ class RegionIdeasGame(RegionGame):
                 return _("hunts down **{target}** cleanly.").format(
                     target=target.display_name
                 )
-            counter_chance = min(68, 18 + self.gear_score[target.id] * 5 + target_bonus // 3)
+            counter_chance = min(68, 18 + target_gear * 5 + target_bonus // 3)
             if random.randint(1, 100) <= counter_chance:
                 self._mark_kill(
                     target,
@@ -2363,11 +2418,12 @@ class RegionIdeasGame(RegionGame):
         if kind == "rush":
             chance = (
                 40
-                + self.gear_score[actor.id] * 6
+                + actor_gear * 6
                 + min(12, self.round)
                 + actor_bonus // 2
                 + regional_bonus
                 - hidden_penalty
+                - min(16, target_gear * 2)
             )
             chance = max(10, min(90, chance))
             if random.randint(1, 100) <= chance:
@@ -2395,7 +2451,9 @@ class RegionIdeasGame(RegionGame):
                 return _("rushes **{target}** and wins the brawl.").format(
                     target=target.display_name
                 )
-            if random.randint(1, 100) <= 40:
+            counter_chance = 30 + target_gear * 3 - actor_gear * 2 + target_bonus // 4
+            counter_chance = max(18, min(70, counter_chance))
+            if random.randint(1, 100) <= counter_chance:
                 self._mark_kill(
                     target,
                     actor,
@@ -2467,7 +2525,10 @@ class RegionIdeasGame(RegionGame):
             if hazard == "mutt_migration":
                 candidates = [p for p in impacted if p.id not in self.hidden_ids] or impacted
                 victim = random.choice(candidates)
-                if random.randint(1, 100) <= 62:
+                lethality = self._mutt_lethality_chance(
+                    victim, base_chance=66, min_chance=24
+                )
+                if random.randint(1, 100) <= lethality:
                     self._mark_kill(
                         None,
                         victim,
@@ -2484,11 +2545,14 @@ class RegionIdeasGame(RegionGame):
                         )
                     )
                 else:
-                    self.gear_score[victim.id] = max(0, self.gear_score[victim.id] - 1)
+                    loss = self._apply_mutt_gear_loss(victim)
                     round_lines.append(
-                        _("🐺 Mutts flood **{region}**. **{victim}** escapes but loses gear.").format(
+                        _(
+                            "🐺 Mutts flood **{region}**. **{victim}** escapes but loses {loss} gear level(s)."
+                        ).format(
                             region=region,
                             victim=victim.display_name,
+                            loss=loss,
                         )
                     )
                 continue
@@ -2766,6 +2830,86 @@ class HungerGames(commands.Cog):
         self.bot = bot
         self.games = {}
 
+    def _format_joined_players(self, joined: set) -> str:
+        if not joined:
+            return _("None yet")
+
+        sorted_joined = sorted(
+            joined,
+            key=lambda user: getattr(user, "display_name", str(user)).casefold(),
+        )
+        preview_limit = 20
+        preview = ", ".join(user.mention for user in sorted_joined[:preview_limit])
+        extra = len(sorted_joined) - preview_limit
+        if extra > 0:
+            return _("{players}, and {extra} more").format(players=preview, extra=extra)
+        return preview
+
+    def _build_join_lobby_text(
+        self,
+        *,
+        author_mention: str,
+        mode_label: str,
+        seconds_left: int,
+        joined: set,
+        is_mass_game: bool,
+    ) -> str:
+        if is_mass_game:
+            intro = _(
+                "{author} started a mass-game of Hunger Games (**{mode}** mode)!"
+            ).format(author=author_mention, mode=mode_label)
+        else:
+            intro = _("{author} started a game of Hunger Games (**{mode}** mode)!").format(
+                author=author_mention, mode=mode_label
+            )
+
+        minutes, seconds = divmod(max(0, seconds_left), 60)
+        timer = f"{minutes:02d}:{seconds:02d}"
+        joined_players = self._format_joined_players(joined)
+        return _(
+            "{intro}\n"
+            "⏳ Starts in: **{timer}**\n"
+            "👥 Joined ({count}): {players}"
+        ).format(
+            intro=intro,
+            timer=timer,
+            count=len(joined),
+            players=joined_players,
+        )
+
+    async def _run_join_countdown(
+        self,
+        *,
+        message: discord.Message,
+        view: JoinView,
+        author_mention: str,
+        mode_label: str,
+        duration_seconds: int,
+        is_mass_game: bool,
+    ) -> None:
+        update_interval = 5
+        remaining = duration_seconds
+        while remaining > 0 and not view.is_finished():
+            wait_for = min(update_interval, remaining)
+            await asyncio.sleep(wait_for)
+            remaining -= wait_for
+            try:
+                await message.edit(
+                    content=self._build_join_lobby_text(
+                        author_mention=author_mention,
+                        mode_label=mode_label,
+                        seconds_left=remaining,
+                        joined=view.joined,
+                        is_mass_game=is_mass_game,
+                    ),
+                    view=view,
+                )
+            except discord.NotFound:
+                break
+            except discord.HTTPException:
+                pass
+        view.stop()
+
 
     @commands.command(aliases=["hg"], brief=_("Play the hunger games"))
     @locale_doc
@@ -2810,45 +2954,41 @@ class HungerGames(commands.Cog):
 
         self.games[ctx.channel.id] = "forming"
 
-        if ctx.channel.id == self.bot.config.game.official_tournament_channel_id:
-            view = JoinView(
-                Button(
-                    style=ButtonStyle.primary,
-                    label="Join the Hunger Games!",
-                    emoji="\U0001f958",
-                ),
-                message=_("You joined the Hunger Games."),
-                timeout=60 * 10,
-            )
-            await ctx.send(
-                _("{author} started a mass-game of Hunger Games (**{mode}** mode)!").format(
-                    author=ctx.author.mention,
-                    mode=mode_label,
-                ),
-                view=view,
-            )
-            await asyncio.sleep(60 * 10)
-            view.stop()
-            players = list(view.joined)
-        else:
-            view = JoinView(
-                Button(
-                    style=ButtonStyle.primary,
-                    label="Join the Hunger Games!",
-                    emoji="\U0001f958",
-                ),
-                message=_("You joined the Hunger Games."),
-                timeout=60 * 2,
-            )
+        is_mass_game = (
+            ctx.channel.id == self.bot.config.game.official_tournament_channel_id
+        )
+        join_timeout = 60 * 10 if is_mass_game else 60 * 2
+        view = JoinView(
+            Button(
+                style=ButtonStyle.primary,
+                label="Join the Hunger Games!",
+                emoji="\U0001f958",
+            ),
+            message=_("You joined the Hunger Games."),
+            timeout=join_timeout,
+        )
+        if not is_mass_game:
             view.joined.add(ctx.author)
-            text = _("{author} started a game of Hunger Games (**{mode}** mode)!")
-            await ctx.send(
-                text.format(author=ctx.author.mention, mode=mode_label),
-                view=view,
-            )
-            await asyncio.sleep(60 * 2)
-            view.stop()
-            players = list(view.joined)
+
+        lobby_message = await ctx.send(
+            self._build_join_lobby_text(
+                author_mention=ctx.author.mention,
+                mode_label=mode_label,
+                seconds_left=join_timeout,
+                joined=view.joined,
+                is_mass_game=is_mass_game,
+            ),
+            view=view,
+        )
+        await self._run_join_countdown(
+            message=lobby_message,
+            view=view,
+            author_mention=ctx.author.mention,
+            mode_label=mode_label,
+            duration_seconds=join_timeout,
+            is_mass_game=is_mass_game,
+        )
+        players = list(view.joined)
 
         if len(players) < 2:
             del self.games[ctx.channel.id]

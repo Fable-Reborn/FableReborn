@@ -3037,6 +3037,123 @@ class NewWerewolf(commands.Cog):
             ).format(prefix=ctx.clean_prefix, track=track)
         )
 
+    def _format_multiplayer_joined_players(self, joined: set) -> str:
+        if not joined:
+            return _("None yet")
+        sorted_joined = sorted(
+            joined,
+            key=lambda user: getattr(user, "display_name", str(user)).casefold(),
+        )
+        preview_limit = 20
+        preview = ", ".join(user.mention for user in sorted_joined[:preview_limit])
+        extra = len(sorted_joined) - preview_limit
+        if extra > 0:
+            return _("{players}, and {extra} more").format(players=preview, extra=extra)
+        return preview
+
+    def _build_multiplayer_lobby_embed(
+        self,
+        *,
+        author: discord.Member,
+        mode_label: str,
+        speed: str,
+        min_players: int,
+        seconds_left: int,
+        joined: set,
+        additional_text: str,
+        is_mass_game: bool,
+    ) -> discord.Embed:
+        minutes, seconds = divmod(max(0, seconds_left), 60)
+        timer = f"{minutes:02d}:{seconds:02d}"
+        joined_text = self._format_multiplayer_joined_players(joined)
+
+        if is_mass_game:
+            title = _("Werewolf Mass-game!")
+            description = _(
+                "**{author} started a mass-game of Werewolf!**\n"
+                "**{mode}** mode on **{speed}** speed.\n"
+                "⏳ Starts in **{timer}**.\n"
+                "**Minimum of {min_players} players are required.**\n"
+                "👥 Joined ({count}): {players}"
+            ).format(
+                author=author.mention,
+                mode=mode_label,
+                speed=speed,
+                timer=timer,
+                min_players=min_players,
+                count=len(joined),
+                players=joined_text,
+            )
+        else:
+            title = _("Werewolf game!")
+            description = _(
+                "**{author} started a game of Werewolf!**\n"
+                "**{mode}** mode on **{speed}** speed.\n"
+                "⏳ Starts in **{timer}**.\n"
+                "**Minimum of {min_players} players are required.**\n"
+                "👥 Joined ({count}): {players}"
+            ).format(
+                author=author.mention,
+                mode=mode_label,
+                speed=speed,
+                timer=timer,
+                min_players=min_players,
+                count=len(joined),
+                players=joined_text,
+            )
+
+        return (
+            discord.Embed(
+                title=title,
+                description=description,
+                colour=self.bot.config.game.primary_colour,
+            )
+            .set_author(name=str(author), icon_url=author.display_avatar.url)
+            .add_field(name=_("New to Werewolf?"), value=additional_text)
+        )
+
+    async def _run_multiplayer_lobby_countdown(
+        self,
+        *,
+        message: discord.Message,
+        view: JoinView,
+        author: discord.Member,
+        mode_label: str,
+        speed: str,
+        min_players: int,
+        duration_seconds: int,
+        additional_text: str,
+        is_mass_game: bool,
+    ) -> None:
+        update_interval = 5
+        remaining = duration_seconds
+        while remaining > 0 and not view.is_finished():
+            wait_for = min(update_interval, remaining)
+            try:
+                await asyncio.wait_for(view.wait(), timeout=wait_for)
+            except asyncio.TimeoutError:
+                pass
+            remaining -= wait_for
+            try:
+                await message.edit(
+                    embed=self._build_multiplayer_lobby_embed(
+                        author=author,
+                        mode_label=mode_label,
+                        speed=speed,
+                        min_players=min_players,
+                        seconds_left=remaining,
+                        joined=view.joined,
+                        additional_text=additional_text,
+                        is_mass_game=is_mass_game,
+                    ),
+                    view=view,
+                )
+            except discord.NotFound:
+                break
+            except discord.HTTPException:
+                pass
+        view.stop()
+
     async def _start_multiplayer_game(
         self,
         ctx,
@@ -3084,88 +3201,56 @@ class NewWerewolf(commands.Cog):
         mode_emoji = mode_emojis.get(mode, "")
         mode_label = mode_emoji + mode + mode_emoji
 
-        if (
+        is_mass_game = bool(
             self.bot.config.game.official_tournament_channel_id
             and ctx.channel.id == self.bot.config.game.official_tournament_channel_id
-        ):
-            view = JoinView(
-                Button(style=ButtonStyle.primary, label=_("Join the Werewolf game!")),
-                message=_("You joined the Werewolf game."),
-                timeout=60 * 10,
-            )
-            text = _(
-                "**{author} started a mass-game of Werewolf!**\n**{mode}** mode on"
-                " **{speed}** speed. You can join in the next 10 minutes."
-                " **Minimum of {min_players} players are required.**"
-            )
+        )
+        join_timeout = 60 * 10 if is_mass_game else 60 * 2
+        view = JoinView(
+            Button(style=ButtonStyle.primary, label=_("Join the Werewolf game!")),
+            message=_("You joined the Werewolf game."),
+            timeout=join_timeout,
+        )
+        if not is_mass_game:
+            view.joined.add(ctx.author)
 
-            await ctx.send(
-                embed=discord.Embed(
-                    title=_("Werewolf Mass-game!"),
-                    description=text.format(
-                        author=ctx.author.mention,
-                        mode=mode_label,
-                        speed=speed,
-                        min_players=min_players,
-                    ),
-                    colour=self.bot.config.game.primary_colour,
-                )
-                .set_author(
-                    name=str(ctx.author), icon_url=ctx.author.display_avatar.url
-                )
-                .add_field(name=_("New to Werewolf?"), value=additional_text),
+        try:
+            lobby_message = await ctx.send(
+                embed=self._build_multiplayer_lobby_embed(
+                    author=ctx.author,
+                    mode_label=mode_label,
+                    speed=speed,
+                    min_players=min_players,
+                    seconds_left=join_timeout,
+                    joined=view.joined,
+                    additional_text=additional_text,
+                    is_mass_game=is_mass_game,
+                ),
                 view=view,
             )
-
-            await asyncio.sleep(60)
-            view.stop()
-            players = list(view.joined)
-        else:
-            view = JoinView(
-                Button(style=ButtonStyle.primary, label=_("Join the Werewolf game!")),
-                message=_("You joined the Werewolf game."),
-                timeout=120,
-            )
-            view.joined.add(ctx.author)
-            title = _("Werewolf game!")
-            text = _(
-                "**{author} started a game of Werewolf!**\n**{mode}** mode on"
-                " **{speed}** speed. Minimum of"
-                " **{min_players}** players are required. Starting in 2 minutes."
-            )
-
-            try:
-                await ctx.send(
-                    embed=discord.Embed(
-                        title=title,
-                        description=text.format(
-                            author=ctx.author.mention,
-                            mode=mode_label,
-                            speed=speed,
-                            min_players=min_players,
-                        ),
-                        colour=self.bot.config.game.primary_colour,
-                    )
-                    .set_author(
-                        name=str(ctx.author), icon_url=ctx.author.display_avatar.url
-                    )
-                    .add_field(name=_("New to Werewolf?"), value=additional_text),
-                    view=view,
+        except discord.errors.Forbidden:
+            del self.games[ctx.channel.id]
+            await ctx.send(
+                _(
+                    "An error happened during the Werewolf. Missing Permission:"
+                    " `Embed Links` . Please check the **Edit Channel >"
+                    " Permissions** and **Server Settings > Roles** then try again!"
                 )
-            except discord.errors.Forbidden:
-                del self.games[ctx.channel.id]
-                await ctx.send(
-                    _(
-                        "An error happened during the Werewolf. Missing Permission:"
-                        " `Embed Links` . Please check the **Edit Channel >"
-                        " Permissions** and **Server Settings > Roles** then try again!"
-                    )
-                )
-                return
+            )
+            return
 
-            await asyncio.sleep(60 * 2)
-            view.stop()
-            players = list(view.joined)
+        await self._run_multiplayer_lobby_countdown(
+            message=lobby_message,
+            view=view,
+            author=ctx.author,
+            mode_label=mode_label,
+            speed=speed,
+            min_players=min_players,
+            duration_seconds=join_timeout,
+            additional_text=additional_text,
+            is_mass_game=is_mass_game,
+        )
+        players = list(view.joined)
 
         if len(players) < min_players:
             del self.games[ctx.channel.id]
