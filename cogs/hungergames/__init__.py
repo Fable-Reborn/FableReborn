@@ -240,7 +240,7 @@ class GameBase:
         trap_count = self.traps.get(defender.id, 0)
         if trap_count <= 0:
             return False
-        trigger_chance = min(90, 12 + trap_count * 14 + bonus_chance)
+        trigger_chance = min(70, 12 + trap_count * 14 + bonus_chance)
         if random.randint(1, 100) > trigger_chance:
             return False
         self.traps[defender.id] = max(0, trap_count - 1)
@@ -1281,7 +1281,18 @@ class RegionGame(GameBase):
             new_region = str(action.get("region") or "")
             if new_region not in self.REGION_ADJACENCY.get(actor_region, ()):
                 return _("tries to move, but gets turned around in the arena.")
+            abandoned = self.traps.get(actor.id, 0)
+            if abandoned > 0:
+                self.traps[actor.id] = 0
             self.player_region[actor.id] = new_region
+            if abandoned > 0:
+                return _(
+                    "moves from **{old}** to **{new}**, abandoning {count} trap(s)."
+                ).format(
+                    old=actor_region,
+                    new=new_region,
+                    count=abandoned,
+                )
             return _("moves from **{old}** to **{new}**.").format(
                 old=actor_region,
                 new=new_region,
@@ -2309,7 +2320,18 @@ class RegionIdeasGame(RegionGame):
                 return _(
                     "tries to move from **{old}**, but tunnel fatigue slows them down."
                 ).format(old=actor_region)
+            abandoned = self.traps.get(actor.id, 0)
+            if abandoned > 0:
+                self.traps[actor.id] = 0
             self.player_region[actor.id] = new_region
+            if abandoned > 0:
+                return _(
+                    "moves from **{old}** to **{new}**, abandoning {count} trap(s)."
+                ).format(
+                    old=actor_region,
+                    new=new_region,
+                    count=abandoned,
+                )
             return _("moves from **{old}** to **{new}**.").format(
                 old=actor_region,
                 new=new_region,
@@ -2991,6 +3013,13 @@ class HungerGames(commands.Cog):
         self.bot = bot
         self.games = {}
 
+    def _regions_map_text(self) -> str:
+        lines = []
+        for region in RegionGame.REGIONS:
+            neighbors = ", ".join(RegionGame.REGION_ADJACENCY.get(region, ()))
+            lines.append(f"**{region}** -> {neighbors}")
+        return "\n".join(lines)
+
     def _active_game_for_player(self, player_id: int) -> GameBase | None:
         for game in self.games.values():
             if not isinstance(game, GameBase):
@@ -3149,6 +3178,113 @@ class HungerGames(commands.Cog):
                 pass
         view.stop()
 
+    @commands.command(
+        aliases=["hgregionshelp", "hgregionhelp", "hgrules"],
+        brief=_("Show Hunger Games regions mode help"),
+    )
+    @locale_doc
+    async def hgregions(self, ctx, *, mode: str | None = None):
+        _(
+            """Shows how Hunger Games region modes work
+
+            Use this command to learn movement, fog, mutts, traps, and team mechanics.
+
+            Usage:
+            - `{prefix}hgregions`
+            - `{prefix}hgregions region-ideas`"""
+        )
+        token = (mode or "regions").strip().casefold()
+        advanced_tokens = {"region-ideas", "regionideas", "ideas", "advanced"}
+        base_tokens = {"regions", "region", "basic", ""}
+        if token not in base_tokens and token not in advanced_tokens:
+            return await ctx.send(
+                _(
+                    "Unknown mode `{mode}`. Valid options: `regions`, `region-ideas`."
+                ).format(mode=mode or "")
+            )
+
+        core = discord.Embed(
+            title=_("🗺️ Hunger Games Regions Help"),
+            description=_(
+                "Round flow: region brief -> DM choices -> action resolution -> arena"
+                " event -> toxic fog -> round report."
+            ),
+            color=discord.Color.dark_gold(),
+        )
+        core.add_field(
+            name=_("Connected Map"),
+            value=self._regions_map_text(),
+            inline=False,
+        )
+        core.add_field(
+            name=_("Fog & Mutts"),
+            value=_(
+                "• `Toxic Next` is a warning.\n"
+                "• `Toxic Now` is active this round.\n"
+                "• Fog resolves after movement/actions.\n"
+                "• `Mutt Warning Next` warns first; mutts can strike there next round"
+                " only if 2+ tributes remain."
+            ),
+            inline=False,
+        )
+        core.add_field(
+            name=_("Combat & Traps"),
+            value=_(
+                "• `Hunt` fails against hidden targets.\n"
+                "• `Hunt` is trap-sensitive.\n"
+                "• `Rush` is more gear-focused.\n"
+                "• Trap stacks cap at 4 and moving abandons your trap stack.\n"
+                "• Trap trigger: `12 + 14*traps` (`+20` on hunt), capped at `70%`."
+            ),
+            inline=False,
+        )
+        core.add_field(
+            name=_("Teams"),
+            value=_(
+                "• Betrayals unlock after round {round}.\n"
+                "• `Coordinate/Team up` gives both teammates +1 gear.\n"
+                "• DM the bot to relay to your living district teammate.\n"
+                "• One district can win together."
+            ).format(round=GameBase.ALLIANCE_LOCK_ROUNDS),
+            inline=False,
+        )
+        core.set_footer(
+            text=_(
+                "Stalemate rule: after {rounds} bloodless rounds, survivors are forced to Cornucopia for sudden death."
+            ).format(rounds=RegionGame.STALEMATE_ROUNDS)
+        )
+        await ctx.send(embed=core)
+
+        if token in advanced_tokens:
+            advanced = discord.Embed(
+                title=_("⚙️ Region-Ideas Extras"),
+                color=discord.Color.gold(),
+                description=_(
+                    "Region-Ideas keeps all base region rules and adds deeper systems."
+                ),
+            )
+            advanced.add_field(
+                name=_("Extra Actions"),
+                value=_(
+                    "• `Scout`: checks adjacent region population/drop/trap signs.\n"
+                    "• `Ambush`: team attack option.\n"
+                    "• `Cover Fire`: boosts district combat odds.\n"
+                    "• `Shared Medkit`: both gain gear and fog resistance."
+                ),
+                inline=False,
+            )
+            advanced.add_field(
+                name=_("Advanced Systems"),
+                value=_(
+                    "• Noise can reveal your region.\n"
+                    "• Sponsor contracts grant bonuses.\n"
+                    "• Dynamic hazards (wildfire, mutt migration, tracker-jackers).\n"
+                    "• Region control bonuses and endgame collapse pressure."
+                ),
+                inline=False,
+            )
+            await ctx.send(embed=advanced)
+
 
     @commands.command(aliases=["hg"], brief=_("Play the hunger games"))
     @locale_doc
@@ -3169,7 +3305,8 @@ class HungerGames(commands.Cog):
             Usage:
             - `{prefix}hungergames`
             - `{prefix}hungergames regions`
-            - `{prefix}hungergames region-ideas`"""
+            - `{prefix}hungergames region-ideas`
+            - `{prefix}hgregions` (regions help)"""
         )
         if self.games.get(ctx.channel.id):
             return await ctx.send(_("There is already a game in here!"))
