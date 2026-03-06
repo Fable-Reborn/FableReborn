@@ -827,6 +827,49 @@ class GameBase:
                     ).format(round=self.ALLIANCE_LOCK_ROUNDS)
                 )
             await self.ctx.send(embed=embed)
+        await self._send_team_relay_opening_dms()
+
+    async def _send_team_relay_opening_dms(self) -> None:
+        for team in self.cast:
+            if len(team) < 2:
+                continue
+            for member in team:
+                teammates = [ally for ally in team if ally.id != member.id]
+                if not teammates:
+                    continue
+
+                teammate_text = nice_join([ally.display_name for ally in teammates])
+                lines = [
+                    _("🤝 District relay is now open."),
+                    _("Teammate: {teammates}").format(teammates=teammate_text),
+                    _(
+                        "DM this bot anytime and your message will be forwarded to your living district teammate."
+                    ),
+                ]
+
+                # Region modes include teammate region intel in the opening DM.
+                if hasattr(self, "_region_for"):
+                    try:
+                        teammate_regions = ", ".join(
+                            _("{name}: {region}").format(
+                                name=ally.display_name,
+                                region=self._region_for(ally),  # type: ignore[attr-defined]
+                            )
+                            for ally in teammates
+                        )
+                    except Exception:
+                        teammate_regions = ""
+                    if teammate_regions:
+                        lines.append(
+                            _("Current teammate location: {info}").format(
+                                info=teammate_regions
+                            )
+                        )
+
+                try:
+                    await member.send("\n".join(lines))
+                except (discord.Forbidden, discord.HTTPException):
+                    continue
 
     def _final_leaderboard_lines(self) -> list[str]:
         leaders = [
