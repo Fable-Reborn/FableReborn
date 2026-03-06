@@ -1038,6 +1038,76 @@ class RegionGame(GameBase):
         allies = super()._alive_allies(actor, killed_this_round)
         return [ally for ally in allies if self._region_for(ally) == actor_region]
 
+    def _is_under_escape_pressure(self, region: str) -> bool:
+        return (
+            region in self.active_toxic_regions
+            or region in self.next_toxic_regions
+            or region in self.active_mutt_regions
+            or region in self.next_mutt_regions
+        )
+
+    def _escape_move_choices(
+        self,
+        actor: discord.Member,
+        killed_this_round: set,
+    ) -> list[dict]:
+        current_region = self._region_for(actor)
+        if not self._is_under_escape_pressure(current_region):
+            return []
+
+        neighbors = list(self.REGION_ADJACENCY.get(current_region, ()))
+        if not neighbors:
+            return []
+
+        def region_risk(region: str) -> tuple[int, int, str]:
+            risk = 0
+            if region in self.active_toxic_regions:
+                risk += 6
+            if region in self.active_mutt_regions:
+                risk += 4
+            if region in self.next_toxic_regions:
+                risk += 2
+            if region in self.next_mutt_regions:
+                risk += 1
+            crowd = len(self._players_in_region(region, killed_this_round=killed_this_round))
+            return (risk, crowd, region)
+
+        ordered_regions = sorted(neighbors, key=region_risk)
+        return [
+            {
+                "label": _("Move to {region}").format(region=region),
+                "kind": "move",
+                "region": region,
+            }
+            for region in ordered_regions
+        ]
+
+    def _ensure_escape_route_choices(
+        self,
+        actor: discord.Member,
+        killed_this_round: set,
+        selected: list[dict],
+    ) -> list[dict]:
+        if any(choice.get("kind") == "move" for choice in selected):
+            return selected
+
+        emergency_moves = self._escape_move_choices(actor, killed_this_round)
+        if not emergency_moves:
+            return selected
+
+        existing_regions = {
+            str(choice.get("region"))
+            for choice in selected
+            if choice.get("kind") == "move"
+        }
+        for move_choice in emergency_moves:
+            region = str(move_choice.get("region"))
+            if region in existing_regions:
+                continue
+            selected.append(move_choice)
+            existing_regions.add(region)
+        return selected
+
     def _spawn_region_drops(self) -> None:
         self.region_drops.clear()
         available_regions = [
@@ -1133,6 +1203,23 @@ class RegionGame(GameBase):
             )
         )
         await self.ctx.send(embed=embed)
+        await self._send_region_brief_dms(embed)
+
+    async def _send_region_brief_dms(self, embed: discord.Embed) -> None:
+        cog = self.ctx.bot.get_cog("HungerGames")
+        if cog is None or not hasattr(cog, "region_board_dm_enabled"):
+            return
+        for player in list(self.players):
+            try:
+                enabled = await cog.region_board_dm_enabled(player.id)
+            except Exception:
+                enabled = True
+            if not enabled:
+                continue
+            try:
+                await player.send(embed=embed)
+            except (discord.Forbidden, discord.HTTPException):
+                continue
 
     def _build_action_choices(
         self,
@@ -1215,7 +1302,8 @@ class RegionGame(GameBase):
                 )
 
         sample_size = min(4, len(choices))
-        return random.sample(choices, sample_size)
+        picked = random.sample(choices, sample_size)
+        return self._ensure_escape_route_choices(actor, killed_this_round, picked)
 
     def _teammate_intel_prompt(self, actor: discord.Member) -> str:
         ally_ids = self.allies_by_player_id.get(actor.id, set())
@@ -1572,31 +1660,17 @@ class RegionGame(GameBase):
     ) -> None:
         await super()._send_round_report(round_lines, killed_this_round, elimination_log)
         extra = discord.Embed(
-            title=_("Arena Hazard Update"),
+            title=_("Next Round Hazard Preview"),
             description=_(
-                "☣️ Toxic now: {active}\n"
-                "⚠️ Prewarned next round: {next_regions}\n"
-                "🐺 Mutts this round: {active_mutts}\n"
-                "🐾 Mutt warning next: {next_mutts}\n"
-                "📦 Active drops: {drops}"
+                "☣️ Toxic at round start: {next_regions}\n"
+                "🐺 Mutt pressure at round start: {next_mutts}\n"
+                "📦 Sponsor drops reroll at round start."
             ).format(
-                active=", ".join(sorted(self.active_toxic_regions))
-                if self.active_toxic_regions
-                else _("None"),
                 next_regions=", ".join(sorted(self.next_toxic_regions))
                 if self.next_toxic_regions
                 else _("None"),
-                active_mutts=", ".join(sorted(self.active_mutt_regions))
-                if self.active_mutt_regions
-                else _("None"),
                 next_mutts=", ".join(sorted(self.next_mutt_regions))
                 if self.next_mutt_regions
-                else _("None"),
-                drops=", ".join(
-                    f"{region} (+{bonus})"
-                    for region, bonus in sorted(self.region_drops.items())
-                )
-                if self.region_drops
                 else _("None"),
             ),
             color=discord.Color.dark_teal(),
@@ -2109,6 +2183,7 @@ class RegionIdeasGame(RegionGame):
             )
         )
         await self.ctx.send(embed=embed)
+        await self._send_region_brief_dms(embed)
 
     def _build_action_choices(
         self,
@@ -2246,10 +2321,11 @@ class RegionIdeasGame(RegionGame):
                 )
 
         if len(choices) <= 8:
-            return choices
+            return self._ensure_escape_route_choices(actor, killed_this_round, choices)
         core = choices[:3]
         extras = random.sample(choices[3:], k=5)
-        return core + extras
+        picked = core + extras
+        return self._ensure_escape_route_choices(actor, killed_this_round, picked)
 
     async def _choose_action(self, actor: discord.Member, choices: list[dict]) -> dict:
         contract_line = self._contract_prompt_line(self.active_contracts.get(actor.id))
@@ -3009,9 +3085,86 @@ class RegionIdeasGame(RegionGame):
 
 
 class HungerGames(commands.Cog):
+    REGION_DM_SETTINGS_TABLE = "hungergames_dm_settings"
+
     def __init__(self, bot):
         self.bot = bot
         self.games = {}
+        self._region_board_dm_cache: dict[int, bool] = {}
+        self._region_dm_settings_ready = False
+
+    async def cog_load(self) -> None:
+        await self._ensure_region_dm_settings_table()
+
+    async def _ensure_region_dm_settings_table(self) -> None:
+        if self._region_dm_settings_ready:
+            return
+        if not hasattr(self.bot, "pool"):
+            return
+        try:
+            await self.bot.pool.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.REGION_DM_SETTINGS_TABLE} (
+                    "user_id" BIGINT PRIMARY KEY,
+                    "region_board_dm" BOOLEAN NOT NULL DEFAULT TRUE
+                );
+                """
+            )
+            self._region_dm_settings_ready = True
+        except Exception:
+            # DB failures should never block playing the game.
+            self._region_dm_settings_ready = False
+
+    async def region_board_dm_enabled(self, user_id: int) -> bool:
+        if user_id in self._region_board_dm_cache:
+            return self._region_board_dm_cache[user_id]
+
+        if not hasattr(self.bot, "pool"):
+            return True
+
+        await self._ensure_region_dm_settings_table()
+        if not self._region_dm_settings_ready:
+            return True
+
+        try:
+            row = await self.bot.pool.fetchrow(
+                f"""
+                SELECT "region_board_dm"
+                FROM {self.REGION_DM_SETTINGS_TABLE}
+                WHERE "user_id" = $1;
+                """,
+                user_id,
+            )
+        except Exception:
+            return True
+
+        enabled = True if row is None else bool(row["region_board_dm"])
+        self._region_board_dm_cache[user_id] = enabled
+        return enabled
+
+    async def _set_region_board_dm_enabled(self, user_id: int, enabled: bool) -> None:
+        self._region_board_dm_cache[user_id] = enabled
+
+        if not hasattr(self.bot, "pool"):
+            return
+
+        await self._ensure_region_dm_settings_table()
+        if not self._region_dm_settings_ready:
+            return
+
+        try:
+            await self.bot.pool.execute(
+                f"""
+                INSERT INTO {self.REGION_DM_SETTINGS_TABLE} ("user_id", "region_board_dm")
+                VALUES ($1, $2)
+                ON CONFLICT ("user_id")
+                DO UPDATE SET "region_board_dm" = EXCLUDED."region_board_dm";
+                """,
+                user_id,
+                enabled,
+            )
+        except Exception:
+            pass
 
     def _regions_map_text(self) -> str:
         lines = []
@@ -3179,6 +3332,50 @@ class HungerGames(commands.Cog):
         view.stop()
 
     @commands.command(
+        aliases=["hgdm", "hgdms"],
+        brief=_("Toggle region board DMs"),
+    )
+    @locale_doc
+    async def hgdmboard(self, ctx, setting: str | None = None):
+        _(
+            """Toggles DM board updates for Hunger Games region modes
+
+            Enabled by default. When enabled, you receive the region board in DMs each round.
+
+            Usage:
+            - `{prefix}hgdmboard`
+            - `{prefix}hgdmboard on`
+            - `{prefix}hgdmboard off`"""
+        )
+        if setting is None:
+            enabled = await self.region_board_dm_enabled(ctx.author.id)
+            status = _("enabled") if enabled else _("disabled")
+            return await ctx.send(
+                _("Region board DMs are currently **{status}**.").format(
+                    status=status
+                )
+            )
+
+        normalized = setting.strip().casefold()
+        truthy = {"on", "enable", "enabled", "true", "yes", "y", "1"}
+        falsy = {"off", "disable", "disabled", "false", "no", "n", "0"}
+
+        if normalized in truthy:
+            enabled = True
+        elif normalized in falsy:
+            enabled = False
+        else:
+            return await ctx.send(
+                _("Invalid option `{value}`. Use `on` or `off`.").format(
+                    value=setting
+                )
+            )
+
+        await self._set_region_board_dm_enabled(ctx.author.id, enabled)
+        status = _("enabled") if enabled else _("disabled")
+        await ctx.send(_("Region board DMs are now **{status}**.").format(status=status))
+
+    @commands.command(
         aliases=["hgregionshelp", "hgregionhelp", "hgrules"],
         brief=_("Show Hunger Games regions mode help"),
     )
@@ -3257,7 +3454,8 @@ class HungerGames(commands.Cog):
                 "• Betrayals unlock after round {round}.\n"
                 "• `Coordinate/Team up` gives both teammates +1 gear.\n"
                 "• DM the bot to relay to your living district teammate.\n"
-                "• One district can win together."
+                "• One district can win together.\n"
+                "• `hgdmboard on/off` toggles region board DMs (default: on)."
             ).format(round=GameBase.ALLIANCE_LOCK_ROUNDS),
             inline=False,
         )
@@ -3319,7 +3517,8 @@ class HungerGames(commands.Cog):
             - `{prefix}hungergames`
             - `{prefix}hungergames regions`
             - `{prefix}hungergames region-ideas`
-            - `{prefix}hgregions` (regions help)"""
+            - `{prefix}hgregions` (regions help)
+            - `{prefix}hgdmboard on/off` (region board DM toggle)"""
         )
         if self.games.get(ctx.channel.id):
             return await ctx.send(_("There is already a game in here!"))
