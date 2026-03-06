@@ -3206,8 +3206,12 @@ class HungerGames(commands.Cog):
         core = discord.Embed(
             title=_("🗺️ Hunger Games Regions Help"),
             description=_(
-                "Round flow: region brief -> DM choices -> action resolution -> arena"
-                " event -> toxic fog -> round report."
+                "How rounds resolve:\n"
+                "1) Region brief\n"
+                "2) DM choices\n"
+                "3) Action resolution\n"
+                "4) Arena event + toxic fog\n"
+                "5) Round report"
             ),
             color=discord.Color.dark_gold(),
         )
@@ -3219,22 +3223,31 @@ class HungerGames(commands.Cog):
         core.add_field(
             name=_("Fog & Mutts"),
             value=_(
-                "• `Toxic Next` is a warning.\n"
-                "• `Toxic Now` is active this round.\n"
-                "• Fog resolves after movement/actions.\n"
-                "• `Mutt Warning Next` warns first; mutts can strike there next round"
-                " only if 2+ tributes remain."
+                "Emote key:\n"
+                "☣️ `Toxic Now` = active this round\n"
+                "⚠️ `Toxic Next` = warning for next round\n"
+                "🐺 `Mutts This Round` = mutt threat can strike now\n"
+                "🐾 `Mutt Warning Next` = warning only\n"
+                "\n"
+                "Fog resolves after movement/actions, so moving into ☣️ can get"
+                " checked immediately.\n"
+                "🐾 warns first; mutts can strike there next round only if 2+"
+                " tributes remain."
             ),
             inline=False,
         )
         core.add_field(
             name=_("Combat & Traps"),
             value=_(
-                "• `Hunt` fails against hidden targets.\n"
-                "• `Hunt` is trap-sensitive.\n"
-                "• `Rush` is more gear-focused.\n"
-                "• Trap stacks cap at 4 and moving abandons your trap stack.\n"
-                "• Trap trigger: `12 + 14*traps` (`+20` on hunt), capped at `70%`."
+                "Combat:\n"
+                "• `Hunt` fails against hidden targets\n"
+                "• `Hunt` is trap-sensitive\n"
+                "• `Rush` is more gear-focused\n"
+                "\n"
+                "Traps:\n"
+                "• Trap stacks cap at 4\n"
+                "• Moving abandons your trap stack\n"
+                "• Trigger: `12 + 14*traps` (`+20` on hunt), max `70%`"
             ),
             inline=False,
         )
