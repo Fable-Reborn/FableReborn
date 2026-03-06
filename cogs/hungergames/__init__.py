@@ -550,7 +550,17 @@ class GameBase:
         survivors = [p for p in self.players if p not in killed_this_round]
         if len(survivors) < 2:
             return
-        left, right = random.sample(survivors, 2)
+        cross_team_pairs: list[tuple[discord.Member, discord.Member]] = []
+        for idx, left in enumerate(survivors):
+            left_team = self.team_by_player_id.get(left.id)
+            for right in survivors[idx + 1 :]:
+                right_team = self.team_by_player_id.get(right.id)
+                if left_team == right_team:
+                    continue
+                cross_team_pairs.append((left, right))
+        if not cross_team_pairs:
+            return
+        left, right = random.choice(cross_team_pairs)
         left_roll = self.gear_score[left.id] + random.randint(1, 4)
         right_roll = self.gear_score[right.id] + random.randint(1, 4)
         winner, loser = (left, right) if left_roll >= right_roll else (right, left)
@@ -769,13 +779,6 @@ class GameBase:
             round_lines.append(f"**{actor.display_name}** {summary}")
 
         await self._resolve_arena_event(killed_this_round, round_lines, elimination_log)
-        if (
-            not killed_this_round
-            and len(self.players) > 2
-            and self.round >= 2
-            and not self._single_team_left(killed_this_round)
-        ):
-            self._force_showdown(killed_this_round, round_lines, elimination_log)
 
         for dead in list(killed_this_round):
             try:
@@ -1292,21 +1295,23 @@ class RegionGame(GameBase):
         round_lines: list[str],
         elimination_log: dict[int, dict],
     ) -> None:
-        # In region mode, forced showdowns only happen between tributes in
-        # the same region.
-        contested_regions = [
-            region
-            for region in self.REGIONS
-            if len(self._players_in_region(region, killed_this_round=killed_this_round)) >= 2
-        ]
-        if not contested_regions:
+        # In region mode, forced showdowns only happen between tributes in the
+        # same region and never between district teammates.
+        cross_team_pairs: list[tuple[str, discord.Member, discord.Member]] = []
+        for region in self.REGIONS:
+            contenders = self._players_in_region(region, killed_this_round=killed_this_round)
+            if len(contenders) < 2:
+                continue
+            for idx, left in enumerate(contenders):
+                left_team = self.team_by_player_id.get(left.id)
+                for right in contenders[idx + 1 :]:
+                    right_team = self.team_by_player_id.get(right.id)
+                    if left_team == right_team:
+                        continue
+                    cross_team_pairs.append((region, left, right))
+        if not cross_team_pairs:
             return
-
-        region = random.choice(contested_regions)
-        contenders = self._players_in_region(region, killed_this_round=killed_this_round)
-        if len(contenders) < 2:
-            return
-        left, right = random.sample(contenders, 2)
+        region, left, right = random.choice(cross_team_pairs)
         left_roll = self.gear_score[left.id] + random.randint(1, 4)
         right_roll = self.gear_score[right.id] + random.randint(1, 4)
         winner, loser = (left, right) if left_roll >= right_roll else (right, left)
@@ -1517,13 +1522,6 @@ class RegionGame(GameBase):
 
         await self._resolve_arena_event(killed_this_round, round_lines, elimination_log)
         self._apply_toxic_fog(killed_this_round, round_lines, elimination_log)
-        if (
-            not killed_this_round
-            and len(self.players) > 2
-            and self.round >= 2
-            and not self._single_team_left(killed_this_round)
-        ):
-            self._force_showdown(killed_this_round, round_lines, elimination_log)
 
         if killed_this_round:
             self.no_kill_rounds = 0
@@ -2789,14 +2787,6 @@ class RegionIdeasGame(RegionGame):
         self._apply_dynamic_hazards(killed_this_round, round_lines, elimination_log)
         self._resolve_contracts(killed_this_round, round_lines)
         self._apply_toxic_fog(killed_this_round, round_lines, elimination_log)
-
-        if (
-            not killed_this_round
-            and len(self.players) > 2
-            and self.round >= 2
-            and not self._single_team_left(killed_this_round)
-        ):
-            self._force_showdown(killed_this_round, round_lines, elimination_log)
 
         if killed_this_round:
             self.no_kill_rounds = 0
