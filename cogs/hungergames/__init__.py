@@ -234,11 +234,13 @@ class GameBase:
         defender: discord.Member,
         killed_this_round: set,
         elimination_log: dict[int, dict],
+        *,
+        bonus_chance: int = 0,
     ) -> bool:
         trap_count = self.traps.get(defender.id, 0)
         if trap_count <= 0:
             return False
-        trigger_chance = min(70, 12 + trap_count * 14)
+        trigger_chance = min(90, 12 + trap_count * 14 + bonus_chance)
         if random.randint(1, 100) > trigger_chance:
             return False
         self.traps[defender.id] = max(0, trap_count - 1)
@@ -347,20 +349,33 @@ class GameBase:
                 ally=target.display_name
             )
 
-        if self._check_trap_trigger(actor, target, killed_this_round, elimination_log):
-            return _("charges **{target}** but triggers their trap and dies.").format(
+        if kind == "hunt" and target.id in self.hidden_ids:
+            return _("tries to hunt **{target}**, but they stay hidden.").format(
+                target=target.display_name
+            )
+
+        if kind == "hunt" and self._check_trap_trigger(
+            actor,
+            target,
+            killed_this_round,
+            elimination_log,
+            bonus_chance=20,
+        ):
+            return _("tracks **{target}** but triggers their trap and dies.").format(
                 target=target.display_name
             )
 
         attacker_gear = self.gear_score[actor.id]
         target_gear = self.gear_score[target.id]
+        target_traps = self.traps.get(target.id, 0)
 
         if kind == "hunt":
-            chance = 35 + attacker_gear * 8 + min(18, self.round * 2)
-            chance -= min(24, target_gear * 3)
+            chance = 32 + attacker_gear * 5 + min(14, self.round * 2)
+            chance -= min(18, target_gear * 2)
+            chance -= target_traps * 10
             if target.id in self.hidden_ids:
-                chance -= 18
-            chance = max(12, min(90, chance))
+                chance -= 20
+            chance = max(8, min(82, chance))
             if random.randint(1, 100) <= chance:
                 self._mark_kill(
                     actor,
@@ -374,7 +389,7 @@ class GameBase:
                 return _("hunts down **{target}** cleanly.").format(
                     target=target.display_name
                 )
-            counter_chance = min(60, 18 + target_gear * 5)
+            counter_chance = min(72, 22 + target_gear * 4 + target_traps * 8)
             if random.randint(1, 100) <= counter_chance:
                 self._mark_kill(
                     target,
@@ -393,11 +408,11 @@ class GameBase:
             )
 
         if kind == "rush":
-            chance = 40 + attacker_gear * 6 + min(12, self.round)
-            chance -= min(16, target_gear * 2)
+            chance = 36 + attacker_gear * 8 + min(10, self.round)
+            chance -= min(24, target_gear * 3)
             if target.id in self.hidden_ids:
-                chance -= 14
-            chance = max(10, min(85, chance))
+                chance -= 12
+            chance = max(10, min(90, chance))
             if random.randint(1, 100) <= chance:
                 self._mark_kill(
                     actor,
@@ -767,7 +782,7 @@ class GameBase:
         elimination_log: dict[int, dict] = {}
 
         turn_order = self.players.copy()
-        random.shuffle(turn_order)
+        turn_order = random.shuffle(turn_order)
         for actor in turn_order:
             if actor not in self.players or actor in killed_this_round:
                 continue
@@ -795,7 +810,7 @@ class GameBase:
 
     async def send_cast(self):
         cast = self.players.copy()
-        random.shuffle(cast)
+        cast = random.shuffle(cast)
         self.cast = list(chunks(cast, 2))
 
         self.team_by_player_id.clear()
@@ -971,6 +986,8 @@ class RegionGame(GameBase):
         self.region_drops: dict[str, int] = {}
         self.active_toxic_regions: set[str] = set()
         self.next_toxic_regions: set[str] = set()
+        self.active_mutt_regions: set[str] = set()
+        self.next_mutt_regions: set[str] = set()
         self.fog_stage = 1
         self.no_kill_rounds = 0
         self._assign_initial_regions()
@@ -1073,6 +1090,10 @@ class RegionGame(GameBase):
                 status_bits.append("☣️ Toxic Now")
             elif region in self.next_toxic_regions:
                 status_bits.append("⚠️ Toxic Next")
+            if region in self.active_mutt_regions:
+                status_bits.append("🐺 Mutts Now")
+            elif region in self.next_mutt_regions:
+                status_bits.append("🐾 Mutts Next")
             status = " • ".join(status_bits)
             lines.append(f"**{region}**: {status}")
 
@@ -1086,6 +1107,16 @@ class RegionGame(GameBase):
             if self.next_toxic_regions
             else _("None")
         )
+        active_mutts = (
+            ", ".join(sorted(self.active_mutt_regions))
+            if self.active_mutt_regions
+            else _("None")
+        )
+        next_mutts = (
+            ", ".join(sorted(self.next_mutt_regions))
+            if self.next_mutt_regions
+            else _("None")
+        )
 
         embed = discord.Embed(
             title=_("🗺️ Arena Regions - Round {round}").format(round=self.round),
@@ -1094,6 +1125,8 @@ class RegionGame(GameBase):
         )
         embed.add_field(name=_("Toxic Now"), value=active_toxic, inline=False)
         embed.add_field(name=_("Prewarned Next Round"), value=next_toxic, inline=False)
+        embed.add_field(name=_("Mutts This Round"), value=active_mutts, inline=False)
+        embed.add_field(name=_("Mutt Warning Next"), value=next_mutts, inline=False)
         embed.set_footer(
             text=_(
                 "Move between connected regions, loot drops, and survive the advancing fog."
@@ -1287,6 +1320,67 @@ class RegionGame(GameBase):
         if len(survivors) <= 1:
             return
 
+        if self.active_mutt_regions:
+            active_candidates = [
+                region
+                for region in sorted(self.active_mutt_regions)
+                if len(
+                    self._players_in_region(
+                        region, killed_this_round=killed_this_round
+                    )
+                )
+                >= 2
+            ]
+            if active_candidates:
+                region = random.choice(active_candidates)
+                candidates = self._players_in_region(
+                    region, killed_this_round=killed_this_round
+                )
+                victim = random.choice(candidates)
+                lethality = self._mutt_lethality_chance(
+                    victim, base_chance=76, min_chance=24
+                )
+                self.active_mutt_regions.clear()
+                if random.randint(1, 100) <= lethality:
+                    self._mark_kill(
+                        None,
+                        victim,
+                        killed_this_round,
+                        elimination_log=elimination_log,
+                        cause=_("was torn apart by mutts in **{region}**").format(
+                            region=region
+                        ),
+                    )
+                    round_lines.append(
+                        _("🐺 Mutts ambush **{victim}** in **{region}**.").format(
+                            victim=victim.display_name,
+                            region=region,
+                        )
+                    )
+                else:
+                    loss = self._apply_mutt_gear_loss(victim)
+                    round_lines.append(
+                        _(
+                            "🐺 Mutts ambush **{victim}** in **{region}**, but they escape and lose {loss} gear level(s)."
+                        ).format(
+                            victim=victim.display_name,
+                            region=region,
+                            loss=loss,
+                        )
+                    )
+                return
+
+            faded_regions = sorted(self.active_mutt_regions)
+            self.active_mutt_regions.clear()
+            round_lines.append(
+                _(
+                    "🐾 Mutt warning fades in {regions}. No crowded targets remain."
+                ).format(
+                    regions=nice_join([f"**{region}**" for region in faded_regions])
+                )
+            )
+            return
+
         roll = random.randint(1, 100)
         if roll <= 45:
             candidate_regions = [
@@ -1313,36 +1407,12 @@ class RegionGame(GameBase):
             if not crowded_regions:
                 return
             region = random.choice(crowded_regions)
-            candidates = self._players_in_region(region, killed_this_round=killed_this_round)
-            victim = random.choice(candidates)
-            lethality = self._mutt_lethality_chance(
-                victim, base_chance=76, min_chance=24
+            self.next_mutt_regions = {region}
+            round_lines.append(
+                _(
+                    "🐾 Growls echo from **{region}**. Mutts are gathering and may strike there next round if two or more tributes stay."
+                ).format(region=region)
             )
-            if random.randint(1, 100) <= lethality:
-                self._mark_kill(
-                    None,
-                    victim,
-                    killed_this_round,
-                    elimination_log=elimination_log,
-                    cause=_("was torn apart by mutts in **{region}**").format(region=region),
-                )
-                round_lines.append(
-                    _("🐺 Mutts ambush **{victim}** in **{region}**.").format(
-                        victim=victim.display_name,
-                        region=region,
-                    )
-                )
-            else:
-                loss = self._apply_mutt_gear_loss(victim)
-                round_lines.append(
-                    _(
-                        "🐺 Mutts ambush **{victim}** in **{region}**, but they escape and lose {loss} gear level(s)."
-                    ).format(
-                        victim=victim.display_name,
-                        region=region,
-                        loss=loss,
-                    )
-                )
             return
 
         region = random.choice(list(self.REGIONS))
@@ -1495,6 +1565,8 @@ class RegionGame(GameBase):
             description=_(
                 "☣️ Toxic now: {active}\n"
                 "⚠️ Prewarned next round: {next_regions}\n"
+                "🐺 Mutts this round: {active_mutts}\n"
+                "🐾 Mutt warning next: {next_mutts}\n"
                 "📦 Active drops: {drops}"
             ).format(
                 active=", ".join(sorted(self.active_toxic_regions))
@@ -1502,6 +1574,12 @@ class RegionGame(GameBase):
                 else _("None"),
                 next_regions=", ".join(sorted(self.next_toxic_regions))
                 if self.next_toxic_regions
+                else _("None"),
+                active_mutts=", ".join(sorted(self.active_mutt_regions))
+                if self.active_mutt_regions
+                else _("None"),
+                next_mutts=", ".join(sorted(self.next_mutt_regions))
+                if self.next_mutt_regions
                 else _("None"),
                 drops=", ".join(
                     f"{region} (+{bonus})"
@@ -1539,9 +1617,11 @@ class RegionGame(GameBase):
         elimination_log: dict[int, dict] = {}
 
         self.active_toxic_regions = set(self.next_toxic_regions)
+        self.active_mutt_regions = set(self.next_mutt_regions)
         self.fog_stage = max(1, min(6, 1 + (self.round - 1) // 2))
         self._spawn_region_drops()
         self.next_toxic_regions = self._pick_next_toxic_regions()
+        self.next_mutt_regions = set()
         await self._send_region_brief()
 
         # Everyone receives action choices at once, then we resolve in random initiative.
@@ -1576,7 +1656,7 @@ class RegionGame(GameBase):
             await self.ctx.send(_("⏳ Action phase closed. Resolving round..."))
 
         turn_order = actors.copy()
-        random.shuffle(turn_order)
+        turn_order = random.shuffle(turn_order)
         for actor in turn_order:
             if actor not in self.players or actor in killed_this_round:
                 continue
@@ -2043,7 +2123,7 @@ class RegionIdeasGame(RegionGame):
         ]
 
         neighbors = list(self.REGION_ADJACENCY.get(current_region, ()))
-        random.shuffle(neighbors)
+        neighbors = random.shuffle(neighbors)
         for region in neighbors[:2]:
             choices.append(
                 {
@@ -2426,13 +2506,27 @@ class RegionIdeasGame(RegionGame):
         if target is None:
             return _("does something chaotic but pointless.")
 
-        if self._check_trap_trigger(actor, target, killed_this_round, elimination_log):
-            return _("charges **{target}** but triggers their trap and dies.").format(
+        if kind == "hunt" and (
+            target.id in self.hidden_ids or target.id in self.tunnel_hidden_ids
+        ):
+            return _("tries to hunt **{target}**, but they stay hidden.").format(
+                target=target.display_name
+            )
+
+        if kind == "hunt" and self._check_trap_trigger(
+            actor,
+            target,
+            killed_this_round,
+            elimination_log,
+            bonus_chance=20,
+        ):
+            return _("tracks **{target}** but triggers their trap and dies.").format(
                 target=target.display_name
             )
 
         actor_gear = self.gear_score[actor.id]
         target_gear = self.gear_score[target.id]
+        target_traps = self.traps.get(target.id, 0)
         regional_bonus = 12 if actor_region == "Stone Quarry" else 6 if actor_region == "Cornucopia" else 0
         hidden_penalty = 0
         if target.id in self.hidden_ids:
@@ -2444,15 +2538,16 @@ class RegionIdeasGame(RegionGame):
 
         if kind == "hunt":
             chance = (
-                35
-                + actor_gear * 8
-                + min(18, self.round * 2)
-                + actor_bonus
-                + regional_bonus
+                30
+                + actor_gear * 4
+                + min(14, self.round * 2)
+                + actor_bonus // 2
+                + regional_bonus // 2
                 - hidden_penalty
-                - min(24, target_gear * 3)
+                - min(18, target_gear * 2)
+                - target_traps * 12
             )
-            chance = max(10, min(95, chance))
+            chance = max(8, min(90, chance))
             if random.randint(1, 100) <= chance:
                 self._mark_kill(
                     actor,
@@ -2466,7 +2561,10 @@ class RegionIdeasGame(RegionGame):
                 return _("hunts down **{target}** cleanly.").format(
                     target=target.display_name
                 )
-            counter_chance = min(68, 18 + target_gear * 5 + target_bonus // 3)
+            counter_chance = min(
+                75,
+                22 + target_gear * 4 + target_bonus // 3 + target_traps * 8,
+            )
             if random.randint(1, 100) <= counter_chance:
                 self._mark_kill(
                     target,
@@ -2486,15 +2584,15 @@ class RegionIdeasGame(RegionGame):
 
         if kind == "rush":
             chance = (
-                40
-                + actor_gear * 6
-                + min(12, self.round)
-                + actor_bonus // 2
+                38
+                + actor_gear * 8
+                + min(10, self.round)
+                + actor_bonus // 3
                 + regional_bonus
-                - hidden_penalty
-                - min(16, target_gear * 2)
+                - hidden_penalty // 2
+                - min(24, target_gear * 3)
             )
-            chance = max(10, min(90, chance))
+            chance = max(10, min(93, chance))
             if random.randint(1, 100) <= chance:
                 self._mark_kill(
                     actor,
@@ -2791,10 +2889,12 @@ class RegionIdeasGame(RegionGame):
         self.round_slow_ids = set(self.slow_next_round_ids)
         self.active_toxic_regions = set(self.next_toxic_regions)
         self.active_region_hazards = dict(self.next_region_hazards)
+        self.active_mutt_regions = set(self.next_mutt_regions)
         self.fog_stage = max(1, min(6, 1 + (self.round - 1) // 2))
         self._spawn_region_drops()
         self.next_toxic_regions = self._pick_next_toxic_regions()
         self.next_region_hazards = self._pick_next_region_hazards()
+        self.next_mutt_regions = set()
         self._assign_sponsor_contracts()
 
         if self._is_collapse_mode() and not self.collapse_announced:
@@ -2839,7 +2939,7 @@ class RegionIdeasGame(RegionGame):
             await self.ctx.send(_("⏳ Action phase closed. Resolving round..."))
 
         turn_order = actors.copy()
-        random.shuffle(turn_order)
+        turn_order = random.shuffle(turn_order)
         for actor in turn_order:
             if actor not in self.players or actor in killed_this_round:
                 continue
