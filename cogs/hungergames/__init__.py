@@ -823,7 +823,7 @@ class GameBase:
             if idx == 1:
                 embed.set_footer(
                     text=_(
-                        "District alliances are protected until round {round}. Betrayals unlock after that."
+                        "District alliances are protected until round {round}. Betrayals unlock after that. DM the bot to relay messages to your living district teammate."
                     ).format(round=self.ALLIANCE_LOCK_ROUNDS)
                 )
             await self.ctx.send(embed=embed)
@@ -1141,12 +1141,38 @@ class RegionGame(GameBase):
         sample_size = min(4, len(choices))
         return random.sample(choices, sample_size)
 
+    def _teammate_intel_prompt(self, actor: discord.Member) -> str:
+        ally_ids = self.allies_by_player_id.get(actor.id, set())
+        if not ally_ids:
+            return _("No district teammate.")
+
+        alive_allies = []
+        for ally_id in sorted(ally_ids):
+            ally = self.member_by_id.get(ally_id)
+            if ally is None or ally not in self.players:
+                continue
+            alive_allies.append(ally)
+        if not alive_allies:
+            return _("No district teammate alive.")
+
+        return ", ".join(
+            _("{ally}: {region}").format(
+                ally=ally.display_name,
+                region=self._region_for(ally),
+            )
+            for ally in alive_allies
+        )
+
     async def _choose_action(self, actor: discord.Member, choices: list[dict]) -> dict:
+        teammate_intel = self._teammate_intel_prompt(actor)
         try:
             idx = await self.ctx.bot.paginator.Choose(
                 entries=[choice["label"] for choice in choices],
                 return_index=True,
-                title=_("Choose your arena action\nBack to game: {link}").format(
+                title=_(
+                    "Choose your arena action\nTeammate intel: {intel}\nBack to game: {link}"
+                ).format(
+                    intel=teammate_intel,
                     link=self.game_channel_link
                 ),
                 timeout=self.ACTION_TIMEOUT_SECONDS,
@@ -2093,15 +2119,17 @@ class RegionIdeasGame(RegionGame):
 
     async def _choose_action(self, actor: discord.Member, choices: list[dict]) -> dict:
         contract_line = self._contract_prompt_line(self.active_contracts.get(actor.id))
+        teammate_intel = self._teammate_intel_prompt(actor)
         try:
             idx = await self.ctx.bot.paginator.Choose(
                 entries=[choice["label"] for choice in choices],
                 return_index=True,
                 title=_(
-                    "Choose your arena action\nContract: {contract}\nBack to game:"
-                    " {link}"
+                    "Choose your arena action\nContract: {contract}\nTeammate intel:"
+                    " {intel}\nBack to game: {link}"
                 ).format(
                     contract=contract_line,
+                    intel=teammate_intel,
                     link=self.game_channel_link,
                 ),
                 timeout=self.ACTION_TIMEOUT_SECONDS,
@@ -2819,6 +2847,84 @@ class HungerGames(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.games = {}
+
+    def _active_game_for_player(self, player_id: int) -> GameBase | None:
+        for game in self.games.values():
+            if not isinstance(game, GameBase):
+                continue
+            if player_id in game.member_by_id:
+                return game
+        return None
+
+    def _living_teammates(self, game: GameBase, player: discord.Member) -> list[discord.Member]:
+        ally_ids = game.allies_by_player_id.get(player.id, set())
+        teammates = []
+        for ally_id in sorted(ally_ids):
+            ally = game.member_by_id.get(ally_id)
+            if ally is None or ally not in game.players or ally == player:
+                continue
+            teammates.append(ally)
+        return teammates
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        if message.author.bot or message.guild is not None:
+            return
+        if not isinstance(message.author, discord.Member):
+            # In DMs, discord.py returns User for cached-less cases; we still
+            # support relays by resolving via member_by_id in the game object.
+            pass
+
+        game = self._active_game_for_player(message.author.id)
+        if game is None:
+            return
+
+        sender = game.member_by_id.get(message.author.id)
+        if sender is None or sender not in game.players:
+            return
+
+        teammates = self._living_teammates(game, sender)
+        if not teammates:
+            return
+
+        content = message.content.strip()
+        attachment_urls = [a.url for a in message.attachments]
+        if not content and not attachment_urls:
+            return
+
+        payload_lines = []
+        if content:
+            payload_lines.append(content)
+        if attachment_urls:
+            payload_lines.append("\n".join(attachment_urls))
+        payload = "\n".join(payload_lines)
+
+        if isinstance(game, RegionGame):
+            sender_location = game._region_for(sender)
+            heading = _("📨 Team relay from **{sender}** in **{region}**").format(
+                sender=sender.display_name,
+                region=sender_location,
+            )
+        else:
+            heading = _("📨 Team relay from **{sender}**").format(
+                sender=sender.display_name
+            )
+
+        delivered = 0
+        for teammate in teammates:
+            try:
+                await teammate.send(f"{heading}:\n{payload}")
+                delivered += 1
+            except (discord.Forbidden, discord.HTTPException):
+                continue
+
+        if delivered > 0:
+            try:
+                await message.channel.send(
+                    _("✅ Relayed to {count} teammate(s).").format(count=delivered)
+                )
+            except discord.HTTPException:
+                pass
 
     def _format_joined_players(self, joined: set) -> str:
         if not joined:
