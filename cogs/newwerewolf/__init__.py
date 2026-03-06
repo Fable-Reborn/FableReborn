@@ -3129,10 +3129,7 @@ class NewWerewolf(commands.Cog):
         remaining = duration_seconds
         while remaining > 0 and not view.is_finished():
             wait_for = min(update_interval, remaining)
-            try:
-                await asyncio.wait_for(view.wait(), timeout=wait_for)
-            except asyncio.TimeoutError:
-                pass
+            await asyncio.sleep(wait_for)
             remaining -= wait_for
             try:
                 await message.edit(
