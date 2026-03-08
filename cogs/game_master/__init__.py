@@ -1639,6 +1639,16 @@ class GameMaster(commands.Cog):
         await self.bot.pool.execute(
             'UPDATE profile SET "xp"="xp"+$1 WHERE "user"=$2;', amount, target.id
         )
+        await self.bot.log_xp_watch_event(
+            ctx=ctx,
+            user_id=target.id,
+            delta=int(amount),
+            source="game_master.gmxp",
+            details={
+                "gm_id": ctx.author.id,
+                "reason": reason or "",
+            },
+        )
         await self._safe_ctx_send(
             ctx,
             _("Successfully gave **{amount}** XP to **{target}**.").format(
@@ -1658,6 +1668,214 @@ class GameMaster(commands.Cog):
                 self.bot.config.game.gm_log_channel,
                 params=params,
             )
+
+    @is_gm()
+    @commands.group(
+        hidden=True,
+        invoke_without_command=True,
+        name="xpwatch",
+        aliases=["xpwatchdog", "xpwd"],
+        brief=_("Manage XP watchdog users"),
+    )
+    @locale_doc
+    async def xpwatch(self, ctx):
+        _(
+            """Manage XP watchdog users and view tracked XP gain events.
+
+            `{prefix}xpwatch add <user> [note]`
+            `{prefix}xpwatch remove <user>`
+            `{prefix}xpwatch list`
+            `{prefix}xpwatch logs <user> [limit]`
+            """
+        )
+        return await self._safe_ctx_send(
+            ctx,
+            _(
+                "Usage: `{prefix}xpwatch add <user> [note]`, `{prefix}xpwatch remove"
+                " <user>`, `{prefix}xpwatch list`, `{prefix}xpwatch logs <user>"
+                " [limit]`."
+            ).format(prefix=ctx.clean_prefix),
+        )
+
+    @is_gm()
+    @xpwatch.command(name="add", aliases=["on", "enable"], hidden=True)
+    async def xpwatch_add(self, ctx, target: discord.User, *, note: str = None):
+        note_text = note.strip() if note else None
+        await self.bot.set_xp_watch(
+            user_id=target.id,
+            enabled=True,
+            added_by=ctx.author.id,
+            note=note_text,
+        )
+        if note_text:
+            return await self._safe_ctx_send(
+                ctx,
+                _(
+                    "XP watchdog enabled for **{user}** (`{user_id}`). Note: {note}"
+                ).format(
+                    user=str(target),
+                    user_id=target.id,
+                    note=note_text,
+                ),
+            )
+        return await self._safe_ctx_send(
+            ctx,
+            _("XP watchdog enabled for **{user}** (`{user_id}`).").format(
+                user=str(target),
+                user_id=target.id,
+            ),
+        )
+
+    @is_gm()
+    @xpwatch.command(name="remove", aliases=["off", "disable"], hidden=True)
+    async def xpwatch_remove(self, ctx, target: discord.User):
+        await self.bot.set_xp_watch(
+            user_id=target.id,
+            enabled=False,
+            added_by=ctx.author.id,
+        )
+        return await self._safe_ctx_send(
+            ctx,
+            _("XP watchdog disabled for **{user}** (`{user_id}`).").format(
+                user=str(target),
+                user_id=target.id,
+            ),
+        )
+
+    @staticmethod
+    def _chunk_watch_lines(lines: list[str], max_chars: int = 3800) -> list[str]:
+        if not lines:
+            return []
+        chunks = []
+        current = []
+        current_len = 0
+        for line in lines:
+            line_len = len(line) + 1
+            if current and current_len + line_len > max_chars:
+                chunks.append("\n".join(current))
+                current = []
+                current_len = 0
+            current.append(line)
+            current_len += line_len
+        if current:
+            chunks.append("\n".join(current))
+        return chunks
+
+    @is_gm()
+    @xpwatch.command(name="list", hidden=True)
+    async def xpwatch_list(self, ctx):
+        rows = await self.bot.fetch_xp_watchlist()
+        if not rows:
+            return await self._safe_ctx_send(ctx, _("No users are currently on XP watchdog."))
+
+        lines = []
+        for row in rows:
+            user_id = int(row["user_id"])
+            added_by = int(row["added_by"])
+            note = (row.get("note") or "").strip()
+            added_at = row.get("added_at")
+            added_text = _("unknown time")
+            if added_at is not None:
+                try:
+                    added_text = f"<t:{int(added_at.timestamp())}:R>"
+                except Exception:
+                    added_text = _("unknown time")
+            base_line = f"<@{user_id}> (`{user_id}`) - by <@{added_by}> - {added_text}"
+            if note:
+                base_line += f" - note: {note}"
+            lines.append(base_line)
+
+        pages = self._chunk_watch_lines(lines)
+        embeds = []
+        for idx, page in enumerate(pages, start=1):
+            embed = discord.Embed(
+                title=_("XP Watchdog Users"),
+                description=page,
+                colour=self.bot.config.game.primary_colour,
+            )
+            if len(pages) > 1:
+                embed.set_footer(
+                    text=_("Page {page}/{total}").format(page=idx, total=len(pages))
+                )
+            embeds.append(embed)
+
+        if len(embeds) == 1:
+            return await self._safe_ctx_send(ctx, embed=embeds[0])
+        return await self.bot.paginator.Paginator(extras=embeds).paginate(ctx)
+
+    @is_gm()
+    @xpwatch.command(name="logs", aliases=["events", "history"], hidden=True)
+    async def xpwatch_logs(
+        self,
+        ctx,
+        target: discord.User,
+        limit: IntFromTo(1, 200) = 50,
+    ):
+        rows = await self.bot.fetch_xp_watch_events(user_id=target.id, limit=int(limit))
+        if not rows:
+            return await self._safe_ctx_send(
+                ctx,
+                _(
+                    "No XP watchdog events found for **{user}** (`{user_id}`)."
+                ).format(user=str(target), user_id=target.id),
+            )
+
+        lines = []
+        for row in rows:
+            created_at = row.get("created_at")
+            timestamp_text = _("unknown time")
+            if created_at is not None:
+                try:
+                    timestamp_text = f"<t:{int(created_at.timestamp())}:F>"
+                except Exception:
+                    timestamp_text = _("unknown time")
+
+            details_obj = row.get("details")
+            details_text = ""
+            if isinstance(details_obj, dict) and details_obj:
+                details_pairs = [
+                    f"{key}={value}"
+                    for key, value in details_obj.items()
+                    if value not in (None, "")
+                ]
+                details_text = ", ".join(details_pairs)
+            elif details_obj:
+                details_text = str(details_obj)
+
+            if len(details_text) > 180:
+                details_text = details_text[:177] + "..."
+
+            old_xp = row.get("old_xp")
+            new_xp = row.get("new_xp")
+            old_xp_text = "?" if old_xp is None else str(old_xp)
+            new_xp_text = "?" if new_xp is None else str(new_xp)
+            command_name = row.get("command_name") or "n/a"
+            line = (
+                f"{timestamp_text} | +{int(row['xp_delta'])} XP | {row['source']} | "
+                f"cmd: {command_name} | {old_xp_text}->{new_xp_text}"
+            )
+            if details_text:
+                line += f" | {details_text}"
+            lines.append(line)
+
+        pages = self._chunk_watch_lines(lines)
+        embeds = []
+        for idx, page in enumerate(pages, start=1):
+            embed = discord.Embed(
+                title=_("XP Watchdog Logs"),
+                description=page,
+                colour=self.bot.config.game.primary_colour,
+            )
+            embed.set_author(name=str(target), icon_url=target.display_avatar.url)
+            if len(pages) > 1:
+                embed.set_footer(
+                    text=_("Page {page}/{total}").format(page=idx, total=len(pages))
+                )
+            embeds.append(embed)
+
+        if len(embeds) == 1:
+            return await self._safe_ctx_send(ctx, embed=embeds[0])
+        return await self.bot.paginator.Paginator(extras=embeds).paginate(ctx)
 
     import random
     @is_gm()

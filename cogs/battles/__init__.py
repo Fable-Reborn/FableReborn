@@ -6489,6 +6489,20 @@ class Battles(commands.Cog):
                             'UPDATE profile SET "money"="money"+$1, "xp"="xp"+$2 WHERE "user"=$3;',
                             member_money, member_xp, member.id
                         )
+                        await self.bot.log_xp_watch_event(
+                            ctx=ctx,
+                            user_id=member.id,
+                            delta=int(member_xp),
+                            source="battles.dragon_challenge.victory",
+                            details={
+                                "dragon_level": int(old_level),
+                                "party_size": len(party_members),
+                                "member_money_reward": int(member_money),
+                            },
+                            before_xp=current_xp,
+                            after_xp=current_xp + member_xp,
+                            conn=conn,
+                        )
 
                         # Calculate new level and check for level-up
                         new_level = int(rpgtools.xptolevel(current_xp + member_xp))
@@ -6674,6 +6688,19 @@ class Battles(commands.Cog):
                     await conn.execute(
                         'UPDATE profile SET "xp"="xp"+$1 WHERE "user"=$2;',
                         consolation_xp, member.id
+                    )
+                    await self.bot.log_xp_watch_event(
+                        ctx=ctx,
+                        user_id=member.id,
+                        delta=int(consolation_xp),
+                        source="battles.dragon_challenge.defeat_consolation",
+                        details={
+                            "dragon_level": int(dragon_level),
+                            "party_size": len(party_members),
+                        },
+                        before_xp=current_xp,
+                        after_xp=current_xp + consolation_xp,
+                        conn=conn,
                     )
 
                     # Calculate new level and check for level-up

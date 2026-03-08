@@ -336,6 +336,20 @@ class Crates(commands.Cog):
                                 total_xp,
                                 user_id,
                             )
+                            await self.bot.log_xp_watch_event(
+                                ctx=ctx,
+                                user_id=user_id,
+                                delta=int(total_xp),
+                                source="crates.open.fortune",
+                                details={
+                                    "opened_crates": int(amount),
+                                    "xp_rolls": int(xp_crates),
+                                    "money_rolls": int(money_crates),
+                                },
+                                before_xp=current_xp,
+                                after_xp=current_xp + total_xp,
+                                conn=conn,
+                            )
                         if total_money > 0:
                             await conn.execute(
                                 'UPDATE profile SET "money" = "money" + $1 WHERE "user" = $2',

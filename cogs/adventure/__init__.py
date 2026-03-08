@@ -1840,6 +1840,17 @@ class Adventure(commands.Cog):
                     xp,
                     ctx.author.id,
                 )
+                await self.bot.log_xp_watch_event(
+                    ctx=ctx,
+                    user_id=ctx.author.id,
+                    delta=int(xp),
+                    source="adventure.complete",
+                    details={
+                        "adventure_level": int(num),
+                        "gold_reward": int(gold),
+                    },
+                    conn=conn,
+                )
 
                 if partner := ctx.character_data["marriage"]:
                     await conn.execute(

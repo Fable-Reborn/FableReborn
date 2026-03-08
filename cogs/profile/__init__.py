@@ -1878,6 +1878,16 @@ class Profile(commands.Cog):
                         xp,
                         ctx.author.id
                     )
+                    await self.bot.log_xp_watch_event(
+                        ctx=ctx,
+                        user_id=ctx.author.id,
+                        delta=int(xp),
+                        source="profile.consume.level_candy",
+                        details={"item": "levelcandy"},
+                        before_xp=current_xp,
+                        after_xp=current_xp + xp,
+                        conn=conn,
+                    )
                     await self.bot.process_levelup(ctx, current_level + 1, current_level)
 
                 await ctx.send(
@@ -1917,6 +1927,16 @@ class Profile(commands.Cog):
                         xp,
                         ctx.author.id
                     )
+                    await self.bot.log_xp_watch_event(
+                        ctx=ctx,
+                        user_id=ctx.author.id,
+                        delta=int(xp),
+                        source="profile.consume.highquality_level_candy",
+                        details={"item": "highqualitylevelcandy", "step": 1},
+                        before_xp=current_xp,
+                        after_xp=current_xp + xp,
+                        conn=conn,
+                    )
                     await self.bot.process_levelup(ctx, current_level + 1, current_level)
 
                     # Second level up
@@ -1926,6 +1946,16 @@ class Profile(commands.Cog):
                         'UPDATE profile SET "xp" = "xp" + $1 WHERE "user" = $2;',
                         newxp,
                         ctx.author.id
+                    )
+                    await self.bot.log_xp_watch_event(
+                        ctx=ctx,
+                        user_id=ctx.author.id,
+                        delta=int(newxp),
+                        source="profile.consume.highquality_level_candy",
+                        details={"item": "highqualitylevelcandy", "step": 2},
+                        before_xp=new_xp,
+                        after_xp=new_xp + newxp,
+                        conn=conn,
                     )
                     await self.bot.process_levelup(ctx, current_level + 2, current_level + 1)
 

@@ -103,6 +103,9 @@ class Bot(commands.AutoShardedBot):
         self.donator_cooldown = CooldownMapping(
             Cooldown(3, 3, 1, 2, commands.BucketType.user)
         )
+        self._xp_watch_tables_ready = False
+        self._xp_watch_table_lock = asyncio.Lock()
+        self._xp_watch_user_ids = set()
 
 
 
@@ -1147,6 +1150,221 @@ class Bot(commands.AutoShardedBot):
             )
         if local:
             await self.pool.release(conn)
+
+    async def _ensure_xp_watch_tables(self) -> None:
+        if self._xp_watch_tables_ready:
+            return
+        async with self._xp_watch_table_lock:
+            if self._xp_watch_tables_ready:
+                return
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS xp_watchlist (
+                        user_id bigint PRIMARY KEY,
+                        added_by bigint NOT NULL,
+                        note text,
+                        added_at timestamp with time zone NOT NULL DEFAULT now(),
+                        updated_at timestamp with time zone NOT NULL DEFAULT now()
+                    );
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS xp_watch_events (
+                        id bigserial PRIMARY KEY,
+                        user_id bigint NOT NULL,
+                        xp_delta integer NOT NULL,
+                        old_xp bigint,
+                        new_xp bigint,
+                        source text NOT NULL,
+                        command_name text,
+                        guild_id bigint,
+                        channel_id bigint,
+                        details jsonb NOT NULL DEFAULT '{}'::jsonb,
+                        created_at timestamp with time zone NOT NULL DEFAULT now()
+                    );
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS xp_watch_events_user_created_idx
+                    ON xp_watch_events (user_id, created_at DESC);
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS xp_watch_events_created_idx
+                    ON xp_watch_events (created_at DESC);
+                    """
+                )
+                rows = await conn.fetch("SELECT user_id FROM xp_watchlist;")
+            self._xp_watch_user_ids = {int(row["user_id"]) for row in rows}
+            self._xp_watch_tables_ready = True
+
+    async def _refresh_xp_watch_cache(self, *, conn=None) -> None:
+        await self._ensure_xp_watch_tables()
+        local = False
+        if conn is None:
+            conn = await self.pool.acquire()
+            local = True
+        try:
+            rows = await conn.fetch("SELECT user_id FROM xp_watchlist;")
+            self._xp_watch_user_ids = {int(row["user_id"]) for row in rows}
+        finally:
+            if local:
+                await self.pool.release(conn)
+
+    async def set_xp_watch(
+        self,
+        *,
+        user_id: int,
+        enabled: bool,
+        added_by: int,
+        note: str | None = None,
+    ) -> None:
+        await self._ensure_xp_watch_tables()
+        async with self.pool.acquire() as conn:
+            if enabled:
+                await conn.execute(
+                    """
+                    INSERT INTO xp_watchlist (user_id, added_by, note, updated_at)
+                    VALUES ($1, $2, $3, now())
+                    ON CONFLICT (user_id)
+                    DO UPDATE SET
+                        added_by = EXCLUDED.added_by,
+                        note = EXCLUDED.note,
+                        updated_at = now();
+                    """,
+                    int(user_id),
+                    int(added_by),
+                    note,
+                )
+            else:
+                await conn.execute(
+                    "DELETE FROM xp_watchlist WHERE user_id = $1;",
+                    int(user_id),
+                )
+            await self._refresh_xp_watch_cache(conn=conn)
+
+    async def fetch_xp_watchlist(self) -> list[dict]:
+        await self._ensure_xp_watch_tables()
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT user_id, added_by, note, added_at, updated_at
+                FROM xp_watchlist
+                ORDER BY added_at DESC;
+                """
+            )
+        return [dict(row) for row in rows]
+
+    async def fetch_xp_watch_events(self, *, user_id: int, limit: int = 50) -> list[dict]:
+        await self._ensure_xp_watch_tables()
+        safe_limit = max(1, min(int(limit), 200))
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, user_id, xp_delta, old_xp, new_xp, source, command_name,
+                       guild_id, channel_id, details, created_at
+                FROM xp_watch_events
+                WHERE user_id = $1
+                ORDER BY created_at DESC
+                LIMIT $2;
+                """,
+                int(user_id),
+                safe_limit,
+            )
+        return [dict(row) for row in rows]
+
+    async def log_xp_watch_event(
+        self,
+        *,
+        ctx,
+        user_id: int,
+        delta: int,
+        source: str,
+        details: dict | None = None,
+        before_xp: int | None = None,
+        after_xp: int | None = None,
+        conn=None,
+    ) -> None:
+        try:
+            xp_delta = int(delta)
+        except (TypeError, ValueError):
+            return
+        if xp_delta <= 0:
+            return
+        if not hasattr(self, "pool"):
+            return
+
+        try:
+            await self._ensure_xp_watch_tables()
+        except Exception:
+            return
+
+        if int(user_id) not in self._xp_watch_user_ids:
+            return
+
+        local = False
+        if conn is None:
+            conn = await self.pool.acquire()
+            local = True
+        try:
+            if after_xp is None:
+                after_xp = await conn.fetchval(
+                    'SELECT "xp" FROM profile WHERE "user"=$1;',
+                    int(user_id),
+                )
+            if after_xp is not None:
+                after_xp = int(after_xp)
+            if before_xp is None and after_xp is not None:
+                before_xp = after_xp - xp_delta
+            if before_xp is not None:
+                before_xp = int(before_xp)
+
+            command_name = None
+            guild_id = None
+            channel_id = None
+            if ctx is not None:
+                command = getattr(ctx, "command", None)
+                if command is not None:
+                    command_name = getattr(command, "qualified_name", str(command))
+                guild = getattr(ctx, "guild", None)
+                channel = getattr(ctx, "channel", None)
+                guild_id = getattr(guild, "id", None)
+                channel_id = getattr(channel, "id", None)
+
+            if isinstance(details, dict):
+                details_payload = details
+            elif details is None:
+                details_payload = {}
+            else:
+                details_payload = {"detail": str(details)}
+
+            await conn.execute(
+                """
+                INSERT INTO xp_watch_events (
+                    user_id, xp_delta, old_xp, new_xp, source, command_name,
+                    guild_id, channel_id, details
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb);
+                """,
+                int(user_id),
+                xp_delta,
+                before_xp,
+                after_xp,
+                str(source),
+                command_name,
+                guild_id,
+                channel_id,
+                json.dumps(details_payload, default=str),
+            )
+        except Exception:
+            return
+        finally:
+            if local:
+                await self.pool.release(conn)
 
     async def public_log(self, event: str):
         with handle_message_parameters(content=event) as params:

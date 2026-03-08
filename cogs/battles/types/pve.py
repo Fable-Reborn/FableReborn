@@ -542,6 +542,17 @@ class PvEBattle(Battle):
                     xp_gain,
                     self.ctx.author.id,
                 )
+                await self.ctx.bot.log_xp_watch_event(
+                    ctx=self.ctx,
+                    user_id=self.ctx.author.id,
+                    delta=int(xp_gain),
+                    source="battles.pve.victory",
+                    details={
+                        "monster_level": int(self.monster_level),
+                        "macro_penalty_level": int(self.macro_penalty_level),
+                    },
+                    conn=conn,
+                )
 
             # Award pet battle XP to equipped/only pet with a daily cap.
             pet_battle_result = None
