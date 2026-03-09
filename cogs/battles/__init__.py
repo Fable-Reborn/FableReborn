@@ -448,6 +448,91 @@ class ConfirmView(View):
             return False
         return True
 
+
+class OmnithroneCinematicView(View):
+    def __init__(self, scenes: list[dict], author: discord.User):
+        super().__init__(timeout=300)
+        self.scenes = scenes
+        self.author = author
+        self.current_scene = 0
+        self.message = None
+        self.completed = False
+        self._update_button_state()
+
+    def _update_button_state(self):
+        is_last_scene = self.current_scene >= len(self.scenes) - 1
+        self.advance_button.label = "Begin Battle" if is_last_scene else "Next"
+        self.advance_button.style = (
+            discord.ButtonStyle.success if is_last_scene else discord.ButtonStyle.primary
+        )
+        self.advance_button.emoji = "⚔️" if is_last_scene else "➡️"
+
+    def _build_scene_kwargs(self):
+        scene = self.scenes[self.current_scene]
+        kwargs = {"embed": scene["embed"], "view": self}
+
+        cached_path = scene.get("cached_path")
+        cache_filename = scene.get("cache_filename")
+        if cached_path and cache_filename and os.path.exists(cached_path):
+            kwargs["attachments"] = [discord.File(cached_path, filename=cache_filename)]
+        else:
+            kwargs["attachments"] = []
+
+        return kwargs
+
+    def _build_initial_scene_kwargs(self):
+        scene = self.scenes[self.current_scene]
+        kwargs = {"embed": scene["embed"], "view": self}
+
+        cached_path = scene.get("cached_path")
+        cache_filename = scene.get("cache_filename")
+        if cached_path and cache_filename and os.path.exists(cached_path):
+            kwargs["file"] = discord.File(cached_path, filename=cache_filename)
+
+        return kwargs
+
+    async def show_current_scene(self):
+        self._update_button_state()
+        if self.message is None:
+            return
+        await self.message.edit(**self._build_scene_kwargs())
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message(
+                _("This command was not initiated by you."),
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_timeout(self):
+        self.completed = True
+        for item in self.children:
+            item.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
+        self.stop()
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.primary, emoji="➡️")
+    async def advance_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.message is None and interaction.message is not None:
+            self.message = interaction.message
+
+        is_last_scene = self.current_scene >= len(self.scenes) - 1
+        if is_last_scene:
+            self.completed = True
+            self.stop()
+            await interaction.response.edit_message(view=None)
+            return
+
+        self.current_scene += 1
+        await interaction.response.defer()
+        await self.show_current_scene()
+
 class DialogueView(discord.ui.View):
     def __init__(
         self,
@@ -2372,10 +2457,10 @@ class Battles(commands.Cog):
 
     async def _play_omnithrone_sanctum_cinematic(self, ctx, monster_name: str | None = None):
         """Play a multi-scene pre-fight cinematic for Omnithrone Sanctum encounters."""
-        cinematic_message = None
         total_scenes = len(self.OMNITHRONE_CINEMATIC_SCENES)
         boss_name = monster_name or "The God of Gods"
         cached_assets = await self._cache_omnithrone_cinematic_assets()
+        scene_payloads = []
 
         for idx, scene in enumerate(self.OMNITHRONE_CINEMATIC_SCENES, start=1):
             embed = discord.Embed(
@@ -2387,10 +2472,8 @@ class Battles(commands.Cog):
 
             cache_filename = scene.get("cache_filename")
             cached_path = cached_assets.get(cache_filename) if cache_filename else None
-            scene_file = None
             if cached_path and os.path.exists(cached_path):
                 embed.set_image(url=f"attachment://{cache_filename}")
-                scene_file = discord.File(cached_path, filename=cache_filename)
             else:
                 if cache_filename:
                     embed.add_field(
@@ -2402,24 +2485,19 @@ class Battles(commands.Cog):
                         inline=False,
                     )
 
-            if cinematic_message is None:
-                if scene_file:
-                    cinematic_message = await ctx.send(embed=embed, file=scene_file)
-                else:
-                    cinematic_message = await ctx.send(embed=embed)
-            else:
-                try:
-                    if scene_file:
-                        await cinematic_message.edit(embed=embed, attachments=[scene_file])
-                    else:
-                        await cinematic_message.edit(embed=embed, attachments=[])
-                except Exception:
-                    if scene_file:
-                        cinematic_message = await ctx.send(embed=embed, file=scene_file)
-                    else:
-                        cinematic_message = await ctx.send(embed=embed)
+            scene_payloads.append(
+                {
+                    "embed": embed,
+                    "cached_path": cached_path,
+                    "cache_filename": cache_filename,
+                }
+            )
 
-            await asyncio.sleep(scene["delay"])
+        cinematic_view = OmnithroneCinematicView(scene_payloads, ctx.author)
+        initial_scene = cinematic_view._build_initial_scene_kwargs()
+        cinematic_message = await ctx.send(**initial_scene)
+        cinematic_view.message = cinematic_message
+        await cinematic_view.wait()
 
     async def _get_godofgods_monster_data(self) -> dict | None:
         """Fetch the real tier-12 monster data from database storage."""
