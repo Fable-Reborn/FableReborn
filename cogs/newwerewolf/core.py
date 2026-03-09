@@ -229,7 +229,7 @@ DESCRIPTIONS = {
         " long as no Werewolf has been killed."
     ),
     Role.RAVAGER_WOLF: _(
-        "You are the Ravager Wolf, an advanced Big Bad Wolf role. You fight with the"
+        "You are the Ravager Wolf, an advanced Werewolf role. You fight with the"
         " werewolves at night and may use **Ravage** once per game (not on the first"
         " night). Ravage pierces Doctor/Healer/Jailer/Witch protection on the wolves'"
         " chosen target, but forged shields and Bodyguard/Tough Guy interceptions still"

@@ -3997,9 +3997,10 @@ class NewWerewolf(commands.Cog):
             {
                 "side": _("The Werewolves"),
                 "members": (
-                    "Werewolf, Junior Werewolf, Wolf Seer, Sorcerer - Advanced"
+                    "Werewolf, Ravager Wolf - Advanced unlock, Junior Werewolf,"
+                    " Wolf Seer, Sorcerer - Advanced"
                     " unlock, White Wolf, Cursed Wolf"
-                    " Father, Big Bad Wolf, Ravager Wolf - Advanced unlock, Wolf"
+                    " Father, Big Bad Wolf, Wolf"
                     f" Shaman - {restriction}, Wolf Necromancer - {restriction},"
                     f" Alpha Werewolf - {restriction}, Wolf Summoner - Advanced unlock,"
                     " Wolf Trickster - Advanced unlock,"
