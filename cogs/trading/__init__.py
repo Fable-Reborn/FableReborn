@@ -1558,7 +1558,7 @@ class Trading(commands.Cog):
         return f"{int(hours):02}:{int(minutes):02}:{int(seconds):02}"
 
     @has_char()
-    @commands.cooldown(1, 300, commands.BucketType.user)
+    @user_cooldown(500)
     @commands.command(brief=_("Buys an offer from the trader"))
     @locale_doc
     async def trader(self, ctx):
@@ -1615,6 +1615,8 @@ class Trading(commands.Cog):
                     choices=offer_choices,
                 ).paginate(ctx)
             except NoChoice:
+                
+                await self.bot.reset_cooldown(ctx)
                 return await ctx.send("You did not choose anything.")
 
             if offerid < 0 or offerid >= len(offers):
