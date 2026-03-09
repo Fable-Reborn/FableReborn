@@ -62,6 +62,9 @@ class PvEBattle(Battle):
                 "status_effects": False,
                 "pets_continue_battle": False
             }
+
+        if int(self.monster_level or 0) == self.GOD_OF_GODS_TIER:
+            self.config["tripping"] = False
         
     async def start_battle(self):
         """Initialize and start the battle"""
