@@ -1761,6 +1761,1243 @@ class RegionGame(GameBase):
             self.no_kill_rounds = 0
         else:
             self.no_kill_rounds += 1
+            await self._resolve_stalemate_with_gm(
+                killed_this_round,
+                round_lines,
+                elimination_log,
+            )
+            if killed_this_round:
+                self.no_kill_rounds = 0
+
+        for dead in list(killed_this_round):
+            try:
+                self.players.remove(dead)
+            except ValueError:
+                pass
+
+        try:
+            await status.delete()
+        except discord.NotFound:
+            pass
+        await self._send_round_report(round_lines, killed_this_round, elimination_log)
+        self.round += 1
+
+
+class RegionGMRegionSelect(discord.ui.Select):
+    def __init__(
+        self,
+        panel,
+        *,
+        selection_key: str,
+        placeholder: str,
+        max_allowed: int,
+        row: int,
+    ) -> None:
+        self.panel = panel
+        self.selection_key = selection_key
+        self.max_allowed = max_allowed
+        super().__init__(
+            placeholder=placeholder,
+            min_values=1,
+            max_values=max_allowed,
+            options=[discord.SelectOption(label="...", value="...")],
+            row=row,
+        )
+        self.refresh_options()
+
+    def refresh_options(self) -> None:
+        available_regions = self.panel.available_regions(self.selection_key)
+        selected_regions = self.panel.selected_regions(self.selection_key)
+        if not available_regions:
+            self.disabled = True
+            self.max_values = 1
+            self.options = [
+                discord.SelectOption(
+                    label=_("No valid regions available"),
+                    value="none",
+                )
+            ]
+            return
+
+        self.disabled = False
+        self.max_values = min(self.max_allowed, len(available_regions))
+        self.options = [
+            discord.SelectOption(
+                label=region,
+                value=region,
+                description=self.panel.region_option_description(region)[:100],
+                default=region in selected_regions,
+            )
+            for region in available_regions
+        ]
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        self.panel.set_selection(self.selection_key, self.values)
+        self.panel.refresh_components()
+        await self.panel.refresh_message(interaction)
+
+
+class RegionGMPanelView(discord.ui.View):
+    def __init__(self, game, defaults: dict[str, set[str]], *, timeout: int) -> None:
+        super().__init__(timeout=timeout)
+        self.game = game
+        self.owner_id = game.gm_player.id
+        self.message: discord.Message | None = None
+        self.locked_in = False
+        self.drop_regions = set(defaults.get("drops", set()))
+        self.toxic_regions = set(defaults.get("toxic", set()))
+        self.mutt_regions = set(defaults.get("mutts", set()))
+        self.drop_select = RegionGMRegionSelect(
+            self,
+            selection_key="drops",
+            placeholder=_("Pick current-round drop regions"),
+            max_allowed=max(1, self.game._gm_drop_region_limit()),
+            row=0,
+        )
+        self.toxic_select = RegionGMRegionSelect(
+            self,
+            selection_key="toxic",
+            placeholder=_("Pick next-round toxic regions"),
+            max_allowed=2,
+            row=1,
+        )
+        self.mutt_select = RegionGMRegionSelect(
+            self,
+            selection_key="mutts",
+            placeholder=_("Pick next-round mutt warning"),
+            max_allowed=1,
+            row=2,
+        )
+        self.add_item(self.drop_select)
+        self.add_item(self.toxic_select)
+        self.add_item(self.mutt_select)
+
+    def available_regions(self, selection_key: str) -> list[str]:
+        if selection_key == "drops":
+            return self.game._gm_available_drop_regions()
+        if selection_key == "toxic":
+            return self.game._gm_available_toxic_regions()
+        if selection_key == "mutts":
+            return self.game._gm_available_mutt_regions()
+        return []
+
+    def selected_regions(self, selection_key: str) -> set[str]:
+        if selection_key == "drops":
+            return set(self.drop_regions)
+        if selection_key == "toxic":
+            return set(self.toxic_regions)
+        if selection_key == "mutts":
+            return set(self.mutt_regions)
+        return set()
+
+    def set_selection(self, selection_key: str, values: list[str]) -> None:
+        chosen = {
+            value
+            for value in values
+            if value in set(self.available_regions(selection_key))
+        }
+        if selection_key == "drops":
+            self.drop_regions = chosen
+        elif selection_key == "toxic":
+            self.toxic_regions = set(list(chosen)[:2])
+        elif selection_key == "mutts":
+            self.mutt_regions = set(list(chosen)[:1])
+
+    def region_option_description(self, region: str) -> str:
+        occupants = len(self.game._players_in_region(region))
+        parts = [_("Alive: {count}").format(count=occupants)]
+        if region in self.game.active_toxic_regions:
+            parts.append(_("Toxic now"))
+        if region in self.game.active_mutt_regions:
+            parts.append(_("Mutts now"))
+        if region in self.game.region_drops:
+            parts.append(_("Drop now"))
+        return " | ".join(parts)
+
+    def refresh_components(self) -> None:
+        self.drop_select.refresh_options()
+        self.toxic_select.refresh_options()
+        self.mutt_select.refresh_options()
+
+    def _region_field_value(self, region: str) -> str:
+        occupants = self.game._players_in_region(region)
+        if occupants:
+            names = [player.display_name for player in occupants]
+            visible_names = []
+            for idx, name in enumerate(names):
+                candidate = ", ".join([*visible_names, name])
+                if len(candidate) > 850:
+                    remaining = len(names) - idx
+                    visible_names.append(_("+{count} more").format(count=remaining))
+                    break
+                visible_names.append(name)
+            occupant_text = ", ".join(visible_names)
+        else:
+            occupant_text = _("None")
+        status_bits = []
+        if region in self.game.active_toxic_regions:
+            status_bits.append("☣️ " + _("Toxic now"))
+        if region in self.game.active_mutt_regions:
+            status_bits.append("🐺 " + _("Mutts now"))
+        if region in self.game.region_drops:
+            status_bits.append("📦 " + _("Drop now"))
+
+        if not status_bits:
+            status_bits.append(_("Quiet"))
+        return _(
+            "Status: {status}\nTributes: {occupants}"
+        ).format(
+            status=" • ".join(status_bits),
+            occupants=occupant_text,
+        )
+
+    def _selection_text(self, regions: set[str]) -> str:
+        if not regions:
+            return _("None")
+        return ", ".join(f"**{region}**" for region in sorted(regions))
+
+    def build_embed(self, note: str | None = None) -> discord.Embed:
+        embed = discord.Embed(
+            title=_("🎛️ Game Master Panel - Round {round}").format(
+                round=self.game.round
+            ),
+            description=_(
+                "Choose sponsor drops for this round, then lock toxic zones and mutt pressure for the next round."
+            ),
+            color=discord.Color.dark_purple(),
+        )
+        for region in self.game.REGIONS:
+            embed.add_field(
+                name=region,
+                value=self._region_field_value(region),
+                inline=False,
+            )
+        embed.add_field(
+            name=_("Pending Directives"),
+            value=_(
+                "📦 Drops now: {drops}\n"
+                "⚠️ Toxic next: {toxic}\n"
+                "🐾 Mutts next: {mutts}"
+            ).format(
+                drops=self._selection_text(self.drop_regions),
+                toxic=self._selection_text(self.toxic_regions),
+                mutts=self._selection_text(self.mutt_regions),
+            ),
+            inline=False,
+        )
+        embed.set_footer(
+            text=_(
+                "Limits: up to {drops} drop regions, 2 toxic regions, 1 mutt warning. Empty slots auto-fill on lock or timeout."
+            ).format(drops=self.game._gm_drop_region_limit())
+        )
+        if note:
+            embed.add_field(name=_("Status"), value=note, inline=False)
+        return embed
+
+    async def refresh_message(
+        self,
+        interaction: discord.Interaction | None = None,
+        *,
+        note: str | None = None,
+    ) -> None:
+        self.refresh_components()
+        embed = self.build_embed(note=note)
+        if interaction is not None:
+            await interaction.response.edit_message(embed=embed, view=self)
+            self.message = interaction.message
+            return
+        if self.message is not None:
+            await self.message.edit(embed=embed, view=self)
+
+    def disable_all(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                _("This control panel is not yours."),
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        self.disable_all()
+        if self.message is not None:
+            try:
+                await self.message.edit(
+                    embed=self.build_embed(
+                        note=_("Timed out. Arena defaults will be used.")
+                    ),
+                    view=self,
+                )
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+    @discord.ui.button(label="Randomize", style=ButtonStyle.primary, row=3)
+    async def randomize_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        directives = self.game._random_gm_directives()
+        self.drop_regions = set(directives["drops"])
+        self.toxic_regions = set(directives["toxic"])
+        self.mutt_regions = set(directives["mutts"])
+        await self.refresh_message(
+            interaction,
+            note=_("Random arena directives generated."),
+        )
+
+    @discord.ui.button(label="Clear", style=ButtonStyle.secondary, row=3)
+    async def clear_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.drop_regions.clear()
+        self.toxic_regions.clear()
+        self.mutt_regions.clear()
+        await self.refresh_message(
+            interaction,
+            note=_("Selections cleared. Empty slots will auto-fill if left blank."),
+        )
+
+    @discord.ui.button(label="Lock Round", style=ButtonStyle.success, row=3)
+    async def lock_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.locked_in = True
+        self.disable_all()
+        await interaction.response.edit_message(
+            embed=self.build_embed(note=_("Directives locked for this round.")),
+            view=self,
+        )
+        self.message = interaction.message
+        self.stop()
+
+
+class RegionGMShowdownFighterSelect(discord.ui.Select):
+    def __init__(self, view, *, slot_key: str, placeholder: str, row: int) -> None:
+        self.showdown_view = view
+        self.slot_key = slot_key
+        super().__init__(
+            placeholder=placeholder,
+            min_values=1,
+            max_values=1,
+            options=[discord.SelectOption(label="...", value="0")],
+            row=row,
+        )
+        self.refresh_options()
+
+    def refresh_options(self) -> None:
+        contenders = self.showdown_view.contenders
+        if not contenders:
+            self.disabled = True
+            self.options = [
+                discord.SelectOption(
+                    label=_("No valid contenders"),
+                    value="0",
+                )
+            ]
+            return
+
+        selected_id = self.showdown_view.selected_id(self.slot_key)
+        self.disabled = False
+        self.options = []
+        for contender in contenders:
+            team_id = self.showdown_view.game.team_by_player_id.get(contender.id)
+            description = _("District #{team}").format(team=team_id or "?")
+            self.options.append(
+                discord.SelectOption(
+                    label=contender.display_name[:100],
+                    value=str(contender.id),
+                    description=description[:100],
+                    default=contender.id == selected_id,
+                )
+            )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        self.showdown_view.set_selected(self.slot_key, int(self.values[0]))
+        self.showdown_view.refresh_components()
+        await self.showdown_view.refresh_message(interaction)
+
+
+class RegionGMShowdownView(discord.ui.View):
+    def __init__(
+        self,
+        game,
+        contenders: list[discord.Member],
+        default_pair: tuple[discord.Member, discord.Member],
+        *,
+        timeout: int,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.game = game
+        self.owner_id = game.gm_player.id
+        self.message: discord.Message | None = None
+        self.locked_in = False
+        self.random_choice = False
+        self.contenders = sorted(
+            contenders,
+            key=lambda member: member.display_name.casefold(),
+        )
+        self.first_id = default_pair[0].id
+        self.second_id = default_pair[1].id
+        self.first_select = RegionGMShowdownFighterSelect(
+            self,
+            slot_key="first",
+            placeholder=_("Pick the first duelist"),
+            row=0,
+        )
+        self.second_select = RegionGMShowdownFighterSelect(
+            self,
+            slot_key="second",
+            placeholder=_("Pick the second duelist"),
+            row=1,
+        )
+        self.add_item(self.first_select)
+        self.add_item(self.second_select)
+
+    def selected_id(self, slot_key: str) -> int | None:
+        return self.first_id if slot_key == "first" else self.second_id
+
+    def set_selected(self, slot_key: str, player_id: int) -> None:
+        if slot_key == "first":
+            self.first_id = player_id
+        else:
+            self.second_id = player_id
+
+    def refresh_components(self) -> None:
+        self.first_select.refresh_options()
+        self.second_select.refresh_options()
+
+    def _selected_name(self, player_id: int | None) -> str:
+        if player_id is None:
+            return _("None")
+        player = self.game.member_by_id.get(player_id)
+        if player is None:
+            return _("None")
+        return f"**{player.display_name}**"
+
+    def build_embed(self, note: str | None = None) -> discord.Embed:
+        contenders_text = ", ".join(
+            f"**{member.display_name}**"
+            f" ({_('District #{team}').format(team=self.game.team_by_player_id.get(member.id) or '?')})"
+            for member in self.contenders
+        )
+        embed = discord.Embed(
+            title=_("⚔️ Sudden Death Duel Picker"),
+            description=_(
+                "Multiple tributes survived into forced showdown. Choose who gets dragged into the duel."
+            ),
+            color=discord.Color.dark_red(),
+        )
+        embed.add_field(
+            name=_("Eligible Contenders"),
+            value=contenders_text[:1024],
+            inline=False,
+        )
+        embed.add_field(
+            name=_("Pending Duel"),
+            value=_(
+                "{first} vs {second}"
+            ).format(
+                first=self._selected_name(self.first_id),
+                second=self._selected_name(self.second_id),
+            ),
+            inline=False,
+        )
+        embed.set_footer(
+            text=_(
+                "Pick two tributes from different districts. If the pair is incomplete or invalid, the arena auto-fills a legal duel."
+            )
+        )
+        if note:
+            embed.add_field(name=_("Status"), value=note, inline=False)
+        return embed
+
+    async def refresh_message(
+        self,
+        interaction: discord.Interaction | None = None,
+        *,
+        note: str | None = None,
+    ) -> None:
+        self.refresh_components()
+        embed = self.build_embed(note=note)
+        if interaction is not None:
+            await interaction.response.edit_message(embed=embed, view=self)
+            self.message = interaction.message
+            return
+        if self.message is not None:
+            await self.message.edit(embed=embed, view=self)
+
+    def disable_all(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                _("This control panel is not yours."),
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        self.disable_all()
+        if self.message is not None:
+            try:
+                await self.message.edit(
+                    embed=self.build_embed(
+                        note=_("Timed out. The arena will auto-pick the duel.")
+                    ),
+                    view=self,
+                )
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+    @discord.ui.button(label="Random Duel", style=ButtonStyle.secondary, row=2)
+    async def random_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.random_choice = True
+        self.first_id = None
+        self.second_id = None
+        self.locked_in = True
+        self.disable_all()
+        await interaction.response.edit_message(
+            embed=self.build_embed(note=_("The arena will auto-pick the duelists.")),
+            view=self,
+        )
+        self.message = interaction.message
+        self.stop()
+
+    @discord.ui.button(label="Lock Duel", style=ButtonStyle.danger, row=2)
+    async def lock_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.random_choice = False
+        self.locked_in = True
+        self.disable_all()
+        await interaction.response.edit_message(
+            embed=self.build_embed(note=_("Duelists locked.")),
+            view=self,
+        )
+        self.message = interaction.message
+        self.stop()
+
+
+class RegionGMGame(RegionGame):
+    GM_CONTROL_TIMEOUT_SECONDS = 35
+    GM_SHOWDOWN_TIMEOUT_SECONDS = 20
+
+    def __init__(self, ctx, players: list, *, gm_player: discord.Member) -> None:
+        super().__init__(ctx, players)
+        self.gm_player = gm_player
+        self.gm_panel_message: discord.Message | None = None
+        self.gm_showdown_message: discord.Message | None = None
+        self.gm_panel_public = False
+
+    def _gm_drop_region_limit(self) -> int:
+        return 2 if len(self.players) >= 6 else 1
+
+    def _gm_available_drop_regions(self) -> list[str]:
+        return [
+            region for region in self.REGIONS if region not in self.active_toxic_regions
+        ]
+
+    def _gm_available_toxic_regions(self) -> list[str]:
+        return [
+            region for region in self.REGIONS if region not in self.active_toxic_regions
+        ]
+
+    def _gm_available_mutt_regions(self) -> list[str]:
+        return [
+            region
+            for region in self.REGIONS
+            if region not in self.active_toxic_regions
+            and len(self._players_in_region(region)) > 0
+        ]
+
+    def _random_gm_directives(self) -> dict[str, set[str]]:
+        drops: set[str] = set()
+        toxic: set[str] = set()
+        mutts: set[str] = set()
+
+        available_drop_regions = self._gm_available_drop_regions()
+        drop_count = min(self._gm_drop_region_limit(), len(available_drop_regions))
+        if drop_count > 0:
+            drops = set(random.sample(available_drop_regions, drop_count))
+
+        available_toxic_regions = self._gm_available_toxic_regions()
+        toxic_count = 1
+        if self.round >= 3 and len(self.players) >= 6:
+            toxic_count = 2
+        toxic_count = min(2, toxic_count, len(available_toxic_regions))
+        if toxic_count > 0:
+            toxic = set(random.sample(available_toxic_regions, toxic_count))
+
+        crowded_regions = [
+            region
+            for region in self._gm_available_mutt_regions()
+            if len(self._players_in_region(region)) >= 2
+        ]
+        mutt_pool = crowded_regions or self._gm_available_mutt_regions()
+        if mutt_pool:
+            mutts = {random.choice(mutt_pool)}
+
+        return {"drops": drops, "toxic": toxic, "mutts": mutts}
+
+    def _complete_gm_directive_slot(
+        self,
+        *,
+        selected: set[str],
+        fallback: set[str],
+        available: list[str],
+        target_count: int,
+    ) -> set[str]:
+        if target_count <= 0 or not available:
+            return set()
+
+        chosen: list[str] = []
+        for region in sorted(selected):
+            if region in available and region not in chosen:
+                chosen.append(region)
+
+        for region in sorted(fallback):
+            if len(chosen) >= target_count:
+                break
+            if region in available and region not in chosen:
+                chosen.append(region)
+
+        if len(chosen) < target_count:
+            remaining = [region for region in available if region not in chosen]
+            if remaining:
+                chosen.extend(
+                    random.sample(
+                        remaining,
+                        min(target_count - len(chosen), len(remaining)),
+                    )
+                )
+
+        return set(chosen)
+
+    def _finalize_gm_directives(
+        self,
+        selected: dict[str, set[str]],
+        defaults: dict[str, set[str]],
+    ) -> tuple[dict[str, set[str]], bool]:
+        finalized = {
+            "drops": self._complete_gm_directive_slot(
+                selected=set(selected.get("drops", set())),
+                fallback=set(defaults.get("drops", set())),
+                available=self._gm_available_drop_regions(),
+                target_count=min(
+                    len(self._gm_available_drop_regions()),
+                    max(1, len(defaults.get("drops", set()))),
+                ),
+            ),
+            "toxic": self._complete_gm_directive_slot(
+                selected=set(selected.get("toxic", set())),
+                fallback=set(defaults.get("toxic", set())),
+                available=self._gm_available_toxic_regions(),
+                target_count=min(
+                    len(self._gm_available_toxic_regions()),
+                    len(defaults.get("toxic", set())),
+                ),
+            ),
+            "mutts": self._complete_gm_directive_slot(
+                selected=set(selected.get("mutts", set())),
+                fallback=set(defaults.get("mutts", set())),
+                available=self._gm_available_mutt_regions(),
+                target_count=min(
+                    len(self._gm_available_mutt_regions()),
+                    len(defaults.get("mutts", set())),
+                ),
+            ),
+        }
+        auto_filled = any(
+            finalized[key] != set(selected.get(key, set())) for key in finalized
+        )
+        return finalized, auto_filled
+
+    def _apply_gm_drop_regions(self, drop_regions: set[str]) -> None:
+        self.region_drops.clear()
+        early_round = self.round <= 3
+        for region in sorted(drop_regions):
+            self.region_drops[region] = (
+                random.randint(1, 2) if early_round else random.randint(2, 3)
+            )
+
+    def _directive_text(self, regions) -> str:
+        region_list = sorted(regions)
+        if not region_list:
+            return _("None")
+        return ", ".join(f"**{region}**" for region in region_list)
+
+    async def _send_gm_intro(self) -> None:
+        lines = [
+            _("You have been chosen as this Hunger Games' Game Master."),
+            _(
+                "Each round, pick sponsor drops for the current round and choose toxic zones plus mutt pressure for the next round."
+            ),
+            _("During Sudden Death with multiple valid tributes, you also choose who gets forced into the duel."),
+            _("If you leave anything blank or go AFK, the arena auto-fills the missing directives."),
+            _("Back to game: {link}").format(link=self.game_channel_link),
+        ]
+        try:
+            await self.gm_player.send("\n".join(lines))
+        except (discord.Forbidden, discord.HTTPException):
+            return
+
+    async def _present_gm_panel(self, view: RegionGMPanelView) -> None:
+        content = None
+        if self.gm_panel_public:
+            content = _(
+                "{gm}, your Game Master panel is here because DMs are unavailable."
+            ).format(gm=self.gm_player.mention)
+
+        if self.gm_panel_message is not None:
+            try:
+                await self.gm_panel_message.edit(
+                    content=content,
+                    embed=view.build_embed(),
+                    view=view,
+                )
+                view.message = self.gm_panel_message
+                return
+            except (discord.NotFound, discord.HTTPException):
+                self.gm_panel_message = None
+
+        try:
+            dm_channel = self.gm_player.dm_channel or await self.gm_player.create_dm()
+            self.gm_panel_message = await dm_channel.send(embed=view.build_embed(), view=view)
+            self.gm_panel_public = False
+            view.message = self.gm_panel_message
+        except (discord.Forbidden, discord.HTTPException):
+            self.gm_panel_message = await self.ctx.send(
+                _(
+                    "{gm}, your Game Master panel is public because your DMs are closed."
+                ).format(gm=self.gm_player.mention),
+                embed=view.build_embed(),
+                view=view,
+            )
+            self.gm_panel_public = True
+            view.message = self.gm_panel_message
+
+    async def _present_gm_showdown_view(self, view: RegionGMShowdownView) -> None:
+        content = None
+        if self.gm_panel_public:
+            content = _(
+                "{gm}, your Sudden Death picker is here because DMs are unavailable."
+            ).format(gm=self.gm_player.mention)
+
+        if self.gm_showdown_message is not None:
+            try:
+                await self.gm_showdown_message.edit(
+                    content=content,
+                    embed=view.build_embed(),
+                    view=view,
+                )
+                view.message = self.gm_showdown_message
+                return
+            except (discord.NotFound, discord.HTTPException):
+                self.gm_showdown_message = None
+
+        try:
+            dm_channel = self.gm_player.dm_channel or await self.gm_player.create_dm()
+            self.gm_showdown_message = await dm_channel.send(
+                embed=view.build_embed(),
+                view=view,
+            )
+            self.gm_panel_public = False
+            view.message = self.gm_showdown_message
+        except (discord.Forbidden, discord.HTTPException):
+            self.gm_showdown_message = await self.ctx.send(
+                _(
+                    "{gm}, your Sudden Death picker is public because your DMs are closed."
+                ).format(gm=self.gm_player.mention),
+                embed=view.build_embed(),
+                view=view,
+            )
+            self.gm_panel_public = True
+            view.message = self.gm_showdown_message
+
+    def _showdown_pairs(
+        self,
+        killed_this_round: set,
+    ) -> list[tuple[str, discord.Member, discord.Member]]:
+        pairs: list[tuple[str, discord.Member, discord.Member]] = []
+        for region in self.REGIONS:
+            contenders = self._players_in_region(region, killed_this_round=killed_this_round)
+            if len(contenders) < 2:
+                continue
+            for idx, left in enumerate(contenders):
+                left_team = self.team_by_player_id.get(left.id)
+                for right in contenders[idx + 1 :]:
+                    right_team = self.team_by_player_id.get(right.id)
+                    if left_team == right_team:
+                        continue
+                    pairs.append((region, left, right))
+        return pairs
+
+    def _complete_showdown_pair(
+        self,
+        *,
+        pairs: list[tuple[str, discord.Member, discord.Member]],
+        default_pair: tuple[str, discord.Member, discord.Member],
+        first_id: int | None,
+        second_id: int | None,
+    ) -> tuple[tuple[str, discord.Member, discord.Member], bool]:
+        pair_lookup = {
+            tuple(sorted((left.id, right.id))): (region, left, right)
+            for region, left, right in pairs
+        }
+
+        if first_id is not None and second_id is not None:
+            exact = pair_lookup.get(tuple(sorted((first_id, second_id))))
+            if exact is not None:
+                return exact, False
+
+        if first_id is not None:
+            anchored = [
+                pair
+                for pair in pairs
+                if pair[1].id == first_id or pair[2].id == first_id
+            ]
+            if anchored:
+                if any(
+                    tuple(sorted((pair[1].id, pair[2].id)))
+                    == tuple(sorted((default_pair[1].id, default_pair[2].id)))
+                    for pair in anchored
+                ):
+                    return default_pair, True
+                return random.choice(anchored), True
+
+        if second_id is not None:
+            anchored = [
+                pair
+                for pair in pairs
+                if pair[1].id == second_id or pair[2].id == second_id
+            ]
+            if anchored:
+                if any(
+                    tuple(sorted((pair[1].id, pair[2].id)))
+                    == tuple(sorted((default_pair[1].id, default_pair[2].id)))
+                    for pair in anchored
+                ):
+                    return default_pair, True
+                return random.choice(anchored), True
+
+        return default_pair, True
+
+    def _resolve_showdown_pair(
+        self,
+        region: str,
+        left: discord.Member,
+        right: discord.Member,
+        killed_this_round: set,
+        round_lines: list[str],
+        elimination_log: dict[int, dict],
+    ) -> None:
+        left_roll = self.gear_score[left.id] + random.randint(1, 4)
+        right_roll = self.gear_score[right.id] + random.randint(1, 4)
+        winner, loser = (left, right) if left_roll >= right_roll else (right, left)
+        self._mark_kill(
+            winner,
+            loser,
+            killed_this_round,
+            elimination_log=elimination_log,
+            cause=_("lost a forced showdown in **{region}** to **{killer}**").format(
+                region=region,
+                killer=winner.display_name,
+            ),
+        )
+        round_lines.append(
+            _(
+                "💥 The silence breaks in **{region}**. **{winner}** wins a forced"
+                " showdown against **{loser}**."
+            ).format(
+                region=region,
+                winner=winner.display_name,
+                loser=loser.display_name,
+            )
+        )
+
+    async def _run_gm_showdown_phase(
+        self,
+        killed_this_round: set,
+        round_lines: list[str],
+        elimination_log: dict[int, dict],
+    ) -> None:
+        pairs = self._showdown_pairs(killed_this_round)
+        if not pairs:
+            return
+
+        default_pair = random.choice(pairs)
+        contenders_by_id: dict[int, discord.Member] = {}
+        for _, left, right in pairs:
+            contenders_by_id[left.id] = left
+            contenders_by_id[right.id] = right
+        contenders = list(contenders_by_id.values())
+
+        if len(contenders) <= 2 or len(contenders) > 25:
+            if len(contenders) > 2:
+                round_lines.append(
+                    _(
+                        "🎛️ Too many tributes remain for manual duel selection. The arena chooses the Sudden Death pairing."
+                    )
+                )
+            self._resolve_showdown_pair(
+                default_pair[0],
+                default_pair[1],
+                default_pair[2],
+                killed_this_round,
+                round_lines,
+                elimination_log,
+            )
+            return
+
+        view = RegionGMShowdownView(
+            self,
+            contenders,
+            (default_pair[1], default_pair[2]),
+            timeout=self.GM_SHOWDOWN_TIMEOUT_SECONDS,
+        )
+        await self._present_gm_showdown_view(view)
+        await self.ctx.send(
+            _("⚔️ Sudden Death triggers. The Game Master is choosing the duelists."),
+            delete_after=self.GM_SHOWDOWN_TIMEOUT_SECONDS,
+        )
+        await view.wait()
+
+        chosen_pair, auto_filled = self._complete_showdown_pair(
+            pairs=pairs,
+            default_pair=default_pair,
+            first_id=view.first_id,
+            second_id=view.second_id,
+        )
+
+        status_note = _("The arena auto-picked the Sudden Death duel.")
+        if view.locked_in:
+            status_note = _("The Game Master locks in the Sudden Death duel.")
+            if view.random_choice:
+                status_note = _("The Game Master lets the arena pick the Sudden Death duel.")
+            elif auto_filled:
+                status_note = _(
+                    "The Game Master marked the duel. Missing or invalid slots were auto-filled."
+                )
+
+        if view.message is not None:
+            try:
+                await view.message.edit(
+                    content=view.message.content,
+                    embed=view.build_embed(note=status_note),
+                    view=view,
+                )
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+        region, left, right = chosen_pair
+        if view.locked_in and view.random_choice:
+            round_lines.append(
+                _(
+                    "🎛️ The Game Master unleashes the arena on Sudden Death. **{left}** and **{right}** are chosen."
+                ).format(
+                    left=left.display_name,
+                    right=right.display_name,
+                )
+            )
+        elif view.locked_in and not auto_filled:
+            round_lines.append(
+                _(
+                    "🎛️ The Game Master drags **{left}** and **{right}** into Sudden Death."
+                ).format(
+                    left=left.display_name,
+                    right=right.display_name,
+                )
+            )
+        elif view.locked_in:
+            round_lines.append(
+                _(
+                    "🎛️ The Game Master marks **{left}** and **{right}** for Sudden Death, and the arena fills the rest."
+                ).format(
+                    left=left.display_name,
+                    right=right.display_name,
+                )
+            )
+        else:
+            round_lines.append(
+                _(
+                    "🎛️ The Game Master hesitates. The arena drags **{left}** and **{right}** into Sudden Death."
+                ).format(
+                    left=left.display_name,
+                    right=right.display_name,
+                )
+            )
+
+        self._resolve_showdown_pair(
+            region,
+            left,
+            right,
+            killed_this_round,
+            round_lines,
+            elimination_log,
+        )
+
+    async def _resolve_stalemate_with_gm(
+        self,
+        killed_this_round: set,
+        round_lines: list[str],
+        elimination_log: dict[int, dict],
+    ) -> None:
+        if self.no_kill_rounds < self.STALEMATE_ROUNDS:
+            return
+        survivors = [p for p in self.players if p not in killed_this_round]
+        if len(survivors) <= 1:
+            return
+
+        round_lines.append(
+            _(
+                "🕛 {rounds} bloodless rounds. The Gamemakers trigger Sudden Death."
+            ).format(rounds=self.no_kill_rounds)
+        )
+        for survivor in survivors:
+            self.player_region[survivor.id] = "Cornucopia"
+        round_lines.append(
+            _(
+                "🚨 Sirens blare. Remaining tributes are forced into **Cornucopia**."
+            )
+        )
+        await self._run_gm_showdown_phase(
+            killed_this_round,
+            round_lines,
+            elimination_log,
+        )
+
+    async def _run_gm_control_phase(self) -> None:
+        defaults = self._random_gm_directives()
+        view = RegionGMPanelView(
+            self,
+            defaults,
+            timeout=self.GM_CONTROL_TIMEOUT_SECONDS,
+        )
+        await self._present_gm_panel(view)
+        await self.ctx.send(
+            _("🎛️ The Game Master is shaping the arena for round {round}.").format(
+                round=self.round
+            ),
+            delete_after=self.GM_CONTROL_TIMEOUT_SECONDS,
+        )
+        await view.wait()
+
+        selected = {
+            "drops": set(view.drop_regions),
+            "toxic": set(view.toxic_regions),
+            "mutts": set(view.mutt_regions),
+        }
+        directives, auto_filled = self._finalize_gm_directives(selected, defaults)
+        has_manual_changes = any(
+            selected[key] != defaults.get(key, set()) for key in selected
+        )
+        has_saved_manual_choices = has_manual_changes and any(
+            selected[key] for key in selected
+        )
+        status_note = _("Arena defaults engaged after the Game Master timed out.")
+        if view.locked_in:
+            status_note = _("The Game Master locks in the arena.")
+            if auto_filled:
+                status_note = _(
+                    "The Game Master locks in the arena. Empty slots were auto-filled."
+                )
+        elif has_saved_manual_choices:
+            status_note = _(
+                "The Game Master went AFK. Their saved picks were kept and the rest auto-filled."
+            )
+
+        self._apply_gm_drop_regions(directives["drops"])
+        self.next_toxic_regions = set(directives["toxic"])
+        self.next_mutt_regions = set(directives["mutts"])
+
+        if view.message is not None:
+            try:
+                await view.message.edit(
+                    content=view.message.content,
+                    embed=view.build_embed(note=status_note),
+                    view=view,
+                )
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+        summary = discord.Embed(
+            title=_("Gamemaker Briefing"),
+            description=_(
+                "📦 Drops this round: {drops}\n"
+                "⚠️ Toxic next round: {toxic}\n"
+                "🐾 Mutt warning next round: {mutts}"
+            ).format(
+                drops=self._directive_text(self.region_drops.keys()),
+                toxic=self._directive_text(self.next_toxic_regions),
+                mutts=self._directive_text(self.next_mutt_regions),
+            ),
+            color=discord.Color.orange(),
+        )
+        summary.set_footer(text=status_note)
+        await self.ctx.send(embed=summary)
+
+    async def send_cast(self):
+        await self.ctx.send(
+            embed=discord.Embed(
+                title=_("🎛️ Game Master Selected"),
+                description=_(
+                    "{gm} has been chosen at random as the Game Master and will direct the arena instead of fighting."
+                ).format(gm=self.gm_player.mention),
+                color=discord.Color.dark_orange(),
+            )
+        )
+        await super().send_cast()
+        await self.ctx.send(
+            embed=discord.Embed(
+                title=_("Regions-GM Rules"),
+                description=_(
+                    "Before each round, the Game Master chooses this round's sponsor drops plus next round's toxic zones and mutt warning. In Sudden Death, the Game Master can also choose the forced duelists. Blank or AFK slots auto-fill."
+                ),
+                color=discord.Color.gold(),
+            )
+        )
+        await self._send_gm_intro()
+
+    async def _resolve_arena_event(
+        self,
+        killed_this_round: set,
+        round_lines: list[str],
+        elimination_log: dict[int, dict],
+    ) -> None:
+        if not self.active_mutt_regions:
+            return
+
+        active_candidates = [
+            region
+            for region in sorted(self.active_mutt_regions)
+            if len(
+                self._players_in_region(region, killed_this_round=killed_this_round)
+            )
+            >= 2
+        ]
+        if not active_candidates:
+            faded_regions = sorted(self.active_mutt_regions)
+            self.active_mutt_regions.clear()
+            round_lines.append(
+                _(
+                    "🐾 Mutt pressure fades in {regions}. No crowded targets remain."
+                ).format(
+                    regions=nice_join([f"**{region}**" for region in faded_regions])
+                )
+            )
+            return
+
+        region = random.choice(active_candidates)
+        candidates = self._players_in_region(region, killed_this_round=killed_this_round)
+        victim = random.choice(candidates)
+        lethality = self._mutt_lethality_chance(
+            victim, base_chance=76, min_chance=24
+        )
+        self.active_mutt_regions.clear()
+        if random.randint(1, 100) <= lethality:
+            self._mark_kill(
+                None,
+                victim,
+                killed_this_round,
+                elimination_log=elimination_log,
+                cause=_("was torn apart by mutts in **{region}**").format(
+                    region=region
+                ),
+            )
+            round_lines.append(
+                _("🐺 Mutts ambush **{victim}** in **{region}**.").format(
+                    victim=victim.display_name,
+                    region=region,
+                )
+            )
+            return
+
+        loss = self._apply_mutt_gear_loss(victim)
+        round_lines.append(
+            _(
+                "🐺 Mutts ambush **{victim}** in **{region}**, but they escape and lose {loss} gear level(s)."
+            ).format(
+                victim=victim.display_name,
+                region=region,
+                loss=loss,
+            )
+        )
+
+    async def get_inputs(self):
+        status = await self.ctx.send(
+            _("🔥 **Round {round}** begins...").format(round=self.round),
+            delete_after=45,
+        )
+        self.hidden_ids = set()
+        killed_this_round: set[discord.Member] = set()
+        round_lines: list[str] = []
+        elimination_log: dict[int, dict] = {}
+
+        self.active_toxic_regions = set(self.next_toxic_regions)
+        self.active_mutt_regions = set(self.next_mutt_regions)
+        self.fog_stage = max(1, min(6, 1 + (self.round - 1) // 2))
+        self.region_drops.clear()
+        await self._run_gm_control_phase()
+        await self._send_region_brief()
+
+        actors = [actor for actor in self.players if actor not in killed_this_round]
+        choices_by_actor_id: dict[int, list[dict]] = {}
+        for actor in actors:
+            choices = self._build_action_choices(actor, killed_this_round)
+            if choices:
+                choices_by_actor_id[actor.id] = choices
+
+        async def choose_for_actor(
+            actor: discord.Member, choices: list[dict]
+        ) -> tuple[discord.Member, dict | None]:
+            if not choices:
+                return actor, None
+            action = await self._choose_action(actor, choices)
+            return actor, action
+
+        selected_actions_by_actor_id: dict[int, dict] = {}
+        choose_tasks = [
+            choose_for_actor(actor, choices_by_actor_id.get(actor.id, []))
+            for actor in actors
+            if actor.id in choices_by_actor_id
+        ]
+        if choose_tasks:
+            await self.ctx.send(
+                _("📩 Action prompts sent to all tributes. Choices lock together.")
+            )
+            for actor, action in await asyncio.gather(*choose_tasks):
+                if action is not None:
+                    selected_actions_by_actor_id[actor.id] = action
+            await self.ctx.send(_("⏳ Action phase closed. Resolving round..."))
+
+        turn_order = random.shuffle(actors.copy())
+        for actor in turn_order:
+            if actor not in self.players or actor in killed_this_round:
+                continue
+            action = selected_actions_by_actor_id.get(actor.id)
+            if action is None:
+                fallback_choices = choices_by_actor_id.get(actor.id, [])
+                if not fallback_choices:
+                    continue
+                action = random.choice(fallback_choices)
+            summary = self._resolve_action(actor, action, killed_this_round, elimination_log)
+            round_lines.append(f"**{actor.display_name}** {summary}")
+
+        await self._resolve_arena_event(killed_this_round, round_lines, elimination_log)
+        self._apply_toxic_fog(killed_this_round, round_lines, elimination_log)
+
+        if killed_this_round:
+            self.no_kill_rounds = 0
+        else:
+            self.no_kill_rounds += 1
             self._resolve_stalemate(killed_this_round, round_lines, elimination_log)
             if killed_this_round:
                 self.no_kill_rounds = 0
@@ -3274,6 +4511,7 @@ class HungerGames(commands.Cog):
         seconds_left: int,
         joined: set,
         is_mass_game: bool,
+        extra_note: str | None = None,
     ) -> str:
         if is_mass_game:
             intro = _(
@@ -3287,7 +4525,7 @@ class HungerGames(commands.Cog):
         minutes, seconds = divmod(max(0, seconds_left), 60)
         timer = f"{minutes:02d}:{seconds:02d}"
         joined_players = self._format_joined_players(joined)
-        return _(
+        text = _(
             "{intro}\n"
             "⏳ Starts in: **{timer}**\n"
             "👥 Joined ({count}): {players}"
@@ -3297,6 +4535,9 @@ class HungerGames(commands.Cog):
             count=len(joined),
             players=joined_players,
         )
+        if extra_note:
+            text = f"{text}\n{extra_note}"
+        return text
 
     async def _run_join_countdown(
         self,
@@ -3307,6 +4548,7 @@ class HungerGames(commands.Cog):
         mode_label: str,
         duration_seconds: int,
         is_mass_game: bool,
+        extra_note: str | None = None,
     ) -> None:
         update_interval = 5
         remaining = duration_seconds
@@ -3322,6 +4564,7 @@ class HungerGames(commands.Cog):
                         seconds_left=remaining,
                         joined=view.joined,
                         is_mass_game=is_mass_game,
+                        extra_note=extra_note,
                     ),
                     view=view,
                 )
@@ -3388,15 +4631,17 @@ class HungerGames(commands.Cog):
 
             Usage:
             - `{prefix}hgregions`
-            - `{prefix}hgregions region-ideas`"""
+            - `{prefix}hgregions region-ideas`
+            - `{prefix}hgregions regions-gm`"""
         )
         token = (mode or "regions").strip().casefold()
         advanced_tokens = {"region-ideas", "regionideas", "ideas", "advanced"}
+        gm_tokens = {"regions-gm", "region-gm", "regionsgm", "regiongm", "gm"}
         base_tokens = {"regions", "region", "basic", ""}
-        if token not in base_tokens and token not in advanced_tokens:
+        if token not in base_tokens and token not in advanced_tokens and token not in gm_tokens:
             return await ctx.send(
                 _(
-                    "Unknown mode `{mode}`. Valid options: `regions`, `region-ideas`."
+                    "Unknown mode `{mode}`. Valid options: `regions`, `region-ideas`, `regions-gm`."
                 ).format(mode=mode or "")
             )
 
@@ -3496,6 +4741,36 @@ class HungerGames(commands.Cog):
             )
             await ctx.send(embed=advanced)
 
+        if token in gm_tokens:
+            gm_embed = discord.Embed(
+                title=_("🎛️ Regions-GM Extras"),
+                color=discord.Color.orange(),
+                description=_(
+                    "One joined player is randomly chosen as Game Master and does not fight as a tribute."
+                ),
+            )
+            gm_embed.add_field(
+                name=_("Game Master Phase"),
+                value=_(
+                    "Before each round, the Game Master chooses:\n"
+                    "• sponsor drop regions for the current round\n"
+                    "• up to 2 toxic regions for the next round\n"
+                    "• 1 mutt warning region for the next round\n"
+                    "• Sudden Death duelists when multiple valid tributes remain"
+                ),
+                inline=False,
+            )
+            gm_embed.add_field(
+                name=_("Mode Rules"),
+                value=_(
+                    "• Regions-GM needs at least 4 joined players.\n"
+                    "• The Game Master sees where tributes are by region.\n"
+                    "• If the Game Master leaves slots blank or goes AFK, the arena auto-fills the missing directives."
+                ),
+                inline=False,
+            )
+            await ctx.send(embed=gm_embed)
+
 
     @commands.command(aliases=["hg"], brief=_("Play the hunger games"))
     @locale_doc
@@ -3512,11 +4787,13 @@ class HungerGames(commands.Cog):
             - `classic` (default): current round-based battle system
             - `regions`: movement between regions, sponsor drops, and prewarned toxic fog zones
             - `region-ideas`: advanced region systems (passives, scouting, contracts, hazards, control points, collapse)
+            - `regions-gm`: one random joined player becomes the Game Master and controls drops, toxic warnings, and mutt pressure
 
             Usage:
             - `{prefix}hungergames`
             - `{prefix}hungergames regions`
             - `{prefix}hungergames region-ideas`
+            - `{prefix}hungergames regions-gm`
             - `{prefix}hgregions` (regions help)
             - `{prefix}hgdmboard on/off` (region board DM toggle)"""
         )
@@ -3524,6 +4801,8 @@ class HungerGames(commands.Cog):
             return await ctx.send(_("There is already a game in here!"))
 
         normalized_mode = (mode or "classic").strip().casefold()
+        gm_mode = False
+        mode_note = None
         if normalized_mode in {"classic", "default", ""}:
             game_factory = GameBase
             mode_label = _("Classic")
@@ -3533,10 +4812,17 @@ class HungerGames(commands.Cog):
         elif normalized_mode in {"region-ideas", "regionideas", "ideas"}:
             game_factory = RegionIdeasGame
             mode_label = _("Region-Ideas")
+        elif normalized_mode in {"regions-gm", "region-gm", "regionsgm", "regiongm", "gm"}:
+            game_factory = RegionGMGame
+            mode_label = _("Regions-GM")
+            gm_mode = True
+            mode_note = _(
+                "One joined player will be chosen at random as Game Master and will not fight as a tribute."
+            )
         else:
             return await ctx.send(
                 _(
-                    "Unknown mode `{mode}`. Valid modes: `classic`, `regions`, `region-ideas`."
+                    "Unknown mode `{mode}`. Valid modes: `classic`, `regions`, `region-ideas`, `regions-gm`."
                 ).format(mode=mode or "")
             )
 
@@ -3565,6 +4851,7 @@ class HungerGames(commands.Cog):
                 seconds_left=join_timeout,
                 joined=view.joined,
                 is_mass_game=is_mass_game,
+                extra_note=mode_note,
             ),
             view=view,
         )
@@ -3575,15 +4862,30 @@ class HungerGames(commands.Cog):
             mode_label=mode_label,
             duration_seconds=join_timeout,
             is_mass_game=is_mass_game,
+            extra_note=mode_note,
         )
         players = list(view.joined)
+
+        if gm_mode and len(players) < 4:
+            del self.games[ctx.channel.id]
+            await self.bot.reset_cooldown(ctx)
+            return await ctx.send(
+                _(
+                    "Regions-GM needs at least 4 joined players so one can become Game Master and at least three tributes remain."
+                )
+            )
 
         if len(players) < 2:
             del self.games[ctx.channel.id]
             await self.bot.reset_cooldown(ctx)
             return await ctx.send(_("Not enough players joined..."))
 
-        game = game_factory(ctx, players=players)
+        if gm_mode:
+            gm_player = random.choice(players)
+            players.remove(gm_player)
+            game = game_factory(ctx, players=players, gm_player=gm_player)
+        else:
+            game = game_factory(ctx, players=players)
         self.games[ctx.channel.id] = game
         try:
             await game.main()
