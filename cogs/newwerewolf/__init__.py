@@ -3831,7 +3831,9 @@ class NewWerewolf(commands.Cog):
         advanced_role_match_note = _(
             "Advanced role choices are available in matches with **{min_players}+ players**."
         ).format(min_players=min_players_for_advanced)
-        base_roles = list(ADVANCED_ROLE_TIERS_BY_BASE.keys())
+        tracked_base_roles = set(ADVANCED_ROLE_TIERS_BY_BASE.keys())
+        tracked_base_roles.add(ROLES.WEREWOLF)
+        base_roles = list(tracked_base_roles)
         if not base_roles:
             return await ctx.send(_("No advanced role progression is configured yet."))
 
@@ -3849,7 +3851,7 @@ class NewWerewolf(commands.Cog):
 
             requested_role = parsed_roles[0]
             base_role = ADVANCED_BASE_ROLE_BY_ADVANCED.get(requested_role, requested_role)
-            if base_role not in ADVANCED_ROLE_TIERS_BY_BASE:
+            if base_role not in tracked_base_roles:
                 return await ctx.send(
                     _("**{role}** has no advanced unlock path configured.").format(
                         role=self._role_display_name(base_role)
