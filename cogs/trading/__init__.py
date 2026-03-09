@@ -470,10 +470,10 @@ class Trading(commands.Cog):
                 )
             )
 
-        # Add Resetpotion with a 4.5% chance
+        # Add Resetpotion with a 15% chance
         # It will only be generated if the shop is "fresh" (cache is empty),
         # so it effectively limits it to one per 12-hour refresh for that user.
-        if random.random() < 0.045:
+        if random.random() < 0.15:
             potion_price = random.randint(1400000, 4300000)
             offers.append(
                 self._build_trader_offer(
