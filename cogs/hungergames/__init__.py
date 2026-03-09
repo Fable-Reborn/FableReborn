@@ -17,6 +17,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import asyncio
+import traceback
 
 import discord
 
@@ -3016,19 +3017,121 @@ class RegionGMGame(RegionGame):
             return
 
         default_pair = random.choice(pairs)
-        contenders_by_id: dict[int, discord.Member] = {}
-        for _, left, right in pairs:
-            contenders_by_id[left.id] = left
-            contenders_by_id[right.id] = right
-        contenders = list(contenders_by_id.values())
+        try:
+            contenders_by_id: dict[int, discord.Member] = {}
+            for _, left, right in pairs:
+                contenders_by_id[left.id] = left
+                contenders_by_id[right.id] = right
+            contenders = list(contenders_by_id.values())
 
-        if len(contenders) <= 2 or len(contenders) > 25:
-            if len(contenders) > 2:
+            if len(contenders) <= 2 or len(contenders) > 25:
+                if len(contenders) > 2:
+                    round_lines.append(
+                        _(
+                            "🎛️ Too many tributes remain for manual duel selection. The arena chooses the Sudden Death pairing."
+                        )
+                    )
+                self._resolve_showdown_pair(
+                    default_pair[0],
+                    default_pair[1],
+                    default_pair[2],
+                    killed_this_round,
+                    round_lines,
+                    elimination_log,
+                )
+                return
+
+            view = RegionGMShowdownView(
+                self,
+                contenders,
+                (default_pair[1], default_pair[2]),
+                timeout=self.GM_SHOWDOWN_TIMEOUT_SECONDS,
+            )
+            await self._present_gm_showdown_view(view)
+            await self.ctx.send(
+                _("⚔️ Sudden Death triggers. The Game Master is choosing the duelists."),
+                delete_after=self.GM_SHOWDOWN_TIMEOUT_SECONDS,
+            )
+            await view.wait()
+
+            chosen_pair, auto_filled = self._complete_showdown_pair(
+                pairs=pairs,
+                default_pair=default_pair,
+                first_id=view.first_id,
+                second_id=view.second_id,
+            )
+
+            status_note = _("The arena auto-picked the Sudden Death duel.")
+            if view.locked_in:
+                status_note = _("The Game Master locks in the Sudden Death duel.")
+                if view.random_choice:
+                    status_note = _("The Game Master lets the arena pick the Sudden Death duel.")
+                elif auto_filled:
+                    status_note = _(
+                        "The Game Master marked the duel. Missing or invalid slots were auto-filled."
+                    )
+
+            if view.message is not None:
+                try:
+                    await view.message.edit(
+                        embed=view.build_embed(note=status_note),
+                        view=view,
+                    )
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+
+            region, left, right = chosen_pair
+            if view.locked_in and view.random_choice:
                 round_lines.append(
                     _(
-                        "🎛️ Too many tributes remain for manual duel selection. The arena chooses the Sudden Death pairing."
+                        "🎛️ The Game Master unleashes the arena on Sudden Death. **{left}** and **{right}** are chosen."
+                    ).format(
+                        left=left.display_name,
+                        right=right.display_name,
                     )
                 )
+            elif view.locked_in and not auto_filled:
+                round_lines.append(
+                    _(
+                        "🎛️ The Game Master drags **{left}** and **{right}** into Sudden Death."
+                    ).format(
+                        left=left.display_name,
+                        right=right.display_name,
+                    )
+                )
+            elif view.locked_in:
+                round_lines.append(
+                    _(
+                        "🎛️ The Game Master marks **{left}** and **{right}** for Sudden Death, and the arena fills the rest."
+                    ).format(
+                        left=left.display_name,
+                        right=right.display_name,
+                    )
+                )
+            else:
+                round_lines.append(
+                    _(
+                        "🎛️ The Game Master hesitates. The arena drags **{left}** and **{right}** into Sudden Death."
+                    ).format(
+                        left=left.display_name,
+                        right=right.display_name,
+                    )
+                )
+
+            self._resolve_showdown_pair(
+                region,
+                left,
+                right,
+                killed_this_round,
+                round_lines,
+                elimination_log,
+            )
+        except Exception:
+            round_lines.append(
+                _(
+                    "🎛️ The Game Master duel picker fails. The arena forces a fallback duel."
+                )
+            )
             self._resolve_showdown_pair(
                 default_pair[0],
                 default_pair[1],
@@ -3037,94 +3140,6 @@ class RegionGMGame(RegionGame):
                 round_lines,
                 elimination_log,
             )
-            return
-
-        view = RegionGMShowdownView(
-            self,
-            contenders,
-            (default_pair[1], default_pair[2]),
-            timeout=self.GM_SHOWDOWN_TIMEOUT_SECONDS,
-        )
-        await self._present_gm_showdown_view(view)
-        await self.ctx.send(
-            _("⚔️ Sudden Death triggers. The Game Master is choosing the duelists."),
-            delete_after=self.GM_SHOWDOWN_TIMEOUT_SECONDS,
-        )
-        await view.wait()
-
-        chosen_pair, auto_filled = self._complete_showdown_pair(
-            pairs=pairs,
-            default_pair=default_pair,
-            first_id=view.first_id,
-            second_id=view.second_id,
-        )
-
-        status_note = _("The arena auto-picked the Sudden Death duel.")
-        if view.locked_in:
-            status_note = _("The Game Master locks in the Sudden Death duel.")
-            if view.random_choice:
-                status_note = _("The Game Master lets the arena pick the Sudden Death duel.")
-            elif auto_filled:
-                status_note = _(
-                    "The Game Master marked the duel. Missing or invalid slots were auto-filled."
-                )
-
-        if view.message is not None:
-            try:
-                await view.message.edit(
-                    content=view.message.content,
-                    embed=view.build_embed(note=status_note),
-                    view=view,
-                )
-            except (discord.NotFound, discord.HTTPException):
-                pass
-
-        region, left, right = chosen_pair
-        if view.locked_in and view.random_choice:
-            round_lines.append(
-                _(
-                    "🎛️ The Game Master unleashes the arena on Sudden Death. **{left}** and **{right}** are chosen."
-                ).format(
-                    left=left.display_name,
-                    right=right.display_name,
-                )
-            )
-        elif view.locked_in and not auto_filled:
-            round_lines.append(
-                _(
-                    "🎛️ The Game Master drags **{left}** and **{right}** into Sudden Death."
-                ).format(
-                    left=left.display_name,
-                    right=right.display_name,
-                )
-            )
-        elif view.locked_in:
-            round_lines.append(
-                _(
-                    "🎛️ The Game Master marks **{left}** and **{right}** for Sudden Death, and the arena fills the rest."
-                ).format(
-                    left=left.display_name,
-                    right=right.display_name,
-                )
-            )
-        else:
-            round_lines.append(
-                _(
-                    "🎛️ The Game Master hesitates. The arena drags **{left}** and **{right}** into Sudden Death."
-                ).format(
-                    left=left.display_name,
-                    right=right.display_name,
-                )
-            )
-
-        self._resolve_showdown_pair(
-            region,
-            left,
-            right,
-            killed_this_round,
-            round_lines,
-            elimination_log,
-        )
 
     async def _resolve_stalemate_with_gm(
         self,
@@ -4915,6 +4930,18 @@ class HungerGames(commands.Cog):
                 return game
         return None
 
+    async def _send_traceback(self, ctx, exc: BaseException) -> None:
+        tb_text = "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__)
+        ).strip()
+        if not tb_text:
+            tb_text = repr(exc)
+
+        chunk_size = 1900
+        for index in range(0, len(tb_text), chunk_size):
+            chunk = tb_text[index : index + chunk_size]
+            await ctx.send(f"```py\n{chunk}\n```")
+
     def _living_teammates(self, game: GameBase, player: discord.Member) -> list[discord.Member]:
         ally_ids = game.allies_by_player_id.get(player.id, set())
         teammates = []
@@ -5449,9 +5476,12 @@ class HungerGames(commands.Cog):
             await game.main()
         except Exception as e:
             await ctx.send(
-                _("An error happened during the hungergame. Please try again!")
+                _(
+                    "An error happened during the hungergame. Traceback follows."
+                )
             )
-            raise e
+            await self._send_traceback(ctx, e)
+            raise
         finally:
             try:
                 del self.games[ctx.channel.id]
