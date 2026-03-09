@@ -1761,11 +1761,7 @@ class RegionGame(GameBase):
             self.no_kill_rounds = 0
         else:
             self.no_kill_rounds += 1
-            await self._resolve_stalemate_with_gm(
-                killed_this_round,
-                round_lines,
-                elimination_log,
-            )
+            self._resolve_stalemate(killed_this_round, round_lines, elimination_log)
             if killed_this_round:
                 self.no_kill_rounds = 0
 
@@ -1912,6 +1908,10 @@ class RegionGMPanelView(discord.ui.View):
             parts.append(_("Mutts now"))
         if region in self.game.region_drops:
             parts.append(_("Drop now"))
+        if region == getattr(self.game, "pending_arena_seal_region", None):
+            parts.append(_("Seal queued"))
+        if region == getattr(self.game, "pending_blood_beacon_region", None):
+            parts.append(_("Beacon queued"))
         return " | ".join(parts)
 
     def refresh_components(self) -> None:
@@ -1941,6 +1941,14 @@ class RegionGMPanelView(discord.ui.View):
             status_bits.append("🐺 " + _("Mutts now"))
         if region in self.game.region_drops:
             status_bits.append("📦 " + _("Drop now"))
+        if region == getattr(self.game, "active_arena_seal_region", None):
+            status_bits.append("🔒 " + _("Sealed now"))
+        elif region == getattr(self.game, "pending_arena_seal_region", None):
+            status_bits.append("🔒 " + _("Seal queued"))
+        if region == getattr(self.game, "active_blood_beacon_region", None):
+            status_bits.append("🩸 " + _("Blood Beacon"))
+        elif region == getattr(self.game, "pending_blood_beacon_region", None):
+            status_bits.append("🩸 " + _("Beacon queued"))
 
         if not status_bits:
             status_bits.append(_("Quiet"))
@@ -1983,6 +1991,11 @@ class RegionGMPanelView(discord.ui.View):
                 toxic=self._selection_text(self.toxic_regions),
                 mutts=self._selection_text(self.mutt_regions),
             ),
+            inline=False,
+        )
+        embed.add_field(
+            name=_("GM Powers"),
+            value="\n".join(self.game._gm_power_status_lines()),
             inline=False,
         )
         embed.set_footer(
@@ -2068,6 +2081,172 @@ class RegionGMPanelView(discord.ui.View):
         self.disable_all()
         await interaction.response.edit_message(
             embed=self.build_embed(note=_("Directives locked for this round.")),
+            view=self,
+        )
+        self.message = interaction.message
+        self.stop()
+
+    @discord.ui.button(label="Powers", style=ButtonStyle.danger, row=4)
+    async def powers_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self.game.open_gm_power_view(interaction)
+
+
+class RegionGMPowerView(discord.ui.View):
+    def __init__(self, game, *, timeout: int) -> None:
+        super().__init__(timeout=timeout)
+        self.game = game
+        self.owner_id = game.gm_player.id
+        self.message: discord.Message | None = None
+        self.seal_select = RegionGMRegionSelect(
+            self,
+            selection_key="seal",
+            placeholder=_("Prepare Arena Seal"),
+            max_allowed=1,
+            row=0,
+        )
+        self.beacon_select = RegionGMRegionSelect(
+            self,
+            selection_key="beacon",
+            placeholder=_("Prepare Blood Beacon"),
+            max_allowed=1,
+            row=1,
+        )
+        self.add_item(self.seal_select)
+        self.add_item(self.beacon_select)
+
+    def available_regions(self, selection_key: str) -> list[str]:
+        if selection_key == "seal":
+            return self.game._gm_available_seal_regions()
+        if selection_key == "beacon":
+            return self.game._gm_available_beacon_regions()
+        return []
+
+    def selected_regions(self, selection_key: str) -> set[str]:
+        if selection_key == "seal" and self.game.pending_arena_seal_region:
+            return {self.game.pending_arena_seal_region}
+        if selection_key == "beacon" and self.game.pending_blood_beacon_region:
+            return {self.game.pending_blood_beacon_region}
+        return set()
+
+    def set_selection(self, selection_key: str, values: list[str]) -> None:
+        selected = values[0] if values else None
+        if selection_key == "seal":
+            self.game.pending_arena_seal_region = selected
+        elif selection_key == "beacon":
+            self.game.pending_blood_beacon_region = selected
+
+    def region_option_description(self, region: str) -> str:
+        occupants = len(self.game._players_in_region(region))
+        parts = [_("Alive: {count}").format(count=occupants)]
+        if region in self.game.active_toxic_regions:
+            parts.append(_("Toxic now"))
+        if region == self.game.pending_arena_seal_region:
+            parts.append(_("Seal queued"))
+        if region == self.game.pending_blood_beacon_region:
+            parts.append(_("Beacon queued"))
+        return " | ".join(parts)
+
+    def refresh_components(self) -> None:
+        self.seal_select.refresh_options()
+        self.beacon_select.refresh_options()
+
+    def build_embed(self, note: str | None = None) -> discord.Embed:
+        embed = discord.Embed(
+            title=_("🛠️ Game Master Powers"),
+            description=_(
+                "Prepare special powers during the GM phase. Prepared powers trigger when the round locks or times out."
+            ),
+            color=discord.Color.dark_magenta(),
+        )
+        embed.add_field(
+            name=_("Arena Seal"),
+            value=self.game._gm_arena_seal_description(),
+            inline=False,
+        )
+        embed.add_field(
+            name=_("Blood Beacon"),
+            value=self.game._gm_blood_beacon_description(),
+            inline=False,
+        )
+        embed.set_footer(
+            text=_(
+                "Arena Seal is a one-use late-game lockdown. Blood Beacon forces a brutal hotspot."
+            )
+        )
+        if note:
+            embed.add_field(name=_("Status"), value=note, inline=False)
+        return embed
+
+    async def refresh_message(
+        self,
+        interaction: discord.Interaction | None = None,
+        *,
+        note: str | None = None,
+    ) -> None:
+        self.refresh_components()
+        embed = self.build_embed(note=note)
+        if interaction is not None:
+            await interaction.response.edit_message(embed=embed, view=self)
+            self.message = interaction.message
+            return
+        if self.message is not None:
+            await self.message.edit(embed=embed, view=self)
+
+    def disable_all(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                _("This control panel is not yours."),
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        self.disable_all()
+        if self.message is not None:
+            try:
+                await self.message.edit(
+                    embed=self.build_embed(
+                        note=_("Timed out. Prepared power choices remain saved.")
+                    ),
+                    view=self,
+                )
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+    @discord.ui.button(label="Clear Seal", style=ButtonStyle.secondary, row=2)
+    async def clear_seal_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.game.pending_arena_seal_region = None
+        await self.refresh_message(
+            interaction,
+            note=_("Arena Seal selection cleared."),
+        )
+
+    @discord.ui.button(label="Clear Beacon", style=ButtonStyle.secondary, row=2)
+    async def clear_beacon_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.game.pending_blood_beacon_region = None
+        await self.refresh_message(
+            interaction,
+            note=_("Blood Beacon selection cleared."),
+        )
+
+    @discord.ui.button(label="Done", style=ButtonStyle.success, row=2)
+    async def done_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.disable_all()
+        await interaction.response.edit_message(
+            embed=self.build_embed(note=_("Prepared powers saved.")),
             view=self,
         )
         self.message = interaction.message
@@ -2287,15 +2466,25 @@ class RegionGMShowdownView(discord.ui.View):
 
 
 class RegionGMGame(RegionGame):
-    GM_CONTROL_TIMEOUT_SECONDS = 35
-    GM_SHOWDOWN_TIMEOUT_SECONDS = 20
+    GM_CONTROL_TIMEOUT_SECONDS = 120
+    GM_SHOWDOWN_TIMEOUT_SECONDS = 120
+    BLOOD_BEACON_COOLDOWN_ROUNDS = 3
+    BLOOD_BEACON_DROP_STRENGTH = 4
+    ARENA_SEAL_LATE_GAME_THRESHOLD = 4
 
     def __init__(self, ctx, players: list, *, gm_player: discord.Member) -> None:
         super().__init__(ctx, players)
         self.gm_player = gm_player
         self.gm_panel_message: discord.Message | None = None
+        self.gm_power_message: discord.Message | None = None
         self.gm_showdown_message: discord.Message | None = None
         self.gm_panel_public = False
+        self.active_arena_seal_region: str | None = None
+        self.pending_arena_seal_region: str | None = None
+        self.active_blood_beacon_region: str | None = None
+        self.pending_blood_beacon_region: str | None = None
+        self.gm_arena_seal_used = False
+        self.gm_blood_beacon_cooldown = 0
 
     def _gm_drop_region_limit(self) -> int:
         return 2 if len(self.players) >= 6 else 1
@@ -2317,6 +2506,86 @@ class RegionGMGame(RegionGame):
             if region not in self.active_toxic_regions
             and len(self._players_in_region(region)) > 0
         ]
+
+    def _gm_arena_seal_available(self) -> bool:
+        return (
+            not self.gm_arena_seal_used
+            and len(self.players) <= self.ARENA_SEAL_LATE_GAME_THRESHOLD
+        )
+
+    def _gm_blood_beacon_available(self) -> bool:
+        return self.gm_blood_beacon_cooldown == 0
+
+    def _gm_available_seal_regions(self) -> list[str]:
+        if not self._gm_arena_seal_available():
+            return []
+        return list(self.REGIONS)
+
+    def _gm_available_beacon_regions(self) -> list[str]:
+        if not self._gm_blood_beacon_available():
+            return []
+        return [
+            region for region in self.REGIONS if region not in self.active_toxic_regions
+        ]
+
+    def _gm_arena_seal_description(self) -> str:
+        if self.active_arena_seal_region:
+            return _(
+                "Prepared: **{region}**\nEffect: No tribute can enter or leave that region this round."
+            ).format(region=self.active_arena_seal_region)
+        if self.pending_arena_seal_region:
+            return _(
+                "Prepared: **{region}**\nEffect: No tribute can enter or leave that region this round."
+            ).format(region=self.pending_arena_seal_region)
+        if self.gm_arena_seal_used:
+            return _("Used already this game.")
+        if len(self.players) > self.ARENA_SEAL_LATE_GAME_THRESHOLD:
+            return _(
+                "Locked until {count} or fewer tributes remain."
+            ).format(count=self.ARENA_SEAL_LATE_GAME_THRESHOLD)
+        return _(
+            "Available now. Pick one region to lock down for this round."
+        )
+
+    def _gm_blood_beacon_description(self) -> str:
+        prepared_region = self.active_blood_beacon_region or self.pending_blood_beacon_region
+        if prepared_region:
+            return _(
+                "Prepared: **{region}**\nEffect: Huge drop, hiding fails there, and the region becomes a public hotspot."
+            ).format(region=prepared_region)
+        if self.gm_blood_beacon_cooldown > 0:
+            return _(
+                "Cooling down for {rounds} more round(s)."
+            ).format(rounds=self.gm_blood_beacon_cooldown)
+        return _(
+            "Available now. Pick one non-toxic region to become a Blood Beacon this round."
+        )
+
+    def _gm_power_status_lines(self) -> list[str]:
+        if self.active_arena_seal_region or self.pending_arena_seal_region:
+            seal_text = _("🔒 Arena Seal: **{region}**").format(
+                region=self.active_arena_seal_region or self.pending_arena_seal_region
+            )
+        elif self.gm_arena_seal_used:
+            seal_text = _("🔒 Arena Seal: used")
+        elif self._gm_arena_seal_available():
+            seal_text = _("🔒 Arena Seal: ready")
+        else:
+            seal_text = _("🔒 Arena Seal: late-game only")
+        if self._gm_blood_beacon_available():
+            beacon_text = (
+                _("🩸 Blood Beacon: **{region}**").format(
+                    region=self.active_blood_beacon_region
+                    or self.pending_blood_beacon_region
+                )
+                if self.active_blood_beacon_region or self.pending_blood_beacon_region
+                else _("🩸 Blood Beacon: ready")
+            )
+        else:
+            beacon_text = _(
+                "🩸 Blood Beacon: cooldown {rounds} round(s)"
+            ).format(rounds=self.gm_blood_beacon_cooldown)
+        return [seal_text, beacon_text]
 
     def _random_gm_directives(self) -> dict[str, set[str]]:
         drops: set[str] = set()
@@ -2420,6 +2689,41 @@ class RegionGMGame(RegionGame):
         )
         return finalized, auto_filled
 
+    def _finalize_gm_powers(self) -> list[str]:
+        effects: list[str] = []
+
+        if (
+            self.pending_arena_seal_region in self.REGIONS
+            and self._gm_arena_seal_available()
+        ):
+            self.active_arena_seal_region = self.pending_arena_seal_region
+            self.gm_arena_seal_used = True
+            effects.append(
+                _("🔒 Arena Seal locks **{region}** this round.").format(
+                    region=self.active_arena_seal_region
+                )
+            )
+
+        if (
+            self.pending_blood_beacon_region in self._gm_available_beacon_regions()
+            and self._gm_blood_beacon_available()
+        ):
+            self.active_blood_beacon_region = self.pending_blood_beacon_region
+            self.gm_blood_beacon_cooldown = self.BLOOD_BEACON_COOLDOWN_ROUNDS + 1
+            self.region_drops[self.active_blood_beacon_region] = max(
+                self.region_drops.get(self.active_blood_beacon_region, 0),
+                self.BLOOD_BEACON_DROP_STRENGTH,
+            )
+            effects.append(
+                _("🩸 Blood Beacon ignites over **{region}**.").format(
+                    region=self.active_blood_beacon_region
+                )
+            )
+
+        self.pending_arena_seal_region = None
+        self.pending_blood_beacon_region = None
+        return effects
+
     def _apply_gm_drop_regions(self, drop_regions: set[str]) -> None:
         self.region_drops.clear()
         early_round = self.round <= 3
@@ -2459,6 +2763,9 @@ class RegionGMGame(RegionGame):
                 "Each round, pick sponsor drops for the current round and choose toxic zones plus mutt pressure for the next round."
             ),
             _("During Sudden Death with multiple valid tributes, you also choose who gets forced into the duel."),
+            _(
+                "You also control Arena Seal (one late-game lockdown) and Blood Beacon (a huge anti-hide hotspot on cooldown)."
+            ),
             _("If you leave anything blank or go AFK, the arena auto-fills the missing directives."),
             _("Back to game: {link}").format(link=self.game_channel_link),
         ]
@@ -2509,6 +2816,55 @@ class RegionGMGame(RegionGame):
             )
             self.gm_panel_public = True
             view.message = self.gm_panel_message
+
+    async def _present_gm_power_view(self, view: RegionGMPowerView) -> None:
+        content = None
+        if self.gm_panel_public:
+            content = _(
+                "{gm}, your power panel is here because DMs are unavailable."
+            ).format(gm=self.gm_player.mention)
+
+        if self.gm_power_message is not None:
+            try:
+                await self.gm_power_message.edit(
+                    content=content,
+                    embed=view.build_embed(),
+                    view=view,
+                )
+                view.message = self.gm_power_message
+                return
+            except (discord.NotFound, discord.HTTPException):
+                self.gm_power_message = None
+
+        try:
+            dm_channel = self.gm_player.dm_channel or await self.gm_player.create_dm()
+            self.gm_power_message = await dm_channel.send(
+                embed=view.build_embed(),
+                view=view,
+            )
+            self.gm_panel_public = False
+            view.message = self.gm_power_message
+        except (discord.Forbidden, discord.HTTPException):
+            self.gm_power_message = await self.ctx.send(
+                _(
+                    "{gm}, your power panel is public because your DMs are closed."
+                ).format(gm=self.gm_player.mention),
+                embed=view.build_embed(),
+                view=view,
+            )
+            self.gm_panel_public = True
+            view.message = self.gm_power_message
+
+    async def open_gm_power_view(self, interaction: discord.Interaction) -> None:
+        view = RegionGMPowerView(
+            self,
+            timeout=self.GM_CONTROL_TIMEOUT_SECONDS,
+        )
+        await self._present_gm_power_view(view)
+        await interaction.response.send_message(
+            _("Game Master power panel opened."),
+            ephemeral=True,
+        )
 
     async def _present_gm_showdown_view(self, view: RegionGMShowdownView) -> None:
         content = None
@@ -2843,6 +3199,7 @@ class RegionGMGame(RegionGame):
         self._apply_gm_drop_regions(directives["drops"])
         self.next_toxic_regions = set(directives["toxic"])
         self.next_mutt_regions = set(directives["mutts"])
+        power_effects = self._finalize_gm_powers()
 
         if view.message is not None:
             try:
@@ -2854,19 +3211,50 @@ class RegionGMGame(RegionGame):
             except (discord.NotFound, discord.HTTPException):
                 pass
 
+        if self.gm_power_message is not None:
+            try:
+                await self.gm_power_message.edit(
+                    content=self.gm_power_message.content,
+                    embed=RegionGMPowerView(
+                        self,
+                        timeout=self.GM_CONTROL_TIMEOUT_SECONDS,
+                    ).build_embed(note=status_note),
+                    view=discord.ui.View(),
+                )
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
         summary = discord.Embed(
             title=_("Gamemaker Briefing"),
             description=_(
                 "📦 Drops this round: {drops}\n"
                 "⚠️ Toxic next round: {toxic}\n"
-                "🐾 Mutt warning next round: {mutts}"
+                "🐾 Mutt warning next round: {mutts}\n"
+                "🔒 Arena Seal this round: {seal}\n"
+                "🩸 Blood Beacon this round: {beacon}"
             ).format(
                 drops=self._directive_text(self.region_drops.keys()),
                 toxic=self._directive_text(self.next_toxic_regions),
                 mutts=self._directive_text(self.next_mutt_regions),
+                seal=self._directive_text(
+                    [self.active_arena_seal_region]
+                    if self.active_arena_seal_region
+                    else []
+                ),
+                beacon=self._directive_text(
+                    [self.active_blood_beacon_region]
+                    if self.active_blood_beacon_region
+                    else []
+                ),
             ),
             color=discord.Color.orange(),
         )
+        if power_effects:
+            summary.add_field(
+                name=_("Powers Triggered"),
+                value="\n".join(power_effects),
+                inline=False,
+            )
         summary.set_footer(text=status_note)
         await self.ctx.send(embed=summary)
 
@@ -2885,12 +3273,76 @@ class RegionGMGame(RegionGame):
             embed=discord.Embed(
                 title=_("Regions-GM Rules"),
                 description=_(
-                    "Before each round, the Game Master chooses this round's sponsor drops plus next round's toxic zones and mutt warning. In Sudden Death, the Game Master can also choose the forced duelists. Blank or AFK slots auto-fill."
+                    "Before each round, the Game Master chooses this round's sponsor drops plus next round's toxic zones and mutt warning. Arena Seal can lock one region late-game, Blood Beacon creates a giant anti-hide hotspot, and mutts can hunt lone tributes at four or fewer alive. In Sudden Death, the Game Master can also choose the forced duelists. Blank or AFK slots auto-fill."
                 ),
                 color=discord.Color.gold(),
             )
         )
         await self._send_gm_intro()
+
+    def _build_action_choices(
+        self,
+        actor: discord.Member,
+        killed_this_round: set,
+    ) -> list[dict]:
+        choices = super()._build_action_choices(actor, killed_this_round)
+        actor_region = self._region_for(actor)
+        filtered: list[dict] = []
+        for choice in choices:
+            if (
+                self.active_arena_seal_region
+                and choice.get("kind") == "move"
+                and (
+                    actor_region == self.active_arena_seal_region
+                    or choice.get("region") == self.active_arena_seal_region
+                )
+            ):
+                continue
+            if (
+                self.active_blood_beacon_region
+                and actor_region == self.active_blood_beacon_region
+                and choice.get("kind") == "hide"
+            ):
+                continue
+            filtered.append(choice)
+        return filtered or choices
+
+    def _resolve_action(
+        self,
+        actor: discord.Member,
+        action: dict,
+        killed_this_round: set,
+        elimination_log: dict[int, dict],
+    ) -> str:
+        actor_region = self._region_for(actor)
+        kind = action["kind"]
+
+        if kind == "move" and self.active_arena_seal_region:
+            new_region = str(action.get("region") or "")
+            if (
+                actor_region == self.active_arena_seal_region
+                or new_region == self.active_arena_seal_region
+            ):
+                return _(
+                    "tries to move, but the arena seal slams shut around **{region}**."
+                ).format(region=self.active_arena_seal_region)
+
+        if (
+            kind == "hide"
+            and self.active_blood_beacon_region
+            and actor_region == self.active_blood_beacon_region
+        ):
+            self.hidden_ids.discard(actor.id)
+            return _(
+                "tries to hide in **{region}**, but the Blood Beacon exposes every shadow."
+            ).format(region=actor_region)
+
+        return super()._resolve_action(
+            actor,
+            action,
+            killed_this_round,
+            elimination_log,
+        )
 
     async def _resolve_arena_event(
         self,
@@ -2901,20 +3353,23 @@ class RegionGMGame(RegionGame):
         if not self.active_mutt_regions:
             return
 
+        survivors = [p for p in self.players if p not in killed_this_round]
+        min_targets = 1 if len(survivors) <= 4 else 2
+
         active_candidates = [
             region
             for region in sorted(self.active_mutt_regions)
             if len(
                 self._players_in_region(region, killed_this_round=killed_this_round)
             )
-            >= 2
+            >= min_targets
         ]
         if not active_candidates:
             faded_regions = sorted(self.active_mutt_regions)
             self.active_mutt_regions.clear()
             round_lines.append(
                 _(
-                    "🐾 Mutt pressure fades in {regions}. No crowded targets remain."
+                    "🐾 Mutt pressure fades in {regions}. No valid targets remain."
                 ).format(
                     regions=nice_join([f"**{region}**" for region in faded_regions])
                 )
@@ -2924,8 +3379,11 @@ class RegionGMGame(RegionGame):
         region = random.choice(active_candidates)
         candidates = self._players_in_region(region, killed_this_round=killed_this_round)
         victim = random.choice(candidates)
+        lone_target = len(candidates) == 1
         lethality = self._mutt_lethality_chance(
-            victim, base_chance=76, min_chance=24
+            victim,
+            base_chance=68 if lone_target else 76,
+            min_chance=28 if lone_target else 24,
         )
         self.active_mutt_regions.clear()
         if random.randint(1, 100) <= lethality:
@@ -2939,22 +3397,25 @@ class RegionGMGame(RegionGame):
                 ),
             )
             round_lines.append(
-                _("🐺 Mutts ambush **{victim}** in **{region}**.").format(
-                    victim=victim.display_name,
-                    region=region,
-                )
+                (
+                    _("🐺 Mutts isolate **{victim}** in **{region}** and tear them apart.")
+                    if lone_target
+                    else _("🐺 Mutts ambush **{victim}** in **{region}**.")
+                ).format(victim=victim.display_name, region=region)
             )
             return
 
         loss = self._apply_mutt_gear_loss(victim)
         round_lines.append(
-            _(
-                "🐺 Mutts ambush **{victim}** in **{region}**, but they escape and lose {loss} gear level(s)."
-            ).format(
-                victim=victim.display_name,
-                region=region,
-                loss=loss,
-            )
+            (
+                _(
+                    "🐺 Mutts corner **{victim}** alone in **{region}**, but they limp away and lose {loss} gear level(s)."
+                )
+                if lone_target
+                else _(
+                    "🐺 Mutts ambush **{victim}** in **{region}**, but they escape and lose {loss} gear level(s)."
+                )
+            ).format(victim=victim.display_name, region=region, loss=loss)
         )
 
     async def get_inputs(self):
@@ -2967,6 +3428,12 @@ class RegionGMGame(RegionGame):
         round_lines: list[str] = []
         elimination_log: dict[int, dict] = {}
 
+        self.active_arena_seal_region = None
+        self.pending_arena_seal_region = None
+        self.active_blood_beacon_region = None
+        self.pending_blood_beacon_region = None
+        if self.gm_blood_beacon_cooldown > 0:
+            self.gm_blood_beacon_cooldown -= 1
         self.active_toxic_regions = set(self.next_toxic_regions)
         self.active_mutt_regions = set(self.next_mutt_regions)
         self.fog_stage = max(1, min(6, 1 + (self.round - 1) // 2))
@@ -3024,7 +3491,11 @@ class RegionGMGame(RegionGame):
             self.no_kill_rounds = 0
         else:
             self.no_kill_rounds += 1
-            self._resolve_stalemate(killed_this_round, round_lines, elimination_log)
+            await self._resolve_stalemate_with_gm(
+                killed_this_round,
+                round_lines,
+                elimination_log,
+            )
             if killed_this_round:
                 self.no_kill_rounds = 0
 
@@ -4782,7 +5253,8 @@ class HungerGames(commands.Cog):
                     "• sponsor drop regions for the current round\n"
                     "• up to 2 toxic regions for the next round\n"
                     "• 1 mutt warning region for the next round\n"
-                    "• Sudden Death duelists when multiple valid tributes remain"
+                    "• Sudden Death duelists when multiple valid tributes remain\n"
+                    "• special powers like Arena Seal and Blood Beacon"
                 ),
                 inline=False,
             )
@@ -4792,6 +5264,9 @@ class HungerGames(commands.Cog):
                     "• Regions-GM needs at least 4 joined players.\n"
                     "• You may force a specific GM with `{prefix}hungergames regions-gm <discord_id>`.\n"
                     "• The Game Master sees where tributes are by region.\n"
+                    "• Arena Seal is a one-use late-game lockdown.\n"
+                    "• Blood Beacon creates a big drop and breaks hiding there.\n"
+                    "• At 4 or fewer tributes, mutts can strike lone targets.\n"
                     "• If the Game Master leaves slots blank or goes AFK, the arena auto-fills the missing directives."
                 ).format(prefix=ctx.clean_prefix),
                 inline=False,
