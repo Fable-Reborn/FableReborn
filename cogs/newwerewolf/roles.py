@@ -134,7 +134,7 @@ ROLE_DEFS: dict[RoleId, RoleDef] = {
         display_name="Ravager Wolf",
         team=Team.WOLVES,
         description=(
-            "Advanced Big Bad Wolf role. Once per game (not on night one) can"
+            "Advanced Werewolf role. Once per game (not on night one) can"
             " ravage the wolves' chosen target to pierce Doctor/Healer/Jailer/Witch"
             " protection. Forged shields and Bodyguard/Tough Guy interception still"
             " work."

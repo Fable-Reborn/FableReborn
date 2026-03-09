@@ -89,7 +89,7 @@ ROLE_MODE_ALLOWLIST: dict[str, set[str]] = {
 #   - at level 5, player may choose Pacifist instead of Flower Child
 #   - at level 10, player may also choose the second advanced role
 ADVANCED_ROLE_TIERS: dict[str, dict[int, str]] = {
-    "big_bad_wolf": {5: "ravager_wolf"},
+    "werewolf": {5: "ravager_wolf"},
     "flower_child": {5: "pacifist"},
     "priest": {5: "marksman"},
     "nightmare_werewolf": {5: "voodoo_werewolf"},
