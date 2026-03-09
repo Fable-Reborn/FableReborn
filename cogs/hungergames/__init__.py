@@ -2434,6 +2434,24 @@ class RegionGMGame(RegionGame):
             return _("None")
         return ", ".join(f"**{region}**" for region in region_list)
 
+    def _gm_pathways_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title=_("🗺️ Arena Pathways Reference"),
+            description=_(
+                "Movement is limited to connected regions. Use this to funnel tributes into drops, mutts, and toxic pressure."
+            ),
+            color=discord.Color.dark_gold(),
+        )
+        for region in self.REGIONS:
+            neighbors = ", ".join(self.REGION_ADJACENCY.get(region, ())) or _("None")
+            embed.add_field(name=region, value=neighbors[:1024], inline=False)
+        embed.set_footer(
+            text=_(
+                "GM note: you do not place tribute traps directly. Pathway control lets you bait or corner them."
+            )
+        )
+        return embed
+
     async def _send_gm_intro(self) -> None:
         lines = [
             _("You have been chosen as this Hunger Games' Game Master."),
@@ -2444,10 +2462,18 @@ class RegionGMGame(RegionGame):
             _("If you leave anything blank or go AFK, the arena auto-fills the missing directives."),
             _("Back to game: {link}").format(link=self.game_channel_link),
         ]
+        intro_text = "\n".join(lines)
+        pathways_embed = self._gm_pathways_embed()
         try:
-            await self.gm_player.send("\n".join(lines))
+            await self.gm_player.send(intro_text)
+            await self.gm_player.send(embed=pathways_embed)
         except (discord.Forbidden, discord.HTTPException):
-            return
+            await self.ctx.send(
+                _(
+                    "{gm}, GM reference is public because your DMs are closed."
+                ).format(gm=self.gm_player.mention)
+            )
+            await self.ctx.send(embed=pathways_embed)
 
     async def _present_gm_panel(self, view: RegionGMPanelView) -> None:
         content = None
@@ -4764,9 +4790,10 @@ class HungerGames(commands.Cog):
                 name=_("Mode Rules"),
                 value=_(
                     "• Regions-GM needs at least 4 joined players.\n"
+                    "• You may force a specific GM with `{prefix}hungergames regions-gm <discord_id>`.\n"
                     "• The Game Master sees where tributes are by region.\n"
                     "• If the Game Master leaves slots blank or goes AFK, the arena auto-fills the missing directives."
-                ),
+                ).format(prefix=ctx.clean_prefix),
                 inline=False,
             )
             await ctx.send(embed=gm_embed)
@@ -4794,13 +4821,45 @@ class HungerGames(commands.Cog):
             - `{prefix}hungergames regions`
             - `{prefix}hungergames region-ideas`
             - `{prefix}hungergames regions-gm`
+            - `{prefix}hungergames regions-gm 123456789012345678`
             - `{prefix}hgregions` (regions help)
             - `{prefix}hgdmboard on/off` (region board DM toggle)"""
         )
         if self.games.get(ctx.channel.id):
             return await ctx.send(_("There is already a game in here!"))
 
-        normalized_mode = (mode or "classic").strip().casefold()
+        raw_mode = (mode or "classic").strip()
+        mode_parts = raw_mode.split() if raw_mode else ["classic"]
+        normalized_mode = mode_parts[0].casefold()
+        gm_tokens = {"regions-gm", "region-gm", "regionsgm", "regiongm", "gm"}
+        forced_gm_id: int | None = None
+
+        if normalized_mode not in gm_tokens and len(mode_parts) > 1:
+            return await ctx.send(
+                _(
+                    "Too many mode arguments. Use `classic`, `regions`, `region-ideas`, or `regions-gm <discord_id>`."
+                )
+            )
+
+        if normalized_mode in gm_tokens and len(mode_parts) > 2:
+            return await ctx.send(
+                _(
+                    "Too many arguments for `regions-gm`. Use `regions-gm` or `regions-gm <discord_id>`."
+                )
+            )
+
+        if normalized_mode in gm_tokens and len(mode_parts) == 2:
+            forced_token = mode_parts[1].strip()
+            if forced_token.startswith("<@") and forced_token.endswith(">"):
+                forced_token = forced_token.strip("<@!>")
+            if not forced_token.isdigit():
+                return await ctx.send(
+                    _(
+                        "Invalid GM id `{value}`. Use a Discord user ID or mention."
+                    ).format(value=mode_parts[1])
+                )
+            forced_gm_id = int(forced_token)
+
         gm_mode = False
         mode_note = None
         if normalized_mode in {"classic", "default", ""}:
@@ -4812,18 +4871,28 @@ class HungerGames(commands.Cog):
         elif normalized_mode in {"region-ideas", "regionideas", "ideas"}:
             game_factory = RegionIdeasGame
             mode_label = _("Region-Ideas")
-        elif normalized_mode in {"regions-gm", "region-gm", "regionsgm", "regiongm", "gm"}:
+        elif normalized_mode in gm_tokens:
             game_factory = RegionGMGame
             mode_label = _("Regions-GM")
             gm_mode = True
-            mode_note = _(
-                "One joined player will be chosen at random as Game Master and will not fight as a tribute."
-            )
+            if forced_gm_id is not None:
+                forced_gm_label = (
+                    ctx.guild.get_member(forced_gm_id).mention
+                    if ctx.guild and ctx.guild.get_member(forced_gm_id)
+                    else f"<@{forced_gm_id}>"
+                )
+                mode_note = _(
+                    "{user} will be the Game Master if they join. They will not fight as a tribute."
+                ).format(user=forced_gm_label)
+            else:
+                mode_note = _(
+                    "One joined player will be chosen at random as Game Master and will not fight as a tribute."
+                )
         else:
             return await ctx.send(
                 _(
                     "Unknown mode `{mode}`. Valid modes: `classic`, `regions`, `region-ideas`, `regions-gm`."
-                ).format(mode=mode or "")
+                ).format(mode=raw_mode or "")
             )
 
         self.games[ctx.channel.id] = "forming"
@@ -4881,7 +4950,21 @@ class HungerGames(commands.Cog):
             return await ctx.send(_("Not enough players joined..."))
 
         if gm_mode:
-            gm_player = random.choice(players)
+            if forced_gm_id is not None:
+                gm_player = next(
+                    (player for player in players if player.id == forced_gm_id),
+                    None,
+                )
+                if gm_player is None:
+                    del self.games[ctx.channel.id]
+                    await self.bot.reset_cooldown(ctx)
+                    return await ctx.send(
+                        _(
+                            "The chosen GM `{user_id}` did not join the lobby."
+                        ).format(user_id=forced_gm_id)
+                    )
+            else:
+                gm_player = random.choice(players)
             players.remove(gm_player)
             game = game_factory(ctx, players=players, gm_player=gm_player)
         else:
