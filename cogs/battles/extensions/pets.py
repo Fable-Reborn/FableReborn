@@ -8,6 +8,96 @@ class PetExtension:
     """Extension for pet integration in battles"""
     PET_MAX_LEVEL = 100
     PET_LEVEL_STAT_BONUS = 0.01
+    LIGHTS_GUIDANCE_PROC_CHANCE = 0.25
+    LIGHTS_GUIDANCE_OFFENSIVE_TYPES = {
+        'aoe_attack',
+        'apply_burn',
+        'blind',
+        'bypass_defenses',
+        'buff_transfer',
+        'chain_attack',
+        'chain_critical',
+        'chaos_aoe',
+        'chaos_mastery',
+        'conditional_passive',
+        'defense_debuff',
+        'delay_enemy',
+        'desperation_power',
+        'dispel_on_hit',
+        'duplicate_attack',
+        'elemental_bonus',
+        'enemy_debuff',
+        'execute',
+        'execute_heal',
+        'happiness_damage',
+        'hp_based_damage',
+        'ignore_armor',
+        'initiative_control',
+        'lifesteal',
+        'lifesteal_to_owner',
+        'on_attack',
+        'on_critical',
+        'owner_buff_on_attack',
+        'owner_heal_on_attack',
+        'paralyze',
+        'partial_true_damage',
+        'permanent_debuff',
+        'persistent_aoe',
+        'persistent_void',
+        'push_back',
+        'random_attack',
+        'random_team_buff',
+        'reality_control',
+        'reality_manipulation',
+        'spreading_debuff',
+        'stacking_damage',
+        'stun',
+        'teleport_attack',
+        'ultimate',
+        'universal_bonus',
+        'void_attack',
+    }
+    LIGHTS_GUIDANCE_OFFENSIVE_SKILLS = {
+        'burning_rage',
+        'corrupted_affinity',
+        'dark_affinity',
+        'electric_affinity',
+        'fire_affinity',
+        'inferno_mastery',
+        'light_affinity',
+        'nature_affinity',
+        'natures_fury',
+        'shadow_step',
+        'void_affinity',
+        'water_affinity',
+    }
+    LIGHTS_GUIDANCE_REACTIVE_TYPES = {
+        'absorb_convert',
+        'absorb_corrupt',
+        'avoid_targeting',
+        'block_attack',
+        'damage_redistribution',
+        'damage_reduction',
+        'damage_transfer',
+        'defensive_corruption',
+        'dodge',
+        'enhanced_vision',
+        'owner_sharing',
+        'phase_dodge',
+        'poison_reflect',
+        'positioning',
+        'resistance',
+        'revive',
+        'sacrifice_save',
+        'selective_defense',
+        'shield',
+    }
+    LIGHTS_GUIDANCE_REACTIVE_SKILLS = {
+        'lightning_rod',
+        'molten_armor',
+        'symbiotic_bond',
+        'thorn_shield',
+    }
 
     @staticmethod
     def _extract_user_id(entity):
@@ -77,6 +167,42 @@ class PetExtension:
             return 0.0   # Cautious: +0%
         else:
             return -0.10  # Distrustful: -10%
+
+    @staticmethod
+    def _format_skill_name(skill_name):
+        """Convert internal skill ids into readable battle-log text."""
+        return str(skill_name).replace('_', ' ')
+
+    def _get_lights_guidance_candidates(self, skill_effects, allowed_types, allowed_skills):
+        """Collect only skills that can reasonably affect the current hit exchange."""
+        if not isinstance(skill_effects, dict):
+            return []
+
+        candidates = []
+        for skill_name, skill_data in skill_effects.items():
+            if skill_name == 'lights_guidance':
+                continue
+
+            skill_type = skill_data.get('type') if isinstance(skill_data, dict) else None
+            if skill_name in allowed_skills or skill_type in allowed_types:
+                candidates.append(skill_name)
+
+        return candidates
+
+    def _has_exchange_reflection(self, combatant):
+        """Check whether the defender can reflect blocked damage on this hit."""
+        if combatant is None:
+            return False
+
+        try:
+            reflection_value = Decimal(str(getattr(combatant, 'damage_reflection', 0)))
+        except Exception:
+            reflection_value = Decimal('0')
+
+        if reflection_value > 0:
+            return True
+
+        return bool(getattr(combatant, 'tank_evolution', None) and not getattr(combatant, 'is_pet', False))
     
     def apply_skill_effects(self, pet_combatant, learned_skills):
         """Apply skill effects to pet combatant with actual implementations"""
@@ -648,8 +774,8 @@ class PetExtension:
         modified_damage = Decimal(str(damage))  # Convert to Decimal to handle all operations
         effects = pet_combatant.skill_effects
         messages = []
-        countered_skill_name = None
-        countered_skill_effect = None
+        countered_attacker_skill_name = None
+        countered_attacker_skill_effect = None
 
         # Decrement internal balance cooldowns before evaluating new procs.
         for cooldown_attr in (
@@ -663,43 +789,24 @@ class PetExtension:
             if turns_left > 0:
                 setattr(pet_combatant, cooldown_attr, turns_left - 1)
 
-        # Light's Guidance is a defensive counter: the defender can negate one attacker skill this hit.
+        # Defending Light's Guidance can blank one offensive enemy skill for this exchange.
         target_effects = getattr(target, 'skill_effects', {}) if hasattr(target, 'skill_effects') else {}
-        if 'lights_guidance' in target_effects and effects and random.random() < 0.25:
-            non_attack_types = {
-                'on_damage_taken',
-                'block_attack',
-                'shield',
-                'resistance',
-                'revive',
-                'sacrifice_save',
-                'owner_immortality',
-                'damage_transfer',
-                'team_heal_per_turn',
-                'team_cleanse_per_turn',
-                'enhanced_vision',
-                'team_protection',
-            }
-            candidate_skills = []
-            for skill_name, skill_data in effects.items():
-                if skill_name == 'lights_guidance':
-                    continue
-                if isinstance(skill_data, dict) and skill_data.get('type') in non_attack_types:
-                    continue
-                candidate_skills.append(skill_name)
-
-            if not candidate_skills:
-                candidate_skills = [skill_name for skill_name in effects.keys() if skill_name != 'lights_guidance']
-
+        if ('lights_guidance' in target_effects and effects and
+            random.random() < self.LIGHTS_GUIDANCE_PROC_CHANCE):
+            candidate_skills = self._get_lights_guidance_candidates(
+                effects,
+                self.LIGHTS_GUIDANCE_OFFENSIVE_TYPES,
+                self.LIGHTS_GUIDANCE_OFFENSIVE_SKILLS,
+            )
             if candidate_skills:
-                countered_skill_name = random.choice(candidate_skills)
-                countered_skill_effect = effects.pop(countered_skill_name, None)
-                if countered_skill_effect is not None:
-                    pretty_skill_name = countered_skill_name.replace('_', ' ')
+                countered_attacker_skill_name = random.choice(candidate_skills)
+                countered_attacker_skill_effect = effects.pop(countered_attacker_skill_name, None)
+                if countered_attacker_skill_effect is not None:
                     messages.append(
-                        f"{target.name}'s Light's Guidance counters {pet_combatant.name}'s {pretty_skill_name}!"
+                        f"{target.name}'s Light's Guidance counters "
+                        f"{pet_combatant.name}'s {self._format_skill_name(countered_attacker_skill_name)}!"
                     )
-                    setattr(target, 'lights_guidance_last_counter', countered_skill_name)
+                    setattr(target, 'lights_guidance_last_counter', countered_attacker_skill_name)
         
 
         
@@ -1435,9 +1542,46 @@ class PetExtension:
         if 'corrupted_affinity' in effects:
             modified_damage *= (Decimal('1') + Decimal(str(effects['corrupted_affinity']['universal_damage'])))
 
+        # Attacking Light's Guidance can blank one reactive defensive skill for this exchange.
+        if ('lights_guidance' in effects and
+            random.random() < self.LIGHTS_GUIDANCE_PROC_CHANCE):
+            reactive_candidates = self._get_lights_guidance_candidates(
+                target_effects,
+                self.LIGHTS_GUIDANCE_REACTIVE_TYPES,
+                self.LIGHTS_GUIDANCE_REACTIVE_SKILLS,
+            )
+            if self._has_exchange_reflection(target):
+                reactive_candidates.append('armor_reflection')
+
+            if reactive_candidates:
+                countered_target_skill_name = random.choice(reactive_candidates)
+
+                if countered_target_skill_name == 'armor_reflection':
+                    setattr(pet_combatant, 'ignore_reflection_this_hit', True)
+                    messages.append(
+                        f"{pet_combatant.name}'s Light's Guidance counters "
+                        f"{target.name}'s {self._format_skill_name(countered_target_skill_name)}!"
+                    )
+                    setattr(pet_combatant, 'lights_guidance_last_counter', countered_target_skill_name)
+                else:
+                    current_target_effects = getattr(target, 'skill_effects', None)
+                    if isinstance(current_target_effects, dict) and countered_target_skill_name in current_target_effects:
+                        filtered_target_effects = dict(current_target_effects)
+                        filtered_target_effects.pop(countered_target_skill_name, None)
+
+                        if not hasattr(target, 'lights_guidance_original_skill_effects'):
+                            setattr(target, 'lights_guidance_original_skill_effects', current_target_effects)
+                        target.skill_effects = filtered_target_effects
+
+                        messages.append(
+                            f"{pet_combatant.name}'s Light's Guidance counters "
+                            f"{target.name}'s {self._format_skill_name(countered_target_skill_name)}!"
+                        )
+                        setattr(pet_combatant, 'lights_guidance_last_counter', countered_target_skill_name)
+
         # Restore any temporarily countered attacker skill for future attacks.
-        if countered_skill_name and countered_skill_effect is not None:
-            effects[countered_skill_name] = countered_skill_effect
+        if countered_attacker_skill_name and countered_attacker_skill_effect is not None:
+            effects[countered_attacker_skill_name] = countered_attacker_skill_effect
             
         return modified_damage, messages
     

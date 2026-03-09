@@ -207,6 +207,7 @@ class Battle(ABC):
         blocked_damage = Decimal("0")
         skill_messages: List[str] = []
         defender_messages: List[str] = []
+        ignore_reflection_this_hit = False
 
         pet_ext = self._get_pet_extension()
         element_ext = self._get_element_extension()
@@ -231,6 +232,9 @@ class Battle(ABC):
         if pet_ext and getattr(attacker, "is_pet", False):
             raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(attacker, defender, raw_damage)
             setattr(attacker, "attacked_this_turn", True)
+            ignore_reflection_this_hit = bool(getattr(attacker, "ignore_reflection_this_hit", False))
+            if hasattr(attacker, "ignore_reflection_this_hit"):
+                delattr(attacker, "ignore_reflection_this_hit")
 
         # 4) Apply armor/defense bypass rules.
         ignore_armor = getattr(defender, "ignore_armor_this_hit", False)
@@ -266,6 +270,9 @@ class Battle(ABC):
             final_damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(
                 defender, attacker, final_damage
             )
+            if hasattr(defender, "lights_guidance_original_skill_effects"):
+                defender.skill_effects = getattr(defender, "lights_guidance_original_skill_effects")
+                delattr(defender, "lights_guidance_original_skill_effects")
 
         # 7) Track damage dealt for pet lifesteal and per-turn effects.
         if getattr(attacker, "is_pet", False):
@@ -278,6 +285,7 @@ class Battle(ABC):
             defender_messages=defender_messages,
             metadata={
                 "raw_damage_after_mods": Decimal(str(raw_damage)),
+                "ignore_reflection_this_hit": ignore_reflection_this_hit,
                 "partial_true_damage": partial_true_damage,
             },
         )

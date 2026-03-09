@@ -161,6 +161,7 @@ class RaidBattle(Battle):
         if hit_success:
             # Attack hits
             blocked_damage = Decimal("0")
+            ignore_reflection_this_hit = False
             
             # Special case for mage fireball
             used_fireball = False
@@ -207,6 +208,7 @@ class RaidBattle(Battle):
                 blocked_damage = outcome.blocked_damage
                 skill_messages = outcome.skill_messages
                 defender_messages = outcome.defender_messages
+                ignore_reflection_this_hit = bool(outcome.metadata.get("ignore_reflection_this_hit", False))
                 
                 target.take_damage(damage)
                 
@@ -289,7 +291,8 @@ class RaidBattle(Battle):
             
             if (self.config["reflection_damage"] and 
                 reflection_value > 0 and 
-                blocked_damage > 0):
+                blocked_damage > 0 and
+                not ignore_reflection_this_hit):
                 
                 reflected = blocked_damage * Decimal(str(reflection_value))
                 current_combatant.take_damage(reflected)
