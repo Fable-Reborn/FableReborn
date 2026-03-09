@@ -47,7 +47,6 @@ NON_CLASSIC_MODES: set[str] = {
 # Roles in this list are excluded from Classic but still available elsewhere.
 CLASSIC_EXCLUDED_ROLES: set[str] = {
     "big_bad_wolf",
-    "ravager_wolf",
     "cursed_wolf_father",
     "wolf_necromancer",
     "alpha_werewolf",
