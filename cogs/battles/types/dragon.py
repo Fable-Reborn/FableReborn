@@ -12,6 +12,19 @@ from ..core.team import Team
 
 class DragonBattle(Battle):
     """Implementation of Ice Dragon Challenge battle"""
+    LIGHTS_GUIDANCE_COUNTERABLE_EFFECTS = {
+        "freeze",
+        "stun",
+        "aoe_stun",
+        "possess_player",
+        "possess_pet",
+        "possess_player_and_pet_permanent",
+        "shatter_armor",
+        "invert_healing",
+        "damage_link",
+        "turn_skip_chance",
+        "true_damage_window",
+    }
     
     def __init__(self, ctx, teams, **kwargs):
         super().__init__(ctx, teams, **kwargs)
@@ -968,6 +981,97 @@ class DragonBattle(Battle):
     def _has_effect(self, combatant, effect_type):
         return self._get_effect(combatant, effect_type) is not None
 
+    @staticmethod
+    def _extract_user_id(entity):
+        """Resolve Discord ids from combatants, users, or raw ids."""
+        if entity is None:
+            return None
+
+        if hasattr(entity, "user"):
+            entity = getattr(entity, "user", None)
+
+        user_id = getattr(entity, "id", None)
+        if user_id is not None:
+            return user_id
+
+        if isinstance(entity, int):
+            return entity
+
+        if isinstance(entity, str):
+            cleaned = entity.strip()
+            if cleaned.isdigit():
+                return int(cleaned)
+
+        return None
+
+    def _get_lights_guidance_proc_chance(self):
+        battles_cog = self.ctx.bot.cogs.get("Battles") if hasattr(self.ctx.bot, "cogs") else None
+        battle_factory = getattr(battles_cog, "battle_factory", None) if battles_cog else None
+        pet_ext = getattr(battle_factory, "pet_ext", None)
+        return float(getattr(pet_ext, "LIGHTS_GUIDANCE_PROC_CHANCE", 0.25))
+
+    def _get_lights_guidance_guardian(self, target):
+        """Find the Light pet that can protect this combatant from possession effects."""
+        if target is None:
+            return None
+
+        if getattr(target, "is_pet", False):
+            skill_effects = getattr(target, "skill_effects", {})
+            if (
+                target.is_alive()
+                and not self._is_possessed(target)
+                and isinstance(skill_effects, dict)
+                and "lights_guidance" in skill_effects
+            ):
+                return target
+            return None
+
+        target_user_id = self._extract_user_id(target)
+        if target_user_id is None:
+            return None
+
+        for combatant in self.player_team.combatants:
+            if not getattr(combatant, "is_pet", False) or not combatant.is_alive():
+                continue
+            if self._is_possessed(combatant):
+                continue
+
+            skill_effects = getattr(combatant, "skill_effects", {})
+            if not isinstance(skill_effects, dict) or "lights_guidance" not in skill_effects:
+                continue
+
+            owner_id = self._extract_user_id(getattr(combatant, "owner", None))
+            pet_user_id = self._extract_user_id(getattr(combatant, "user", None))
+            if owner_id == target_user_id or pet_user_id == target_user_id:
+                return combatant
+
+        return None
+
+    def _try_lights_guidance_counter(self, target):
+        """Roll Light's Guidance against a dragon possession effect."""
+        guardian = self._get_lights_guidance_guardian(target)
+        if not guardian:
+            return None
+
+        if random.random() >= self._get_lights_guidance_proc_chance():
+            return None
+
+        return guardian
+
+    def _maybe_counter_dragon_effect(self, target, effect_type, effect_name):
+        """Resolve Light's Guidance against selected dragon control/setup effects."""
+        if effect_type not in self.LIGHTS_GUIDANCE_COUNTERABLE_EFFECTS:
+            return None
+
+        guardian = self._try_lights_guidance_counter(target)
+        if not guardian:
+            return None
+
+        return (
+            f"🌟 **{guardian.name}'s Light's Guidance** counters the dragon's "
+            f"{effect_name} on **{target.name}**!"
+        )
+
     async def _apply_damage_link(self, target, damage):
         if self._damage_link_guard:
             return
@@ -1376,6 +1480,9 @@ class DragonBattle(Battle):
         effect_desc = ""
         
         if effect_type == "freeze":
+            counter_message = self._maybe_counter_dragon_effect(target, effect_type, "freeze")
+            if counter_message:
+                return counter_message
             self.status_effects[target.name].append({
                 "type": "stun",
                 "name": "Freeze",
@@ -1385,6 +1492,9 @@ class DragonBattle(Battle):
             effect_desc = "🧊 **Frozen** for 1 turn!"
             
         elif effect_type == "stun":
+            counter_message = self._maybe_counter_dragon_effect(target, effect_type, "stun")
+            if counter_message:
+                return counter_message
             self.status_effects[target.name].append({
                 "type": "stun",
                 "name": "Stun",
@@ -1394,6 +1504,9 @@ class DragonBattle(Battle):
             effect_desc = "⚡ **Stunned** for 1 turn!"
             
         elif effect_type == "aoe_stun":
+            counter_message = self._maybe_counter_dragon_effect(target, effect_type, "mass stun")
+            if counter_message:
+                return counter_message
             self.status_effects[target.name].append({
                 "type": "stun",
                 "name": "Mass Stun",
@@ -1479,6 +1592,13 @@ class DragonBattle(Battle):
             alive_allies = self._alive_party_combatants()
             if not any(c is not target for c in alive_allies):
                 return ""
+            guidance_guardian = self._try_lights_guidance_counter(target)
+            if guidance_guardian:
+                self._possession_used = True
+                return (
+                    f"🌟 **{guidance_guardian.name}'s Light's Guidance** counters the dragon's possession of "
+                    f"**{target.name}**!"
+                )
             self.status_effects[target.name].append({
                 "type": "possessed",
                 "name": "Possessed",
@@ -1497,6 +1617,13 @@ class DragonBattle(Battle):
                 alive_allies = self._alive_party_combatants()
                 if not any(c is not pet_target for c in alive_allies):
                     return ""
+                guidance_guardian = self._try_lights_guidance_counter(pet_target)
+                if guidance_guardian:
+                    self._possession_used = True
+                    return (
+                        f"🌟 **{guidance_guardian.name}'s Light's Guidance** counters the dragon's possession of "
+                        f"**{pet_target.name}**!"
+                    )
                 if pet_target.name not in self.status_effects:
                     self.status_effects[pet_target.name] = []
                 self.status_effects[pet_target.name].append({
@@ -1521,33 +1648,68 @@ class DragonBattle(Battle):
                 return ""
             if not any(c is not player_target for c in alive_allies):
                 return ""
-            self.status_effects[player_target.name].append({
-                "type": "possessed",
-                "name": "Dominion",
-                "duration": -1,
-                "value": None
-            })
+
+            protected_messages = []
+            affected_names = []
+
+            player_guardian = self._try_lights_guidance_counter(player_target)
+            player_blocked = player_guardian is not None
+            if player_blocked:
+                protected_messages.append(
+                    f"🌟 **{player_guardian.name}'s Light's Guidance** shields **{player_target.name}** from Dominion!"
+                )
+            else:
+                self.status_effects[player_target.name].append({
+                    "type": "possessed",
+                    "name": "Dominion",
+                    "duration": -1,
+                    "value": None
+                })
+                affected_names.append(player_target.name)
+
             # Possess a pet if available
             pet_targets = [c for c in self._alive_party_combatants() if c.is_pet]
             if pet_targets:
                 pet_target = random.choice(pet_targets)
                 if not any(c is not pet_target for c in alive_allies):
                     return ""
-                if pet_target.name not in self.status_effects:
-                    self.status_effects[pet_target.name] = []
-                self.status_effects[pet_target.name].append({
-                    "type": "possessed",
-                    "name": "Dominion",
-                    "duration": -1,
-                    "value": None
-                })
-                effect_desc = f"🧿 **Dominion!** {player_target.name} and {pet_target.name} are possessed for the entire battle!"
+                pet_guardian = None if player_blocked else self._try_lights_guidance_counter(pet_target)
+                if pet_guardian:
+                    protected_messages.append(
+                        f"🌟 **{pet_guardian.name}'s Light's Guidance** shields **{pet_target.name}** from Dominion!"
+                    )
+                else:
+                    if pet_target.name not in self.status_effects:
+                        self.status_effects[pet_target.name] = []
+                    self.status_effects[pet_target.name].append({
+                        "type": "possessed",
+                        "name": "Dominion",
+                        "duration": -1,
+                        "value": None
+                    })
+                    affected_names.append(pet_target.name)
             else:
-                effect_desc = f"🧿 **Dominion!** {player_target.name} is possessed for the entire battle!"
+                pet_target = None
+
+            if len(affected_names) >= 2:
+                effect_desc = (
+                    f"🧿 **Dominion!** {affected_names[0]} and {affected_names[1]} are possessed for the entire battle!"
+                )
+            elif len(affected_names) == 1:
+                effect_desc = f"🧿 **Dominion!** {affected_names[0]} is possessed for the entire battle!"
+            else:
+                effect_desc = "🧿 **Dominion surges out, but Light's Guidance breaks the dragon's hold!**"
+
+            if protected_messages:
+                effect_desc += " " + " ".join(protected_messages)
+
             self._dominion_used = True
             self._possession_used = True
 
         elif effect_type == "shatter_armor":
+            counter_message = self._maybe_counter_dragon_effect(target, effect_type, "armor shatter")
+            if counter_message:
+                return counter_message
             self.status_effects[target.name].append({
                 "type": "shatter_armor",
                 "name": "Armor Shatter",
@@ -1569,6 +1731,9 @@ class DragonBattle(Battle):
             effect_desc = "💀 **Soul Tax** reduces max HP by 10%!"
 
         elif effect_type == "invert_healing":
+            counter_message = self._maybe_counter_dragon_effect(target, effect_type, "healing inversion")
+            if counter_message:
+                return counter_message
             self.status_effects[target.name].append({
                 "type": "invert_healing",
                 "name": "Dread Inversion",
@@ -1578,6 +1743,9 @@ class DragonBattle(Battle):
             effect_desc = "🩸 **Healing Inverted** for 2 turns!"
 
         elif effect_type == "damage_link":
+            counter_message = self._maybe_counter_dragon_effect(target, effect_type, "damage link")
+            if counter_message:
+                return counter_message
             ally_targets = [
                 c for c in self.player_team.combatants
                 if c.is_alive() and c is not target
@@ -1594,6 +1762,9 @@ class DragonBattle(Battle):
                 effect_desc = f"🔗 **Terror Link** with {linked.name} for 2 turns!"
 
         elif effect_type == "turn_skip_chance":
+            counter_message = self._maybe_counter_dragon_effect(target, effect_type, "panic")
+            if counter_message:
+                return counter_message
             self.status_effects[target.name].append({
                 "type": "turn_skip_chance",
                 "name": "Panic",
@@ -1603,6 +1774,9 @@ class DragonBattle(Battle):
             effect_desc = "😱 **Panic**: 50% chance to lose turns!"
 
         elif effect_type == "true_damage_window":
+            counter_message = self._maybe_counter_dragon_effect(target, effect_type, "null phase")
+            if counter_message:
+                return counter_message
             self.status_effects[target.name].append({
                 "type": "true_damage_window",
                 "name": "Null Phase",
