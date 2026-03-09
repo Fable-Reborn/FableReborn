@@ -100,52 +100,100 @@ class Trading(commands.Cog):
             parts.append(f"{amount}x {label}")
         return ", ".join(parts) if parts else "N/A"
 
+    def _format_price(self, price):
+        return f"${int(price):,}"
+
+    def _get_offer_display_name(self, offer):
+        if offer["name"] == "Resetpotion":
+            return "Reset Potion"
+        if offer["name"] == "Weapontoken":
+            return "Weapon Token"
+        return offer["name"]
+
+    def _truncate_choice_label(self, label, max_length=95):
+        if len(label) <= max_length:
+            return label
+        return f"{label[: max_length - 3]}..."
+
+    def _get_item_stat_text(self, item):
+        stat = self._get_item_display_stat(item)
+        suffix = "ARM" if item["type_"] == "Shield" else "DMG"
+        return f"{stat} {suffix}"
+
+    def _build_trader_choice_label(self, offer, index):
+        offer_type = offer["offer_type"]
+        data = offer["data"]
+        number = f"#{index}"
+
+        if offer_type == "item":
+            item = data["item"]
+            tag = "Featured" if data.get("featured") else "Item"
+            label = f"{number} {tag} | {item.get('element', 'Unknown')} {item['type_']} | {self._get_item_display_stat(item)}"
+        elif offer_type == "crate":
+            label = f"{number} Crate | {data['crate_rarity'].capitalize()}"
+        elif offer_type == "crate_bundle":
+            if data.get("hidden_preview"):
+                label = f"{number} Gatcha | {int(data.get('crate_count', 5))} hidden crates"
+            else:
+                label = f"{number} Bundle | {self._get_offer_display_name(offer)}"
+        elif offer_type == "booster_bundle":
+            label = f"{number} Boost | {self._get_offer_display_name(offer)}"
+        else:
+            label = f"{number} Consumable | {self._get_offer_display_name(offer)}"
+
+        return self._truncate_choice_label(label)
+
     def _format_trader_offer_entry(self, offer):
         offer_type = offer["offer_type"]
         price = offer["price"]
         data = offer["data"]
+        display_name = self._get_offer_display_name(offer)
 
         if offer_type == "item":
             item = data["item"]
-            stat = self._get_item_display_stat(item)
             element = item.get("element", "Unknown")
-            featured_prefix = "Featured " if data.get("featured") else ""
-            return (
-                f"**{featured_prefix}{element} {item['name']}** ({item['type_']}) - "
-                f"{stat} - **${price}**"
-            )
+            tag = "FEATURED" if data.get("featured") else "ITEM"
+            details = f"{element} {item['type_']} | {self._get_item_stat_text(item)} | {self._format_price(price)}"
+            return f"**[{tag}] {display_name}**\n- {details}"
 
         if offer_type == "crate":
             rarity = data["crate_rarity"]
-            return f"**{rarity.capitalize()} Crate** - **${price}**"
+            return f"**[CRATE] {rarity.capitalize()} Crate**\n- {self._format_price(price)}"
 
         if offer_type == "crate_bundle":
+            if data.get("hidden_preview"):
+                crate_count = int(data.get("crate_count", 5))
+                return (
+                    f"**[GATCHA] {display_name}**\n"
+                    f"- {crate_count} hidden random crates | {self._format_price(price)}"
+                )
+
             contents = self._format_offer_components(
                 data["crates"],
                 {
-                    "common": "Common Crate",
-                    "uncommon": "Uncommon Crate",
-                    "rare": "Rare Crate",
-                    "magic": "Magic Crate",
-                    "legendary": "Legendary Crate",
-                    "fortune": "Fortune Crate",
-                    "divine": "Divine Crate",
+                    "common": "Common",
+                    "uncommon": "Uncommon",
+                    "rare": "Rare",
+                    "magic": "Magic",
+                    "legendary": "Legendary",
+                    "fortune": "Fortune",
+                    "divine": "Divine",
                 },
             )
-            return f"**{offer['name']}** - {contents} - **${price}**"
+            return f"**[BUNDLE] {display_name}**\n- {contents} | {self._format_price(price)}"
 
         if offer_type == "booster_bundle":
             contents = self._format_offer_components(
                 data["boosters"],
                 {
-                    "time": "Time Booster",
-                    "luck": "Luck Booster",
-                    "money": "Money Booster",
+                    "time": "Time",
+                    "luck": "Luck",
+                    "money": "Money",
                 },
             )
-            return f"**{offer['name']}** - {contents} - **${price}**"
+            return f"**[BOOST] {display_name}**\n- {contents} | {self._format_price(price)}"
 
-        return f"**{offer['name']}** - **${price}**"
+        return f"**[CONSUMABLE] {display_name}**\n- {self._format_price(price)}"
 
     def _get_item_display_stat(self, item):
         if item["type_"] == "Shield":
@@ -223,14 +271,16 @@ class Trading(commands.Cog):
             },
         ]
 
-        gatcha_weights = [
+        gatcha_base_weights = [
             {"rarity": "common", "weight": 44.4737},
             {"rarity": "uncommon", "weight": 20.5263},
             {"rarity": "rare", "weight": 15.0},
             {"rarity": "magic", "weight": 10.0},
-            {"rarity": "legendary", "weight": 5.0},
-            {"rarity": "fortune", "weight": 2.5},
-            {"rarity": "divine", "weight": 2.5},
+        ]
+        gatcha_special_rolls = [
+            {"rarity": "divine", "chance": 0.025},
+            {"rarity": "fortune", "chance": 0.025},
+            {"rarity": "legendary", "chance": 0.05},
         ]
 
         offers = []
@@ -253,16 +303,29 @@ class Trading(commands.Cog):
             "fortune": 0,
             "divine": 0,
         }
-        for _ in range(5):
-            chosen = self._choose_weighted_entry(gatcha_weights)
+
+        guaranteed_special = None
+        special_roll = random.random()
+        cumulative_special = 0
+        for entry in gatcha_special_rolls:
+            cumulative_special += entry["chance"]
+            if special_roll < cumulative_special:
+                guaranteed_special = entry["rarity"]
+                break
+
+        base_roll_count = 4 if guaranteed_special else 5
+        for _ in range(base_roll_count):
+            chosen = self._choose_weighted_entry(gatcha_base_weights)
             gatcha_crates[chosen["rarity"]] += 1
+        if guaranteed_special:
+            gatcha_crates[guaranteed_special] += 1
 
         offers.append(
             self._build_trader_offer(
                 "crate_bundle",
                 "Gatcha Crate Bundle",
                 random.randint(35000, 55000),
-                {"crates": gatcha_crates},
+                {"crates": gatcha_crates, "hidden_preview": True, "crate_count": 5},
             )
         )
         return offers
@@ -1523,7 +1586,7 @@ class Trading(commands.Cog):
             offer_choices = []
             for idx, offer in enumerate(offers, start=1):
                 offer_entries.append(self._format_trader_offer_entry(offer))
-                offer_choices.append(f"Offer {idx}")
+                offer_choices.append(self._build_trader_choice_label(offer, idx))
 
             try:
                 offerid = await self.bot.paginator.Choose(
@@ -1556,7 +1619,7 @@ class Trading(commands.Cog):
                 embed.add_field(name="Type", value=item["type_"])
                 embed.add_field(name="Element", value=element)
                 embed.add_field(name="Stat", value=stat)
-                embed.add_field(name="Price", value=f"${price}")
+                embed.add_field(name="Price", value=self._format_price(price))
                 item_name = item["name"]
             elif offer_type == "crate":
                 rarity = data["crate_rarity"]
@@ -1566,7 +1629,7 @@ class Trading(commands.Cog):
                     description=f"**Name:** {item_name}",
                     color=discord.Color.gold(),
                 )
-                embed.add_field(name="Price", value=f"${price}")
+                embed.add_field(name="Price", value=self._format_price(price))
             elif offer_type == "crate_bundle":
                 item_name = selected_offer["name"]
                 contents = self._format_offer_components(
@@ -1587,7 +1650,7 @@ class Trading(commands.Cog):
                     color=discord.Color.gold(),
                 )
                 embed.add_field(name="Contents", value=contents, inline=False)
-                embed.add_field(name="Price", value=f"${price}")
+                embed.add_field(name="Price", value=self._format_price(price))
             elif offer_type == "booster_bundle":
                 item_name = selected_offer["name"]
                 contents = self._format_offer_components(
@@ -1604,7 +1667,7 @@ class Trading(commands.Cog):
                     color=discord.Color.green(),
                 )
                 embed.add_field(name="Contents", value=contents, inline=False)
-                embed.add_field(name="Price", value=f"${price}")
+                embed.add_field(name="Price", value=self._format_price(price))
             else:
                 item_name = "Weapon Token" if selected_offer["name"] == "Weapontoken" else "Reset Potion"
                 embed = discord.Embed(
@@ -1612,7 +1675,7 @@ class Trading(commands.Cog):
                     description=f"**Name:** {item_name}",
                     color=discord.Color.green(),
                 )
-                embed.add_field(name="Price", value=f"${price}")
+                embed.add_field(name="Price", value=self._format_price(price))
 
             async with self.bot.pool.acquire() as conn:
                 if not await has_money(self.bot, ctx.author.id, price, conn=conn):
