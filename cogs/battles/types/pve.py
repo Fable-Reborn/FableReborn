@@ -20,21 +20,6 @@ class PvEBattle(Battle):
         "Fire",
         "Wind",
     )
-    THREE_GODS_OPENING_SHIELD_RATIO = Decimal("0.12")
-    THREE_GODS_OPENING_ARMOR_REND_RATIO = Decimal("0.10")
-    THREE_GODS_ELYSIA_TRIGGER_THRESHOLD = Decimal("0.50")
-    THREE_GODS_ELYSIA_HEAL_RATIO = Decimal("0.18")
-    THREE_GODS_ELYSIA_SHIELD_RATIO = Decimal("0.12")
-    THREE_GODS_ELYSIA_COOLDOWN = 3
-    THREE_GODS_SEPULCHURE_ARMOR_REND_RATIO = Decimal("0.08")
-    THREE_GODS_SEPULCHURE_MIN_ARMOR_REND = Decimal("20")
-    THREE_GODS_SEPULCHURE_LIFESTEAL_RATIO = Decimal("0.15")
-    THREE_GODS_SEPULCHURE_MIN_HEAL_RATIO = Decimal("0.05")
-    THREE_GODS_SEPULCHURE_COOLDOWN = 3
-    THREE_GODS_DRAKATH_DAMAGE_RATIO = Decimal("0.35")
-    THREE_GODS_DRAKATH_BOSS_HP_RATIO = Decimal("0.015")
-    THREE_GODS_DRAKATH_MAX_BOSS_HP_RATIO = Decimal("0.05")
-    THREE_GODS_DRAKATH_COOLDOWN = 2
     
     def __init__(self, ctx, teams, **kwargs):
         super().__init__(ctx, teams, **kwargs)
@@ -46,13 +31,6 @@ class PvEBattle(Battle):
         self.attacker = None
         self.defender = None
         self.turn_order = []
-        self.three_gods_enabled = int(self.monster_level or 0) == self.GOD_OF_GODS_TIER
-        self.three_gods_state = {
-            "elysia_cooldown": 0,
-            "sepulchure_cooldown": 2,
-            "drakath_cooldown": 0,
-            "next_offense": "drakath",
-        }
         
         # Load all battle settings
         settings_cog = self.ctx.bot.get_cog("BattleSettings")
@@ -96,7 +74,7 @@ class PvEBattle(Battle):
         monster_name = self.monster_team.combatants[0].name
         await self.add_to_log(f"Battle against {monster_name} started!")
         await self._handle_godofgods_adaptive_element()
-        await self._apply_three_gods_opening_boons()
+        await self._announce_omnithrone_allies()
         
         # Determine turn order (randomized)
         self.turn_order = []
@@ -205,229 +183,26 @@ class PvEBattle(Battle):
             f"{boss.name}'s chest crystal glowed and adapted its element to {new_element}."
         )
 
-    def _get_primary_boss(self):
-        if not self.monster_team.combatants:
-            return None
-        return self.monster_team.combatants[0]
+    def _get_omnithrone_allies(self):
+        return [
+            combatant
+            for combatant in self.player_team.combatants
+            if getattr(combatant, "is_omnithrone_ally", False)
+        ]
 
-    def _get_living_player_allies(self):
-        return [combatant for combatant in self.player_team.combatants if combatant.is_alive()]
-
-    def _decrement_three_gods_cooldowns(self):
-        if not self.three_gods_enabled:
-            return
-        for key in ("elysia_cooldown", "sepulchure_cooldown", "drakath_cooldown"):
-            if self.three_gods_state[key] > 0:
-                self.three_gods_state[key] -= 1
-
-    def _get_health_ratio(self, combatant):
-        if not combatant or combatant.max_hp <= 0:
-            return Decimal("0")
-        return Decimal(str(combatant.hp)) / Decimal(str(combatant.max_hp))
-
-    async def _apply_three_gods_opening_boons(self):
-        if not self.three_gods_enabled:
+    async def _announce_omnithrone_allies(self):
+        god_allies = self._get_omnithrone_allies()
+        if not god_allies:
             return
 
-        boss = self._get_primary_boss()
-        allies = self._get_living_player_allies()
-        if not boss or not allies:
-            return
-
-        shielded_names = []
-        for ally in allies:
-            shield_amount = max(
-                Decimal("1"),
-                Decimal(str(ally.max_hp)) * self.THREE_GODS_OPENING_SHIELD_RATIO,
-            )
-            current_shield = Decimal(str(getattr(ally, "shield", 0)))
-            ally.shield = current_shield + shield_amount
-            shielded_names.append(
-                f"{ally.name} gains **{self.format_number(shield_amount)}** shield"
-            )
-
-        armor_rend = min(
-            Decimal(str(boss.armor)),
-            max(
-                Decimal("1"),
-                Decimal(str(boss.armor)) * self.THREE_GODS_OPENING_ARMOR_REND_RATIO,
-            ),
-        )
-        if armor_rend > 0:
-            boss.armor = max(Decimal("0"), Decimal(str(boss.armor)) - armor_rend)
-
-        description_lines = []
-        if shielded_names:
-            description_lines.append("Elysia raises radiant wards around your side.")
-        if armor_rend > 0:
-            description_lines.append(
-                f"Sepulchure scars {boss.name}'s defenses for **{self.format_number(armor_rend)} armor**."
-            )
-        description_lines.append(
-            "Drakath floods the battlefield with chaos, ready to answer your strikes."
-        )
-
+        god_names = ", ".join(combatant.name for combatant in god_allies)
         embed = discord.Embed(
             title="Oath of the Three",
-            description="\n".join(description_lines),
+            description=f"{god_names} join your side and enter the battle as allied combatants.",
             color=discord.Color.gold(),
         )
         await self.ctx.send(embed=embed)
-
-        log_lines = ["Elysia, Sepulchure, and Drakath answer the oath."]
-        if shielded_names:
-            log_lines.append("; ".join(shielded_names) + ".")
-        if armor_rend > 0:
-            log_lines.append(
-                f"{boss.name}'s armor is reduced by {self.format_number(armor_rend)}."
-            )
-        await self.add_to_log("\n".join(log_lines))
-
-    def _maybe_trigger_elysia_guard(self, defender):
-        if (
-            not self.three_gods_enabled
-            or self.three_gods_state["elysia_cooldown"] > 0
-            or defender not in self.player_team.combatants
-        ):
-            return []
-
-        living_allies = self._get_living_player_allies()
-        if not living_allies:
-            return []
-
-        threshold = self.THREE_GODS_ELYSIA_TRIGGER_THRESHOLD
-        lowest_ally = min(living_allies, key=self._get_health_ratio)
-        if (
-            self._get_health_ratio(defender) > threshold
-            and self._get_health_ratio(lowest_ally) > threshold
-        ):
-            return []
-
-        target = defender if self._get_health_ratio(defender) <= threshold else lowest_ally
-        heal_amount = max(
-            Decimal("1"),
-            Decimal(str(target.max_hp)) * self.THREE_GODS_ELYSIA_HEAL_RATIO,
-        )
-        shield_amount = max(
-            Decimal("1"),
-            Decimal(str(target.max_hp)) * self.THREE_GODS_ELYSIA_SHIELD_RATIO,
-        )
-
-        before_hp = Decimal(str(target.hp))
-        target.heal(heal_amount)
-        actual_heal = Decimal(str(target.hp)) - before_hp
-        current_shield = Decimal(str(getattr(target, "shield", 0)))
-        target.shield = current_shield + shield_amount
-        self.three_gods_state["elysia_cooldown"] = self.THREE_GODS_ELYSIA_COOLDOWN
-
-        return [
-            (
-                f"Elysia's grace shields {target.name}: **{self.format_number(actual_heal)} HP** restored "
-                f"and **{self.format_number(shield_amount)}** shield granted."
-            )
-        ]
-
-    def _attempt_sepulchure_support(self, attacker, defender, damage_dealt):
-        if self.three_gods_state["sepulchure_cooldown"] > 0 or not defender.is_alive():
-            return []
-
-        messages = []
-        support_applied = False
-
-        current_armor = Decimal(str(defender.armor))
-        armor_rend = min(
-            current_armor,
-            max(
-                self.THREE_GODS_SEPULCHURE_MIN_ARMOR_REND,
-                current_armor * self.THREE_GODS_SEPULCHURE_ARMOR_REND_RATIO,
-            ),
-        )
-        if armor_rend > 0:
-            defender.armor = max(Decimal("0"), current_armor - armor_rend)
-            messages.append(
-                f"Sepulchure brands {defender.name}, shredding **{self.format_number(armor_rend)} armor**."
-            )
-            support_applied = True
-
-        heal_amount = max(
-            Decimal(str(damage_dealt)) * self.THREE_GODS_SEPULCHURE_LIFESTEAL_RATIO,
-            Decimal(str(attacker.max_hp)) * self.THREE_GODS_SEPULCHURE_MIN_HEAL_RATIO,
-        )
-        before_hp = Decimal(str(attacker.hp))
-        attacker.heal(heal_amount)
-        actual_heal = Decimal(str(attacker.hp)) - before_hp
-        if actual_heal > 0:
-            messages.append(
-                f"Sepulchure feeds {attacker.name} **{self.format_number(actual_heal)} HP** from the strike."
-            )
-            support_applied = True
-
-        if support_applied:
-            self.three_gods_state["sepulchure_cooldown"] = self.THREE_GODS_SEPULCHURE_COOLDOWN
-            self.three_gods_state["next_offense"] = "drakath"
-            return messages
-        return []
-
-    def _attempt_drakath_support(self, defender, damage_dealt):
-        if self.three_gods_state["drakath_cooldown"] > 0 or not defender.is_alive():
-            return []
-
-        boss_max_hp = Decimal(str(defender.max_hp))
-        bonus_damage = max(
-            Decimal(str(damage_dealt)) * self.THREE_GODS_DRAKATH_DAMAGE_RATIO,
-            boss_max_hp * self.THREE_GODS_DRAKATH_BOSS_HP_RATIO,
-        )
-        bonus_damage = min(
-            bonus_damage,
-            boss_max_hp * self.THREE_GODS_DRAKATH_MAX_BOSS_HP_RATIO,
-        )
-        bonus_damage = max(Decimal("1"), bonus_damage)
-
-        defender.take_damage(bonus_damage)
-        self.three_gods_state["drakath_cooldown"] = self.THREE_GODS_DRAKATH_COOLDOWN
-        self.three_gods_state["next_offense"] = "sepulchure"
-
-        messages = [
-            f"Drakath tears open a chaos rift beneath {defender.name} for **{self.format_number(bonus_damage)} HP** damage."
-        ]
-        if not defender.is_alive():
-            messages.append(f"{defender.name} is swallowed by the chaos surge!")
-        return messages
-
-    def _apply_three_gods_offense_support(self, attacker, defender, damage_dealt):
-        if (
-            not self.three_gods_enabled
-            or attacker not in self.player_team.combatants
-            or Decimal(str(damage_dealt)) <= 0
-        ):
-            return []
-
-        preferred = self.three_gods_state.get("next_offense", "drakath")
-        if preferred == "sepulchure":
-            messages = self._attempt_sepulchure_support(attacker, defender, damage_dealt)
-            if messages:
-                return messages
-            return self._attempt_drakath_support(defender, damage_dealt)
-
-        messages = self._attempt_drakath_support(defender, damage_dealt)
-        if messages:
-            return messages
-        return self._attempt_sepulchure_support(attacker, defender, damage_dealt)
-
-    def _get_three_gods_status_text(self):
-        if not self.three_gods_enabled:
-            return ""
-
-        def format_cooldown(name, cooldown):
-            return f"{name}: Ready" if cooldown <= 0 else f"{name}: {cooldown} turn(s)"
-
-        return "\n".join(
-            [
-                format_cooldown("Elysia", self.three_gods_state["elysia_cooldown"]),
-                format_cooldown("Sepulchure", self.three_gods_state["sepulchure_cooldown"]),
-                format_cooldown("Drakath", self.three_gods_state["drakath_cooldown"]),
-            ]
-        )
+        await self.add_to_log(f"{god_names} join your side.")
     
     async def process_turn(self):
         """Process a single turn of the battle"""
@@ -458,10 +233,6 @@ class PvEBattle(Battle):
             return False
         
         self.defender = random.choice(alive_defenders)
-        self._decrement_three_gods_cooldowns()
-        pre_turn_messages = []
-        if self.attacker in self.monster_team.combatants:
-            pre_turn_messages = self._maybe_trigger_elysia_guard(self.defender)
         
         # No separate tripping check here - we'll handle it in the hit/miss logic below
         
@@ -580,14 +351,6 @@ class PvEBattle(Battle):
                 lifesteal_amount = (float(damage) * float(self.attacker.lifesteal_percent) / 100.0)
                 self.attacker.heal(lifesteal_amount)
                 message += f" Lifesteals: **{self.format_number(lifesteal_amount)} HP**"
-
-            three_gods_messages = self._apply_three_gods_offense_support(
-                self.attacker,
-                self.defender,
-                damage,
-            )
-            if three_gods_messages:
-                message += "\n" + "\n".join(three_gods_messages)
             
             # Handle damage reflection if applicable
             # Apply tank evolution reflection multiplier if applicable
@@ -647,9 +410,6 @@ class PvEBattle(Battle):
                     message = f"{self.attacker.name} tripped and took **{self.format_number(damage)} HP** damage."
             else:
                 message = f"{self.attacker.name}'s attack missed!"
-
-        if pre_turn_messages:
-            message = "\n".join(pre_turn_messages + [message])
         
         # Add message to battle log
         await self.add_to_log(message)
@@ -755,13 +515,6 @@ class PvEBattle(Battle):
             if hasattr(combatant, "shield") and Decimal(str(combatant.shield)) > 0:
                 field_value += f"\nShield: {self.format_number(combatant.shield)}"
             embed.add_field(name=field_name, value=field_value, inline=False)
-
-        if self.three_gods_enabled:
-            embed.add_field(
-                name="Oath of the Three",
-                value=self._get_three_gods_status_text(),
-                inline=False,
-            )
         
         # Add battle log
         log_text = "\n\n".join([f"**Action #{i}**\n{msg}" for i, msg in self.log])

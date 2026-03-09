@@ -1,4 +1,5 @@
 # battles/factory.py
+import json
 import random
 from decimal import Decimal
 import asyncio
@@ -80,6 +81,35 @@ class BattleFactory:
         scaled_monster["pve_tier"] = int(tier)
         scaled_monster["pve_stat_multiplier"] = float(scale_multiplier)
         return scaled_monster
+
+    def _get_monsters_data(self, ctx):
+        battle_cog = ctx.bot.cogs.get("Battles") if hasattr(ctx.bot, "cogs") else None
+        monsters_data = getattr(battle_cog, "monsters_data", None) if battle_cog else None
+        if isinstance(monsters_data, dict) and monsters_data:
+            return monsters_data
+
+        try:
+            with open("monsters.json", "r", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
+
+    def _get_monster_data_by_name(self, ctx, monster_name):
+        target_name = str(monster_name or "").strip().lower()
+        if not target_name:
+            return None
+
+        monsters_data = self._get_monsters_data(ctx)
+        if not isinstance(monsters_data, dict):
+            return None
+
+        for monster_list in monsters_data.values():
+            if not isinstance(monster_list, list):
+                continue
+            for monster in monster_list:
+                if str(monster.get("name", "")).strip().lower() == target_name:
+                    return dict(monster)
+        return None
     
     async def create_battle(self, battle_type, ctx, **kwargs):
         """Create a battle of specified type with given parameters"""
@@ -201,6 +231,19 @@ class BattleFactory:
         player_team = Team("Player", [player_combatant])
         if pet_combatant and allow_pets:
             player_team.add_combatant(pet_combatant)
+
+        if int(monster_level or 0) == PvEBattle.GOD_OF_GODS_TIER:
+            for god_name in ("Elysia", "Sepulchure", "Drakath"):
+                god_data = self._get_monster_data_by_name(ctx, god_name)
+                if not god_data:
+                    continue
+                god_combatant = await self.create_monster_combatant(
+                    god_data,
+                    level=self.PVE_GOD_TIER,
+                    name=god_name,
+                )
+                god_combatant.is_omnithrone_ally = True
+                player_team.add_combatant(god_combatant)
             
         monster_team = Team("Monster", [monster_combatant])
         
