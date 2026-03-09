@@ -219,7 +219,7 @@ class PetEditView(View):
 
                 resp = await asyncio.to_thread(
                     self.openai_client.chat.completions.create,
-                    model="gpt-4o",
+                    model="gpt-5.4",
                     messages=vision_msg,
                 )
                 raw_text = resp.choices[0].message.content
@@ -3584,7 +3584,7 @@ class ProcessSplice(commands.Cog):
 
                         resp = await asyncio.to_thread(
                             openai_client.chat.completions.create,
-                            model="gpt-4o",
+                            model="gpt-5.4",
                             messages=vision_msg,
                         )
                         raw_text = resp.choices[0].message.content
