@@ -70,6 +70,230 @@ class Trading(commands.Cog):
     def is_item_expired(self, timestamp, expiry_duration_hours):
         return (self.get_current_time() - timestamp).total_seconds() > expiry_duration_hours * 3600
 
+    def _build_trader_offer(self, offer_type, name, price, data=None):
+        return {
+            "id": str(uuid.uuid4()),
+            "offer_type": offer_type,
+            "name": name,
+            "price": price,
+            "timestamp": self.get_current_time(),
+            "data": data or {},
+        }
+
+    def _choose_weighted_entry(self, entries):
+        total_weight = sum(entry["weight"] for entry in entries)
+        roll = random.random() * total_weight
+        cumulative = 0
+        for entry in entries:
+            cumulative += entry["weight"]
+            if roll <= cumulative:
+                return entry
+        return entries[-1]
+
+    def _format_offer_components(self, mapping, label_map=None):
+        label_map = label_map or {}
+        parts = []
+        for key, amount in mapping.items():
+            if amount <= 0:
+                continue
+            label = label_map.get(key, key.replace("_", " ").title())
+            parts.append(f"{amount}x {label}")
+        return ", ".join(parts) if parts else "N/A"
+
+    def _format_trader_offer_entry(self, offer):
+        offer_type = offer["offer_type"]
+        price = offer["price"]
+        data = offer["data"]
+
+        if offer_type == "item":
+            item = data["item"]
+            stat = self._get_item_display_stat(item)
+            element = item.get("element", "Unknown")
+            featured_prefix = "Featured " if data.get("featured") else ""
+            return (
+                f"**{featured_prefix}{element} {item['name']}** ({item['type_']}) - "
+                f"{stat} - **${price}**"
+            )
+
+        if offer_type == "crate":
+            rarity = data["crate_rarity"]
+            return f"**{rarity.capitalize()} Crate** - **${price}**"
+
+        if offer_type == "crate_bundle":
+            contents = self._format_offer_components(
+                data["crates"],
+                {
+                    "common": "Common Crate",
+                    "uncommon": "Uncommon Crate",
+                    "rare": "Rare Crate",
+                    "magic": "Magic Crate",
+                    "legendary": "Legendary Crate",
+                    "fortune": "Fortune Crate",
+                    "divine": "Divine Crate",
+                },
+            )
+            return f"**{offer['name']}** - {contents} - **${price}**"
+
+        if offer_type == "booster_bundle":
+            contents = self._format_offer_components(
+                data["boosters"],
+                {
+                    "time": "Time Booster",
+                    "luck": "Luck Booster",
+                    "money": "Money Booster",
+                },
+            )
+            return f"**{offer['name']}** - {contents} - **${price}**"
+
+        return f"**{offer['name']}** - **${price}**"
+
+    def _get_item_display_stat(self, item):
+        if item["type_"] == "Shield":
+            return int(item.get("armor", 0))
+        return int(item.get("damage", 0))
+
+    def _get_item_base_stat(self, item):
+        if item["type_"] == "Shield":
+            return int(item.get("armor", 0))
+
+        damage = int(item.get("damage", 0))
+        if item.get("hand") == "both":
+            return (damage + 1) // 2
+        return damage
+
+    def _price_featured_item(self, item):
+        stat = max(40, min(99, self._get_item_base_stat(item)))
+
+        if stat <= 80:
+            low_anchor = 50_000
+            high_anchor = 100_000
+            progress = (stat - 40) / 40
+            return int(round(low_anchor + (high_anchor - low_anchor) * progress))
+
+        progress = (stat - 80) / 19
+        return int(round(100_000 + (6_000_000 - 100_000) * (progress ** 2)))
+
+    async def _generate_featured_elemental_offer(self):
+        featured_stat_ranges = [
+            {"weight": 0.196, "min": 60, "max": 70},
+            {"weight": 0.539, "min": 50, "max": 60},
+            {"weight": 0.245, "min": 40, "max": 50},
+            {"weight": 0.02, "min": 80, "max": 99},
+        ]
+        elements = [
+            "Light",
+            "Dark",
+            "Corrupted",
+            "Fire",
+            "Water",
+            "Electric",
+            "Nature",
+            "Wind",
+        ]
+
+        stat_entry = self._choose_weighted_entry(featured_stat_ranges)
+        item = await self.bot.create_random_item(
+            minstat=stat_entry["min"],
+            maxstat=stat_entry["max"],
+            minvalue=1,
+            maxvalue=500,
+            owner=None,
+            insert=False,
+        )
+        item["element"] = random.choice(elements)
+        price = self._price_featured_item(item)
+        return self._build_trader_offer(
+            "item",
+            item["name"],
+            price,
+            {"item": item, "featured": True},
+        )
+
+    def _generate_crate_bundle_offers(self):
+        standard_bundles = [
+            {
+                "name": "Adventurer's Pack",
+                "crates": {"uncommon": 2, "rare": 1},
+                "price": (6500, 11000),
+            },
+            {
+                "name": "Raider's Cache",
+                "crates": {"rare": 3, "magic": 1},
+                "price": (90000, 120000),
+            },
+        ]
+
+        gatcha_weights = [
+            {"rarity": "common", "weight": 44.4737},
+            {"rarity": "uncommon", "weight": 20.5263},
+            {"rarity": "rare", "weight": 15.0},
+            {"rarity": "magic", "weight": 10.0},
+            {"rarity": "legendary", "weight": 5.0},
+            {"rarity": "fortune", "weight": 2.5},
+            {"rarity": "divine", "weight": 2.5},
+        ]
+
+        offers = []
+        for bundle in standard_bundles:
+            offers.append(
+                self._build_trader_offer(
+                    "crate_bundle",
+                    bundle["name"],
+                    random.randint(*bundle["price"]),
+                    {"crates": bundle["crates"]},
+                )
+            )
+
+        gatcha_crates = {
+            "common": 0,
+            "uncommon": 0,
+            "rare": 0,
+            "magic": 0,
+            "legendary": 0,
+            "fortune": 0,
+            "divine": 0,
+        }
+        for _ in range(5):
+            chosen = self._choose_weighted_entry(gatcha_weights)
+            gatcha_crates[chosen["rarity"]] += 1
+
+        offers.append(
+            self._build_trader_offer(
+                "crate_bundle",
+                "Gatcha Crate Bundle",
+                random.randint(35000, 55000),
+                {"crates": gatcha_crates},
+            )
+        )
+        return offers
+
+    def _generate_booster_bundle_offer(self):
+        booster_bundles = [
+            {
+                "name": "Lucky Day Bundle",
+                "boosters": {"luck": 5},
+                "price": (1700, 2100),
+            },
+            {
+                "name": "Adventure Kit",
+                "boosters": {"time": 1, "luck": 2, "money": 1},
+                "price": (2200, 2600),
+            },
+            {
+                "name": "Full Boost Pack",
+                "boosters": {"time": 2, "luck": 2, "money": 2},
+                "price": (4200, 4700),
+            },
+        ]
+
+        chosen = random.choice(booster_bundles)
+        return self._build_trader_offer(
+            "booster_bundle",
+            chosen["name"],
+            random.randint(*chosen["price"]),
+            {"boosters": chosen["boosters"]},
+        )
+
     async def generate_items_and_crates(self, ctx):
         # Define stat ranges and price ranges with weights
         stat_ranges = [
@@ -90,11 +314,10 @@ class Trading(commands.Cog):
                     return min_stat, max_stat, price_range
             return 1, 20, (1000, 20000)  # Default case (should not be reached)
 
-        items = []
+        offers = []
         # Generate 5 random weapons
         for _ in range(5):
             min_stat, max_stat, price_range = choose_stat_range(stat_ranges)
-            stat = random.randint(min_stat, max_stat)
             price = random.randint(price_range[0], price_range[1])
 
             item = await self.bot.create_random_item(
@@ -105,7 +328,16 @@ class Trading(commands.Cog):
                 owner=None,  # Owner is not required here
                 insert=False,
             )
-            items.append((item, price))
+            offers.append(
+                self._build_trader_offer(
+                    "item",
+                    item["name"],
+                    price,
+                    {"item": item, "featured": False},
+                )
+            )
+
+        offers.append(await self._generate_featured_elemental_offer())
 
         # Define crate rarity and price ranges
         crate_weights = [
@@ -132,49 +364,49 @@ class Trading(commands.Cog):
                     return rarity, price_range
             return "common", (700, 2000)  # Default case (should not be reached)
 
-        crates = []
         # Generate 3 crates
         for _ in range(3):
             rarity, price_range = choose_crate_rarity(crate_weights)
             price = random.randint(price_range[0], price_range[1])
-
-            crate = await self.bot.create_random_item(
-                minstat=1,
-                maxstat=1,
-                minvalue=1,
-                maxvalue=1,
-                owner=None,
-                insert=False,
+            offers.append(
+                self._build_trader_offer(
+                    "crate",
+                    f"{rarity.capitalize()} Crate",
+                    price,
+                    {"crate_rarity": rarity},
+                )
             )
-            crates.append((crate, price, rarity))
+
+        offers.extend(self._generate_crate_bundle_offers())
+        offers.append(self._generate_booster_bundle_offer())
 
         # Add Weapon Token with a 7% chance
         if random.random() < 0.07:
             token_price = random.randint(250000, 750000)
-            token_item = {
-                'name': 'Weapontoken',
-                'type_': 'Token',
-                'armor': 'N/A',
-                'damage': 'N/A',
-                'value': 'N/A'
-            }
-            items.append((token_item, token_price))
+            offers.append(
+                self._build_trader_offer(
+                    "consumable",
+                    "Weapontoken",
+                    token_price,
+                    {"profile_column": "weapontoken", "amount": 1},
+                )
+            )
 
-        # Add Resetpotion with a 1% chance
+        # Add Resetpotion with a 4.5% chance
         # It will only be generated if the shop is "fresh" (cache is empty),
         # so it effectively limits it to one per 12-hour refresh for that user.
-        if random.random() < 0.01:
+        if random.random() < 0.045:
             potion_price = random.randint(1400000, 4300000)
-            potion_item = {
-                'name': 'Resetpotion',
-                'type_': 'Potion',
-                'armor': 'N/A',
-                'damage': 'N/A',
-                'value': 'N/A'
-            }
-            items.append((potion_item, potion_price))
+            offers.append(
+                self._build_trader_offer(
+                    "consumable",
+                    "Resetpotion",
+                    potion_price,
+                    {"profile_column": "resetpotion", "amount": 1},
+                )
+            )
 
-        return items, crates
+        return offers
 
     @tasks.loop(minutes=999999)  # Adjust the interval as needed (e.g., minutes=10 means it runs every 10 minutes)
     async def decrease_hunger_task(self):
@@ -1249,15 +1481,15 @@ class Trading(commands.Cog):
 
     @has_char()
     @commands.cooldown(1, 300, commands.BucketType.user)
-    @commands.command(brief=_("Buys an item or crate from the trader"))
+    @commands.command(brief=_("Buys an offer from the trader"))
     @locale_doc
     async def trader(self, ctx):
         _(
-            """Purchase items or crates from the trader.
+            """Purchase offers from the trader.
 
-            Use this command to buy items or crates from the trader's current offers. The trader's offers refresh every 12 hours.
+            Use this command to buy items, crates, bundles or consumables from the trader's current offers. The trader's offers refresh every 12 hours.
 
-            You will be presented with a list of available items and crates. Select the one you wish to purchase. Ensure you have enough money to make the purchase.
+            You will be presented with a list of available offers. Select the one you wish to purchase. Ensure you have enough money to make the purchase.
 
             **Note:** This command has a cooldown of 5 minutes per user.
             """
@@ -1266,81 +1498,37 @@ class Trading(commands.Cog):
         try:
             player_id = ctx.author.id
 
-            # Refresh player shop cache
-            if player_id not in self.player_item_cache:
-                self.player_item_cache[player_id] = {}
+            cached_offers = self.player_item_cache.get(player_id, [])
+            if isinstance(cached_offers, dict):
+                cached_offers = []
 
-            # Remove expired items and crates (older than 12 hours)
-            self.player_item_cache[player_id] = {
-                name: (item, price, timestamp, rarity)
-                for name, (item, price, timestamp, rarity) in self.player_item_cache[player_id].items()
-                if not self.is_item_expired(timestamp, 12)
-            }
+            self.player_item_cache[player_id] = [
+                offer
+                for offer in cached_offers
+                if not self.is_item_expired(offer["timestamp"], 12)
+            ]
 
-            # Generate new items and crates if cache is empty
             if not self.player_item_cache[player_id]:
-                items, crates = await self.generate_items_and_crates(ctx)
-                for item, price in items:
-                    self.player_item_cache[player_id][item['name']] = (
-                        item,
-                        price,
-                        self.get_current_time(),
-                        None
-                    )
-                for crate, price, rarity in crates:
-                    self.player_item_cache[player_id][crate['name']] = (
-                        crate,
-                        price,
-                        self.get_current_time(),
-                        rarity
-                    )
+                self.player_item_cache[player_id] = await self.generate_items_and_crates(ctx)
 
-            # Separate items and crates for offers
-            items_offers = [
-                (item, price) for item, price, timestamp, rarity
-                in self.player_item_cache[player_id].values()
-                if rarity is None
-            ]
-            crates_offers = [
-                (item, price, rarity) for item, price, timestamp, rarity
-                in self.player_item_cache[player_id].values()
-                if rarity
-            ]
+            offers = self.player_item_cache[player_id]
+            if not offers:
+                return await ctx.send("There are no trader offers available at the moment.")
 
-            if not items_offers and not crates_offers:
-                return await ctx.send("There are no items or crates available at the moment.")
-
-            # Get the timestamp of the first item (all items share the same refresh time in this model)
-            first_item_timestamp = next(iter(self.player_item_cache[player_id].values()))[2]
+            first_item_timestamp = offers[0]["timestamp"]
             time_left = self.get_time_until_expiry(first_item_timestamp, 12)
-
             await ctx.send(f"All items will expire in {time_left}.")
 
-            # Combine offers for paginator
-            all_offers = items_offers + crates_offers
-
-            # Build display text for paginator
             offer_entries = []
             offer_choices = []
-            for offer in all_offers:
-                if len(offer) == 2:  # It's an item
-                    item, price = offer
-                    offer_entries.append(
-                        f"**{item['name']}** ({item['type_']}) - "
-                        f"{item['armor'] if item['type_'] == 'Shield' else item['damage']} - **${price}**"
-                    )
-                    offer_choices.append(item['name'])
-                else:
-                    # It's a crate
-                    item, price, rarity = offer
-                    offer_entries.append(f"**{rarity.capitalize()} Crate** - **${price}**")
-                    offer_choices.append(f"{rarity.capitalize()} Crate")
+            for idx, offer in enumerate(offers, start=1):
+                offer_entries.append(self._format_trader_offer_entry(offer))
+                offer_choices.append(f"Offer {idx}")
 
             try:
-                # Use your paginator or any menu system that returns an index (offerid)
                 offerid = await self.bot.paginator.Choose(
                     title=("The Trader"),
-                    placeholder=("Select an item or crate to purchase"),
+                    placeholder=("Select an offer to purchase"),
                     return_index=True,
                     entries=offer_entries,
                     choices=offer_choices,
@@ -1348,178 +1536,167 @@ class Trading(commands.Cog):
             except NoChoice:
                 return await ctx.send("You did not choose anything.")
 
-            # Ensure offerid is within the valid range
-            if offerid < 0 or offerid >= len(all_offers):
+            if offerid < 0 or offerid >= len(offers):
                 return await ctx.send("Invalid choice.")
 
-            selected_offer = all_offers[offerid]
+            selected_offer = offers[offerid]
+            offer_type = selected_offer["offer_type"]
+            price = selected_offer["price"]
+            data = selected_offer["data"]
 
-            # Check if item or crate
-            if len(selected_offer) == 2:
-                # It's an item (including possible Weapontoken or Resetpotion)
-                item, price = selected_offer
-                item_name = item['name']
-
-                # Special case: Weapontoken
-                if item_name == 'Weapontoken':
-                    embed = discord.Embed(
-                        title="Weapontoken Purchased",
-                        description=f"**Name:** {item_name}",
-                        color=discord.Color.green()
-                    )
-                    embed.add_field(name="Price", value=f"${price}")
-
-                # Special case: Resetpotion
-                elif item_name == 'Resetpotion':
-                    embed = discord.Embed(
-                        title="Reset Potion Purchased",
-                        description=f"**Name:** {item_name}",
-                        color=discord.Color.green()
-                    )
-                    embed.add_field(name="Price", value=f"${price}")
-
-                else:
-                    # Normal item
-                    embed = discord.Embed(
-                        title="Weapon Purchased",
-                        description=f"**Name:** {item_name}",
-                        color=discord.Color.blue()
-                    )
-                    embed.add_field(name="Type", value=item['type_'])
-                    embed.add_field(
-                        name="Stat",
-                        value=item['armor'] if item['type_'] == 'Shield' else item['damage']
-                    )
-                    embed.add_field(name="Price", value=f"${price}")
-
-                rarity = None  # Because it's not a crate
-                item_data = item
-
-            else:
-                # It's a crate
-                item, price, rarity = selected_offer
-                item_name = f'{rarity.capitalize()} Crate'
-                item_data = None
-
+            if offer_type == "item":
+                item = data["item"]
+                stat = self._get_item_display_stat(item)
+                element = item.get("element", "Unknown")
+                embed = discord.Embed(
+                    title="Featured Item Purchased" if data.get("featured") else "Item Purchased",
+                    description=f"**Name:** {item['name']}",
+                    color=discord.Color.blue(),
+                )
+                embed.add_field(name="Type", value=item["type_"])
+                embed.add_field(name="Element", value=element)
+                embed.add_field(name="Stat", value=stat)
+                embed.add_field(name="Price", value=f"${price}")
+                item_name = item["name"]
+            elif offer_type == "crate":
+                rarity = data["crate_rarity"]
+                item_name = f"{rarity.capitalize()} Crate"
                 embed = discord.Embed(
                     title="Crate Purchased",
                     description=f"**Name:** {item_name}",
-                    color=discord.Color.gold()
+                    color=discord.Color.gold(),
+                )
+                embed.add_field(name="Price", value=f"${price}")
+            elif offer_type == "crate_bundle":
+                item_name = selected_offer["name"]
+                contents = self._format_offer_components(
+                    data["crates"],
+                    {
+                        "common": "Common Crate",
+                        "uncommon": "Uncommon Crate",
+                        "rare": "Rare Crate",
+                        "magic": "Magic Crate",
+                        "legendary": "Legendary Crate",
+                        "fortune": "Fortune Crate",
+                        "divine": "Divine Crate",
+                    },
+                )
+                embed = discord.Embed(
+                    title="Crate Bundle Purchased",
+                    description=f"**Name:** {item_name}",
+                    color=discord.Color.gold(),
+                )
+                embed.add_field(name="Contents", value=contents, inline=False)
+                embed.add_field(name="Price", value=f"${price}")
+            elif offer_type == "booster_bundle":
+                item_name = selected_offer["name"]
+                contents = self._format_offer_components(
+                    data["boosters"],
+                    {
+                        "time": "Time Booster",
+                        "luck": "Luck Booster",
+                        "money": "Money Booster",
+                    },
+                )
+                embed = discord.Embed(
+                    title="Booster Bundle Purchased",
+                    description=f"**Name:** {item_name}",
+                    color=discord.Color.green(),
+                )
+                embed.add_field(name="Contents", value=contents, inline=False)
+                embed.add_field(name="Price", value=f"${price}")
+            else:
+                item_name = "Weapon Token" if selected_offer["name"] == "Weapontoken" else "Reset Potion"
+                embed = discord.Embed(
+                    title=f"{item_name} Purchased",
+                    description=f"**Name:** {item_name}",
+                    color=discord.Color.green(),
                 )
                 embed.add_field(name="Price", value=f"${price}")
 
-            # Debug prints (optional)
-            print(f"Embed Title: {embed.title}")
-            print(f"Embed Description: {embed.description}")
-            print(f"Embed Fields: {embed.fields}")
-
-            # Proceed with the purchase transaction
             async with self.bot.pool.acquire() as conn:
-                # Check if user has enough money
                 if not await has_money(self.bot, ctx.author.id, price, conn=conn):
-                    return await ctx.send("You are too poor to buy this item/crate.")
+                    return await ctx.send("You are too poor to buy this offer.")
 
-                # Deduct money
-                await conn.execute(
-                    'UPDATE profile SET "money" = "money" - $1 WHERE "user" = $2;',
-                    price,
-                    ctx.author.id,
-                )
-
-                # Log transaction (optional, if you have a logging system)
-                await self.bot.log_transaction(
-                    ctx,
-                    from_=1,
-                    to=ctx.author.id,
-                    subject="trader ITEM/CRATE",
-                    data={
-                        "Name": item_name,
-                        "Value": item_data["value"] if item_data else 'N/A',
-                        "Price": price,
-                        "Rarity": rarity.capitalize() if rarity else 'Item',
-                    },
-                    conn=conn,
-                )
-
-                expected_price = price
-
-                # If it's a normal weapon-like item (not Weapontoken or Resetpotion), create it in DB
-                if item_data and item_name not in ['Weapontoken', 'Resetpotion']:
-                    try:
-                        # Prepare required arguments
-                        name = item_data['name']
-                        value = item_data.get('value', 0)
-                        type_ = item_data.get('type_', 'Unknown')
-                        damage = item_data.get('damage', 0)
-                        armor = item_data.get('armor', 0)
-                        hand = item_data.get('hand', None)
-                        element = item_data.get('element', None)
-                        owner = ctx.author.id
-
-                        await self.bot.create_item(
-                            name=name,
-                            value=value,
-                            type_=type_,
-                            damage=damage,
-                            armor=armor,
-                            owner=owner,
-                            hand=hand,
-                            element=element
-                        )
-                    except Exception as e:
-                        import traceback
-                        error_message = f"Error occurred: {e}\n" + traceback.format_exc()
-                        await ctx.send(error_message)
-                        print(error_message)
-
-                # Handle crates
-                if rarity:
-                    # Increase crate count for user
+                async with conn.transaction():
                     await conn.execute(
-                        f'UPDATE profile SET "crates_{rarity}" = "crates_{rarity}" + 1 WHERE "user" = $1;',
+                        'UPDATE profile SET "money" = "money" - $1 WHERE "user" = $2;',
+                        price,
                         ctx.author.id,
                     )
 
-                    # Remove from cache
-                    for name, (citem, cprice, ctimestamp, crarity) in list(self.player_item_cache[player_id].items()):
-                        if crarity == rarity and cprice == expected_price:
-                            del self.player_item_cache[player_id][name]
-                            print(f"Removed {name} with rarity {rarity} and price {price} from cache.")
-                            break
+                    if offer_type == "item":
+                        item = data["item"]
+                        await self.bot.create_item(
+                            name=item["name"],
+                            value=item.get("value", 0),
+                            type_=item.get("type_", "Unknown"),
+                            damage=item.get("damage", 0),
+                            armor=item.get("armor", 0),
+                            owner=ctx.author.id,
+                            hand=item.get("hand"),
+                            element=item.get("element"),
+                            conn=conn,
+                        )
+                    elif offer_type == "crate":
+                        rarity = data["crate_rarity"]
+                        await conn.execute(
+                            f'UPDATE profile SET "crates_{rarity}" = "crates_{rarity}" + 1 WHERE "user" = $1;',
+                            ctx.author.id,
+                        )
+                    elif offer_type == "crate_bundle":
+                        for rarity, amount in data["crates"].items():
+                            if amount <= 0:
+                                continue
+                            await conn.execute(
+                                f'UPDATE profile SET "crates_{rarity}" = "crates_{rarity}" + $1 WHERE "user" = $2;',
+                                amount,
+                                ctx.author.id,
+                            )
+                    elif offer_type == "booster_bundle":
+                        for booster_type, amount in data["boosters"].items():
+                            if amount <= 0:
+                                continue
+                            await conn.execute(
+                                f'UPDATE profile SET "{booster_type}_booster" = "{booster_type}_booster" + $1 WHERE "user" = $2;',
+                                amount,
+                                ctx.author.id,
+                            )
+                    elif offer_type == "consumable":
+                        await conn.execute(
+                            f'UPDATE profile SET "{data["profile_column"]}" = "{data["profile_column"]}" + $1 WHERE "user" = $2;',
+                            data.get("amount", 1),
+                            ctx.author.id,
+                        )
 
-                # Handle Weapontoken
-                elif item_name == 'Weapontoken':
-                    new_value = await conn.fetchval(
-                        'SELECT weapontoken FROM profile WHERE "user"=$1;',
-                        ctx.author.id
-                    )
-                    new_value = (new_value or 0) + 1
-                    await conn.execute(
-                        'UPDATE profile SET weapontoken=$1 WHERE "user"=$2;',
-                        new_value,
-                        ctx.author.id
-                    )
-                    del self.player_item_cache[player_id][item_name]
+                    log_data = {
+                        "Name": item_name,
+                        "Price": price,
+                        "Type": offer_type,
+                    }
+                    if offer_type == "item":
+                        log_data["Value"] = data["item"].get("value", 0)
+                        log_data["Element"] = data["item"].get("element", "Unknown")
+                    elif offer_type == "crate":
+                        log_data["Rarity"] = data["crate_rarity"]
+                    elif offer_type == "crate_bundle":
+                        log_data["Contents"] = self._format_offer_components(data["crates"])
+                    elif offer_type == "booster_bundle":
+                        log_data["Contents"] = self._format_offer_components(data["boosters"])
 
-                # Handle Resetpotion
-                elif item_name == 'Resetpotion':
-                    # Example: increase the resetpotion count by 1
-                    # (or set it to 1 if you treat it as a boolean)
-                    new_value = await conn.fetchval(
-                        'SELECT resetpotion FROM profile WHERE "user"=$1;',
-                        ctx.author.id
+                    await self.bot.log_transaction(
+                        ctx,
+                        from_=1,
+                        to=ctx.author.id,
+                        subject="trader OFFER",
+                        data=log_data,
+                        conn=conn,
                     )
-                    new_value = (new_value or 0) + 1
-                    await conn.execute(
-                        'UPDATE profile SET resetpotion=$1 WHERE "user"=$2;',
-                        new_value,
-                        ctx.author.id
-                    )
-                    del self.player_item_cache[player_id][item_name]
 
-                # If it's a normal item (not Weapontoken/Resetpotion/crate), remove from cache
-                elif item_data and item_name in self.player_item_cache[player_id]:
-                    del self.player_item_cache[player_id][item_name]
+            self.player_item_cache[player_id] = [
+                offer for offer in self.player_item_cache[player_id]
+                if offer["id"] != selected_offer["id"]
+            ]
 
             await ctx.send(embed=embed)
 

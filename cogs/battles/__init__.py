@@ -5155,7 +5155,15 @@ class Battles(commands.Cog):
         # Check for macro penalty
         macro_penalty_level = self.get_pve_macro_penalty_level(ctx.author.id)
         
-        # Create and start the battle
+        async def send_pve_error(exc):
+            import traceback
+
+            error_message = f"Error occurred: {exc}\n"
+            error_message += traceback.format_exc()
+            await ctx.send(error_message)
+            print(error_message)
+
+        battle_started = False
         try:
             battle = await self.battle_factory.create_battle(
                 "pve",
@@ -5165,83 +5173,81 @@ class Battles(commands.Cog):
                 monster_level=levelchoice,
                 macro_penalty_level=macro_penalty_level
             )
-            
-            # Start the battle
+            battle_started = True
             await battle.start_battle()
-            
-            # Run the battle until completion
+
             while not await battle.is_battle_over():
                 await battle.process_turn()
                 await asyncio.sleep(1)  # 1 second delay between turns
-            
-            # End the battle and determine the outcome
-            result = await battle.end_battle()
-            
-            # Handle egg drops and other PvE-specific outcomes
-            if result and result.name == "Player":
-                # Player won - handle PvE drops (skip if macro penalty is active)
-                if levelchoice < 12 and macro_penalty_level == 0:
-                    # God fights now roll alignment shards directly (not affected by ranger bonuses).
-                    if self._is_god_shard_monster(monster):
-                        await self.handle_god_shard_drop(ctx, monster)
-                    else:
-                        # Non-god fights retain egg drop behavior.
-                        if levelchoice == 11:
-                            base_egg_chance = 0.02
-                        else:
-                            base_egg_chance = 0.50 - ((levelchoice - 1) / 9) * 0.45
-                        final_egg_chance = base_egg_chance
-                        
-                        # Check for Ranger class bonus
-                        ranger_egg_bonuses = {
-                            "Caretaker": 0.02,  # +2% (total 7%)
-                            "Tamer": 0.04,      # +4% (total 9%)
-                            "Trainer": 0.06,    # +6% (total 11%)
-                            "Bowman": 0.08,     # +8% (total 13%)
-                            "Hunter": 0.10,     # +10% (total 15%)
-                            "Warden": 0.13,     # +13% (total 18%)
-                            "Ranger": 0.15,     # +15% (total 25%)
-                        }
-                        
-                        # Apply ranger bonus if player has the class
-                        async with self.bot.pool.acquire() as conn:
-                            profile = await conn.fetchrow('SELECT class FROM profile WHERE "user"=$1;', ctx.author.id)
-                            if profile and profile['class']:
-                                # Find the highest ranger bonus
-                                ranger_bonus = 0
-                                for class_name in profile['class']:
-                                    if class_name in ranger_egg_bonuses:
-                                        class_bonus = ranger_egg_bonuses[class_name]
-                                        ranger_bonus = max(ranger_bonus, class_bonus)
-                                        
-                                # Apply ranger bonus with scaling
-                                bonus_multiplier = 1.0 - ((levelchoice - 1) / 9) * (1/3)
-                                adjusted_ranger_bonus = ranger_bonus * bonus_multiplier
-                                final_egg_chance += adjusted_ranger_bonus
-                        
-                        # Check for egg drop
-                        if random.random() < final_egg_chance:
-                            await self.handle_egg_drop(ctx, monster, levelchoice)
-            
-                # Dispatch PVE completion event
-                success = True
-                self.bot.dispatch(
-                    "PVE_completion",
-                    ctx,
-                    success,
-                    monster["name"],
-                    monster.get("element", "Unknown"),
-                    levelchoice,
-                    getattr(battle, "battle_id", None),
-                )
-            
         except Exception as e:
-            import traceback
-            error_message = f"Error occurred: {e}\n"
-            error_message += traceback.format_exc()
-            await ctx.send(error_message)
-            print(error_message)
-            await self.bot.reset_cooldown(ctx)
+            await send_pve_error(e)
+            if not battle_started:
+                await self.bot.reset_cooldown(ctx)
+            return
+
+        try:
+            result = await battle.end_battle()
+        except Exception as e:
+            await send_pve_error(e)
+            return
+
+        # Handle egg drops and other PvE-specific outcomes
+        if result and result.name == "Player":
+            # Player won - handle PvE drops (skip if macro penalty is active)
+            if levelchoice < 12 and macro_penalty_level == 0:
+                # God fights now roll alignment shards directly (not affected by ranger bonuses).
+                if self._is_god_shard_monster(monster):
+                    await self.handle_god_shard_drop(ctx, monster)
+                else:
+                    # Non-god fights retain egg drop behavior.
+                    if levelchoice == 11:
+                        base_egg_chance = 0.02
+                    else:
+                        base_egg_chance = 0.50 - ((levelchoice - 1) / 9) * 0.45
+                    final_egg_chance = base_egg_chance
+
+                    # Check for Ranger class bonus
+                    ranger_egg_bonuses = {
+                        "Caretaker": 0.02,  # +2% (total 7%)
+                        "Tamer": 0.04,      # +4% (total 9%)
+                        "Trainer": 0.06,    # +6% (total 11%)
+                        "Bowman": 0.08,     # +8% (total 13%)
+                        "Hunter": 0.10,     # +10% (total 15%)
+                        "Warden": 0.13,     # +13% (total 18%)
+                        "Ranger": 0.15,     # +15% (total 25%)
+                    }
+
+                    # Apply ranger bonus if player has the class
+                    async with self.bot.pool.acquire() as conn:
+                        profile = await conn.fetchrow('SELECT class FROM profile WHERE "user"=$1;', ctx.author.id)
+                        if profile and profile['class']:
+                            # Find the highest ranger bonus
+                            ranger_bonus = 0
+                            for class_name in profile['class']:
+                                if class_name in ranger_egg_bonuses:
+                                    class_bonus = ranger_egg_bonuses[class_name]
+                                    ranger_bonus = max(ranger_bonus, class_bonus)
+
+                            # Apply ranger bonus with scaling
+                            bonus_multiplier = 1.0 - ((levelchoice - 1) / 9) * (1/3)
+                            adjusted_ranger_bonus = ranger_bonus * bonus_multiplier
+                            final_egg_chance += adjusted_ranger_bonus
+
+                    # Check for egg drop
+                    if random.random() < final_egg_chance:
+                        await self.handle_egg_drop(ctx, monster, levelchoice)
+
+            # Dispatch PVE completion event
+            success = True
+            self.bot.dispatch(
+                "PVE_completion",
+                ctx,
+                success,
+                monster["name"],
+                monster.get("element", "Unknown"),
+                levelchoice,
+                getattr(battle, "battle_id", None),
+            )
 
     async def handle_egg_drop(self, ctx, monster, levelchoice):
         """Handle monster egg drops from PVE battles."""
