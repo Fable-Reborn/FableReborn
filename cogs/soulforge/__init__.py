@@ -1917,7 +1917,7 @@ class Soulforge(commands.Cog):
 
 
     @commands.command()
-    @user_cooldown(604800)
+    @user_cooldown(432000)
     async def splice(self, ctx, pet1_id: int = None, pet2_id: int = None):
         try:
             """Splice two pets together to create a new being"""
