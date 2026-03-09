@@ -5146,6 +5146,24 @@ class Battles(commands.Cog):
         )
         await searching_message.edit(embed=found_embed)
         if is_omnithrone_encounter:
+            confirm = await ctx.confirm(
+                _(
+                    "This encounter is not intended to be fought yet. "
+                    "You will die. Are you sure you want to continue?"
+                ),
+                timeout=45,
+            )
+            if not confirm:
+                retreat_embed = discord.Embed(
+                    title=_("Retreat"),
+                    description=_(
+                        "You step away from the Final Throne before the battle begins."
+                    ),
+                    color=discord.Color.orange(),
+                )
+                await searching_message.edit(embed=retreat_embed)
+                return
+        if is_omnithrone_encounter:
             await asyncio.sleep(self.OMNITHRONE_FOUND_DELAY_SECONDS)
         else:
             await asyncio.sleep(4)
