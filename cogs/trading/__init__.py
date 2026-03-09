@@ -120,6 +120,19 @@ class Trading(commands.Cog):
         suffix = "ARM" if item["type_"] == "Shield" else "DMG"
         return f"{stat} {suffix}"
 
+    def _get_trader_offer_priority(self, offer):
+        if offer["offer_type"] == "item" and offer["data"].get("featured"):
+            return 0
+
+        priority_map = {
+            "item": 1,
+            "consumable": 2,
+            "crate": 3,
+            "crate_bundle": 4,
+            "booster_bundle": 5,
+        }
+        return priority_map.get(offer["offer_type"], 99)
+
     def _build_trader_choice_label(self, offer, index):
         offer_type = offer["offer_type"]
         data = offer["data"]
@@ -127,7 +140,7 @@ class Trading(commands.Cog):
 
         if offer_type == "item":
             item = data["item"]
-            tag = "Featured" if data.get("featured") else "Item"
+            tag = "FEATURED DEAL" if data.get("featured") else "Item"
             label = f"{number} {tag} | {item.get('element', 'Unknown')} {item['type_']} | {self._get_item_display_stat(item)}"
         elif offer_type == "crate":
             label = f"{number} Crate | {data['crate_rarity'].capitalize()}"
@@ -152,8 +165,10 @@ class Trading(commands.Cog):
         if offer_type == "item":
             item = data["item"]
             element = item.get("element", "Unknown")
-            tag = "FEATURED" if data.get("featured") else "ITEM"
+            tag = "FEATURED DEAL" if data.get("featured") else "ITEM"
             details = f"{element} {item['type_']} | {self._get_item_stat_text(item)} | {self._format_price(price)}"
+            if data.get("featured"):
+                return f"**[{tag}] {display_name}**\n- {details}\n- Limited elemental highlight"
             return f"**[{tag}] {display_name}**\n- {details}"
 
         if offer_type == "crate":
@@ -1574,7 +1589,10 @@ class Trading(commands.Cog):
             if not self.player_item_cache[player_id]:
                 self.player_item_cache[player_id] = await self.generate_items_and_crates(ctx)
 
-            offers = self.player_item_cache[player_id]
+            offers = sorted(
+                self.player_item_cache[player_id],
+                key=self._get_trader_offer_priority,
+            )
             if not offers:
                 return await ctx.send("There are no trader offers available at the moment.")
 
@@ -1585,7 +1603,7 @@ class Trading(commands.Cog):
             offer_entries = []
             offer_choices = []
             for idx, offer in enumerate(offers, start=1):
-                offer_entries.append(self._format_trader_offer_entry(offer))
+                offer_entries.append(f"{self._format_trader_offer_entry(offer)}\n")
                 offer_choices.append(self._build_trader_choice_label(offer, idx))
 
             try:
