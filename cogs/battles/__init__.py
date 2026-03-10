@@ -4234,7 +4234,7 @@ class Battles(commands.Cog):
     @user_cooldown(100)
     @commands.command(brief=_("Battle with a teammate against one player (includes raidstats)"))
     @locale_doc
-    async def raidbattle2v1(self, ctx, money: IntGreaterThan(-1) = 0, teammate: discord.Member = None, enemy: discord.Member = None):
+    async def raidbattle2v1(self, ctx, money: IntGreaterThan(-1) = 0, *targets: str):
         _(
             """`[money]` - A whole number that can be 0 or greater; defaults to 0
             `[teammate]` - A user who will join your team
@@ -4280,6 +4280,19 @@ class Battles(commands.Cog):
             return True
 
         try:
+            mentions = list(dict.fromkeys(ctx.message.mentions))
+            teammate = mentions[0] if len(mentions) >= 1 else None
+            enemy = mentions[1] if len(mentions) >= 2 else None
+
+            if len(mentions) > 2:
+                await ctx.send(
+                    _("Usage: `{prefix}raidbattle2v1 [money] <teammate> [enemy]`").format(
+                        prefix=ctx.clean_prefix
+                    )
+                )
+                await safe_reset_cooldown()
+                return
+
             if teammate is None:
                 await ctx.send(_("You must specify a teammate for a 2v1 raidbattle."))
                 await safe_reset_cooldown()
@@ -4468,10 +4481,6 @@ class Battles(commands.Cog):
                     time=datetime.timedelta(seconds=int(error.retry_after))
                 )
             )
-            return
-
-        if isinstance(error, commands.MemberNotFound):
-            await ctx.send(_("The member you referenced was not found."))
             return
 
         if isinstance(error, commands.BadArgument):
