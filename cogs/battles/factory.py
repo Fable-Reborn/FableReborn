@@ -257,46 +257,77 @@ class BattleFactory:
     
     async def create_raid_battle(self, ctx, **kwargs):
         """Create a raid battle with player and pet vs enemy and pet"""
-        player1 = kwargs.get("player1", ctx.author)
-        player2 = kwargs.get("player2")
         money = kwargs.get("money", 0)
-        
+
         # Get allow_pets setting
         allow_pets = kwargs.get("allow_pets")
-        
-        # Create player combatant - only include_pet when allow_pets is true
-        player1_combatant = await self.create_player_combatant(ctx, player1, include_pet=allow_pets)
-        
-        # Only get pet combatant if pets are allowed
-        player1_pet = None
-        if allow_pets:
-            player1_pet = await self.pet_ext.get_pet_combatant(ctx, player1)
-        
-        # Create enemy combatant and pet if specified, or random opponent
-        if player2:
-            player2_combatant = await self.create_player_combatant(ctx, player2, include_pet=allow_pets)
-            player2_pet = None
-            if allow_pets:
-                player2_pet = await self.pet_ext.get_pet_combatant(ctx, player2)
+
+        team_a_members = kwargs.get("team_a")
+        team_b_members = kwargs.get("team_b")
+
+        if team_a_members or team_b_members:
+            if not team_a_members or not team_b_members:
+                raise ValueError("Raid battle team mode requires both team_a and team_b")
+
+            player1_team = await self._create_raid_team(ctx, "A", team_a_members, allow_pets)
+            player2_team = await self._create_raid_team(ctx, "B", team_b_members, allow_pets)
         else:
-            # For random opponents, respect the allow_pets setting
-            player2_combatant, player2_pet = await self.find_random_opponent(ctx, player1)
-            if not allow_pets:
+            player1 = kwargs.get("player1", ctx.author)
+            player2 = kwargs.get("player2")
+
+            # Create player combatant - only include_pet when allow_pets is true
+            player1_combatant = await self.create_player_combatant(ctx, player1, include_pet=allow_pets)
+
+            # Only get pet combatant if pets are allowed
+            player1_pet = None
+            if allow_pets:
+                player1_pet = await self.pet_ext.get_pet_combatant(ctx, player1)
+
+            # Create enemy combatant and pet if specified, or random opponent
+            if player2:
+                player2_combatant = await self.create_player_combatant(ctx, player2, include_pet=allow_pets)
                 player2_pet = None
-        
-        # Create teams
-        player1_team = Team("A", [player1_combatant])
-        if player1_pet:
-            player1_team.add_combatant(player1_pet)
-            
-        player2_team = Team("B", [player2_combatant])
-        if player2_pet:
-            player2_team.add_combatant(player2_pet)
-        
+                if allow_pets:
+                    player2_pet = await self.pet_ext.get_pet_combatant(ctx, player2)
+            else:
+                # For random opponents, respect the allow_pets setting
+                player2_combatant, player2_pet = await self.find_random_opponent(ctx, player1)
+                if not allow_pets:
+                    player2_pet = None
+
+            # Create teams
+            player1_team = Team("A", [player1_combatant])
+            if player1_pet:
+                player1_team.add_combatant(player1_pet)
+
+            player2_team = Team("B", [player2_combatant])
+            if player2_pet:
+                player2_team.add_combatant(player2_pet)
+
         # Create and return the battle
         battle_kwargs = kwargs.copy()
         battle_kwargs.pop('money', None)  # Remove money if it exists
+        battle_kwargs.pop('team_a', None)
+        battle_kwargs.pop('team_b', None)
         return RaidBattle(ctx, [player1_team, player2_team], money=money, **battle_kwargs)
+
+    async def _create_raid_team(self, ctx, team_name, members, allow_pets):
+        """Build a raid-style team from one or more player members."""
+        normalized_members = [member for member in members if member is not None]
+        if not normalized_members:
+            raise ValueError("Raid team requires at least one member")
+
+        combatants = []
+        for member in normalized_members:
+            player_combatant = await self.create_player_combatant(ctx, member, include_pet=allow_pets)
+            combatants.append(player_combatant)
+
+            if allow_pets:
+                pet_combatant = await self.pet_ext.get_pet_combatant(ctx, member)
+                if pet_combatant:
+                    combatants.append(pet_combatant)
+
+        return Team(team_name, combatants)
     
     async def create_tower_battle(self, ctx, **kwargs):
         """Create a battle tower battle for a specific level"""

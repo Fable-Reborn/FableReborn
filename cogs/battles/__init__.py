@@ -4232,6 +4232,221 @@ class Battles(commands.Cog):
 
     @has_char()
     @user_cooldown(100)
+    @commands.command(brief=_("Battle with a teammate against one player (includes raidstats)"))
+    @locale_doc
+    async def raidbattle2v1(self, ctx, money: IntGreaterThan(-1) = 0, teammate: discord.Member = None, enemy: discord.Member = None):
+        _(
+            """`[money]` - A whole number that can be 0 or greater; defaults to 0
+            `[teammate]` - A user who will join your team
+            `[enemy]` - A user who will fight alone; defaults to anyone
+
+            Fight with one teammate against a single player while betting money.
+            To decide the players' stats, their items, race and class bonuses and raidstats are evaluated.
+
+            You also have a chance of tripping depending on your luck.
+
+            The money is removed from all players at the start of the battle. Once a winning side has been decided, the winners receive the pot split between them.
+            The battle is divided into turns, in which each combatant (player or pet) takes an action.
+
+            The battle ends if one side's all combatants' HP drop to 0 (winner decided), or if 5 minutes after the battle started pass (tie).
+            In case of a tie, all players will get their money back.
+
+            Each member of the winning side will receive a PvP win.
+            (This command has a cooldown of 5 minutes)"""
+        )
+        if teammate is None:
+            await self.bot.reset_cooldown(ctx)
+            return await ctx.send(_("You must specify a teammate for a 2v1 raidbattle."))
+
+        if teammate == ctx.author:
+            await self.bot.reset_cooldown(ctx)
+            return await ctx.send(_("You can't be your own teammate."))
+
+        if enemy and enemy in {ctx.author, teammate}:
+            await self.bot.reset_cooldown(ctx)
+            return await ctx.send(_("Invalid team configuration."))
+
+        if ctx.character_data["money"] < money:
+            await self.bot.reset_cooldown(ctx)
+            return await ctx.send(_("You are too poor."))
+
+        deducted_ids = []
+        battle_resolved = False
+
+        async def refund_players(user_ids):
+            unique_ids = list(dict.fromkeys(user_ids))
+            for user_id in unique_ids:
+                await self.bot.pool.execute(
+                    'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                    money,
+                    user_id,
+                )
+
+        async def check_character_and_money(user: discord.User) -> bool:
+            if not await self.bot.pool.fetchrow('SELECT 1 FROM profile WHERE "user"=$1', user.id):
+                return False
+            if money > 0:
+                return await has_money(self.bot, user.id, money)
+            return True
+
+        try:
+            await self.bot.pool.execute(
+                'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
+                money,
+                ctx.author.id,
+            )
+            deducted_ids.append(ctx.author.id)
+
+            teammate_future = asyncio.Future()
+            teammate_view = SingleJoinView(
+                teammate_future,
+                Button(
+                    style=ButtonStyle.primary,
+                    label=_("Join the team!"),
+                    emoji="🤝",
+                ),
+                allowed=teammate,
+                prohibited=ctx.author,
+                timeout=60,
+                check=check_character_and_money,
+                check_fail_message=_("You don't have a character or enough money to join the raidbattle."),
+            )
+
+            await ctx.send(
+                _("{teammate}, {author} has invited you to join them in a 2v1 raidbattle! The price is **${money}** per player.").format(
+                    teammate=teammate.mention,
+                    author=ctx.author.mention,
+                    money=money,
+                ),
+                view=teammate_view,
+            )
+
+            try:
+                teammate_ = await asyncio.wait_for(teammate_future, timeout=60)
+            except asyncio.TimeoutError:
+                await refund_players(deducted_ids)
+                await self.bot.reset_cooldown(ctx)
+                return await ctx.send(
+                    _("Your teammate did not join in time, {author}.").format(
+                        author=ctx.author.mention
+                    )
+                )
+
+            await self.bot.pool.execute(
+                'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
+                money,
+                teammate_.id,
+            )
+            deducted_ids.append(teammate_.id)
+
+            enemy_future = asyncio.Future()
+            enemy_view = SingleJoinView(
+                enemy_future,
+                Button(
+                    style=ButtonStyle.primary,
+                    label=_("Accept Challenge"),
+                    emoji="⚔️",
+                ),
+                allowed=enemy,
+                prohibited=[ctx.author, teammate_],
+                timeout=60,
+                check=check_character_and_money,
+                check_fail_message=_("You don't have a character or enough money to join the raidbattle."),
+            )
+
+            if enemy:
+                enemy_text = _("{enemy}, you have been challenged to a 2v1 raidbattle by {author} and {teammate}! The price is **${money}**.").format(
+                    enemy=enemy.mention,
+                    author=ctx.author.mention,
+                    teammate=teammate_.mention,
+                    money=money,
+                )
+            else:
+                enemy_text = _("{author} and {teammate} seek a 2v1 raidbattle challenger! The price is **${money}**.").format(
+                    author=ctx.author.mention,
+                    teammate=teammate_.mention,
+                    money=money,
+                )
+
+            await ctx.send(enemy_text, view=enemy_view)
+
+            try:
+                enemy_ = await asyncio.wait_for(enemy_future, timeout=60)
+            except asyncio.TimeoutError:
+                await refund_players(deducted_ids)
+                await self.bot.reset_cooldown(ctx)
+                if enemy:
+                    return await ctx.send(_("Your chosen opponent did not join in time. Money has been refunded."))
+                return await ctx.send(_("No one wanted to take the 2v1 raidbattle. Money has been refunded."))
+
+            await self.bot.pool.execute(
+                'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
+                money,
+                enemy_.id,
+            )
+            deducted_ids.append(enemy_.id)
+
+            team_a = [ctx.author, teammate_]
+            team_b = [enemy_]
+
+            await ctx.send(
+                _("**Team A**: {team_a_members}\n**Team B**: {team_b_members}\n\nLet the battle begin!").format(
+                    team_a_members=", ".join(member.mention for member in team_a),
+                    team_b_members=", ".join(member.mention for member in team_b),
+                )
+            )
+
+            battle = await self.battle_factory.create_battle(
+                "raid",
+                ctx,
+                team_a=team_a,
+                team_b=team_b,
+                money=money,
+            )
+
+            await battle.start_battle()
+
+            while not await battle.is_battle_over():
+                await battle.process_turn()
+                await asyncio.sleep(2)
+
+            result = await battle.end_battle()
+            battle_resolved = True
+
+            if result:
+                winner, _ = result
+                team_a_ids = {member.id for member in team_a}
+                if winner and winner.id in team_a_ids:
+                    winning_team = team_a
+                    losing_team = team_b
+                else:
+                    winning_team = team_b
+                    losing_team = team_a
+
+                await ctx.send(
+                    _("Team {winning_team} won the 2v1 raidbattle against Team {losing_team}! Congratulations!").format(
+                        winning_team=", ".join(member.mention for member in winning_team),
+                        losing_team=", ".join(member.mention for member in losing_team),
+                    )
+                )
+            else:
+                await ctx.send(
+                    _("The 2v1 raidbattle between {team_a_members} and {team_b_members} ended in a tie! Money has been refunded.").format(
+                        team_a_members=", ".join(member.mention for member in team_a),
+                        team_b_members=", ".join(member.mention for member in team_b),
+                    )
+                )
+        except Exception as e:
+            if deducted_ids and not battle_resolved:
+                await refund_players(deducted_ids)
+                await self.bot.reset_cooldown(ctx)
+            error_message = f"Error occurred: {e}\n"
+            error_message += traceback.format_exc()
+            await ctx.send(error_message)
+            print(error_message)
+
+    @has_char()
+    @user_cooldown(100)
     @commands.command(brief=_("Battle in teams of two against another team (includes raidstats)"))
     @locale_doc
     async def raidbattle2v2(self, ctx, money: IntGreaterThan(-1) = 0, teammate: discord.Member = None, opponents: commands.Greedy[discord.Member] = None):
