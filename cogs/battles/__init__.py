@@ -4234,7 +4234,7 @@ class Battles(commands.Cog):
     @user_cooldown(100)
     @commands.command(brief=_("Battle with a teammate against one player (includes raidstats)"))
     @locale_doc
-    async def raidbattle2v1(self, ctx, money: IntGreaterThan(-1) = 0, teammate: discord.Member = None, enemy: discord.Member = None):
+    async def raidbattle2v1(self, money: IntGreaterThan(-1) = 0, teammate: discord.Member = None, enemy: discord.Member = None):
         _(
             """`[money]` - A whole number that can be 0 or greater; defaults to 0
             `[teammate]` - A user who will join your team
