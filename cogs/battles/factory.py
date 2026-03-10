@@ -161,7 +161,9 @@ class BattleFactory:
             kwargs["player2_stats"] = player2_stats
         
         # Create and return the battle
-        return PvPBattle(ctx, [team1, team2], money=money, **kwargs)
+        battle_kwargs = kwargs.copy()
+        battle_kwargs.pop("money", None)
+        return PvPBattle(ctx, [team1, team2], money=money, **battle_kwargs)
     
     async def create_pve_battle(self, ctx, **kwargs):
         """Create a PvE battle against a monster"""
@@ -427,9 +429,9 @@ class BattleFactory:
         # Create the battle
         battle_kwargs = kwargs.copy()
         battle_kwargs.pop("money", None)
+        battle_kwargs.pop("teams", None)
         battle_kwargs.pop("team_a", None)
         battle_kwargs.pop("team_b", None)
-        battle_kwargs["teams"] = teams
         return TeamBattle(ctx, teams, money=money, **battle_kwargs)
         
     async def create_dragon_battle(self, ctx, **kwargs):
@@ -464,7 +466,9 @@ class BattleFactory:
         player_team = Team("Players", player_combatants)
         
         # Create and return the battle
-        return DragonBattle(ctx, [dragon_team, player_team], dragon_level=dragon_level, **kwargs)
+        battle_kwargs = kwargs.copy()
+        battle_kwargs.pop("dragon_level", None)
+        return DragonBattle(ctx, [dragon_team, player_team], dragon_level=dragon_level, **battle_kwargs)
     
     async def create_couples_tower_battle(self, ctx, **kwargs):
         """Create a couples battle tower battle for a specific level"""
