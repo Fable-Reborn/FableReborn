@@ -4440,7 +4440,7 @@ class Battles(commands.Cog):
             battle_resolved = True
 
             if result:
-                winner, _ = result
+                winner, loser = result
                 team_a_ids = {member.id for member in team_a}
                 if winner and winner.id in team_a_ids:
                     winning_team = team_a
