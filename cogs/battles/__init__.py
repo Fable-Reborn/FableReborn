@@ -4234,7 +4234,7 @@ class Battles(commands.Cog):
     @user_cooldown(100)
     @commands.command(brief=_("Battle with a teammate against one player (includes raidstats)"))
     @locale_doc
-    async def raidbattle2v1(self, money: IntGreaterThan(-1) = 0, teammate: discord.Member = None, enemy: discord.Member = None):
+    async def raidbattle2v1(self, ctx, money: IntGreaterThan(-1) = 0, teammate: discord.Member = None, enemy: discord.Member = None):
         _(
             """`[money]` - A whole number that can be 0 or greater; defaults to 0
             `[teammate]` - A user who will join your team
@@ -4254,24 +4254,14 @@ class Battles(commands.Cog):
             Each member of the winning side will receive a PvP win.
             (This command has a cooldown of 5 minutes)"""
         )
-        if teammate is None:
-            await self.bot.reset_cooldown(ctx)
-            return await ctx.send(_("You must specify a teammate for a 2v1 raidbattle."))
-
-        if teammate == ctx.author:
-            await self.bot.reset_cooldown(ctx)
-            return await ctx.send(_("You can't be your own teammate."))
-
-        if enemy and enemy in {ctx.author, teammate}:
-            await self.bot.reset_cooldown(ctx)
-            return await ctx.send(_("Invalid team configuration."))
-
-        if ctx.character_data["money"] < money:
-            await self.bot.reset_cooldown(ctx)
-            return await ctx.send(_("You are too poor."))
-
         deducted_ids = []
         battle_resolved = False
+
+        async def safe_reset_cooldown():
+            try:
+                await self.bot.reset_cooldown(ctx)
+            except Exception as cooldown_error:
+                print(f"[raidbattle2v1] cooldown reset failed: {cooldown_error}")
 
         async def refund_players(user_ids):
             unique_ids = list(dict.fromkeys(user_ids))
@@ -4290,6 +4280,26 @@ class Battles(commands.Cog):
             return True
 
         try:
+            if teammate is None:
+                await ctx.send(_("You must specify a teammate for a 2v1 raidbattle."))
+                await safe_reset_cooldown()
+                return
+
+            if teammate == ctx.author:
+                await ctx.send(_("You can't be your own teammate."))
+                await safe_reset_cooldown()
+                return
+
+            if enemy and enemy in {ctx.author, teammate}:
+                await ctx.send(_("Invalid team configuration."))
+                await safe_reset_cooldown()
+                return
+
+            if ctx.character_data["money"] < money:
+                await ctx.send(_("You are too poor."))
+                await safe_reset_cooldown()
+                return
+
             await self.bot.pool.execute(
                 'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
                 money,
@@ -4325,12 +4335,13 @@ class Battles(commands.Cog):
                 teammate_ = await asyncio.wait_for(teammate_future, timeout=60)
             except asyncio.TimeoutError:
                 await refund_players(deducted_ids)
-                await self.bot.reset_cooldown(ctx)
-                return await ctx.send(
+                await ctx.send(
                     _("Your teammate did not join in time, {author}.").format(
                         author=ctx.author.mention
                     )
                 )
+                await safe_reset_cooldown()
+                return
 
             await self.bot.pool.execute(
                 'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
@@ -4374,10 +4385,12 @@ class Battles(commands.Cog):
                 enemy_ = await asyncio.wait_for(enemy_future, timeout=60)
             except asyncio.TimeoutError:
                 await refund_players(deducted_ids)
-                await self.bot.reset_cooldown(ctx)
                 if enemy:
-                    return await ctx.send(_("Your chosen opponent did not join in time. Money has been refunded."))
-                return await ctx.send(_("No one wanted to take the 2v1 raidbattle. Money has been refunded."))
+                    await ctx.send(_("Your chosen opponent did not join in time. Money has been refunded."))
+                else:
+                    await ctx.send(_("No one wanted to take the 2v1 raidbattle. Money has been refunded."))
+                await safe_reset_cooldown()
+                return
 
             await self.bot.pool.execute(
                 'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
@@ -4439,11 +4452,38 @@ class Battles(commands.Cog):
         except Exception as e:
             if deducted_ids and not battle_resolved:
                 await refund_players(deducted_ids)
-                await self.bot.reset_cooldown(ctx)
+                await safe_reset_cooldown()
             error_message = f"Error occurred: {e}\n"
             error_message += traceback.format_exc()
             await ctx.send(error_message)
             print(error_message)
+
+    @raidbattle2v1.error
+    async def raidbattle2v1_error(self, ctx, error):
+        original = getattr(error, "original", error)
+
+        if isinstance(error, commands.CommandOnCooldown):
+            await ctx.send(
+                _("You are on cooldown. Try again in {time}.").format(
+                    time=datetime.timedelta(seconds=int(error.retry_after))
+                )
+            )
+            return
+
+        if isinstance(error, commands.MemberNotFound):
+            await ctx.send(_("The member you referenced was not found."))
+            return
+
+        if isinstance(error, commands.BadArgument):
+            await ctx.send(
+                _("Usage: `{prefix}raidbattle2v1 [money] <teammate> [enemy]`").format(
+                    prefix=ctx.clean_prefix
+                )
+            )
+            return
+
+        await ctx.send(f"raidbattle2v1 error: {type(original).__name__}: {original}")
+        print(f"[raidbattle2v1] {type(original).__name__}: {original}")
 
     @has_char()
     @user_cooldown(100)
