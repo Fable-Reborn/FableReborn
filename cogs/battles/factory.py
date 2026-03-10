@@ -426,6 +426,7 @@ class BattleFactory:
 
         # Create the battle
         battle_kwargs = kwargs.copy()
+        battle_kwargs.pop("money", None)
         battle_kwargs.pop("team_a", None)
         battle_kwargs.pop("team_b", None)
         battle_kwargs["teams"] = teams
