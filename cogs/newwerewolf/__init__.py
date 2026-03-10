@@ -55,6 +55,30 @@ from .role_config import (
     ROLE_XP_WIN_ALIVE,
 )
 
+
+class WerewolfLobbyJoinView(JoinView):
+    def __init__(self, *args, leave_message: str, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.leave_message = leave_message
+        leave_button = Button(
+            style=ButtonStyle.secondary,
+            label=_("Leave the Werewolf game!"),
+        )
+        leave_button.callback = self.leave_button_pressed
+        self.add_item(leave_button)
+
+    async def leave_button_pressed(self, interaction: discord.Interaction) -> None:
+        if interaction.user in self.joined:
+            self.joined.remove(interaction.user)
+            await interaction.response.send_message(
+                self.leave_message, ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                _("You are not in the Werewolf game."), ephemeral=True
+            )
+
+
 class NewWerewolf(commands.Cog):
     JUNIOR_WEREWOLF_BADGE_BIT: int = 512
     TUTORIAL_TRACK_COLUMNS: dict[str, str] = {
@@ -3074,7 +3098,8 @@ class NewWerewolf(commands.Cog):
                 "**{mode}** mode on **{speed}** speed.\n"
                 "⏳ Starts in **{timer}**.\n"
                 "**Minimum of {min_players} players are required.**\n"
-                "👥 Joined ({count}): {players}"
+                "👥 Joined ({count}): {players}\n"
+                "Use **Join** to play or **Leave** to spectate before the timer ends."
             ).format(
                 author=author.mention,
                 mode=mode_label,
@@ -3091,7 +3116,8 @@ class NewWerewolf(commands.Cog):
                 "**{mode}** mode on **{speed}** speed.\n"
                 "⏳ Starts in **{timer}**.\n"
                 "**Minimum of {min_players} players are required.**\n"
-                "👥 Joined ({count}): {players}"
+                "👥 Joined ({count}): {players}\n"
+                "Use **Join** to play or **Leave** to spectate before the timer ends."
             ).format(
                 author=author.mention,
                 mode=mode_label,
@@ -3116,7 +3142,7 @@ class NewWerewolf(commands.Cog):
         self,
         *,
         message: discord.Message,
-        view: JoinView,
+        view: WerewolfLobbyJoinView,
         author: discord.Member,
         mode_label: str,
         speed: str,
@@ -3186,7 +3212,8 @@ class NewWerewolf(commands.Cog):
             "Use `{prefix}help nww` to get help on werewolf commands. Use `{prefix}nww"
             " roles` to view descriptions of game roles and their goals to win. Use"
             " `{prefix}nww modes` and `{prefix}nww speeds` to see info about available"
-            " game modes and speeds."
+            " game modes and speeds. The starter is not auto-joined; click **Join** if"
+            " you want to play."
         ).format(prefix=ctx.clean_prefix)
 
         mode_emojis = {
@@ -3203,13 +3230,12 @@ class NewWerewolf(commands.Cog):
             and ctx.channel.id == self.bot.config.game.official_tournament_channel_id
         )
         join_timeout = 60 * 10 if is_mass_game else 60 * 2
-        view = JoinView(
+        view = WerewolfLobbyJoinView(
             Button(style=ButtonStyle.primary, label=_("Join the Werewolf game!")),
             message=_("You joined the Werewolf game."),
+            leave_message=_("You left the Werewolf game."),
             timeout=join_timeout,
         )
-        if not is_mass_game:
-            view.joined.add(ctx.author)
 
         try:
             lobby_message = await ctx.send(
@@ -3316,6 +3342,7 @@ class NewWerewolf(commands.Cog):
 
             Starts a game of NewWerewolf. Find the werewolves, before they find you!
             Your goal to win is indicated on the role you have.
+            The command starter is not auto-joined. Click the lobby's **Join** button if you want to play, or **Leave** before the game begins if you want to spectate.
             **Game modes:** `Classic` (default), `Imbalanced`, `Huntergame`, `Villagergame`, `Avengergame`, `Valentines`, `IdleRPG`. Use `{prefix}nww modes` for detailed info.
             **Game speeds** (in seconds): `Normal`: 60 (default), `Extended`: 90, `Fast`: 45, `Blitz`: 30. Use `{prefix}nww speeds` for detailed info.
             **Aliases:**
@@ -3410,7 +3437,8 @@ class NewWerewolf(commands.Cog):
             - Separate roles with commas.
             - Repeating a role means it can spawn multiple times.
             - Any unfilled slots are generated with the normal balanced role system.
-            - The game always guarantees at least one Werewolf-team role and one Villager-team role."""
+            - The game always guarantees at least one Werewolf-team role and one Villager-team role.
+            - The command starter is not auto-joined; use the lobby buttons to join or leave before the game starts."""
         )
 
         parsed_roles, invalid_tokens = parse_custom_roles(roles)
