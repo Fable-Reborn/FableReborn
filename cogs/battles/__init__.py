@@ -4563,6 +4563,7 @@ class Battles(commands.Cog):
                 # Open enrollment implementation
                 participants = [ctx.author]
                 participant_ids = {ctx.author.id}
+                join_lock = asyncio.Lock()
                 
                 battle_msg = None
                 
@@ -4575,62 +4576,68 @@ class Battles(commands.Cog):
                     @discord.ui.button(label=_("Join Battle"), style=discord.ButtonStyle.primary, emoji="⚔️")
                     async def join_battle(self, interaction: discord.Interaction, button: discord.ui.Button):
                         user = interaction.user
-                        
-                        # Check if user is already in the battle
-                        if user.id in participant_ids:
-                            return await interaction.response.send_message(
-                                _("You have already joined this battle."), ephemeral=True
-                            )
-                        
-                        # Check if user has a character and enough money
-                        if not await check_character_and_money(user):
-                            if not await self.bot.pool.fetchrow('SELECT 1 FROM profile WHERE "user"=$1', user.id):
+
+                        async with join_lock:
+                            if self.is_complete or len(participants) >= 4:
                                 return await interaction.response.send_message(
-                                    _("You don't have a character to participate."), ephemeral=True
+                                    _("This battle is already full."), ephemeral=True
                                 )
-                            else:
+
+                            # Check if user is already in the battle
+                            if user.id in participant_ids:
                                 return await interaction.response.send_message(
-                                    _("You don't have enough money to join this battle."), ephemeral=True
+                                    _("You have already joined this battle."), ephemeral=True
                                 )
-                        
-                        # Deduct money from the player
-                        if money > 0:
-                            await self.bot.pool.execute(
-                                'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
-                                money,
-                                user.id,
-                            )
-                        
-                        # Add user to participants
-                        participants.append(user)
-                        participant_ids.add(user.id)
-                        
-                        # Acknowledge the interaction
-                        await interaction.response.send_message(_("You have joined the battle!"), ephemeral=True)
-                        
-                        # Update the battle message
-                        joined_text = "\n".join([f"• {p.mention}" for p in participants])
-                        needed = 4 - len(participants)
-                        
-                        await battle_msg.edit(content=_(
-                            "{author} has started a 2v2 raidbattle! The price is **${money}** per player.\n"
-                            "**Participants ({count}/4):**\n{participants}\n\n"
-                            "{needed_text}"
-                        ).format(
-                            author=ctx.author.mention,
-                            money=money,
-                            count=len(participants),
-                            participants=joined_text,
-                            needed_text=_("Need {more} more players to start!").format(more=needed) if needed > 0 else _("Battle ready to begin!")
-                        ))
-                        
-                        # If we have 4 players, start the battle
-                        if len(participants) >= 4:
-                            self.is_complete = True
-                            for item in self.children:
-                                item.disabled = True
-                            await battle_msg.edit(view=self)
-                            self.stop()
+
+                            # Check if user has a character and enough money
+                            if not await check_character_and_money(user):
+                                if not await self.bot.pool.fetchrow('SELECT 1 FROM profile WHERE "user"=$1', user.id):
+                                    return await interaction.response.send_message(
+                                        _("You don't have a character to participate."), ephemeral=True
+                                    )
+                                else:
+                                    return await interaction.response.send_message(
+                                        _("You don't have enough money to join this battle."), ephemeral=True
+                                    )
+
+                            # Deduct money from the player
+                            if money > 0:
+                                await self.bot.pool.execute(
+                                    'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
+                                    money,
+                                    user.id,
+                                )
+
+                            # Add user to participants
+                            participants.append(user)
+                            participant_ids.add(user.id)
+
+                            # Acknowledge the interaction
+                            await interaction.response.send_message(_("You have joined the battle!"), ephemeral=True)
+
+                            # Update the battle message
+                            joined_text = "\n".join([f"• {p.mention}" for p in participants])
+                            needed = 4 - len(participants)
+
+                            await battle_msg.edit(content=_(
+                                "{author} has started a 2v2 raidbattle! The price is **${money}** per player.\n"
+                                "**Participants ({count}/4):**\n{participants}\n\n"
+                                "{needed_text}"
+                            ).format(
+                                author=ctx.author.mention,
+                                money=money,
+                                count=len(participants),
+                                participants=joined_text,
+                                needed_text=_("Need {more} more players to start!").format(more=needed) if needed > 0 else _("Battle ready to begin!")
+                            ))
+
+                            # If we have 4 players, start the battle
+                            if len(participants) >= 4:
+                                self.is_complete = True
+                                for item in self.children:
+                                    item.disabled = True
+                                await battle_msg.edit(view=self)
+                                self.stop()
                 
                 # Create the view and send the initial message
                 view = OpenBattleView(self.bot)
@@ -4656,8 +4663,19 @@ class Battles(commands.Cog):
                             'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
                             money,
                             participant.id,
-                        )
+                    )
                     return await ctx.send(_("Not enough players joined the battle. Money has been refunded."))
+
+                if len(participants) > 4:
+                    overflow_participants = participants[4:]
+                    participants = participants[:4]
+                    for participant in overflow_participants:
+                        await self.bot.pool.execute(
+                            'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                            money,
+                            participant.id,
+                        )
+                    await ctx.send(_("Battle enrollment exceeded 4 players. Extra participants were refunded and removed."))
                 
                 # Randomly assign teams
                 random.shuffle(participants)
@@ -4799,8 +4817,8 @@ class Battles(commands.Cog):
             # Run the battle until completion
             while not await battle.is_battle_over():
                 await battle.process_turn()
-                await asyncio.sleep(4)  # Delay between turns for readability
-            
+                await asyncio.sleep(2)  # Match raidbattle pacing
+
             # Get the result
             result = await battle.end_battle()
             
@@ -4824,7 +4842,7 @@ class Battles(commands.Cog):
                         player.id,
                     )
         except Exception as e:
-            await ctx.send(e)
+            await ctx.send(str(e))
 
     @has_char()
     @commands.command(
