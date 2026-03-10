@@ -4518,310 +4518,313 @@ class Battles(commands.Cog):
             Each member of the winning team will receive a PvP win, which shows on their profile.
             (This command has a cooldown of 5 minutes)"""
         )
-        # Check if the initiator has enough money
-        if ctx.character_data["money"] < money:
-            await self.bot.reset_cooldown(ctx)
-            return await ctx.send(_("You are too poor."))
-
-        # Determine if we're using open enrollment
-        open_enrollment = teammate is None and (not opponents or len(opponents) == 0)
-
-        if not open_enrollment:
-            # Validate specific player configuration
-            if teammate == ctx.author:
+        try:
+            # Check if the initiator has enough money
+            if ctx.character_data["money"] < money:
                 await self.bot.reset_cooldown(ctx)
-                return await ctx.send(_("You can't be your own teammate."))
+                return await ctx.send(_("You are too poor."))
 
-            if not opponents or len(opponents) != 2:
-                await self.bot.reset_cooldown(ctx)
-                return await ctx.send(_("You must specify exactly two opponents."))
+            # Determine if we're using open enrollment
+            open_enrollment = teammate is None and (not opponents or len(opponents) == 0)
 
-            if ctx.author in opponents or teammate in opponents:
-                await self.bot.reset_cooldown(ctx)
-                return await ctx.send(_("Invalid team configuration."))
+            if not open_enrollment:
+                # Validate specific player configuration
+                if teammate == ctx.author:
+                    await self.bot.reset_cooldown(ctx)
+                    return await ctx.send(_("You can't be your own teammate."))
 
-        # Deduct money from initiating player
-        await self.bot.pool.execute(
-            'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
-            money,
-            ctx.author.id,
-        )
+                if not opponents or len(opponents) != 2:
+                    await self.bot.reset_cooldown(ctx)
+                    return await ctx.send(_("You must specify exactly two opponents."))
 
-        # Function to check if a user has enough money and a character
-        async def check_character_and_money(user: discord.User) -> bool:
-            # Check if user has a character
-            if not await self.bot.pool.fetchrow('SELECT 1 FROM profile WHERE "user"=$1', user.id):
-                return False
-            # Check if user has enough money (if bet amount > 0)
-            if money > 0:
-                return await has_money(self.bot, user.id, money)
-            return True
+                if ctx.author in opponents or teammate in opponents:
+                    await self.bot.reset_cooldown(ctx)
+                    return await ctx.send(_("Invalid team configuration."))
 
-        # Handle open or specific enrollment
-        if open_enrollment:
-            # Open enrollment implementation
-            participants = [ctx.author]
-            participant_ids = {ctx.author.id}
-            
-            battle_msg = None
-            
-            class OpenBattleView(discord.ui.View):
-                def __init__(self, bot):
-                    super().__init__(timeout=60)
-                    self.bot = bot
-                    self.is_complete = False
-                
-                @discord.ui.button(label=_("Join Battle"), style=discord.ButtonStyle.primary, emoji="⚔️")
-                async def join_battle(self, interaction: discord.Interaction, button: discord.ui.Button):
-                    user = interaction.user
-                    
-                    # Check if user is already in the battle
-                    if user.id in participant_ids:
-                        return await interaction.response.send_message(
-                            _("You have already joined this battle."), ephemeral=True
-                        )
-                    
-                    # Check if user has a character and enough money
-                    if not await check_character_and_money(user):
-                        if not await self.bot.pool.fetchrow('SELECT 1 FROM profile WHERE "user"=$1', user.id):
-                            return await interaction.response.send_message(
-                                _("You don't have a character to participate."), ephemeral=True
-                            )
-                        else:
-                            return await interaction.response.send_message(
-                                _("You don't have enough money to join this battle."), ephemeral=True
-                            )
-                    
-                    # Deduct money from the player
-                    if money > 0:
-                        await self.bot.pool.execute(
-                            'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
-                            money,
-                            user.id,
-                        )
-                    
-                    # Add user to participants
-                    participants.append(user)
-                    participant_ids.add(user.id)
-                    
-                    # Acknowledge the interaction
-                    await interaction.response.send_message(_("You have joined the battle!"), ephemeral=True)
-                    
-                    # Update the battle message
-                    joined_text = "\n".join([f"• {p.mention}" for p in participants])
-                    needed = 4 - len(participants)
-                    
-                    await battle_msg.edit(content=_(
-                        "{author} has started a 2v2 raidbattle! The price is **${money}** per player.\n"
-                        "**Participants ({count}/4):**\n{participants}\n\n"
-                        "{needed_text}"
-                    ).format(
-                        author=ctx.author.mention,
-                        money=money,
-                        count=len(participants),
-                        participants=joined_text,
-                        needed_text=_("Need {more} more players to start!").format(more=needed) if needed > 0 else _("Battle ready to begin!")
-                    ))
-                    
-                    # If we have 4 players, start the battle
-                    if len(participants) >= 4:
-                        self.is_complete = True
-                        for item in self.children:
-                            item.disabled = True
-                        await battle_msg.edit(view=self)
-                        self.stop()
-            
-            # Create the view and send the initial message
-            view = OpenBattleView(self.bot)
-            battle_msg = await ctx.send(
-                _("{author} has started a 2v2 raidbattle! The price is **${money}** per player.\n"
-                "**Participants (1/4):**\n• {author}\n\n"
-                "Need 3 more players to start!").format(
-                    author=ctx.author.mention,
-                    money=money
-                ),
-                view=view
-            )
-            
-            # Wait for the view to complete or timeout
-            await view.wait()
-            
-            # Check if we have enough players
-            if not view.is_complete:
-                await self.bot.reset_cooldown(ctx)
-                # Refund money to all participants
-                for participant in participants:
-                    await self.bot.pool.execute(
-                        'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
-                        money,
-                        participant.id,
-                    )
-                return await ctx.send(_("Not enough players joined the battle. Money has been refunded."))
-            
-            # Randomly assign teams
-            random.shuffle(participants)
-            team_a = participants[:2]
-            team_b = participants[2:]
-            
-        else:
-            # Specific player enrollment
-            # Create future for teammate
-            teammate_future = asyncio.Future()
-            view = SingleJoinView(
-                teammate_future,
-                Button(
-                    style=ButtonStyle.primary,
-                    label=_("Join the team!"),
-                    emoji="🤝",
-                ),
-                allowed=teammate,
-                prohibited=ctx.author,
-                timeout=60,
-                check=check_character_and_money,
-                check_fail_message=_("You don't have a character or enough money to join the raidbattle."),
-            )
-            
-            # Send invitation to teammate
-            await ctx.send(
-                _("{teammate}, {author} has invited you to join their team in a 2v2 raidbattle! The price is **${money}** per player.").format(
-                    teammate=teammate.mention,
-                    author=ctx.author.mention,
-                    money=money
-                ),
-                view=view
-            )
-            
-            # Wait for teammate to join
-            try:
-                teammate_ = await asyncio.wait_for(teammate_future, timeout=60)
-            except asyncio.TimeoutError:
-                await self.bot.reset_cooldown(ctx)
-                # Refund money to author
-                await self.bot.pool.execute(
-                    'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
-                    money,
-                    ctx.author.id,
-                )
-                return await ctx.send(
-                    _("Your teammate did not join in time, {author}.").format(
-                        author=ctx.author.mention
-                    )
-                )
-            
-            # Take money from teammate
+            # Deduct money from initiating player
             await self.bot.pool.execute(
                 'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
                 money,
-                teammate_.id,
+                ctx.author.id,
             )
-            
-            # Invite opponents
-            opponent_futures = []
-            for opponent in opponents:
-                future = asyncio.Future()
+
+            # Function to check if a user has enough money and a character
+            async def check_character_and_money(user: discord.User) -> bool:
+                # Check if user has a character
+                if not await self.bot.pool.fetchrow('SELECT 1 FROM profile WHERE "user"=$1', user.id):
+                    return False
+                # Check if user has enough money (if bet amount > 0)
+                if money > 0:
+                    return await has_money(self.bot, user.id, money)
+                return True
+
+            # Handle open or specific enrollment
+            if open_enrollment:
+                # Open enrollment implementation
+                participants = [ctx.author]
+                participant_ids = {ctx.author.id}
+                
+                battle_msg = None
+                
+                class OpenBattleView(discord.ui.View):
+                    def __init__(self, bot):
+                        super().__init__(timeout=60)
+                        self.bot = bot
+                        self.is_complete = False
+                    
+                    @discord.ui.button(label=_("Join Battle"), style=discord.ButtonStyle.primary, emoji="⚔️")
+                    async def join_battle(self, interaction: discord.Interaction, button: discord.ui.Button):
+                        user = interaction.user
+                        
+                        # Check if user is already in the battle
+                        if user.id in participant_ids:
+                            return await interaction.response.send_message(
+                                _("You have already joined this battle."), ephemeral=True
+                            )
+                        
+                        # Check if user has a character and enough money
+                        if not await check_character_and_money(user):
+                            if not await self.bot.pool.fetchrow('SELECT 1 FROM profile WHERE "user"=$1', user.id):
+                                return await interaction.response.send_message(
+                                    _("You don't have a character to participate."), ephemeral=True
+                                )
+                            else:
+                                return await interaction.response.send_message(
+                                    _("You don't have enough money to join this battle."), ephemeral=True
+                                )
+                        
+                        # Deduct money from the player
+                        if money > 0:
+                            await self.bot.pool.execute(
+                                'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
+                                money,
+                                user.id,
+                            )
+                        
+                        # Add user to participants
+                        participants.append(user)
+                        participant_ids.add(user.id)
+                        
+                        # Acknowledge the interaction
+                        await interaction.response.send_message(_("You have joined the battle!"), ephemeral=True)
+                        
+                        # Update the battle message
+                        joined_text = "\n".join([f"• {p.mention}" for p in participants])
+                        needed = 4 - len(participants)
+                        
+                        await battle_msg.edit(content=_(
+                            "{author} has started a 2v2 raidbattle! The price is **${money}** per player.\n"
+                            "**Participants ({count}/4):**\n{participants}\n\n"
+                            "{needed_text}"
+                        ).format(
+                            author=ctx.author.mention,
+                            money=money,
+                            count=len(participants),
+                            participants=joined_text,
+                            needed_text=_("Need {more} more players to start!").format(more=needed) if needed > 0 else _("Battle ready to begin!")
+                        ))
+                        
+                        # If we have 4 players, start the battle
+                        if len(participants) >= 4:
+                            self.is_complete = True
+                            for item in self.children:
+                                item.disabled = True
+                            await battle_msg.edit(view=self)
+                            self.stop()
+                
+                # Create the view and send the initial message
+                view = OpenBattleView(self.bot)
+                battle_msg = await ctx.send(
+                    _("{author} has started a 2v2 raidbattle! The price is **${money}** per player.\n"
+                    "**Participants (1/4):**\n• {author}\n\n"
+                    "Need 3 more players to start!").format(
+                        author=ctx.author.mention,
+                        money=money
+                    ),
+                    view=view
+                )
+                
+                # Wait for the view to complete or timeout
+                await view.wait()
+                
+                # Check if we have enough players
+                if not view.is_complete:
+                    await self.bot.reset_cooldown(ctx)
+                    # Refund money to all participants
+                    for participant in participants:
+                        await self.bot.pool.execute(
+                            'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                            money,
+                            participant.id,
+                        )
+                    return await ctx.send(_("Not enough players joined the battle. Money has been refunded."))
+                
+                # Randomly assign teams
+                random.shuffle(participants)
+                team_a = participants[:2]
+                team_b = participants[2:]
+                
+            else:
+                # Specific player enrollment
+                # Create future for teammate
+                teammate_future = asyncio.Future()
                 view = SingleJoinView(
-                    future,
+                    teammate_future,
                     Button(
                         style=ButtonStyle.primary,
-                        label=_("Accept Challenge"),
-                        emoji="⚔️",
+                        label=_("Join the team!"),
+                        emoji="🤝",
                     ),
-                    allowed=opponent,
-                    prohibited=[ctx.author, teammate_],
+                    allowed=teammate,
+                    prohibited=ctx.author,
                     timeout=60,
                     check=check_character_and_money,
                     check_fail_message=_("You don't have a character or enough money to join the raidbattle."),
                 )
                 
+                # Send invitation to teammate
                 await ctx.send(
-                    _("{opponent}, you have been challenged to a 2v2 raidbattle by {author} and {teammate}! The price is **${money}** per player.").format(
-                        opponent=opponent.mention,
+                    _("{teammate}, {author} has invited you to join their team in a 2v2 raidbattle! The price is **${money}** per player.").format(
+                        teammate=teammate.mention,
                         author=ctx.author.mention,
-                        teammate=teammate_.mention,
                         money=money
                     ),
                     view=view
                 )
-                opponent_futures.append(future)
-            
-            # Wait for both opponents to join
-            opponents_ = []
-            try:
-                for future in opponent_futures:
-                    opponent = await asyncio.wait_for(future, timeout=60)
-                    opponents_.append(opponent)
-                    
-                    # Take money from opponent
-                    await self.bot.pool.execute(
-                        'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
-                        money,
-                        opponent.id,
-                    )
-            except asyncio.TimeoutError:
-                await self.bot.reset_cooldown(ctx)
-                # Refund money to all participants so far
-                participants = [ctx.author, teammate_] + opponents_
-                for participant in participants:
+                
+                # Wait for teammate to join
+                try:
+                    teammate_ = await asyncio.wait_for(teammate_future, timeout=60)
+                except asyncio.TimeoutError:
+                    await self.bot.reset_cooldown(ctx)
+                    # Refund money to author
                     await self.bot.pool.execute(
                         'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
                         money,
-                        participant.id,
+                        ctx.author.id,
                     )
-                return await ctx.send(
-                    _("Not all opponents joined in time. Money has been refunded.")
-                )
-            
-            # Set teams
-            team_a = [ctx.author, teammate_]
-            team_b = opponents_
-
-        # Announce teams
-        await ctx.send(
-            _("**Team A**: {team_a_members}\n**Team B**: {team_b_members}\n\nLet the battle begin!").format(
-                team_a_members=", ".join(member.mention for member in team_a),
-                team_b_members=", ".join(member.mention for member in team_b)
-            )
-        )
-
-        # Create and start the battle
-        battle = await self.battle_factory.create_battle(
-            "team",
-            ctx,
-            team_a=team_a,
-            team_b=team_b,
-            money=money
-        )
-        
-        # Start the battle
-        await battle.start_battle()
-        
-        # Run the battle until completion
-        while not await battle.is_battle_over():
-            await battle.process_turn()
-            await asyncio.sleep(4)  # Delay between turns for readability
-        
-        # Get the result
-        result = await battle.end_battle()
-        
-        if result:
-            # Battle has a winner
-            winning_team, losing_team = result
-            await ctx.send(
-                _("Team {winning_team} won the battle against Team {losing_team}! Congratulations!").format(
-                    winning_team=winning_team,
-                    losing_team=losing_team
-                )
-            )
-        else:
-            # Battle ended in a tie
-            await ctx.send(_("The battle ended in a tie! All money has been refunded."))
-            # Refund money to all players
-            for player in team_a + team_b:
+                    return await ctx.send(
+                        _("Your teammate did not join in time, {author}.").format(
+                            author=ctx.author.mention
+                        )
+                    )
+                
+                # Take money from teammate
                 await self.bot.pool.execute(
-                    'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                    'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
                     money,
-                    player.id,
+                    teammate_.id,
                 )
+                
+                # Invite opponents
+                opponent_futures = []
+                for opponent in opponents:
+                    future = asyncio.Future()
+                    view = SingleJoinView(
+                        future,
+                        Button(
+                            style=ButtonStyle.primary,
+                            label=_("Accept Challenge"),
+                            emoji="⚔️",
+                        ),
+                        allowed=opponent,
+                        prohibited=[ctx.author, teammate_],
+                        timeout=60,
+                        check=check_character_and_money,
+                        check_fail_message=_("You don't have a character or enough money to join the raidbattle."),
+                    )
+                    
+                    await ctx.send(
+                        _("{opponent}, you have been challenged to a 2v2 raidbattle by {author} and {teammate}! The price is **${money}** per player.").format(
+                            opponent=opponent.mention,
+                            author=ctx.author.mention,
+                            teammate=teammate_.mention,
+                            money=money
+                        ),
+                        view=view
+                    )
+                    opponent_futures.append(future)
+                
+                # Wait for both opponents to join
+                opponents_ = []
+                try:
+                    for future in opponent_futures:
+                        opponent = await asyncio.wait_for(future, timeout=60)
+                        opponents_.append(opponent)
+                        
+                        # Take money from opponent
+                        await self.bot.pool.execute(
+                            'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
+                            money,
+                            opponent.id,
+                        )
+                except asyncio.TimeoutError:
+                    await self.bot.reset_cooldown(ctx)
+                    # Refund money to all participants so far
+                    participants = [ctx.author, teammate_] + opponents_
+                    for participant in participants:
+                        await self.bot.pool.execute(
+                            'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                            money,
+                            participant.id,
+                        )
+                    return await ctx.send(
+                        _("Not all opponents joined in time. Money has been refunded.")
+                    )
+                
+                # Set teams
+                team_a = [ctx.author, teammate_]
+                team_b = opponents_
+
+            # Announce teams
+            await ctx.send(
+                _("**Team A**: {team_a_members}\n**Team B**: {team_b_members}\n\nLet the battle begin!").format(
+                    team_a_members=", ".join(member.mention for member in team_a),
+                    team_b_members=", ".join(member.mention for member in team_b)
+                )
+            )
+
+            # Create and start the battle
+            battle = await self.battle_factory.create_battle(
+                "team",
+                ctx,
+                team_a=team_a,
+                team_b=team_b,
+                money=money
+            )
+            
+            # Start the battle
+            await battle.start_battle()
+            
+            # Run the battle until completion
+            while not await battle.is_battle_over():
+                await battle.process_turn()
+                await asyncio.sleep(4)  # Delay between turns for readability
+            
+            # Get the result
+            result = await battle.end_battle()
+            
+            if result:
+                # Battle has a winner
+                winning_team, losing_team = result
+                await ctx.send(
+                    _("Team {winning_team} won the battle against Team {losing_team}! Congratulations!").format(
+                        winning_team=winning_team,
+                        losing_team=losing_team
+                    )
+                )
+            else:
+                # Battle ended in a tie
+                await ctx.send(_("The battle ended in a tie! All money has been refunded."))
+                # Refund money to all players
+                for player in team_a + team_b:
+                    await self.bot.pool.execute(
+                        'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                        money,
+                        player.id,
+                    )
+        except Exception as e:
+            await ctx.send(e)
 
     @has_char()
     @commands.command(
