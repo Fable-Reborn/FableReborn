@@ -269,8 +269,8 @@ class BattleFactory:
             if not team_a_members or not team_b_members:
                 raise ValueError("Raid battle team mode requires both team_a and team_b")
 
-            player1_team = await self._create_raid_team(ctx, "A", team_a_members, allow_pets)
-            player2_team = await self._create_raid_team(ctx, "B", team_b_members, allow_pets)
+            player1_team = await self._create_player_team(ctx, "A", team_a_members, allow_pets)
+            player2_team = await self._create_player_team(ctx, "B", team_b_members, allow_pets)
         else:
             player1 = kwargs.get("player1", ctx.author)
             player2 = kwargs.get("player2")
@@ -311,11 +311,11 @@ class BattleFactory:
         battle_kwargs.pop('team_b', None)
         return RaidBattle(ctx, [player1_team, player2_team], money=money, **battle_kwargs)
 
-    async def _create_raid_team(self, ctx, team_name, members, allow_pets):
-        """Build a raid-style team from one or more player members."""
+    async def _create_player_team(self, ctx, team_name, members, allow_pets):
+        """Build a player team from one or more player members."""
         normalized_members = [member for member in members if member is not None]
         if not normalized_members:
-            raise ValueError("Raid team requires at least one member")
+            raise ValueError("Team requires at least one member")
 
         combatants = []
         for member in normalized_members:
@@ -409,12 +409,27 @@ class BattleFactory:
         """Create a battle with two teams of players"""
         teams = kwargs.get("teams", [])
         money = kwargs.get("money", 0)
-        
+
+        if not teams:
+            team_a_members = kwargs.get("team_a")
+            team_b_members = kwargs.get("team_b")
+            allow_pets = kwargs.get("allow_pets")
+
+            if team_a_members and team_b_members:
+                teams = [
+                    await self._create_player_team(ctx, "A", team_a_members, allow_pets),
+                    await self._create_player_team(ctx, "B", team_b_members, allow_pets),
+                ]
+
         if not teams or len(teams) != 2:
             raise ValueError("Team battle requires exactly two teams")
-        
+
         # Create the battle
-        return TeamBattle(ctx, teams, money=money, **kwargs)
+        battle_kwargs = kwargs.copy()
+        battle_kwargs.pop("team_a", None)
+        battle_kwargs.pop("team_b", None)
+        battle_kwargs["teams"] = teams
+        return TeamBattle(ctx, teams, money=money, **battle_kwargs)
         
     async def create_dragon_battle(self, ctx, **kwargs):
         """Create an Ice Dragon challenge battle"""
