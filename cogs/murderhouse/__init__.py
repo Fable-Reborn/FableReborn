@@ -124,6 +124,16 @@ JUNK_DISCOVERIES = {
         "The shelves rattle, but the boxes hold nothing worth keeping.",
     ),
 }
+ROOM_DEATH_FEATURES = {
+    "Foyer": ("the umbrella stand", "the staircase rail", "the grandfather clock"),
+    "Kitchen": ("the pantry door", "the counters", "the hanging pots"),
+    "Study": ("the writing desk", "the bookcase", "the curtained window"),
+    "Upstairs Hall": ("the banister", "the display cabinet", "the wall mirror"),
+    "Master Bedroom": ("the vanity mirror", "the bedframe", "the balcony doors"),
+    "Bathroom": ("the porcelain sink", "the bathtub edge", "the medicine cabinet"),
+    "Attic": ("the roof beams", "the trunk pile", "the ladder hatch"),
+    "Basement": ("the furnace", "the concrete steps", "the water heater"),
+}
 
 
 @dataclass
@@ -200,6 +210,7 @@ class MurderHouseGame:
         self.primary_escape_open = False
         self.secondary_escape_open = False
         self.secondary_escape_unlock_round: int | None = None
+        self.sudden_death_announced = False
         self.guests: dict[int, GuestState] = {}
         self.traps: dict[tuple[str, str], int] = {}
         self.barricades: dict[str, int] = {}
@@ -311,7 +322,14 @@ class MurderHouseGame:
             rooms.append(self.secondary_escape_room)
         return tuple(rooms)
 
+    def _in_sudden_death(self) -> bool:
+        return self.round > self.max_rounds
+
     def _escape_status_text(self, *, markdown: bool = False) -> str:
+        if self._in_sudden_death():
+            return _(
+                "Sudden death: all selected exits are open, and the house claims someone if a round ends with no kill or escape."
+            )
         open_rooms = self._open_escape_rooms()
         if not open_rooms:
             return _(
@@ -336,6 +354,8 @@ class MurderHouseGame:
         )
 
     def _compact_escape_status_text(self) -> str:
+        if self._in_sudden_death():
+            return _("Sudden death: all selected exits open.")
         open_rooms = self._open_escape_rooms()
         if not open_rooms:
             return _(
@@ -383,6 +403,57 @@ class MurderHouseGame:
             )
         )
 
+    def _start_sudden_death(self, public_lines: list[str]) -> None:
+        if self.sudden_death_announced:
+            return
+        self.sudden_death_announced = True
+        self.primary_escape_open = True
+        self.secondary_escape_open = True
+        public_lines.append(
+            _(
+                "The house tips into **Sudden Death**. The {primary} and {secondary} are thrown open, hiding stops mattering, and if a round ends with no kill or escape, the house itself claims someone."
+            ).format(
+                primary=f"**{self._escape_route_label(self.primary_escape_room)}**",
+                secondary=f"**{self._escape_route_label(self.secondary_escape_room)}**",
+            )
+        )
+
+    def _room_death_feature(self, room: str) -> str:
+        return random.choice(ROOM_DEATH_FEATURES.get(room, ("the floor",)))
+
+    def _flavored_death_text(
+        self, *, mode: str, victim: discord.abc.User, room: str, spot: str | None = None
+    ) -> str:
+        feature = self._room_death_feature(room)
+        templates = {
+            "sweep": (
+                _("**{victim}** is cornered in the **{room}** and left crumpled against {feature}."),
+                _("**{victim}** tries to run through the **{room}**, but never gets past {feature}."),
+                _("The **{room}** erupts in violence. **{victim}** drops beside {feature}."),
+            ),
+            "check": (
+                _("The **{spot}** in the **{room}** bursts open. **{victim}** is smashed into {feature}."),
+                _("**{victim}** is dragged out of the **{spot}** in the **{room}** and thrown across {feature}."),
+                _("A hand tears into the **{spot}** in the **{room}**. **{victim}** never gets beyond {feature}."),
+            ),
+            "trap": (
+                _("A trap snaps shut in the **{room}** and hurls **{victim}** into {feature}."),
+                _("Metal bites down in the **{room}**. **{victim}** collapses beside {feature}."),
+                _("The trap in the **{room}** goes off hard. **{victim}** is broken against {feature}."),
+            ),
+            "house": (
+                _("The house itself turns on **{victim}** in the **{room}**. They go down beside {feature}."),
+                _("Something gives way in the **{room}**. **{victim}** vanishes in the wreck around {feature}."),
+                _("Smoke and splintering wood swallow the **{room}**. **{victim}** never makes it past {feature}."),
+            ),
+        }
+        return random.choice(templates[mode]).format(
+            victim=victim.display_name,
+            room=room,
+            spot=spot,
+            feature=feature,
+        )
+
     def _joined_preview(self) -> str:
         sorted_players = sorted(
             self.players,
@@ -413,8 +484,7 @@ class MurderHouseGame:
                 "Collect **{goal}** escape clues.\n"
                 "There are **4** possible exits in the house: {routes}.\n"
                 "When the final clue is found, one selected exit opens. A second selected exit opens **{delay}** rounds later.\n"
-                "Get **{escape_target}** houseguests out before round **{rounds}** ends.\n"
-                "If **{escape_target}** people do not escape by round **{rounds}**, the murderer wins.\n"
+                "If round **{rounds}** ends with people still trapped, the game flips into **Sudden Death** until **{escape_target}** people escape or nobody is left alive.\n"
                 "Hiding buys time, but it never counts as a win by itself.\n"
                 "Map:\n```{house_map}```"
             ).format(
@@ -435,6 +505,7 @@ class MurderHouseGame:
             "The houseguests need **{goal}** clues to start opening exits.\n"
             "There are **4** possible exits: {routes}.\n"
             "One selected exit opens after the final clue, and a second selected exit opens **{delay}** rounds later.\n"
+            "If round **{rounds}** ends with people still trapped, **Sudden Death** begins and the house starts claiming anyone left inside.\n"
             "Sweep rooms, check hiding spots, listen for noise, set traps, and stop **{escape_target}** escapes.\n"
             "Map:\n```{house_map}```"
         ).format(
@@ -442,6 +513,7 @@ class MurderHouseGame:
             goal=self.escape_goal,
             routes=self._escape_routes_text(markdown=True),
             delay=self.SECONDARY_EXIT_DELAY_ROUNDS,
+            rounds=self.max_rounds,
             escape_target=self.ESCAPE_TARGET,
             house_map=self._house_map_text(),
         )
@@ -454,7 +526,7 @@ class MurderHouseGame:
             "Houseguests must find **{goal}** escape clues.\n"
             "One selected exit opens first, and a second selected exit opens **{delay}** rounds later.\n"
             "The possible exits are {routes}.\n"
-            "If **{escape_target}** people do not escape by round **{rounds}**, the murderer wins.\n"
+            "If round **{rounds}** ends with people still trapped, **Sudden Death** begins until **{escape_target}** people escape or nobody is left alive.\n"
             "Simply hiding until time runs out does not save the houseguests.\n"
             "Talk in channel. Hidden actions happen in DMs."
         ).format(
@@ -510,7 +582,11 @@ class MurderHouseGame:
             )
             .add_field(
                 name=_("Rounds Left"),
-                value=str(max(0, self.max_rounds - self.round)),
+                value=(
+                    _("Sudden Death")
+                    if self._in_sudden_death()
+                    else str(max(0, self.max_rounds - self.round))
+                ),
                 inline=True,
             )
             .add_field(
@@ -520,7 +596,7 @@ class MurderHouseGame:
             )
         )
 
-    def _build_final_embed(self, survivors_win: bool, timeout_loss: bool) -> discord.Embed:
+    def _build_final_embed(self, survivors_win: bool) -> discord.Embed:
         if survivors_win:
             description = _(
                 "Sirens wash the street in blue as **{escaped}** bursts out of the house. Two survivors make it out, and the murderer loses the night."
@@ -539,10 +615,6 @@ class MurderHouseGame:
                 count=len(self.escaped_members),
                 goal=self.ESCAPE_TARGET,
             )
-        elif timeout_loss:
-            description = _(
-                "Round **{rounds}** ends and the house falls silent. Nobody found a way out in time."
-            ).format(rounds=self.max_rounds)
         else:
             description = _(
                 "No houseguests remain alive inside the house. The murderer owns the ending."
@@ -602,6 +674,7 @@ class MurderHouseGame:
     def _build_guest_options(self, state: GuestState) -> list[dict]:
         current_room = state.room
         options: list[dict] = []
+        sudden_death = self._in_sudden_death()
 
         if current_room in self._open_escape_rooms():
             options.append(
@@ -613,27 +686,28 @@ class MurderHouseGame:
                 }
             )
 
-        for spot in HIDING_SPOTS[current_room]:
+        if not sudden_death:
+            for spot in HIDING_SPOTS[current_room]:
+                options.append(
+                    {
+                        "label": _("Hide in the {spot}").format(spot=spot),
+                        "kind": "hide",
+                        "spot": spot,
+                    }
+                )
+
             options.append(
                 {
-                    "label": _("Hide in the {spot}").format(spot=spot),
-                    "kind": "hide",
-                    "spot": spot,
+                    "label": _("Search the {room} for clues").format(room=current_room),
+                    "kind": "scavenge",
                 }
             )
-
-        options.append(
-            {
-                "label": _("Search the {room} for clues").format(room=current_room),
-                "kind": "scavenge",
-            }
-        )
-        options.append(
-            {
-                "label": _("Barricade the {room}").format(room=current_room),
-                "kind": "barricade",
-            }
-        )
+            options.append(
+                {
+                    "label": _("Barricade the {room}").format(room=current_room),
+                    "kind": "barricade",
+                }
+            )
 
         for adjacent_room in HOUSE_MAP[current_room]:
             options.append(
@@ -979,9 +1053,11 @@ class MurderHouseGame:
         if exposed:
             priority = [state for state in exposed if state.room == FOYER]
             victim = random.choice(priority or exposed)
-            public_text = _(
-                "**{victim}** is caught in the **{room}** and butchered."
-            ).format(victim=victim.member.display_name, room=room)
+            public_text = self._flavored_death_text(
+                mode="sweep",
+                victim=victim.member,
+                room=room,
+            )
             if self._kill_guest(
                 victim,
                 public_text=public_text,
@@ -1089,12 +1165,11 @@ class MurderHouseGame:
             ]
             if victims:
                 victim = random.choice(victims)
-                public_text = _(
-                    "**{victim}** is pulled from the **{spot}** in the **{room}** and slaughtered."
-                ).format(
-                    victim=victim.member.display_name,
-                    spot=spot,
+                public_text = self._flavored_death_text(
+                    mode="check",
+                    victim=victim.member,
                     room=current_room,
+                    spot=spot,
                 )
                 if self._kill_guest(
                     victim,
@@ -1258,6 +1333,33 @@ class MurderHouseGame:
                     _("One more survivor needs to escape to beat the murderer.")
                 )
 
+    def _resolve_house_claim(
+        self,
+        *,
+        public_lines: list[str],
+        private_lines: defaultdict[int, list[str]],
+    ) -> bool:
+        candidates = self._alive_guest_states()
+        if not candidates:
+            return False
+        victim = random.choice(candidates)
+        public_text = self._flavored_death_text(
+            mode="house",
+            victim=victim.member,
+            room=victim.room,
+        )
+        if not self._kill_guest(
+            victim,
+            public_text=public_text,
+            private_lines=private_lines,
+            victim_text=_(
+                "The house comes apart around you in the **{room}**. You do not get back up."
+            ).format(room=victim.room),
+        ):
+            return False
+        public_lines.append(public_text)
+        return True
+
     def _top_noise_line(self, noise_by_room: dict[str, int]) -> str | None:
         loud_rooms = [room for room, score in noise_by_room.items() if score >= 2]
         if not loud_rooms:
@@ -1278,11 +1380,16 @@ class MurderHouseGame:
         public_lines = [
             random.choice(BLACKOUT_LINES if current_blackout else AMBIENCE_LINES)
         ]
-        self._maybe_open_secondary_escape(public_lines)
+        if self._in_sudden_death():
+            self._start_sudden_death(public_lines)
+        else:
+            self._maybe_open_secondary_escape(public_lines)
         private_lines: defaultdict[int, list[str]] = defaultdict(list)
         noise_by_room: dict[str, int] = {room: 0 for room in HOUSE_MAP}
         escape_attempt_ids: set[int] = set()
         pending_senses: list[tuple[int, str, bool]] = []
+        escapes_before = len(self.escaped_members)
+        casualties_before = len(self.casualties)
 
         for state in self._alive_guest_states():
             state.hidden_spot = None
@@ -1317,9 +1424,12 @@ class MurderHouseGame:
                 trap_key = (state.room, spot)
                 if trap_key in self.traps:
                     del self.traps[trap_key]
-                    public_text = _(
-                        "A hidden trap snaps shut in the **{room}**. **{victim}** never gets back up."
-                    ).format(room=state.room, victim=state.member.display_name)
+                    public_text = self._flavored_death_text(
+                        mode="trap",
+                        victim=state.member,
+                        room=state.room,
+                        spot=spot,
+                    )
                     if self._kill_guest(
                         state,
                         public_text=public_text,
@@ -1427,6 +1537,16 @@ class MurderHouseGame:
             private_lines=private_lines,
         )
 
+        if (
+            self._in_sudden_death()
+            and len(self.escaped_members) == escapes_before
+            and len(self.casualties) == casualties_before
+        ):
+            self._resolve_house_claim(
+                public_lines=public_lines,
+                private_lines=private_lines,
+            )
+
         noise_line = self._top_noise_line(noise_by_room)
         if noise_line is not None:
             public_lines.append(noise_line)
@@ -1443,7 +1563,7 @@ class MurderHouseGame:
         await self.ctx.send(embed=self._build_intro_embed())
         await self._send_opening_dms()
 
-        while self.round <= self.max_rounds:
+        while True:
             if (
                 not self._alive_guest_states()
                 or len(self.escaped_members) >= self.ESCAPE_TARGET
@@ -1451,8 +1571,14 @@ class MurderHouseGame:
                 break
 
             await self.ctx.send(
-                _(
-                    "Round **{round}** begins. Check your DMs and make your choice."
+                (
+                    _(
+                        "Round **{round}** begins. Check your DMs and make your choice."
+                    )
+                    if not self._in_sudden_death()
+                    else _(
+                        "Round **{round}** begins. **Sudden Death** is active. Check your DMs and run."
+                    )
                 ).format(round=self.round)
             )
             await self._run_round()
@@ -1465,12 +1591,8 @@ class MurderHouseGame:
             await asyncio.sleep(self.REPORT_DELAY_SECONDS)
 
         survivors_win = len(self.escaped_members) >= self.ESCAPE_TARGET
-        timeout_loss = not survivors_win and bool(self._alive_guest_states())
         await self.ctx.send(
-            embed=self._build_final_embed(
-                survivors_win=survivors_win,
-                timeout_loss=timeout_loss,
-            )
+            embed=self._build_final_embed(survivors_win=survivors_win)
         )
 
 
@@ -1522,7 +1644,8 @@ class MurderHouse(commands.Cog):
                     "`Peek` and `Flashlight` gather information.\n"
                     "`Barricade` can burn the murderer's next kill window in that room.\n"
                     "`Escape` only works from open exit rooms.\n"
-                    "The first chosen exit opens when the clue track fills; the second opens **3 rounds later**."
+                    "The first chosen exit opens when the clue track fills; the second opens **3 rounds later**.\n"
+                    "After the round cap, **Sudden Death** opens every selected exit and stops slow play."
                 ),
                 inline=False,
             )
@@ -1542,7 +1665,8 @@ class MurderHouse(commands.Cog):
                 value=_(
                     "Possible exits: **Kitchen back door**, **Basement bulkhead**, **Attic fire ladder**, **Master bedroom balcony**.\n"
                     "Houseguests: spread out early, search hard, and pivot fast once the first exit is revealed.\n"
-                    "Hiding forever does not win; you still need **2** escapes before the round limit.\n"
+                    "Hiding forever does not win; you still need **2** escapes before Sudden Death swallows the rest of the house.\n"
+                    "In **Sudden Death**, everybody is exposed and the house starts taking bodies if nothing happens.\n"
                     "Murderer: listen for noisy rooms, trap common spots, and control the live exit while reading the setup for the delayed one.\n"
                     "Use `{prefix}murderhouse 4` to start a lighter-size test match."
                 ).format(prefix=prefix),
@@ -1580,6 +1704,7 @@ class MurderHouse(commands.Cog):
             "**{author}** opened the doors to **Murder House**.\n"
             "One player becomes the murderer. Everyone else searches rooms, hides, and tries to get **2** survivors out.\n"
             "There are **4** possible exits. One opens after the final clue, and another opens **3 rounds later**.\n"
+            "If the normal rounds run out, **Sudden Death** takes over instead of ending the game early.\n"
             "⏳ Starts in **{timer}**.\n"
             "**Minimum of {min_players} players are required.**\n"
             "👥 Joined ({count}): {players}\n"
@@ -1670,7 +1795,7 @@ class MurderHouse(commands.Cog):
             """Starts a round of Murder House.
 
             One joined player becomes the murderer.
-            Everyone else is trapped inside a creaking house and must search rooms, hide in specific spots, and get two survivors out through the house's escape routes before the round limit expires.
+            Everyone else is trapped inside a creaking house and must search rooms, hide in specific spots, and get two survivors out through the house's escape routes before Sudden Death finishes whoever is left inside.
             Hidden actions happen in DMs, while the channel sees dramatic public recaps.
 
             Usage:
@@ -1684,9 +1809,10 @@ class MurderHouse(commands.Cog):
             - The required clue count scales up with player count.
             - There are 4 possible exits, but only 2 open in a game.
             - The first exit opens after the final clue; the second opens 3 rounds later.
+            - If the round cap is reached, Sudden Death begins instead of ending the game.
             - The houseguests need 2 escapes to win.
             - Hiding out the clock does not count as a win.
-            - If 2 people do not escape before the final round, the murderer wins."""
+            - The game only ends when 2 people escape or nobody is left alive."""
         )
         if self.games.get(ctx.channel.id):
             return await ctx.send(_("There is already a game in here!"))
