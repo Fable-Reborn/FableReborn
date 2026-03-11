@@ -1705,8 +1705,8 @@ class MurderHouse(commands.Cog):
         self, room_key: str, count: int
     ) -> tuple[int, list[tuple[int, int]]]:
         rect = TESTPILLOW_ROOM_COORDS[room_key]
-        padding = 18
-        gap = 8
+        padding = 12
+        gap = 6
         best: tuple[int, int, int, int] | None = None
 
         # Keep avatars smaller and biased toward a room corner so labels stay readable.
@@ -1716,7 +1716,7 @@ class MurderHouse(commands.Cog):
             usable_h = rect["h"] - (padding * 2) - (gap * (rows - 1))
             if usable_w <= 0 or usable_h <= 0:
                 continue
-            size = int(min(usable_w // cols, usable_h // rows) * 0.82)
+            size = int(min(usable_w // cols, usable_h // rows) * 0.9)
             if size <= 0:
                 continue
             if best is None or size > best[0]:
