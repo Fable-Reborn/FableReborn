@@ -13,13 +13,16 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 import traceback
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+from io import BytesIO
 from typing import Awaitable, Callable
 
 import discord
+from PIL import Image, ImageDraw, ImageOps
 
 from discord.enums import ButtonStyle
 from discord.ext import commands
@@ -134,6 +137,24 @@ ROOM_DEATH_FEATURES = {
     "Attic": ("the roof beams", "the trunk pile", "the ladder hatch"),
     "Basement": ("the furnace", "the concrete steps", "the water heater"),
 }
+TESTPILLOW_BG_URL = (
+    "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/"
+    "295173706496475136_contentNewer.png"
+)
+TESTPILLOW_ROOM_COORDS = {
+    "kitchen": {"x": 125, "y": 230, "w": 235, "h": 145},
+    "foyer": {"x": 435, "y": 345, "w": 235, "h": 115},
+    "study": {"x": 735, "y": 245, "w": 180, "h": 140},
+    "staircase_hall": {"x": 455, "y": 175, "w": 195, "h": 105},
+    "master_bedroom": {"x": 1020, "y": 225, "w": 155, "h": 115},
+    "bathroom": {"x": 1275, "y": 225, "w": 165, "h": 85},
+    "upstairs_hall": {"x": 1065, "y": 355, "w": 320, "h": 65},
+    "attic_stairs": {"x": 1010, "y": 445, "w": 165, "h": 60},
+    "basement": {"x": 560, "y": 620, "w": 400, "h": 155},
+}
+PIL_RESAMPLE = (
+    Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
+)
 
 
 @dataclass
@@ -185,12 +206,12 @@ class MurderHouseJoinView(JoinView):
 
 
 class MurderHouseGame:
-    ACTION_TIMEOUT_SECONDS = 45
+    ACTION_TIMEOUT_SECONDS = 70
     REPORT_DELAY_SECONDS = 1.0
     JOIN_TIMEOUT_SECONDS = 120
     CUT_POWER_COOLDOWN = 3
     MAX_ESCAPE_GOAL = 8
-    SECONDARY_EXIT_DELAY_ROUNDS = 3
+    SECONDARY_EXIT_DELAY_ROUNDS = 4
 
     def __init__(
         self,
@@ -253,21 +274,19 @@ class MurderHouseGame:
 
     def _build_room_stashes(self) -> dict[str, list[str]]:
         clue_count = self._clue_stash_count()
-        stash_pool = (
-            ["clue"] * clue_count
-            + [ITEM_FLASHLIGHT] * 2
-            + [ITEM_NOISEMAKER] * 3
-        )
-        total_slots = len(HOUSE_MAP) * 2
-        junk_count = max(0, total_slots - len(stash_pool))
-        stash_pool += ["junk"] * junk_count
-        stash_pool = random.shuffle(stash_pool)
+        clue_rooms = set(random.sample(list(HOUSE_MAP), clue_count))
+        filler_pool = [ITEM_FLASHLIGHT] * 2 + [ITEM_NOISEMAKER] * 3
+        filler_slots = len(HOUSE_MAP) * 2 - clue_count
+        filler_pool += ["junk"] * max(0, filler_slots - len(filler_pool))
+        filler_pool = random.shuffle(filler_pool)
 
-        room_stashes: dict[str, list[str]] = {}
-        index = 0
+        room_stashes: dict[str, list[str]] = {room: [] for room in HOUSE_MAP}
         for room in HOUSE_MAP:
-            room_stashes[room] = stash_pool[index : index + 2]
-            index += 2
+            if room in clue_rooms:
+                room_stashes[room].append("clue")
+            while len(room_stashes[room]) < 2 and filler_pool:
+                room_stashes[room].append(filler_pool.pop(0))
+            room_stashes[room] = random.shuffle(room_stashes[room])
         return room_stashes
 
     def _escape_goal_for_player_count(self) -> int:
@@ -275,7 +294,7 @@ class MurderHouseGame:
 
     def _clue_stash_count(self) -> int:
         spare_clues = 1 if len(self.players) <= 6 else 0
-        return min(self.escape_goal + spare_clues, len(HOUSE_MAP) * 2)
+        return min(self.escape_goal + spare_clues, len(HOUSE_MAP))
 
     def _alive_guest_states(self) -> list[GuestState]:
         return [
@@ -299,6 +318,32 @@ class MurderHouseGame:
         for room, exits in HOUSE_MAP.items():
             lines.append(f"{room} -> {', '.join(exits)}")
         return "\n".join(lines)
+
+    def _build_map_embed(self, *, current_room: str) -> discord.Embed:
+        return (
+            discord.Embed(
+                title=_("Murder House Map"),
+                description=f"```{self._house_map_text()}```",
+                colour=self.ctx.bot.config.game.primary_colour,
+            )
+            .add_field(name=_("Current Room"), value=f"**{current_room}**", inline=True)
+            .add_field(
+                name=_("Exit Status"),
+                value=self._escape_status_text(markdown=True),
+                inline=False,
+            )
+        )
+
+    def _build_map_button(self, *, current_room: str) -> Button:
+        button = Button(style=ButtonStyle.secondary, label=_("Open Map"))
+
+        async def send_map(interaction: discord.Interaction) -> None:
+            await interaction.response.send_message(
+                embed=self._build_map_embed(current_room=current_room)
+            )
+
+        button.callback = send_map
+        return button
 
     def _choose_escape_rooms(self) -> tuple[str, str]:
         lower_room = random.choice(list(LOWER_ESCAPE_ROUTES))
@@ -864,6 +909,7 @@ class MurderHouseGame:
         *,
         title: str,
         footer: str | None = None,
+        extra_items: list[discord.ui.Item] | None = None,
     ) -> dict:
         try:
             index = await self.ctx.bot.paginator.Choose(
@@ -872,6 +918,7 @@ class MurderHouseGame:
                 title=title,
                 footer=footer,
                 timeout=self.ACTION_TIMEOUT_SECONDS,
+                extra_items=extra_items,
             ).paginate(self.ctx, location=user)
             return options[index]
         except (
@@ -913,8 +960,13 @@ class MurderHouseGame:
             blackout=_("active") if current_blackout else _("off"),
         )
         await self._send_back_to_game_link(state.member)
+        map_button = self._build_map_button(current_room=state.room)
         action = await self._choose_action(
-            state.member, self._build_guest_options(state), title=title, footer=footer
+            state.member,
+            self._build_guest_options(state),
+            title=title,
+            footer=footer,
+            extra_items=[map_button],
         )
         return state.member.id, action
 
@@ -934,8 +986,12 @@ class MurderHouseGame:
             cooldown=max(0, self.power_cooldown),
         )
         await self._send_back_to_game_link(self.killer)
+        map_button = self._build_map_button(current_room=self.killer_room)
         action = await self._choose_action(
-            self.killer, self._build_killer_options(), title=title
+            self.killer,
+            self._build_killer_options(),
+            title=title,
+            extra_items=[map_button],
         )
         return self.killer.id, action
 
@@ -1205,6 +1261,17 @@ class MurderHouseGame:
             return
 
         if kind == "listen":
+            if self._in_final_chase():
+                last_survivors = self._alive_guest_states()
+                if last_survivors:
+                    private_lines[self.killer.id].append(
+                        _("Final Chase narrows to the **{room}**.").format(
+                            room=last_survivors[0].room
+                        )
+                    )
+                public_lines.append(_("The murderer stops moving and listens."))
+                return
+
             loud_rooms = [
                 room
                 for room, score in noise_by_room.items()
@@ -1225,6 +1292,17 @@ class MurderHouseGame:
             else:
                 private_lines[self.killer.id].append(
                     _("The house holds its breath. No room gives anything away.")
+                )
+            active_exit_rooms = [
+                room
+                for room in self._open_escape_rooms()
+                if noise_by_room.get(room, 0) > 0 or self._room_states(room)
+            ]
+            if active_exit_rooms:
+                private_lines[self.killer.id].append(
+                    _("You catch activity around the open exit(s): {rooms}.").format(
+                        rooms=nice_join([f"**{room}**" for room in active_exit_rooms])
+                    )
                 )
             public_lines.append(_("The murderer stops moving and listens."))
             return
@@ -1539,6 +1617,8 @@ class MurderHouse(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.games: dict[int, MurderHouseGame | str] = {}
+        self._testpillow_background: Image.Image | None = None
+        self._testpillow_bg_lock = asyncio.Lock()
 
     async def _send_crash_traceback(self, ctx, exc: Exception) -> None:
         header = _("Murder House crashed:")
@@ -1550,6 +1630,198 @@ class MurderHouse(commands.Cog):
             chunk = traceback_text[index : index + max_payload]
             prefix = f"{header}\n" if index == 0 else ""
             await ctx.send(f"{prefix}```py\n{chunk}\n```")
+
+    def _parse_testpillow_ids(self, raw_user_ids: str) -> list[int]:
+        tokens = [
+            token for token in re.split(r"[,\s]+", raw_user_ids.strip()) if token
+        ]
+        if not tokens:
+            raise ValueError("empty")
+
+        unique_ids: list[int] = []
+        seen: set[int] = set()
+        for token in tokens:
+            match = re.fullmatch(r"<@!?(\d+)>|(\d+)", token)
+            if match is None:
+                raise ValueError("invalid")
+            user_id = int(match.group(1) or match.group(2))
+            if user_id in seen:
+                continue
+            seen.add(user_id)
+            unique_ids.append(user_id)
+        if len(unique_ids) > 10:
+            raise ValueError("too_many")
+        return unique_ids
+
+    async def _load_testpillow_background(self) -> Image.Image:
+        if self._testpillow_background is not None:
+            return self._testpillow_background.copy()
+
+        async with self._testpillow_bg_lock:
+            if self._testpillow_background is None:
+                session = getattr(self.bot, "trusted_session", None) or self.bot.session
+                async with session.get(TESTPILLOW_BG_URL) as resp:
+                    resp.raise_for_status()
+                    data = await resp.read()
+                with Image.open(BytesIO(data)) as source:
+                    self._testpillow_background = source.convert("RGBA")
+
+        return self._testpillow_background.copy()
+
+    async def _fetch_testpillow_user(
+        self, user_id: int
+    ) -> discord.User | discord.Member | None:
+        user = self.bot.get_user(user_id)
+        if user is not None:
+            return user
+        user = discord.utils.get(self.bot.get_all_members(), id=user_id)
+        if user is not None:
+            return user
+        try:
+            return await self.bot.fetch_user(user_id)
+        except (discord.NotFound, discord.HTTPException):
+            return None
+
+    async def _fetch_testpillow_avatar(
+        self, user: discord.abc.User, *, size: int
+    ) -> Image.Image:
+        asset = user.display_avatar
+        try:
+            avatar_url = asset.replace(format="png", size=max(128, size * 2)).url
+        except Exception:
+            avatar_url = asset.url
+
+        session = getattr(self.bot, "trusted_session", None) or self.bot.session
+        async with session.get(avatar_url) as resp:
+            resp.raise_for_status()
+            data = await resp.read()
+
+        with Image.open(BytesIO(data)) as source:
+            return source.convert("RGBA")
+
+    def _testpillow_layout(
+        self, room_key: str, count: int
+    ) -> tuple[int, list[tuple[int, int]]]:
+        rect = TESTPILLOW_ROOM_COORDS[room_key]
+        padding = 10
+        best: tuple[int, int, int, int] | None = None
+
+        # Pick the densest grid that still keeps every avatar cleanly inside the room.
+        for cols in range(1, count + 1):
+            rows = math.ceil(count / cols)
+            gap = 8
+            usable_w = rect["w"] - (padding * 2) - (gap * (cols - 1))
+            usable_h = rect["h"] - (padding * 2) - (gap * (rows - 1))
+            if usable_w <= 0 or usable_h <= 0:
+                continue
+            size = min(usable_w // cols, usable_h // rows)
+            if size <= 0:
+                continue
+            if best is None or size > best[0]:
+                best = (size, cols, rows, gap)
+
+        if best is None:
+            size = max(24, min(rect["w"], rect["h"]) - (padding * 2))
+            cols = 1
+            rows = count
+            gap = 6
+        else:
+            size, cols, rows, gap = best
+
+        grid_w = cols * size + (cols - 1) * gap
+        grid_h = rows * size + (rows - 1) * gap
+        start_x = rect["x"] + max(0, (rect["w"] - grid_w) // 2)
+        start_y = rect["y"] + max(0, (rect["h"] - grid_h) // 2)
+
+        positions = []
+        for index in range(count):
+            row = index // cols
+            col = index % cols
+            positions.append(
+                (start_x + col * (size + gap), start_y + row * (size + gap))
+            )
+        return size, positions
+
+    def _style_testpillow_avatar(
+        self,
+        avatar: Image.Image,
+        *,
+        size: int,
+        is_murderer: bool,
+        is_dead: bool,
+    ) -> Image.Image:
+        avatar = ImageOps.fit(avatar.convert("RGBA"), (size, size), method=PIL_RESAMPLE)
+        if is_dead:
+            avatar = ImageOps.grayscale(avatar).convert("RGBA")
+            alpha = avatar.getchannel("A").point(lambda value: int(value * 0.58))
+            avatar.putalpha(alpha)
+
+        mask = Image.new("L", (size, size), 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
+
+        circular = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        circular.paste(avatar, (0, 0), mask)
+
+        outline = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        outline_draw = ImageDraw.Draw(outline)
+        outline_width = max(2, size // 16)
+        outline_draw.ellipse(
+            (outline_width // 2, outline_width // 2, size - 1 - outline_width // 2, size - 1 - outline_width // 2),
+            outline=(245, 245, 245, 240),
+            width=outline_width,
+        )
+        if is_murderer:
+            red_width = max(3, size // 10)
+            inset = outline_width + 1
+            outline_draw.ellipse(
+                (inset, inset, size - 1 - inset, size - 1 - inset),
+                outline=(220, 40, 40, 255),
+                width=red_width,
+            )
+            red_overlay = Image.new("RGBA", (size, size), (150, 10, 10, 45))
+            circular = Image.composite(red_overlay, circular, mask)
+
+        return Image.alpha_composite(circular, outline)
+
+    async def _render_testpillow_overlay(
+        self,
+        *,
+        users: list[discord.abc.User],
+        murderer_id: int,
+        dead_ids: set[int],
+        room_assignments: dict[int, str],
+    ) -> BytesIO:
+        canvas = await self._load_testpillow_background()
+        grouped: dict[str, list[discord.abc.User]] = defaultdict(list)
+        for user in users:
+            grouped[room_assignments[user.id]].append(user)
+
+        async def load_avatar(user: discord.abc.User) -> Image.Image:
+            try:
+                return await self._fetch_testpillow_avatar(user, size=256)
+            except Exception:
+                return Image.new("RGBA", (256, 256), (90, 90, 90, 255))
+
+        avatar_images = await asyncio.gather(
+            *(load_avatar(user) for user in users)
+        )
+        avatar_map = {user.id: image for user, image in zip(users, avatar_images)}
+
+        for room_key, room_users in grouped.items():
+            size, positions = self._testpillow_layout(room_key, len(room_users))
+            for user, (x, y) in zip(room_users, positions):
+                styled = self._style_testpillow_avatar(
+                    avatar_map[user.id],
+                    size=size,
+                    is_murderer=user.id == murderer_id,
+                    is_dead=user.id in dead_ids,
+                )
+                canvas.alpha_composite(styled, (x, y))
+
+        output = BytesIO()
+        canvas.save(output, format="PNG")
+        output.seek(0)
+        return output
 
     def _build_tutorial_embed(self, ctx) -> discord.Embed:
         prefix = ctx.clean_prefix
@@ -1583,9 +1855,10 @@ class MurderHouse(commands.Cog):
                     "`Peek` and `Flashlight` gather information.\n"
                     "`Barricade` can burn the murderer's next kill window in that room.\n"
                     "`Escape` only works from open exit rooms.\n"
-                    "The first chosen exit opens when the clue track fills; the second opens **3 rounds later**.\n"
+                    "Each room holds at most **1** clue.\n"
+                    "The first chosen exit opens when the clue track fills; the second opens **{delay} rounds later**.\n"
                     "If only one houseguest remains before the clue track fills, **Final Chase** opens both selected exits and removes hiding, searching, and barricading."
-                ),
+                ).format(delay=MurderHouseGame.SECONDARY_EXIT_DELAY_ROUNDS),
                 inline=False,
             )
             .add_field(
@@ -1593,7 +1866,7 @@ class MurderHouse(commands.Cog):
                 value=_(
                     "`Sweep` kills exposed targets in a room.\n"
                     "`Check` kills someone in one exact hiding spot.\n"
-                    "`Listen` finds loud rooms.\n"
+                    "`Listen` finds loud rooms, active exits, and the last survivor during Final Chase.\n"
                     "`Trap` punishes predictable hiding.\n"
                     "`Cut power` makes the next round harder to read."
                 ),
@@ -1603,7 +1876,8 @@ class MurderHouse(commands.Cog):
                 name=_("First-Game Tips"),
                 value=_(
                     "Possible exits: **Kitchen back door**, **Basement bulkhead**, **Attic fire ladder**, **Master bedroom balcony**.\n"
-                    "Houseguests: spread out early, search hard, and pivot fast once the first exit is revealed.\n"
+                    "Houseguests: spread out early, because rooms do not stack clues anymore.\n"
+                    "Pivot fast once the first exit is revealed.\n"
                     "If you are the last one left before the clues are done, **Final Chase** gives you two doors and one clean chance to run.\n"
                     "Anyone who reaches an open exit is out for good.\n"
                     "Murderer: listen for noisy rooms, trap common spots, and control the live exit while reading the setup for the delayed one.\n"
@@ -1658,7 +1932,7 @@ class MurderHouse(commands.Cog):
         description = _(
             "**{author}** opened the doors to **Murder House**.\n"
             "One player becomes the murderer. Everyone else searches rooms, hides, and tries to escape.\n"
-            "There are **4** possible exits. One opens after the final clue, and another opens **3 rounds later**.\n"
+            "There are **4** possible exits. One opens after the final clue, and another opens **{delay} rounds later**.\n"
             "If only one houseguest remains before the clue track is complete, **Final Chase** opens both selected exits.\n"
             "⏳ Starts in **{timer}**.\n"
             "**Minimum of {min_players} players are required.**\n"
@@ -1667,6 +1941,7 @@ class MurderHouse(commands.Cog):
         ).format(
             author=author.mention,
             timer=timer,
+            delay=MurderHouseGame.SECONDARY_EXIT_DELAY_ROUNDS,
             min_players=min_players,
             count=len(joined),
             players=joined_text,
@@ -1764,9 +2039,10 @@ class MurderHouse(commands.Cog):
             - The command starter is not auto-joined.
             - Minimum players cannot be lower than 4.
             - The required clue count scales up with player count.
+            - A room can hold at most 1 clue.
             - You can force a specific joined player to be the murderer.
             - There are 4 possible exits, but only 2 open in a game.
-            - The first exit opens after the final clue; the second opens 3 rounds later.
+            - The first exit opens after the final clue; the second opens 4 rounds later.
             - If only one houseguest remains before the clues are done, Final Chase opens both selected exits.
             - Hiding out the clock does not count as a win.
             - The game only ends when everyone inside is either dead or escaped."""
@@ -1892,6 +2168,114 @@ class MurderHouse(commands.Cog):
             Shows the core goals, main actions, and quick tips for both houseguests and the murderer."""
         )
         await ctx.send(embed=self._build_tutorial_embed(ctx))
+
+    @murderhouse.command(
+        name="pillow",
+        aliases=["testpillow"],
+        brief=_("Render a Murder House spectator test map"),
+        hidden=True,
+    )
+    @locale_doc
+    async def pillow(self, ctx, *, user_ids: str):
+        _(
+            """Render a Murder House spectator test map.
+
+            Usage:
+            `{prefix}murderhouse pillow 123456789012345678, 234567890123456789`
+
+            Provide up to 10 user IDs or mentions. The command picks one random murderer,
+            marks a couple of houseguests dead, scatters everyone into random rooms,
+            and renders a spectator overlay on the mansion map."""
+        )
+
+        try:
+            parsed_ids = self._parse_testpillow_ids(user_ids)
+        except ValueError as exc:
+            if str(exc) == "empty":
+                return await ctx.send(_("Give me at least one user ID to render."))
+            if str(exc) == "too_many":
+                return await ctx.send(
+                    _("Use up to **10** unique user IDs for the test map.")
+                )
+            return await ctx.send(
+                _("Use raw user IDs or mentions separated by commas or spaces.")
+            )
+
+        async with ctx.typing():
+            users: list[discord.abc.User] = []
+            missing_ids: list[str] = []
+            for user_id in parsed_ids:
+                user = await self._fetch_testpillow_user(user_id)
+                if user is None:
+                    missing_ids.append(str(user_id))
+                    continue
+                users.append(user)
+
+            if missing_ids:
+                return await ctx.send(
+                    _(
+                        "I couldn't find these users: {users}"
+                    ).format(users=", ".join(missing_ids))
+                )
+
+            room_keys = list(TESTPILLOW_ROOM_COORDS.keys())
+            murderer = random.choice(users)
+            non_murderers = [user for user in users if user.id != murderer.id]
+            dead_count = min(2, max(0, len(non_murderers) - 1))
+            dead_members = (
+                random.sample(non_murderers, dead_count) if dead_count else []
+            )
+            dead_ids = {user.id for user in dead_members}
+            room_assignments = {
+                user.id: random.choice(room_keys)
+                for user in users
+            }
+
+            try:
+                image_buffer = await self._render_testpillow_overlay(
+                    users=users,
+                    murderer_id=murderer.id,
+                    dead_ids=dead_ids,
+                    room_assignments=room_assignments,
+                )
+            except Exception as exc:
+                await self._send_crash_traceback(ctx, exc)
+                return
+
+        alive_members = [
+            user
+            for user in users
+            if user.id != murderer.id and user.id not in dead_ids
+        ]
+
+        def describe_user(user: discord.abc.User) -> str:
+            display_name = discord.utils.escape_markdown(
+                getattr(user, "display_name", str(user))
+            )
+            room_name = room_assignments[user.id].replace("_", " ").title()
+            return f"**{display_name}** ({room_name})"
+
+        def format_people(users_to_format: list[discord.abc.User]) -> str:
+            if not users_to_format:
+                return _("None")
+            return nice_join([describe_user(user) for user in users_to_format])
+
+        await ctx.send(
+            "\n".join(
+                [
+                    _("Murderer: {murderer}").format(
+                        murderer=describe_user(murderer)
+                    ),
+                    _("Dead guests: {dead}").format(
+                        dead=format_people(dead_members)
+                    ),
+                    _("Alive guests: {alive}").format(
+                        alive=format_people(alive_members)
+                    ),
+                ]
+            ),
+            file=discord.File(image_buffer, filename="murderhouse_test_map.png"),
+        )
 
 
 async def setup(bot):

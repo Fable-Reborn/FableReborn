@@ -678,6 +678,7 @@ class Choose:
         colour: int | None = None,
         timeout: int = 30,
         return_index: bool = False,
+        extra_items: list[discord.ui.Item] | None = None,
     ):
         self.entries = entries
         self.placeholder = _safe_select_placeholder(placeholder or title)
@@ -687,6 +688,7 @@ class Choose:
         self.colour = colour
         self.timeout = timeout
         self.return_index = return_index
+        self.extra_items = extra_items or []
 
         assert len(self.entries) == len(self.choices)
         assert 2 <= len(self.entries) <= 25
@@ -712,6 +714,8 @@ class Choose:
             em.set_footer(text=self.footer)
 
         view.add_item(select)
+        for item in self.extra_items:
+            view.add_item(item)
 
         await view.start(em, location or ctx, user=user)
 
