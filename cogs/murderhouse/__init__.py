@@ -152,6 +152,8 @@ TESTPILLOW_ROOM_COORDS = {
     "attic_stairs": {"x": 1010, "y": 445, "w": 165, "h": 60},
     "basement": {"x": 560, "y": 620, "w": 400, "h": 155},
 }
+TESTPILLOW_CANVAS_WIDTH = 1536
+TESTPILLOW_CANVAS_HEIGHT = 1024
 PIL_RESAMPLE = (
     Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
 )
@@ -1703,18 +1705,18 @@ class MurderHouse(commands.Cog):
         self, room_key: str, count: int
     ) -> tuple[int, list[tuple[int, int]]]:
         rect = TESTPILLOW_ROOM_COORDS[room_key]
-        padding = 10
+        padding = 18
+        gap = 8
         best: tuple[int, int, int, int] | None = None
 
-        # Pick the densest grid that still keeps every avatar cleanly inside the room.
+        # Keep avatars smaller and biased toward a room corner so labels stay readable.
         for cols in range(1, count + 1):
             rows = math.ceil(count / cols)
-            gap = 8
             usable_w = rect["w"] - (padding * 2) - (gap * (cols - 1))
             usable_h = rect["h"] - (padding * 2) - (gap * (rows - 1))
             if usable_w <= 0 or usable_h <= 0:
                 continue
-            size = min(usable_w // cols, usable_h // rows)
+            size = int(min(usable_w // cols, usable_h // rows) * 0.82)
             if size <= 0:
                 continue
             if best is None or size > best[0]:
@@ -1730,8 +1732,25 @@ class MurderHouse(commands.Cog):
 
         grid_w = cols * size + (cols - 1) * gap
         grid_h = rows * size + (rows - 1) * gap
-        start_x = rect["x"] + max(0, (rect["w"] - grid_w) // 2)
-        start_y = rect["y"] + max(0, (rect["h"] - grid_h) // 2)
+        room_mid_x = rect["x"] + rect["w"] / 2
+        room_mid_y = rect["y"] + rect["h"] / 2
+        horizontal_anchor = "left"
+        vertical_anchor = "top"
+        if room_mid_x >= TESTPILLOW_CANVAS_WIDTH / 2:
+            horizontal_anchor = "right"
+        if room_mid_y >= TESTPILLOW_CANVAS_HEIGHT / 2:
+            vertical_anchor = "bottom"
+
+        inner_x = rect["x"] + padding
+        inner_y = rect["y"] + padding
+        inner_w = max(0, rect["w"] - (padding * 2))
+        inner_h = max(0, rect["h"] - (padding * 2))
+        start_x = inner_x
+        start_y = inner_y
+        if horizontal_anchor == "right":
+            start_x = inner_x + max(0, inner_w - grid_w)
+        if vertical_anchor == "bottom":
+            start_y = inner_y + max(0, inner_h - grid_h)
 
         positions = []
         for index in range(count):
@@ -1751,7 +1770,7 @@ class MurderHouse(commands.Cog):
         is_dead: bool,
     ) -> Image.Image:
         avatar = ImageOps.fit(avatar.convert("RGBA"), (size, size), method=PIL_RESAMPLE)
-        if is_dead:
+        if is_dead and not is_murderer:
             avatar = ImageOps.grayscale(avatar).convert("RGBA")
             alpha = avatar.getchannel("A").point(lambda value: int(value * 0.58))
             avatar.putalpha(alpha)
@@ -1764,22 +1783,30 @@ class MurderHouse(commands.Cog):
 
         outline = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         outline_draw = ImageDraw.Draw(outline)
-        outline_width = max(2, size // 16)
-        outline_draw.ellipse(
-            (outline_width // 2, outline_width // 2, size - 1 - outline_width // 2, size - 1 - outline_width // 2),
-            outline=(245, 245, 245, 240),
-            width=outline_width,
-        )
         if is_murderer:
             red_width = max(3, size // 10)
-            inset = outline_width + 1
             outline_draw.ellipse(
-                (inset, inset, size - 1 - inset, size - 1 - inset),
+                (
+                    red_width // 2,
+                    red_width // 2,
+                    size - 1 - red_width // 2,
+                    size - 1 - red_width // 2,
+                ),
                 outline=(220, 40, 40, 255),
                 width=red_width,
             )
-            red_overlay = Image.new("RGBA", (size, size), (150, 10, 10, 45))
-            circular = Image.composite(red_overlay, circular, mask)
+        else:
+            outline_width = max(2, size // 16)
+            outline_draw.ellipse(
+                (
+                    outline_width // 2,
+                    outline_width // 2,
+                    size - 1 - outline_width // 2,
+                    size - 1 - outline_width // 2,
+                ),
+                outline=(245, 245, 245, 240),
+                width=outline_width,
+            )
 
         return Image.alpha_composite(circular, outline)
 
