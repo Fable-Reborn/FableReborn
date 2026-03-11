@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import traceback
 
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -332,6 +333,25 @@ class MurderHouseGame:
             )
         return _("Open now: {routes}.").format(
             routes=self._escape_routes_text(open_rooms, markdown=markdown)
+        )
+
+    def _compact_escape_status_text(self) -> str:
+        open_rooms = self._open_escape_rooms()
+        if not open_rooms:
+            return _(
+                "Locked. First exit at full clues, second +{delay} rounds."
+            ).format(delay=self.SECONDARY_EXIT_DELAY_ROUNDS)
+        if len(open_rooms) == 1:
+            rounds_left = max(
+                0,
+                (self.secondary_escape_unlock_round or self.round) - self.round,
+            )
+            return _("Open: {route}. Next exit in {rounds}.").format(
+                route=self._escape_routes_text(open_rooms),
+                rounds=rounds_left,
+            )
+        return _("Open: {routes}.").format(
+            routes=self._escape_routes_text(open_rooms)
         )
 
     def _unlock_primary_escape(self, public_lines: list[str]) -> None:
@@ -776,12 +796,14 @@ class MurderHouseGame:
         options: list[dict],
         *,
         title: str,
+        footer: str | None = None,
     ) -> dict:
         try:
             index = await self.ctx.bot.paginator.Choose(
                 entries=[option["label"] for option in options],
                 return_index=True,
                 title=title,
+                footer=footer,
                 timeout=self.ACTION_TIMEOUT_SECONDS,
             ).paginate(self.ctx, location=user)
             return options[index]
@@ -789,6 +811,8 @@ class MurderHouseGame:
             self.ctx.bot.paginator.NoChoice,
             asyncio.TimeoutError,
             discord.Forbidden,
+            discord.HTTPException,
+            ValueError,
         ):
             await self.ctx.send(
                 _(
@@ -804,25 +828,26 @@ class MurderHouseGame:
         title = _(
             "Murder House - Round {round}\n"
             "Room: {room}\n"
-            "Escape clues: {found}/{goal}\n"
-            "Exit status: {exits}\n"
+            "Clues: {found}/{goal}\n"
+            "Exits: {exits}\n"
             "Inventory: {inventory}\n"
-            "Adjacent: {adjacent}\n"
-            "Blackout: {blackout}\n"
-            "Back to game: {link}"
         ).format(
             round=self.round,
             room=state.room,
             found=self.escape_progress,
             goal=self.escape_goal,
-            exits=self._escape_status_text(),
+            exits=self._compact_escape_status_text(),
             inventory=self._inventory_text(state),
+        )
+        footer = _(
+            "Adjacent: {adjacent} | Blackout: {blackout} | Back to game: {link}"
+        ).format(
             adjacent=", ".join(HOUSE_MAP[state.room]),
             blackout=_("active") if current_blackout else _("off"),
             link=self.game_channel_link,
         )
         action = await self._choose_action(
-            state.member, self._build_guest_options(state), title=title
+            state.member, self._build_guest_options(state), title=title, footer=footer
         )
         return state.member.id, action
 
@@ -832,19 +857,18 @@ class MurderHouseGame:
             "You are the murderer.\n"
             "Current room: {room}\n"
             "Alive guests: {count}\n"
-            "Exit status: {exits}\n"
-            "Power cooldown: {cooldown}\n"
-            "Back to game: {link}"
+            "Exits: {exits}\n"
+            "Power cooldown: {cooldown}"
         ).format(
             round=self.round,
             room=self.killer_room,
             count=len(self._alive_guest_states()),
-            exits=self._escape_status_text(),
+            exits=self._compact_escape_status_text(),
             cooldown=max(0, self.power_cooldown),
-            link=self.game_channel_link,
         )
+        footer = _("Back to game: {link}").format(link=self.game_channel_link)
         action = await self._choose_action(
-            self.killer, self._build_killer_options(), title=title
+            self.killer, self._build_killer_options(), title=title, footer=footer
         )
         return self.killer.id, action
 
@@ -1455,6 +1479,17 @@ class MurderHouse(commands.Cog):
         self.bot = bot
         self.games: dict[int, MurderHouseGame | str] = {}
 
+    async def _send_crash_traceback(self, ctx, exc: Exception) -> None:
+        header = _("Murder House crashed:")
+        traceback_text = "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__)
+        ).rstrip()
+        max_payload = 1900
+        for index in range(0, len(traceback_text), max_payload):
+            chunk = traceback_text[index : index + max_payload]
+            prefix = f"{header}\n" if index == 0 else ""
+            await ctx.send(f"{prefix}```py\n{chunk}\n```")
+
     def _build_tutorial_embed(self, ctx) -> discord.Embed:
         prefix = ctx.clean_prefix
         return (
@@ -1726,6 +1761,8 @@ class MurderHouse(commands.Cog):
             game = MurderHouseGame(ctx, players)
             self.games[ctx.channel.id] = game
             await game.run()
+        except Exception as exc:
+            await self._send_crash_traceback(ctx, exc)
         finally:
             self.games.pop(ctx.channel.id, None)
 
