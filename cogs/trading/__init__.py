@@ -855,7 +855,7 @@ class Trading(commands.Cog):
         )
 
     @commands.command(
-        aliases=["mh", "markethistory"],
+        aliases=["markethistory"],
         brief=_("View sale history for the item market"),
     )
     @locale_doc
