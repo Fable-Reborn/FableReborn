@@ -3372,7 +3372,7 @@ class Battles(commands.Cog):
     @has_char()
     @commands.command(hidden=True)
     async def gmbttest(self, ctx, floor: int, prestige: int = None):
-        """[GM only] Start a Jury Tower test for an exact floor using live scaling."""
+        """[GM only] Run a plain tower test using Jury Tower stat generation for a floor."""
         if floor < 1 or floor > JURY_TOWER_FLOOR_COUNT:
             return await ctx.send(f"Floor must be between 1 and {JURY_TOWER_FLOOR_COUNT}.")
         if prestige is not None and prestige < 0:
@@ -3392,23 +3392,62 @@ class Battles(commands.Cog):
                 )
         prestige = int(prestige or 0)
 
+        player_combatant = await self.battle_factory.create_player_combatant(ctx, ctx.author, include_pet=True)
+        pet_combatant = await self.battle_factory.pet_ext.get_pet_combatant(ctx, ctx.author)
+        player_team = Team("Player", [player_combatant])
+        if pet_combatant:
+            player_team.add_combatant(pet_combatant)
+
         scale_snapshot = await self.battle_factory.build_jury_tower_scale_snapshot(
             ctx,
             ctx.author,
             True,
         )
-        choice_key = await self._prompt_jury_choice(ctx, floor_data)
 
-        battle = await self.battle_factory.create_battle(
-            "jurytower",
+        enemy_specs = self.battle_factory.build_jury_tower_enemy_specs(
+            floor_data,
+            scale_snapshot,
+            prestige_level=prestige,
+        )
+        enemy_team = Team("Enemy", [])
+        for enemy_spec in enemy_specs:
+            enemy_team.add_combatant(
+                await self.battle_factory.create_monster_combatant(
+                    enemy_spec,
+                    name=enemy_spec["name"],
+                )
+            )
+
+        level_data = {
+            "minion1_name": enemy_specs[0]["name"],
+            "minion2_name": enemy_specs[1]["name"],
+            "boss_name": enemy_specs[2]["name"],
+            "minion1": {
+                "hp": enemy_specs[0]["hp"],
+                "damage": enemy_specs[0]["attack"],
+                "armor": enemy_specs[0]["defense"],
+                "element": enemy_specs[0]["element"],
+            },
+            "minion2": {
+                "hp": enemy_specs[1]["hp"],
+                "damage": enemy_specs[1]["attack"],
+                "armor": enemy_specs[1]["defense"],
+                "element": enemy_specs[1]["element"],
+            },
+            "boss": {
+                "hp": enemy_specs[2]["hp"],
+                "damage": enemy_specs[2]["attack"],
+                "armor": enemy_specs[2]["defense"],
+                "element": enemy_specs[2]["element"],
+            },
+        }
+
+        battle = TowerBattle(
             ctx,
-            player=ctx.author,
-            floor_number=floor,
-            floor_data=floor_data,
-            choice_key=choice_key,
+            [player_team, enemy_team],
+            level=floor,
+            level_data=level_data,
             allow_pets=True,
-            jury_scale_snapshot=scale_snapshot,
-            jury_prestige_level=prestige,
         )
         battle.config["allow_pets"] = True
         battle.config["pets_continue_battle"] = True
@@ -3418,7 +3457,8 @@ class Battles(commands.Cog):
             description=(
                 f"**{floor_data['judge_name']}, {floor_data['judge_title']}**\n"
                 f"**{floor_data['title']}**\n"
-                f"Act: **{floor_data.get('act_label', 'Proceedings')}**"
+                f"Act: **{floor_data.get('act_label', 'Proceedings')}**\n"
+                "Running as a plain tower fight with Jury-scaled enemies."
             ),
             color=floor_data.get("color", 0x8B5CF6),
         )
@@ -3426,15 +3466,14 @@ class Battles(commands.Cog):
             name="Test Setup",
             value=(
                 f"Prestige: **{prestige}**\n"
-                f"Choice: **{choice_key}**\n"
                 f"{self._format_jury_scale_snapshot(scale_snapshot) or 'No scale snapshot.'}"
             ),
             inline=False,
         )
         enemy_lines = []
-        for enemy in battle.enemy_team.combatants:
+        for enemy in enemy_specs:
             enemy_lines.append(
-                f"{enemy.name}: **HP {float(enemy.max_hp):.1f} / ATK {float(enemy.damage):.1f} / DEF {float(enemy.armor):.1f}**"
+                f"{enemy['name']}: **HP {enemy['hp']} / ATK {enemy['attack']} / DEF {enemy['defense']}**"
             )
         preview.add_field(name="Generated Enemies", value="\n".join(enemy_lines), inline=False)
         await ctx.send(embed=preview)

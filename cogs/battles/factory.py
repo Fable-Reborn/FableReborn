@@ -237,6 +237,26 @@ class BattleFactory:
             "defense": scaled_defense,
             "element": enemy_info.get("element", "Unknown"),
         }
+
+    def build_jury_tower_enemy_specs(self, floor_data, scale_snapshot, prestige_level=0):
+        enemy_specs = []
+        for enemy_info in floor_data.get("enemies", []):
+            scaled_enemy_info = self._build_jury_scaled_enemy_info(
+                enemy_info,
+                scale_snapshot,
+                prestige_level=prestige_level,
+            )
+            enemy_specs.append(
+                {
+                    "key": enemy_info.get("key", "boss"),
+                    "name": enemy_info.get("name", scaled_enemy_info.get("name", "Defendant")),
+                    "hp": int(scaled_enemy_info.get("hp", 100)),
+                    "attack": int(scaled_enemy_info.get("attack", 20)),
+                    "defense": int(scaled_enemy_info.get("defense", 10)),
+                    "element": scaled_enemy_info.get("element", "Unknown"),
+                }
+            )
+        return enemy_specs
     
     async def create_battle(self, battle_type, ctx, **kwargs):
         """Create a battle of specified type with given parameters"""
@@ -586,17 +606,16 @@ class BattleFactory:
             player_team.add_combatant(pet_combatant)
 
         enemy_team = Team("Defendants", [])
-        for enemy_info in floor_data.get("enemies", []):
-            scaled_enemy_info = self._build_jury_scaled_enemy_info(
-                enemy_info,
-                scale_snapshot,
-                prestige_level=prestige_level,
-            )
+        for scaled_enemy_info in self.build_jury_tower_enemy_specs(
+            floor_data,
+            scale_snapshot,
+            prestige_level=prestige_level,
+        ):
             enemy_combatant = await self.create_monster_combatant(
                 scaled_enemy_info,
-                name=enemy_info.get("name"),
+                name=scaled_enemy_info.get("name"),
             )
-            setattr(enemy_combatant, "jury_key", enemy_info.get("key", "boss"))
+            setattr(enemy_combatant, "jury_key", scaled_enemy_info.get("key", "boss"))
             enemy_team.add_combatant(enemy_combatant)
 
         battle_kwargs = kwargs.copy()
