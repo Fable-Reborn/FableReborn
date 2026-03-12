@@ -31,6 +31,10 @@ class BattleFactory:
     PVE_GOD_ENCOUNTER_LEVEL = 100
     PVE_PER_LEVEL_STAT_SCALE = Decimal("0.02")
     PVE_LEGENDARY_SPAWN_CHANCE = 0.01
+    JURY_ATTACK_PET_WEIGHT = Decimal("0.45")
+    JURY_HP_PET_WEIGHT = Decimal("0.35")
+    JURY_DEFENSE_PLAYER_WEIGHT = Decimal("0.60")
+    JURY_DEFENSE_PET_WEIGHT = Decimal("0.40")
     
     def __init__(self, bot):
         self.bot = bot
@@ -133,6 +137,89 @@ class BattleFactory:
                 if str(monster.get("name", "")).strip().lower() == target_name:
                     return dict(monster)
         return None
+
+    def _build_jury_scale_snapshot_from_combatants(self, player_combatant, pet_combatant=None):
+        player_hp = Decimal(str(getattr(player_combatant, "max_hp", getattr(player_combatant, "hp", 0)) or 0))
+        player_attack = Decimal(str(getattr(player_combatant, "damage", 0) or 0))
+        player_defense = Decimal(str(getattr(player_combatant, "armor", 0) or 0))
+
+        pet_hp = Decimal("0")
+        pet_attack = Decimal("0")
+        pet_defense = Decimal("0")
+        if pet_combatant:
+            pet_hp = Decimal(str(getattr(pet_combatant, "max_hp", getattr(pet_combatant, "hp", 0)) or 0))
+            pet_attack = Decimal(str(getattr(pet_combatant, "damage", 0) or 0))
+            pet_defense = Decimal(str(getattr(pet_combatant, "armor", 0) or 0))
+
+        attack_base = player_attack
+        hp_base = player_hp
+        defense_base = player_defense
+        if pet_combatant:
+            attack_base += pet_attack * self.JURY_ATTACK_PET_WEIGHT
+            hp_base += pet_hp * self.JURY_HP_PET_WEIGHT
+            defense_base = (
+                (player_defense * self.JURY_DEFENSE_PLAYER_WEIGHT)
+                + (pet_defense * self.JURY_DEFENSE_PET_WEIGHT)
+            )
+
+        return {
+            "attack_base": max(1, int(round(float(attack_base)))),
+            "hp_base": max(1, int(round(float(hp_base)))),
+            "defense_base": max(1, int(round(float(defense_base)))),
+        }
+
+    async def build_jury_tower_scale_snapshot(self, ctx, player, allow_pets):
+        player_combatant = await self.create_player_combatant(ctx, player, include_pet=allow_pets)
+        pet_combatant = None
+        if allow_pets:
+            pet_combatant = await self.pet_ext.get_pet_combatant(ctx, player)
+        return self._build_jury_scale_snapshot_from_combatants(player_combatant, pet_combatant)
+
+    def _build_jury_scaled_enemy_info(self, enemy_info, scale_snapshot):
+        scale_profile = enemy_info.get("scale") or {}
+        if not scale_profile:
+            return {
+                "name": enemy_info.get("name", "Defendant"),
+                "hp": int(enemy_info.get("hp", 100)),
+                "attack": int(enemy_info.get("attack", 20)),
+                "defense": int(enemy_info.get("defense", 10)),
+                "element": enemy_info.get("element", "Unknown"),
+            }
+
+        attack_base = Decimal(str(scale_snapshot.get("attack_base", 1) or 1))
+        hp_base = Decimal(str(scale_snapshot.get("hp_base", 1) or 1))
+        defense_base = Decimal(str(scale_snapshot.get("defense_base", 1) or 1))
+
+        floor_scale = Decimal(str(scale_profile.get("floor_scale", 1)))
+        hp_multiplier = Decimal(str(scale_profile.get("hp_multiplier", 1)))
+        defense_ratio = Decimal(str(scale_profile.get("defense_ratio", 0.1)))
+        attack_armor_ratio = Decimal(str(scale_profile.get("attack_armor_ratio", 1.0)))
+        attack_hp_ratio = Decimal(str(scale_profile.get("attack_hp_ratio", 0.05)))
+
+        scaled_hp = max(100, int(round(float(attack_base * hp_multiplier * floor_scale))))
+        scaled_attack = max(
+            10,
+            int(
+                round(
+                    float(
+                        (defense_base * attack_armor_ratio)
+                        + (hp_base * attack_hp_ratio * floor_scale)
+                    )
+                )
+            ),
+        )
+        scaled_defense = max(
+            1,
+            int(round(float(attack_base * defense_ratio * floor_scale))),
+        )
+
+        return {
+            "name": enemy_info.get("name", "Defendant"),
+            "hp": scaled_hp,
+            "attack": scaled_attack,
+            "defense": scaled_defense,
+            "element": enemy_info.get("element", "Unknown"),
+        }
     
     async def create_battle(self, battle_type, ctx, **kwargs):
         """Create a battle of specified type with given parameters"""
@@ -466,11 +553,15 @@ class BattleFactory:
         floor_data = kwargs.get("floor_data", {})
         allow_pets = kwargs.get("allow_pets")
         choice_key = kwargs.get("choice_key")
+        scale_snapshot = kwargs.get("jury_scale_snapshot")
 
         player_combatant = await self.create_player_combatant(ctx, player, include_pet=allow_pets)
         pet_combatant = None
         if allow_pets:
             pet_combatant = await self.pet_ext.get_pet_combatant(ctx, player)
+
+        if not scale_snapshot:
+            scale_snapshot = self._build_jury_scale_snapshot_from_combatants(player_combatant, pet_combatant)
 
         player_team = Team("Player", [player_combatant])
         if pet_combatant:
@@ -478,14 +569,9 @@ class BattleFactory:
 
         enemy_team = Team("Defendants", [])
         for enemy_info in floor_data.get("enemies", []):
+            scaled_enemy_info = self._build_jury_scaled_enemy_info(enemy_info, scale_snapshot)
             enemy_combatant = await self.create_monster_combatant(
-                {
-                    "name": enemy_info.get("name", "Defendant"),
-                    "hp": enemy_info.get("hp", 100),
-                    "attack": enemy_info.get("attack", 20),
-                    "defense": enemy_info.get("defense", 10),
-                    "element": enemy_info.get("element", "Unknown"),
-                },
+                scaled_enemy_info,
                 name=enemy_info.get("name"),
             )
             setattr(enemy_combatant, "jury_key", enemy_info.get("key", "boss"))

@@ -118,6 +118,71 @@ JUDGES: tuple[JudgeDefinition, ...] = (
 
 
 ACT_LABELS = ("Opening Arguments", "Cross Examination", "Chamber Recess", "Final Verdict")
+JURY_JUDGE_BASE_SCALES = (0.72, 0.82, 0.92, 1.04, 1.18, 1.32, 1.48)
+JURY_ROLE_SCALE_TEMPLATES = {
+    "minion1": {
+        "hp_multiplier": 1.55,
+        "defense_ratio": 0.10,
+        "attack_armor_ratio": 1.00,
+        "attack_hp_ratio": 0.04,
+    },
+    "minion2": {
+        "hp_multiplier": 2.05,
+        "defense_ratio": 0.14,
+        "attack_armor_ratio": 1.03,
+        "attack_hp_ratio": 0.055,
+    },
+    "boss": {
+        "hp_multiplier": 3.60,
+        "defense_ratio": 0.18,
+        "attack_armor_ratio": 1.06,
+        "attack_hp_ratio": 0.08,
+    },
+}
+JURY_JUDGE_SCALE_BIASES = {
+    "mercy": {
+        "hp_multiplier": 1.00,
+        "defense_ratio": 0.92,
+        "attack_armor_ratio": 0.95,
+        "attack_hp_ratio": 0.85,
+    },
+    "truth": {
+        "hp_multiplier": 0.96,
+        "defense_ratio": 1.00,
+        "attack_armor_ratio": 0.98,
+        "attack_hp_ratio": 0.95,
+    },
+    "resolve": {
+        "hp_multiplier": 1.25,
+        "defense_ratio": 1.18,
+        "attack_armor_ratio": 0.97,
+        "attack_hp_ratio": 0.95,
+    },
+    "sacrifice": {
+        "hp_multiplier": 0.95,
+        "defense_ratio": 0.92,
+        "attack_armor_ratio": 1.04,
+        "attack_hp_ratio": 1.10,
+    },
+    "balance": {
+        "hp_multiplier": 1.05,
+        "defense_ratio": 1.04,
+        "attack_armor_ratio": 1.00,
+        "attack_hp_ratio": 1.00,
+    },
+    "ambition": {
+        "hp_multiplier": 1.00,
+        "defense_ratio": 0.96,
+        "attack_armor_ratio": 1.08,
+        "attack_hp_ratio": 1.12,
+    },
+    "sentence": {
+        "hp_multiplier": 1.20,
+        "defense_ratio": 1.12,
+        "attack_armor_ratio": 1.10,
+        "attack_hp_ratio": 1.15,
+    },
+}
 
 
 def _boss_reward_for_judge(judge_index: int) -> dict:
@@ -129,11 +194,28 @@ def _boss_reward_for_judge(judge_index: int) -> dict:
         "money": money_base[judge_index],
         "appeals": 1,
         "writs": writs_base[judge_index],
+        "reset_potion": 1 if judge_index == len(JUDGES) - 1 else 0,
     }
-
-
-def _scale_stat(base: int, floor: int, local_floor: int, boss_bonus: int = 0) -> int:
-    return int(base + (floor * 7) + (local_floor * 5) + boss_bonus)
+def _build_enemy_scale_profile(
+    judge: JudgeDefinition,
+    judge_index: int,
+    local_floor: int,
+    role: str,
+) -> dict[str, float]:
+    role_template = JURY_ROLE_SCALE_TEMPLATES[role]
+    judge_bias = JURY_JUDGE_SCALE_BIASES[judge.key]
+    floor_scale = (
+        JURY_JUDGE_BASE_SCALES[judge_index]
+        * (1 + ((local_floor - 1) * 0.035))
+        * (1.08 if role == "boss" else 1.03 if role == "minion2" else 1.0)
+    )
+    return {
+        "floor_scale": round(floor_scale, 4),
+        "hp_multiplier": round(role_template["hp_multiplier"] * judge_bias["hp_multiplier"], 4),
+        "defense_ratio": round(role_template["defense_ratio"] * judge_bias["defense_ratio"], 4),
+        "attack_armor_ratio": round(role_template["attack_armor_ratio"] * judge_bias["attack_armor_ratio"], 4),
+        "attack_hp_ratio": round(role_template["attack_hp_ratio"] * judge_bias["attack_hp_ratio"], 4),
+    }
 
 
 def _build_choice(judge: JudgeDefinition, local_floor: int, names: dict[str, str], floor: int) -> dict:
@@ -564,6 +646,11 @@ def build_jury_tower_data() -> dict:
             checkpoint = boss_floor
             title = f"{judge.chamber_prefix} {local_floor}"
             reward_writs = 8 + (judge_index * 2) + local_floor
+            enemy_scale_profiles = {
+                "minion1": _build_enemy_scale_profile(judge, judge_index, local_floor, "minion1"),
+                "minion2": _build_enemy_scale_profile(judge, judge_index, local_floor, "minion2"),
+                "boss": _build_enemy_scale_profile(judge, judge_index, local_floor, "boss"),
+            }
 
             floors[str(floor)] = {
                 "floor": floor,
@@ -587,26 +674,20 @@ def build_jury_tower_data() -> dict:
                     {
                         "key": "minion1",
                         "name": minion1_name,
-                        "hp": _scale_stat(140, floor, local_floor),
-                        "attack": _scale_stat(45, floor, local_floor),
-                        "defense": _scale_stat(20, floor, local_floor),
                         "element": judge.element,
+                        "scale": enemy_scale_profiles["minion1"],
                     },
                     {
                         "key": "minion2",
                         "name": minion2_name,
-                        "hp": _scale_stat(165, floor, local_floor),
-                        "attack": _scale_stat(52, floor, local_floor),
-                        "defense": _scale_stat(28, floor, local_floor),
                         "element": judge.element,
+                        "scale": enemy_scale_profiles["minion2"],
                     },
                     {
                         "key": "boss",
                         "name": boss_name,
-                        "hp": _scale_stat(260, floor, local_floor, boss_bonus=local_floor * 8),
-                        "attack": _scale_stat(70, floor, local_floor, boss_bonus=local_floor * 2),
-                        "defense": _scale_stat(38, floor, local_floor, boss_bonus=local_floor * 3),
                         "element": judge.element,
+                        "scale": enemy_scale_profiles["boss"],
                     },
                 ],
             }

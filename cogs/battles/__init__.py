@@ -1536,6 +1536,15 @@ class Battles(commands.Cog):
                 )
                 """
             )
+            await conn.execute(
+                "ALTER TABLE jurytower ADD COLUMN IF NOT EXISTS scale_attack_base INTEGER NOT NULL DEFAULT 0;"
+            )
+            await conn.execute(
+                "ALTER TABLE jurytower ADD COLUMN IF NOT EXISTS scale_hp_base INTEGER NOT NULL DEFAULT 0;"
+            )
+            await conn.execute(
+                "ALTER TABLE jurytower ADD COLUMN IF NOT EXISTS scale_defense_base INTEGER NOT NULL DEFAULT 0;"
+            )
 
             # Ice Dragon tables
             await conn.execute(
@@ -4110,6 +4119,61 @@ class Battles(commands.Cog):
             return "Contempt Citation", 0xE74C3C
         return "Contested", 0xF39C12
 
+    def _jury_scale_snapshot_from_row(self, row) -> dict[str, int]:
+        if not row:
+            return {"attack_base": 0, "hp_base": 0, "defense_base": 0}
+        return {
+            "attack_base": int(row["scale_attack_base"] or 0),
+            "hp_base": int(row["scale_hp_base"] or 0),
+            "defense_base": int(row["scale_defense_base"] or 0),
+        }
+
+    def _format_jury_scale_snapshot(self, snapshot: dict[str, int] | None) -> str | None:
+        if not snapshot:
+            return None
+        attack_base = int(snapshot.get("attack_base", 0) or 0)
+        hp_base = int(snapshot.get("hp_base", 0) or 0)
+        defense_base = int(snapshot.get("defense_base", 0) or 0)
+        if attack_base <= 0 and hp_base <= 0 and defense_base <= 0:
+            return None
+        return (
+            f"Attack Base: **{attack_base}**\n"
+            f"HP Base: **{hp_base}**\n"
+            f"Defense Base: **{defense_base}**"
+        )
+
+    async def _ensure_jury_scale_snapshot(self, ctx, row) -> dict[str, int]:
+        stored_snapshot = self._jury_scale_snapshot_from_row(row)
+        allow_pets = self.battle_factory.settings.get_setting("jurytower", "allow_pets", default=True)
+        current_snapshot = await self.battle_factory.build_jury_tower_scale_snapshot(
+            ctx,
+            ctx.author,
+            allow_pets,
+        )
+        merged_snapshot = {
+            "attack_base": max(stored_snapshot["attack_base"], current_snapshot["attack_base"]),
+            "hp_base": max(stored_snapshot["hp_base"], current_snapshot["hp_base"]),
+            "defense_base": max(stored_snapshot["defense_base"], current_snapshot["defense_base"]),
+        }
+
+        if merged_snapshot != stored_snapshot:
+            async with self.bot.pool.acquire() as connection:
+                await connection.execute(
+                    """
+                    UPDATE jurytower
+                    SET scale_attack_base = $1,
+                        scale_hp_base = $2,
+                        scale_defense_base = $3
+                    WHERE id = $4
+                    """,
+                    merged_snapshot["attack_base"],
+                    merged_snapshot["hp_base"],
+                    merged_snapshot["defense_base"],
+                    ctx.author.id,
+                )
+
+        return merged_snapshot
+
     async def _prompt_jury_choice(self, ctx, floor_data: dict) -> str:
         choice_data = floor_data.get("choice") or {}
         default_choice = choice_data.get("default")
@@ -4168,7 +4232,7 @@ class Battles(commands.Cog):
             await ctx.send(f"No verdict was filed in time. The court defaults to **{default_choice}**.")
             return default_choice
 
-    async def _display_jury_floor_intro(self, ctx, row, floor_data: dict):
+    async def _display_jury_floor_intro(self, ctx, row, floor_data: dict, scale_snapshot: dict | None = None):
         seals = int(row["seals"] or 0)
         embed = discord.Embed(
             title=f"Jury Tower - Floor {floor_data['floor']}",
@@ -4192,6 +4256,9 @@ class Battles(commands.Cog):
             bench_notes.append(f"Mechanic: {floor_data['mechanic_hint']}")
         if bench_notes:
             embed.add_field(name="Bench Notes", value="\n".join(bench_notes), inline=False)
+        scale_text = self._format_jury_scale_snapshot(scale_snapshot)
+        if scale_text:
+            embed.add_field(name="Tower Scale Base", value=scale_text, inline=False)
         embed.add_field(
             name="Run State",
             value=(
@@ -4209,6 +4276,8 @@ class Battles(commands.Cog):
             reward_lines.append(f"Checkpoint Writ Cache: **+{boss_reward.get('writs', 0)}**")
             reward_lines.append(f"Checkpoint Gold: **${boss_reward.get('money', 0)}**")
             reward_lines.append(f"Appeals Restored: **+{boss_reward.get('appeals', 0)}**")
+            if boss_reward.get("reset_potion", 0):
+                reward_lines.append(f"Reset Potion: **+{boss_reward.get('reset_potion', 0)}**")
             reward_lines.append(f"Seal on Clearance: **{floor_data.get('seal_name', 'Court Seal')}**")
         embed.add_field(
             name="Rewards This Floor",
@@ -4225,7 +4294,8 @@ class Battles(commands.Cog):
         async with self.bot.pool.acquire() as connection:
             row = await connection.fetchrow(
                 """
-                SELECT level, checkpoint, cycles, seals, favor, contempt, writs, appeals
+                SELECT level, checkpoint, cycles, seals, favor, contempt, writs, appeals,
+                       scale_attack_base, scale_hp_base, scale_defense_base
                 FROM jurytower
                 WHERE id = $1
                 """,
@@ -4260,6 +4330,13 @@ class Battles(commands.Cog):
                     await connection.execute(
                         'UPDATE profile SET money = money + $1 WHERE "user" = $2',
                         money_reward,
+                        ctx.author.id,
+                    )
+                reset_potion_reward = int(boss_reward.get("reset_potion", 0) or 0)
+                if reset_potion_reward:
+                    await connection.execute(
+                        'UPDATE profile SET resetpotion = resetpotion + $1 WHERE "user" = $2',
+                        reset_potion_reward,
                         ctx.author.id,
                     )
 
@@ -4315,6 +4392,11 @@ class Battles(commands.Cog):
                     f"Crate: **{boss_reward.get('crate_type', 'none').title()}**\n"
                     f"Gold: **${boss_reward.get('money', 0)}**\n"
                     f"Appeals Restored: **+{boss_reward.get('appeals', 0)}**"
+                    + (
+                        f"\nReset Potion: **+{boss_reward.get('reset_potion', 0)}**"
+                        if boss_reward.get("reset_potion", 0)
+                        else ""
+                    )
                 ),
                 inline=False,
             )
@@ -4422,7 +4504,8 @@ class Battles(commands.Cog):
                 f"- {JURY_TOWER_FLOOR_COUNT} floors\n"
                 "- Checkpoints at each judge's verdict floor\n"
                 "- Appeals can protect progress when you lose away from a checkpoint\n"
-                "- Court Writs accumulate across cycles"
+                "- Court Writs accumulate across cycles\n"
+                "- Enemy scaling ratchets to the strongest build you use that cycle"
             ),
             inline=False,
         )
@@ -4434,7 +4517,8 @@ class Battles(commands.Cog):
         async with self.bot.pool.acquire() as connection:
             row = await connection.fetchrow(
                 """
-                SELECT level, checkpoint, cycles, seals, favor, contempt, writs, appeals
+                SELECT level, checkpoint, cycles, seals, favor, contempt, writs, appeals,
+                       scale_attack_base, scale_hp_base, scale_defense_base
                 FROM jurytower
                 WHERE id = $1
                 """,
@@ -4482,6 +4566,9 @@ class Battles(commands.Cog):
             ),
             inline=False,
         )
+        scale_text = self._format_jury_scale_snapshot(self._jury_scale_snapshot_from_row(row))
+        if scale_text:
+            embed.add_field(name="Tower Scale Base", value=scale_text, inline=False)
         embed.add_field(
             name="Judge Seals",
             value="\n".join(seal_lines) or "No seals earned yet.",
@@ -4496,8 +4583,9 @@ class Battles(commands.Cog):
         try:
             async with self.bot.pool.acquire() as connection:
                 row = await connection.fetchrow(
-                    """
-                    SELECT level, checkpoint, cycles, seals, favor, contempt, writs, appeals
+                """
+                    SELECT level, checkpoint, cycles, seals, favor, contempt, writs, appeals,
+                           scale_attack_base, scale_hp_base, scale_defense_base
                     FROM jurytower
                     WHERE id = $1
                     """,
@@ -4525,14 +4613,18 @@ class Battles(commands.Cog):
                             seals = 0,
                             favor = 0,
                             contempt = 0,
-                            appeals = 2
+                            appeals = 2,
+                            scale_attack_base = 0,
+                            scale_hp_base = 0,
+                            scale_defense_base = 0
                         WHERE id = $1
                         """,
                         ctx.author.id,
                     )
                     row = await connection.fetchrow(
                         """
-                        SELECT level, checkpoint, cycles, seals, favor, contempt, writs, appeals
+                        SELECT level, checkpoint, cycles, seals, favor, contempt, writs, appeals,
+                               scale_attack_base, scale_hp_base, scale_defense_base
                         FROM jurytower
                         WHERE id = $1
                         """,
@@ -4546,7 +4638,8 @@ class Battles(commands.Cog):
                 await self.bot.reset_cooldown(ctx)
                 return await ctx.send(f"No Jury Tower data exists for floor {level}.")
 
-            await self._display_jury_floor_intro(ctx, row, floor_data)
+            scale_snapshot = await self._ensure_jury_scale_snapshot(ctx, row)
+            await self._display_jury_floor_intro(ctx, row, floor_data, scale_snapshot)
             choice_key = await self._prompt_jury_choice(ctx, floor_data)
 
             if await self.is_player_in_fight(ctx.author.id):
@@ -4562,6 +4655,7 @@ class Battles(commands.Cog):
                 floor_number=level,
                 floor_data=floor_data,
                 choice_key=choice_key,
+                jury_scale_snapshot=scale_snapshot,
             )
 
             await battle.start_battle()
