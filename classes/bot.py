@@ -54,6 +54,9 @@ from utils.config import ConfigLoader
 from utils.i18n import _
 
 
+LEVEL_100_ANNOUNCE_CHANNEL_ID = 1406296535443963935
+
+
 class Bot(commands.AutoShardedBot):
     def __init__(self, **kwargs):
         self.cluster_name = kwargs.pop("cluster_name")
@@ -827,6 +830,8 @@ class Bot(commands.AutoShardedBot):
             conn=conn,
         ):
             additional_parts.append(_("You also unlocked the **Eternal Sovereign** badge!"))
+        if old_level < 100 <= new_level:
+            await self._announce_level_100(ctx.author.id)
         additional = " ".join(additional_parts)
 
         if local:
@@ -885,6 +890,22 @@ class Bot(commands.AutoShardedBot):
             (current_badges | Badge.ETERNAL_SOVEREIGN).to_db(),
             user_id,
         )
+        return True
+
+    async def _announce_level_100(self, user_id: int) -> bool:
+        channel = self.get_channel(LEVEL_100_ANNOUNCE_CHANNEL_ID)
+        if channel is None:
+            try:
+                channel = await self.fetch_channel(LEVEL_100_ANNOUNCE_CHANNEL_ID)
+            except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+                return False
+
+        try:
+            await channel.send(
+                f"The realm bears witness: <@{user_id}> has reached Level 100."
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            return False
         return True
 
     async def process_guildlevelup(self, ctx, user_id, new_level, old_level, conn=None):
@@ -971,6 +992,8 @@ class Bot(commands.AutoShardedBot):
             conn=conn,
         ):
             additional_parts.append(_("You also unlocked the **Eternal Sovereign** badge!"))
+        if old_level < 100 <= new_level:
+            await self._announce_level_100(user_id)
         additional = " ".join(additional_parts)
 
         if local:

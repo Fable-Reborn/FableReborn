@@ -73,8 +73,15 @@ class BattleFactory:
                     CREATE TABLE IF NOT EXISTS {ASCENSION_TABLE_NAME} (
                         user_id bigint PRIMARY KEY,
                         mantle text NOT NULL,
+                        enabled boolean NOT NULL DEFAULT true,
                         chosen_at timestamp with time zone NOT NULL DEFAULT now()
                     );
+                    """
+                )
+                await conn.execute(
+                    f"""
+                    ALTER TABLE {ASCENSION_TABLE_NAME}
+                    ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true;
                     """
                 )
             self._ascension_tables_ready = True
@@ -864,12 +871,14 @@ class BattleFactory:
             classes = result['class'] if isinstance(result['class'], list) else [result['class']]
             buffs = await self.class_ext.get_class_buffs(classes)
             try:
-                ascension_mantle = await conn.fetchval(
-                    f'SELECT mantle FROM {ASCENSION_TABLE_NAME} WHERE user_id = $1;',
+                ascension_record = await conn.fetchrow(
+                    f'SELECT mantle, enabled FROM {ASCENSION_TABLE_NAME} WHERE user_id = $1;',
                     player.id,
                 )
             except Exception:
-                ascension_mantle = None
+                ascension_record = None
+            ascension_mantle = None if ascension_record is None else ascension_record["mantle"]
+            ascension_enabled = True if ascension_record is None else bool(ascension_record["enabled"])
             
             has_shield = element_data.get("has_shield", False)
             
@@ -896,6 +905,7 @@ class BattleFactory:
                 damage_reflection=damage_reflection,
                 has_shield=has_shield,
                 ascension_mantle=ascension_mantle,
+                ascension_enabled=ascension_enabled,
                 ascension_signature_used=False,
                 ascension_opening_used=False,
                 ascension_survival_used=False,

@@ -389,6 +389,11 @@ class Battle(ABC):
             refresh_queue()
         return echo
 
+    def _get_active_ascension_mantle(self, combatant):
+        if combatant is None or not getattr(combatant, "ascension_enabled", True):
+            return None
+        return get_ascension_mantle(getattr(combatant, "ascension_mantle", None))
+
     async def trigger_ascension_openings(self):
         messages = []
         for team in self.teams:
@@ -396,7 +401,7 @@ class Battle(ABC):
                 if not combatant.is_alive() or getattr(combatant, "is_pet", False):
                     continue
 
-                mantle = get_ascension_mantle(getattr(combatant, "ascension_mantle", None))
+                mantle = self._get_active_ascension_mantle(combatant)
                 if mantle is None or getattr(combatant, "ascension_opening_used", False):
                     continue
 
@@ -442,7 +447,7 @@ class Battle(ABC):
         )
 
     async def maybe_trigger_grave_sovereign(self, attacker, target):
-        mantle = get_ascension_mantle(getattr(attacker, "ascension_mantle", None))
+        mantle = self._get_active_ascension_mantle(attacker)
         if (
             mantle is None
             or mantle.key != "grave_sovereign"
@@ -494,7 +499,7 @@ class Battle(ABC):
         )
 
     async def maybe_trigger_cyclebreaker(self, target, attacker):
-        mantle = get_ascension_mantle(getattr(target, "ascension_mantle", None))
+        mantle = self._get_active_ascension_mantle(target)
         if (
             mantle is None
             or mantle.key != "cyclebreaker"

@@ -81,8 +81,15 @@ class Classes(commands.Cog):
                     CREATE TABLE IF NOT EXISTS {ASCENSION_TABLE_NAME} (
                         user_id bigint PRIMARY KEY,
                         mantle text NOT NULL,
+                        enabled boolean NOT NULL DEFAULT true,
                         chosen_at timestamp with time zone NOT NULL DEFAULT now()
                     );
+                    """
+                )
+                await conn.execute(
+                    f"""
+                    ALTER TABLE {ASCENSION_TABLE_NAME}
+                    ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true;
                     """
                 )
                 await conn.execute(
@@ -93,15 +100,19 @@ class Classes(commands.Cog):
                 )
             self._ascension_tables_ready = True
 
-    async def _fetch_ascension_choice(self, user_id: int) -> str | None:
+    async def _fetch_ascension_record(self, user_id: int):
         await self._ensure_ascension_tables()
         async with self.bot.pool.acquire() as conn:
-            return await conn.fetchval(
-                f'SELECT mantle FROM {ASCENSION_TABLE_NAME} WHERE user_id = $1;',
+            return await conn.fetchrow(
+                f'SELECT mantle, enabled FROM {ASCENSION_TABLE_NAME} WHERE user_id = $1;',
                 user_id,
             )
 
-    def _build_ascension_embed(self, mantle_key: str) -> discord.Embed:
+    async def _fetch_ascension_choice(self, user_id: int) -> str | None:
+        record = await self._fetch_ascension_record(user_id)
+        return None if record is None else record["mantle"]
+
+    def _build_ascension_embed(self, mantle_key: str, *, enabled: bool = True) -> discord.Embed:
         mantle = ASCENSION_MANTLES[mantle_key]
         embed = discord.Embed(
             title=f"{mantle.title} of {mantle.god}",
@@ -118,8 +129,13 @@ class Classes(commands.Cog):
             value="\n".join(f"- {line}" for line in mantle.passive_lines),
             inline=False,
         )
+        embed.add_field(
+            name="State",
+            value="Active" if enabled else "Dormant",
+            inline=False,
+        )
         embed.set_footer(
-            text="Ascension Mantles are permanent level-100 choices."
+            text="Ascension Mantles are permanent level-100 choices. Use ascension on/off to toggle."
         )
         return embed
 
@@ -130,24 +146,54 @@ class Classes(commands.Cog):
         brief=_("Choose your level-100 ascension mantle"),
     )
     @locale_doc
-    async def ascension(self, ctx):
+    async def ascension(self, ctx, state: str = None):
         _(
             """Choose your level-100 ascension mantle.
 
             At level 100, you may bind yourself to one Ascension Mantle:
             Thronekeeper, Grave Sovereign, or Cyclebreaker.
 
-            This choice is permanent and grants powerful automated battle effects."""
+            This choice is permanent and grants powerful automated battle effects.
+            Use `{prefix}ascension on` or `{prefix}ascension off` to toggle it later."""
         )
         await self._ensure_ascension_tables()
 
-        existing_choice = await self._fetch_ascension_choice(ctx.author.id)
+        record = await self._fetch_ascension_record(ctx.author.id)
+        normalized_state = None if state is None else state.strip().lower()
+
+        if normalized_state in {"on", "off"}:
+            if record is None:
+                return await ctx.send(_("You have not claimed an Ascension Mantle yet."))
+            desired_state = normalized_state == "on"
+            if bool(record["enabled"]) == desired_state:
+                return await ctx.send(
+                    _(
+                        "Your ascension mantle is already **{state}**."
+                    ).format(state="active" if desired_state else "dormant")
+                )
+            async with self.bot.pool.acquire() as conn:
+                await conn.execute(
+                    f'UPDATE {ASCENSION_TABLE_NAME} SET enabled = $1 WHERE user_id = $2;',
+                    desired_state,
+                    ctx.author.id,
+                )
+            return await ctx.send(
+                _(
+                    "Your ascension mantle is now **{state}**."
+                ).format(state="active" if desired_state else "dormant")
+            )
+
+        if normalized_state not in {None, "status"}:
+            return await ctx.send(_("Use `{prefix}ascension on` or `{prefix}ascension off`.").format(prefix=ctx.clean_prefix))
+
+        existing_choice = None if record is None else record["mantle"]
+        enabled = True if record is None else bool(record["enabled"])
         if existing_choice is not None:
             mantle = get_ascension_mantle(existing_choice)
             if mantle is None:
                 return await ctx.send(_("Your ascension record is invalid. Contact a GM."))
-            embed = self._build_ascension_embed(mantle.key)
-            embed.set_footer(text="Your ascension mantle is locked in.")
+            embed = self._build_ascension_embed(mantle.key, enabled=enabled)
+            embed.set_footer(text=f"Your ascension mantle is locked in. Current state: {'Active' if enabled else 'Dormant'}.")
             return await ctx.send(embed=embed)
 
         level = int(rpgtools.xptolevel(ctx.character_data["xp"]))
@@ -178,8 +224,8 @@ class Classes(commands.Cog):
         async with self.bot.pool.acquire() as conn:
             inserted = await conn.fetchval(
                 f"""
-                INSERT INTO {ASCENSION_TABLE_NAME} (user_id, mantle)
-                VALUES ($1, $2)
+                INSERT INTO {ASCENSION_TABLE_NAME} (user_id, mantle, enabled)
+                VALUES ($1, $2, true)
                 ON CONFLICT (user_id) DO NOTHING
                 RETURNING mantle;
                 """,
@@ -200,8 +246,10 @@ class Classes(commands.Cog):
 
         await ctx.send(
             _(
-                "The throne answers. You are now bound to **{mantle}**."
-            ).format(mantle=chosen_mantle.title)
+                "The throne answers. You are now bound to **{mantle}**. Use"
+                " `{prefix}ascension off` to suppress its powers, or"
+                " `{prefix}ascension on` to awaken them again."
+            ).format(mantle=chosen_mantle.title, prefix=ctx.clean_prefix)
         )
 
     @has_char()

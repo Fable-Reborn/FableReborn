@@ -570,7 +570,11 @@ class Profile(commands.Cog):
         classes = " / ".join([str(c) for c in class_list if c]) or "No Class"
         god_name = str(profile.get("god") or "No God")
         ascension = get_ascension_mantle(profile.get("ascension_mantle"))
-        ascension_title = ascension.title if ascension else "Unclaimed"
+        ascension_enabled = bool(profile.get("ascension_enabled", True))
+        if ascension:
+            ascension_title = f"{ascension.title} ({'Active' if ascension_enabled else 'Dormant'})"
+        else:
+            ascension_title = "Unclaimed"
         jury_title = str(profile.get("jury_title") or "").strip()
 
         avatar = await self._fetch_avatar_image(user, size=512)
@@ -2163,8 +2167,8 @@ class Profile(commands.Cog):
                 return await ctx.send(
                     _("**{target}** does not have a character.").format(target=target_user)
                 )
-            ascension_choice = await conn.fetchval(
-                f'SELECT mantle FROM {ASCENSION_TABLE_NAME} WHERE user_id = $1;',
+            ascension_record = await conn.fetchrow(
+                f'SELECT mantle, enabled FROM {ASCENSION_TABLE_NAME} WHERE user_id = $1;',
                 target_user.id,
             )
             jury_title_unlocked = await conn.fetchval(
@@ -2177,8 +2181,12 @@ class Profile(commands.Cog):
                 'SELECT default_name FROM monster_pets WHERE "user_id"=$1 AND equipped = true;',
                 target_user.id,
             ) or "None"
-        ascension = get_ascension_mantle(ascension_choice)
-        ascension_title = ascension.title if ascension else "Unclaimed"
+        ascension = get_ascension_mantle(None if ascension_record is None else ascension_record["mantle"])
+        ascension_enabled = True if ascension_record is None else bool(ascension_record["enabled"])
+        if ascension:
+            ascension_title = f"{ascension.title} ({'Active' if ascension_enabled else 'Dormant'})"
+        else:
+            ascension_title = "Unclaimed"
         jury_title = JURY_COSMETIC_TITLE if jury_title_unlocked else None
         court_title_line = f"**Court Title:** {jury_title}\n" if jury_title else ""
 
@@ -2317,10 +2325,12 @@ class Profile(commands.Cog):
             )
             profile_data = dict(profile_data)
             profile_data["badges"] = synced_badges.to_db()
-            profile_data["ascension_mantle"] = await conn.fetchval(
-                f'SELECT mantle FROM {ASCENSION_TABLE_NAME} WHERE user_id = $1;',
+            ascension_record = await conn.fetchrow(
+                f'SELECT mantle, enabled FROM {ASCENSION_TABLE_NAME} WHERE user_id = $1;',
                 user.id,
             )
+            profile_data["ascension_mantle"] = None if ascension_record is None else ascension_record["mantle"]
+            profile_data["ascension_enabled"] = True if ascension_record is None else bool(ascension_record["enabled"])
             jury_title_unlocked = await conn.fetchval(
                 'SELECT shop_title_unlocked FROM jurytower WHERE id = $1;',
                 user.id,
