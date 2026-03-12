@@ -563,7 +563,7 @@ class JuryTowerBattle(TowerBattle):
             state_lines.append(f"Marked: **{accused}**")
         embed.add_field(name="Battle State", value="\n".join(state_lines), inline=False)
 
-        recent_log = self.log[-4:]
+        recent_log = list(self.log)[-4:]
         log_text = "\n\n".join([f"**Action #{index}**\n{message}" for index, message in recent_log])
         embed.add_field(name="Battle Log", value=log_text or "Battle starting...", inline=False)
         embed.set_footer(text=f"Battle ID: {self.battle_id}")
