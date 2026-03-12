@@ -3526,7 +3526,7 @@ class Battles(commands.Cog):
             description=(
                 f"**{floor_data['judge_name']}, {floor_data['judge_title']}**\n"
                 f"**{floor_data['title']}**\n"
-                f"Act: **{floor_data.get('act_label', 'Proceedings')}**\n"
+                f"Phase: **{floor_data.get('act_label', 'Outer Gate')}**\n"
                 "Running as a plain tower fight with Jury-scaled enemies."
             ),
             color=floor_data.get("color", 0x8B5CF6),
@@ -4866,48 +4866,25 @@ class Battles(commands.Cog):
                 return value
             return value[: max(0, limit - 3)].rstrip() + "..."
 
-        hook_text = None
-        for candidate in (
-            floor_data.get("charges"),
-            floor_data.get("testimony"),
-            floor_data.get("judge_commentary"),
-            floor_data.get("case_summary"),
-        ):
-            hook_text = clip_text(candidate, 150)
-            if hook_text:
-                break
-
         embed = discord.Embed(
-            title=f"Jury Tower - Floor {floor_data['floor']} Choice",
+            title=f"Jury Tower - Floor {floor_data['floor']} Stance",
             description=choice_data.get("prompt_text", "Choose your stance for this case."),
             color=floor_data.get("color", 0x8B5CF6),
         )
-        choice_context = [
-            f"Judge: **{floor_data.get('judge_name', 'The Bench')}**",
-            f"Act: **{floor_data.get('act_label', 'Proceedings')}**",
-        ]
-        if hook_text:
-            choice_context.append(f"Hook: {hook_text}")
-        if floor_data.get("mechanic_hint"):
-            choice_context.append(f"Mechanic: {clip_text(floor_data.get('mechanic_hint'), 140)}")
-        embed.add_field(name="Why It Matters", value="\n".join(choice_context), inline=False)
 
         aliases = {}
         lines = []
         for index, option in enumerate(choice_data.get("options", []), start=1):
             key = option.get("key")
             label = option.get("label", key)
-            description = option.get("description", "")
             effect = clip_text(option.get("effect"), 120)
             aliases[str(index)] = key
             aliases[str(key).lower()] = key
             aliases[str(label).lower()] = key
-            option_lines = [f"`{index}` **{label}**"]
-            if description:
-                option_lines.append(description)
+            option_line = f"`{index}` **{label}**"
             if effect:
-                option_lines.append(f"Effect: {effect}")
-            lines.append("\n".join(option_lines))
+                option_line += f" - {effect}"
+            lines.append(option_line)
 
         embed.add_field(name="Options", value="\n\n".join(lines) or "No options.", inline=False)
         embed.set_footer(text=f"Reply with 1-{len(lines)} or the option name. Default: {default_choice}")
@@ -4925,85 +4902,34 @@ class Battles(commands.Cog):
                 None,
             )
             if selected_option:
-                confirmation_lines = [
-                    f"Choice locked: **{selected_option.get('label', selected_key)}**"
-                ]
+                confirmation_lines = [f"Stance locked: **{selected_option.get('label', selected_key)}**"]
                 selected_effect = clip_text(selected_option.get("effect"), 140)
-                selected_quote = clip_text(selected_option.get("quote"), 120)
                 if selected_effect:
                     confirmation_lines.append(selected_effect)
-                if selected_quote:
-                    confirmation_lines.append(
-                        f'{floor_data.get("judge_name", "The Judge")}: "{selected_quote}"'
-                    )
                 await ctx.send("\n".join(confirmation_lines))
             return selected_key
         except asyncio.TimeoutError:
-            await ctx.send(f"No verdict was filed in time. The court defaults to **{default_choice}**.")
+            await ctx.send(f"No stance was chosen in time. Defaulting to **{default_choice}**.")
             return default_choice
 
     async def _display_jury_floor_intro(self, ctx, row, floor_data: dict, scale_snapshot: dict | None = None):
-        seals = int(row["seals"] or 0)
-        def clip_text(text: str | None, limit: int = 190) -> str | None:
-            value = str(text or "").strip()
-            if not value:
-                return None
-            if len(value) <= limit:
-                return value
-            return value[: max(0, limit - 3)].rstrip() + "..."
-
-        hook_text = None
-        for candidate in (
-            floor_data.get("charges"),
-            floor_data.get("testimony"),
-            floor_data.get("judge_commentary"),
-            floor_data.get("case_summary"),
-            floor_data.get("intro"),
-        ):
-            hook_text = clip_text(candidate, 180)
-            if hook_text:
-                break
-
         embed = discord.Embed(
             title=f"Jury Tower - Floor {floor_data['floor']}",
             description=(
-                f"**{floor_data['judge_name']}, {floor_data['judge_title']}** presides over **{floor_data['title']}**.\n"
-                f"**Act:** {floor_data.get('act_label', 'Proceedings')}"
+                f"**{floor_data['judge_name']}, {floor_data['judge_title']}**\n"
+                f"**{floor_data['title']}**"
             ),
             color=floor_data.get("color", 0x8B5CF6),
         )
-        if hook_text:
-            embed.add_field(name="Hook", value=hook_text, inline=False)
-        floor_notes = []
         if floor_data.get("mechanic_hint"):
-            floor_notes.append(f"Mechanic: {clip_text(floor_data['mechanic_hint'], 150)}")
-        bracket_text = self._format_jury_bracket(row, scale_snapshot)
-        if bracket_text:
-            floor_notes.append(f"Court Tier: **{bracket_text}**")
-        if floor_notes:
-            embed.add_field(name="This Floor", value="\n".join(floor_notes), inline=False)
-        embed.add_field(
-            name="Run State",
-            value=(
-                f"Checkpoint: **{row['checkpoint']}**\n"
-                f"Appeals: **{row['appeals']}**\n"
-                f"Prestige: **{row['prestige']}**\n"
-                f"Favor: **{row['favor']}**\n"
-                f"Contempt: **{row['contempt']}**\n"
-                f"Seals: **{self._jury_seal_count(seals)}/7**"
-            ),
-            inline=False,
-        )
+            embed.add_field(name="Trial", value=floor_data["mechanic_hint"], inline=False)
         floor_base_writs = int(floor_data.get("writs_reward", 0) or 0)
         floor_scaled_writs = self._apply_jury_writ_multiplier(
             floor_base_writs,
             row=row,
             snapshot=scale_snapshot,
         )
-        reward_lines = [
-            f"Court Tier Writ Bonus: **{self._format_jury_writ_bonus(row=row, snapshot=scale_snapshot)}**",
-            f"Floor Writs on Clear: **+{floor_scaled_writs}** (Base: {floor_base_writs})",
-        ]
+        reward_lines = [f"Writs on Clear: **+{floor_scaled_writs}**"]
         boss_reward = floor_data.get("boss_reward") or {}
         if boss_reward:
             base_checkpoint_writs = int(boss_reward.get("writs", 0) or 0)
@@ -5012,24 +4938,15 @@ class Battles(commands.Cog):
                 row=row,
                 snapshot=scale_snapshot,
             )
-            reward_lines.append(
-                f"Checkpoint Writ Cache: **+{scaled_checkpoint_writs}** (Base: {base_checkpoint_writs})"
-            )
-            reward_lines.append(f"Checkpoint Gold: **${boss_reward.get('money', 0)}**")
-            reward_lines.append(f"Appeals Restored: **+{boss_reward.get('appeals', 0)}**")
+            reward_lines.append(f"Boss Cache: **+{scaled_checkpoint_writs} Writs**")
+            reward_lines.append(f"Gold: **${boss_reward.get('money', 0)}**")
+            reward_lines.append(f"Appeals: **+{boss_reward.get('appeals', 0)}**")
             if boss_reward.get("reset_fragment", 0):
-                reward_lines.append(
-                    f"Reset Fragment: **+{boss_reward.get('reset_fragment', 0)}** "
-                    f"({self.JURY_RESET_FRAGMENT_REQUIREMENT} = 1 Reset Potion)"
-                )
+                reward_lines.append(f"Reset Fragment: **+{boss_reward.get('reset_fragment', 0)}**")
             if boss_reward.get("reset_potion", 0):
                 reward_lines.append(f"Reset Potion: **+{boss_reward.get('reset_potion', 0)}**")
-            reward_lines.append(f"Seal on Clearance: **{floor_data.get('seal_name', 'Court Seal')}**")
-        embed.add_field(
-            name="Rewards This Floor",
-            value="\n".join(reward_lines),
-            inline=False,
-        )
+            reward_lines.append(f"Seal: **{floor_data.get('seal_name', 'Court Seal')}**")
+        embed.add_field(name="On Clear", value="\n".join(reward_lines), inline=False)
         await ctx.send(embed=embed)
 
     async def _handle_jury_victory(self, ctx, floor: int, floor_data: dict, battle):
@@ -5130,19 +5047,19 @@ class Battles(commands.Cog):
         summary = discord.Embed(
             title=f"Verdict: {verdict_name}",
             description=(
-                f"{floor_data.get('victory_text', 'The bench records your win.')}\n\n"
-                f"You cleared **Floor {floor} - {floor_data['title']}**."
+                f"{floor_data.get('victory_text', 'The hall yields.')}\n\n"
+                f"Cleared **Floor {floor} - {floor_data['title']}**."
             ),
             color=verdict_color,
         )
         summary.add_field(
-            name="Court Record",
+            name="Verdict",
             value=(
                 f"Favor: **+{verdict.get('favor', 0)}**\n"
                 f"Contempt: **+{verdict.get('contempt', 0)}**\n"
                 f"Court Writs: **+{writs_gain}**"
                 + (
-                    f"\nCourt Tier Bonus: **{self._format_jury_writ_bonus(row=row)}** (+{writ_bonus_gain} writs)"
+                    f"\nTier Bonus: **{self._format_jury_writ_bonus(row=row)}** (+{writ_bonus_gain} writs)"
                     if writ_bonus_gain > 0
                     else ""
                 )
@@ -5152,7 +5069,7 @@ class Battles(commands.Cog):
 
         notes = verdict.get("notes") or []
         if notes:
-            summary.add_field(name="Bench Notes", value="\n".join(f"- {note}" for note in notes), inline=False)
+            summary.add_field(name="Notes", value="\n".join(f"- {note}" for note in notes), inline=False)
 
         if boss_reward:
             base_checkpoint_writs = int(boss_reward.get("writs", 0) or 0)
@@ -5193,15 +5110,15 @@ class Battles(commands.Cog):
             )
             if seal_earned:
                 summary.add_field(
-                    name="Seal Earned",
-                    value=f"**{floor_data.get('seal_name', 'Court Seal')}** now answers to your record.",
+                    name="Seal Claimed",
+                    value=f"You claimed **{floor_data.get('seal_name', 'Court Seal')}**.",
                     inline=False,
                 )
             if floor >= JURY_TOWER_FLOOR_COUNT:
                 summary.add_field(
                     name="Cycle Complete",
                     value=(
-                        "The Seventh Bench has fallen. Your next `jurytower fight` will begin "
+                        "The seventh hall has fallen. Your next `jurytower fight` will begin "
                         f"**Prestige {current_prestige + 1}**."
                     ),
                     inline=False,
@@ -5238,20 +5155,20 @@ class Battles(commands.Cog):
                 new_level = level
                 new_appeals = appeals - 1
                 outcome_text = (
-                    f"You were defeated on **Floor {floor}**, but the court grants an appeal. "
-                    f"You may retry the same floor. Appeals remaining: **{new_appeals}**."
+                    f"You fell on **Floor {floor}**, but an appeal was burned. "
+                    f"Retry the same floor. Appeals remaining: **{new_appeals}**."
                 )
             elif level > checkpoint:
                 new_level = checkpoint
                 new_appeals = 0
                 outcome_text = (
-                    f"You exhausted your appeals. The bench remands you to checkpoint **Floor {checkpoint}**."
+                    f"You exhausted your appeals. You are dragged back to **Floor {checkpoint}**."
                 )
             else:
                 new_level = level
                 new_appeals = appeals
                 outcome_text = (
-                    f"You were defeated on **Floor {floor}**. The case remains open and you may try again."
+                    f"You fell on **Floor {floor}**. Try again when ready."
                 )
 
             await connection.execute(
@@ -5472,7 +5389,7 @@ class Battles(commands.Cog):
                 "- Your first fight locks the run into a Court Tier based on your power\n"
                 "- Checkpoints can promote that tier if your build is at least 20% stronger\n"
                 "- Floors 22, 44, and 66 grant reset fragments that reforge into potions\n"
-                "- The court shop can sell one extra reset potion per cycle for writs\n"
+                "- The writ shop can sell one extra reset potion per cycle for writs\n"
                 "- Each new prestige lightly increases enemy stats"
             ),
             inline=False,
@@ -5521,20 +5438,20 @@ class Battles(commands.Cog):
         floor_data = None
         if level > JURY_TOWER_FLOOR_COUNT:
             current_case = "Cycle complete"
-            current_title = "Awaiting recommittal"
-            current_act = "Deliberation complete"
+            current_title = "The black halls fall silent"
+            current_act = "Reckoning complete"
         else:
             floor_data = self._get_jury_floor_data(level)
             current_case = f"Floor {level}"
             current_title = floor_data["title"] if floor_data else "Unknown"
-            current_act = floor_data.get("act_label", "Proceedings") if floor_data else "Proceedings"
+            current_act = floor_data.get("act_label", "Outer Gate") if floor_data else "Outer Gate"
 
         embed = discord.Embed(
             title="Jury Tower Progress",
             description=(
-                f"Current Case: **{current_case}**\n"
-                f"Current Chamber: **{current_title}**\n"
-                f"Current Act: **{current_act}**"
+                f"Current Floor: **{current_case}**\n"
+                f"Current Hall: **{current_title}**\n"
+                f"Current Phase: **{current_act}**"
             ),
             color=0x8B5CF6,
         )
@@ -5796,7 +5713,7 @@ class Battles(commands.Cog):
         if not await ctx.confirm(
             f"Spend **{cost} Court Writs** for **{reward_label}**?"
         ):
-            return await ctx.send("The court purchase was cancelled.")
+            return await ctx.send("The purchase was cancelled.")
 
         async with self.bot.pool.acquire() as connection:
             async with connection.transaction():
@@ -6087,7 +6004,7 @@ class Battles(commands.Cog):
                 else:
                     await self._handle_jury_defeat(ctx, level, floor_data)
             elif battle_timed_out:
-                await ctx.send("The hearing timed out. The case remains open on the same floor.")
+                await ctx.send("The fight timed out. The floor remains open.")
             else:
                 await self._handle_jury_defeat(ctx, level, floor_data)
 

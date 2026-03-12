@@ -80,27 +80,19 @@ class JuryTowerBattle(TowerBattle):
         current_enemy = self.enemy_team.combatants[self.current_opponent_index]
         current_enemy_key = getattr(current_enemy, "jury_key", "boss")
         enemy_opening = (self.floor_data.get("enemy_openings") or {}).get(current_enemy_key)
-        hook_text = self._story_hook()
         await self.add_to_log(
-            f"{self.judge_name}, {self.judge_title}, convenes Floor {self.floor_number}: **{self.floor_title}**."
+            f"{self.judge_name}, {self.judge_title}, watches from the dark."
         )
-        opening_brief = [line for line in (
-            self.choice_summary,
-            f"Hook: {hook_text}" if hook_text else None,
-            (
-                f"Mechanic: {self._clip_text(self.floor_data.get('mechanic_hint'), limit=150)}"
-                if self.floor_data.get("mechanic_hint")
-                else None
-            ),
-        ) if line]
-        if opening_brief:
-            await self.add_to_log("\n".join(opening_brief), force_new_action=False)
-        intro_lines = [f"{current_enemy.name} takes the stand."]
+        if self.choice_summary:
+            await self.add_to_log(self.choice_summary, force_new_action=False)
+        intro_lines = [f"Prepare to face {current_enemy.name}!"]
         if enemy_opening:
             intro_lines.append(enemy_opening)
         await self.add_to_log("\n".join(intro_lines), force_new_action=True)
         self.battle_message = await self.ctx.send(embed=await self.create_battle_embed())
         await asyncio.sleep(2)
+        await self.add_to_log(f"Battle against {current_enemy.name} has begun!", force_new_action=True)
+        await self.update_display()
         return True
 
     def _store_base_stats(self):
@@ -147,22 +139,16 @@ class JuryTowerBattle(TowerBattle):
     def _apply_choice_effects(self):
         label = self._choice_label()
         effect_text = self._choice_effect_text()
-        quote_text = self._choice_quote()
-        summary_parts = []
-        if quote_text:
-            summary_parts.append(f'"{quote_text}"')
-        if effect_text:
-            summary_parts.append(effect_text)
-        summary_tail = " ".join(summary_parts).strip()
+        summary_tail = effect_text or ""
         if self.trial_type == "mercy":
             if self.choice_key == "condemn":
                 self._modify_player_damage(Decimal("1.15"))
                 self.surrender_threshold = Decimal("0")
-                self.choice_summary = f"Verdict stance: **{label}**. {summary_tail or 'You hit harder, but every ruthless finish is remembered.'}"
+                self.choice_summary = f"Stance: **{label}**. {summary_tail or 'You hit harder, but each execution stains the climb.'}"
             else:
                 self._modify_player_damage(Decimal("0.95"))
                 self.surrender_threshold = Decimal("0.30")
-                self.choice_summary = f"Verdict stance: **{label}**. {summary_tail or 'Enemies are more likely to surrender when cornered.'}"
+                self.choice_summary = f"Stance: **{label}**. {summary_tail or 'Broken foes can kneel instead of dying.'}"
 
         elif self.trial_type == "truth":
             self.truth_correct = self.choice_key == self.truth_lair_target
@@ -173,24 +159,24 @@ class JuryTowerBattle(TowerBattle):
                     liar.armor *= Decimal("0.82")
                     liar.damage *= Decimal("0.92")
                 self.floor_favor_delta += 1
-                self.choice_summary = f"Accusation filed: **{accused_name}**. {summary_tail or 'The bench senses you may have named the liar.'}"
+                self.choice_summary = f"Marked: **{accused_name}**. {summary_tail or 'You may have marked the liar.'}"
             else:
                 chosen = self._find_enemy_by_key(self.choice_key)
                 if chosen:
                     chosen.armor *= Decimal("1.12")
                     chosen.damage *= Decimal("1.08")
                 self.floor_contempt_delta += 1
-                self.choice_summary = f"Accusation filed: **{accused_name}**. {summary_tail or 'The courtroom murmurs at your haste.'}"
+                self.choice_summary = f"Marked: **{accused_name}**. {summary_tail or 'A bad mark will make this floor worse.'}"
 
         elif self.trial_type == "resolve":
             if self.choice_key == "rush":
                 self.resolve_round_goal = max(2, self.resolve_round_goal - 1)
                 self._modify_player_damage(Decimal("1.12"))
                 self._modify_enemy_damage(Decimal("1.08"))
-                self.choice_summary = f"Approach chosen: **{label}**. {summary_tail or 'The trial will resolve faster, but hits will land harder.'}"
+                self.choice_summary = f"Approach: **{label}**. {summary_tail or 'The fight ends faster, but every hit lands harder.'}"
             else:
                 self._modify_enemy_damage(Decimal("0.90"))
-                self.choice_summary = f"Approach chosen: **{label}**. {summary_tail or 'You brace for a long case and the bench softens incoming pressure.'}"
+                self.choice_summary = f"Approach: **{label}**. {summary_tail or 'You brace for a longer fight and soften incoming pressure.'}"
 
         elif self.trial_type == "sacrifice":
             if self.choice_key == "blood":
@@ -199,7 +185,7 @@ class JuryTowerBattle(TowerBattle):
                     if combatant.hp > combatant.max_hp:
                         combatant.hp = combatant.max_hp
                 self._modify_player_damage(Decimal("1.25"))
-                self.choice_summary = f"Oath offered: **{label}**. {summary_tail or 'Your life is shorter, your verdict swifter.'}"
+                self.choice_summary = f"Oath: **{label}**. {summary_tail or 'Less life. More force.'}"
             elif self.choice_key == "steel":
                 for combatant in self._alive_players():
                     combatant.armor *= Decimal("0.65")
@@ -208,7 +194,7 @@ class JuryTowerBattle(TowerBattle):
                         Decimal(str(getattr(combatant, "damage_reflection", 0))),
                         Decimal("0.12"),
                     )
-                self.choice_summary = f"Oath offered: **{label}**. {summary_tail or 'Your guard weakens, but every counterstroke matters.'}"
+                self.choice_summary = f"Oath: **{label}**. {summary_tail or 'Your guard weakens, but every counterstroke matters.'}"
             else:
                 pet_found = False
                 for combatant in self.player_team.combatants:
@@ -220,24 +206,24 @@ class JuryTowerBattle(TowerBattle):
                 if not pet_found:
                     self._modify_player_damage(Decimal("1.08"))
                     self._modify_player_armor(Decimal("1.05"))
-                self.choice_summary = f"Oath offered: **{label}**. {summary_tail or 'Loyalty beyond yourself becomes part of the case.'}"
+                self.choice_summary = f"Oath: **{label}**. {summary_tail or 'Your companion becomes part of the climb.'}"
 
         elif self.trial_type == "balance":
             if self.choice_key == "blade":
                 self.balance_meter = 1
                 self._modify_player_damage(Decimal("1.10"))
-                self.choice_summary = f"Scale favored: **{label}**. {summary_tail or 'You begin leaning toward aggression.'}"
+                self.choice_summary = f"Scale: **{label}**. {summary_tail or 'You begin leaning toward aggression.'}"
             else:
                 self.balance_meter = -1
                 self._modify_player_armor(Decimal("1.10"))
-                self.choice_summary = f"Scale favored: **{label}**. {summary_tail or 'You begin leaning toward restraint.'}"
+                self.choice_summary = f"Scale: **{label}**. {summary_tail or 'You begin leaning toward restraint.'}"
 
         elif self.trial_type == "ambition":
             if self.choice_key == "allin":
                 self._modify_player_damage(Decimal("1.05"))
-                self.choice_summary = f"Appetite declared: **{label}**. {summary_tail or 'Every kill will feed your momentum.'}"
+                self.choice_summary = f"Hunger: **{label}**. {summary_tail or 'Every kill will feed your momentum.'}"
             else:
-                self.choice_summary = f"Appetite declared: **{label}**. {summary_tail or 'The bench expects discipline, not frenzy.'}"
+                self.choice_summary = f"Hunger: **{label}**. {summary_tail or 'You climb without giving in to frenzy.'}"
 
         elif self.trial_type == "sentence":
             self.final_directive = self.choice_key
@@ -250,7 +236,7 @@ class JuryTowerBattle(TowerBattle):
                 boss = self._find_enemy_by_key("boss")
                 if boss:
                     boss.armor *= Decimal("0.90")
-            self.choice_summary = f"Final principle: **{label}**. {summary_tail or 'The bench will judge the consistency of your sentence.'}"
+            self.choice_summary = f"Law: **{label}**. {summary_tail or 'The last hall will judge whether you stay consistent.'}"
 
     def _modify_player_damage(self, multiplier: Decimal):
         for combatant in self.player_team.combatants:
@@ -274,10 +260,13 @@ class JuryTowerBattle(TowerBattle):
         self.current_opponent_index += 1
         current_enemy = self.enemy_team.combatants[self.current_opponent_index]
         opening = (self.floor_data.get("enemy_openings") or {}).get(getattr(current_enemy, "jury_key", "boss"))
-        await self.add_to_log(f"{current_enemy.name} approaches the bench.", force_new_action=True)
+        await self.add_to_log(f"Prepare to face {current_enemy.name}!", force_new_action=True)
         if opening:
             await self.add_to_log(opening, force_new_action=False)
         self.update_turn_order()
+        await self.update_display()
+        await asyncio.sleep(2)
+        await self.add_to_log(f"Battle with {current_enemy.name} begins!", force_new_action=True)
         await self.update_display()
         self.pending_enemy_transition = False
         self.transition_state = 0
@@ -332,7 +321,7 @@ class JuryTowerBattle(TowerBattle):
         if self.trial_type == "balance" and current_player_hp < player_hp_before:
             self.balance_meter = max(self.balance_meter - 1, -4)
             if self.balance_meter <= -3:
-                await self._grant_team_shield(Decimal("35"), "The scale swings toward restraint. The bench shields you.")
+                await self._grant_team_shield(Decimal("35"), "The scale swings toward restraint. The chains shield you.")
 
         if self.trial_type == "resolve" and enemy.is_alive():
             self.resolve_rounds_survived += 1
@@ -343,7 +332,7 @@ class JuryTowerBattle(TowerBattle):
                     combatant.hp = Decimal("0")
                 self.floor_favor_delta += 2
                 await self.add_to_log(
-                    f"{self.judge_name} strikes the bench. You endured **{self.resolve_round_goal}** rounds. The chamber yields."
+                    f"{self.judge_name} slams the black maul. You endured **{self.resolve_round_goal}** rounds. The gate yields."
                 )
                 await self.update_display()
 
@@ -388,7 +377,7 @@ class JuryTowerBattle(TowerBattle):
         enemy.is_spared = True
         enemy.hp = Decimal("0")
         self.floor_favor_delta += 1
-        await self.add_to_log(f"🕊️ {enemy.name} yields to the court and is pardoned.")
+        await self.add_to_log(f"🕊️ {enemy.name} drops to a knee. You spare them.")
         if self.current_opponent_index < len(self.enemy_team.combatants) - 1:
             self.pending_enemy_transition = True
             self.transition_state = 1
@@ -406,7 +395,7 @@ class JuryTowerBattle(TowerBattle):
             enemy.is_spared = True
             enemy.hp = Decimal("0")
             self.floor_favor_delta += 1
-            await self.add_to_log(f"📜 {enemy.name} flees the stand alive, preserving the testimony.")
+            await self.add_to_log(f"📜 {enemy.name} escapes with the truth intact.")
             if self.current_opponent_index < len(self.enemy_team.combatants) - 1:
                 self.pending_enemy_transition = True
                 self.transition_state = 1
@@ -420,10 +409,10 @@ class JuryTowerBattle(TowerBattle):
         if self.trial_type == "truth":
             if jury_key == self.truth_lair_target and self.truth_correct:
                 self.floor_favor_delta += 1
-                await self.add_to_log(f"🔎 Your accusation against {enemy.name} is vindicated.")
+                await self.add_to_log(f"🔎 Your mark against {enemy.name} was true.")
             elif jury_key == self.truth_witness_target and not getattr(enemy, "is_spared", False):
                 self.floor_contempt_delta += 2
-                await self.add_to_log(f"⚠️ {enemy.name} was a vital witness. The bench marks your haste with contempt.")
+                await self.add_to_log(f"⚠️ {enemy.name} carried the truth. Killing them stains the climb.")
 
         if self.trial_type == "ambition":
             self.ambition_stacks += 1
@@ -431,7 +420,7 @@ class JuryTowerBattle(TowerBattle):
                 self.ambition_stacks = min(self.ambition_stacks, 3)
                 await self._heal_team(Decimal("20"), "Measured ambition restores your footing.")
             await self._apply_ambition_state()
-            await self.add_to_log(f"👑 Ambition rises to **{self.ambition_stacks}**.")
+            await self.add_to_log(f"👑 Hunger rises to **{self.ambition_stacks}**.")
 
         if self.trial_type == "sentence":
             if self.final_directive == "mercy" and getattr(enemy, "is_spared", False):
@@ -469,7 +458,7 @@ class JuryTowerBattle(TowerBattle):
             self.floor_writs_delta += bonus
             if self.ambition_stacks >= 4:
                 self.floor_contempt_delta += 2
-                self.floor_notes.append("The court admired your force, but not your restraint.")
+                self.floor_notes.append("The judges admired your force, not your restraint.")
         else:
             if self.ambition_stacks <= 2:
                 self.floor_favor_delta += 2
@@ -499,7 +488,7 @@ class JuryTowerBattle(TowerBattle):
                 self._score_sentence()
             elif self.trial_type == "resolve" and self.resolve_round_goal and self.resolve_rounds_survived < self.resolve_round_goal:
                 self.floor_contempt_delta += 1
-                self.floor_notes.append("You won quickly, but the court wanted endurance.")
+                self.floor_notes.append("You won quickly, but the hall wanted endurance.")
 
         self.verdict_result = {
             "favor": self.floor_favor_delta,
@@ -512,13 +501,13 @@ class JuryTowerBattle(TowerBattle):
 
     async def create_battle_embed(self):
         current_enemy = self.enemy_team.combatants[self.current_opponent_index]
+        element_emoji_map = {}
+        if hasattr(self.ctx.bot.cogs["Battles"], "emoji_to_element"):
+            element_emoji_map = self.ctx.bot.cogs["Battles"].emoji_to_element
+
         embed = discord.Embed(
-            title=f"Jury Tower: Floor {self.floor_number} - {self.floor_title}",
-            description=(
-                f"**{self.judge_name}, {self.judge_title}** presides.\n"
-                f"**Act:** {self.floor_data.get('act_label', 'Proceedings')}\n"
-                f"Current stance: **{self._choice_label()}**"
-            ),
+            title=f"Jury Tower: Floor {self.floor_number} - {self.ctx.author.display_name} vs {current_enemy.name}",
+            description=f"**{self.judge_name}, {self.judge_title}**",
             color=self.floor_color,
         )
 
@@ -526,58 +515,56 @@ class JuryTowerBattle(TowerBattle):
             current_hp = max(0, float(combatant.hp))
             max_hp = max(1.0, float(combatant.max_hp))
             hp_bar = self.create_hp_bar(current_hp, max_hp)
-            role = "Pet" if combatant.is_pet else "Advocate"
             field_value = f"HP: {current_hp:.1f}/{max_hp:.1f}\n{hp_bar}"
+            element_emoji = "❌"
+            for emoji, element in element_emoji_map.items():
+                if element == combatant.element:
+                    element_emoji = emoji
+                    break
+            if combatant.is_pet:
+                field_name = f"{combatant.name} {element_emoji}"
+            else:
+                field_name = f"**[TEAM A]** \n{combatant.display_name} {element_emoji}"
+            if getattr(combatant, "damage_reflection", 0) > 0:
+                reflection_percent = float(combatant.damage_reflection) * 100
+                field_value += f"\nDamage Reflection: {reflection_percent:.1f}%"
             shield = Decimal(str(getattr(combatant, "shield", 0)))
             if shield > 0:
                 field_value += f"\nShield: {float(shield):.1f}"
-            embed.add_field(name=f"{role} - {combatant.display_name}", value=field_value, inline=False)
+            embed.add_field(name=field_name, value=field_value, inline=False)
 
         enemy_hp = max(0, float(current_enemy.hp))
         enemy_max_hp = max(1.0, float(current_enemy.max_hp))
         enemy_bar = self.create_hp_bar(enemy_hp, enemy_max_hp)
         enemy_value = f"HP: {enemy_hp:.1f}/{enemy_max_hp:.1f}\n{enemy_bar}"
+        enemy_emoji = "❌"
+        for emoji, element in element_emoji_map.items():
+            if element == current_enemy.element:
+                enemy_emoji = emoji
+                break
         if getattr(current_enemy, "is_spared", False):
-            enemy_value += "\nSpared by the court"
-        embed.add_field(name=f"Defendant - {current_enemy.name}", value=enemy_value, inline=False)
+            enemy_value += "\nSpared"
+        embed.add_field(name=f"**[TEAM B]** \n{current_enemy.name} {enemy_emoji}", value=enemy_value, inline=False)
 
-        case_lines = []
-        hook_text = self._story_hook()
-        if hook_text:
-            case_lines.append(hook_text)
-        if self.floor_data.get("mechanic_hint"):
-            case_lines.append(
-                f"Mechanic: {self._clip_text(self.floor_data['mechanic_hint'], limit=140)}"
-            )
-        if case_lines:
-            embed.add_field(name="Floor Hook", value="\n".join(case_lines), inline=False)
+        state_lines = [f"Stance: **{self._choice_label()}**"]
         choice_effect = self._choice_effect_text()
         if choice_effect:
-            embed.add_field(
-                name="Choice Impact",
-                value=f"**{self._choice_label()}**: {choice_effect}",
-                inline=False,
-            )
-
-        verdict_lines = [
-            f"Favor: **+{self.floor_favor_delta}**",
-            f"Contempt: **+{self.floor_contempt_delta}**",
-            f"Writs this floor: **{self.floor_writs_delta}**",
-        ]
+            state_lines.append(choice_effect)
         if self.trial_type == "resolve" and self.resolve_round_goal:
-            verdict_lines.append(
+            state_lines.append(
                 f"Resolve: **{self.resolve_rounds_survived}/{self.resolve_round_goal}** enemy turns survived"
             )
         if self.trial_type == "balance":
-            verdict_lines.append(f"Scale Meter: **{self.balance_meter:+d}**")
+            state_lines.append(f"Scale Meter: **{self.balance_meter:+d}**")
         if self.trial_type == "ambition" or self.final_directive == "power":
-            verdict_lines.append(f"Ambition: **{self.ambition_stacks}**")
+            state_lines.append(f"Hunger: **{self.ambition_stacks}**")
         if self.trial_type == "truth":
             accused = self.floor_data.get("enemy_names", {}).get(self.choice_key, self.choice_key)
-            verdict_lines.append(f"Accused: **{accused}**")
-        embed.add_field(name="Court Record", value="\n".join(verdict_lines), inline=False)
+            state_lines.append(f"Marked: **{accused}**")
+        embed.add_field(name="Battle State", value="\n".join(state_lines), inline=False)
 
-        log_text = "\n\n".join([f"**Action #{index}**\n{message}" for index, message in self.log])
-        embed.add_field(name="Proceedings", value=log_text or "The chamber waits.", inline=False)
+        recent_log = self.log[-4:]
+        log_text = "\n\n".join([f"**Action #{index}**\n{message}" for index, message in recent_log])
+        embed.add_field(name="Battle Log", value=log_text or "Battle starting...", inline=False)
         embed.set_footer(text=f"Battle ID: {self.battle_id}")
         return embed

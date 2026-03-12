@@ -26,99 +26,99 @@ class JudgeDefinition:
 JUDGES: tuple[JudgeDefinition, ...] = (
     JudgeDefinition(
         key="mercy",
-        judge_name="Aurelia",
-        title="Judge of Mercy",
+        judge_name="Morvane",
+        title="Iron Mercy",
         element="Light",
         color=0xD7C178,
-        chamber_prefix="Hall of Mercy",
-        minion_one=("Repentant Squire", "Pleading Duelist", "Weeping Standard-Bearer"),
-        minion_two=("Ash Bailiff", "Lantern Penitent", "Soft-Voiced Headsman"),
-        bosses=("Magister of Clemency", "The Last Pardon", "Absolver Halcyon"),
+        chamber_prefix="Hall of Kneeling Iron",
+        minion_one=("Kneeling Reaver", "Ashen Supplicant", "Chainbound Penitent"),
+        minion_two=("Lantern Warden", "Iron Confessor", "Mercy Hound"),
+        bosses=("Pardon Knight", "Halcyon the Absolver", "Morvane's Headsman"),
         trial_type="mercy",
-        intro_line="Mercy is not weakness. It is strength disciplined by conscience.",
+        intro_line="Mercy only matters when it costs you the kill.",
     ),
     JudgeDefinition(
         key="truth",
-        judge_name="Veritus",
-        title="Judge of Truth",
+        judge_name="Sevrak",
+        title="Veiled Truth",
         element="Wind",
         color=0x70B4E4,
-        chamber_prefix="Gallery of Testimony",
-        minion_one=("False Witness", "Paper-Knife Clerk", "Echo Examiner"),
-        minion_two=("Veiled Informant", "Court Scribe", "Glass-Eyed Witness"),
-        bosses=("Grand Cross-Examiner", "The Perjured Crown", "Archivist Null"),
+        chamber_prefix="Crypt of Echoes",
+        minion_one=("Masked Liar", "Tongueless Herald", "Rune-Scar Witness"),
+        minion_two=("Ash Scribe", "Blind Archivist", "Grave Listener"),
+        bosses=("The Perjurer", "Null Archivist", "Sevrak's Inquisitor"),
         trial_type="truth",
-        intro_line="Truth is not loud. It survives scrutiny.",
+        intro_line="Truth survives the blade, not the rumor.",
     ),
     JudgeDefinition(
         key="resolve",
-        judge_name="Bastion",
-        title="Judge of Resolve",
+        judge_name="Varkhul",
+        title="Black Bastion",
         element="Earth",
         color=0x9C8F73,
-        chamber_prefix="Ward of Endurance",
-        minion_one=("Stoneworn Guard", "Siege Bailiff", "Unbroken Veteran"),
-        minion_two=("Trial Hound", "Iron Sentinel", "Oath-Bound Pike"),
-        bosses=("The Long March", "Citadel Warden", "Last Stand of Varr"),
+        chamber_prefix="Gate of Endurance",
+        minion_one=("Stonebound Guard", "Siege Hound", "Unbroken Halberd"),
+        minion_two=("Iron Sentinel", "Gravelord Veteran", "Oath Pike"),
+        bosses=("The Wall That Walks", "Citadel Reaver", "Varkhul the Unmoved"),
         trial_type="resolve",
-        intro_line="Resolve is proven when the verdict takes longer than your patience.",
+        intro_line="If you cannot endure, you do not advance.",
     ),
     JudgeDefinition(
         key="sacrifice",
         judge_name="Caldris",
-        title="Judge of Sacrifice",
+        title="Pyre Tithe",
         element="Fire",
         color=0xD96B39,
-        chamber_prefix="Forge of Oaths",
-        minion_one=("Ember Penitent", "Brand Knight", "Ashen Forgebearer"),
-        minion_two=("Cinder Collector", "Scorch Bailiff", "Oath Furnace"),
-        bosses=("The Tithe Engine", "High Forger Calvein", "Burnished Adjudicator"),
+        chamber_prefix="Forge of Ashen Oaths",
+        minion_one=("Ember Penitent", "Brand Knight", "Ash Forgebearer"),
+        minion_two=("Cinder Collector", "Scorch Warden", "Oath Furnace"),
+        bosses=("The Tithe Engine", "High Forger Calvein", "Caldris the Furnace"),
         trial_type="sacrifice",
-        intro_line="Every oath costs something. Weak vows are free.",
+        intro_line="Nothing passes the forge unpaid.",
     ),
     JudgeDefinition(
         key="balance",
-        judge_name="Equa",
-        title="Judge of Balance",
+        judge_name="Meridrax",
+        title="Chain Balance",
         element="Water",
         color=0x5EA8D1,
-        chamber_prefix="Scales of Accord",
-        minion_one=("Chainbearer", "Counterweight Adept", "Measured Spear"),
-        minion_two=("Scale Keeper", "Ledger Knight", "Mirror Shield"),
-        bosses=("Twin Pan Executor", "The Counterpoise", "Lady Meridian"),
+        chamber_prefix="Dais of Hanging Chains",
+        minion_one=("Chainbearer", "Counterweight Spear", "Measured Reaver"),
+        minion_two=("Scale Knight", "Weight Warden", "Mirror Shield"),
+        bosses=("Twin-Pan Executioner", "The Counterpoise", "Meridrax the Leveler"),
         trial_type="balance",
-        intro_line="To lean too far in any direction is to become predictable.",
+        intro_line="A wild swing is just a confession.",
     ),
     JudgeDefinition(
         key="ambition",
         judge_name="Mordane",
-        title="Judge of Ambition",
+        title="Crown Hunger",
         element="Dark",
         color=0x9655B6,
-        chamber_prefix="Ascendant Tribunal",
-        minion_one=("Laureled Reaver", "Greed Knight", "Crown-Thief"),
-        minion_two=("Triumph Hound", "Glory Collector", "Vault Breaker"),
-        bosses=("The Climbing King", "Vault of Desire", "Sovereign of More"),
+        chamber_prefix="Throne of Want",
+        minion_one=("Laureled Reaver", "Crown-Thief", "Gilded Hound"),
+        minion_two=("Vault Breaker", "Glory Collector", "Throne Climber"),
+        bosses=("The Climbing King", "Vault Tyrant", "Mordane the Unfilled"),
         trial_type="ambition",
-        intro_line="Ambition is admirable until it becomes appetite.",
+        intro_line="Hunger makes the strong faster and the foolish blind.",
     ),
     JudgeDefinition(
         key="sentence",
         judge_name="Septimus",
-        title="Judge of Final Sentence",
+        title="Final Sentence",
         element="Corrupted",
         color=0xC0392B,
-        chamber_prefix="Seat of Final Sentence",
-        minion_one=("Red Clerk", "Final Bailiff", "Sentence Hound"),
-        minion_two=("Doom Herald", "Black-Robed Jury", "Gavel Revenant"),
-        bosses=("The Sevenfold Bench", "Executor Prime", "High Judge Septimus"),
+        chamber_prefix="Seat of the Black Maul",
+        minion_one=("Red Herald", "Sentence Hound", "Gallows Warden"),
+        minion_two=("Doom Herald", "Black Jury", "Maul Revenant"),
+        bosses=("The Black Jury", "Execution Prime", "High Judge Septimus"),
         trial_type="sentence",
-        intro_line="A final sentence remembers every mercy, lie, oath, excess, and compromise before it falls.",
+        intro_line="Every choice returns to the maul.",
     ),
 )
 
 
-ACT_LABELS = ("Opening Arguments", "Cross Examination", "Chamber Recess", "Final Verdict")
+ACT_LABELS = ("Outer Gate", "Black Hall", "Inner Vault", "Final Reckoning")
 JURY_BRACKET_BASE_SNAPSHOT = {
     "attack_base": 3200,
     "hp_base": 12000,
@@ -242,21 +242,21 @@ def _build_choice(judge: JudgeDefinition, local_floor: int, names: dict[str, str
         return {
             "prompt": prompt,
             "default": "pardon",
-            "prompt_text": "Will you spare the weak when they yield, or condemn every foe who kneels?",
+            "prompt_text": "Will you stay the blow, or bury everything before it kneels?",
             "options": [
                 {
                     "key": "pardon",
                     "label": "Pardon",
-                    "description": "Show restraint and let the guilty reveal themselves.",
-                    "effect": "-5% damage. Enemies can surrender below 30% HP for extra favor.",
-                    "quote": "Then spend mercy with discipline, not sentiment.",
+                    "description": "Spare the broken and force the strong to reveal themselves.",
+                    "effect": "-5% damage. Enemies can kneel below 30% HP for extra favor.",
+                    "quote": "Mercy is steel with the swing held back.",
                 },
                 {
                     "key": "condemn",
                     "label": "Condemn",
-                    "description": "End the case fast and accept the stain.",
-                    "effect": "+15% damage. No surrender. Each ruthless finish adds contempt.",
-                    "quote": "Then let every death become part of your record.",
+                    "description": "Break the floor fast and wear the stain.",
+                    "effect": "+15% damage. No surrender. Each execution adds contempt.",
+                    "quote": "Then let the dead speak for you.",
                 },
             ],
         }
@@ -268,16 +268,16 @@ def _build_choice(judge: JudgeDefinition, local_floor: int, names: dict[str, str
             {
                 "key": target_key,
                 "label": names[target_key],
-                "description": "Name this combatant as the liar before testimony begins.",
-                "effect": "Correct accusation weakens the liar and grants favor. Wrong accusation strengthens them and adds contempt.",
-                "quote": "A name entered into the record cannot be withdrawn.",
+                "description": "Mark this combatant as the liar before steel is drawn.",
+                "effect": "Correct mark weakens the liar and grants favor. Wrong mark strengthens them and adds contempt.",
+                "quote": "Mark carefully. The hall remembers mistakes.",
             }
             for target_key in ("minion1", "minion2", "boss")
         ]
         return {
             "prompt": True,
             "default": liar_target,
-            "prompt_text": "One foe lies, one conceals the truth, and one profits from both. Whom do you accuse?",
+            "prompt_text": "One lies. One carries the truth. Mark the liar.",
             "options": options,
             "liar_target": liar_target,
             "witness_target": witness_target,
@@ -288,21 +288,21 @@ def _build_choice(judge: JudgeDefinition, local_floor: int, names: dict[str, str
         return {
             "prompt": prompt,
             "default": "stand",
-            "prompt_text": "Will you stand and weather the case, or try to break it before it breaks you?",
+            "prompt_text": "Will you endure the gate, or break it before it breaks you?",
             "options": [
                 {
                     "key": "stand",
                     "label": "Stand Firm",
-                    "description": "Absorb the pressure and outlast the chamber.",
+                    "description": "Take the weight and outlast the hall.",
                     "effect": "-10% enemy damage. Team sustain while enduring. Survive the required enemy turns to win cleanly.",
-                    "quote": "Good. Let the room break itself against your patience.",
+                    "quote": "Let the hall spend itself against you.",
                 },
                 {
                     "key": "rush",
                     "label": "Press Attack",
-                    "description": "Try to crack the case before it settles on you.",
+                    "description": "Crack the line before the pressure settles in.",
                     "effect": "+12% damage. Survival goal is shorter, but enemies hit +8% harder.",
-                    "quote": "Then be sharp enough to finish before endurance matters.",
+                    "quote": "Then kill fast enough that endurance never matters.",
                 },
             ],
             "round_goal": goal,
@@ -312,28 +312,28 @@ def _build_choice(judge: JudgeDefinition, local_floor: int, names: dict[str, str
         return {
             "prompt": True,
             "default": "steel",
-            "prompt_text": "Choose the oath you will give up before the forge opens.",
+            "prompt_text": "Choose what the forge will take from you.",
             "options": [
                 {
                     "key": "blood",
                     "label": "Blood Oath",
-                    "description": "Give up your safety and turn it into force.",
+                    "description": "Trade your life for force.",
                     "effect": "-25% max HP, +25% damage.",
-                    "quote": "Pain is easy to promise. Paying it is harder.",
+                    "quote": "Bleed first, then swing.",
                 },
                 {
                     "key": "steel",
                     "label": "Steel Oath",
-                    "description": "Shed your guard and punish what reaches you.",
+                    "description": "Shed your guard and punish what touches you.",
                     "effect": "-35% armor, +10 luck, minimum 12% reflection.",
-                    "quote": "Then let every opening become a trap for them instead.",
+                    "quote": "A missing plate is still a weapon if used well.",
                 },
                 {
                     "key": "beast",
                     "label": "Beast Oath",
-                    "description": "Bind the oath to instinct, fang, and loyalty.",
+                    "description": "Bind the oath to fang and instinct.",
                     "effect": "Pet: +25% damage and +15% max HP. No pet: lighter solo damage/armor bonus.",
-                    "quote": "Then trust what fights beside you more than what hides behind you.",
+                    "quote": "Trust the beast beside you more than the fear behind you.",
                 },
             ],
         }
@@ -342,21 +342,21 @@ def _build_choice(judge: JudgeDefinition, local_floor: int, names: dict[str, str
         return {
             "prompt": prompt,
             "default": "shield",
-            "prompt_text": "Which side of the scale will you favor when the chamber tips?",
+            "prompt_text": "When the chains swing, which side do you feed?",
             "options": [
                 {
                     "key": "shield",
                     "label": "Shield",
-                    "description": "Open cautiously and keep the scale from running away.",
+                    "description": "Open steady and keep the chain from running wild.",
                     "effect": "+10% armor and starts the meter toward restraint. Staying near center earns favor.",
-                    "quote": "Restraint is not passivity. Prove you know the difference.",
+                    "quote": "Stand still enough to choose your violence.",
                 },
                 {
                     "key": "blade",
                     "label": "Blade",
-                    "description": "Lean hard into aggression and control the swing.",
+                    "description": "Lean hard into aggression and master the recoil.",
                     "effect": "+10% damage and starts the meter toward aggression. Overcommitting earns contempt.",
-                    "quote": "Then strike cleanly enough that excess never owns you.",
+                    "quote": "If you swing wide, the chains will answer.",
                 },
             ],
         }
@@ -365,21 +365,21 @@ def _build_choice(judge: JudgeDefinition, local_floor: int, names: dict[str, str
         return {
             "prompt": True,
             "default": "measured",
-            "prompt_text": "How hungry will you allow yourself to become?",
+            "prompt_text": "How much hunger will you let into the climb?",
             "options": [
                 {
                     "key": "measured",
                     "label": "Measured",
-                    "description": "Climb without letting appetite steer the run.",
+                    "description": "Climb without letting hunger take the reins.",
                     "effect": "Kills heal your team. Lower momentum, cleaner verdicts, less contempt risk.",
-                    "quote": "Want more, certainly. Need more? That is the question.",
+                    "quote": "Keep the crown in sight. Do not let it into your skull.",
                 },
                 {
                     "key": "allin",
                     "label": "All-In",
-                    "description": "Take the fast path and dare the bench to object.",
+                    "description": "Take the fast path and dare the tower to answer.",
                     "effect": "+5% damage. Kills ramp momentum and extra writs, but also scrutiny and armor loss.",
-                    "quote": "Then climb hard enough that even your fall looks expensive.",
+                    "quote": "Climb so hard the fall has a price tag.",
                 },
             ],
         }
@@ -387,28 +387,28 @@ def _build_choice(judge: JudgeDefinition, local_floor: int, names: dict[str, str
     return {
         "prompt": True,
         "default": "mercy",
-        "prompt_text": "The final bench offers no innocence, only philosophy. Which principle guides your sentence?",
+        "prompt_text": "The black maul falls soon. Which law do you carry into the last hall?",
         "options": [
             {
                 "key": "mercy",
                 "label": "Mercy",
-                "description": "End the tower by preserving what can still be spared.",
+                "description": "Carry restraint into the last kill.",
                 "effect": "Allows surrender below 22% HP and reduces enemy damage by 5%.",
-                "quote": "Then do not call yourself merciful unless it costs you something.",
+                "quote": "Do not name yourself merciful unless it costs you blood.",
             },
             {
                 "key": "truth",
                 "label": "Truth",
-                "description": "Anchor the final case on consistency and exposed lies.",
+                "description": "Anchor the last climb on consistency and exposed lies.",
                 "effect": "Weakens boss armor and rewards consistent, accurate play.",
-                "quote": "Then hold to one line of truth when the floor starts moving.",
+                "quote": "Hold one truth when the floor starts to move.",
             },
             {
                 "key": "power",
                 "label": "Power",
-                "description": "Take raw force and let the verdict chase you after.",
+                "description": "Take raw force and pay for it later.",
                 "effect": "+15% damage and extra writs, but harsher scrutiny as momentum climbs.",
-                "quote": "Then make force your argument and accept its consequences.",
+                "quote": "If force is your law, live under it.",
             },
         ],
     }
@@ -426,217 +426,215 @@ def _phase_index(local_floor: int) -> int:
 
 def _trial_hint(judge: JudgeDefinition, local_floor: int) -> str:
     if judge.trial_type == "mercy":
-        if local_floor >= 8:
-            return "Pardoned defendants still count as wins. The court cares about how the case ends, not how loudly it ends."
-        return "Under Pardon, wounded defendants can yield instead of dying. Condemn gives speed but every ruthless finish is remembered."
+        return "Pardon lets broken foes kneel. Condemn kills faster but stains the climb."
     if judge.trial_type == "truth":
-        return "Accusing the liar weakens the case against you. Letting the witness escape alive earns additional favor."
+        return "Mark the liar. Keep the witness alive."
     if judge.trial_type == "resolve":
-        return "You can win this case by surviving the required number of enemy turns. Fast clears are not always the cleanest clears."
+        return "Some floors are won by surviving, not rushing."
     if judge.trial_type == "sacrifice":
-        return "Pick the oath that best fits your build. The safest-looking oath is not always the most efficient."
+        return "Pick the loss your build can actually afford."
     if judge.trial_type == "balance":
-        return "The Scale Meter rewards measured play. If you go too hard in one direction, the bench calls it imbalance."
+        return "Stay near center. Extremes are punished."
     if judge.trial_type == "ambition":
-        return "All-In scales harder with each kill, but unchecked momentum turns into contempt."
-    return "Your chosen principle is judged against everything you do afterward. Consistency matters more than raw speed."
+        return "All-In pays more, but greed strips your guard."
+    return "The last hall rewards consistency more than panic."
 
 
 def _enemy_openings(judge: JudgeDefinition, names: dict[str, str]) -> dict[str, str]:
     if judge.key == "mercy":
         return {
-            "minion1": f"{names['minion1']} drops to one knee. 'Will the court hear me before the blade?'",
-            "minion2": f"{names['minion2']} lifts a lantern. 'Mercy for me, punishment for you. That is how these halls work.'",
-            "boss": f"{names['boss']} smiles thinly. 'Mercy is a privilege I issue, not a law I obey.'",
+            "minion1": f"{names['minion1']} drops to one knee. 'Will you swing, or stay your hand?'",
+            "minion2": f"{names['minion2']} raises a lantern. 'Mercy without strength is begging.'",
+            "boss": f"{names['boss']} drags a greatblade. 'Only the strong are allowed to spare.'",
         }
     if judge.key == "truth":
         return {
-            "minion1": f"{names['minion1']} spreads their hands. 'I only repeat what benefits the room.'",
-            "minion2": f"{names['minion2']} whispers behind a veil. 'Truth survives only if someone bothers to protect it.'",
-            "boss": f"{names['boss']} taps the witness rail. 'Facts are fragile. Let us see whether you can keep them alive.'",
+            "minion1": f"{names['minion1']} tilts a cracked mask. 'Mark wrong and I become truth.'",
+            "minion2": f"{names['minion2']} whispers. 'Truth dies if nobody carries it out.'",
+            "boss": f"{names['boss']} lowers a spear. 'Find the lie before it finds you.'",
         }
     if judge.key == "resolve":
         return {
-            "minion1": f"{names['minion1']} plants a spear. 'This hall does not break quickly, and neither do I.'",
-            "minion2": f"{names['minion2']} circles slowly. 'Endurance is a sentence, not a virtue, until you survive it.'",
-            "boss": f"{names['boss']} braces behind stone. 'If you want victory, prove you can outlast the room itself.'",
+            "minion1": f"{names['minion1']} plants a spear. 'You will tire before the gate does.'",
+            "minion2": f"{names['minion2']} keeps marching. 'Endurance is paid one hit at a time.'",
+            "boss": f"{names['boss']} braces behind stone. 'Outlast the wall, or die against it.'",
         }
     if judge.key == "sacrifice":
         return {
-            "minion1": f"{names['minion1']} drags a heated chain. 'Everything valuable burns before it shines.'",
-            "minion2": f"{names['minion2']} fans the forge. 'The oath you keep is weaker than the one you surrendered.'",
-            "boss": f"{names['boss']} raises a hammer. 'Offer something real, or leave with nothing.'",
+            "minion1": f"{names['minion1']} drags a hot chain. 'Everything worth keeping burns first.'",
+            "minion2": f"{names['minion2']} fans the forge. 'Cheap vows make weak steel.'",
+            "boss": f"{names['boss']} lifts a hammer. 'Pay, or be broken.'",
         }
     if judge.key == "balance":
         return {
-            "minion1": f"{names['minion1']} adjusts a hanging weight. 'One wrong lean and the room chooses for you.'",
-            "minion2": f"{names['minion2']} studies your stance. 'Excess is merely imbalance wearing confidence.'",
-            "boss": f"{names['boss']} extends both hands. 'The scale records every overreach.'",
+            "minion1": f"{names['minion1']} pulls a chain taut. 'Lean too far and the hall leans back.'",
+            "minion2": f"{names['minion2']} studies your footing. 'Excess always rings louder than skill.'",
+            "boss": f"{names['boss']} spreads both arms. 'Every overreach has a counterweight.'",
         }
     if judge.key == "ambition":
         return {
-            "minion1": f"{names['minion1']} grins. 'Climb faster. The fall is better from higher up.'",
-            "minion2": f"{names['minion2']} points upward. 'There is always one more prize if you are willing to deserve less.'",
-            "boss": f"{names['boss']} opens the vault doors. 'Want more? Then prove you can stop wanting.'",
+            "minion1": f"{names['minion1']} grins. 'Climb harder. The fall is worth seeing.'",
+            "minion2": f"{names['minion2']} points upward. 'There is always one more door for the greedy.'",
+            "boss": f"{names['boss']} opens the vault. 'Want more? Then survive wanting it.'",
         }
     return {
-        "minion1": f"{names['minion1']} sharpens a seal-stamped blade. 'Every prior choice is evidence now.'",
-        "minion2": f"{names['minion2']} bows to the bench. 'The final sentence was written before you reached this hall.'",
-        "boss": f"{names['boss']} lifts the gavel. 'Bring every principle you claimed. I will weigh them all.'",
+        "minion1": f"{names['minion1']} sharpens a red blade. 'Every old choice walks with you now.'",
+        "minion2": f"{names['minion2']} bows its helm. 'The last law was waiting for you.'",
+        "boss": f"{names['boss']} raises the black maul. 'Bring every law you claimed. I will break the false ones.'",
     }
 
 
 def _build_story_fields(judge: JudgeDefinition, local_floor: int, names: dict[str, str]) -> dict[str, str]:
     phase = _phase_index(local_floor)
     act_label = ACT_LABELS[phase]
-    seal_name = f"Seal of {judge.title.replace('Judge of ', '')}"
+    seal_name = f"Seal of {judge.title}"
 
     if judge.key == "mercy":
         summaries = (
-            "Aurelia begins with defendants who know how to sound pitiful. The room is built to make cruelty feel efficient.",
-            "The pleas turn manipulative. Surrender, guilt, and cowardice begin wearing the same face.",
-            "Recess opens with pardons sold like bribes. The chamber wants you to confuse kindness with weakness.",
-            "Aurelia now asks the only question left: can you spare the innocent without letting the cruel hide behind them?",
+            "Morvane fills the hall with kneeling killers and asks if you know when to stop swinging.",
+            "The pleas get uglier here. Some are fear. Some are bait.",
+            "Blood darkens the iron floor and every spared life starts to matter more.",
+            "Only the strong can spare without being fooled.",
         )
         testimony = (
-            f"{names['minion1']} claims they were ordered here and only want to survive the hearing.",
-            f"{names['minion2']} insists mercy should belong to those strong enough to seize it.",
-            f"The gallery murmurs that {names['boss']} has never once offered the pardon they demand from others.",
-            f"Even the candles dim when {names['boss']} speaks, as if the hall itself expects a false mercy.",
+            f"{names['minion1']} kneels, but keeps one hand near the blade.",
+            f"{names['minion2']} watches to see whether mercy makes you soft.",
+            f"{names['boss']} has never spared anyone weaker than them.",
+            f"The hall wants you cruel or naive. Nothing between.",
         )
-        charges = f"{names['boss']} presides over a circle of defendants who weaponize surrender and dare you to become judge, executioner, and fool at once."
-        commentary = "Aurelia's scales glow warm, but they do not forgive thoughtlessness."
+        charges = f"{names['boss']} commands the kneeling dead and turns hesitation into a trap."
+        commentary = "Morvane does not reward softness. Only control."
         victory = (
-            "You leave the first mercy cases with your conscience intact, and the chamber hates you for it.",
-            "The false penitents break, and the judge's lanterns burn steadier in your wake.",
-            "Mercy survives recess. That alone is enough to unsettle the entire gallery.",
-            "Aurelia lowers her gaze. 'Compassion with teeth. Acceptable.'",
+            "The hall expected slaughter. It got discipline.",
+            "The false kneelers fall and the iron lamps burn colder.",
+            "Mercy survives deeper into the climb than the hall wanted.",
+            "Morvane lowers the blade. 'Mercy with teeth. Good.'",
         )
     elif judge.key == "truth":
         summaries = (
-            "Veritus opens with contradictory statements, forged records, and witnesses who know exactly how much truth the room can survive.",
-            "The testimony sharpens. Every wrong accusation now strengthens the liar and endangers the quiet witness.",
-            "During recess the chamber floods with evidence, most of it beautifully fabricated.",
-            "By the final hearing, truth is no longer hidden. It is simply expensive to preserve.",
+            "Sevrak floods the crypt with masks, lies, and one truth worth carrying out alive.",
+            "A wrong mark feeds the liar. A dead witness feeds the dark.",
+            "The deeper vaults echo with half-truths strong enough to kill the careless.",
+            "By the end, the truth is visible. Keeping it alive is the hard part.",
         )
         testimony = (
-            f"{names['minion1']} speaks first, too quickly, with details nobody asked for.",
-            f"{names['minion2']} avoids your eye line, guarding something more valuable than their life.",
-            f"The clerk rails fill with forged affidavits implicating everyone except {names['boss']}.",
-            f"When {names['boss']} laughs, half the archive rearranges itself to support them.",
+            f"{names['minion1']} speaks too fast and smiles too easily.",
+            f"{names['minion2']} guards something more valuable than their life.",
+            f"{names['boss']} lets the lies fight for them.",
+            f"The crypt echoes with voices that should not agree this well.",
         )
-        charges = f"{names['boss']} has built a profitable courtroom where lies hire guards and witnesses die of administrative error."
-        commentary = "Veritus never raises his voice. In this hall, silence does more damage than shouting."
+        charges = f"{names['boss']} buries truth beneath masks and dares you to pick wrong."
+        commentary = "Sevrak never shouts. The crypt does the work for him."
         victory = (
-            "Your accusation lands cleanly and the record finally stops shifting under your feet.",
-            "A few surviving truths escape the chamber, which is more than most advocates manage.",
-            "By recess the paper storm tears itself apart around the facts you kept alive.",
-            "Veritus closes the archive. 'You did not merely find truth. You paid to keep it breathing.'",
+            "The lie breaks first, then the room around it.",
+            "A surviving witness slips into the dark with the truth intact.",
+            "The echoing lies start tearing each other apart.",
+            "Sevrak closes his helm. 'You kept the truth alive. Rare.'",
         )
     elif judge.key == "resolve":
         summaries = (
-            "Bastion's ward begins as a siege. The room cares nothing for flair and everything for what remains standing after impact.",
-            "Every hallway narrows. Attrition becomes the argument and exhaustion becomes the prosecutor.",
-            "Recess arrives without comfort. It is only a longer stretch of pressure wearing a different name.",
-            "The final ward is not trying to kill you quickly. It is trying to convince you that continuing is irrational.",
+            "Varkhul's gate is a siege with a heartbeat.",
+            "Every chamber narrows until only endurance matters.",
+            "There is no rest here, only longer pressure.",
+            "The last gate is built to make quitting sound smart.",
         )
         testimony = (
-            f"{names['minion1']} strikes a shield wall and waits for you to tire yourself out on it.",
-            f"{names['minion2']} paces in perfect rhythm, counting breaths instead of wounds.",
-            f"The stones themselves pulse with the confidence of structures that have buried stronger challengers.",
-            f"{names['boss']} steps forward like a fortress deciding to walk.",
+            f"{names['minion1']} waits for you to waste yourself on the shield.",
+            f"{names['minion2']} counts breaths instead of wounds.",
+            f"The stone here remembers stronger climbers breaking.",
+            f"{names['boss']} moves like a wall learning how to walk.",
         )
-        charges = f"{names['boss']} commands a defensive machine designed to make surrender look practical."
-        commentary = "Bastion respects persistence more than brilliance. The chamber knows it."
+        charges = f"{names['boss']} holds the gate through brute patience and dead weight."
+        commentary = "Varkhul respects endurance more than brilliance."
         victory = (
-            "You outlast the first press of the ward and the silence afterward feels earned.",
-            "The hall fails to crack you, which in Bastion's court is louder than any triumph.",
-            "Recess does not refresh you, but it does prove you are still here.",
-            "Bastion nods once. 'Endurance is proof. Continue.'",
+            "The gate spends itself and still you remain.",
+            "The hall fails to break you. That is enough here.",
+            "You leave the pressure alive, not comfortable.",
+            "Varkhul nods once. 'Still standing. Continue.'",
         )
     elif judge.key == "sacrifice":
         summaries = (
-            "Caldris opens the forge with easy bargains. The first floors tempt you to sacrifice what you can already afford to lose.",
-            "Soon the room starts asking for meaningful pieces of your comfort, defense, and certainty.",
-            "Recess here is only time enough for metal to cool before it is reheated.",
-            "The final forge stops pretending to be ceremonial. It wants tribute, not symbolism.",
+            "Caldris begins with easy costs, then asks for something real.",
+            "The forge grows hotter and your comfortable options disappear.",
+            "There is no rest here. Only time for the metal to glow again.",
+            "The last forge wants payment, not symbolism.",
         )
         testimony = (
-            f"{names['minion1']} wears fresh brands like medals and stares at what you have not surrendered yet.",
-            f"{names['minion2']} feeds your hesitation to the furnace and watches it burn brighter.",
-            f"The anvils ring with the names of champions who tried to win without paying anything real.",
-            f"{names['boss']} sets a hammer on the bench as though inviting you to strike your own bargain.",
+            f"{names['minion1']} wears fresh brands like honors.",
+            f"{names['minion2']} feeds hesitation to the furnace.",
+            f"The anvils sing for every climber who tried to leave the forge owing it.",
+            f"{names['boss']} waits beside a hammer the size of a coffin lid.",
         )
-        charges = f"{names['boss']} oversees a court where every advantage is taxed and every victory receipt is written in ash."
-        commentary = "Caldris does not hate greed. He only hates unpaid greed."
+        charges = f"{names['boss']} taxes every advantage in heat, blood, or iron."
+        commentary = "Caldris hates only one thing: unpaid power."
         victory = (
-            "Your first oath leaves a mark, but the forge recognizes that you actually meant it.",
-            "The chamber cools around you for a moment, annoyed that sacrifice made you sharper instead of smaller.",
-            "Even during recess the anvils keep singing, but none of them sing your failure.",
-            "Caldris turns the hammer face down. 'A meaningful cost. Finally.'",
+            "The forge takes its due and leaves you sharper.",
+            "Sacrifice did not weaken you. The fire hates that.",
+            "The anvils ring, but not with your failure.",
+            "Caldris turns the hammer. 'A real cost. Good.'",
         )
     elif judge.key == "balance":
         summaries = (
-            "Equa begins with symmetrical rooms and asymmetrical consequences. Every strong choice here tries to become an overcorrection.",
-            "Soon the scale starts recording not just damage dealt, but appetite, panic, and overconfidence.",
-            "Recess brings mirrored chambers where every efficient plan risks becoming excess.",
-            "The final scales demand discipline under pressure, not merely caution or aggression in isolation.",
+            "Meridrax hangs the hall on chains and punishes every wild correction.",
+            "Soon the chains measure greed, panic, and overreach as much as damage.",
+            "Each deeper room tempts efficiency into excess.",
+            "The last chain wants discipline, not fear or frenzy.",
         )
         testimony = (
-            f"{names['minion1']} studies your footing as though they can see the direction of your next mistake.",
-            f"{names['minion2']} smiles when you lean too far, because the scale always collects interest.",
-            f"The chains above the chamber ring differently depending on how greedy your last turn was.",
-            f"{names['boss']} waits for imbalance the way sharks wait for blood.",
+            f"{names['minion1']} watches your footing more than your blade.",
+            f"{names['minion2']} waits for you to lean too hard.",
+            f"The hanging chains sing every time you overcommit.",
+            f"{names['boss']} lives for the moment the swing goes too wide.",
         )
-        charges = f"{names['boss']} guards a living balance that punishes excess more consistently than failure."
-        commentary = "Equa is patient. She never hurries imbalance because she knows it volunteers."
+        charges = f"{names['boss']} guards a living chain-scale that punishes excess harder than failure."
+        commentary = "Meridrax never rushes imbalance. It volunteers."
         victory = (
-            "You keep the scales from tilting hard enough to own you, and that alone feels like stealing.",
-            "The chamber resents how calmly you corrected your own momentum.",
-            "Recess ends with the chains still swaying, but not in your favor or against it.",
-            "Equa taps the beam level. 'Acceptable. You were neither timid nor gluttonous for too long.'",
+            "You keep the chains from owning the fight.",
+            "The hall hates how cleanly you corrected yourself.",
+            "The chains still sway, but they do not drag you with them.",
+            "Meridrax levels the beam. 'Controlled. Continue.'",
         )
     elif judge.key == "ambition":
         summaries = (
-            "Mordane opens with rewards in plain sight. Every floor after the first teaches that appetite can look exactly like confidence.",
-            "The climb grows richer and louder. The tower wants you to mistake acceleration for mastery.",
-            "Recess is a marketplace of trophies where every shortcut is offered with a smile and a hidden invoice.",
-            "The last ascent is pure temptation: faster kills, bigger payouts, and a judge who wants to see whether you can stop.",
+            "Mordane puts prizes in view and dares you to lose yourself chasing them.",
+            "The climb gets louder, richer, and uglier the faster you move.",
+            "Every deeper room offers speed and sends the bill later.",
+            "The last ascent is pure temptation with teeth.",
         )
         testimony = (
-            f"{names['minion1']} laughs as if losing to them would hurt your pride more than your body.",
-            f"{names['minion2']} points to a higher balcony. 'There is always one more room worth betraying yourself for.'",
-            f"The vault doors keep opening just enough to show you prizes, never enough to let you rest.",
-            f"{names['boss']} applauds every reckless success like a patron funding your eventual collapse.",
+            f"{names['minion1']} laughs like pride hurts more than steel.",
+            f"{names['minion2']} points upward and never stops climbing.",
+            f"The vault doors keep opening just enough to keep you hungry.",
+            f"{names['boss']} celebrates reckless success like a trap already sprung.",
         )
-        charges = f"{names['boss']} runs a tribunal where greed is not hidden. It is celebrated until it becomes legally inconvenient."
-        commentary = "Mordane does not need you to fail. He only needs you to enjoy the slide."
+        charges = f"{names['boss']} feeds greed until it starts eating the climber."
+        commentary = "Mordane does not need you to fail. He only needs you hungry."
         victory = (
-            "You leave the early climbs with your hunger intact, which is not the same thing as letting it drive.",
-            "The brighter the rewards become, the more impressive restraint starts to look.",
-            "Recess fails to buy you. Mordane notices and hates that he notices.",
-            "The vault seals behind you. 'Ambition contained,' the judge says, sounding almost offended.",
+            "You climb higher without letting hunger drive the blade.",
+            "The louder the prizes get, the more valuable restraint becomes.",
+            "The deeper vaults fail to buy you outright.",
+            "Mordane seals the vault. 'Hunger contained. Barely.'",
         )
     else:
         summaries = (
-            "Septimus begins with an impossible promise: every prior principle will be remembered and none of them will be allowed to contradict each other for free.",
-            "The chamber now mixes mercy with deceit, sacrifice with greed, and balance with attrition until your earlier claims start colliding.",
-            "Recess becomes deliberation. The hall is no longer testing one virtue at a time, only your coherence under all of them.",
-            "The final sentence is not a single fight. It is the total weight of every philosophy you brought this far.",
+            "Septimus drags every prior law back into the room with you.",
+            "Mercy, lies, hunger, endurance, and sacrifice start colliding.",
+            "The inner vault stops testing one thing at a time. It tests whether you were ever consistent.",
+            "The final reckoning is the whole climb swinging back at once.",
         )
         testimony = (
-            f"{names['minion1']} presents a red-sealed ledger full of your prior rulings and waits for inconsistency.",
-            f"{names['minion2']} calls each old verdict into evidence, line by line.",
-            f"The black-robed jury behind the rail murmurs whenever your present stance disagrees with your earlier courage.",
-            f"{names['boss']} lifts the gavel and the whole tower goes silent enough to hear your mistakes breathing.",
+            f"{names['minion1']} carries your old choices like trophies.",
+            f"{names['minion2']} drags every past mistake back into the dark.",
+            f"The black hall listens for contradiction more than fear.",
+            f"{names['boss']} lifts the maul and the tower goes dead silent.",
         )
-        charges = f"{names['boss']} prosecutes you with your own history and intends to prove that your principles only lasted while they were convenient."
-        commentary = "Septimus does not ask who you are. He compares your answer against seventy-six floors of evidence."
+        charges = f"{names['boss']} means to break you with the weight of your own climb."
+        commentary = "Septimus does not care what you claimed. Only what held."
         victory = (
-            "The final bench hears your first argument and sharpens its knives on it.",
-            "Contradictions start collapsing under their own weight, leaving only the positions you can actually defend.",
-            "Deliberation turns vicious. The room is no longer debating your strength, only your consistency.",
-            "When the final blow lands, the entire bench sounds less angry than disappointed you survived it.",
+            "The black hall hears your answer and sharpens around it.",
+            "Your contradictions begin to die before you do.",
+            "The reckoning turns vicious, then simple.",
+            "When the maul falls, the tower finally goes quiet.",
         )
 
     return {
@@ -662,7 +660,7 @@ def build_jury_tower_data() -> dict:
                 "key": judge.key,
                 "judge_name": judge.judge_name,
                 "title": judge.title,
-                "seal_name": f"Seal of {judge.title.replace('Judge of ', '')}",
+                "seal_name": f"Seal of {judge.title}",
                 "start_floor": (judge_index * JURY_SEGMENT_LENGTH) + 1,
                 "end_floor": (judge_index + 1) * JURY_SEGMENT_LENGTH,
                 "color": judge.color,
