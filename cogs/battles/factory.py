@@ -35,6 +35,14 @@ class BattleFactory:
     JURY_HP_PET_WEIGHT = Decimal("0.35")
     JURY_DEFENSE_PLAYER_WEIGHT = Decimal("0.60")
     JURY_DEFENSE_PET_WEIGHT = Decimal("0.40")
+    JURY_ATTACK_PLAYER_GUARDRAIL_WEIGHT = Decimal("1.15")
+    JURY_ATTACK_PET_GUARDRAIL_WEIGHT = Decimal("0.55")
+    JURY_ATTACK_PET_MIN_WEIGHT = Decimal("0.65")
+    JURY_HP_PET_GUARDRAIL_WEIGHT = Decimal("0.40")
+    JURY_HP_PET_MIN_WEIGHT = Decimal("0.50")
+    JURY_DEFENSE_PLAYER_GUARDRAIL_WEIGHT = Decimal("0.70")
+    JURY_DEFENSE_PET_GUARDRAIL_WEIGHT = Decimal("0.45")
+    JURY_DEFENSE_PET_MIN_WEIGHT = Decimal("0.55")
     JURY_PRESTIGE_ATTACK_DEFENSE_STEP = Decimal("0.01")
     JURY_PRESTIGE_HP_STEP = Decimal("0.02")
     
@@ -157,11 +165,29 @@ class BattleFactory:
         hp_base = player_hp
         defense_base = player_defense
         if pet_combatant:
-            attack_base += pet_attack * self.JURY_ATTACK_PET_WEIGHT
-            hp_base += pet_hp * self.JURY_HP_PET_WEIGHT
-            defense_base = (
+            weighted_attack_base = player_attack + (pet_attack * self.JURY_ATTACK_PET_WEIGHT)
+            weighted_hp_base = player_hp + (pet_hp * self.JURY_HP_PET_WEIGHT)
+            weighted_defense_base = (
                 (player_defense * self.JURY_DEFENSE_PLAYER_WEIGHT)
                 + (pet_defense * self.JURY_DEFENSE_PET_WEIGHT)
+            )
+            # Keep strong pets from enabling a weak first-entry snapshot via stripped player gear.
+            attack_base = max(
+                weighted_attack_base,
+                (player_attack * self.JURY_ATTACK_PLAYER_GUARDRAIL_WEIGHT)
+                + (pet_attack * self.JURY_ATTACK_PET_GUARDRAIL_WEIGHT),
+                pet_attack * self.JURY_ATTACK_PET_MIN_WEIGHT,
+            )
+            hp_base = max(
+                weighted_hp_base,
+                player_hp + (pet_hp * self.JURY_HP_PET_GUARDRAIL_WEIGHT),
+                pet_hp * self.JURY_HP_PET_MIN_WEIGHT,
+            )
+            defense_base = max(
+                weighted_defense_base,
+                (player_defense * self.JURY_DEFENSE_PLAYER_GUARDRAIL_WEIGHT)
+                + (pet_defense * self.JURY_DEFENSE_PET_GUARDRAIL_WEIGHT),
+                pet_defense * self.JURY_DEFENSE_PET_MIN_WEIGHT,
             )
 
         return {
