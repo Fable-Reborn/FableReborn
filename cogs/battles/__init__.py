@@ -38,6 +38,10 @@ from utils.joins import JoinView, SingleJoinView
 
 JURY_TOWER_IS_DEV = True
 JURY_TOWER_DEV_USER_ID = 295173706496475136
+JURY_RANK_LABEL = "Iron Rank"
+JURY_CURRENCY_LABEL = "Black Sigils"
+JURY_CURRENCY_LABEL_LOWER = "black sigils"
+JURY_SHOP_LABEL = "Black Vault"
 
 class PetEggSelect(Select):
     def __init__(self, items, page=0):
@@ -3536,7 +3540,7 @@ class Battles(commands.Cog):
             value=(
                 f"Prestige: **{prestige}**\n"
                 f"Snapshot Source: **{snapshot_source}**\n"
-                f"Power Bracket: **{self._format_jury_bracket(row, scale_snapshot) or 'Unassigned'}**\n"
+                f"{JURY_RANK_LABEL}: **{self._format_jury_bracket(row, scale_snapshot) or 'Unassigned'}**\n"
                 f"{self._format_jury_scale_snapshot(scale_snapshot) or 'No scale snapshot.'}"
             ),
             inline=False,
@@ -4632,14 +4636,6 @@ class Battles(commands.Cog):
         label = bracket_info.get("label")
         if not label:
             return None
-        power_score = self._jury_scale_power_score_from_row(row)
-        bracket_key = bracket_info.get("key", "")
-        if snapshot and bracket_key and bracket_key != self._jury_scale_bracket_key_from_row(row):
-            power_score = int(round(float(self._jury_scale_snapshot_score(snapshot))))
-        elif power_score <= 0 and snapshot:
-            power_score = int(round(float(self._jury_scale_snapshot_score(snapshot))))
-        if power_score > 0:
-            return f"{label} (Power Score: {power_score})"
         return label
 
     def _format_jury_reset_fragments(self, fragment_count: int) -> str:
@@ -4929,7 +4925,7 @@ class Battles(commands.Cog):
             row=row,
             snapshot=scale_snapshot,
         )
-        reward_lines = [f"Writs on Clear: **+{floor_scaled_writs}**"]
+        reward_lines = [f"{JURY_CURRENCY_LABEL} on Clear: **+{floor_scaled_writs}**"]
         boss_reward = floor_data.get("boss_reward") or {}
         if boss_reward:
             base_checkpoint_writs = int(boss_reward.get("writs", 0) or 0)
@@ -4938,7 +4934,7 @@ class Battles(commands.Cog):
                 row=row,
                 snapshot=scale_snapshot,
             )
-            reward_lines.append(f"Boss Cache: **+{scaled_checkpoint_writs} Writs**")
+            reward_lines.append(f"Boss Cache: **+{scaled_checkpoint_writs} {JURY_CURRENCY_LABEL}**")
             reward_lines.append(f"Gold: **${boss_reward.get('money', 0)}**")
             reward_lines.append(f"Appeals: **+{boss_reward.get('appeals', 0)}**")
             if boss_reward.get("reset_fragment", 0):
@@ -5057,9 +5053,9 @@ class Battles(commands.Cog):
             value=(
                 f"Favor: **+{verdict.get('favor', 0)}**\n"
                 f"Contempt: **+{verdict.get('contempt', 0)}**\n"
-                f"Court Writs: **+{writs_gain}**"
+                f"{JURY_CURRENCY_LABEL}: **+{writs_gain}**"
                 + (
-                    f"\nTier Bonus: **{self._format_jury_writ_bonus(row=row)}** (+{writ_bonus_gain} writs)"
+                    f"\n{JURY_RANK_LABEL} Bonus: **{self._format_jury_writ_bonus(row=row)}** (+{writ_bonus_gain} sigils)"
                     if writ_bonus_gain > 0
                     else ""
                 )
@@ -5089,7 +5085,7 @@ class Battles(commands.Cog):
             summary.add_field(
                 name="Checkpoint Rewards",
                 value=(
-                    f"Court Writ Cache: **+{scaled_checkpoint_writs}**"
+                    f"Sigil Cache: **+{scaled_checkpoint_writs}**"
                     + (
                         f" (Base: {base_checkpoint_writs})\n"
                         if scaled_checkpoint_writs != base_checkpoint_writs
@@ -5192,7 +5188,90 @@ class Battles(commands.Cog):
         if ctx.invoked_subcommand is None:
             if not await self._ensure_jury_tower_dev_access(ctx):
                 return
-            await ctx.invoke(self.jurytower_progress)
+            async with self.bot.pool.acquire() as connection:
+                row = await connection.fetchrow(
+                    """
+                    SELECT level, checkpoint, prestige, seals, writs, appeals,
+                           scale_attack_base, scale_hp_base, scale_defense_base,
+                           scale_power_score, scale_bracket
+                    FROM jurytower
+                    WHERE id = $1
+                    """,
+                    ctx.author.id,
+                )
+
+            if not row:
+                embed = discord.Embed(
+                    title="Jury Tower",
+                    description=(
+                        "Seven iron judges wait across seventy-seven floors.\n"
+                        "No wasted words. No easy mercy."
+                    ),
+                    color=0x8B5CF6,
+                )
+                embed.add_field(
+                    name="Get Started",
+                    value=(
+                        "`$jt start` - enter the tower\n"
+                        "`$jt help` - view the full guide"
+                    ),
+                    inline=False,
+                )
+                embed.add_field(
+                    name="What Matters",
+                    value=(
+                        f"`{JURY_TOWER_FLOOR_COUNT}` floors\n"
+                        "Boss floors every 11 levels\n"
+                        "Choices change the fight\n"
+                        f"{JURY_CURRENCY_LABEL} buy rewards in `$jt shop`"
+                    ),
+                    inline=False,
+                )
+                return await ctx.send(embed=embed)
+
+            level = int(row["level"] or 1)
+            if level > JURY_TOWER_FLOOR_COUNT:
+                title_line = "Cycle Complete"
+                subtitle_line = "The black halls fall silent."
+            else:
+                floor_data = self._get_jury_floor_data(level)
+                if floor_data:
+                    title_line = f"Floor {level} - {floor_data['title']}"
+                    subtitle_line = f"{floor_data['judge_name']}, {floor_data['judge_title']}"
+                else:
+                    title_line = f"Floor {level}"
+                    subtitle_line = "Unknown hall"
+
+            embed = discord.Embed(
+                title="Jury Tower",
+                description=f"**{title_line}**\n{subtitle_line}",
+                color=0x8B5CF6,
+            )
+            embed.add_field(
+                name="Run",
+                value=(
+                    f"Checkpoint: **{row['checkpoint']}**\n"
+                    f"Appeals: **{row['appeals']}**\n"
+                    f"Prestige: **{row['prestige']}**\n"
+                    f"{JURY_CURRENCY_LABEL}: **{row['writs']}**\n"
+                    f"Seals: **{self._jury_seal_count(int(row['seals'] or 0))}/7**"
+                ),
+                inline=False,
+            )
+            bracket_text = self._format_jury_bracket(row)
+            if bracket_text:
+                embed.add_field(name=JURY_RANK_LABEL, value=bracket_text, inline=False)
+            embed.add_field(
+                name="Commands",
+                value=(
+                    "`$jt fight` - continue the climb\n"
+                    "`$jt progress` - full run details\n"
+                    f"`$jt shop` - open the {JURY_SHOP_LABEL.lower()}\n"
+                    "`$jt help` - full guide"
+                ),
+                inline=False,
+            )
+            await ctx.send(embed=embed)
 
     @jurytower.command(name="help", aliases=["info"])
     async def jurytower_help(self, ctx):
@@ -5203,13 +5282,13 @@ class Battles(commands.Cog):
         judge_lines = []
         for judge in judges:
             judge_lines.append(
-                f"**{judge['judge_name']}**: {judge.get('trial_name', judge.get('trial_type', 'Trial').title())}"
+                f"**{judge['judge_name']}** - {judge.get('title', judge.get('trial_type', 'Trial').title())}"
             )
 
         tier_lines = []
         for bracket in JURY_POWER_BRACKETS:
             bonus_percent = int(round((float(bracket.get("writ_multiplier", 1.0)) - 1.0) * 100))
-            tier_lines.append(f"{bracket['label']}: **+{bonus_percent}% writs**")
+            tier_lines.append(f"{bracket['label']}: **+{bonus_percent}% sigils**")
 
         checkpoint_lines = []
         for floor in (11, 22, 33, 44, 55, 66, 77):
@@ -5230,107 +5309,96 @@ class Battles(commands.Cog):
             )
 
         shop_lines = [
-            f"`reset` - {self.JURY_SHOP_RESET_POTION_COST} writs, {self.JURY_SHOP_RESET_POTION_LIMIT}/cycle",
-            f"`fragment` - {self.JURY_SHOP_RESET_FRAGMENT_COST} writs, {self.JURY_SHOP_RESET_FRAGMENT_LIMIT}/cycle",
-            f"`appeal` - {self.JURY_SHOP_APPEAL_COST} writs, {self.JURY_SHOP_APPEAL_LIMIT}/cycle",
-            f"`fortune` - {self.JURY_SHOP_FORTUNE_CRATE_COST} writs, {self.JURY_SHOP_FORTUNE_CRATE_LIMIT}/cycle",
-            f"`weapelement` - {self.JURY_SHOP_WEAPON_SCROLL_COST} writs, {self.JURY_SHOP_WEAPON_SCROLL_LIMIT}/cycle",
-            f"`title` - {self.JURY_SHOP_COSMETIC_TITLE_COST} writs, permanent unlock",
+            f"`reset` - {self.JURY_SHOP_RESET_POTION_COST} sigils",
+            f"`fragment` - {self.JURY_SHOP_RESET_FRAGMENT_COST} sigils",
+            f"`appeal` - {self.JURY_SHOP_APPEAL_COST} sigils",
+            f"`fortune` - {self.JURY_SHOP_FORTUNE_CRATE_COST} sigils",
+            f"`weapelement` - {self.JURY_SHOP_WEAPON_SCROLL_COST} sigils",
+            f"`title` - {self.JURY_SHOP_COSMETIC_TITLE_COST} sigils",
         ]
 
         overview = discord.Embed(
-            title="Jury Tower Help",
+            title="Jury Tower",
             description=(
-                "A 77-floor solo tower split across 7 judges. Each judge changes how the fight works, "
-                "so the mode is about choices and verdicts, not just bigger enemy numbers."
+                "A 77-floor solo climb through seven iron judges.\n"
+                "Each judge changes the fight. Winning is not just stats."
             ),
             color=0x8B5CF6,
         )
         overview.add_field(
             name="Commands",
             value=(
-                "`$jt start` - create your Jury Tower run\n"
-                "`$jt progress` - see floor, checkpoint, tier, writs, seals, inventory\n"
-                "`$jt fight` - play the current floor\n"
-                "`$jt shop` - view writ shop stock\n"
-                "`$jt buy <item>` - buy a shop item\n"
+                "`$jt start` - enter the tower\n"
+                "`$jt fight` - fight your current floor\n"
+                "`$jt progress` - view your run\n"
+                f"`$jt shop` - open the {JURY_SHOP_LABEL.lower()}\n"
+                "`$jt buy <item>` - buy from the shop\n"
                 "`$jt help` - show this guide"
             ),
             inline=False,
         )
         overview.add_field(
-            name="Tower Layout",
+            name="Tower Flow",
             value=(
                 f"`{JURY_TOWER_FLOOR_COUNT}` floors total\n"
-                "Each judge owns 11 floors\n"
-                "Boss/checkpoint floors: `11, 22, 33, 44, 55, 66, 77`\n"
-                "Beating a boss moves your checkpoint to the next floor\n"
-                "Floor 77 clear finishes the cycle"
+                "Each judge controls 11 floors\n"
+                "Boss floors: `11, 22, 33, 44, 55, 66, 77`\n"
+                "Beat a boss and your checkpoint moves forward\n"
+                "Clear floor 77 to begin the next prestige"
             ),
             inline=False,
         )
         overview.add_field(
-            name="Judges",
+            name="The Seven",
             value="\n".join(judge_lines),
             inline=False,
         )
-
-        progression = discord.Embed(
-            title="Jury Tower Progression",
-            description="How your run, scaling, losses, and prestiges work.",
-            color=0x8B5CF6,
-        )
-        progression.add_field(
-            name="Appeals and Losses",
+        overview.add_field(
+            name="Run Rules",
             value=(
                 "You start with **2 Appeals** and cap at **4**.\n"
-                "If you lose above checkpoint and still have appeals, you stay on that floor and spend one.\n"
-                "If you lose with no appeals left, you get sent back to your checkpoint.\n"
-                "If you lose while already on checkpoint, you can just retry that floor."
-            ),
-            inline=False,
-        )
-        progression.add_field(
-            name="Court Tier Lock",
-            value=(
-                "Your first fight snapshots your current player + pet power and locks the run into a Court Tier.\n"
-                "That tier is not recalculated every floor.\n"
-                "At a checkpoint, the tower only refreshes if your new build is at least **20% stronger** and actually moves you into a higher tier."
-            ),
-            inline=False,
-        )
-        progression.add_field(
-            name="Court Tiers",
-            value="\n".join(tier_lines),
-            inline=False,
-        )
-        progression.add_field(
-            name="Prestige",
-            value=(
-                "After clearing floor 77, your next `$jt fight` starts the next prestige.\n"
-                "Prestige resets floor progress, checkpoint, seals, favor, contempt, appeals, and cycle shop stock.\n"
-                "Prestige keeps your writs and title unlock.\n"
-                "Enemy scaling also gains **+2% HP** and **+1% Attack/Defense** per prestige."
+                "Lose above checkpoint with appeals left: stay on that floor and burn one.\n"
+                "Lose with no appeals left: fall back to checkpoint."
             ),
             inline=False,
         )
 
         rewards = discord.Embed(
             title="Jury Tower Rewards",
-            description="What you earn from floors, checkpoints, fragments, and the writ shop.",
+            description="How tiers, prestiges, and rewards work.",
             color=0x8B5CF6,
         )
         rewards.add_field(
-            name="Core Rewards",
+            name="Ranks",
             value=(
-                "Every floor gives Court Writs.\n"
-                "Boss floors also give gold, a crate, +1 Appeal, and a judge seal.\n"
-                "Writs persist across prestiges and are your main repeat currency."
+                f"Your first fight locks the run into an {JURY_RANK_LABEL.lower()} based on your power.\n"
+                f"The {JURY_RANK_LABEL.lower()} does not change every floor.\n"
+                f"At a boss checkpoint, it only updates if your build is at least **20% stronger** and lands in a higher {JURY_RANK_LABEL.lower()}.\n\n"
+                + "\n".join(tier_lines)
             ),
             inline=False,
         )
         rewards.add_field(
-            name="Checkpoint Floors",
+            name="Prestige",
+            value=(
+                "After floor 77, your next `$jt fight` starts the next prestige.\n"
+                "Prestige resets floor progress, checkpoint, seals, favor, contempt, appeals, and shop stock.\n"
+                f"Prestige keeps your {JURY_CURRENCY_LABEL_LOWER} and title.\n"
+                "Enemy stats gain **+2% HP** and **+1% Attack/Defense** per prestige."
+            ),
+            inline=False,
+        )
+        rewards.add_field(
+            name="Boss Rewards",
+            value=(
+                f"Every floor gives {JURY_CURRENCY_LABEL_LOWER}.\n"
+                "Boss floors also give gold, a crate, +1 Appeal, and a seal.\n"
+                f"{JURY_CURRENCY_LABEL} persist across prestiges and are your main repeat currency."
+            ),
+            inline=False,
+        )
+        rewards.add_field(
+            name="Boss Floors",
             value="\n".join(checkpoint_lines),
             inline=False,
         )
@@ -5344,20 +5412,15 @@ class Battles(commands.Cog):
             inline=False,
         )
         rewards.add_field(
-            name="Shop Items",
-            value="\n".join(shop_lines),
-            inline=False,
-        )
-        rewards.add_field(
-            name="Cosmetic Title",
+            name=JURY_SHOP_LABEL,
             value=(
-                f"`$jt buy title` unlocks **{JURY_COSMETIC_TITLE}**.\n"
-                "It is permanent and shows on the profile card and text profile."
+                "\n".join(shop_lines)
+                + f"\n\n`$jt buy title` unlocks **{JURY_COSMETIC_TITLE}** permanently."
             ),
             inline=False,
         )
 
-        for embed in (overview, progression, rewards):
+        for embed in (overview, rewards):
             await ctx.send(embed=embed)
 
     @has_char()
@@ -5368,14 +5431,14 @@ class Battles(commands.Cog):
         async with self.bot.pool.acquire() as connection:
             exists = await connection.fetchval("SELECT 1 FROM jurytower WHERE id = $1", ctx.author.id)
             if exists:
-                return await ctx.send("You have already entered the Jury Tower. Use `$jurytower progress` to review your case.")
+                return await ctx.send("You are already in the Jury Tower. Use `$jt` or `$jt progress` to view your run.")
             await connection.execute("INSERT INTO jurytower (id) VALUES ($1)", ctx.author.id)
 
         embed = discord.Embed(
-            title="The Jury Tower Opens",
+            title="The Jury Tower Stirs",
             description=(
-                "Seven judges preside over seventy-seven floors of cases, temptations, and verdicts.\n"
-                "You will not be tested only on strength. You will be measured on restraint, accusation, balance, sacrifice, and what kind of champion you become while winning."
+                "Seventy-seven floors. Seven iron judges.\n"
+                "Power matters, but so do your choices."
             ),
             color=0x8B5CF6,
         )
@@ -5383,13 +5446,13 @@ class Battles(commands.Cog):
             name="Run Rules",
             value=(
                 f"- {JURY_TOWER_FLOOR_COUNT} floors\n"
-                "- Checkpoints at each judge's verdict floor\n"
-                "- Appeals can protect progress when you lose away from a checkpoint\n"
-                "- Court Writs accumulate across cycles\n"
-                "- Your first fight locks the run into a Court Tier based on your power\n"
-                "- Checkpoints can promote that tier if your build is at least 20% stronger\n"
+                "- Boss floors set checkpoints\n"
+                "- Appeals protect progress away from checkpoint\n"
+                f"- {JURY_CURRENCY_LABEL} carry across prestiges\n"
+                f"- Your first fight locks the run into an {JURY_RANK_LABEL.lower()} based on your power\n"
+                f"- Checkpoints can promote that {JURY_RANK_LABEL.lower()} if your build jumps by 20%\n"
                 "- Floors 22, 44, and 66 grant reset fragments that reforge into potions\n"
-                "- The writ shop can sell one extra reset potion per cycle for writs\n"
+                f"- The {JURY_SHOP_LABEL.lower()} can sell one extra reset potion per cycle for sigils\n"
                 "- Each new prestige lightly increases enemy stats"
             ),
             inline=False,
@@ -5406,14 +5469,14 @@ class Battles(commands.Cog):
                 """
                 SELECT level, checkpoint, cycles, prestige, seals, favor, contempt, writs, appeals,
                        scale_attack_base, scale_hp_base, scale_defense_base,
-                       scale_power_score, scale_bracket, shop_reset_purchases
+                       scale_power_score, scale_bracket, shop_title_unlocked
                 FROM jurytower
                 WHERE id = $1
                 """,
                 ctx.author.id,
             )
             if not row:
-                return await ctx.send("You have not started the Jury Tower. Use `$jurytower start`.")
+                return await ctx.send("You have not started the Jury Tower. Use `$jt start`.")
             profile_row = await connection.fetchrow(
                 'SELECT resetpotion, resetfragments, crates_fortune FROM profile WHERE "user" = $1',
                 ctx.author.id,
@@ -5429,78 +5492,67 @@ class Battles(commands.Cog):
         weapon_scrolls = int(weapon_scrolls or 0)
 
         level = int(row["level"] or 1)
-        seals = int(row["seals"] or 0)
-        seal_lines = []
-        for judge_index, judge in enumerate(self.jury_tower_data.get("judges", [])):
-            unlocked = "✅" if seals & (1 << judge_index) else "❌"
-            seal_lines.append(f"{unlocked} {judge['seal_name']} - {judge['judge_name']}")
-
-        floor_data = None
         if level > JURY_TOWER_FLOOR_COUNT:
-            current_case = "Cycle complete"
+            current_floor = "Cycle complete"
             current_title = "The black halls fall silent"
-            current_act = "Reckoning complete"
+            current_judge = "All seven judged"
         else:
             floor_data = self._get_jury_floor_data(level)
-            current_case = f"Floor {level}"
+            current_floor = f"Floor {level}"
             current_title = floor_data["title"] if floor_data else "Unknown"
-            current_act = floor_data.get("act_label", "Outer Gate") if floor_data else "Outer Gate"
+            current_judge = (
+                f"{floor_data['judge_name']}, {floor_data['judge_title']}"
+                if floor_data
+                else "Unknown judge"
+            )
 
         embed = discord.Embed(
-            title="Jury Tower Progress",
+            title="Jury Tower",
             description=(
-                f"Current Floor: **{current_case}**\n"
-                f"Current Hall: **{current_title}**\n"
-                f"Current Phase: **{current_act}**"
+                f"**{current_floor}**\n"
+                f"{current_title}\n"
+                f"{current_judge}"
             ),
             color=0x8B5CF6,
         )
         embed.add_field(
-            name="Run State",
+            name="Run",
             value=(
                 f"Checkpoint: **{row['checkpoint']}**\n"
                 f"Appeals: **{row['appeals']}**\n"
                 f"Cycles Completed: **{row['cycles']}**\n"
-                f"Prestige: **{row['prestige']}**\n"
-                f"Favor: **{row['favor']}**\n"
-                f"Contempt: **{row['contempt']}**\n"
-                f"Court Writs: **{row['writs']}**"
+                f"Prestige: **{row['prestige']}**"
             ),
             inline=False,
         )
         embed.add_field(
-            name="Court Inventory",
+            name="Marks",
+            value=(
+                f"Favor: **{row['favor']}**\n"
+                f"Contempt: **{row['contempt']}**\n"
+                f"{JURY_CURRENCY_LABEL}: **{row['writs']}**\n"
+                f"Seals: **{self._jury_seal_count(int(row['seals'] or 0))}/7**"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Inventory",
             value=(
                 f"Reset Potions: **{reset_potions}**\n"
                 f"Reset Fragments: **{self._format_jury_reset_fragments(reset_fragments)}**\n"
                 f"Fortune Crates: **{fortune_crates}**\n"
                 f"Weapon Element Changes: **{weapon_scrolls}**\n"
-                f"Court Title: **{JURY_COSMETIC_TITLE if self._jury_shop_title_unlocked(row) else 'Unclaimed'}**"
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name="Shop Stock",
-            value=(
-                f"Reset Potion: **{self._jury_shop_reset_available(row)}/{self.JURY_SHOP_RESET_POTION_LIMIT}**\n"
-                f"Reset Fragment: **{self._jury_shop_item_available(row, 'shop_reset_fragment_purchases', self.JURY_SHOP_RESET_FRAGMENT_LIMIT)}/{self.JURY_SHOP_RESET_FRAGMENT_LIMIT}**\n"
-                f"Appeal: **{self._jury_shop_item_available(row, 'shop_appeal_purchases', self.JURY_SHOP_APPEAL_LIMIT)}/{self.JURY_SHOP_APPEAL_LIMIT}**\n"
-                f"Fortune Crate: **{self._jury_shop_item_available(row, 'shop_fortune_crate_purchases', self.JURY_SHOP_FORTUNE_CRATE_LIMIT)}/{self.JURY_SHOP_FORTUNE_CRATE_LIMIT}**\n"
-                f"Weapon Element Change: **{self._jury_shop_item_available(row, 'shop_weapon_scroll_purchases', self.JURY_SHOP_WEAPON_SCROLL_LIMIT)}/{self.JURY_SHOP_WEAPON_SCROLL_LIMIT}**"
+                f"Title: **{JURY_COSMETIC_TITLE if self._jury_shop_title_unlocked(row) else 'Unclaimed'}**"
             ),
             inline=False,
         )
         scale_text = self._format_jury_scale_snapshot(self._jury_scale_snapshot_from_row(row))
+        bracket_text = self._format_jury_bracket(row)
+        tier_lines = [f"{JURY_RANK_LABEL}: **{bracket_text or 'Unassigned'}**"]
         if scale_text:
-            bracket_text = self._format_jury_bracket(row)
-            if bracket_text:
-                scale_text = f"Power Bracket: **{bracket_text}**\n{scale_text}"
-            embed.add_field(name="Tower Scale Base", value=scale_text, inline=False)
-        embed.add_field(
-            name="Judge Seals",
-            value="\n".join(seal_lines) or "No seals earned yet.",
-            inline=False,
-        )
+            tier_lines.append(scale_text)
+        embed.add_field(name=JURY_RANK_LABEL, value="\n".join(tier_lines), inline=False)
+        embed.set_footer(text=f"Use $jt shop to view the {JURY_SHOP_LABEL.lower()}.")
         await ctx.send(embed=embed)
 
     @has_char()
@@ -5522,7 +5574,7 @@ class Battles(commands.Cog):
                 ctx.author.id,
             )
             if not row:
-                return await ctx.send("You have not started the Jury Tower. Use `$jurytower start`.")
+                return await ctx.send("You have not started the Jury Tower. Use `$jt start`.")
             profile_row = await connection.fetchrow(
                 'SELECT resetpotion, resetfragments, crates_fortune FROM profile WHERE "user" = $1',
                 ctx.author.id,
@@ -5538,90 +5590,53 @@ class Battles(commands.Cog):
         fortune_crates = int(profile_row["crates_fortune"] or 0) if profile_row else 0
         weapon_scrolls = int(weapon_scrolls or 0)
         embed = discord.Embed(
-            title="Jury Tower Shop",
-            description="Spend Court Writs on capped utility and cosmetic rewards. Judge fragments are reforged automatically.",
+            title=JURY_SHOP_LABEL,
+            description=f"Spend {JURY_CURRENCY_LABEL_LOWER} on limited rewards. Buy with `$jt buy <item>`.",
             color=0x8B5CF6,
         )
         embed.add_field(
-            name="Resources",
+            name="Your Stock",
             value=(
-                f"Court Writs: **{row['writs']}**\n"
+                f"{JURY_CURRENCY_LABEL}: **{row['writs']}**\n"
                 f"Appeals: **{row['appeals']}/{self.JURY_MAX_APPEALS}**\n"
                 f"Reset Potions: **{potions}**\n"
                 f"Reset Fragments: **{self._format_jury_reset_fragments(fragments)}**\n"
                 f"Fortune Crates: **{fortune_crates}**\n"
                 f"Weapon Element Changes: **{weapon_scrolls}**\n"
-                f"Court Title: **{JURY_COSMETIC_TITLE if self._jury_shop_title_unlocked(row) else 'Unclaimed'}**"
+                f"Title: **{JURY_COSMETIC_TITLE if self._jury_shop_title_unlocked(row) else 'Unclaimed'}**"
             ),
             inline=False,
         )
         embed.add_field(
-            name="Reset Potion",
+            name="Utility",
             value=(
-                f"Cost: **{self.JURY_SHOP_RESET_POTION_COST} Court Writs**\n"
-                f"Cycle Limit: **{self.JURY_SHOP_RESET_POTION_LIMIT}**\n"
-                f"Available This Cycle: **{self._jury_shop_reset_available(row)}**\n"
-                f"Command: **$jurytower buy reset**"
+                f"`reset` - **{self.JURY_SHOP_RESET_POTION_COST}** sigils "
+                f"({self._jury_shop_reset_available(row)}/{self.JURY_SHOP_RESET_POTION_LIMIT} left)\n"
+                f"`fragment` - **{self.JURY_SHOP_RESET_FRAGMENT_COST}** sigils "
+                f"({self._jury_shop_item_available(row, 'shop_reset_fragment_purchases', self.JURY_SHOP_RESET_FRAGMENT_LIMIT)}/{self.JURY_SHOP_RESET_FRAGMENT_LIMIT} left)\n"
+                f"`appeal` - **{self.JURY_SHOP_APPEAL_COST}** sigils "
+                f"({self._jury_shop_item_available(row, 'shop_appeal_purchases', self.JURY_SHOP_APPEAL_LIMIT)}/{self.JURY_SHOP_APPEAL_LIMIT} left)"
             ),
-            inline=True,
+            inline=False,
         )
         embed.add_field(
-            name="Reset Fragment",
+            name="Rewards",
             value=(
-                f"Cost: **{self.JURY_SHOP_RESET_FRAGMENT_COST} Court Writs**\n"
-                f"Cycle Limit: **{self.JURY_SHOP_RESET_FRAGMENT_LIMIT}**\n"
-                f"Available This Cycle: **{self._jury_shop_item_available(row, 'shop_reset_fragment_purchases', self.JURY_SHOP_RESET_FRAGMENT_LIMIT)}**\n"
-                f"Command: **$jurytower buy fragment**"
+                f"`fortune` - **{self.JURY_SHOP_FORTUNE_CRATE_COST}** sigils "
+                f"({self._jury_shop_item_available(row, 'shop_fortune_crate_purchases', self.JURY_SHOP_FORTUNE_CRATE_LIMIT)}/{self.JURY_SHOP_FORTUNE_CRATE_LIMIT} left)\n"
+                f"`weapelement` - **{self.JURY_SHOP_WEAPON_SCROLL_COST}** sigils "
+                f"({self._jury_shop_item_available(row, 'shop_weapon_scroll_purchases', self.JURY_SHOP_WEAPON_SCROLL_LIMIT)}/{self.JURY_SHOP_WEAPON_SCROLL_LIMIT} left)\n"
+                f"`title` - **{self.JURY_SHOP_COSMETIC_TITLE_COST}** sigils "
+                f"({'owned' if self._jury_shop_title_unlocked(row) else 'available'})"
             ),
-            inline=True,
+            inline=False,
         )
         embed.add_field(
-            name="Appeal",
+            name="Notes",
             value=(
-                f"Cost: **{self.JURY_SHOP_APPEAL_COST} Court Writs**\n"
-                f"Cycle Limit: **{self.JURY_SHOP_APPEAL_LIMIT}**\n"
-                f"Available This Cycle: **{self._jury_shop_item_available(row, 'shop_appeal_purchases', self.JURY_SHOP_APPEAL_LIMIT)}**\n"
-                f"Use: **+1 retry charge** for this cycle\n"
-                f"Command: **$jurytower buy appeal**"
-            ),
-            inline=True,
-        )
-        embed.add_field(
-            name="Fortune Crate",
-            value=(
-                f"Cost: **{self.JURY_SHOP_FORTUNE_CRATE_COST} Court Writs**\n"
-                f"Cycle Limit: **{self.JURY_SHOP_FORTUNE_CRATE_LIMIT}**\n"
-                f"Available This Cycle: **{self._jury_shop_item_available(row, 'shop_fortune_crate_purchases', self.JURY_SHOP_FORTUNE_CRATE_LIMIT)}**\n"
-                f"Command: **$jurytower buy fortune**"
-            ),
-            inline=True,
-        )
-        embed.add_field(
-            name="Weapon Element Change",
-            value=(
-                f"Cost: **{self.JURY_SHOP_WEAPON_SCROLL_COST} Court Writs**\n"
-                f"Cycle Limit: **{self.JURY_SHOP_WEAPON_SCROLL_LIMIT}**\n"
-                f"Available This Cycle: **{self._jury_shop_item_available(row, 'shop_weapon_scroll_purchases', self.JURY_SHOP_WEAPON_SCROLL_LIMIT)}**\n"
-                f"Use: **1 Weapon Element Scroll**\n"
-                f"Command: **$jurytower buy weapelement**"
-            ),
-            inline=True,
-        )
-        embed.add_field(
-            name="Cosmetic Title",
-            value=(
-                f"Cost: **{self.JURY_SHOP_COSMETIC_TITLE_COST} Court Writs**\n"
-                f"Status: **{'Owned' if self._jury_shop_title_unlocked(row) else 'Available'}**\n"
-                f"Unlocks: **{JURY_COSMETIC_TITLE}**\n"
-                f"Command: **$jurytower buy title**"
-            ),
-            inline=True,
-        )
-        embed.add_field(
-            name="Judge Fragment Chain",
-            value=(
-                "Floors **22**, **44**, and **66** each grant **1 Reset Fragment**.\n"
-                f"Every **{self.JURY_RESET_FRAGMENT_REQUIREMENT} fragments** automatically reforge into **1 Reset Potion**."
+                f"Fragments auto-reforge at **{self.JURY_RESET_FRAGMENT_REQUIREMENT} = 1 Reset Potion**.\n"
+                "Shop limits reset on prestige.\n"
+                "Use `$jt buy <item>` to purchase."
             ),
             inline=False,
         )
@@ -5679,7 +5694,7 @@ class Battles(commands.Cog):
         if not preview_row:
             return await ctx.send("You have not started the Jury Tower. Use `$jurytower start`.")
         if int(preview_row["writs"] or 0) < cost:
-            return await ctx.send(f"You need **{cost} Court Writs** for that purchase.")
+            return await ctx.send(f"You need **{cost} {JURY_CURRENCY_LABEL}** for that purchase.")
         if item_key == "reset" and self._jury_shop_reset_available(preview_row) <= 0:
             return await ctx.send("You already bought the shop reset potion for this cycle.")
         if item_key == "fragment" and self._jury_shop_item_available(
@@ -5711,7 +5726,7 @@ class Battles(commands.Cog):
         if item_key == "title" and self._jury_shop_title_unlocked(preview_row):
             return await ctx.send(f"You already unlocked **{JURY_COSMETIC_TITLE}**.")
         if not await ctx.confirm(
-            f"Spend **{cost} Court Writs** for **{reward_label}**?"
+            f"Spend **{cost} {JURY_CURRENCY_LABEL}** for **{reward_label}**?"
         ):
             return await ctx.send("The purchase was cancelled.")
 
@@ -5733,7 +5748,7 @@ class Battles(commands.Cog):
 
                 writs = int(row["writs"] or 0)
                 if writs < cost:
-                    return await ctx.send(f"You need **{cost} Court Writs** for that purchase.")
+                    return await ctx.send(f"You need **{cost} {JURY_CURRENCY_LABEL}** for that purchase.")
 
                 summary_line = ""
                 if item_key == "reset":
@@ -5756,7 +5771,7 @@ class Battles(commands.Cog):
                     )
                     remaining_after = max(0, remaining_before - 1)
                     summary_line = (
-                        f"You spend **{cost} Court Writs** and receive **1 Reset Potion**. "
+                        f"You spend **{cost} {JURY_CURRENCY_LABEL}** and receive **1 Reset Potion**. "
                         f"Shop resets remaining this cycle: **{remaining_after}/{self.JURY_SHOP_RESET_POTION_LIMIT}**."
                     )
                 elif item_key == "fragment":
@@ -5779,7 +5794,7 @@ class Battles(commands.Cog):
                     )
                     fragment_award = await self._award_jury_reset_fragments(connection, ctx.author.id, 1)
                     summary_line = (
-                        f"You spend **{cost} Court Writs** and receive **1 Reset Fragment**. "
+                        f"You spend **{cost} {JURY_CURRENCY_LABEL}** and receive **1 Reset Fragment**. "
                         f"Fragments now: **{self._format_jury_reset_fragments(fragment_award['remaining_fragments'])}**."
                     )
                     if fragment_award["converted_potions"] > 0:
@@ -5813,7 +5828,7 @@ class Battles(commands.Cog):
                         ctx.author.id,
                     )
                     summary_line = (
-                        f"You spend **{cost} Court Writs** and gain **1 Appeal**. "
+                        f"You spend **{cost} {JURY_CURRENCY_LABEL}** and gain **1 Appeal**. "
                         f"Appeals: **{new_appeals}/{self.JURY_MAX_APPEALS}**."
                     )
                 elif item_key == "fortune":
@@ -5839,7 +5854,7 @@ class Battles(commands.Cog):
                         ctx.author.id,
                     )
                     summary_line = (
-                        f"You spend **{cost} Court Writs** and receive **1 Fortune Crate**."
+                        f"You spend **{cost} {JURY_CURRENCY_LABEL}** and receive **1 Fortune Crate**."
                     )
                 elif item_key == "weapelement":
                     remaining_before = self._jury_shop_item_available(
@@ -5868,7 +5883,7 @@ class Battles(commands.Cog):
                         1,
                     )
                     summary_line = (
-                        f"You spend **{cost} Court Writs** and receive **1 Weapon Element Scroll**. "
+                        f"You spend **{cost} {JURY_CURRENCY_LABEL}** and receive **1 Weapon Element Scroll**. "
                         f"Total Weapon Element Changes: **{new_quantity}**."
                     )
                 elif item_key == "title":
@@ -5885,7 +5900,7 @@ class Battles(commands.Cog):
                         ctx.author.id,
                     )
                     summary_line = (
-                        f"You spend **{cost} Court Writs** and unlock the cosmetic title "
+                        f"You spend **{cost} {JURY_CURRENCY_LABEL}** and unlock the cosmetic title "
                         f"**{JURY_COSMETIC_TITLE}**."
                     )
 

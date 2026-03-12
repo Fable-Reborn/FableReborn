@@ -125,13 +125,13 @@ JURY_BRACKET_BASE_SNAPSHOT = {
     "defense_base": 2200,
 }
 JURY_POWER_BRACKETS = (
-    {"key": "court_tier_i", "label": "Court Tier I", "max_score": 6500, "multiplier": 0.78, "writ_multiplier": 1.00},
-    {"key": "court_tier_ii", "label": "Court Tier II", "max_score": 7800, "multiplier": 0.92, "writ_multiplier": 1.15},
-    {"key": "court_tier_iii", "label": "Court Tier III", "max_score": 9200, "multiplier": 1.06, "writ_multiplier": 1.30},
-    {"key": "court_tier_iv", "label": "Court Tier IV", "max_score": 10800, "multiplier": 1.20, "writ_multiplier": 1.45},
-    {"key": "court_tier_v", "label": "Court Tier V", "max_score": 12600, "multiplier": 1.36, "writ_multiplier": 1.60},
-    {"key": "court_tier_vi", "label": "Court Tier VI", "max_score": 14600, "multiplier": 1.54, "writ_multiplier": 1.80},
-    {"key": "court_tier_vii", "label": "Court Tier VII", "max_score": None, "multiplier": 1.74, "writ_multiplier": 2.00},
+    {"key": "court_tier_i", "label": "Iron Rank I", "max_score": 6500, "multiplier": 0.78, "writ_multiplier": 1.00},
+    {"key": "court_tier_ii", "label": "Iron Rank II", "max_score": 7800, "multiplier": 0.92, "writ_multiplier": 1.15},
+    {"key": "court_tier_iii", "label": "Iron Rank III", "max_score": 9200, "multiplier": 1.06, "writ_multiplier": 1.30},
+    {"key": "court_tier_iv", "label": "Iron Rank IV", "max_score": 10800, "multiplier": 1.20, "writ_multiplier": 1.45},
+    {"key": "court_tier_v", "label": "Iron Rank V", "max_score": 12600, "multiplier": 1.36, "writ_multiplier": 1.60},
+    {"key": "court_tier_vi", "label": "Iron Rank VI", "max_score": 14600, "multiplier": 1.54, "writ_multiplier": 1.80},
+    {"key": "court_tier_vii", "label": "Iron Rank VII", "max_score": None, "multiplier": 1.74, "writ_multiplier": 2.00},
 )
 JURY_JUDGE_BASE_SCALES = (0.68, 0.78, 0.88, 0.98, 1.08, 1.18, 1.28)
 JURY_ROLE_SCALE_TEMPLATES = {
@@ -378,7 +378,7 @@ def _build_choice(judge: JudgeDefinition, local_floor: int, names: dict[str, str
                     "key": "allin",
                     "label": "All-In",
                     "description": "Take the fast path and dare the tower to answer.",
-                    "effect": "+5% damage. Kills ramp momentum and extra writs, but also scrutiny and armor loss.",
+                    "effect": "+5% damage. Kills ramp momentum and extra sigils, but also scrutiny and armor loss.",
                     "quote": "Climb so hard the fall has a price tag.",
                 },
             ],
@@ -407,7 +407,7 @@ def _build_choice(judge: JudgeDefinition, local_floor: int, names: dict[str, str
                 "key": "power",
                 "label": "Power",
                 "description": "Take raw force and pay for it later.",
-                "effect": "+15% damage and extra writs, but harsher scrutiny as momentum climbs.",
+                "effect": "+15% damage and extra sigils, but harsher scrutiny as momentum climbs.",
                 "quote": "If force is your law, live under it.",
             },
         ],
