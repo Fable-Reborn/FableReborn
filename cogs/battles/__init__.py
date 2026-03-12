@@ -3217,10 +3217,43 @@ class Battles(commands.Cog):
         except Exception as e:
             await ctx.send(f"An error occurred while updating the level: {e}")
 
+    async def _run_gm_test_battle(self, ctx, battle, label: str):
+        try:
+            await self.add_player_to_fight(ctx.author.id)
+            await battle.start_battle()
+
+            while not await battle.is_battle_over():
+                await battle.process_turn()
+                await asyncio.sleep(1)
+
+            result = await battle.end_battle()
+            battle_timed_out = hasattr(battle, "battle_timed_out") and battle.battle_timed_out
+
+            if result and result.name == "Player":
+                player_alive = any(not c.is_pet and c.is_alive() for c in battle.player_team.combatants)
+                if player_alive or battle.config.get("pets_continue_battle", False):
+                    outcome = "Victory"
+                else:
+                    outcome = "Player Defeated"
+            elif battle_timed_out:
+                outcome = "Timed Out"
+            else:
+                outcome = "Defeat"
+
+            await ctx.send(
+                f"{label} complete. Result: **{outcome}**. Battle ID: `{battle.battle_id}`"
+            )
+        except Exception as e:
+            error_message = f"An error occurred during {label}: {e}\n{traceback.format_exc()}"
+            await ctx.send(error_message[:1900] + "..." if len(error_message) > 1900 else error_message)
+            print(error_message)
+        finally:
+            await self.remove_player_from_fight(ctx.author.id)
+
     @is_gm()
     @has_char()
-    @commands.command(hidden=True)
-    async def gmbttest(
+    @commands.command(name="gmbtmanual", hidden=True)
+    async def gmbtmanual(
         self,
         ctx,
         minion1_hp: int,
@@ -3331,38 +3364,82 @@ class Battles(commands.Cog):
             allow_pets=True,
         )
         battle.config["allow_pets"] = True
+        battle.config["pets_continue_battle"] = True
 
-        try:
-            await self.add_player_to_fight(ctx.author.id)
-            await battle.start_battle()
+        await self._run_gm_test_battle(ctx, battle, "GM BT manual test")
 
-            while not await battle.is_battle_over():
-                await battle.process_turn()
-                await asyncio.sleep(1)
+    @is_gm()
+    @has_char()
+    @commands.command(hidden=True)
+    async def gmbttest(self, ctx, floor: int, prestige: int = None):
+        """[GM only] Start a Jury Tower test for an exact floor using live scaling."""
+        if floor < 1 or floor > JURY_TOWER_FLOOR_COUNT:
+            return await ctx.send(f"Floor must be between 1 and {JURY_TOWER_FLOOR_COUNT}.")
+        if prestige is not None and prestige < 0:
+            return await ctx.send("Prestige must be 0 or greater.")
+        if await self.is_player_in_fight(ctx.author.id):
+            return await ctx.send("You are already in a battle.")
 
-            result = await battle.end_battle()
-            battle_timed_out = hasattr(battle, "battle_timed_out") and battle.battle_timed_out
+        floor_data = self._get_jury_floor_data(floor)
+        if not floor_data:
+            return await ctx.send(f"No Jury Tower data exists for floor {floor}.")
 
-            if result and result.name == "Player":
-                player_alive = any(not c.is_pet and c.is_alive() for c in battle.player_team.combatants)
-                if player_alive or battle.config.get("pets_continue_battle", False):
-                    outcome = "Victory"
-                else:
-                    outcome = "Player Defeated"
-            elif battle_timed_out:
-                outcome = "Timed Out"
-            else:
-                outcome = "Defeat"
+        if prestige is None:
+            async with self.bot.pool.acquire() as connection:
+                prestige = await connection.fetchval(
+                    "SELECT prestige FROM jurytower WHERE id = $1",
+                    ctx.author.id,
+                )
+        prestige = int(prestige or 0)
 
-            await ctx.send(
-                f"GM BT test complete. Result: **{outcome}**. Battle ID: `{battle.battle_id}`"
+        scale_snapshot = await self.battle_factory.build_jury_tower_scale_snapshot(
+            ctx,
+            ctx.author,
+            True,
+        )
+        choice_key = await self._prompt_jury_choice(ctx, floor_data)
+
+        battle = await self.battle_factory.create_battle(
+            "jurytower",
+            ctx,
+            player=ctx.author,
+            floor_number=floor,
+            floor_data=floor_data,
+            choice_key=choice_key,
+            allow_pets=True,
+            jury_scale_snapshot=scale_snapshot,
+            jury_prestige_level=prestige,
+        )
+        battle.config["allow_pets"] = True
+        battle.config["pets_continue_battle"] = True
+
+        preview = discord.Embed(
+            title=f"GM Jury Test - Floor {floor}",
+            description=(
+                f"**{floor_data['judge_name']}, {floor_data['judge_title']}**\n"
+                f"**{floor_data['title']}**\n"
+                f"Act: **{floor_data.get('act_label', 'Proceedings')}**"
+            ),
+            color=floor_data.get("color", 0x8B5CF6),
+        )
+        preview.add_field(
+            name="Test Setup",
+            value=(
+                f"Prestige: **{prestige}**\n"
+                f"Choice: **{choice_key}**\n"
+                f"{self._format_jury_scale_snapshot(scale_snapshot) or 'No scale snapshot.'}"
+            ),
+            inline=False,
+        )
+        enemy_lines = []
+        for enemy in battle.enemy_team.combatants:
+            enemy_lines.append(
+                f"{enemy.name}: **HP {float(enemy.max_hp):.1f} / ATK {float(enemy.damage):.1f} / DEF {float(enemy.armor):.1f}**"
             )
-        except Exception as e:
-            error_message = f"An error occurred during GM BT test: {e}\n{traceback.format_exc()}"
-            await ctx.send(error_message[:1900] + "..." if len(error_message) > 1900 else error_message)
-            print(error_message)
-        finally:
-            await self.remove_player_from_fight(ctx.author.id)
+        preview.add_field(name="Generated Enemies", value="\n".join(enemy_lines), inline=False)
+        await ctx.send(embed=preview)
+
+        await self._run_gm_test_battle(ctx, battle, f"GM Jury test for floor {floor}")
 
     @battletower.command()
     @locale_doc
