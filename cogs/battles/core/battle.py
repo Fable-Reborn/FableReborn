@@ -29,6 +29,8 @@ class PetAttackOutcome:
 import discord
 from discord.ext import commands
 
+from classes.ascension import get_ascension_mantle
+
 # Import the status effect registry
 from .status_effect import StatusEffectRegistry
 
@@ -288,6 +290,250 @@ class Battle(ABC):
                 "ignore_reflection_this_hit": ignore_reflection_this_hit,
                 "partial_true_damage": partial_true_damage,
             },
+        )
+
+    def get_team_for_combatant(self, combatant):
+        for team in self.teams:
+            if combatant in getattr(team, "combatants", []):
+                return team
+        return None
+
+    def get_enemy_team_for_combatant(self, combatant):
+        current_team = self.get_team_for_combatant(combatant)
+        if current_team is None:
+            return None
+        for team in self.teams:
+            if team is not current_team:
+                return team
+        return None
+
+    def _get_counter_element(self, enemy_team, current_element):
+        element_ext = self._get_element_extension()
+        strengths = getattr(element_ext, "element_strengths", {}) if element_ext else {}
+        if not strengths or enemy_team is None:
+            return current_element
+
+        enemy_elements = []
+        for combatant in getattr(enemy_team, "combatants", []):
+            if combatant.is_alive():
+                element = self.resolve_defense_element(combatant)
+                if element and element != "Unknown":
+                    enemy_elements.append(element)
+        if not enemy_elements:
+            return current_element
+
+        def score(candidate):
+            total = 0
+            for enemy_element in enemy_elements:
+                if strengths.get(candidate) == enemy_element:
+                    total += 2
+                if strengths.get(enemy_element) == candidate:
+                    total -= 1
+            return total
+
+        best_element = current_element
+        best_score = score(current_element)
+        candidates = ("Light", "Dark", "Corrupted", "Nature", "Electric", "Water", "Fire", "Wind")
+        for candidate in candidates:
+            candidate_score = score(candidate)
+            if candidate_score > best_score:
+                best_element = candidate
+                best_score = candidate_score
+        return best_element
+
+    def _grant_team_shield(self, team, shield_scale: Decimal) -> None:
+        for combatant in getattr(team, "combatants", []):
+            if not combatant.is_alive():
+                continue
+            current_shield = Decimal(str(getattr(combatant, "shield", 0)))
+            setattr(
+                combatant,
+                "shield",
+                current_shield + (combatant.max_hp * shield_scale),
+            )
+
+    def _spawn_ascension_echo(
+        self,
+        *,
+        source,
+        team,
+        name: str,
+        hp_scale: Decimal,
+        damage_scale: Decimal,
+        armor_scale: Decimal,
+        element: str | None = None,
+    ):
+        if team is None:
+            return None
+
+        from .combatant import Combatant
+
+        echo = Combatant(
+            user=name,
+            hp=max(75, int(round(float(source.max_hp * hp_scale)))),
+            max_hp=max(75, int(round(float(source.max_hp * hp_scale)))),
+            damage=max(25, int(round(float(source.damage * damage_scale)))),
+            armor=max(10, int(round(float(source.armor * armor_scale)))),
+            element=element or getattr(source, "element", "Unknown"),
+            luck=85,
+            name=name,
+            attack_priority=True,
+            is_pet=False,
+        )
+        team.combatants.append(echo)
+        if hasattr(self, "turn_order"):
+            self.turn_order.append(echo)
+            self.turn_order = self.prioritize_turn_order(self.turn_order)
+        refresh_queue = getattr(self, "_refresh_player_turn_queue", None)
+        if callable(refresh_queue):
+            refresh_queue()
+        return echo
+
+    async def trigger_ascension_openings(self):
+        messages = []
+        for team in self.teams:
+            for combatant in list(getattr(team, "combatants", [])):
+                if not combatant.is_alive() or getattr(combatant, "is_pet", False):
+                    continue
+
+                mantle = get_ascension_mantle(getattr(combatant, "ascension_mantle", None))
+                if mantle is None or getattr(combatant, "ascension_opening_used", False):
+                    continue
+
+                enemy_team = self.get_enemy_team_for_combatant(combatant)
+                if mantle.key == "thronekeeper" and enemy_team is not None:
+                    combatant.ascension_opening_used = True
+                    self._grant_team_shield(team, Decimal("0.22"))
+                    for enemy in getattr(enemy_team, "combatants", []):
+                        if enemy.is_alive():
+                            setattr(enemy, "ascension_silenced_turns", max(1, int(getattr(enemy, "ascension_silenced_turns", 0) or 0)))
+                    messages.append(
+                        f"👑 **{mantle.signature_name}:** {combatant.name} raises a golden decree. "
+                        "Allies gain radiant shields and the enemy's first action is sealed."
+                    )
+                elif mantle.key == "cyclebreaker" and enemy_team is not None:
+                    combatant.ascension_opening_used = True
+                    current_element = self.resolve_attack_element(combatant)
+                    new_element = self._get_counter_element(enemy_team, current_element)
+                    combatant.attack_element = new_element
+                    combatant.defense_element = new_element
+                    combatant.element = new_element
+                    combatant.attack_priority = True
+                    messages.append(
+                        f"🌀 **Fractured Attunement:** {combatant.name} studies the broken timeline and "
+                        f"realigns to **{new_element}**."
+                    )
+        return messages
+
+    def consume_ascension_action_lock(self, combatant):
+        turns = int(getattr(combatant, "ascension_silenced_turns", 0) or 0)
+        if turns <= 0:
+            return None
+        remaining = turns - 1
+        if remaining > 0:
+            setattr(combatant, "ascension_silenced_turns", remaining)
+        else:
+            try:
+                delattr(combatant, "ascension_silenced_turns")
+            except AttributeError:
+                setattr(combatant, "ascension_silenced_turns", 0)
+        return (
+            f"🔒 **Edict of Silence:** {combatant.name} is bound by throne-law and cannot act."
+        )
+
+    async def maybe_trigger_grave_sovereign(self, attacker, target):
+        mantle = get_ascension_mantle(getattr(attacker, "ascension_mantle", None))
+        if (
+            mantle is None
+            or mantle.key != "grave_sovereign"
+            or getattr(attacker, "ascension_signature_used", False)
+            or getattr(attacker, "is_pet", False)
+            or target is None
+        ):
+            return None
+
+        target_max_hp = Decimal(str(getattr(target, "max_hp", 0)))
+        if target_max_hp <= 0:
+            return None
+
+        target_hp = Decimal(str(getattr(target, "hp", 0)))
+        if target.is_alive() and (target_hp / target_max_hp) > Decimal("0.35"):
+            return None
+
+        attacker.ascension_signature_used = True
+        ally_team = self.get_team_for_combatant(attacker)
+        bonus_damage = Decimal("0")
+        if target.is_alive():
+            bonus_damage = max(target_max_hp * Decimal("0.18"), attacker.damage * Decimal("0.85"))
+            existing_true_damage = Decimal(str(getattr(target, "pending_true_damage_bypass_shield", 0)))
+            setattr(
+                target,
+                "pending_true_damage_bypass_shield",
+                existing_true_damage + bonus_damage,
+            )
+            target.take_damage(bonus_damage)
+
+        self._spawn_ascension_echo(
+            source=target,
+            team=ally_team,
+            name=f"Grave Echo of {target.name}",
+            hp_scale=Decimal("0.32"),
+            damage_scale=Decimal("0.40"),
+            armor_scale=Decimal("0.28"),
+            element="Dark",
+        )
+
+        if bonus_damage > 0:
+            return (
+                f"☠️ **{mantle.signature_name}:** {attacker.name} tears a Grave Echo from {target.name}, "
+                f"dealing **{self.format_number(bonus_damage)} HP** true damage and forcing the echo to kneel."
+            )
+        return (
+            f"☠️ **{mantle.signature_name}:** {attacker.name} rips a Grave Echo from the ruin of {target.name}. "
+            "The dead answer your crown."
+        )
+
+    async def maybe_trigger_cyclebreaker(self, target, attacker):
+        mantle = get_ascension_mantle(getattr(target, "ascension_mantle", None))
+        if (
+            mantle is None
+            or mantle.key != "cyclebreaker"
+            or getattr(target, "ascension_survival_used", False)
+            or getattr(target, "is_pet", False)
+            or target.is_alive()
+        ):
+            return None
+
+        target.ascension_survival_used = True
+        target.hp = min(target.max_hp, max(Decimal("75"), target.max_hp * Decimal("0.40")))
+        current_shield = Decimal(str(getattr(target, "shield", 0)))
+        target.shield = current_shield + (target.max_hp * Decimal("0.20"))
+        target.attack_priority = True
+
+        enemy_team = self.get_enemy_team_for_combatant(target)
+        if enemy_team is not None:
+            new_element = self._get_counter_element(enemy_team, self.resolve_attack_element(target))
+            target.attack_element = new_element
+            target.defense_element = new_element
+            target.element = new_element
+
+        ally_team = self.get_team_for_combatant(target)
+        self._spawn_ascension_echo(
+            source=target,
+            team=ally_team,
+            name=f"Paradox Echo of {target.name}",
+            hp_scale=Decimal("0.34"),
+            damage_scale=Decimal("0.42"),
+            armor_scale=Decimal("0.34"),
+            element=getattr(target, "element", "Corrupted"),
+        )
+
+        if attacker is not None and attacker.is_alive():
+            setattr(attacker, "ascension_silenced_turns", max(1, int(getattr(attacker, "ascension_silenced_turns", 0) or 0)))
+
+        return (
+            f"🌀 **{mantle.signature_name}:** Reality rejects the killing blow. {target.name} returns with "
+            f"**{self.format_number(target.hp)} HP**, a paradox barrier, and an echo from a winning timeline."
         )
         
     # ----- Status Effect System Methods -----

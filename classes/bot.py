@@ -38,6 +38,7 @@ from json import JSONDecoder, JSONEncoder
 
 from redis import asyncio as aioredis
 
+from classes.badges import Badge
 from classes.bucket_cooldown import Cooldown, CooldownMapping
 from classes.classes import Mage, Paragon, Raider, Ranger, Ritualist, Thief, Warrior, Paladin, Reaper, Tank
 from classes.classes import from_string as class_from_string
@@ -808,13 +809,25 @@ class Bot(commands.AutoShardedBot):
             )
             reward_text = f"**${money}**"
 
-        additional = (
-            _("You can now choose your second class using `{prefix}class`!").format(
-                prefix=ctx.clean_prefix
+        additional_parts = []
+        if old_level < 12 and new_level >= 12:
+            additional_parts.append(
+                _("You can now choose your second class using `{prefix}class`!").format(
+                    prefix=ctx.clean_prefix
+                )
             )
-            if old_level < 12 and new_level >= 12
-            else ""
-        )
+        if old_level < 100 <= new_level:
+            additional_parts.append(
+                _("You can now claim an Ascension Mantle using `{prefix}ascension`!").format(
+                    prefix=ctx.clean_prefix
+                )
+            )
+        if old_level < 100 <= new_level and await self._grant_eternal_sovereign_badge(
+            ctx.author.id,
+            conn=conn,
+        ):
+            additional_parts.append(_("You also unlocked the **Eternal Sovereign** badge!"))
+        additional = " ".join(additional_parts)
 
         if local:
             await self.pool.release(conn)
@@ -849,6 +862,30 @@ class Bot(commands.AutoShardedBot):
                     "as a reward :tada:! {additional}"
                 ).format(user=user.mention, new_level=new_level, reward=reward_text, additional=additional)
             )
+
+    async def _grant_eternal_sovereign_badge(self, user_id: int, *, conn) -> bool:
+        profile_row = await conn.fetchrow(
+            'SELECT "badges" FROM profile WHERE "user" = $1;',
+            user_id,
+        )
+        if profile_row is None:
+            return False
+
+        raw_badges = profile_row["badges"]
+        try:
+            current_badges = Badge(0) if raw_badges is None else Badge.from_db(raw_badges)
+        except Exception:
+            current_badges = Badge(0)
+
+        if current_badges & Badge.ETERNAL_SOVEREIGN:
+            return False
+
+        await conn.execute(
+            'UPDATE profile SET "badges" = $1 WHERE "user" = $2;',
+            (current_badges | Badge.ETERNAL_SOVEREIGN).to_db(),
+            user_id,
+        )
+        return True
 
     async def process_guildlevelup(self, ctx, user_id, new_level, old_level, conn=None):
         if conn is None:
@@ -916,13 +953,25 @@ class Bot(commands.AutoShardedBot):
             )
             reward_text = f"**${money}**"
 
-        additional = (
-            _("You can now choose your second class using `{prefix}class`!").format(
-                prefix=ctx.clean_prefix
+        additional_parts = []
+        if old_level < 12 and new_level >= 12:
+            additional_parts.append(
+                _("You can now choose your second class using `{prefix}class`!").format(
+                    prefix=ctx.clean_prefix
+                )
             )
-            if old_level < 12 and new_level >= 12
-            else ""
-        )
+        if old_level < 100 <= new_level:
+            additional_parts.append(
+                _("You can now claim an Ascension Mantle using `{prefix}ascension`!").format(
+                    prefix=ctx.clean_prefix
+                )
+            )
+        if old_level < 100 <= new_level and await self._grant_eternal_sovereign_badge(
+            user_id,
+            conn=conn,
+        ):
+            additional_parts.append(_("You also unlocked the **Eternal Sovereign** badge!"))
+        additional = " ".join(additional_parts)
 
         if local:
             await self.pool.release(conn)

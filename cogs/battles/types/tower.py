@@ -100,6 +100,8 @@ class TowerBattle(Battle):
         
         # First action: Introduction
         await self.add_to_log(intro_message, force_new_action=True)
+        for opening_message in await self.trigger_ascension_openings():
+            await self.add_to_log(opening_message, force_new_action=True)
         
         # Create and send initial embed
         embed = await self.create_battle_embed()
@@ -174,6 +176,13 @@ class TowerBattle(Battle):
         
         # Skip dead combatants
         if not current_combatant.is_alive():
+            return True
+
+        silenced_message = self.consume_ascension_action_lock(current_combatant)
+        if silenced_message:
+            await self.add_to_log(silenced_message, force_new_action=True)
+            await self.update_display()
+            await asyncio.sleep(1)
             return True
             
         # Determine which team the combatant belongs to
@@ -326,6 +335,20 @@ class TowerBattle(Battle):
                     
                     # Clear the summon flag
                     delattr(current_combatant, 'summon_skeleton')
+
+            grave_message = await self.maybe_trigger_grave_sovereign(
+                current_combatant,
+                target,
+            )
+            if grave_message:
+                message += "\n" + grave_message
+
+            cycle_message = await self.maybe_trigger_cyclebreaker(
+                target,
+                current_combatant,
+            )
+            if cycle_message:
+                message += "\n" + cycle_message
             
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 

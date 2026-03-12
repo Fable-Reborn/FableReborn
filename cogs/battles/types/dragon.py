@@ -153,6 +153,9 @@ class DragonBattle(Battle):
             await self.add_to_log("**Dragon's Passive Effects:**\n" + "\n".join(passive_descriptions))
             # Keep dragon as the first actor after passive log
             self.current_turn = 0
+
+        for opening_message in await self.trigger_ascension_openings():
+            await self.add_to_log(opening_message)
             
         # Create initial battle display
         self._refresh_player_turn_queue()
@@ -173,6 +176,13 @@ class DragonBattle(Battle):
         await self.process_status_effects(current_combatant)
         if not current_combatant.is_alive():
             await self.add_to_log(f"{current_combatant.name} is defeated and cannot act!")
+            self._decrement_status_effects(current_combatant)
+            await self.update_display()
+            return True
+
+        silenced_message = self.consume_ascension_action_lock(current_combatant)
+        if silenced_message:
+            await self.add_to_log(silenced_message)
             self._decrement_status_effects(current_combatant)
             await self.update_display()
             return True
@@ -407,9 +417,14 @@ class DragonBattle(Battle):
             fallback_flavor = element_flavor["Unknown"]
             flavor = element_flavor.get(element_key, fallback_flavor)
             attack_text = random.choice(flavor)
-            await self.add_to_log(
-                f"{dragon.name} {attack_text}! {target.name} takes **{self.format_number(damage)} HP** damage."
+            message = (
+                f"{dragon.name} {attack_text}! {target.name} takes "
+                f"**{self.format_number(damage)} HP** damage."
             )
+            cycle_message = await self.maybe_trigger_cyclebreaker(target, dragon)
+            if cycle_message:
+                message += f"\n{cycle_message}"
+            await self.add_to_log(message)
             return
 
         # Enforce one-time ultimate use
@@ -672,6 +687,10 @@ class DragonBattle(Battle):
                     message += f" {effect_desc}"
                     if effect in ("possess_player", "possess_pet", "possess_player_and_pet_permanent"):
                         self._move_cooldowns[effect] = 2
+
+            cycle_message = await self.maybe_trigger_cyclebreaker(target, dragon)
+            if cycle_message:
+                message += f"\n{cycle_message}"
                     
             await self.add_to_log(message)
             
@@ -966,6 +985,14 @@ class DragonBattle(Battle):
             
             # Clear the summon flag
             delattr(player, 'summon_skeleton')
+
+        grave_message = await self.maybe_trigger_grave_sovereign(player, target)
+        if grave_message:
+            message += f"\n{grave_message}"
+
+        cycle_message = await self.maybe_trigger_cyclebreaker(target, player)
+        if cycle_message:
+            message += f"\n{cycle_message}"
         
         await self.add_to_log(message)
 
@@ -1095,9 +1122,14 @@ class DragonBattle(Battle):
         self._damage_link_guard = True
         try:
             linked_target.take_damage(mirrored)
-            await self.add_to_log(
-                f"🔗 **Terror Link**: {linked_target.name} takes **{self.format_number(mirrored)} HP** mirrored damage!"
+            message = (
+                f"🔗 **Terror Link**: {linked_target.name} takes "
+                f"**{self.format_number(mirrored)} HP** mirrored damage!"
             )
+            cycle_message = await self.maybe_trigger_cyclebreaker(linked_target, None)
+            if cycle_message:
+                message += f"\n{cycle_message}"
+            await self.add_to_log(message)
         finally:
             self._damage_link_guard = False
 
@@ -1108,9 +1140,14 @@ class DragonBattle(Battle):
             else:
                 dmg = float(amount)
             combatant.take_damage(dmg)
-            await self.add_to_log(
-                f"🩸 **Inverted Healing**: {combatant.name} takes **{self.format_number(dmg)} HP** instead!"
+            message = (
+                f"🩸 **Inverted Healing**: {combatant.name} takes "
+                f"**{self.format_number(dmg)} HP** instead!"
             )
+            cycle_message = await self.maybe_trigger_cyclebreaker(combatant, None)
+            if cycle_message:
+                message += f"\n{cycle_message}"
+            await self.add_to_log(message)
             return
         curse = self._get_effect(combatant, "curse")
         if curse:
@@ -1418,7 +1455,14 @@ class DragonBattle(Battle):
                 # Damage over time
                 damage = effect["value"]
                 combatant.take_damage(damage)
-                await self.add_to_log(f"{combatant.name} takes **{self.format_number(damage)} HP** from {effect['name']}!")
+                message = (
+                    f"{combatant.name} takes **{self.format_number(damage)} HP** "
+                    f"from {effect['name']}!"
+                )
+                cycle_message = await self.maybe_trigger_cyclebreaker(combatant, None)
+                if cycle_message:
+                    message += f"\n{cycle_message}"
+                await self.add_to_log(message)
 
     def _decrement_status_effects(self, combatant):
         if combatant.name not in self.status_effects:

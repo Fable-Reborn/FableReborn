@@ -33,6 +33,7 @@ class BattleSettings(commands.Cog):
             "pvp": {},
             "raid": {},
             "tower": {},
+            "jurytower": {},
             "team": {}
         }
         
@@ -183,7 +184,7 @@ class BattleSettings(commands.Cog):
                 result[key] = await self.get_setting_async(battle_type, key)
         else:
             # Get all settings
-            for bt in ["global", "pve", "pvp", "raid", "tower", "team"]:
+            for bt in ["global", "pve", "pvp", "raid", "tower", "jurytower", "team"]:
                 result[bt] = {}
                 for key in self.default_settings["global"].keys():
                     result[bt][key] = await self.get_setting_async(bt, key)

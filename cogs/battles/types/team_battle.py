@@ -42,6 +42,8 @@ class TeamBattle(Battle):
         team_a_members = ", ".join(c.name for c in self.teams[0].combatants)
         team_b_members = ", ".join(c.name for c in self.teams[1].combatants)
         await self.add_to_log(f"Team Battle: Team A ({team_a_members}) vs Team B ({team_b_members}) started!")
+        for opening_message in await self.trigger_ascension_openings():
+            await self.add_to_log(opening_message)
         
         # Create and send initial embed
         embed = await self.create_battle_embed()
@@ -74,6 +76,13 @@ class TeamBattle(Battle):
         # If we've checked all combatants and none are alive, end the battle
         if turns_checked >= max_turns:
             return False
+
+        silenced_message = self.consume_ascension_action_lock(current_combatant)
+        if silenced_message:
+            await self.add_to_log(silenced_message)
+            await self.update_display()
+            await asyncio.sleep(1)
+            return True
             
         # Determine which team the combatant belongs to
         current_team = None
@@ -198,6 +207,20 @@ class TeamBattle(Battle):
                     
                     # Clear the summon flag
                     delattr(current_combatant, 'summon_skeleton')
+
+            grave_message = await self.maybe_trigger_grave_sovereign(
+                current_combatant,
+                target,
+            )
+            if grave_message:
+                message += "\n" + grave_message
+
+            cycle_message = await self.maybe_trigger_cyclebreaker(
+                target,
+                current_combatant,
+            )
+            if cycle_message:
+                message += "\n" + cycle_message
             
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 

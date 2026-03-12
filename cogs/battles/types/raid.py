@@ -68,9 +68,11 @@ class RaidBattle(Battle):
         # Shuffle turn order randomly
         random.shuffle(self.turn_order)
         self.turn_order = self.prioritize_turn_order(self.turn_order)
-        
+
         # Create battle log
         await self.add_to_log(f"Raidbattle started between Team A and Team B!")
+        for opening_message in await self.trigger_ascension_openings():
+            await self.add_to_log(opening_message)
         
 
         # Create and send initial embed
@@ -107,6 +109,13 @@ class RaidBattle(Battle):
         # If we've checked all combatants and none are alive, end the battle
         if turns_checked >= max_turns:
             return False
+
+        silenced_message = self.consume_ascension_action_lock(current_combatant)
+        if silenced_message:
+            await self.add_to_log(silenced_message)
+            await self.update_display()
+            await asyncio.sleep(1)
+            return True
             
         # Determine which team the combatant belongs to
         combatant_team = self.team_a if current_combatant in self.team_a.combatants else self.team_b
@@ -256,6 +265,20 @@ class RaidBattle(Battle):
                     
                     # Clear the summon flag
                     delattr(current_combatant, 'summon_skeleton')
+
+            grave_message = await self.maybe_trigger_grave_sovereign(
+                current_combatant,
+                target,
+            )
+            if grave_message:
+                message += "\n" + grave_message
+
+            cycle_message = await self.maybe_trigger_cyclebreaker(
+                target,
+                current_combatant,
+            )
+            if cycle_message:
+                message += "\n" + cycle_message
             
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 

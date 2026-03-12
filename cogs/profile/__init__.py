@@ -31,6 +31,7 @@ from aiohttp import ContentTypeError
 from discord import Embed
 from discord.ext import commands
 
+from classes.ascension import ASCENSION_TABLE_NAME, get_ascension_mantle
 from classes.badges import Badge
 from classes.bot import Bot
 from classes.classes import from_string as class_from_string
@@ -247,12 +248,22 @@ class Profile(commands.Cog):
         *,
         user_id: int,
         badges_raw,
+        profile_xp=None,
         conn,
     ) -> Badge:
         current_badges = self._badge_from_db_value(badges_raw)
         managed_badges = Badge.GAME_MASTER | Badge.GOD
 
         dynamic_badges = Badge(0)
+        xp_value = self._safe_int(profile_xp, 0)
+        if profile_xp is None:
+            xp_value = self._safe_int(
+                await conn.fetchval(
+                    'SELECT "xp" FROM profile WHERE "user" = $1;',
+                    user_id,
+                ),
+                0,
+            )
         gm_exists = await conn.fetchval(
             "SELECT 1 FROM game_masters WHERE user_id = $1;",
             user_id,
@@ -270,6 +281,8 @@ class Profile(commands.Cog):
             dynamic_badges |= Badge.VETERAN
         if user_id in self._AUTO_DEVELOPER_BADGE_IDS:
             dynamic_badges |= Badge.DEVELOPER
+        if rpgtools.xptolevel(xp_value) >= 100:
+            dynamic_badges |= Badge.ETERNAL_SOVEREIGN
 
         synced_badges = (current_badges & ~managed_badges) | dynamic_badges
         if synced_badges != current_badges:
@@ -554,6 +567,8 @@ class Profile(commands.Cog):
             class_list = [str(class_list)]
         classes = " / ".join([str(c) for c in class_list if c]) or "No Class"
         god_name = str(profile.get("god") or "No God")
+        ascension = get_ascension_mantle(profile.get("ascension_mantle"))
+        ascension_title = ascension.title if ascension else "Unclaimed"
 
         avatar = await self._fetch_avatar_image(user, size=512)
         avatar = ImageOps.fit(avatar, (212, 212), method=resample)
@@ -584,6 +599,8 @@ class Profile(commands.Cog):
             fill=colors["muted"],
             spacing=6,
         )
+        draw.text((80, 748), "Ascension", font=label_font, fill=colors["border"])
+        draw.text((80, 784), clip(ascension_title, tiny_font, 286), font=tiny_font, fill=colors["muted"])
         draw.text((80, 852), f"ID {user.id}", font=tiny_font, fill=colors["muted"])
 
         right_hand, left_hand = None, None
@@ -1412,6 +1429,7 @@ class Profile(commands.Cog):
                     synced_badges = await self._sync_auto_profile_badges(
                         user_id=targetid,
                         badges_raw=profile["badges"],
+                        profile_xp=profile["xp"],
                         conn=conn,
                     )
 
@@ -1591,6 +1609,7 @@ class Profile(commands.Cog):
                     await self._sync_auto_profile_badges(
                         user_id=targetid,
                         badges_raw=profile["badges"],
+                        profile_xp=profile["xp"],
                         conn=conn,
                     )
 
@@ -2136,12 +2155,18 @@ class Profile(commands.Cog):
                 return await ctx.send(
                     _("**{target}** does not have a character.").format(target=target_user)
                 )
+            ascension_choice = await conn.fetchval(
+                f'SELECT mantle FROM {ASCENSION_TABLE_NAME} WHERE user_id = $1;',
+                target_user.id,
+            )
             mission = await self.bot.get_adventure(target_user)
             guild = await conn.fetchval('SELECT name FROM guild WHERE "id"=$1;', p_data["guild"])
             pet = await conn.fetchval(
                 'SELECT default_name FROM monster_pets WHERE "user_id"=$1 AND equipped = true;',
                 target_user.id,
             ) or "None"
+        ascension = get_ascension_mantle(ascension_choice)
+        ascension_title = ascension.title if ascension else "Unclaimed"
 
         # Get color from profile data (use default color if not available)
         try:
@@ -2214,6 +2239,7 @@ class Profile(commands.Cog):
             f"**Pet:** {pet}\n"
             f"**Marriage:** {marriage_display}\n"
             f"**Class:** {' / '.join(p_data.get('class', [])) or 'N/A'}\n"
+            f"**Ascension:** {ascension_title}\n"
             f"**Race:** {p_data['race']}\n"
             f"**PvP Wins:** {p_data['pvpwins']}\n"
             f"**Guild:** {guild or 'None'}"
@@ -2271,10 +2297,15 @@ class Profile(commands.Cog):
             synced_badges = await self._sync_auto_profile_badges(
                 user_id=user.id,
                 badges_raw=profile_data["badges"],
+                profile_xp=profile_data["xp"],
                 conn=conn,
             )
             profile_data = dict(profile_data)
             profile_data["badges"] = synced_badges.to_db()
+            profile_data["ascension_mantle"] = await conn.fetchval(
+                f'SELECT mantle FROM {ASCENSION_TABLE_NAME} WHERE user_id = $1;',
+                user.id,
+            )
 
             mission = await self.bot.get_adventure(user)
             guild_name = await conn.fetchval(

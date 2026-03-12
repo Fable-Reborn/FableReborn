@@ -87,6 +87,9 @@ class PvEBattle(Battle):
         
         random.shuffle(self.turn_order)
         self.turn_order = self.prioritize_turn_order(self.turn_order)
+
+        for opening_message in await self.trigger_ascension_openings():
+            await self.add_to_log(opening_message)
         
         # Create and send initial battle embed
         embed = await self.create_battle_embed()
@@ -219,6 +222,14 @@ class PvEBattle(Battle):
         if not self.attacker.is_alive():
             self.current_turn += 1
             return True
+
+        silenced_message = self.consume_ascension_action_lock(self.attacker)
+        if silenced_message:
+            await self.add_to_log(silenced_message)
+            await self.update_display()
+            await asyncio.sleep(1)
+            self.current_turn += 1
+            return True
         
         # Determine which team the attacker is on
         attacker_team = None
@@ -315,7 +326,7 @@ class PvEBattle(Battle):
                     message += "\n" + "\n".join(skill_messages)
                 if defender_messages:
                     message += "\n" + "\n".join(defender_messages)
-                    
+
                 # Check for skeleton summoning after skill processing
                 if hasattr(self.attacker, 'summon_skeleton'):
                     skeleton_data = self.attacker.summon_skeleton
@@ -345,6 +356,20 @@ class PvEBattle(Battle):
                     
                     # Clear the summon flag
                     delattr(self.attacker, 'summon_skeleton')
+
+            grave_message = await self.maybe_trigger_grave_sovereign(
+                self.attacker,
+                self.defender,
+            )
+            if grave_message:
+                message += "\n" + grave_message
+
+            cycle_message = await self.maybe_trigger_cyclebreaker(
+                self.defender,
+                self.attacker,
+            )
+            if cycle_message:
+                message += "\n" + cycle_message
             
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 

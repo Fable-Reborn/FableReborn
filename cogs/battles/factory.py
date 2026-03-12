@@ -4,6 +4,7 @@ import random
 from decimal import Decimal
 import asyncio
 
+from classes.ascension import ASCENSION_TABLE_NAME
 from .core.battle import Battle
 from .core.combatant import Combatant
 from .core.team import Team
@@ -11,6 +12,7 @@ from .types.pve import PvEBattle
 from .types.pvp import PvPBattle
 from .types.raid import RaidBattle
 from .types.tower import TowerBattle
+from .types.jury_tower import JuryTowerBattle
 from .types.team_battle import TeamBattle
 from .types.dragon import DragonBattle
 from .types.couples_tower import CouplesTowerBattle
@@ -37,10 +39,31 @@ class BattleFactory:
         self.pet_ext = PetExtension()
         self.dragon_ext = DragonExtension()
         self.settings = BattleSettings(bot)
+        self._ascension_tables_ready = False
+        self._ascension_table_lock = asyncio.Lock()
         
     async def initialize(self):
         """Initialize the battle factory and its components"""
+        await self._ensure_ascension_tables()
         await self.settings.initialize()
+
+    async def _ensure_ascension_tables(self):
+        if self._ascension_tables_ready:
+            return
+        async with self._ascension_table_lock:
+            if self._ascension_tables_ready:
+                return
+            async with self.bot.pool.acquire() as conn:
+                await conn.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {ASCENSION_TABLE_NAME} (
+                        user_id bigint PRIMARY KEY,
+                        mantle text NOT NULL,
+                        chosen_at timestamp with time zone NOT NULL DEFAULT now()
+                    );
+                    """
+                )
+            self._ascension_tables_ready = True
 
     def _get_pve_tier_for_player_level(self, player_level: int) -> int:
         normalized_level = max(1, int(player_level))
@@ -124,6 +147,8 @@ class BattleFactory:
             return await self.create_raid_battle(ctx, **settings_kwargs)
         elif battle_type == "tower":
             return await self.create_tower_battle(ctx, **settings_kwargs)
+        elif battle_type == "jurytower":
+            return await self.create_jury_tower_battle(ctx, **settings_kwargs)
         elif battle_type == "team":
             return await self.create_team_battle(ctx, **settings_kwargs)
         elif battle_type == "dragon":
@@ -433,6 +458,53 @@ class BattleFactory:
         battle_kwargs.pop("team_a", None)
         battle_kwargs.pop("team_b", None)
         return TeamBattle(ctx, teams, money=money, **battle_kwargs)
+
+    async def create_jury_tower_battle(self, ctx, **kwargs):
+        """Create a jury tower battle for a specific floor."""
+        player = kwargs.get("player", ctx.author)
+        floor_number = kwargs.get("floor_number", kwargs.get("level", 1))
+        floor_data = kwargs.get("floor_data", {})
+        allow_pets = kwargs.get("allow_pets")
+        choice_key = kwargs.get("choice_key")
+
+        player_combatant = await self.create_player_combatant(ctx, player, include_pet=allow_pets)
+        pet_combatant = None
+        if allow_pets:
+            pet_combatant = await self.pet_ext.get_pet_combatant(ctx, player)
+
+        player_team = Team("Player", [player_combatant])
+        if pet_combatant:
+            player_team.add_combatant(pet_combatant)
+
+        enemy_team = Team("Defendants", [])
+        for enemy_info in floor_data.get("enemies", []):
+            enemy_combatant = await self.create_monster_combatant(
+                {
+                    "name": enemy_info.get("name", "Defendant"),
+                    "hp": enemy_info.get("hp", 100),
+                    "attack": enemy_info.get("attack", 20),
+                    "defense": enemy_info.get("defense", 10),
+                    "element": enemy_info.get("element", "Unknown"),
+                },
+                name=enemy_info.get("name"),
+            )
+            setattr(enemy_combatant, "jury_key", enemy_info.get("key", "boss"))
+            enemy_team.add_combatant(enemy_combatant)
+
+        battle_kwargs = kwargs.copy()
+        battle_kwargs.pop("level", None)
+        battle_kwargs.pop("floor_number", None)
+        battle_kwargs.pop("floor_data", None)
+
+        return JuryTowerBattle(
+            ctx,
+            [player_team, enemy_team],
+            level=floor_number,
+            floor_number=floor_number,
+            floor_data=floor_data,
+            choice_key=choice_key,
+            **battle_kwargs,
+        )
         
     async def create_dragon_battle(self, ctx, **kwargs):
         """Create an Ice Dragon challenge battle"""
@@ -638,6 +710,13 @@ class BattleFactory:
             # Get class buffs
             classes = result['class'] if isinstance(result['class'], list) else [result['class']]
             buffs = await self.class_ext.get_class_buffs(classes)
+            try:
+                ascension_mantle = await conn.fetchval(
+                    f'SELECT mantle FROM {ASCENSION_TABLE_NAME} WHERE user_id = $1;',
+                    player.id,
+                )
+            except Exception:
+                ascension_mantle = None
             
             has_shield = element_data.get("has_shield", False)
             
@@ -662,7 +741,11 @@ class BattleFactory:
                 mage_evolution=buffs.get("mage_evolution"),
                 tank_evolution=tank_evolution,
                 damage_reflection=damage_reflection,
-                has_shield=has_shield
+                has_shield=has_shield,
+                ascension_mantle=ascension_mantle,
+                ascension_signature_used=False,
+                ascension_opening_used=False,
+                ascension_survival_used=False,
             )
 
     async def create_monster_combatant(self, monster_data, level=1, name=None):

@@ -16,6 +16,7 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
+import asyncio
 from copy import copy
 from decimal import Decimal
 
@@ -23,6 +24,13 @@ import discord
 
 from discord.ext import commands
 
+from classes.ascension import (
+    ASCENSION_MANTLES,
+    ASCENSION_MANTLE_ORDER,
+    ASCENSION_TABLE_NAME,
+    ASCENSION_UNLOCK_LEVEL,
+    get_ascension_mantle,
+)
 from classes.classes import (
     ALL_CLASSES_TYPES,
     Mage,
@@ -51,6 +59,150 @@ from utils.i18n import _, locale_doc
 class Classes(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._ascension_tables_ready = False
+        self._ascension_table_lock = asyncio.Lock()
+        self.bot.loop.create_task(self._warm_ascension_tables())
+
+    async def _warm_ascension_tables(self) -> None:
+        try:
+            await self._ensure_ascension_tables()
+        except Exception:
+            pass
+
+    async def _ensure_ascension_tables(self) -> None:
+        if self._ascension_tables_ready:
+            return
+        async with self._ascension_table_lock:
+            if self._ascension_tables_ready:
+                return
+            async with self.bot.pool.acquire() as conn:
+                await conn.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {ASCENSION_TABLE_NAME} (
+                        user_id bigint PRIMARY KEY,
+                        mantle text NOT NULL,
+                        chosen_at timestamp with time zone NOT NULL DEFAULT now()
+                    );
+                    """
+                )
+                await conn.execute(
+                    f"""
+                    CREATE INDEX IF NOT EXISTS {ASCENSION_TABLE_NAME}_mantle_idx
+                    ON {ASCENSION_TABLE_NAME} (mantle);
+                    """
+                )
+            self._ascension_tables_ready = True
+
+    async def _fetch_ascension_choice(self, user_id: int) -> str | None:
+        await self._ensure_ascension_tables()
+        async with self.bot.pool.acquire() as conn:
+            return await conn.fetchval(
+                f'SELECT mantle FROM {ASCENSION_TABLE_NAME} WHERE user_id = $1;',
+                user_id,
+            )
+
+    def _build_ascension_embed(self, mantle_key: str) -> discord.Embed:
+        mantle = ASCENSION_MANTLES[mantle_key]
+        embed = discord.Embed(
+            title=f"{mantle.title} of {mantle.god}",
+            description=mantle.lore,
+            color=mantle.color,
+        )
+        embed.add_field(
+            name=mantle.signature_name,
+            value=mantle.signature_summary,
+            inline=False,
+        )
+        embed.add_field(
+            name="Battle Traits",
+            value="\n".join(f"- {line}" for line in mantle.passive_lines),
+            inline=False,
+        )
+        embed.set_footer(
+            text="Ascension Mantles are permanent level-100 choices."
+        )
+        return embed
+
+    @has_char()
+    @commands.command(
+        name="ascension",
+        aliases=["ascend", "mantle"],
+        brief=_("Choose your level-100 ascension mantle"),
+    )
+    @locale_doc
+    async def ascension(self, ctx):
+        _(
+            """Choose your level-100 ascension mantle.
+
+            At level 100, you may bind yourself to one Ascension Mantle:
+            Thronekeeper, Grave Sovereign, or Cyclebreaker.
+
+            This choice is permanent and grants powerful automated battle effects."""
+        )
+        await self._ensure_ascension_tables()
+
+        existing_choice = await self._fetch_ascension_choice(ctx.author.id)
+        if existing_choice is not None:
+            mantle = get_ascension_mantle(existing_choice)
+            if mantle is None:
+                return await ctx.send(_("Your ascension record is invalid. Contact a GM."))
+            embed = self._build_ascension_embed(mantle.key)
+            embed.set_footer(text="Your ascension mantle is locked in.")
+            return await ctx.send(embed=embed)
+
+        level = int(rpgtools.xptolevel(ctx.character_data["xp"]))
+        if level < ASCENSION_UNLOCK_LEVEL:
+            return await ctx.send(
+                _(
+                    "You must reach level **{level}** before you can claim an Ascension Mantle."
+                ).format(level=ASCENSION_UNLOCK_LEVEL)
+            )
+
+        entries = [self._build_ascension_embed(key) for key in ASCENSION_MANTLE_ORDER]
+        index = await self.bot.paginator.ChoosePaginator(
+            extras=entries,
+            placeholder=_("Choose your ascension mantle"),
+            choices=[ASCENSION_MANTLES[key].title for key in ASCENSION_MANTLE_ORDER],
+            return_index=True,
+        ).paginate(ctx)
+        chosen_key = ASCENSION_MANTLE_ORDER[index]
+        chosen_mantle = ASCENSION_MANTLES[chosen_key]
+
+        if not await ctx.confirm(
+            _(
+                "Bind yourself to **{mantle}**? This choice is permanent."
+            ).format(mantle=chosen_mantle.title)
+        ):
+            return await ctx.send(_("Ascension cancelled."))
+
+        async with self.bot.pool.acquire() as conn:
+            inserted = await conn.fetchval(
+                f"""
+                INSERT INTO {ASCENSION_TABLE_NAME} (user_id, mantle)
+                VALUES ($1, $2)
+                ON CONFLICT (user_id) DO NOTHING
+                RETURNING mantle;
+                """,
+                ctx.author.id,
+                chosen_key,
+            )
+
+        if inserted is None:
+            current_choice = await self._fetch_ascension_choice(ctx.author.id)
+            mantle = get_ascension_mantle(current_choice)
+            if mantle is None:
+                return await ctx.send(_("Your ascension choice was not changed."))
+            return await ctx.send(
+                _(
+                    "Your ascension is already fixed as **{mantle}**."
+                ).format(mantle=mantle.title)
+            )
+
+        await ctx.send(
+            _(
+                "The throne answers. You are now bound to **{mantle}**."
+            ).format(mantle=chosen_mantle.title)
+        )
 
     @has_char()
     @user_cooldown(86400)

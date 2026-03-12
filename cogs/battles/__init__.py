@@ -15,6 +15,7 @@ from discord.ui import View, Button, Select, select
 from discord.enums import ButtonStyle
 
 from .factory import BattleFactory
+from .jury_tower_data import build_jury_tower_data, JURY_TOWER_FLOOR_COUNT, JURY_SEGMENT_LENGTH
 from .settings import BattleSettings
 from .utils import create_hp_bar
 from .core.team import Team
@@ -1520,6 +1521,21 @@ class Battles(commands.Cog):
             await conn.execute(
                 "ALTER TABLE battletower ADD COLUMN IF NOT EXISTS freedom_meter INTEGER NOT NULL DEFAULT 0;"
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS jurytower (
+                    id BIGINT PRIMARY KEY,
+                    level INTEGER NOT NULL DEFAULT 1,
+                    checkpoint INTEGER NOT NULL DEFAULT 1,
+                    cycles INTEGER NOT NULL DEFAULT 0,
+                    seals INTEGER NOT NULL DEFAULT 0,
+                    favor INTEGER NOT NULL DEFAULT 0,
+                    contempt INTEGER NOT NULL DEFAULT 0,
+                    writs INTEGER NOT NULL DEFAULT 0,
+                    appeals INTEGER NOT NULL DEFAULT 2
+                )
+                """
+            )
 
             # Ice Dragon tables
             await conn.execute(
@@ -1790,6 +1806,7 @@ class Battles(commands.Cog):
             self.couples_battle_tower_data = json.load(f)
         with open("cogs/battles/couples_game_levels.json", "r") as f:
             self.couples_game_levels = json.load(f)
+        self.jury_tower_data = build_jury_tower_data()
 
     def _canonical_god_shard_name(self, god_name: str) -> str:
         return self.GOD_SHARD_CANONICAL_NAMES.get(god_name, god_name)
@@ -4071,6 +4088,507 @@ class Battles(commands.Cog):
             import traceback
             error_message = f"An error occurred during the battletower battle: {e}\n{traceback.format_exc()}"
             await ctx.send(error_message)
+            print(error_message)
+            await self.remove_player_from_fight(ctx.author.id)
+            await self.bot.reset_cooldown(ctx)
+
+    def _get_jury_floor_data(self, floor: int) -> dict | None:
+        return self.jury_tower_data.get("floors", {}).get(str(int(floor)))
+
+    def _jury_seal_count(self, seals: int) -> int:
+        return int(int(seals or 0)).bit_count()
+
+    def _jury_verdict_label(self, favor_delta: int, contempt_delta: int) -> tuple[str, int]:
+        score = int(favor_delta or 0) - int(contempt_delta or 0)
+        if score >= 3:
+            return "Unanimous", 0x2ECC71
+        if score >= 1:
+            return "Favored", 0x58D68D
+        if score == 0:
+            return "Hung Jury", 0xF1C40F
+        if score <= -2:
+            return "Contempt Citation", 0xE74C3C
+        return "Contested", 0xF39C12
+
+    async def _prompt_jury_choice(self, ctx, floor_data: dict) -> str:
+        choice_data = floor_data.get("choice") or {}
+        default_choice = choice_data.get("default")
+        if not choice_data:
+            return default_choice
+        if not choice_data.get("prompt", False):
+            return default_choice
+
+        embed = discord.Embed(
+            title=f"Jury Tower - Floor {floor_data['floor']} Choice",
+            description=choice_data.get("prompt_text", "Choose your stance for this case."),
+            color=floor_data.get("color", 0x8B5CF6),
+        )
+        case_summary = floor_data.get("case_summary")
+        charges = floor_data.get("charges")
+        mechanic_hint = floor_data.get("mechanic_hint")
+
+        embed.add_field(
+            name="Case File",
+            value=(
+                f"Act: **{floor_data.get('act_label', 'Proceedings')}**\n"
+                f"Judge: **{floor_data.get('judge_name', 'The Bench')}**"
+            ),
+            inline=False,
+        )
+        if case_summary:
+            embed.add_field(name="Summary", value=case_summary, inline=False)
+        if charges:
+            embed.add_field(name="Charges", value=charges, inline=False)
+        if mechanic_hint:
+            embed.add_field(name="Counsel Note", value=mechanic_hint, inline=False)
+
+        aliases = {}
+        lines = []
+        for index, option in enumerate(choice_data.get("options", []), start=1):
+            key = option.get("key")
+            label = option.get("label", key)
+            description = option.get("description", "")
+            aliases[str(index)] = key
+            aliases[str(key).lower()] = key
+            aliases[str(label).lower()] = key
+            lines.append(f"`{index}` {label} - {description}")
+
+        embed.add_field(name="Options", value="\n".join(lines) or "No options.", inline=False)
+        embed.set_footer(text=f"Reply with 1-{len(lines)} or the option name. Default: {default_choice}")
+        await ctx.send(embed=embed)
+
+        def check(message):
+            return message.author == ctx.author and message.channel == ctx.channel
+
+        try:
+            response = await self.bot.wait_for("message", check=check, timeout=45.0)
+            lowered = response.content.strip().lower()
+            return aliases.get(lowered, default_choice)
+        except asyncio.TimeoutError:
+            await ctx.send(f"No verdict was filed in time. The court defaults to **{default_choice}**.")
+            return default_choice
+
+    async def _display_jury_floor_intro(self, ctx, row, floor_data: dict):
+        seals = int(row["seals"] or 0)
+        embed = discord.Embed(
+            title=f"Jury Tower - Floor {floor_data['floor']}",
+            description=(
+                f"**{floor_data['judge_name']}, {floor_data['judge_title']}** presides over **{floor_data['title']}**.\n"
+                f"**Act:** {floor_data.get('act_label', 'Proceedings')}\n"
+                f"{floor_data.get('intro', 'The bench is watching.')}"
+            ),
+            color=floor_data.get("color", 0x8B5CF6),
+        )
+        if floor_data.get("case_summary"):
+            embed.add_field(name="Case Summary", value=floor_data["case_summary"], inline=False)
+        if floor_data.get("charges"):
+            embed.add_field(name="Charges", value=floor_data["charges"], inline=False)
+        if floor_data.get("testimony"):
+            embed.add_field(name="Opening Testimony", value=floor_data["testimony"], inline=False)
+        bench_notes = []
+        if floor_data.get("judge_commentary"):
+            bench_notes.append(floor_data["judge_commentary"])
+        if floor_data.get("mechanic_hint"):
+            bench_notes.append(f"Mechanic: {floor_data['mechanic_hint']}")
+        if bench_notes:
+            embed.add_field(name="Bench Notes", value="\n".join(bench_notes), inline=False)
+        embed.add_field(
+            name="Run State",
+            value=(
+                f"Checkpoint: **{row['checkpoint']}**\n"
+                f"Appeals: **{row['appeals']}**\n"
+                f"Favor: **{row['favor']}**\n"
+                f"Contempt: **{row['contempt']}**\n"
+                f"Seals: **{self._jury_seal_count(seals)}/7**"
+            ),
+            inline=False,
+        )
+        reward_lines = [f"Base Court Writs: **{floor_data.get('writs_reward', 0)}**"]
+        boss_reward = floor_data.get("boss_reward") or {}
+        if boss_reward:
+            reward_lines.append(f"Checkpoint Writ Cache: **+{boss_reward.get('writs', 0)}**")
+            reward_lines.append(f"Checkpoint Gold: **${boss_reward.get('money', 0)}**")
+            reward_lines.append(f"Appeals Restored: **+{boss_reward.get('appeals', 0)}**")
+            reward_lines.append(f"Seal on Clearance: **{floor_data.get('seal_name', 'Court Seal')}**")
+        embed.add_field(
+            name="Rewards This Floor",
+            value="\n".join(reward_lines),
+            inline=False,
+        )
+        await ctx.send(embed=embed)
+
+    async def _handle_jury_victory(self, ctx, floor: int, floor_data: dict, battle):
+        verdict = battle.verdict_result or {"favor": 0, "contempt": 0, "writs": floor_data.get("writs_reward", 0), "notes": []}
+        boss_reward = floor_data.get("boss_reward") if floor_data.get("boss_floor") else None
+        verdict_name, verdict_color = self._jury_verdict_label(verdict["favor"], verdict["contempt"])
+
+        async with self.bot.pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """
+                SELECT level, checkpoint, cycles, seals, favor, contempt, writs, appeals
+                FROM jurytower
+                WHERE id = $1
+                """,
+                ctx.author.id,
+            )
+            if not row:
+                return await ctx.send("Your Jury Tower record could not be found.")
+
+            new_level = min(floor + 1, JURY_TOWER_FLOOR_COUNT + 1)
+            new_checkpoint = int(row["checkpoint"] or 1)
+            new_seals = int(row["seals"] or 0)
+            new_appeals = int(row["appeals"] or 0)
+            writs_gain = int(verdict.get("writs", 0) or 0)
+            seal_earned = False
+
+            if boss_reward:
+                writs_gain += int(boss_reward.get("writs", 0) or 0)
+
+            if floor_data.get("boss_floor"):
+                new_checkpoint = new_level
+                seal_earned = not bool(new_seals & (1 << int(floor_data["judge_index"])))
+                new_seals |= (1 << int(floor_data["judge_index"]))
+                new_appeals = min(4, new_appeals + int(boss_reward.get("appeals", 1)))
+                crate_type = boss_reward.get("crate_type")
+                if crate_type:
+                    await connection.execute(
+                        f'UPDATE profile SET crates_{crate_type} = crates_{crate_type} + 1 WHERE "user" = $1',
+                        ctx.author.id,
+                    )
+                money_reward = int(boss_reward.get("money", 0) or 0)
+                if money_reward:
+                    await connection.execute(
+                        'UPDATE profile SET money = money + $1 WHERE "user" = $2',
+                        money_reward,
+                        ctx.author.id,
+                    )
+
+            await connection.execute(
+                """
+                UPDATE jurytower
+                SET level = $1,
+                    checkpoint = $2,
+                    seals = $3,
+                    appeals = $4,
+                    favor = favor + $5,
+                    contempt = contempt + $6,
+                    writs = writs + $7
+                WHERE id = $8
+                """,
+                new_level,
+                new_checkpoint,
+                new_seals,
+                new_appeals,
+                int(verdict.get("favor", 0) or 0),
+                int(verdict.get("contempt", 0) or 0),
+                writs_gain,
+                ctx.author.id,
+            )
+
+        summary = discord.Embed(
+            title=f"Verdict: {verdict_name}",
+            description=(
+                f"{floor_data.get('victory_text', 'The bench records your win.')}\n\n"
+                f"You cleared **Floor {floor} - {floor_data['title']}**."
+            ),
+            color=verdict_color,
+        )
+        summary.add_field(
+            name="Court Record",
+            value=(
+                f"Favor: **+{verdict.get('favor', 0)}**\n"
+                f"Contempt: **+{verdict.get('contempt', 0)}**\n"
+                f"Court Writs: **+{writs_gain}**"
+            ),
+            inline=False,
+        )
+
+        notes = verdict.get("notes") or []
+        if notes:
+            summary.add_field(name="Bench Notes", value="\n".join(f"- {note}" for note in notes), inline=False)
+
+        if boss_reward:
+            summary.add_field(
+                name="Checkpoint Rewards",
+                value=(
+                    f"Court Writ Cache: **+{boss_reward.get('writs', 0)}**\n"
+                    f"Crate: **{boss_reward.get('crate_type', 'none').title()}**\n"
+                    f"Gold: **${boss_reward.get('money', 0)}**\n"
+                    f"Appeals Restored: **+{boss_reward.get('appeals', 0)}**"
+                ),
+                inline=False,
+            )
+            if seal_earned:
+                summary.add_field(
+                    name="Seal Earned",
+                    value=f"**{floor_data.get('seal_name', 'Court Seal')}** now answers to your record.",
+                    inline=False,
+                )
+            if floor >= JURY_TOWER_FLOOR_COUNT:
+                summary.add_field(
+                    name="Cycle Complete",
+                    value="The Seventh Bench has fallen. Your next `jurytower fight` will offer a fresh cycle.",
+                    inline=False,
+                )
+            else:
+                summary.add_field(
+                    name="Checkpoint Secured",
+                    value=f"You may now resume from **Floor {floor + 1}**.",
+                    inline=False,
+                )
+        else:
+            summary.add_field(name="Next Floor", value=f"Proceed to **Floor {floor + 1}**.", inline=False)
+
+        await ctx.send(embed=summary)
+
+    async def _handle_jury_defeat(self, ctx, floor: int, floor_data: dict):
+        async with self.bot.pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """
+                SELECT level, checkpoint, appeals
+                FROM jurytower
+                WHERE id = $1
+                """,
+                ctx.author.id,
+            )
+            if not row:
+                return await ctx.send("Your Jury Tower record could not be found.")
+
+            checkpoint = int(row["checkpoint"] or 1)
+            level = int(row["level"] or floor)
+            appeals = int(row["appeals"] or 0)
+
+            if level > checkpoint and appeals > 0:
+                new_level = level
+                new_appeals = appeals - 1
+                outcome_text = (
+                    f"You were defeated on **Floor {floor}**, but the court grants an appeal. "
+                    f"You may retry the same floor. Appeals remaining: **{new_appeals}**."
+                )
+            elif level > checkpoint:
+                new_level = checkpoint
+                new_appeals = 0
+                outcome_text = (
+                    f"You exhausted your appeals. The bench remands you to checkpoint **Floor {checkpoint}**."
+                )
+            else:
+                new_level = level
+                new_appeals = appeals
+                outcome_text = (
+                    f"You were defeated on **Floor {floor}**. The case remains open and you may try again."
+                )
+
+            await connection.execute(
+                """
+                UPDATE jurytower
+                SET level = $1,
+                    appeals = $2,
+                    contempt = contempt + 1
+                WHERE id = $3
+                """,
+                new_level,
+                new_appeals,
+                ctx.author.id,
+            )
+
+        await ctx.send(outcome_text)
+
+    @commands.group(aliases=["jt"])
+    async def jurytower(self, ctx):
+        """Commands for the Jury Tower."""
+        if ctx.invoked_subcommand is None:
+            await ctx.invoke(self.jurytower_progress)
+
+    @has_char()
+    @jurytower.command(name="start")
+    async def jurytower_start(self, ctx):
+        async with self.bot.pool.acquire() as connection:
+            exists = await connection.fetchval("SELECT 1 FROM jurytower WHERE id = $1", ctx.author.id)
+            if exists:
+                return await ctx.send("You have already entered the Jury Tower. Use `$jurytower progress` to review your case.")
+            await connection.execute("INSERT INTO jurytower (id) VALUES ($1)", ctx.author.id)
+
+        embed = discord.Embed(
+            title="The Jury Tower Opens",
+            description=(
+                "Seven judges preside over seventy-seven floors of cases, temptations, and verdicts.\n"
+                "You will not be tested only on strength. You will be measured on restraint, accusation, balance, sacrifice, and what kind of champion you become while winning."
+            ),
+            color=0x8B5CF6,
+        )
+        embed.add_field(
+            name="Run Rules",
+            value=(
+                f"- {JURY_TOWER_FLOOR_COUNT} floors\n"
+                "- Checkpoints at each judge's verdict floor\n"
+                "- Appeals can protect progress when you lose away from a checkpoint\n"
+                "- Court Writs accumulate across cycles"
+            ),
+            inline=False,
+        )
+        await ctx.send(embed=embed)
+
+    @has_char()
+    @jurytower.command(name="progress")
+    async def jurytower_progress(self, ctx):
+        async with self.bot.pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """
+                SELECT level, checkpoint, cycles, seals, favor, contempt, writs, appeals
+                FROM jurytower
+                WHERE id = $1
+                """,
+                ctx.author.id,
+            )
+            if not row:
+                return await ctx.send("You have not started the Jury Tower. Use `$jurytower start`.")
+
+        level = int(row["level"] or 1)
+        seals = int(row["seals"] or 0)
+        seal_lines = []
+        for judge_index, judge in enumerate(self.jury_tower_data.get("judges", [])):
+            unlocked = "✅" if seals & (1 << judge_index) else "❌"
+            seal_lines.append(f"{unlocked} {judge['seal_name']} - {judge['judge_name']}")
+
+        floor_data = None
+        if level > JURY_TOWER_FLOOR_COUNT:
+            current_case = "Cycle complete"
+            current_title = "Awaiting recommittal"
+            current_act = "Deliberation complete"
+        else:
+            floor_data = self._get_jury_floor_data(level)
+            current_case = f"Floor {level}"
+            current_title = floor_data["title"] if floor_data else "Unknown"
+            current_act = floor_data.get("act_label", "Proceedings") if floor_data else "Proceedings"
+
+        embed = discord.Embed(
+            title="Jury Tower Progress",
+            description=(
+                f"Current Case: **{current_case}**\n"
+                f"Current Chamber: **{current_title}**\n"
+                f"Current Act: **{current_act}**"
+            ),
+            color=0x8B5CF6,
+        )
+        embed.add_field(
+            name="Run State",
+            value=(
+                f"Checkpoint: **{row['checkpoint']}**\n"
+                f"Appeals: **{row['appeals']}**\n"
+                f"Cycles Completed: **{row['cycles']}**\n"
+                f"Favor: **{row['favor']}**\n"
+                f"Contempt: **{row['contempt']}**\n"
+                f"Court Writs: **{row['writs']}**"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Judge Seals",
+            value="\n".join(seal_lines) or "No seals earned yet.",
+            inline=False,
+        )
+        await ctx.send(embed=embed)
+
+    @has_char()
+    @jurytower.command(name="fight", aliases=["begin"])
+    @user_cooldown(60)
+    async def jurytower_fight(self, ctx):
+        try:
+            async with self.bot.pool.acquire() as connection:
+                row = await connection.fetchrow(
+                    """
+                    SELECT level, checkpoint, cycles, seals, favor, contempt, writs, appeals
+                    FROM jurytower
+                    WHERE id = $1
+                    """,
+                    ctx.author.id,
+                )
+                if not row:
+                    await self.bot.reset_cooldown(ctx)
+                    return await ctx.send("You have not started the Jury Tower. Use `$jurytower start`.")
+
+                level = int(row["level"] or 1)
+                if level > JURY_TOWER_FLOOR_COUNT:
+                    confirm = await ctx.confirm(
+                        f"You have completed the current cycle of the Jury Tower. Begin cycle **{int(row['cycles'] or 0) + 1}**?"
+                    )
+                    if not confirm:
+                        await self.bot.reset_cooldown(ctx)
+                        return await ctx.send("No new case was opened.")
+
+                    await connection.execute(
+                        """
+                        UPDATE jurytower
+                        SET level = 1,
+                            checkpoint = 1,
+                            cycles = cycles + 1,
+                            seals = 0,
+                            favor = 0,
+                            contempt = 0,
+                            appeals = 2
+                        WHERE id = $1
+                        """,
+                        ctx.author.id,
+                    )
+                    row = await connection.fetchrow(
+                        """
+                        SELECT level, checkpoint, cycles, seals, favor, contempt, writs, appeals
+                        FROM jurytower
+                        WHERE id = $1
+                        """,
+                        ctx.author.id,
+                    )
+                    level = 1
+                    await ctx.send("A new cycle begins. The seven judges reconvene.")
+
+            floor_data = self._get_jury_floor_data(level)
+            if not floor_data:
+                await self.bot.reset_cooldown(ctx)
+                return await ctx.send(f"No Jury Tower data exists for floor {level}.")
+
+            await self._display_jury_floor_intro(ctx, row, floor_data)
+            choice_key = await self._prompt_jury_choice(ctx, floor_data)
+
+            if await self.is_player_in_fight(ctx.author.id):
+                await self.bot.reset_cooldown(ctx)
+                return await ctx.send("You are already in a battle.")
+
+            await self.add_player_to_fight(ctx.author.id)
+
+            battle = await self.battle_factory.create_battle(
+                "jurytower",
+                ctx,
+                player=ctx.author,
+                floor_number=level,
+                floor_data=floor_data,
+                choice_key=choice_key,
+            )
+
+            await battle.start_battle()
+            while not await battle.is_battle_over():
+                await battle.process_turn()
+                await asyncio.sleep(1)
+
+            result = await battle.end_battle()
+            battle_timed_out = hasattr(battle, "battle_timed_out") and battle.battle_timed_out
+
+            if result and result.name == "Player":
+                player_alive = any(not c.is_pet and c.is_alive() for c in battle.player_team.combatants)
+                if player_alive or battle.config.get("pets_continue_battle", False):
+                    await self._handle_jury_victory(ctx, level, floor_data, battle)
+                else:
+                    await self._handle_jury_defeat(ctx, level, floor_data)
+            elif battle_timed_out:
+                await ctx.send("The hearing timed out. The case remains open on the same floor.")
+            else:
+                await self._handle_jury_defeat(ctx, level, floor_data)
+
+            await self.remove_player_from_fight(ctx.author.id)
+
+        except Exception as e:
+            import traceback
+            error_message = f"An error occurred during the Jury Tower battle: {e}\n{traceback.format_exc()}"
+            await ctx.send(error_message[:1900] + "..." if len(error_message) > 1900 else error_message)
             print(error_message)
             await self.remove_player_from_fight(ctx.author.id)
             await self.bot.reset_cooldown(ctx)
@@ -6376,7 +6894,7 @@ class Battles(commands.Cog):
         value: The new value (true/false for boolean settings, numbers for numeric settings)
         """
         # Validate battle type
-        valid_battle_types = ["pve", "pvp", "raid", "tower", "team", "global", "dragon"]
+        valid_battle_types = ["pve", "pvp", "raid", "tower", "jurytower", "team", "global", "dragon"]
         if battle_type.lower() not in valid_battle_types:
             return await ctx.send(f"Invalid battle type. Must be one of: {', '.join(valid_battle_types)}")
         
@@ -6415,7 +6933,7 @@ class Battles(commands.Cog):
         setting: The setting to reset (allow_pets, class_buffs, element_effects, etc.)
         """
         # Validate battle type
-        valid_battle_types = ["pve", "pvp", "raid", "tower", "team", "dragon", "global"]
+        valid_battle_types = ["pve", "pvp", "raid", "tower", "jurytower", "team", "dragon", "global"]
         if battle_type.lower() not in valid_battle_types:
             return await ctx.send(f"Invalid battle type. Must be one of: {', '.join(valid_battle_types)}")
         
