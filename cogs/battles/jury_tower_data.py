@@ -118,69 +118,69 @@ JUDGES: tuple[JudgeDefinition, ...] = (
 
 
 ACT_LABELS = ("Opening Arguments", "Cross Examination", "Chamber Recess", "Final Verdict")
-JURY_JUDGE_BASE_SCALES = (0.72, 0.82, 0.92, 1.04, 1.18, 1.32, 1.48)
+JURY_JUDGE_BASE_SCALES = (0.68, 0.78, 0.88, 0.98, 1.08, 1.18, 1.28)
 JURY_ROLE_SCALE_TEMPLATES = {
     "minion1": {
-        "hp_multiplier": 1.55,
-        "defense_ratio": 0.10,
-        "attack_armor_ratio": 1.00,
-        "attack_hp_ratio": 0.04,
+        "hp_multiplier": 1.48,
+        "defense_ratio": 0.095,
+        "attack_armor_ratio": 0.98,
+        "attack_hp_ratio": 0.036,
     },
     "minion2": {
-        "hp_multiplier": 2.05,
-        "defense_ratio": 0.14,
-        "attack_armor_ratio": 1.03,
-        "attack_hp_ratio": 0.055,
+        "hp_multiplier": 1.95,
+        "defense_ratio": 0.132,
+        "attack_armor_ratio": 1.00,
+        "attack_hp_ratio": 0.049,
     },
     "boss": {
-        "hp_multiplier": 3.60,
-        "defense_ratio": 0.18,
-        "attack_armor_ratio": 1.06,
-        "attack_hp_ratio": 0.08,
+        "hp_multiplier": 3.25,
+        "defense_ratio": 0.165,
+        "attack_armor_ratio": 1.01,
+        "attack_hp_ratio": 0.068,
     },
 }
 JURY_JUDGE_SCALE_BIASES = {
     "mercy": {
         "hp_multiplier": 1.00,
-        "defense_ratio": 0.92,
-        "attack_armor_ratio": 0.95,
-        "attack_hp_ratio": 0.85,
+        "defense_ratio": 0.90,
+        "attack_armor_ratio": 0.94,
+        "attack_hp_ratio": 0.82,
     },
     "truth": {
         "hp_multiplier": 0.96,
-        "defense_ratio": 1.00,
-        "attack_armor_ratio": 0.98,
-        "attack_hp_ratio": 0.95,
+        "defense_ratio": 0.98,
+        "attack_armor_ratio": 0.97,
+        "attack_hp_ratio": 0.92,
     },
     "resolve": {
-        "hp_multiplier": 1.25,
-        "defense_ratio": 1.18,
-        "attack_armor_ratio": 0.97,
-        "attack_hp_ratio": 0.95,
+        "hp_multiplier": 1.18,
+        "defense_ratio": 1.12,
+        "attack_armor_ratio": 0.96,
+        "attack_hp_ratio": 0.93,
     },
     "sacrifice": {
-        "hp_multiplier": 0.95,
-        "defense_ratio": 0.92,
-        "attack_armor_ratio": 1.04,
-        "attack_hp_ratio": 1.10,
+        "hp_multiplier": 0.94,
+        "defense_ratio": 0.90,
+        "attack_armor_ratio": 1.02,
+        "attack_hp_ratio": 1.06,
     },
     "balance": {
-        "hp_multiplier": 1.05,
-        "defense_ratio": 1.04,
-        "attack_armor_ratio": 1.00,
-        "attack_hp_ratio": 1.00,
+        "hp_multiplier": 1.03,
+        "defense_ratio": 1.02,
+        "attack_armor_ratio": 0.99,
+        "attack_hp_ratio": 0.98,
     },
     "ambition": {
-        "hp_multiplier": 1.00,
-        "defense_ratio": 0.96,
-        "attack_armor_ratio": 1.08,
-        "attack_hp_ratio": 1.12,
+        "hp_multiplier": 0.99,
+        "defense_ratio": 0.94,
+        "attack_armor_ratio": 1.05,
+        "attack_hp_ratio": 1.08,
     },
     "sentence": {
-        "hp_multiplier": 1.20,
-        "defense_ratio": 1.12,
-        "attack_armor_ratio": 1.10,
-        "attack_hp_ratio": 1.15,
+        "hp_multiplier": 1.12,
+        "defense_ratio": 1.06,
+        "attack_armor_ratio": 1.04,
+        "attack_hp_ratio": 1.08,
     },
 }
 
@@ -206,8 +206,8 @@ def _build_enemy_scale_profile(
     judge_bias = JURY_JUDGE_SCALE_BIASES[judge.key]
     floor_scale = (
         JURY_JUDGE_BASE_SCALES[judge_index]
-        * (1 + ((local_floor - 1) * 0.035))
-        * (1.08 if role == "boss" else 1.03 if role == "minion2" else 1.0)
+        * (1 + ((local_floor - 1) * 0.03))
+        * (1.05 if role == "boss" else 1.02 if role == "minion2" else 1.0)
     )
     return {
         "floor_scale": round(floor_scale, 4),
