@@ -4858,29 +4858,39 @@ class Battles(commands.Cog):
         if not choice_data.get("prompt", False):
             return default_choice
 
+        def clip_text(text: str | None, limit: int = 170) -> str | None:
+            value = str(text or "").strip()
+            if not value:
+                return None
+            if len(value) <= limit:
+                return value
+            return value[: max(0, limit - 3)].rstrip() + "..."
+
+        hook_text = None
+        for candidate in (
+            floor_data.get("charges"),
+            floor_data.get("testimony"),
+            floor_data.get("judge_commentary"),
+            floor_data.get("case_summary"),
+        ):
+            hook_text = clip_text(candidate, 150)
+            if hook_text:
+                break
+
         embed = discord.Embed(
             title=f"Jury Tower - Floor {floor_data['floor']} Choice",
             description=choice_data.get("prompt_text", "Choose your stance for this case."),
             color=floor_data.get("color", 0x8B5CF6),
         )
-        case_summary = floor_data.get("case_summary")
-        charges = floor_data.get("charges")
-        mechanic_hint = floor_data.get("mechanic_hint")
-
-        embed.add_field(
-            name="Case File",
-            value=(
-                f"Act: **{floor_data.get('act_label', 'Proceedings')}**\n"
-                f"Judge: **{floor_data.get('judge_name', 'The Bench')}**"
-            ),
-            inline=False,
-        )
-        if case_summary:
-            embed.add_field(name="Summary", value=case_summary, inline=False)
-        if charges:
-            embed.add_field(name="Charges", value=charges, inline=False)
-        if mechanic_hint:
-            embed.add_field(name="Counsel Note", value=mechanic_hint, inline=False)
+        choice_context = [
+            f"Judge: **{floor_data.get('judge_name', 'The Bench')}**",
+            f"Act: **{floor_data.get('act_label', 'Proceedings')}**",
+        ]
+        if hook_text:
+            choice_context.append(f"Hook: {hook_text}")
+        if floor_data.get("mechanic_hint"):
+            choice_context.append(f"Mechanic: {clip_text(floor_data.get('mechanic_hint'), 140)}")
+        embed.add_field(name="Why It Matters", value="\n".join(choice_context), inline=False)
 
         aliases = {}
         lines = []
@@ -4888,12 +4898,18 @@ class Battles(commands.Cog):
             key = option.get("key")
             label = option.get("label", key)
             description = option.get("description", "")
+            effect = clip_text(option.get("effect"), 120)
             aliases[str(index)] = key
             aliases[str(key).lower()] = key
             aliases[str(label).lower()] = key
-            lines.append(f"`{index}` {label} - {description}")
+            option_lines = [f"`{index}` **{label}**"]
+            if description:
+                option_lines.append(description)
+            if effect:
+                option_lines.append(f"Effect: {effect}")
+            lines.append("\n".join(option_lines))
 
-        embed.add_field(name="Options", value="\n".join(lines) or "No options.", inline=False)
+        embed.add_field(name="Options", value="\n\n".join(lines) or "No options.", inline=False)
         embed.set_footer(text=f"Reply with 1-{len(lines)} or the option name. Default: {default_choice}")
         await ctx.send(embed=embed)
 
@@ -4903,41 +4919,69 @@ class Battles(commands.Cog):
         try:
             response = await self.bot.wait_for("message", check=check, timeout=45.0)
             lowered = response.content.strip().lower()
-            return aliases.get(lowered, default_choice)
+            selected_key = aliases.get(lowered, default_choice)
+            selected_option = next(
+                (option for option in choice_data.get("options", []) if option.get("key") == selected_key),
+                None,
+            )
+            if selected_option:
+                confirmation_lines = [
+                    f"Choice locked: **{selected_option.get('label', selected_key)}**"
+                ]
+                selected_effect = clip_text(selected_option.get("effect"), 140)
+                selected_quote = clip_text(selected_option.get("quote"), 120)
+                if selected_effect:
+                    confirmation_lines.append(selected_effect)
+                if selected_quote:
+                    confirmation_lines.append(
+                        f'{floor_data.get("judge_name", "The Judge")}: "{selected_quote}"'
+                    )
+                await ctx.send("\n".join(confirmation_lines))
+            return selected_key
         except asyncio.TimeoutError:
             await ctx.send(f"No verdict was filed in time. The court defaults to **{default_choice}**.")
             return default_choice
 
     async def _display_jury_floor_intro(self, ctx, row, floor_data: dict, scale_snapshot: dict | None = None):
         seals = int(row["seals"] or 0)
+        def clip_text(text: str | None, limit: int = 190) -> str | None:
+            value = str(text or "").strip()
+            if not value:
+                return None
+            if len(value) <= limit:
+                return value
+            return value[: max(0, limit - 3)].rstrip() + "..."
+
+        hook_text = None
+        for candidate in (
+            floor_data.get("charges"),
+            floor_data.get("testimony"),
+            floor_data.get("judge_commentary"),
+            floor_data.get("case_summary"),
+            floor_data.get("intro"),
+        ):
+            hook_text = clip_text(candidate, 180)
+            if hook_text:
+                break
+
         embed = discord.Embed(
             title=f"Jury Tower - Floor {floor_data['floor']}",
             description=(
                 f"**{floor_data['judge_name']}, {floor_data['judge_title']}** presides over **{floor_data['title']}**.\n"
-                f"**Act:** {floor_data.get('act_label', 'Proceedings')}\n"
-                f"{floor_data.get('intro', 'The bench is watching.')}"
+                f"**Act:** {floor_data.get('act_label', 'Proceedings')}"
             ),
             color=floor_data.get("color", 0x8B5CF6),
         )
-        if floor_data.get("case_summary"):
-            embed.add_field(name="Case Summary", value=floor_data["case_summary"], inline=False)
-        if floor_data.get("charges"):
-            embed.add_field(name="Charges", value=floor_data["charges"], inline=False)
-        if floor_data.get("testimony"):
-            embed.add_field(name="Opening Testimony", value=floor_data["testimony"], inline=False)
-        bench_notes = []
-        if floor_data.get("judge_commentary"):
-            bench_notes.append(floor_data["judge_commentary"])
+        if hook_text:
+            embed.add_field(name="Hook", value=hook_text, inline=False)
+        floor_notes = []
         if floor_data.get("mechanic_hint"):
-            bench_notes.append(f"Mechanic: {floor_data['mechanic_hint']}")
-        if bench_notes:
-            embed.add_field(name="Bench Notes", value="\n".join(bench_notes), inline=False)
-        scale_text = self._format_jury_scale_snapshot(scale_snapshot)
+            floor_notes.append(f"Mechanic: {clip_text(floor_data['mechanic_hint'], 150)}")
         bracket_text = self._format_jury_bracket(row, scale_snapshot)
-        if scale_text:
-            if bracket_text:
-                scale_text = f"Power Bracket: **{bracket_text}**\n{scale_text}"
-            embed.add_field(name="Tower Scale Base", value=scale_text, inline=False)
+        if bracket_text:
+            floor_notes.append(f"Court Tier: **{bracket_text}**")
+        if floor_notes:
+            embed.add_field(name="This Floor", value="\n".join(floor_notes), inline=False)
         embed.add_field(
             name="Run State",
             value=(

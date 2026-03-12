@@ -48,6 +48,27 @@ class JuryTowerBattle(TowerBattle):
             enemy.is_surrendered = False
             enemy.is_spared = False
 
+    def _clip_text(self, text: str | None, limit: int = 180) -> str | None:
+        value = str(text or "").strip()
+        if not value:
+            return None
+        if len(value) <= limit:
+            return value
+        return value[: max(0, limit - 3)].rstrip() + "..."
+
+    def _story_hook(self) -> str | None:
+        for candidate in (
+            self.floor_data.get("charges"),
+            self.floor_data.get("testimony"),
+            self.floor_data.get("judge_commentary"),
+            self.floor_data.get("case_summary"),
+            self.floor_data.get("intro"),
+        ):
+            clipped = self._clip_text(candidate, limit=170)
+            if clipped:
+                return clipped
+        return None
+
     async def start_battle(self):
         self.started = True
         self.start_time = datetime.datetime.utcnow()
@@ -59,27 +80,21 @@ class JuryTowerBattle(TowerBattle):
         current_enemy = self.enemy_team.combatants[self.current_opponent_index]
         current_enemy_key = getattr(current_enemy, "jury_key", "boss")
         enemy_opening = (self.floor_data.get("enemy_openings") or {}).get(current_enemy_key)
+        hook_text = self._story_hook()
         await self.add_to_log(
             f"{self.judge_name}, {self.judge_title}, convenes Floor {self.floor_number}: **{self.floor_title}**."
         )
-        opening_brief = []
-        if self.floor_data.get("act_label"):
-            opening_brief.append(f"Act: **{self.floor_data['act_label']}**")
-        if self.choice_summary:
-            opening_brief.append(self.choice_summary)
-        if self.floor_data.get("case_summary"):
-            opening_brief.append(f"Case File: {self.floor_data['case_summary']}")
-        if self.floor_data.get("charges"):
-            opening_brief.append(f"Charges: {self.floor_data['charges']}")
-        if self.floor_data.get("testimony"):
-            opening_brief.append(f"Testimony: {self.floor_data['testimony']}")
-        if self.floor_data.get("judge_commentary"):
-            opening_brief.append(f"Bench: {self.floor_data['judge_commentary']}")
-        if self.floor_data.get("mechanic_hint"):
-            opening_brief.append(f"Counsel Note: {self.floor_data['mechanic_hint']}")
+        opening_brief = [line for line in (
+            self.choice_summary,
+            f"Hook: {hook_text}" if hook_text else None,
+            (
+                f"Mechanic: {self._clip_text(self.floor_data.get('mechanic_hint'), limit=150)}"
+                if self.floor_data.get("mechanic_hint")
+                else None
+            ),
+        ) if line]
         if opening_brief:
             await self.add_to_log("\n".join(opening_brief), force_new_action=False)
-        await self.add_to_log(self.floor_data.get("intro", "The jury watches in silence."))
         intro_lines = [f"{current_enemy.name} takes the stand."]
         if enemy_opening:
             intro_lines.append(enemy_opening)
@@ -115,17 +130,39 @@ class JuryTowerBattle(TowerBattle):
                 return option.get("label", self.choice_key.title())
         return str(self.choice_key or "Default").title()
 
+    def _current_choice_option(self) -> dict:
+        for option in self.choice_data.get("options", []):
+            if option.get("key") == self.choice_key:
+                return option
+        return {}
+
+    def _choice_effect_text(self) -> str | None:
+        option = self._current_choice_option()
+        return self._clip_text(option.get("effect") or option.get("description"), limit=170)
+
+    def _choice_quote(self) -> str | None:
+        option = self._current_choice_option()
+        return self._clip_text(option.get("quote"), limit=130)
+
     def _apply_choice_effects(self):
         label = self._choice_label()
+        effect_text = self._choice_effect_text()
+        quote_text = self._choice_quote()
+        summary_parts = []
+        if quote_text:
+            summary_parts.append(f'"{quote_text}"')
+        if effect_text:
+            summary_parts.append(effect_text)
+        summary_tail = " ".join(summary_parts).strip()
         if self.trial_type == "mercy":
             if self.choice_key == "condemn":
                 self._modify_player_damage(Decimal("1.15"))
                 self.surrender_threshold = Decimal("0")
-                self.choice_summary = f"Verdict stance: **{label}**. Brutality sharpens your strike, but the jury will count every ruthless finish."
+                self.choice_summary = f"Verdict stance: **{label}**. {summary_tail or 'You hit harder, but every ruthless finish is remembered.'}"
             else:
                 self._modify_player_damage(Decimal("0.95"))
                 self.surrender_threshold = Decimal("0.30")
-                self.choice_summary = f"Verdict stance: **{label}**. Enemies are more likely to surrender when cornered."
+                self.choice_summary = f"Verdict stance: **{label}**. {summary_tail or 'Enemies are more likely to surrender when cornered.'}"
 
         elif self.trial_type == "truth":
             self.truth_correct = self.choice_key == self.truth_lair_target
@@ -136,24 +173,24 @@ class JuryTowerBattle(TowerBattle):
                     liar.armor *= Decimal("0.82")
                     liar.damage *= Decimal("0.92")
                 self.floor_favor_delta += 1
-                self.choice_summary = f"Accusation filed: **{accused_name}**. The bench senses you may have named the liar."
+                self.choice_summary = f"Accusation filed: **{accused_name}**. {summary_tail or 'The bench senses you may have named the liar.'}"
             else:
                 chosen = self._find_enemy_by_key(self.choice_key)
                 if chosen:
                     chosen.armor *= Decimal("1.12")
                     chosen.damage *= Decimal("1.08")
                 self.floor_contempt_delta += 1
-                self.choice_summary = f"Accusation filed: **{accused_name}**. The courtroom murmurs at your haste."
+                self.choice_summary = f"Accusation filed: **{accused_name}**. {summary_tail or 'The courtroom murmurs at your haste.'}"
 
         elif self.trial_type == "resolve":
             if self.choice_key == "rush":
                 self.resolve_round_goal = max(2, self.resolve_round_goal - 1)
                 self._modify_player_damage(Decimal("1.12"))
                 self._modify_enemy_damage(Decimal("1.08"))
-                self.choice_summary = f"Approach chosen: **{label}**. The trial will resolve faster, but hits will land harder."
+                self.choice_summary = f"Approach chosen: **{label}**. {summary_tail or 'The trial will resolve faster, but hits will land harder.'}"
             else:
                 self._modify_enemy_damage(Decimal("0.90"))
-                self.choice_summary = f"Approach chosen: **{label}**. You brace for a long case and the bench softens incoming pressure."
+                self.choice_summary = f"Approach chosen: **{label}**. {summary_tail or 'You brace for a long case and the bench softens incoming pressure.'}"
 
         elif self.trial_type == "sacrifice":
             if self.choice_key == "blood":
@@ -162,7 +199,7 @@ class JuryTowerBattle(TowerBattle):
                     if combatant.hp > combatant.max_hp:
                         combatant.hp = combatant.max_hp
                 self._modify_player_damage(Decimal("1.25"))
-                self.choice_summary = f"Oath offered: **{label}**. Your life is shorter, your verdict swifter."
+                self.choice_summary = f"Oath offered: **{label}**. {summary_tail or 'Your life is shorter, your verdict swifter.'}"
             elif self.choice_key == "steel":
                 for combatant in self._alive_players():
                     combatant.armor *= Decimal("0.65")
@@ -171,7 +208,7 @@ class JuryTowerBattle(TowerBattle):
                         Decimal(str(getattr(combatant, "damage_reflection", 0))),
                         Decimal("0.12"),
                     )
-                self.choice_summary = f"Oath offered: **{label}**. Your guard weakens, but every counterstroke matters."
+                self.choice_summary = f"Oath offered: **{label}**. {summary_tail or 'Your guard weakens, but every counterstroke matters.'}"
             else:
                 pet_found = False
                 for combatant in self.player_team.combatants:
@@ -183,24 +220,24 @@ class JuryTowerBattle(TowerBattle):
                 if not pet_found:
                     self._modify_player_damage(Decimal("1.08"))
                     self._modify_player_armor(Decimal("1.05"))
-                self.choice_summary = f"Oath offered: **{label}**. Loyalty beyond yourself becomes part of the case."
+                self.choice_summary = f"Oath offered: **{label}**. {summary_tail or 'Loyalty beyond yourself becomes part of the case.'}"
 
         elif self.trial_type == "balance":
             if self.choice_key == "blade":
                 self.balance_meter = 1
                 self._modify_player_damage(Decimal("1.10"))
-                self.choice_summary = f"Scale favored: **{label}**. You begin leaning toward aggression."
+                self.choice_summary = f"Scale favored: **{label}**. {summary_tail or 'You begin leaning toward aggression.'}"
             else:
                 self.balance_meter = -1
                 self._modify_player_armor(Decimal("1.10"))
-                self.choice_summary = f"Scale favored: **{label}**. You begin leaning toward restraint."
+                self.choice_summary = f"Scale favored: **{label}**. {summary_tail or 'You begin leaning toward restraint.'}"
 
         elif self.trial_type == "ambition":
             if self.choice_key == "allin":
                 self._modify_player_damage(Decimal("1.05"))
-                self.choice_summary = f"Appetite declared: **{label}**. Every kill will feed your momentum."
+                self.choice_summary = f"Appetite declared: **{label}**. {summary_tail or 'Every kill will feed your momentum.'}"
             else:
-                self.choice_summary = f"Appetite declared: **{label}**. The bench expects discipline, not frenzy."
+                self.choice_summary = f"Appetite declared: **{label}**. {summary_tail or 'The bench expects discipline, not frenzy.'}"
 
         elif self.trial_type == "sentence":
             self.final_directive = self.choice_key
@@ -213,7 +250,7 @@ class JuryTowerBattle(TowerBattle):
                 boss = self._find_enemy_by_key("boss")
                 if boss:
                     boss.armor *= Decimal("0.90")
-            self.choice_summary = f"Final principle: **{label}**. The bench will judge the consistency of your sentence."
+            self.choice_summary = f"Final principle: **{label}**. {summary_tail or 'The bench will judge the consistency of your sentence.'}"
 
     def _modify_player_damage(self, multiplier: Decimal):
         for combatant in self.player_team.combatants:
@@ -505,12 +542,22 @@ class JuryTowerBattle(TowerBattle):
         embed.add_field(name=f"Defendant - {current_enemy.name}", value=enemy_value, inline=False)
 
         case_lines = []
-        if self.floor_data.get("case_summary"):
-            case_lines.append(self.floor_data["case_summary"])
+        hook_text = self._story_hook()
+        if hook_text:
+            case_lines.append(hook_text)
         if self.floor_data.get("mechanic_hint"):
-            case_lines.append(f"Hint: {self.floor_data['mechanic_hint']}")
+            case_lines.append(
+                f"Mechanic: {self._clip_text(self.floor_data['mechanic_hint'], limit=140)}"
+            )
         if case_lines:
-            embed.add_field(name="Case File", value="\n".join(case_lines), inline=False)
+            embed.add_field(name="Floor Hook", value="\n".join(case_lines), inline=False)
+        choice_effect = self._choice_effect_text()
+        if choice_effect:
+            embed.add_field(
+                name="Choice Impact",
+                value=f"**{self._choice_label()}**: {choice_effect}",
+                inline=False,
+            )
 
         verdict_lines = [
             f"Favor: **+{self.floor_favor_delta}**",

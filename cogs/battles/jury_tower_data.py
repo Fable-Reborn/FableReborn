@@ -247,12 +247,16 @@ def _build_choice(judge: JudgeDefinition, local_floor: int, names: dict[str, str
                 {
                     "key": "pardon",
                     "label": "Pardon",
-                    "description": "Raise surrender chances and turn mercy into favor.",
+                    "description": "Show restraint and let the guilty reveal themselves.",
+                    "effect": "-5% damage. Enemies can surrender below 30% HP for extra favor.",
+                    "quote": "Then spend mercy with discipline, not sentiment.",
                 },
                 {
                     "key": "condemn",
                     "label": "Condemn",
-                    "description": "Hit harder, but every ruthless finish adds contempt.",
+                    "description": "End the case fast and accept the stain.",
+                    "effect": "+15% damage. No surrender. Each ruthless finish adds contempt.",
+                    "quote": "Then let every death become part of your record.",
                 },
             ],
         }
@@ -264,7 +268,9 @@ def _build_choice(judge: JudgeDefinition, local_floor: int, names: dict[str, str
             {
                 "key": target_key,
                 "label": names[target_key],
-                "description": "Accuse this combatant before testimony begins.",
+                "description": "Name this combatant as the liar before testimony begins.",
+                "effect": "Correct accusation weakens the liar and grants favor. Wrong accusation strengthens them and adds contempt.",
+                "quote": "A name entered into the record cannot be withdrawn.",
             }
             for target_key in ("minion1", "minion2", "boss")
         ]
@@ -287,12 +293,16 @@ def _build_choice(judge: JudgeDefinition, local_floor: int, names: dict[str, str
                 {
                     "key": "stand",
                     "label": "Stand Firm",
-                    "description": "Gain protection and healing while surviving the trial.",
+                    "description": "Absorb the pressure and outlast the chamber.",
+                    "effect": "-10% enemy damage. Team sustain while enduring. Survive the required enemy turns to win cleanly.",
+                    "quote": "Good. Let the room break itself against your patience.",
                 },
                 {
                     "key": "rush",
                     "label": "Press Attack",
-                    "description": "Gain damage and shorten the trial at the cost of safety.",
+                    "description": "Try to crack the case before it settles on you.",
+                    "effect": "+12% damage. Survival goal is shorter, but enemies hit +8% harder.",
+                    "quote": "Then be sharp enough to finish before endurance matters.",
                 },
             ],
             "round_goal": goal,
@@ -307,17 +317,23 @@ def _build_choice(judge: JudgeDefinition, local_floor: int, names: dict[str, str
                 {
                     "key": "blood",
                     "label": "Blood Oath",
-                    "description": "Lose max HP for a heavy damage bonus.",
+                    "description": "Give up your safety and turn it into force.",
+                    "effect": "-25% max HP, +25% damage.",
+                    "quote": "Pain is easy to promise. Paying it is harder.",
                 },
                 {
                     "key": "steel",
                     "label": "Steel Oath",
-                    "description": "Lose armor for better luck and reflected punishment.",
+                    "description": "Shed your guard and punish what reaches you.",
+                    "effect": "-35% armor, +10 luck, minimum 12% reflection.",
+                    "quote": "Then let every opening become a trap for them instead.",
                 },
                 {
                     "key": "beast",
                     "label": "Beast Oath",
-                    "description": "Empower your companion, or gain a lighter solo bonus.",
+                    "description": "Bind the oath to instinct, fang, and loyalty.",
+                    "effect": "Pet: +25% damage and +15% max HP. No pet: lighter solo damage/armor bonus.",
+                    "quote": "Then trust what fights beside you more than what hides behind you.",
                 },
             ],
         }
@@ -331,12 +347,16 @@ def _build_choice(judge: JudgeDefinition, local_floor: int, names: dict[str, str
                 {
                     "key": "shield",
                     "label": "Shield",
-                    "description": "Begin guarded and pull the scale toward restraint.",
+                    "description": "Open cautiously and keep the scale from running away.",
+                    "effect": "+10% armor and starts the meter toward restraint. Staying near center earns favor.",
+                    "quote": "Restraint is not passivity. Prove you know the difference.",
                 },
                 {
                     "key": "blade",
                     "label": "Blade",
-                    "description": "Begin aggressive and chase a faster clear.",
+                    "description": "Lean hard into aggression and control the swing.",
+                    "effect": "+10% damage and starts the meter toward aggression. Overcommitting earns contempt.",
+                    "quote": "Then strike cleanly enough that excess never owns you.",
                 },
             ],
         }
@@ -350,12 +370,16 @@ def _build_choice(judge: JudgeDefinition, local_floor: int, names: dict[str, str
                 {
                     "key": "measured",
                     "label": "Measured",
-                    "description": "Keep ambition contained and earn cleaner verdicts.",
+                    "description": "Climb without letting appetite steer the run.",
+                    "effect": "Kills heal your team. Lower momentum, cleaner verdicts, less contempt risk.",
+                    "quote": "Want more, certainly. Need more? That is the question.",
                 },
                 {
                     "key": "allin",
                     "label": "All-In",
-                    "description": "Gain larger kill spikes and payouts, but risk contempt.",
+                    "description": "Take the fast path and dare the bench to object.",
+                    "effect": "+5% damage. Kills ramp momentum and extra writs, but also scrutiny and armor loss.",
+                    "quote": "Then climb hard enough that even your fall looks expensive.",
                 },
             ],
         }
@@ -368,17 +392,23 @@ def _build_choice(judge: JudgeDefinition, local_floor: int, names: dict[str, str
             {
                 "key": "mercy",
                 "label": "Mercy",
-                "description": "Favor pardons, stability, and clean verdicts.",
+                "description": "End the tower by preserving what can still be spared.",
+                "effect": "Allows surrender below 22% HP and reduces enemy damage by 5%.",
+                "quote": "Then do not call yourself merciful unless it costs you something.",
             },
             {
                 "key": "truth",
                 "label": "Truth",
-                "description": "Expose the right target and punish deception.",
+                "description": "Anchor the final case on consistency and exposed lies.",
+                "effect": "Weakens boss armor and rewards consistent, accurate play.",
+                "quote": "Then hold to one line of truth when the floor starts moving.",
             },
             {
                 "key": "power",
                 "label": "Power",
-                "description": "Claim raw force and accept harsher scrutiny.",
+                "description": "Take raw force and let the verdict chase you after.",
+                "effect": "+15% damage and extra writs, but harsher scrutiny as momentum climbs.",
+                "quote": "Then make force your argument and accept its consequences.",
             },
         ],
     }

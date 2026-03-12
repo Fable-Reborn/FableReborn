@@ -655,6 +655,7 @@ class BattleFactory:
         battle_kwargs.pop("level", None)
         battle_kwargs.pop("floor_number", None)
         battle_kwargs.pop("floor_data", None)
+        battle_kwargs.pop("choice_key", None)
 
         return JuryTowerBattle(
             ctx,
