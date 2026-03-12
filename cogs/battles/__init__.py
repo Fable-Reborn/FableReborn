@@ -5233,6 +5233,172 @@ class Battles(commands.Cog):
                 return
             await ctx.invoke(self.jurytower_progress)
 
+    @jurytower.command(name="help", aliases=["info"])
+    async def jurytower_help(self, ctx):
+        if not await self._ensure_jury_tower_dev_access(ctx):
+            return
+
+        judges = self.jury_tower_data.get("judges", [])
+        judge_lines = []
+        for judge in judges:
+            judge_lines.append(
+                f"**{judge['judge_name']}**: {judge.get('trial_name', judge.get('trial_type', 'Trial').title())}"
+            )
+
+        tier_lines = []
+        for bracket in JURY_POWER_BRACKETS:
+            bonus_percent = int(round((float(bracket.get("writ_multiplier", 1.0)) - 1.0) * 100))
+            tier_lines.append(f"{bracket['label']}: **+{bonus_percent}% writs**")
+
+        checkpoint_lines = []
+        for floor in (11, 22, 33, 44, 55, 66, 77):
+            floor_data = self._get_jury_floor_data(floor)
+            if not floor_data:
+                continue
+            boss_reward = floor_data.get("boss_reward") or {}
+            reward_bits = [
+                f"{boss_reward.get('crate_type', 'none').title()} crate",
+                f"${int(boss_reward.get('money', 0) or 0):,}",
+            ]
+            if boss_reward.get("reset_fragment", 0):
+                reward_bits.append(f"+{boss_reward['reset_fragment']} reset fragment")
+            if boss_reward.get("reset_potion", 0):
+                reward_bits.append(f"+{boss_reward['reset_potion']} reset potion")
+            checkpoint_lines.append(
+                f"**{floor}**: {', '.join(reward_bits)}"
+            )
+
+        shop_lines = [
+            f"`reset` - {self.JURY_SHOP_RESET_POTION_COST} writs, {self.JURY_SHOP_RESET_POTION_LIMIT}/cycle",
+            f"`fragment` - {self.JURY_SHOP_RESET_FRAGMENT_COST} writs, {self.JURY_SHOP_RESET_FRAGMENT_LIMIT}/cycle",
+            f"`appeal` - {self.JURY_SHOP_APPEAL_COST} writs, {self.JURY_SHOP_APPEAL_LIMIT}/cycle",
+            f"`fortune` - {self.JURY_SHOP_FORTUNE_CRATE_COST} writs, {self.JURY_SHOP_FORTUNE_CRATE_LIMIT}/cycle",
+            f"`weapelement` - {self.JURY_SHOP_WEAPON_SCROLL_COST} writs, {self.JURY_SHOP_WEAPON_SCROLL_LIMIT}/cycle",
+            f"`title` - {self.JURY_SHOP_COSMETIC_TITLE_COST} writs, permanent unlock",
+        ]
+
+        overview = discord.Embed(
+            title="Jury Tower Help",
+            description=(
+                "A 77-floor solo tower split across 7 judges. Each judge changes how the fight works, "
+                "so the mode is about choices and verdicts, not just bigger enemy numbers."
+            ),
+            color=0x8B5CF6,
+        )
+        overview.add_field(
+            name="Commands",
+            value=(
+                "`$jt start` - create your Jury Tower run\n"
+                "`$jt progress` - see floor, checkpoint, tier, writs, seals, inventory\n"
+                "`$jt fight` - play the current floor\n"
+                "`$jt shop` - view writ shop stock\n"
+                "`$jt buy <item>` - buy a shop item\n"
+                "`$jt help` - show this guide"
+            ),
+            inline=False,
+        )
+        overview.add_field(
+            name="Tower Layout",
+            value=(
+                f"`{JURY_TOWER_FLOOR_COUNT}` floors total\n"
+                "Each judge owns 11 floors\n"
+                "Boss/checkpoint floors: `11, 22, 33, 44, 55, 66, 77`\n"
+                "Beating a boss moves your checkpoint to the next floor\n"
+                "Floor 77 clear finishes the cycle"
+            ),
+            inline=False,
+        )
+        overview.add_field(
+            name="Judges",
+            value="\n".join(judge_lines),
+            inline=False,
+        )
+
+        progression = discord.Embed(
+            title="Jury Tower Progression",
+            description="How your run, scaling, losses, and prestiges work.",
+            color=0x8B5CF6,
+        )
+        progression.add_field(
+            name="Appeals and Losses",
+            value=(
+                "You start with **2 Appeals** and cap at **4**.\n"
+                "If you lose above checkpoint and still have appeals, you stay on that floor and spend one.\n"
+                "If you lose with no appeals left, you get sent back to your checkpoint.\n"
+                "If you lose while already on checkpoint, you can just retry that floor."
+            ),
+            inline=False,
+        )
+        progression.add_field(
+            name="Court Tier Lock",
+            value=(
+                "Your first fight snapshots your current player + pet power and locks the run into a Court Tier.\n"
+                "That tier is not recalculated every floor.\n"
+                "At a checkpoint, the tower only refreshes if your new build is at least **20% stronger** and actually moves you into a higher tier."
+            ),
+            inline=False,
+        )
+        progression.add_field(
+            name="Court Tiers",
+            value="\n".join(tier_lines),
+            inline=False,
+        )
+        progression.add_field(
+            name="Prestige",
+            value=(
+                "After clearing floor 77, your next `$jt fight` starts the next prestige.\n"
+                "Prestige resets floor progress, checkpoint, seals, favor, contempt, appeals, and cycle shop stock.\n"
+                "Prestige keeps your writs and title unlock.\n"
+                "Enemy scaling also gains **+2% HP** and **+1% Attack/Defense** per prestige."
+            ),
+            inline=False,
+        )
+
+        rewards = discord.Embed(
+            title="Jury Tower Rewards",
+            description="What you earn from floors, checkpoints, fragments, and the writ shop.",
+            color=0x8B5CF6,
+        )
+        rewards.add_field(
+            name="Core Rewards",
+            value=(
+                "Every floor gives Court Writs.\n"
+                "Boss floors also give gold, a crate, +1 Appeal, and a judge seal.\n"
+                "Writs persist across prestiges and are your main repeat currency."
+            ),
+            inline=False,
+        )
+        rewards.add_field(
+            name="Checkpoint Floors",
+            value="\n".join(checkpoint_lines),
+            inline=False,
+        )
+        rewards.add_field(
+            name="Reset Potions",
+            value=(
+                "Floors **22, 44, and 66** each give **1 Reset Fragment**.\n"
+                f"Every **{self.JURY_RESET_FRAGMENT_REQUIREMENT} fragments** automatically reforge into **1 Reset Potion**.\n"
+                "Floor **77** also gives **1 full Reset Potion**."
+            ),
+            inline=False,
+        )
+        rewards.add_field(
+            name="Shop Items",
+            value="\n".join(shop_lines),
+            inline=False,
+        )
+        rewards.add_field(
+            name="Cosmetic Title",
+            value=(
+                f"`$jt buy title` unlocks **{JURY_COSMETIC_TITLE}**.\n"
+                "It is permanent and shows on the profile card and text profile."
+            ),
+            inline=False,
+        )
+
+        for embed in (overview, progression, rewards):
+            await ctx.send(embed=embed)
+
     @has_char()
     @jurytower.command(name="start")
     async def jurytower_start(self, ctx):
