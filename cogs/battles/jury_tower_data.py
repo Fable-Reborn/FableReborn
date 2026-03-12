@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 JURY_TOWER_FLOOR_COUNT = 77
 JURY_SEGMENT_LENGTH = 11
+JURY_COSMETIC_TITLE = "Favored by the Seven"
 
 
 @dataclass(frozen=True)
@@ -118,6 +119,20 @@ JUDGES: tuple[JudgeDefinition, ...] = (
 
 
 ACT_LABELS = ("Opening Arguments", "Cross Examination", "Chamber Recess", "Final Verdict")
+JURY_BRACKET_BASE_SNAPSHOT = {
+    "attack_base": 3200,
+    "hp_base": 12000,
+    "defense_base": 2200,
+}
+JURY_POWER_BRACKETS = (
+    {"key": "court_tier_i", "label": "Court Tier I", "max_score": 6500, "multiplier": 0.78, "writ_multiplier": 1.00},
+    {"key": "court_tier_ii", "label": "Court Tier II", "max_score": 7800, "multiplier": 0.92, "writ_multiplier": 1.15},
+    {"key": "court_tier_iii", "label": "Court Tier III", "max_score": 9200, "multiplier": 1.06, "writ_multiplier": 1.30},
+    {"key": "court_tier_iv", "label": "Court Tier IV", "max_score": 10800, "multiplier": 1.20, "writ_multiplier": 1.45},
+    {"key": "court_tier_v", "label": "Court Tier V", "max_score": 12600, "multiplier": 1.36, "writ_multiplier": 1.60},
+    {"key": "court_tier_vi", "label": "Court Tier VI", "max_score": 14600, "multiplier": 1.54, "writ_multiplier": 1.80},
+    {"key": "court_tier_vii", "label": "Court Tier VII", "max_score": None, "multiplier": 1.74, "writ_multiplier": 2.00},
+)
 JURY_JUDGE_BASE_SCALES = (0.68, 0.78, 0.88, 0.98, 1.08, 1.18, 1.28)
 JURY_ROLE_SCALE_TEMPLATES = {
     "minion1": {
@@ -194,6 +209,7 @@ def _boss_reward_for_judge(judge_index: int) -> dict:
         "money": money_base[judge_index],
         "appeals": 1,
         "writs": writs_base[judge_index],
+        "reset_fragment": 1 if judge_index in {1, 3, 5} else 0,
         "reset_potion": 1 if judge_index == len(JUDGES) - 1 else 0,
     }
 def _build_enemy_scale_profile(

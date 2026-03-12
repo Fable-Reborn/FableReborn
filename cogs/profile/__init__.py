@@ -48,6 +48,8 @@ from utils import misc as rpgtools
 from utils.checks import is_gm
 from utils.i18n import _, locale_doc
 
+JURY_COSMETIC_TITLE = "Favored by the Seven"
+
 
 
 import discord
@@ -569,6 +571,7 @@ class Profile(commands.Cog):
         god_name = str(profile.get("god") or "No God")
         ascension = get_ascension_mantle(profile.get("ascension_mantle"))
         ascension_title = ascension.title if ascension else "Unclaimed"
+        jury_title = str(profile.get("jury_title") or "").strip()
 
         avatar = await self._fetch_avatar_image(user, size=512)
         avatar = ImageOps.fit(avatar, (212, 212), method=resample)
@@ -601,7 +604,12 @@ class Profile(commands.Cog):
         )
         draw.text((80, 748), "Ascension", font=label_font, fill=colors["border"])
         draw.text((80, 784), clip(ascension_title, tiny_font, 286), font=tiny_font, fill=colors["muted"])
-        draw.text((80, 852), f"ID {user.id}", font=tiny_font, fill=colors["muted"])
+        if jury_title:
+            draw.text((80, 816), "Court Title", font=label_font, fill=colors["border"])
+            draw.text((80, 848), clip(jury_title, tiny_font, 286), font=tiny_font, fill=colors["muted"])
+            draw.text((80, 878), f"ID {user.id}", font=tiny_font, fill=colors["muted"])
+        else:
+            draw.text((80, 852), f"ID {user.id}", font=tiny_font, fill=colors["muted"])
 
         right_hand, left_hand = None, None
         any_count = sum(1 for i in items if i.get("hand") == "any")
@@ -2159,6 +2167,10 @@ class Profile(commands.Cog):
                 f'SELECT mantle FROM {ASCENSION_TABLE_NAME} WHERE user_id = $1;',
                 target_user.id,
             )
+            jury_title_unlocked = await conn.fetchval(
+                'SELECT shop_title_unlocked FROM jurytower WHERE id = $1;',
+                target_user.id,
+            )
             mission = await self.bot.get_adventure(target_user)
             guild = await conn.fetchval('SELECT name FROM guild WHERE "id"=$1;', p_data["guild"])
             pet = await conn.fetchval(
@@ -2167,6 +2179,8 @@ class Profile(commands.Cog):
             ) or "None"
         ascension = get_ascension_mantle(ascension_choice)
         ascension_title = ascension.title if ascension else "Unclaimed"
+        jury_title = JURY_COSMETIC_TITLE if jury_title_unlocked else None
+        court_title_line = f"**Court Title:** {jury_title}\n" if jury_title else ""
 
         # Get color from profile data (use default color if not available)
         try:
@@ -2240,6 +2254,7 @@ class Profile(commands.Cog):
             f"**Marriage:** {marriage_display}\n"
             f"**Class:** {' / '.join(p_data.get('class', [])) or 'N/A'}\n"
             f"**Ascension:** {ascension_title}\n"
+            f"{court_title_line}"
             f"**Race:** {p_data['race']}\n"
             f"**PvP Wins:** {p_data['pvpwins']}\n"
             f"**Guild:** {guild or 'None'}"
@@ -2306,6 +2321,11 @@ class Profile(commands.Cog):
                 f'SELECT mantle FROM {ASCENSION_TABLE_NAME} WHERE user_id = $1;',
                 user.id,
             )
+            jury_title_unlocked = await conn.fetchval(
+                'SELECT shop_title_unlocked FROM jurytower WHERE id = $1;',
+                user.id,
+            )
+            profile_data["jury_title"] = JURY_COSMETIC_TITLE if jury_title_unlocked else ""
 
             mission = await self.bot.get_adventure(user)
             guild_name = await conn.fetchval(

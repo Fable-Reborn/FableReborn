@@ -15,7 +15,14 @@ from discord.ui import View, Button, Select, select
 from discord.enums import ButtonStyle
 
 from .factory import BattleFactory
-from .jury_tower_data import build_jury_tower_data, JURY_TOWER_FLOOR_COUNT, JURY_SEGMENT_LENGTH
+from .jury_tower_data import (
+    build_jury_tower_data,
+    JURY_BRACKET_BASE_SNAPSHOT,
+    JURY_COSMETIC_TITLE,
+    JURY_POWER_BRACKETS,
+    JURY_TOWER_FLOOR_COUNT,
+    JURY_SEGMENT_LENGTH,
+)
 from .settings import BattleSettings
 from .utils import create_hp_bar
 from .core.team import Team
@@ -28,6 +35,9 @@ from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils.checks import has_char, has_money, is_gm
 from utils.i18n import _, locale_doc
 from utils.joins import JoinView, SingleJoinView
+
+JURY_TOWER_IS_DEV = True
+JURY_TOWER_DEV_USER_ID = 295173706496475136
 
 class PetEggSelect(Select):
     def __init__(self, items, page=0):
@@ -1275,6 +1285,19 @@ class Battles(commands.Cog):
     PVE_LEGENDARY_SPAWN_CHANCE = 0.01
     PVE_SPLICE_SAMPLE_PER_GENERATION = 75
     PVE_SPLICE_GENERATIONS = (0,)
+    JURY_RESET_FRAGMENT_REQUIREMENT = 3
+    JURY_MAX_APPEALS = 4
+    JURY_SHOP_RESET_POTION_COST = 3200
+    JURY_SHOP_RESET_POTION_LIMIT = 1
+    JURY_SHOP_RESET_FRAGMENT_COST = 1000
+    JURY_SHOP_RESET_FRAGMENT_LIMIT = 1
+    JURY_SHOP_APPEAL_COST = 650
+    JURY_SHOP_APPEAL_LIMIT = 1
+    JURY_SHOP_FORTUNE_CRATE_COST = 1800
+    JURY_SHOP_FORTUNE_CRATE_LIMIT = 1
+    JURY_SHOP_WEAPON_SCROLL_COST = 2400
+    JURY_SHOP_WEAPON_SCROLL_LIMIT = 1
+    JURY_SHOP_COSMETIC_TITLE_COST = 5000
     OMNITHRONE_SANCTUM_LOCATION_ID = "omnithrone_sanctum"
     OMNITHRONE_SEARCH_DELAY_RANGE = (7, 12)
     OMNITHRONE_FOUND_DELAY_SECONDS = 6
@@ -1548,7 +1571,34 @@ class Battles(commands.Cog):
                 "ALTER TABLE jurytower ADD COLUMN IF NOT EXISTS scale_defense_base INTEGER NOT NULL DEFAULT 0;"
             )
             await conn.execute(
+                "ALTER TABLE jurytower ADD COLUMN IF NOT EXISTS scale_power_score INTEGER NOT NULL DEFAULT 0;"
+            )
+            await conn.execute(
+                "ALTER TABLE jurytower ADD COLUMN IF NOT EXISTS scale_bracket TEXT NOT NULL DEFAULT '';"
+            )
+            await conn.execute(
+                "ALTER TABLE jurytower ADD COLUMN IF NOT EXISTS shop_reset_purchases INTEGER NOT NULL DEFAULT 0;"
+            )
+            await conn.execute(
+                "ALTER TABLE jurytower ADD COLUMN IF NOT EXISTS shop_reset_fragment_purchases INTEGER NOT NULL DEFAULT 0;"
+            )
+            await conn.execute(
+                "ALTER TABLE jurytower ADD COLUMN IF NOT EXISTS shop_appeal_purchases INTEGER NOT NULL DEFAULT 0;"
+            )
+            await conn.execute(
+                "ALTER TABLE jurytower ADD COLUMN IF NOT EXISTS shop_fortune_crate_purchases INTEGER NOT NULL DEFAULT 0;"
+            )
+            await conn.execute(
+                "ALTER TABLE jurytower ADD COLUMN IF NOT EXISTS shop_weapon_scroll_purchases INTEGER NOT NULL DEFAULT 0;"
+            )
+            await conn.execute(
+                "ALTER TABLE jurytower ADD COLUMN IF NOT EXISTS shop_title_unlocked BOOLEAN NOT NULL DEFAULT FALSE;"
+            )
+            await conn.execute(
                 "ALTER TABLE jurytower ADD COLUMN IF NOT EXISTS prestige INTEGER NOT NULL DEFAULT 0;"
+            )
+            await conn.execute(
+                'ALTER TABLE IF EXISTS profile ADD COLUMN IF NOT EXISTS resetfragments INTEGER NOT NULL DEFAULT 0;'
             )
 
             # Ice Dragon tables
@@ -3267,6 +3317,8 @@ class Battles(commands.Cog):
         boss_def: int,
     ):
         """[GM only] Start a manual battle tower test with exact enemy stats."""
+        if not await self._ensure_jury_tower_dev_access(ctx):
+            return
         stat_values = [
             minion1_hp,
             minion1_atk,
@@ -3373,6 +3425,8 @@ class Battles(commands.Cog):
     @commands.command(hidden=True)
     async def gmbttest(self, ctx, floor: int, prestige: int = None):
         """[GM only] Run a plain tower test using Jury Tower stat generation for a floor."""
+        if not await self._ensure_jury_tower_dev_access(ctx):
+            return
         if floor < 1 or floor > JURY_TOWER_FLOOR_COUNT:
             return await ctx.send(f"Floor must be between 1 and {JURY_TOWER_FLOOR_COUNT}.")
         if prestige is not None and prestige < 0:
@@ -3387,7 +3441,8 @@ class Battles(commands.Cog):
         async with self.bot.pool.acquire() as connection:
             row = await connection.fetchrow(
                 """
-                SELECT prestige, scale_attack_base, scale_hp_base, scale_defense_base
+                SELECT level, checkpoint, prestige, scale_attack_base, scale_hp_base, scale_defense_base,
+                       scale_power_score, scale_bracket
                 FROM jurytower
                 WHERE id = $1
                 """,
@@ -3405,35 +3460,18 @@ class Battles(commands.Cog):
         if pet_combatant:
             player_team.add_combatant(pet_combatant)
 
-        current_snapshot = await self.battle_factory.build_jury_tower_scale_snapshot(
-            ctx,
-            ctx.author,
-            True,
-        )
         snapshot_source = "Fresh snapshot from current equipped stats"
         if row:
-            stored_snapshot = self._jury_scale_snapshot_from_row(row)
-            scale_snapshot = self._select_jury_scale_snapshot(stored_snapshot, current_snapshot)
-            if scale_snapshot != stored_snapshot:
-                async with self.bot.pool.acquire() as connection:
-                    await connection.execute(
-                        """
-                        UPDATE jurytower
-                        SET scale_attack_base = $1,
-                            scale_hp_base = $2,
-                            scale_defense_base = $3
-                        WHERE id = $4
-                        """,
-                        scale_snapshot["attack_base"],
-                        scale_snapshot["hp_base"],
-                        scale_snapshot["defense_base"],
-                        ctx.author.id,
-                    )
-                snapshot_source = "Current snapshot became the new cycle max"
-            else:
-                snapshot_source = "Stored strongest cycle snapshot"
+            scale_snapshot, snapshot_source = await self._resolve_jury_scale_snapshot(ctx, row)
         else:
-            scale_snapshot = current_snapshot
+            current_snapshot = await self.battle_factory.build_jury_tower_scale_snapshot(
+                ctx,
+                ctx.author,
+                True,
+            )
+            bracket_payload = self._jury_bracket_payload_from_snapshot(current_snapshot)
+            scale_snapshot = bracket_payload["snapshot"]
+            snapshot_source = f"Fresh bracket snapshot - {bracket_payload['bracket_label']}"
 
         enemy_specs = self.battle_factory.build_jury_tower_enemy_specs(
             floor_data,
@@ -3498,6 +3536,7 @@ class Battles(commands.Cog):
             value=(
                 f"Prestige: **{prestige}**\n"
                 f"Snapshot Source: **{snapshot_source}**\n"
+                f"Power Bracket: **{self._format_jury_bracket(row, scale_snapshot) or 'Unassigned'}**\n"
                 f"{self._format_jury_scale_snapshot(scale_snapshot) or 'No scale snapshot.'}"
             ),
             inline=False,
@@ -4428,6 +4467,49 @@ class Battles(commands.Cog):
             "defense_base": int(row["scale_defense_base"] or 0),
         }
 
+    def _jury_scale_power_score_from_row(self, row) -> int:
+        if not row:
+            return 0
+        try:
+            return int(row["scale_power_score"] or 0)
+        except (KeyError, IndexError, TypeError):
+            return 0
+
+    def _jury_scale_bracket_key_from_row(self, row) -> str:
+        if not row:
+            return ""
+        try:
+            return str(row["scale_bracket"] or "").strip().lower()
+        except (KeyError, IndexError, TypeError):
+            return ""
+
+    def _jury_shop_reset_purchases_from_row(self, row) -> int:
+        if not row:
+            return 0
+        try:
+            return int(row["shop_reset_purchases"] or 0)
+        except (KeyError, IndexError, TypeError):
+            return 0
+
+    def _jury_shop_purchase_count(self, row, column: str) -> int:
+        if not row:
+            return 0
+        try:
+            return int(row[column] or 0)
+        except (KeyError, IndexError, TypeError):
+            return 0
+
+    def _jury_shop_item_available(self, row, column: str, limit: int) -> int:
+        return max(0, int(limit or 0) - self._jury_shop_purchase_count(row, column))
+
+    def _jury_shop_title_unlocked(self, row) -> bool:
+        if not row:
+            return False
+        try:
+            return bool(row["shop_title_unlocked"])
+        except (KeyError, IndexError, TypeError):
+            return False
+
     def _jury_scale_snapshot_score(self, snapshot: dict[str, int] | None) -> Decimal:
         if not snapshot:
             return Decimal("0")
@@ -4440,26 +4522,260 @@ class Battles(commands.Cog):
         # more dangerous overall build, while still counting as meaningful power.
         return attack_base + defense_base + (hp_base * Decimal("0.20"))
 
-    def _select_jury_scale_snapshot(
+    def _jury_power_bracket_for_score(self, power_score: Decimal | int | float) -> dict:
+        normalized_score = Decimal(str(power_score or 0))
+        selected = JURY_POWER_BRACKETS[-1]
+        for bracket in JURY_POWER_BRACKETS:
+            max_score = bracket.get("max_score")
+            if max_score is None or normalized_score <= Decimal(str(max_score)):
+                selected = bracket
+                break
+        return dict(selected)
+
+    def _jury_power_bracket_info_from_snapshot(self, snapshot: dict[str, int] | None) -> dict:
+        score = self._jury_scale_snapshot_score(snapshot)
+        if score <= 0:
+            return {}
+        return self._jury_power_bracket_for_score(score)
+
+    def _jury_power_bracket_info_from_row(self, row) -> dict:
+        bracket_key = self._jury_scale_bracket_key_from_row(row)
+        for bracket in JURY_POWER_BRACKETS:
+            if bracket["key"] == bracket_key:
+                return dict(bracket)
+        stored_score = self._jury_scale_power_score_from_row(row)
+        if stored_score > 0:
+            return self._jury_power_bracket_for_score(stored_score)
+        snapshot = self._jury_scale_snapshot_from_row(row)
+        score = self._jury_scale_snapshot_score(snapshot)
+        if score > 0:
+            return self._jury_power_bracket_for_score(score)
+        return {}
+
+    def _build_jury_bracket_snapshot(self, bracket: dict) -> dict[str, int]:
+        multiplier = Decimal(str(bracket.get("multiplier", 1)))
+        return {
+            key: max(1, int(round(float(Decimal(str(base_value)) * multiplier))))
+            for key, base_value in JURY_BRACKET_BASE_SNAPSHOT.items()
+        }
+
+    def _jury_bracket_payload_from_snapshot(self, snapshot: dict[str, int] | None) -> dict:
+        score = self._jury_scale_snapshot_score(snapshot)
+        bracket = self._jury_power_bracket_for_score(score)
+        return {
+            "power_score": max(0, int(round(float(score)))),
+            "bracket_key": bracket["key"],
+            "bracket_label": bracket["label"],
+            "snapshot": self._build_jury_bracket_snapshot(bracket),
+        }
+
+    def _jury_writ_multiplier(self, row=None, snapshot: dict[str, int] | None = None) -> Decimal:
+        bracket_info = self._jury_power_bracket_info_from_snapshot(snapshot) if snapshot else {}
+        if not bracket_info:
+            bracket_info = self._jury_power_bracket_info_from_row(row)
+        return Decimal(str(bracket_info.get("writ_multiplier", 1)))
+
+    def _format_jury_writ_bonus(self, row=None, snapshot: dict[str, int] | None = None) -> str:
+        multiplier = self._jury_writ_multiplier(row=row, snapshot=snapshot)
+        bonus_percent = ((multiplier - Decimal("1")) * Decimal("100")).quantize(
+            Decimal("1"),
+            rounding=ROUND_HALF_UP,
+        )
+        return f"+{int(bonus_percent)}%"
+
+    def _apply_jury_writ_multiplier(self, writs: int, row=None, snapshot: dict[str, int] | None = None) -> int:
+        base_writs = max(0, int(writs or 0))
+        multiplier = self._jury_writ_multiplier(row=row, snapshot=snapshot)
+        scaled = (Decimal(str(base_writs)) * multiplier).quantize(
+            Decimal("1"),
+            rounding=ROUND_HALF_UP,
+        )
+        return int(scaled)
+
+    def _jury_scale_snapshot_refresh_allowed(self, row) -> bool:
+        if not row:
+            return False
+        level = int(row["level"] or 0)
+        checkpoint = int(row["checkpoint"] or 0)
+        return 1 < level <= JURY_TOWER_FLOOR_COUNT and level == checkpoint
+
+    async def _persist_jury_scale_state(
         self,
-        stored_snapshot: dict[str, int] | None,
-        current_snapshot: dict[str, int] | None,
+        user_id: int,
+        snapshot: dict[str, int],
+        power_score: int,
+        bracket_key: str,
+    ) -> None:
+        async with self.bot.pool.acquire() as connection:
+            await connection.execute(
+                """
+                UPDATE jurytower
+                SET scale_attack_base = $1,
+                    scale_hp_base = $2,
+                    scale_defense_base = $3,
+                    scale_power_score = $4,
+                    scale_bracket = $5
+                WHERE id = $6
+                """,
+                snapshot["attack_base"],
+                snapshot["hp_base"],
+                snapshot["defense_base"],
+                int(power_score or 0),
+                str(bracket_key or ""),
+                user_id,
+            )
+
+    def _format_jury_bracket(self, row, snapshot: dict[str, int] | None = None) -> str | None:
+        bracket_info = self._jury_power_bracket_info_from_snapshot(snapshot) if snapshot else {}
+        if not bracket_info:
+            bracket_info = self._jury_power_bracket_info_from_row(row)
+        label = bracket_info.get("label")
+        if not label:
+            return None
+        power_score = self._jury_scale_power_score_from_row(row)
+        bracket_key = bracket_info.get("key", "")
+        if snapshot and bracket_key and bracket_key != self._jury_scale_bracket_key_from_row(row):
+            power_score = int(round(float(self._jury_scale_snapshot_score(snapshot))))
+        elif power_score <= 0 and snapshot:
+            power_score = int(round(float(self._jury_scale_snapshot_score(snapshot))))
+        if power_score > 0:
+            return f"{label} (Power Score: {power_score})"
+        return label
+
+    def _format_jury_reset_fragments(self, fragment_count: int) -> str:
+        current = max(0, int(fragment_count or 0))
+        return f"{current}/{self.JURY_RESET_FRAGMENT_REQUIREMENT}"
+
+    def _jury_shop_reset_available(self, row) -> int:
+        purchases = self._jury_shop_reset_purchases_from_row(row)
+        return max(0, self.JURY_SHOP_RESET_POTION_LIMIT - purchases)
+
+    def _normalize_jury_shop_item(self, item: str | None) -> str | None:
+        normalized = "".join(ch for ch in str(item or "").lower() if ch.isalnum())
+        alias_map = {
+            "reset": {
+                "reset",
+                "resetpotion",
+                "potion",
+            },
+            "fragment": {
+                "fragment",
+                "fragments",
+                "resetfragment",
+                "resetfragments",
+            },
+            "appeal": {
+                "appeal",
+                "appeals",
+            },
+            "fortune": {
+                "fortune",
+                "fortunecrate",
+                "crate",
+            },
+            "weapelement": {
+                "weapelement",
+                "weaponchange",
+                "weaponelementchange",
+                "elementscroll",
+                "weaponelementscroll",
+                "weapelementscroll",
+            },
+            "title": {
+                "title",
+                "cosmetic",
+                "cosmetictitle",
+                "jurytitle",
+            },
+        }
+        for key, aliases in alias_map.items():
+            if normalized in aliases:
+                return key
+        return None
+
+    async def _grant_user_consumable(
+        self,
+        connection,
+        user_id: int,
+        consumable_type: str,
+        amount: int = 1,
+    ) -> int:
+        quantity = max(0, int(amount or 0))
+        if quantity <= 0:
+            return 0
+        existing = await connection.fetchrow(
+            'SELECT id, quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;',
+            user_id,
+            consumable_type,
+        )
+        if existing:
+            await connection.execute(
+                'UPDATE user_consumables SET quantity = quantity + $1 WHERE id = $2;',
+                quantity,
+                existing["id"],
+            )
+            return int(existing["quantity"] or 0) + quantity
+        await connection.execute(
+            'INSERT INTO user_consumables (user_id, consumable_type, quantity) VALUES ($1, $2, $3);',
+            user_id,
+            consumable_type,
+            quantity,
+        )
+        return quantity
+
+    async def _ensure_jury_tower_dev_access(self, ctx) -> bool:
+        if not JURY_TOWER_IS_DEV:
+            return True
+        if ctx.author.id == JURY_TOWER_DEV_USER_ID:
+            return True
+        await ctx.send("Jury Tower is currently in developer testing.")
+        return False
+
+    async def _award_jury_reset_fragments(
+        self,
+        connection,
+        user_id: int,
+        amount: int,
     ) -> dict[str, int]:
-        normalized_stored = stored_snapshot or {
-            "attack_base": 0,
-            "hp_base": 0,
-            "defense_base": 0,
+        awarded = max(0, int(amount or 0))
+        if awarded <= 0:
+            return {
+                "awarded_fragments": 0,
+                "converted_potions": 0,
+                "remaining_fragments": 0,
+            }
+
+        profile_row = await connection.fetchrow(
+            'SELECT resetfragments, resetpotion FROM profile WHERE "user" = $1 FOR UPDATE',
+            user_id,
+        )
+        if not profile_row:
+            return {
+                "awarded_fragments": 0,
+                "converted_potions": 0,
+                "remaining_fragments": 0,
+            }
+
+        total_fragments = int(profile_row["resetfragments"] or 0) + awarded
+        converted_potions = total_fragments // self.JURY_RESET_FRAGMENT_REQUIREMENT
+        remaining_fragments = total_fragments % self.JURY_RESET_FRAGMENT_REQUIREMENT
+
+        await connection.execute(
+            """
+            UPDATE profile
+            SET resetfragments = $1,
+                resetpotion = resetpotion + $2
+            WHERE "user" = $3
+            """,
+            remaining_fragments,
+            converted_potions,
+            user_id,
+        )
+        return {
+            "awarded_fragments": awarded,
+            "converted_potions": converted_potions,
+            "remaining_fragments": remaining_fragments,
         }
-        normalized_current = current_snapshot or {
-            "attack_base": 0,
-            "hp_base": 0,
-            "defense_base": 0,
-        }
-        if self._jury_scale_snapshot_score(normalized_current) > self._jury_scale_snapshot_score(
-            normalized_stored
-        ):
-            return normalized_current
-        return normalized_stored
 
     def _format_jury_scale_snapshot(self, snapshot: dict[str, int] | None) -> str | None:
         if not snapshot:
@@ -4475,33 +4791,64 @@ class Battles(commands.Cog):
             f"Defense Base: **{defense_base}**"
         )
 
-    async def _ensure_jury_scale_snapshot(self, ctx, row) -> dict[str, int]:
+    async def _resolve_jury_scale_snapshot(self, ctx, row) -> tuple[dict[str, int], str]:
         stored_snapshot = self._jury_scale_snapshot_from_row(row)
         allow_pets = self.battle_factory.settings.get_setting("jurytower", "allow_pets", default=True)
+        stored_power_score = self._jury_scale_power_score_from_row(row)
+        if stored_power_score <= 0:
+            stored_snapshot_score = self._jury_scale_snapshot_score(stored_snapshot)
+            if stored_snapshot_score > 0:
+                bracket_payload = self._jury_bracket_payload_from_snapshot(stored_snapshot)
+                if row:
+                    await self._persist_jury_scale_state(
+                        ctx.author.id,
+                        bracket_payload["snapshot"],
+                        bracket_payload["power_score"],
+                        bracket_payload["bracket_key"],
+                    )
+                return bracket_payload["snapshot"], "Existing run normalized to a locked bracket"
+
+            current_snapshot = await self.battle_factory.build_jury_tower_scale_snapshot(
+                ctx,
+                ctx.author,
+                allow_pets,
+            )
+            bracket_payload = self._jury_bracket_payload_from_snapshot(current_snapshot)
+            if row:
+                await self._persist_jury_scale_state(
+                    ctx.author.id,
+                    bracket_payload["snapshot"],
+                    bracket_payload["power_score"],
+                    bracket_payload["bracket_key"],
+                )
+            return bracket_payload["snapshot"], f"Initial run locked to {bracket_payload['bracket_label']}"
+
+        if not self._jury_scale_snapshot_refresh_allowed(row):
+            return stored_snapshot, "Locked run snapshot"
+
         current_snapshot = await self.battle_factory.build_jury_tower_scale_snapshot(
             ctx,
             ctx.author,
             allow_pets,
         )
-        merged_snapshot = self._select_jury_scale_snapshot(stored_snapshot, current_snapshot)
-
-        if merged_snapshot != stored_snapshot:
-            async with self.bot.pool.acquire() as connection:
-                await connection.execute(
-                    """
-                    UPDATE jurytower
-                    SET scale_attack_base = $1,
-                        scale_hp_base = $2,
-                        scale_defense_base = $3
-                    WHERE id = $4
-                    """,
-                    merged_snapshot["attack_base"],
-                    merged_snapshot["hp_base"],
-                    merged_snapshot["defense_base"],
+        current_score = self._jury_scale_snapshot_score(current_snapshot)
+        refresh_threshold = Decimal(str(stored_power_score)) * Decimal("1.20")
+        if current_score >= refresh_threshold:
+            bracket_payload = self._jury_bracket_payload_from_snapshot(current_snapshot)
+            current_bracket = self._jury_scale_bracket_key_from_row(row)
+            if bracket_payload["bracket_key"] != current_bracket:
+                await self._persist_jury_scale_state(
                     ctx.author.id,
+                    bracket_payload["snapshot"],
+                    bracket_payload["power_score"],
+                    bracket_payload["bracket_key"],
+                )
+                return (
+                    bracket_payload["snapshot"],
+                    f"Checkpoint refresh promoted the run to {bracket_payload['bracket_label']}",
                 )
 
-        return merged_snapshot
+        return stored_snapshot, "Locked run snapshot"
 
     async def _prompt_jury_choice(self, ctx, floor_data: dict) -> str:
         choice_data = floor_data.get("choice") or {}
@@ -4586,7 +4933,10 @@ class Battles(commands.Cog):
         if bench_notes:
             embed.add_field(name="Bench Notes", value="\n".join(bench_notes), inline=False)
         scale_text = self._format_jury_scale_snapshot(scale_snapshot)
+        bracket_text = self._format_jury_bracket(row, scale_snapshot)
         if scale_text:
+            if bracket_text:
+                scale_text = f"Power Bracket: **{bracket_text}**\n{scale_text}"
             embed.add_field(name="Tower Scale Base", value=scale_text, inline=False)
         embed.add_field(
             name="Run State",
@@ -4600,12 +4950,34 @@ class Battles(commands.Cog):
             ),
             inline=False,
         )
-        reward_lines = [f"Base Court Writs: **{floor_data.get('writs_reward', 0)}**"]
+        floor_base_writs = int(floor_data.get("writs_reward", 0) or 0)
+        floor_scaled_writs = self._apply_jury_writ_multiplier(
+            floor_base_writs,
+            row=row,
+            snapshot=scale_snapshot,
+        )
+        reward_lines = [
+            f"Court Tier Writ Bonus: **{self._format_jury_writ_bonus(row=row, snapshot=scale_snapshot)}**",
+            f"Floor Writs on Clear: **+{floor_scaled_writs}** (Base: {floor_base_writs})",
+        ]
         boss_reward = floor_data.get("boss_reward") or {}
         if boss_reward:
-            reward_lines.append(f"Checkpoint Writ Cache: **+{boss_reward.get('writs', 0)}**")
+            base_checkpoint_writs = int(boss_reward.get("writs", 0) or 0)
+            scaled_checkpoint_writs = self._apply_jury_writ_multiplier(
+                base_checkpoint_writs,
+                row=row,
+                snapshot=scale_snapshot,
+            )
+            reward_lines.append(
+                f"Checkpoint Writ Cache: **+{scaled_checkpoint_writs}** (Base: {base_checkpoint_writs})"
+            )
             reward_lines.append(f"Checkpoint Gold: **${boss_reward.get('money', 0)}**")
             reward_lines.append(f"Appeals Restored: **+{boss_reward.get('appeals', 0)}**")
+            if boss_reward.get("reset_fragment", 0):
+                reward_lines.append(
+                    f"Reset Fragment: **+{boss_reward.get('reset_fragment', 0)}** "
+                    f"({self.JURY_RESET_FRAGMENT_REQUIREMENT} = 1 Reset Potion)"
+                )
             if boss_reward.get("reset_potion", 0):
                 reward_lines.append(f"Reset Potion: **+{boss_reward.get('reset_potion', 0)}**")
             reward_lines.append(f"Seal on Clearance: **{floor_data.get('seal_name', 'Court Seal')}**")
@@ -4625,7 +4997,11 @@ class Battles(commands.Cog):
             row = await connection.fetchrow(
                 """
                 SELECT level, checkpoint, cycles, prestige, seals, favor, contempt, writs, appeals,
-                       scale_attack_base, scale_hp_base, scale_defense_base
+                       scale_attack_base, scale_hp_base, scale_defense_base,
+                       scale_power_score, scale_bracket, shop_reset_purchases,
+                       shop_reset_fragment_purchases, shop_appeal_purchases,
+                       shop_fortune_crate_purchases, shop_weapon_scroll_purchases,
+                       shop_title_unlocked
                 FROM jurytower
                 WHERE id = $1
                 """,
@@ -4639,11 +5015,18 @@ class Battles(commands.Cog):
             new_checkpoint = int(row["checkpoint"] or 1)
             new_seals = int(row["seals"] or 0)
             new_appeals = int(row["appeals"] or 0)
-            writs_gain = int(verdict.get("writs", 0) or 0)
+            base_writs_gain = int(verdict.get("writs", 0) or 0)
             seal_earned = False
+            fragment_reward_result = {
+                "awarded_fragments": 0,
+                "converted_potions": 0,
+                "remaining_fragments": 0,
+            }
 
             if boss_reward:
-                writs_gain += int(boss_reward.get("writs", 0) or 0)
+                base_writs_gain += int(boss_reward.get("writs", 0) or 0)
+            writs_gain = self._apply_jury_writ_multiplier(base_writs_gain, row=row)
+            writ_bonus_gain = max(0, writs_gain - base_writs_gain)
 
             if floor_data.get("boss_floor"):
                 new_checkpoint = new_level
@@ -4669,6 +5052,13 @@ class Battles(commands.Cog):
                         'UPDATE profile SET resetpotion = resetpotion + $1 WHERE "user" = $2',
                         reset_potion_reward,
                         ctx.author.id,
+                    )
+                fragment_reward = int(boss_reward.get("reset_fragment", 0) or 0)
+                if fragment_reward:
+                    fragment_reward_result = await self._award_jury_reset_fragments(
+                        connection,
+                        ctx.author.id,
+                        fragment_reward,
                     )
 
             await connection.execute(
@@ -4707,6 +5097,11 @@ class Battles(commands.Cog):
                 f"Favor: **+{verdict.get('favor', 0)}**\n"
                 f"Contempt: **+{verdict.get('contempt', 0)}**\n"
                 f"Court Writs: **+{writs_gain}**"
+                + (
+                    f"\nCourt Tier Bonus: **{self._format_jury_writ_bonus(row=row)}** (+{writ_bonus_gain} writs)"
+                    if writ_bonus_gain > 0
+                    else ""
+                )
             ),
             inline=False,
         )
@@ -4716,10 +5111,30 @@ class Battles(commands.Cog):
             summary.add_field(name="Bench Notes", value="\n".join(f"- {note}" for note in notes), inline=False)
 
         if boss_reward:
+            base_checkpoint_writs = int(boss_reward.get("writs", 0) or 0)
+            scaled_checkpoint_writs = self._apply_jury_writ_multiplier(base_checkpoint_writs, row=row)
+            fragment_lines = ""
+            if fragment_reward_result["awarded_fragments"] > 0:
+                fragment_lines += (
+                    f"\nReset Fragment: **+{fragment_reward_result['awarded_fragments']}**"
+                )
+                fragment_lines += (
+                    f"\nFragment Progress: **{self._format_jury_reset_fragments(fragment_reward_result['remaining_fragments'])}**"
+                )
+            if fragment_reward_result["converted_potions"] > 0:
+                fragment_lines += (
+                    f"\nFragments Reforged: **+{fragment_reward_result['converted_potions']} Reset Potion**"
+                )
             summary.add_field(
                 name="Checkpoint Rewards",
                 value=(
-                    f"Court Writ Cache: **+{boss_reward.get('writs', 0)}**\n"
+                    f"Court Writ Cache: **+{scaled_checkpoint_writs}**"
+                    + (
+                        f" (Base: {base_checkpoint_writs})\n"
+                        if scaled_checkpoint_writs != base_checkpoint_writs
+                        else "\n"
+                    )
+                    +
                     f"Crate: **{boss_reward.get('crate_type', 'none').title()}**\n"
                     f"Gold: **${boss_reward.get('money', 0)}**\n"
                     f"Appeals Restored: **+{boss_reward.get('appeals', 0)}**"
@@ -4728,6 +5143,7 @@ class Battles(commands.Cog):
                         if boss_reward.get("reset_potion", 0)
                         else ""
                     )
+                    + fragment_lines
                 ),
                 inline=False,
             )
@@ -4813,11 +5229,15 @@ class Battles(commands.Cog):
     async def jurytower(self, ctx):
         """Commands for the Jury Tower."""
         if ctx.invoked_subcommand is None:
+            if not await self._ensure_jury_tower_dev_access(ctx):
+                return
             await ctx.invoke(self.jurytower_progress)
 
     @has_char()
     @jurytower.command(name="start")
     async def jurytower_start(self, ctx):
+        if not await self._ensure_jury_tower_dev_access(ctx):
+            return
         async with self.bot.pool.acquire() as connection:
             exists = await connection.fetchval("SELECT 1 FROM jurytower WHERE id = $1", ctx.author.id)
             if exists:
@@ -4839,7 +5259,10 @@ class Battles(commands.Cog):
                 "- Checkpoints at each judge's verdict floor\n"
                 "- Appeals can protect progress when you lose away from a checkpoint\n"
                 "- Court Writs accumulate across cycles\n"
-                "- Enemy scaling ratchets to the strongest build you use that cycle\n"
+                "- Your first fight locks the run into a Court Tier based on your power\n"
+                "- Checkpoints can promote that tier if your build is at least 20% stronger\n"
+                "- Floors 22, 44, and 66 grant reset fragments that reforge into potions\n"
+                "- The court shop can sell one extra reset potion per cycle for writs\n"
                 "- Each new prestige lightly increases enemy stats"
             ),
             inline=False,
@@ -4849,11 +5272,14 @@ class Battles(commands.Cog):
     @has_char()
     @jurytower.command(name="progress")
     async def jurytower_progress(self, ctx):
+        if not await self._ensure_jury_tower_dev_access(ctx):
+            return
         async with self.bot.pool.acquire() as connection:
             row = await connection.fetchrow(
                 """
                 SELECT level, checkpoint, cycles, prestige, seals, favor, contempt, writs, appeals,
-                       scale_attack_base, scale_hp_base, scale_defense_base
+                       scale_attack_base, scale_hp_base, scale_defense_base,
+                       scale_power_score, scale_bracket, shop_reset_purchases
                 FROM jurytower
                 WHERE id = $1
                 """,
@@ -4861,6 +5287,19 @@ class Battles(commands.Cog):
             )
             if not row:
                 return await ctx.send("You have not started the Jury Tower. Use `$jurytower start`.")
+            profile_row = await connection.fetchrow(
+                'SELECT resetpotion, resetfragments, crates_fortune FROM profile WHERE "user" = $1',
+                ctx.author.id,
+            )
+            weapon_scrolls = await connection.fetchval(
+                'SELECT quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2',
+                ctx.author.id,
+                "weapon_element_scroll",
+            )
+        reset_potions = int(profile_row["resetpotion"] or 0) if profile_row else 0
+        reset_fragments = int(profile_row["resetfragments"] or 0) if profile_row else 0
+        fortune_crates = int(profile_row["crates_fortune"] or 0) if profile_row else 0
+        weapon_scrolls = int(weapon_scrolls or 0)
 
         level = int(row["level"] or 1)
         seals = int(row["seals"] or 0)
@@ -4902,8 +5341,33 @@ class Battles(commands.Cog):
             ),
             inline=False,
         )
+        embed.add_field(
+            name="Court Inventory",
+            value=(
+                f"Reset Potions: **{reset_potions}**\n"
+                f"Reset Fragments: **{self._format_jury_reset_fragments(reset_fragments)}**\n"
+                f"Fortune Crates: **{fortune_crates}**\n"
+                f"Weapon Element Changes: **{weapon_scrolls}**\n"
+                f"Court Title: **{JURY_COSMETIC_TITLE if self._jury_shop_title_unlocked(row) else 'Unclaimed'}**"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Shop Stock",
+            value=(
+                f"Reset Potion: **{self._jury_shop_reset_available(row)}/{self.JURY_SHOP_RESET_POTION_LIMIT}**\n"
+                f"Reset Fragment: **{self._jury_shop_item_available(row, 'shop_reset_fragment_purchases', self.JURY_SHOP_RESET_FRAGMENT_LIMIT)}/{self.JURY_SHOP_RESET_FRAGMENT_LIMIT}**\n"
+                f"Appeal: **{self._jury_shop_item_available(row, 'shop_appeal_purchases', self.JURY_SHOP_APPEAL_LIMIT)}/{self.JURY_SHOP_APPEAL_LIMIT}**\n"
+                f"Fortune Crate: **{self._jury_shop_item_available(row, 'shop_fortune_crate_purchases', self.JURY_SHOP_FORTUNE_CRATE_LIMIT)}/{self.JURY_SHOP_FORTUNE_CRATE_LIMIT}**\n"
+                f"Weapon Element Change: **{self._jury_shop_item_available(row, 'shop_weapon_scroll_purchases', self.JURY_SHOP_WEAPON_SCROLL_LIMIT)}/{self.JURY_SHOP_WEAPON_SCROLL_LIMIT}**"
+            ),
+            inline=False,
+        )
         scale_text = self._format_jury_scale_snapshot(self._jury_scale_snapshot_from_row(row))
         if scale_text:
+            bracket_text = self._format_jury_bracket(row)
+            if bracket_text:
+                scale_text = f"Power Bracket: **{bracket_text}**\n{scale_text}"
             embed.add_field(name="Tower Scale Base", value=scale_text, inline=False)
         embed.add_field(
             name="Judge Seals",
@@ -4913,15 +5377,407 @@ class Battles(commands.Cog):
         await ctx.send(embed=embed)
 
     @has_char()
+    @jurytower.command(name="shop")
+    async def jurytower_shop(self, ctx):
+        if not await self._ensure_jury_tower_dev_access(ctx):
+            return
+        async with self.bot.pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """
+                SELECT writs, cycles, prestige, appeals, shop_reset_purchases,
+                       shop_reset_fragment_purchases, shop_appeal_purchases,
+                       shop_fortune_crate_purchases, shop_weapon_scroll_purchases,
+                       shop_title_unlocked, scale_power_score, scale_bracket,
+                       scale_attack_base, scale_hp_base, scale_defense_base
+                FROM jurytower
+                WHERE id = $1
+                """,
+                ctx.author.id,
+            )
+            if not row:
+                return await ctx.send("You have not started the Jury Tower. Use `$jurytower start`.")
+            profile_row = await connection.fetchrow(
+                'SELECT resetpotion, resetfragments, crates_fortune FROM profile WHERE "user" = $1',
+                ctx.author.id,
+            )
+            weapon_scrolls = await connection.fetchval(
+                'SELECT quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2',
+                ctx.author.id,
+                "weapon_element_scroll",
+            )
+
+        fragments = int(profile_row["resetfragments"] or 0) if profile_row else 0
+        potions = int(profile_row["resetpotion"] or 0) if profile_row else 0
+        fortune_crates = int(profile_row["crates_fortune"] or 0) if profile_row else 0
+        weapon_scrolls = int(weapon_scrolls or 0)
+        embed = discord.Embed(
+            title="Jury Tower Shop",
+            description="Spend Court Writs on capped utility and cosmetic rewards. Judge fragments are reforged automatically.",
+            color=0x8B5CF6,
+        )
+        embed.add_field(
+            name="Resources",
+            value=(
+                f"Court Writs: **{row['writs']}**\n"
+                f"Appeals: **{row['appeals']}/{self.JURY_MAX_APPEALS}**\n"
+                f"Reset Potions: **{potions}**\n"
+                f"Reset Fragments: **{self._format_jury_reset_fragments(fragments)}**\n"
+                f"Fortune Crates: **{fortune_crates}**\n"
+                f"Weapon Element Changes: **{weapon_scrolls}**\n"
+                f"Court Title: **{JURY_COSMETIC_TITLE if self._jury_shop_title_unlocked(row) else 'Unclaimed'}**"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Reset Potion",
+            value=(
+                f"Cost: **{self.JURY_SHOP_RESET_POTION_COST} Court Writs**\n"
+                f"Cycle Limit: **{self.JURY_SHOP_RESET_POTION_LIMIT}**\n"
+                f"Available This Cycle: **{self._jury_shop_reset_available(row)}**\n"
+                f"Command: **$jurytower buy reset**"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Reset Fragment",
+            value=(
+                f"Cost: **{self.JURY_SHOP_RESET_FRAGMENT_COST} Court Writs**\n"
+                f"Cycle Limit: **{self.JURY_SHOP_RESET_FRAGMENT_LIMIT}**\n"
+                f"Available This Cycle: **{self._jury_shop_item_available(row, 'shop_reset_fragment_purchases', self.JURY_SHOP_RESET_FRAGMENT_LIMIT)}**\n"
+                f"Command: **$jurytower buy fragment**"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Appeal",
+            value=(
+                f"Cost: **{self.JURY_SHOP_APPEAL_COST} Court Writs**\n"
+                f"Cycle Limit: **{self.JURY_SHOP_APPEAL_LIMIT}**\n"
+                f"Available This Cycle: **{self._jury_shop_item_available(row, 'shop_appeal_purchases', self.JURY_SHOP_APPEAL_LIMIT)}**\n"
+                f"Use: **+1 retry charge** for this cycle\n"
+                f"Command: **$jurytower buy appeal**"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Fortune Crate",
+            value=(
+                f"Cost: **{self.JURY_SHOP_FORTUNE_CRATE_COST} Court Writs**\n"
+                f"Cycle Limit: **{self.JURY_SHOP_FORTUNE_CRATE_LIMIT}**\n"
+                f"Available This Cycle: **{self._jury_shop_item_available(row, 'shop_fortune_crate_purchases', self.JURY_SHOP_FORTUNE_CRATE_LIMIT)}**\n"
+                f"Command: **$jurytower buy fortune**"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Weapon Element Change",
+            value=(
+                f"Cost: **{self.JURY_SHOP_WEAPON_SCROLL_COST} Court Writs**\n"
+                f"Cycle Limit: **{self.JURY_SHOP_WEAPON_SCROLL_LIMIT}**\n"
+                f"Available This Cycle: **{self._jury_shop_item_available(row, 'shop_weapon_scroll_purchases', self.JURY_SHOP_WEAPON_SCROLL_LIMIT)}**\n"
+                f"Use: **1 Weapon Element Scroll**\n"
+                f"Command: **$jurytower buy weapelement**"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Cosmetic Title",
+            value=(
+                f"Cost: **{self.JURY_SHOP_COSMETIC_TITLE_COST} Court Writs**\n"
+                f"Status: **{'Owned' if self._jury_shop_title_unlocked(row) else 'Available'}**\n"
+                f"Unlocks: **{JURY_COSMETIC_TITLE}**\n"
+                f"Command: **$jurytower buy title**"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Judge Fragment Chain",
+            value=(
+                "Floors **22**, **44**, and **66** each grant **1 Reset Fragment**.\n"
+                f"Every **{self.JURY_RESET_FRAGMENT_REQUIREMENT} fragments** automatically reforge into **1 Reset Potion**."
+            ),
+            inline=False,
+        )
+        await ctx.send(embed=embed)
+
+    @has_char()
+    @jurytower.command(name="buy")
+    async def jurytower_buy(self, ctx, *, item: str):
+        if not await self._ensure_jury_tower_dev_access(ctx):
+            return
+        item_key = self._normalize_jury_shop_item(item)
+        if item_key is None:
+            return await ctx.send(
+                "Valid shop items are `reset`, `fragment`, `appeal`, `fortune`, `weapelement`, and `title`."
+            )
+
+        purchase_text = {
+            "reset": (
+                self.JURY_SHOP_RESET_POTION_COST,
+                "1 Reset Potion",
+            ),
+            "fragment": (
+                self.JURY_SHOP_RESET_FRAGMENT_COST,
+                "1 Reset Fragment",
+            ),
+            "appeal": (
+                self.JURY_SHOP_APPEAL_COST,
+                "1 Appeal",
+            ),
+            "fortune": (
+                self.JURY_SHOP_FORTUNE_CRATE_COST,
+                "1 Fortune Crate",
+            ),
+            "weapelement": (
+                self.JURY_SHOP_WEAPON_SCROLL_COST,
+                "1 Weapon Element Change",
+            ),
+            "title": (
+                self.JURY_SHOP_COSMETIC_TITLE_COST,
+                f"the cosmetic title {JURY_COSMETIC_TITLE}",
+            ),
+        }
+        cost, reward_label = purchase_text[item_key]
+        async with self.bot.pool.acquire() as preview_connection:
+            preview_row = await preview_connection.fetchrow(
+                """
+                SELECT writs, appeals, shop_reset_purchases, shop_reset_fragment_purchases,
+                       shop_appeal_purchases, shop_fortune_crate_purchases,
+                       shop_weapon_scroll_purchases, shop_title_unlocked
+                FROM jurytower
+                WHERE id = $1
+                """,
+                ctx.author.id,
+            )
+        if not preview_row:
+            return await ctx.send("You have not started the Jury Tower. Use `$jurytower start`.")
+        if int(preview_row["writs"] or 0) < cost:
+            return await ctx.send(f"You need **{cost} Court Writs** for that purchase.")
+        if item_key == "reset" and self._jury_shop_reset_available(preview_row) <= 0:
+            return await ctx.send("You already bought the shop reset potion for this cycle.")
+        if item_key == "fragment" and self._jury_shop_item_available(
+            preview_row,
+            "shop_reset_fragment_purchases",
+            self.JURY_SHOP_RESET_FRAGMENT_LIMIT,
+        ) <= 0:
+            return await ctx.send("You already bought the shop reset fragment for this cycle.")
+        if item_key == "appeal" and self._jury_shop_item_available(
+            preview_row,
+            "shop_appeal_purchases",
+            self.JURY_SHOP_APPEAL_LIMIT,
+        ) <= 0:
+            return await ctx.send("You already bought the shop appeal for this cycle.")
+        if item_key == "appeal" and int(preview_row["appeals"] or 0) >= self.JURY_MAX_APPEALS:
+            return await ctx.send(f"You already have the maximum **{self.JURY_MAX_APPEALS} Appeals**.")
+        if item_key == "fortune" and self._jury_shop_item_available(
+            preview_row,
+            "shop_fortune_crate_purchases",
+            self.JURY_SHOP_FORTUNE_CRATE_LIMIT,
+        ) <= 0:
+            return await ctx.send("You already bought the shop fortune crate for this cycle.")
+        if item_key == "weapelement" and self._jury_shop_item_available(
+            preview_row,
+            "shop_weapon_scroll_purchases",
+            self.JURY_SHOP_WEAPON_SCROLL_LIMIT,
+        ) <= 0:
+            return await ctx.send("You already bought the shop weapon element change for this cycle.")
+        if item_key == "title" and self._jury_shop_title_unlocked(preview_row):
+            return await ctx.send(f"You already unlocked **{JURY_COSMETIC_TITLE}**.")
+        if not await ctx.confirm(
+            f"Spend **{cost} Court Writs** for **{reward_label}**?"
+        ):
+            return await ctx.send("The court purchase was cancelled.")
+
+        async with self.bot.pool.acquire() as connection:
+            async with connection.transaction():
+                row = await connection.fetchrow(
+                    """
+                    SELECT writs, appeals, shop_reset_purchases, shop_reset_fragment_purchases,
+                           shop_appeal_purchases, shop_fortune_crate_purchases,
+                           shop_weapon_scroll_purchases, shop_title_unlocked
+                    FROM jurytower
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    ctx.author.id,
+                )
+                if not row:
+                    return await ctx.send("You have not started the Jury Tower. Use `$jurytower start`.")
+
+                writs = int(row["writs"] or 0)
+                if writs < cost:
+                    return await ctx.send(f"You need **{cost} Court Writs** for that purchase.")
+
+                summary_line = ""
+                if item_key == "reset":
+                    remaining_before = self._jury_shop_reset_available(row)
+                    if remaining_before <= 0:
+                        return await ctx.send("You already bought the shop reset potion for this cycle.")
+                    await connection.execute(
+                        """
+                        UPDATE jurytower
+                        SET writs = writs - $1,
+                            shop_reset_purchases = shop_reset_purchases + 1
+                        WHERE id = $2
+                        """,
+                        cost,
+                        ctx.author.id,
+                    )
+                    await connection.execute(
+                        'UPDATE profile SET resetpotion = resetpotion + 1 WHERE "user" = $1',
+                        ctx.author.id,
+                    )
+                    remaining_after = max(0, remaining_before - 1)
+                    summary_line = (
+                        f"You spend **{cost} Court Writs** and receive **1 Reset Potion**. "
+                        f"Shop resets remaining this cycle: **{remaining_after}/{self.JURY_SHOP_RESET_POTION_LIMIT}**."
+                    )
+                elif item_key == "fragment":
+                    remaining_before = self._jury_shop_item_available(
+                        row,
+                        "shop_reset_fragment_purchases",
+                        self.JURY_SHOP_RESET_FRAGMENT_LIMIT,
+                    )
+                    if remaining_before <= 0:
+                        return await ctx.send("You already bought the shop reset fragment for this cycle.")
+                    await connection.execute(
+                        """
+                        UPDATE jurytower
+                        SET writs = writs - $1,
+                            shop_reset_fragment_purchases = shop_reset_fragment_purchases + 1
+                        WHERE id = $2
+                        """,
+                        cost,
+                        ctx.author.id,
+                    )
+                    fragment_award = await self._award_jury_reset_fragments(connection, ctx.author.id, 1)
+                    summary_line = (
+                        f"You spend **{cost} Court Writs** and receive **1 Reset Fragment**. "
+                        f"Fragments now: **{self._format_jury_reset_fragments(fragment_award['remaining_fragments'])}**."
+                    )
+                    if fragment_award["converted_potions"] > 0:
+                        summary_line += (
+                            f" The fragments reforge into **{fragment_award['converted_potions']} Reset Potion**."
+                        )
+                elif item_key == "appeal":
+                    remaining_before = self._jury_shop_item_available(
+                        row,
+                        "shop_appeal_purchases",
+                        self.JURY_SHOP_APPEAL_LIMIT,
+                    )
+                    current_appeals = int(row["appeals"] or 0)
+                    if remaining_before <= 0:
+                        return await ctx.send("You already bought the shop appeal for this cycle.")
+                    if current_appeals >= self.JURY_MAX_APPEALS:
+                        return await ctx.send(
+                            f"You already have the maximum **{self.JURY_MAX_APPEALS} Appeals**."
+                        )
+                    new_appeals = min(self.JURY_MAX_APPEALS, current_appeals + 1)
+                    await connection.execute(
+                        """
+                        UPDATE jurytower
+                        SET writs = writs - $1,
+                            appeals = $2,
+                            shop_appeal_purchases = shop_appeal_purchases + 1
+                        WHERE id = $3
+                        """,
+                        cost,
+                        new_appeals,
+                        ctx.author.id,
+                    )
+                    summary_line = (
+                        f"You spend **{cost} Court Writs** and gain **1 Appeal**. "
+                        f"Appeals: **{new_appeals}/{self.JURY_MAX_APPEALS}**."
+                    )
+                elif item_key == "fortune":
+                    remaining_before = self._jury_shop_item_available(
+                        row,
+                        "shop_fortune_crate_purchases",
+                        self.JURY_SHOP_FORTUNE_CRATE_LIMIT,
+                    )
+                    if remaining_before <= 0:
+                        return await ctx.send("You already bought the shop fortune crate for this cycle.")
+                    await connection.execute(
+                        """
+                        UPDATE jurytower
+                        SET writs = writs - $1,
+                            shop_fortune_crate_purchases = shop_fortune_crate_purchases + 1
+                        WHERE id = $2
+                        """,
+                        cost,
+                        ctx.author.id,
+                    )
+                    await connection.execute(
+                        'UPDATE profile SET crates_fortune = crates_fortune + 1 WHERE "user" = $1',
+                        ctx.author.id,
+                    )
+                    summary_line = (
+                        f"You spend **{cost} Court Writs** and receive **1 Fortune Crate**."
+                    )
+                elif item_key == "weapelement":
+                    remaining_before = self._jury_shop_item_available(
+                        row,
+                        "shop_weapon_scroll_purchases",
+                        self.JURY_SHOP_WEAPON_SCROLL_LIMIT,
+                    )
+                    if remaining_before <= 0:
+                        return await ctx.send(
+                            "You already bought the shop weapon element change for this cycle."
+                        )
+                    await connection.execute(
+                        """
+                        UPDATE jurytower
+                        SET writs = writs - $1,
+                            shop_weapon_scroll_purchases = shop_weapon_scroll_purchases + 1
+                        WHERE id = $2
+                        """,
+                        cost,
+                        ctx.author.id,
+                    )
+                    new_quantity = await self._grant_user_consumable(
+                        connection,
+                        ctx.author.id,
+                        "weapon_element_scroll",
+                        1,
+                    )
+                    summary_line = (
+                        f"You spend **{cost} Court Writs** and receive **1 Weapon Element Scroll**. "
+                        f"Total Weapon Element Changes: **{new_quantity}**."
+                    )
+                elif item_key == "title":
+                    if self._jury_shop_title_unlocked(row):
+                        return await ctx.send(f"You already unlocked **{JURY_COSMETIC_TITLE}**.")
+                    await connection.execute(
+                        """
+                        UPDATE jurytower
+                        SET writs = writs - $1,
+                            shop_title_unlocked = TRUE
+                        WHERE id = $2
+                        """,
+                        cost,
+                        ctx.author.id,
+                    )
+                    summary_line = (
+                        f"You spend **{cost} Court Writs** and unlock the cosmetic title "
+                        f"**{JURY_COSMETIC_TITLE}**."
+                    )
+
+        await ctx.send(summary_line)
+
+    @has_char()
     @jurytower.command(name="fight", aliases=["begin"])
     @user_cooldown(1800)
     async def jurytower_fight(self, ctx):
+        if not await self._ensure_jury_tower_dev_access(ctx):
+            await self.bot.reset_cooldown(ctx)
+            return
         try:
             async with self.bot.pool.acquire() as connection:
                 row = await connection.fetchrow(
                 """
                     SELECT level, checkpoint, cycles, prestige, seals, favor, contempt, writs, appeals,
-                           scale_attack_base, scale_hp_base, scale_defense_base
+                           scale_attack_base, scale_hp_base, scale_defense_base,
+                           scale_power_score, scale_bracket, shop_reset_purchases
                     FROM jurytower
                     WHERE id = $1
                     """,
@@ -4953,7 +5809,14 @@ class Battles(commands.Cog):
                             appeals = 2,
                             scale_attack_base = 0,
                             scale_hp_base = 0,
-                            scale_defense_base = 0
+                            scale_defense_base = 0,
+                            scale_power_score = 0,
+                            scale_bracket = '',
+                            shop_reset_purchases = 0,
+                            shop_reset_fragment_purchases = 0,
+                            shop_appeal_purchases = 0,
+                            shop_fortune_crate_purchases = 0,
+                            shop_weapon_scroll_purchases = 0
                         WHERE id = $1
                         """,
                         ctx.author.id,
@@ -4961,7 +5824,8 @@ class Battles(commands.Cog):
                     row = await connection.fetchrow(
                         """
                         SELECT level, checkpoint, cycles, prestige, seals, favor, contempt, writs, appeals,
-                               scale_attack_base, scale_hp_base, scale_defense_base
+                               scale_attack_base, scale_hp_base, scale_defense_base,
+                               scale_power_score, scale_bracket, shop_reset_purchases
                         FROM jurytower
                         WHERE id = $1
                         """,
@@ -4977,7 +5841,7 @@ class Battles(commands.Cog):
                 await self.bot.reset_cooldown(ctx)
                 return await ctx.send(f"No Jury Tower data exists for floor {level}.")
 
-            scale_snapshot = await self._ensure_jury_scale_snapshot(ctx, row)
+            scale_snapshot, _snapshot_source = await self._resolve_jury_scale_snapshot(ctx, row)
             await self._display_jury_floor_intro(ctx, row, floor_data, scale_snapshot)
             choice_key = await self._prompt_jury_choice(ctx, floor_data)
 
