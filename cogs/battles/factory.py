@@ -35,6 +35,8 @@ class BattleFactory:
     JURY_HP_PET_WEIGHT = Decimal("0.35")
     JURY_DEFENSE_PLAYER_WEIGHT = Decimal("0.60")
     JURY_DEFENSE_PET_WEIGHT = Decimal("0.40")
+    JURY_PRESTIGE_ATTACK_DEFENSE_STEP = Decimal("0.01")
+    JURY_PRESTIGE_HP_STEP = Decimal("0.02")
     
     def __init__(self, bot):
         self.bot = bot
@@ -175,7 +177,7 @@ class BattleFactory:
             pet_combatant = await self.pet_ext.get_pet_combatant(ctx, player)
         return self._build_jury_scale_snapshot_from_combatants(player_combatant, pet_combatant)
 
-    def _build_jury_scaled_enemy_info(self, enemy_info, scale_snapshot):
+    def _build_jury_scaled_enemy_info(self, enemy_info, scale_snapshot, prestige_level=0):
         scale_profile = enemy_info.get("scale") or {}
         if not scale_profile:
             return {
@@ -212,6 +214,21 @@ class BattleFactory:
             1,
             int(round(float(attack_base * defense_ratio * floor_scale))),
         )
+        prestige_level = max(0, int(prestige_level or 0))
+        if prestige_level > 0:
+            attack_defense_multiplier = Decimal("1") + (
+                self.JURY_PRESTIGE_ATTACK_DEFENSE_STEP * Decimal(prestige_level)
+            )
+            hp_multiplier = Decimal("1") + (
+                self.JURY_PRESTIGE_HP_STEP * Decimal(prestige_level)
+            )
+            scaled_hp = int(round(float(Decimal(str(scaled_hp)) * hp_multiplier)))
+            scaled_attack = int(
+                round(float(Decimal(str(scaled_attack)) * attack_defense_multiplier))
+            )
+            scaled_defense = int(
+                round(float(Decimal(str(scaled_defense)) * attack_defense_multiplier))
+            )
 
         return {
             "name": enemy_info.get("name", "Defendant"),
@@ -554,6 +571,7 @@ class BattleFactory:
         allow_pets = kwargs.get("allow_pets")
         choice_key = kwargs.get("choice_key")
         scale_snapshot = kwargs.get("jury_scale_snapshot")
+        prestige_level = kwargs.get("jury_prestige_level", 0)
 
         player_combatant = await self.create_player_combatant(ctx, player, include_pet=allow_pets)
         pet_combatant = None
@@ -569,7 +587,11 @@ class BattleFactory:
 
         enemy_team = Team("Defendants", [])
         for enemy_info in floor_data.get("enemies", []):
-            scaled_enemy_info = self._build_jury_scaled_enemy_info(enemy_info, scale_snapshot)
+            scaled_enemy_info = self._build_jury_scaled_enemy_info(
+                enemy_info,
+                scale_snapshot,
+                prestige_level=prestige_level,
+            )
             enemy_combatant = await self.create_monster_combatant(
                 scaled_enemy_info,
                 name=enemy_info.get("name"),

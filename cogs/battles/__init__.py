@@ -20,6 +20,7 @@ from .settings import BattleSettings
 from .utils import create_hp_bar
 from .core.team import Team
 from .core.combatant import Combatant
+from .types.tower import TowerBattle
 from classes.classes import from_string as class_from_string
 from classes.converters import IntGreaterThan
 from classes.items import ItemType, Hand
@@ -1528,6 +1529,7 @@ class Battles(commands.Cog):
                     level INTEGER NOT NULL DEFAULT 1,
                     checkpoint INTEGER NOT NULL DEFAULT 1,
                     cycles INTEGER NOT NULL DEFAULT 0,
+                    prestige INTEGER NOT NULL DEFAULT 0,
                     seals INTEGER NOT NULL DEFAULT 0,
                     favor INTEGER NOT NULL DEFAULT 0,
                     contempt INTEGER NOT NULL DEFAULT 0,
@@ -1544,6 +1546,9 @@ class Battles(commands.Cog):
             )
             await conn.execute(
                 "ALTER TABLE jurytower ADD COLUMN IF NOT EXISTS scale_defense_base INTEGER NOT NULL DEFAULT 0;"
+            )
+            await conn.execute(
+                "ALTER TABLE jurytower ADD COLUMN IF NOT EXISTS prestige INTEGER NOT NULL DEFAULT 0;"
             )
 
             # Ice Dragon tables
@@ -3212,6 +3217,153 @@ class Battles(commands.Cog):
         except Exception as e:
             await ctx.send(f"An error occurred while updating the level: {e}")
 
+    @is_gm()
+    @has_char()
+    @commands.command(hidden=True)
+    async def gmbttest(
+        self,
+        ctx,
+        minion1_hp: int,
+        minion1_atk: int,
+        minion1_def: int,
+        minion2_hp: int,
+        minion2_atk: int,
+        minion2_def: int,
+        boss_hp: int,
+        boss_atk: int,
+        boss_def: int,
+    ):
+        """[GM only] Start a manual battle tower test with exact enemy stats."""
+        stat_values = [
+            minion1_hp,
+            minion1_atk,
+            minion1_def,
+            minion2_hp,
+            minion2_atk,
+            minion2_def,
+            boss_hp,
+            boss_atk,
+            boss_def,
+        ]
+        if any(value < 0 for value in stat_values):
+            return await ctx.send("All enemy stats must be 0 or greater.")
+        if minion1_hp <= 0 or minion1_atk <= 0 or minion2_hp <= 0 or minion2_atk <= 0 or boss_hp <= 0 or boss_atk <= 0:
+            return await ctx.send("HP and attack values must be greater than 0 for all three enemies.")
+
+        if await self.is_player_in_fight(ctx.author.id):
+            return await ctx.send("You are already in a battle.")
+
+        player_combatant = await self.battle_factory.create_player_combatant(ctx, ctx.author, include_pet=True)
+        pet_combatant = await self.battle_factory.pet_ext.get_pet_combatant(ctx, ctx.author)
+
+        player_team = Team("Player", [player_combatant])
+        if pet_combatant:
+            player_team.add_combatant(pet_combatant)
+
+        enemy_specs = [
+            {
+                "name": "Test Minion 1",
+                "hp": minion1_hp,
+                "attack": minion1_atk,
+                "defense": minion1_def,
+                "element": "Unknown",
+            },
+            {
+                "name": "Test Minion 2",
+                "hp": minion2_hp,
+                "attack": minion2_atk,
+                "defense": minion2_def,
+                "element": "Unknown",
+            },
+            {
+                "name": "Test Boss",
+                "hp": boss_hp,
+                "attack": boss_atk,
+                "defense": boss_def,
+                "element": "Unknown",
+            },
+        ]
+
+        enemy_team = Team("Enemy", [])
+        for enemy_spec in enemy_specs:
+            enemy_team.add_combatant(
+                await self.battle_factory.create_monster_combatant(enemy_spec, name=enemy_spec["name"])
+            )
+
+        preview = discord.Embed(
+            title="GM BT Test",
+            description="Manual tower test using exact enemy stats. Pets are enabled for the player side.",
+            color=0xC0392B,
+        )
+        player_lines = [
+            f"Player: **HP {float(player_combatant.max_hp):.1f} / ATK {float(player_combatant.damage):.1f} / DEF {float(player_combatant.armor):.1f}**"
+        ]
+        if pet_combatant:
+            player_lines.append(
+                f"Pet: **HP {float(pet_combatant.max_hp):.1f} / ATK {float(pet_combatant.damage):.1f} / DEF {float(pet_combatant.armor):.1f}**"
+            )
+        preview.add_field(name="Player Side", value="\n".join(player_lines), inline=False)
+        preview.add_field(
+            name="Enemy Lineup",
+            value=(
+                f"Test Minion 1: **HP {minion1_hp} / ATK {minion1_atk} / DEF {minion1_def}**\n"
+                f"Test Minion 2: **HP {minion2_hp} / ATK {minion2_atk} / DEF {minion2_def}**\n"
+                f"Test Boss: **HP {boss_hp} / ATK {boss_atk} / DEF {boss_def}**"
+            ),
+            inline=False,
+        )
+        await ctx.send(embed=preview)
+
+        level_data = {
+            "minion1_name": "Test Minion 1",
+            "minion2_name": "Test Minion 2",
+            "boss_name": "Test Boss",
+            "minion1": {"hp": minion1_hp, "damage": minion1_atk, "armor": minion1_def},
+            "minion2": {"hp": minion2_hp, "damage": minion2_atk, "armor": minion2_def},
+            "boss": {"hp": boss_hp, "damage": boss_atk, "armor": boss_def},
+        }
+
+        battle = TowerBattle(
+            ctx,
+            [player_team, enemy_team],
+            level=1,
+            level_data=level_data,
+            allow_pets=True,
+        )
+        battle.config["allow_pets"] = True
+
+        try:
+            await self.add_player_to_fight(ctx.author.id)
+            await battle.start_battle()
+
+            while not await battle.is_battle_over():
+                await battle.process_turn()
+                await asyncio.sleep(1)
+
+            result = await battle.end_battle()
+            battle_timed_out = hasattr(battle, "battle_timed_out") and battle.battle_timed_out
+
+            if result and result.name == "Player":
+                player_alive = any(not c.is_pet and c.is_alive() for c in battle.player_team.combatants)
+                if player_alive or battle.config.get("pets_continue_battle", False):
+                    outcome = "Victory"
+                else:
+                    outcome = "Player Defeated"
+            elif battle_timed_out:
+                outcome = "Timed Out"
+            else:
+                outcome = "Defeat"
+
+            await ctx.send(
+                f"GM BT test complete. Result: **{outcome}**. Battle ID: `{battle.battle_id}`"
+            )
+        except Exception as e:
+            error_message = f"An error occurred during GM BT test: {e}\n{traceback.format_exc()}"
+            await ctx.send(error_message[:1900] + "..." if len(error_message) > 1900 else error_message)
+            print(error_message)
+        finally:
+            await self.remove_player_from_fight(ctx.author.id)
+
     @battletower.command()
     @locale_doc
     async def toggle_dialogue(self, ctx):
@@ -4264,6 +4416,7 @@ class Battles(commands.Cog):
             value=(
                 f"Checkpoint: **{row['checkpoint']}**\n"
                 f"Appeals: **{row['appeals']}**\n"
+                f"Prestige: **{row['prestige']}**\n"
                 f"Favor: **{row['favor']}**\n"
                 f"Contempt: **{row['contempt']}**\n"
                 f"Seals: **{self._jury_seal_count(seals)}/7**"
@@ -4294,7 +4447,7 @@ class Battles(commands.Cog):
         async with self.bot.pool.acquire() as connection:
             row = await connection.fetchrow(
                 """
-                SELECT level, checkpoint, cycles, seals, favor, contempt, writs, appeals,
+                SELECT level, checkpoint, cycles, prestige, seals, favor, contempt, writs, appeals,
                        scale_attack_base, scale_hp_base, scale_defense_base
                 FROM jurytower
                 WHERE id = $1
@@ -4305,6 +4458,7 @@ class Battles(commands.Cog):
                 return await ctx.send("Your Jury Tower record could not be found.")
 
             new_level = min(floor + 1, JURY_TOWER_FLOOR_COUNT + 1)
+            current_prestige = int(row["prestige"] or 0)
             new_checkpoint = int(row["checkpoint"] or 1)
             new_seals = int(row["seals"] or 0)
             new_appeals = int(row["appeals"] or 0)
@@ -4409,7 +4563,10 @@ class Battles(commands.Cog):
             if floor >= JURY_TOWER_FLOOR_COUNT:
                 summary.add_field(
                     name="Cycle Complete",
-                    value="The Seventh Bench has fallen. Your next `jurytower fight` will offer a fresh cycle.",
+                    value=(
+                        "The Seventh Bench has fallen. Your next `jurytower fight` will begin "
+                        f"**Prestige {current_prestige + 1}**."
+                    ),
                     inline=False,
                 )
             else:
@@ -4505,7 +4662,8 @@ class Battles(commands.Cog):
                 "- Checkpoints at each judge's verdict floor\n"
                 "- Appeals can protect progress when you lose away from a checkpoint\n"
                 "- Court Writs accumulate across cycles\n"
-                "- Enemy scaling ratchets to the strongest build you use that cycle"
+                "- Enemy scaling ratchets to the strongest build you use that cycle\n"
+                "- Each new prestige lightly increases enemy stats"
             ),
             inline=False,
         )
@@ -4517,7 +4675,7 @@ class Battles(commands.Cog):
         async with self.bot.pool.acquire() as connection:
             row = await connection.fetchrow(
                 """
-                SELECT level, checkpoint, cycles, seals, favor, contempt, writs, appeals,
+                SELECT level, checkpoint, cycles, prestige, seals, favor, contempt, writs, appeals,
                        scale_attack_base, scale_hp_base, scale_defense_base
                 FROM jurytower
                 WHERE id = $1
@@ -4560,6 +4718,7 @@ class Battles(commands.Cog):
                 f"Checkpoint: **{row['checkpoint']}**\n"
                 f"Appeals: **{row['appeals']}**\n"
                 f"Cycles Completed: **{row['cycles']}**\n"
+                f"Prestige: **{row['prestige']}**\n"
                 f"Favor: **{row['favor']}**\n"
                 f"Contempt: **{row['contempt']}**\n"
                 f"Court Writs: **{row['writs']}**"
@@ -4578,13 +4737,13 @@ class Battles(commands.Cog):
 
     @has_char()
     @jurytower.command(name="fight", aliases=["begin"])
-    @user_cooldown(60)
+    @user_cooldown(1800)
     async def jurytower_fight(self, ctx):
         try:
             async with self.bot.pool.acquire() as connection:
                 row = await connection.fetchrow(
                 """
-                    SELECT level, checkpoint, cycles, seals, favor, contempt, writs, appeals,
+                    SELECT level, checkpoint, cycles, prestige, seals, favor, contempt, writs, appeals,
                            scale_attack_base, scale_hp_base, scale_defense_base
                     FROM jurytower
                     WHERE id = $1
@@ -4598,7 +4757,7 @@ class Battles(commands.Cog):
                 level = int(row["level"] or 1)
                 if level > JURY_TOWER_FLOOR_COUNT:
                     confirm = await ctx.confirm(
-                        f"You have completed the current cycle of the Jury Tower. Begin cycle **{int(row['cycles'] or 0) + 1}**?"
+                        f"You have completed the current cycle of the Jury Tower. Begin **Prestige {int(row['prestige'] or 0) + 1}**?"
                     )
                     if not confirm:
                         await self.bot.reset_cooldown(ctx)
@@ -4610,6 +4769,7 @@ class Battles(commands.Cog):
                         SET level = 1,
                             checkpoint = 1,
                             cycles = cycles + 1,
+                            prestige = prestige + 1,
                             seals = 0,
                             favor = 0,
                             contempt = 0,
@@ -4623,7 +4783,7 @@ class Battles(commands.Cog):
                     )
                     row = await connection.fetchrow(
                         """
-                        SELECT level, checkpoint, cycles, seals, favor, contempt, writs, appeals,
+                        SELECT level, checkpoint, cycles, prestige, seals, favor, contempt, writs, appeals,
                                scale_attack_base, scale_hp_base, scale_defense_base
                         FROM jurytower
                         WHERE id = $1
@@ -4631,7 +4791,9 @@ class Battles(commands.Cog):
                         ctx.author.id,
                     )
                     level = 1
-                    await ctx.send("A new cycle begins. The seven judges reconvene.")
+                    await ctx.send(
+                        f"Prestige **{int(row['prestige'] or 0)}** begins. The seven judges reconvene."
+                    )
 
             floor_data = self._get_jury_floor_data(level)
             if not floor_data:
@@ -4656,6 +4818,7 @@ class Battles(commands.Cog):
                 floor_data=floor_data,
                 choice_key=choice_key,
                 jury_scale_snapshot=scale_snapshot,
+                jury_prestige_level=int(row["prestige"] or 0),
             )
 
             await battle.start_battle()
