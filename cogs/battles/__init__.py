@@ -3384,13 +3384,20 @@ class Battles(commands.Cog):
         if not floor_data:
             return await ctx.send(f"No Jury Tower data exists for floor {floor}.")
 
+        async with self.bot.pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """
+                SELECT prestige, scale_attack_base, scale_hp_base, scale_defense_base
+                FROM jurytower
+                WHERE id = $1
+                """,
+                ctx.author.id,
+            )
+
         if prestige is None:
-            async with self.bot.pool.acquire() as connection:
-                prestige = await connection.fetchval(
-                    "SELECT prestige FROM jurytower WHERE id = $1",
-                    ctx.author.id,
-                )
-        prestige = int(prestige or 0)
+            prestige = int(row["prestige"] or 0) if row else 0
+        else:
+            prestige = int(prestige or 0)
 
         player_combatant = await self.battle_factory.create_player_combatant(ctx, ctx.author, include_pet=True)
         pet_combatant = await self.battle_factory.pet_ext.get_pet_combatant(ctx, ctx.author)
@@ -3398,11 +3405,35 @@ class Battles(commands.Cog):
         if pet_combatant:
             player_team.add_combatant(pet_combatant)
 
-        scale_snapshot = await self.battle_factory.build_jury_tower_scale_snapshot(
+        current_snapshot = await self.battle_factory.build_jury_tower_scale_snapshot(
             ctx,
             ctx.author,
             True,
         )
+        snapshot_source = "Fresh snapshot from current equipped stats"
+        if row:
+            stored_snapshot = self._jury_scale_snapshot_from_row(row)
+            scale_snapshot = self._select_jury_scale_snapshot(stored_snapshot, current_snapshot)
+            if scale_snapshot != stored_snapshot:
+                async with self.bot.pool.acquire() as connection:
+                    await connection.execute(
+                        """
+                        UPDATE jurytower
+                        SET scale_attack_base = $1,
+                            scale_hp_base = $2,
+                            scale_defense_base = $3
+                        WHERE id = $4
+                        """,
+                        scale_snapshot["attack_base"],
+                        scale_snapshot["hp_base"],
+                        scale_snapshot["defense_base"],
+                        ctx.author.id,
+                    )
+                snapshot_source = "Current snapshot became the new cycle max"
+            else:
+                snapshot_source = "Stored strongest cycle snapshot"
+        else:
+            scale_snapshot = current_snapshot
 
         enemy_specs = self.battle_factory.build_jury_tower_enemy_specs(
             floor_data,
@@ -3466,6 +3497,7 @@ class Battles(commands.Cog):
             name="Test Setup",
             value=(
                 f"Prestige: **{prestige}**\n"
+                f"Snapshot Source: **{snapshot_source}**\n"
                 f"{self._format_jury_scale_snapshot(scale_snapshot) or 'No scale snapshot.'}"
             ),
             inline=False,
@@ -4396,6 +4428,39 @@ class Battles(commands.Cog):
             "defense_base": int(row["scale_defense_base"] or 0),
         }
 
+    def _jury_scale_snapshot_score(self, snapshot: dict[str, int] | None) -> Decimal:
+        if not snapshot:
+            return Decimal("0")
+        attack_base = Decimal(str(int(snapshot.get("attack_base", 0) or 0)))
+        hp_base = Decimal(str(int(snapshot.get("hp_base", 0) or 0)))
+        defense_base = Decimal(str(int(snapshot.get("defense_base", 0) or 0)))
+        if attack_base <= 0 and hp_base <= 0 and defense_base <= 0:
+            return Decimal("0")
+        # HP is weighted lower so a tanky swap does not automatically outrank a
+        # more dangerous overall build, while still counting as meaningful power.
+        return attack_base + defense_base + (hp_base * Decimal("0.20"))
+
+    def _select_jury_scale_snapshot(
+        self,
+        stored_snapshot: dict[str, int] | None,
+        current_snapshot: dict[str, int] | None,
+    ) -> dict[str, int]:
+        normalized_stored = stored_snapshot or {
+            "attack_base": 0,
+            "hp_base": 0,
+            "defense_base": 0,
+        }
+        normalized_current = current_snapshot or {
+            "attack_base": 0,
+            "hp_base": 0,
+            "defense_base": 0,
+        }
+        if self._jury_scale_snapshot_score(normalized_current) > self._jury_scale_snapshot_score(
+            normalized_stored
+        ):
+            return normalized_current
+        return normalized_stored
+
     def _format_jury_scale_snapshot(self, snapshot: dict[str, int] | None) -> str | None:
         if not snapshot:
             return None
@@ -4418,11 +4483,7 @@ class Battles(commands.Cog):
             ctx.author,
             allow_pets,
         )
-        merged_snapshot = {
-            "attack_base": max(stored_snapshot["attack_base"], current_snapshot["attack_base"]),
-            "hp_base": max(stored_snapshot["hp_base"], current_snapshot["hp_base"]),
-            "defense_base": max(stored_snapshot["defense_base"], current_snapshot["defense_base"]),
-        }
+        merged_snapshot = self._select_jury_scale_snapshot(stored_snapshot, current_snapshot)
 
         if merged_snapshot != stored_snapshot:
             async with self.bot.pool.acquire() as connection:
