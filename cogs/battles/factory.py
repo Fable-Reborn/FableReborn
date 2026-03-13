@@ -43,8 +43,8 @@ class BattleFactory:
     JURY_DEFENSE_PLAYER_GUARDRAIL_WEIGHT = Decimal("0.70")
     JURY_DEFENSE_PET_GUARDRAIL_WEIGHT = Decimal("0.45")
     JURY_DEFENSE_PET_MIN_WEIGHT = Decimal("0.55")
-    JURY_PRESTIGE_ATTACK_DEFENSE_STEP = Decimal("0.01")
-    JURY_PRESTIGE_HP_STEP = Decimal("0.02")
+    JURY_PRESTIGE_ATTACK_DEFENSE_STEP = Decimal("0.02")
+    JURY_PRESTIGE_HP_STEP = Decimal("0.04")
     
     def __init__(self, bot):
         self.bot = bot
