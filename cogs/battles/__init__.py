@@ -42,6 +42,10 @@ JURY_RANK_LABEL = "Iron Rank"
 JURY_CURRENCY_LABEL = "Black Sigils"
 JURY_CURRENCY_LABEL_LOWER = "black sigils"
 JURY_SHOP_LABEL = "Black Vault"
+JURY_BONUS_CACHE_THRESHOLD = 2
+JURY_MAJOR_BONUS_CACHE_THRESHOLD = 6
+JURY_BONUS_CACHE_MULTIPLIER = Decimal("0.50")
+JURY_MAJOR_BONUS_CACHE_MULTIPLIER = Decimal("1.00")
 
 class PetEggSelect(Select):
     def __init__(self, items, page=0):
@@ -1564,6 +1568,12 @@ class Battles(commands.Cog):
                     appeals INTEGER NOT NULL DEFAULT 2
                 )
                 """
+            )
+            await conn.execute(
+                "ALTER TABLE jurytower ADD COLUMN IF NOT EXISTS segment_favor INTEGER NOT NULL DEFAULT 0;"
+            )
+            await conn.execute(
+                "ALTER TABLE jurytower ADD COLUMN IF NOT EXISTS segment_contempt INTEGER NOT NULL DEFAULT 0;"
             )
             await conn.execute(
                 "ALTER TABLE jurytower ADD COLUMN IF NOT EXISTS scale_attack_base INTEGER NOT NULL DEFAULT 0;"
@@ -4462,6 +4472,47 @@ class Battles(commands.Cog):
             return "Contempt Citation", 0xE74C3C
         return "Contested", 0xF39C12
 
+    def _jury_segment_marks_from_row(self, row) -> tuple[int, int]:
+        if not row:
+            return 0, 0
+        try:
+            return int(row["segment_favor"] or 0), int(row["segment_contempt"] or 0)
+        except (KeyError, IndexError, TypeError):
+            return 0, 0
+
+    def _jury_segment_score(self, favor_total: int, contempt_total: int) -> int:
+        return int(favor_total or 0) - int(contempt_total or 0)
+
+    def _jury_bonus_cache_reward(self, favor_total: int, contempt_total: int, boss_reward: dict | None) -> dict:
+        base_boss_writs = int((boss_reward or {}).get("writs", 0) or 0)
+        score = self._jury_segment_score(favor_total, contempt_total)
+        reward = {
+            "score": score,
+            "favor": int(favor_total or 0),
+            "contempt": int(contempt_total or 0),
+            "label": None,
+            "base_writs": 0,
+            "multiplier": Decimal("0"),
+        }
+        if base_boss_writs <= 0:
+            return reward
+
+        if score >= JURY_MAJOR_BONUS_CACHE_THRESHOLD:
+            reward["label"] = "Major Bonus Cache"
+            reward["multiplier"] = JURY_MAJOR_BONUS_CACHE_MULTIPLIER
+        elif score >= JURY_BONUS_CACHE_THRESHOLD:
+            reward["label"] = "Bonus Cache"
+            reward["multiplier"] = JURY_BONUS_CACHE_MULTIPLIER
+        else:
+            return reward
+
+        reward["base_writs"] = int(
+            (
+                Decimal(str(base_boss_writs)) * Decimal(str(reward["multiplier"]))
+            ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        )
+        return reward
+
     def _jury_scale_snapshot_from_row(self, row) -> dict[str, int]:
         if not row:
             return {"attack_base": 0, "hp_base": 0, "defense_base": 0}
@@ -4954,6 +5005,7 @@ class Battles(commands.Cog):
             row = await connection.fetchrow(
                 """
                 SELECT level, checkpoint, cycles, prestige, seals, favor, contempt, writs, appeals,
+                       segment_favor, segment_contempt,
                        scale_attack_base, scale_hp_base, scale_defense_base,
                        scale_power_score, scale_bracket, shop_reset_purchases,
                        shop_reset_fragment_purchases, shop_appeal_purchases,
@@ -4974,6 +5026,18 @@ class Battles(commands.Cog):
             new_appeals = int(row["appeals"] or 0)
             base_writs_gain = int(verdict.get("writs", 0) or 0)
             seal_earned = False
+            segment_favor, segment_contempt = self._jury_segment_marks_from_row(row)
+            updated_segment_favor = segment_favor + int(verdict.get("favor", 0) or 0)
+            updated_segment_contempt = segment_contempt + int(verdict.get("contempt", 0) or 0)
+            boss_bonus_reward = {
+                "score": self._jury_segment_score(updated_segment_favor, updated_segment_contempt),
+                "favor": updated_segment_favor,
+                "contempt": updated_segment_contempt,
+                "label": None,
+                "base_writs": 0,
+                "multiplier": Decimal("0"),
+                "scaled_writs": 0,
+            }
             fragment_reward_result = {
                 "awarded_fragments": 0,
                 "converted_potions": 0,
@@ -4982,14 +5046,26 @@ class Battles(commands.Cog):
 
             if boss_reward:
                 base_writs_gain += int(boss_reward.get("writs", 0) or 0)
+                boss_bonus_reward = self._jury_bonus_cache_reward(
+                    updated_segment_favor,
+                    updated_segment_contempt,
+                    boss_reward,
+                )
+                base_writs_gain += int(boss_bonus_reward.get("base_writs", 0) or 0)
             writs_gain = self._apply_jury_writ_multiplier(base_writs_gain, row=row)
             writ_bonus_gain = max(0, writs_gain - base_writs_gain)
+            boss_bonus_reward["scaled_writs"] = self._apply_jury_writ_multiplier(
+                int(boss_bonus_reward.get("base_writs", 0) or 0),
+                row=row,
+            )
 
             if floor_data.get("boss_floor"):
                 new_checkpoint = new_level
                 seal_earned = not bool(new_seals & (1 << int(floor_data["judge_index"])))
                 new_seals |= (1 << int(floor_data["judge_index"]))
                 new_appeals = min(4, new_appeals + int(boss_reward.get("appeals", 1)))
+                updated_segment_favor = 0
+                updated_segment_contempt = 0
                 crate_type = boss_reward.get("crate_type")
                 if crate_type:
                     await connection.execute(
@@ -5027,8 +5103,10 @@ class Battles(commands.Cog):
                     appeals = $4,
                     favor = favor + $5,
                     contempt = contempt + $6,
-                    writs = writs + $7
-                WHERE id = $8
+                    writs = writs + $7,
+                    segment_favor = $8,
+                    segment_contempt = $9
+                WHERE id = $10
                 """,
                 new_level,
                 new_checkpoint,
@@ -5037,6 +5115,8 @@ class Battles(commands.Cog):
                 int(verdict.get("favor", 0) or 0),
                 int(verdict.get("contempt", 0) or 0),
                 writs_gain,
+                updated_segment_favor,
+                updated_segment_contempt,
                 ctx.author.id,
             )
 
@@ -5102,6 +5182,27 @@ class Battles(commands.Cog):
                     )
                     + fragment_lines
                 ),
+                inline=False,
+            )
+            bonus_lines = [
+                f"Hall Score: **{boss_bonus_reward['score']:+d}**",
+                f"Hall Marks: **{boss_bonus_reward['favor']} Favor / {boss_bonus_reward['contempt']} Contempt**",
+            ]
+            if boss_bonus_reward["scaled_writs"] > 0:
+                bonus_lines.append(
+                    f"{boss_bonus_reward['label']}: **+{boss_bonus_reward['scaled_writs']} {JURY_CURRENCY_LABEL_LOWER}**"
+                )
+                if int(boss_bonus_reward["base_writs"]) != int(boss_bonus_reward["scaled_writs"]):
+                    bonus_lines.append(
+                        f"Base Bonus: **+{int(boss_bonus_reward['base_writs'])}**"
+                    )
+            else:
+                bonus_lines.append(
+                    f"No bonus cache unlocked. Reach **+{JURY_BONUS_CACHE_THRESHOLD}** for a bonus cache or **+{JURY_MAJOR_BONUS_CACHE_THRESHOLD}** for a major one."
+                )
+            summary.add_field(
+                name="Judge Bonus",
+                value="\n".join(bonus_lines),
                 inline=False,
             )
             if seal_earned:
@@ -5172,7 +5273,8 @@ class Battles(commands.Cog):
                 UPDATE jurytower
                 SET level = $1,
                     appeals = $2,
-                    contempt = contempt + 1
+                    contempt = contempt + 1,
+                    segment_contempt = segment_contempt + 1
                 WHERE id = $3
                 """,
                 new_level,
@@ -5362,6 +5464,17 @@ class Battles(commands.Cog):
             ),
             inline=False,
         )
+        overview.add_field(
+            name="Favor / Contempt",
+            value=(
+                "Favor means the judges liked how you cleared the floor.\n"
+                "Contempt means you won in a way they disliked.\n"
+                "Each 11-floor judge arc keeps its own hall score.\n"
+                f"At the boss, **+{JURY_BONUS_CACHE_THRESHOLD}** unlocks a bonus cache and **+{JURY_MAJOR_BONUS_CACHE_THRESHOLD}** unlocks a major bonus cache.\n"
+                "Base rewards are always guaranteed."
+            ),
+            inline=False,
+        )
 
         rewards = discord.Embed(
             title="Jury Tower Rewards",
@@ -5393,6 +5506,7 @@ class Battles(commands.Cog):
             value=(
                 f"Every floor gives {JURY_CURRENCY_LABEL_LOWER}.\n"
                 "Boss floors also give gold, a crate, +1 Appeal, and a seal.\n"
+                f"Clean hall scores unlock extra {JURY_CURRENCY_LABEL_LOWER} on boss clears.\n"
                 f"{JURY_CURRENCY_LABEL} persist across prestiges and are your main repeat currency."
             ),
             inline=False,
@@ -5423,6 +5537,7 @@ class Battles(commands.Cog):
         for embed in (overview, rewards):
             await ctx.send(embed=embed)
 
+    @is_gm()
     @has_char()
     @jurytower.command(name="start")
     async def jurytower_start(self, ctx):
@@ -5451,6 +5566,7 @@ class Battles(commands.Cog):
                 f"- {JURY_CURRENCY_LABEL} carry across prestiges\n"
                 f"- Your first fight locks the run into an {JURY_RANK_LABEL.lower()} based on your power\n"
                 f"- Checkpoints can promote that {JURY_RANK_LABEL.lower()} if your build jumps by 20%\n"
+                f"- Every judge arc builds a hall score; boss clears at **+{JURY_BONUS_CACHE_THRESHOLD}** and **+{JURY_MAJOR_BONUS_CACHE_THRESHOLD}** unlock bonus sigil caches\n"
                 "- Floors 22, 44, and 66 grant reset fragments that reforge into potions\n"
                 f"- The {JURY_SHOP_LABEL.lower()} can sell one extra reset potion per cycle for sigils\n"
                 "- Each new prestige lightly increases enemy stats"
@@ -5468,6 +5584,7 @@ class Battles(commands.Cog):
             row = await connection.fetchrow(
                 """
                 SELECT level, checkpoint, cycles, prestige, seals, favor, contempt, writs, appeals,
+                       segment_favor, segment_contempt,
                        scale_attack_base, scale_hp_base, scale_defense_base,
                        scale_power_score, scale_bracket, shop_title_unlocked
                 FROM jurytower
@@ -5532,6 +5649,26 @@ class Battles(commands.Cog):
                 f"Contempt: **{row['contempt']}**\n"
                 f"{JURY_CURRENCY_LABEL}: **{row['writs']}**\n"
                 f"Seals: **{self._jury_seal_count(int(row['seals'] or 0))}/7**"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Current Hall",
+            value=(
+                f"Favor: **{int(row['segment_favor'] or 0)}**\n"
+                f"Contempt: **{int(row['segment_contempt'] or 0)}**\n"
+                f"Score: **{self._jury_segment_score(int(row['segment_favor'] or 0), int(row['segment_contempt'] or 0)):+d}**\n"
+                f"Bonus Cache at **+{JURY_BONUS_CACHE_THRESHOLD}**\n"
+                f"Major Bonus Cache at **+{JURY_MAJOR_BONUS_CACHE_THRESHOLD}**"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Judgment",
+            value=(
+                "Favor = good judgment.\n"
+                "Contempt = bad judgment.\n"
+                "Your current hall score decides whether the next boss pays bonus sigils."
             ),
             inline=False,
         )
@@ -5906,6 +6043,7 @@ class Battles(commands.Cog):
 
         await ctx.send(summary_line)
 
+    @is_gm()
     @has_char()
     @jurytower.command(name="fight", aliases=["begin"])
     @user_cooldown(1800)
@@ -5948,6 +6086,8 @@ class Battles(commands.Cog):
                             seals = 0,
                             favor = 0,
                             contempt = 0,
+                            segment_favor = 0,
+                            segment_contempt = 0,
                             appeals = 2,
                             scale_attack_base = 0,
                             scale_hp_base = 0,
