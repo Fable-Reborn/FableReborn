@@ -25,6 +25,7 @@ from .jury_tower_data import (
 )
 from .settings import BattleSettings
 from .utils import create_hp_bar
+from classes.badges import Badge
 from .core.team import Team
 from .core.combatant import Combatant
 from .types.tower import TowerBattle
@@ -6112,9 +6113,27 @@ class Battles(commands.Cog):
                         cost,
                         ctx.author.id,
                     )
+                    profile_badges_raw = await connection.fetchval(
+                        'SELECT "badges" FROM profile WHERE "user" = $1;',
+                        ctx.author.id,
+                    )
+                    try:
+                        current_badges = (
+                            Badge(0)
+                            if profile_badges_raw is None
+                            else Badge.from_db(profile_badges_raw)
+                        )
+                    except Exception:
+                        current_badges = Badge(0)
+                    if not current_badges & Badge.FAVORED_BY_THE_SEVEN:
+                        await connection.execute(
+                            'UPDATE profile SET "badges" = $1 WHERE "user" = $2;',
+                            (current_badges | Badge.FAVORED_BY_THE_SEVEN).to_db(),
+                            ctx.author.id,
+                        )
                     summary_line = (
                         f"You spend **{cost} {JURY_CURRENCY_LABEL}** and unlock the cosmetic title "
-                        f"**{JURY_COSMETIC_TITLE}**."
+                        f"**{JURY_COSMETIC_TITLE}** and the profile badge **Favored by the Seven**."
                     )
 
         await ctx.send(summary_line)

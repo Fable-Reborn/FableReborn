@@ -254,7 +254,7 @@ class Profile(commands.Cog):
         conn,
     ) -> Badge:
         current_badges = self._badge_from_db_value(badges_raw)
-        managed_badges = Badge.GAME_MASTER | Badge.GOD
+        managed_badges = Badge.GAME_MASTER | Badge.GOD | Badge.FAVORED_BY_THE_SEVEN
 
         dynamic_badges = Badge(0)
         xp_value = self._safe_int(profile_xp, 0)
@@ -283,6 +283,12 @@ class Profile(commands.Cog):
             dynamic_badges |= Badge.VETERAN
         if user_id in self._AUTO_DEVELOPER_BADGE_IDS:
             dynamic_badges |= Badge.DEVELOPER
+        jury_title_unlocked = await conn.fetchval(
+            "SELECT shop_title_unlocked FROM jurytower WHERE id = $1;",
+            user_id,
+        )
+        if jury_title_unlocked:
+            dynamic_badges |= Badge.FAVORED_BY_THE_SEVEN
         if rpgtools.xptolevel(xp_value) >= 100:
             dynamic_badges |= Badge.ETERNAL_SOVEREIGN
 
@@ -592,10 +598,7 @@ class Profile(commands.Cog):
         draw.text((80, 436), clip(race_name, tiny_font, 286), font=tiny_font, fill=colors["muted"])
         badge_value = self._badge_from_db_value(profile.get("badges"))
         if badge_value:
-            badge_lines = [
-                str(badge_name).replace("_", " ").title()
-                for badge_name in badge_value.to_items()[:6]
-            ]
+            badge_lines = badge_value.to_display_items()[:6]
         else:
             badge_lines = ["No badges yet"]
         draw.text((80, 506), "Relics and Badges", font=label_font, fill=colors["border"])

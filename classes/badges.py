@@ -38,6 +38,11 @@ class Badge(IntFlag):
     GOD = 256
     JUNIOR_WEREWOLF = 512
     ETERNAL_SOVEREIGN = 1024
+    FAVORED_BY_THE_SEVEN = 2048
+
+    _DISPLAY_NAMES = {
+        "FAVORED_BY_THE_SEVEN": "Favored by the Seven",
+    }
 
     @classmethod
     def from_string(cls, string: str) -> Badge | None:
@@ -59,6 +64,19 @@ class Badge(IntFlag):
 
         return contains
 
+    @classmethod
+    def display_name_for(cls, name: str) -> str:
+        return cls._DISPLAY_NAMES.get(name, name.replace("_", " ").title())
+
+    def to_display_items(self) -> list[str]:
+        contains = []
+
+        for (name, value) in self.__class__.__members__.items():
+            if bool(self & value):
+                contains.append(self.__class__.display_name_for(name))
+
+        return contains
+
     def to_items_lowercase(self) -> list[str]:
         contains = []
 
@@ -69,7 +87,7 @@ class Badge(IntFlag):
         return contains
 
     def to_pretty(self) -> str:
-        return " | ".join(self.to_items())
+        return " | ".join(self.to_display_items())
 
 
 class BadgeConverter(Converter[Badge]):
