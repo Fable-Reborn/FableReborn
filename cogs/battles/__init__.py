@@ -4242,7 +4242,7 @@ class Battles(commands.Cog):
 
     @has_char()
     @battletower.command()
-    @user_cooldown(600)
+    @user_cooldown(300)
     async def fight(self, ctx):
         """Fight the current level in the battle tower."""
         try:
