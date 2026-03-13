@@ -4242,7 +4242,7 @@ class Battles(commands.Cog):
 
     @has_char()
     @battletower.command()
-    @user_cooldown(300)
+    @user_cooldown(600)
     async def fight(self, ctx):
         """Fight the current level in the battle tower."""
         try:
@@ -4897,6 +4897,46 @@ class Battles(commands.Cog):
 
         return stored_snapshot, "Locked run snapshot"
 
+    async def _jury_next_prestige_scale_payload(self, ctx, row) -> dict | None:
+        allow_pets = self.battle_factory.settings.get_setting("jurytower", "allow_pets", default=True)
+        current_snapshot = await self.battle_factory.build_jury_tower_scale_snapshot(
+            ctx,
+            ctx.author,
+            allow_pets,
+        )
+        current_payload = self._jury_bracket_payload_from_snapshot(current_snapshot)
+        current_score = int(current_payload.get("power_score", 0) or 0)
+
+        stored_snapshot = self._jury_scale_snapshot_from_row(row)
+        stored_score = self._jury_scale_power_score_from_row(row)
+        stored_bracket = self._jury_scale_bracket_key_from_row(row)
+
+        if stored_score > current_score and stored_snapshot:
+            stored_bracket_info = self._jury_power_bracket_info_from_row(row)
+            return {
+                "snapshot": stored_snapshot,
+                "power_score": stored_score,
+                "bracket_key": stored_bracket,
+                "bracket_label": stored_bracket_info.get("label", ""),
+                "source": "stored",
+            }
+
+        if current_score > 0:
+            current_payload["source"] = "floor_77"
+            return current_payload
+
+        if stored_score > 0 and stored_snapshot:
+            stored_bracket_info = self._jury_power_bracket_info_from_row(row)
+            return {
+                "snapshot": stored_snapshot,
+                "power_score": stored_score,
+                "bracket_key": stored_bracket,
+                "bracket_label": stored_bracket_info.get("label", ""),
+                "source": "stored",
+            }
+
+        return None
+
     async def _prompt_jury_choice(self, ctx, floor_data: dict) -> str:
         choice_data = floor_data.get("choice") or {}
         default_choice = choice_data.get("default")
@@ -5029,6 +5069,10 @@ class Battles(commands.Cog):
             segment_favor, segment_contempt = self._jury_segment_marks_from_row(row)
             updated_segment_favor = segment_favor + int(verdict.get("favor", 0) or 0)
             updated_segment_contempt = segment_contempt + int(verdict.get("contempt", 0) or 0)
+            scale_snapshot_to_store = self._jury_scale_snapshot_from_row(row)
+            scale_power_score_to_store = self._jury_scale_power_score_from_row(row)
+            scale_bracket_to_store = self._jury_scale_bracket_key_from_row(row)
+            next_prestige_scale_note = None
             boss_bonus_reward = {
                 "score": self._jury_segment_score(updated_segment_favor, updated_segment_contempt),
                 "favor": updated_segment_favor,
@@ -5093,6 +5137,13 @@ class Battles(commands.Cog):
                         ctx.author.id,
                         fragment_reward,
                     )
+                if floor >= JURY_TOWER_FLOOR_COUNT:
+                    next_prestige_scale = await self._jury_next_prestige_scale_payload(ctx, row)
+                    if next_prestige_scale:
+                        scale_snapshot_to_store = next_prestige_scale["snapshot"]
+                        scale_power_score_to_store = int(next_prestige_scale.get("power_score", 0) or 0)
+                        scale_bracket_to_store = str(next_prestige_scale.get("bracket_key", "") or "")
+                        next_prestige_scale_note = next_prestige_scale
 
             await connection.execute(
                 """
@@ -5105,8 +5156,13 @@ class Battles(commands.Cog):
                     contempt = contempt + $6,
                     writs = writs + $7,
                     segment_favor = $8,
-                    segment_contempt = $9
-                WHERE id = $10
+                    segment_contempt = $9,
+                    scale_attack_base = $10,
+                    scale_hp_base = $11,
+                    scale_defense_base = $12,
+                    scale_power_score = $13,
+                    scale_bracket = $14
+                WHERE id = $15
                 """,
                 new_level,
                 new_checkpoint,
@@ -5117,6 +5173,11 @@ class Battles(commands.Cog):
                 writs_gain,
                 updated_segment_favor,
                 updated_segment_contempt,
+                int(scale_snapshot_to_store.get("attack_base", 0) or 0),
+                int(scale_snapshot_to_store.get("hp_base", 0) or 0),
+                int(scale_snapshot_to_store.get("defense_base", 0) or 0),
+                int(scale_power_score_to_store or 0),
+                scale_bracket_to_store,
                 ctx.author.id,
             )
 
@@ -5220,6 +5281,15 @@ class Battles(commands.Cog):
                     ),
                     inline=False,
                 )
+                if next_prestige_scale_note and next_prestige_scale_note.get("bracket_label"):
+                    summary.add_field(
+                        name="Next Prestige",
+                        value=(
+                            f"Next prestige is seeded from your floor 77 clear.\n"
+                            f"Starting {JURY_RANK_LABEL}: **{next_prestige_scale_note['bracket_label']}**"
+                        ),
+                        inline=False,
+                    )
             else:
                 summary.add_field(
                     name="Checkpoint Secured",
@@ -5486,7 +5556,8 @@ class Battles(commands.Cog):
         rewards.add_field(
             name="Ranks",
             value=(
-                f"Your first fight locks the run into an {JURY_RANK_LABEL.lower()} based on your power.\n"
+                f"Your first run locks on the first fight based on your power.\n"
+                f"Later prestiges inherit the snapshot from the build that cleared floor 77.\n"
                 f"The {JURY_RANK_LABEL.lower()} does not change every floor.\n"
                 f"At a boss checkpoint, it only updates if your build is at least **20% stronger** and lands in a higher {JURY_RANK_LABEL.lower()}.\n\n"
                 + "\n".join(tier_lines)
@@ -5566,7 +5637,7 @@ class Battles(commands.Cog):
                 "- Boss floors set checkpoints\n"
                 "- Appeals protect progress away from checkpoint\n"
                 f"- {JURY_CURRENCY_LABEL} carry across prestiges\n"
-                f"- Your first fight locks the run into an {JURY_RANK_LABEL.lower()} based on your power\n"
+                f"- Your first run locks on the first fight; later prestiges inherit the floor 77 clear snapshot\n"
                 f"- Checkpoints can promote that {JURY_RANK_LABEL.lower()} if your build jumps by 20%\n"
                 f"- Every judge arc builds a hall score; boss clears at **+{JURY_BONUS_CACHE_THRESHOLD}** and **+{JURY_MAJOR_BONUS_CACHE_THRESHOLD}** unlock bonus sigil caches\n"
                 "- Floors 22, 44, and 66 grant reset fragments that reforge into potions\n"
@@ -6051,7 +6122,7 @@ class Battles(commands.Cog):
     @is_gm()
     @has_char()
     @jurytower.command(name="fight", aliases=["begin"])
-    @user_cooldown(1800)
+    @user_cooldown(180)
     async def jurytower_fight(self, ctx):
         if not await self._ensure_jury_tower_dev_access(ctx):
             await self.bot.reset_cooldown(ctx)
@@ -6094,11 +6165,6 @@ class Battles(commands.Cog):
                             segment_favor = 0,
                             segment_contempt = 0,
                             appeals = 2,
-                            scale_attack_base = 0,
-                            scale_hp_base = 0,
-                            scale_defense_base = 0,
-                            scale_power_score = 0,
-                            scale_bracket = '',
                             shop_reset_purchases = 0,
                             shop_reset_fragment_purchases = 0,
                             shop_appeal_purchases = 0,
