@@ -36,7 +36,7 @@ from utils.checks import has_char, has_money, is_gm
 from utils.i18n import _, locale_doc
 from utils.joins import JoinView, SingleJoinView
 
-JURY_TOWER_IS_DEV = True
+JURY_TOWER_IS_DEV = False
 JURY_TOWER_DEV_USER_ID = 295173706496475136
 JURY_RANK_LABEL = "Iron Rank"
 JURY_CURRENCY_LABEL = "Black Sigils"
@@ -5284,6 +5284,7 @@ class Battles(commands.Cog):
 
         await ctx.send(outcome_text)
 
+    @is_gm()
     @commands.group(aliases=["jt"])
     async def jurytower(self, ctx):
         """Commands for the Jury Tower."""
@@ -5375,6 +5376,7 @@ class Battles(commands.Cog):
             )
             await ctx.send(embed=embed)
 
+    @is_gm()
     @jurytower.command(name="help", aliases=["info"])
     async def jurytower_help(self, ctx):
         if not await self._ensure_jury_tower_dev_access(ctx):
@@ -5575,6 +5577,7 @@ class Battles(commands.Cog):
         )
         await ctx.send(embed=embed)
 
+    @is_gm()
     @has_char()
     @jurytower.command(name="progress")
     async def jurytower_progress(self, ctx):
@@ -5692,6 +5695,7 @@ class Battles(commands.Cog):
         embed.set_footer(text=f"Use $jt shop to view the {JURY_SHOP_LABEL.lower()}.")
         await ctx.send(embed=embed)
 
+    @is_gm()
     @has_char()
     @jurytower.command(name="shop")
     async def jurytower_shop(self, ctx):
@@ -5779,6 +5783,7 @@ class Battles(commands.Cog):
         )
         await ctx.send(embed=embed)
 
+    @is_gm()
     @has_char()
     @jurytower.command(name="buy")
     async def jurytower_buy(self, ctx, *, item: str):
