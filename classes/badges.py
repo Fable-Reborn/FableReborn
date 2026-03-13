@@ -25,6 +25,10 @@ from discord.ext.commands.errors import BadArgument
 
 from classes.context import Context
 
+BADGE_DISPLAY_NAMES = {
+    "FAVORED_BY_THE_SEVEN": "Favored by the Seven",
+}
+
 
 class Badge(IntFlag):
     CONTRIBUTOR = 1
@@ -39,10 +43,6 @@ class Badge(IntFlag):
     JUNIOR_WEREWOLF = 512
     ETERNAL_SOVEREIGN = 1024
     FAVORED_BY_THE_SEVEN = 2048
-
-    _DISPLAY_NAMES = {
-        "FAVORED_BY_THE_SEVEN": "Favored by the Seven",
-    }
 
     @classmethod
     def from_string(cls, string: str) -> Badge | None:
@@ -66,7 +66,7 @@ class Badge(IntFlag):
 
     @classmethod
     def display_name_for(cls, name: str) -> str:
-        return cls._DISPLAY_NAMES.get(name, name.replace("_", " ").title())
+        return BADGE_DISPLAY_NAMES.get(name, name.replace("_", " ").title())
 
     def to_display_items(self) -> list[str]:
         contains = []
