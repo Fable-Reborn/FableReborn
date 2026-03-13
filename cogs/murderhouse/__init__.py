@@ -382,7 +382,7 @@ class MurderHouseGame:
     def _escape_status_text(self, *, markdown: bool = False) -> str:
         if self._in_final_chase():
             return _(
-                "Final Chase: both selected exits are open, and the last houseguest cannot hide, search, or barricade."
+                "Final Chase: both selected exits are open for the last houseguest."
             )
         open_rooms = self._open_escape_rooms()
         if not open_rooms:
@@ -465,7 +465,7 @@ class MurderHouseGame:
         self.secondary_escape_open = True
         public_lines.append(
             _(
-                "Only one houseguest is left inside. **Final Chase** begins: the {primary} and {secondary} are thrown open, and the last survivor has to run."
+                "Only one houseguest is left inside. **Final Chase** begins: the {primary} and {secondary} are thrown open for a desperate endgame."
             ).format(
                 primary=f"**{self._escape_route_label(self.primary_escape_room)}**",
                 secondary=f"**{self._escape_route_label(self.secondary_escape_room)}**",
@@ -541,7 +541,7 @@ class MurderHouseGame:
                 "Collect **{goal}** escape clues.\n"
                 "There are **4** possible exits in the house: {routes}.\n"
                 "When the final clue is found, one selected exit opens. A second selected exit opens **{delay}** rounds later.\n"
-                "If you become the last houseguest before the clue track is full, **Final Chase** opens both selected exits for one last run.\n"
+                "If you become the last houseguest before the clue track is full, **Final Chase** opens both selected exits.\n"
                 "Anyone who reaches an open exit escapes for good.\n"
                 "Hiding buys time, but it never counts as a win by itself.\n"
                 "Map:\n```{house_map}```"
@@ -561,7 +561,7 @@ class MurderHouseGame:
             "The houseguests need **{goal}** clues to start opening exits.\n"
             "There are **4** possible exits: {routes}.\n"
             "One selected exit opens after the final clue, and a second selected exit opens **{delay}** rounds later.\n"
-            "If only one houseguest remains before the clue track is full, **Final Chase** opens both selected exits and forces a last run.\n"
+            "If only one houseguest remains before the clue track is full, **Final Chase** opens both selected exits.\n"
             "Sweep rooms, check hiding spots, listen for noise, set traps, and kill whoever does not make it out.\n"
             "Map:\n```{house_map}```"
         ).format(
@@ -726,16 +726,16 @@ class MurderHouseGame:
                 }
             )
 
-        if not final_chase:
-            for spot in HIDING_SPOTS[current_room]:
-                options.append(
-                    {
-                        "label": _("Hide in the {spot}").format(spot=spot),
-                        "kind": "hide",
-                        "spot": spot,
-                    }
-                )
+        for spot in HIDING_SPOTS[current_room]:
+            options.append(
+                {
+                    "label": _("Hide in the {spot}").format(spot=spot),
+                    "kind": "hide",
+                    "spot": spot,
+                }
+            )
 
+        if not final_chase:
             options.append(
                 {
                     "label": _("Search the {room} for clues").format(room=current_room),
@@ -1427,6 +1427,7 @@ class MurderHouseGame:
         private_lines: defaultdict[int, list[str]] = defaultdict(list)
         noise_by_room: dict[str, int] = {room: 0 for room in HOUSE_MAP}
         escape_attempt_ids: set[int] = set()
+        occupied_hiding_spots: set[tuple[str, str]] = set()
         pending_senses: list[tuple[int, str, bool]] = []
 
         for state in self._alive_guest_states():
@@ -1482,6 +1483,16 @@ class MurderHouseGame:
                         public_lines.append(public_text)
                     continue
 
+                if trap_key in occupied_hiding_spots:
+                    noise_by_room[state.room] += 1
+                    private_lines[state.member.id].append(
+                        _(
+                            "You dive for the **{spot}**, but somebody is already jammed into it. You stay exposed."
+                        ).format(spot=spot)
+                    )
+                    continue
+
+                occupied_hiding_spots.add(trap_key)
                 state.hidden_spot = spot
                 private_lines[state.member.id].append(
                     _("You keep still in the **{spot}**.").format(spot=spot)
@@ -1602,7 +1613,7 @@ class MurderHouseGame:
                     )
                     if not self._in_final_chase()
                     else _(
-                        "Round **{round}** begins. **Final Chase** is active. Check your DMs and run."
+                        "Round **{round}** begins. **Final Chase** is active. Check your DMs and make your choice."
                     )
                 ).format(round=self.round)
             )
@@ -1884,7 +1895,7 @@ class MurderHouse(commands.Cog):
                     "`Escape` only works from open exit rooms.\n"
                     "Each room holds at most **1** clue.\n"
                     "The first chosen exit opens when the clue track fills; the second opens **{delay} rounds later**.\n"
-                    "If only one houseguest remains before the clue track fills, **Final Chase** opens both selected exits and removes hiding, searching, and barricading."
+                    "If only one houseguest remains before the clue track fills, **Final Chase** opens both selected exits. Hiding and barricading still work, but searching ends."
                 ).format(delay=MurderHouseGame.SECONDARY_EXIT_DELAY_ROUNDS),
                 inline=False,
             )
@@ -1905,7 +1916,7 @@ class MurderHouse(commands.Cog):
                     "Possible exits: **Kitchen back door**, **Basement bulkhead**, **Attic fire ladder**, **Master bedroom balcony**.\n"
                     "Houseguests: spread out early, because rooms do not stack clues anymore.\n"
                     "Pivot fast once the first exit is revealed.\n"
-                    "If you are the last one left before the clues are done, **Final Chase** gives you two doors and one clean chance to run.\n"
+                    "If you are the last one left before the clues are done, **Final Chase** gives you two open doors while hide and barricade still buy time.\n"
                     "Anyone who reaches an open exit is out for good.\n"
                     "Murderer: listen for noisy rooms, trap common spots, and control the live exit while reading the setup for the delayed one.\n"
                     "Use `{prefix}murderhouse 4` to start a lighter-size test match."
