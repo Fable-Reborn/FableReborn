@@ -131,7 +131,10 @@ JURY_POWER_BRACKETS = (
     {"key": "court_tier_iv", "label": "Iron Rank IV", "max_score": 10800, "multiplier": 1.20, "writ_multiplier": 1.45},
     {"key": "court_tier_v", "label": "Iron Rank V", "max_score": 12600, "multiplier": 1.36, "writ_multiplier": 1.60},
     {"key": "court_tier_vi", "label": "Iron Rank VI", "max_score": 14600, "multiplier": 1.54, "writ_multiplier": 1.80},
-    {"key": "court_tier_vii", "label": "Iron Rank VII", "max_score": None, "multiplier": 1.74, "writ_multiplier": 2.00},
+    {"key": "court_tier_vii", "label": "Iron Rank VII", "max_score": 16800, "multiplier": 1.74, "writ_multiplier": 2.00},
+    {"key": "court_tier_viii", "label": "Iron Rank VIII", "max_score": 19200, "multiplier": 1.88, "writ_multiplier": 2.15},
+    {"key": "court_tier_ix", "label": "Iron Rank IX", "max_score": 21800, "multiplier": 2.02, "writ_multiplier": 2.30},
+    {"key": "court_tier_x", "label": "Iron Rank X", "max_score": None, "multiplier": 2.18, "writ_multiplier": 2.50},
 )
 JURY_JUDGE_BASE_SCALES = (0.68, 0.78, 0.88, 0.98, 1.08, 1.18, 1.28)
 JURY_ROLE_SCALE_TEMPLATES = {

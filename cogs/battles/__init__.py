@@ -43,6 +43,8 @@ JURY_RANK_LABEL = "Iron Rank"
 JURY_CURRENCY_LABEL = "Black Sigils"
 JURY_CURRENCY_LABEL_LOWER = "black sigils"
 JURY_SHOP_LABEL = "Black Vault"
+JURY_TOWER_MIN_LEVEL = 40
+JURY_TOWER_REQUIRED_BATTLE_TOWER_PRESTIGE = 5
 JURY_BONUS_CACHE_THRESHOLD = 2
 JURY_MAJOR_BONUS_CACHE_THRESHOLD = 6
 JURY_BONUS_CACHE_MULTIPLIER = Decimal("0.50")
@@ -4595,13 +4597,13 @@ class Battles(commands.Cog):
         return self._jury_power_bracket_for_score(score)
 
     def _jury_power_bracket_info_from_row(self, row) -> dict:
+        stored_score = self._jury_scale_power_score_from_row(row)
+        if stored_score > 0:
+            return self._jury_power_bracket_for_score(stored_score)
         bracket_key = self._jury_scale_bracket_key_from_row(row)
         for bracket in JURY_POWER_BRACKETS:
             if bracket["key"] == bracket_key:
                 return dict(bracket)
-        stored_score = self._jury_scale_power_score_from_row(row)
-        if stored_score > 0:
-            return self._jury_power_bracket_for_score(stored_score)
         snapshot = self._jury_scale_snapshot_from_row(row)
         score = self._jury_scale_snapshot_score(snapshot)
         if score > 0:
@@ -4615,15 +4617,28 @@ class Battles(commands.Cog):
             for key, base_value in JURY_BRACKET_BASE_SNAPSHOT.items()
         }
 
-    def _jury_bracket_payload_from_snapshot(self, snapshot: dict[str, int] | None) -> dict:
-        score = self._jury_scale_snapshot_score(snapshot)
-        bracket = self._jury_power_bracket_for_score(score)
+    def _jury_bracket_payload_from_score(self, power_score: Decimal | int | float) -> dict:
+        normalized_score = Decimal(str(power_score or 0))
+        bracket = self._jury_power_bracket_for_score(normalized_score)
+        rounded_score = max(
+            0,
+            int(
+                normalized_score.quantize(
+                    Decimal("1"),
+                    rounding=ROUND_HALF_UP,
+                )
+            ),
+        )
         return {
-            "power_score": max(0, int(round(float(score)))),
+            "power_score": rounded_score,
             "bracket_key": bracket["key"],
             "bracket_label": bracket["label"],
             "snapshot": self._build_jury_bracket_snapshot(bracket),
         }
+
+    def _jury_bracket_payload_from_snapshot(self, snapshot: dict[str, int] | None) -> dict:
+        score = self._jury_scale_snapshot_score(snapshot)
+        return self._jury_bracket_payload_from_score(score)
 
     def _jury_writ_multiplier(self, row=None, snapshot: dict[str, int] | None = None) -> Decimal:
         bracket_info = self._jury_power_bracket_info_from_snapshot(snapshot) if snapshot else {}
@@ -4779,6 +4794,45 @@ class Battles(commands.Cog):
         await ctx.send("Jury Tower is currently in developer testing.")
         return False
 
+    async def _ensure_jury_tower_entry_requirements(self, ctx, connection=None) -> bool:
+        owns_connection = connection is None
+        if owns_connection:
+            connection = await self.bot.pool.acquire()
+        try:
+            xp_value = await connection.fetchval(
+                'SELECT "xp" FROM profile WHERE "user" = $1;',
+                ctx.author.id,
+            )
+            level = int(rpgtools.xptolevel(int(xp_value or 0)))
+            battle_tower_prestige = int(
+                await connection.fetchval(
+                    'SELECT prestige FROM battletower WHERE id = $1;',
+                    ctx.author.id,
+                )
+                or 0
+            )
+
+            requirement_failures = []
+            if level < JURY_TOWER_MIN_LEVEL:
+                requirement_failures.append(
+                    f"Level: **{level} / {JURY_TOWER_MIN_LEVEL}**"
+                )
+            if battle_tower_prestige < JURY_TOWER_REQUIRED_BATTLE_TOWER_PRESTIGE:
+                requirement_failures.append(
+                    f"Battle Tower Prestige: **{battle_tower_prestige} / {JURY_TOWER_REQUIRED_BATTLE_TOWER_PRESTIGE}**"
+                )
+
+            if requirement_failures:
+                await ctx.send(
+                    "You do not meet the Jury Tower entry requirements.\n"
+                    + "\n".join(requirement_failures)
+                )
+                return False
+            return True
+        finally:
+            if owns_connection:
+                await self.bot.pool.release(connection)
+
     async def _award_jury_reset_fragments(
         self,
         connection,
@@ -4871,6 +4925,26 @@ class Battles(commands.Cog):
                 )
             return bracket_payload["snapshot"], f"Initial run locked to {bracket_payload['bracket_label']}"
 
+        stored_bracket_payload = self._jury_bracket_payload_from_score(stored_power_score)
+        stored_bracket_key = str(stored_bracket_payload["bracket_key"] or "")
+        if (
+            self._jury_scale_bracket_key_from_row(row) != stored_bracket_key
+            or stored_snapshot != stored_bracket_payload["snapshot"]
+        ):
+            if row:
+                await self._persist_jury_scale_state(
+                    ctx.author.id,
+                    stored_bracket_payload["snapshot"],
+                    stored_bracket_payload["power_score"],
+                    stored_bracket_payload["bracket_key"],
+                )
+            stored_snapshot = stored_bracket_payload["snapshot"]
+            if not self._jury_scale_snapshot_refresh_allowed(row):
+                return (
+                    stored_snapshot,
+                    f"Stored run normalized to {stored_bracket_payload['bracket_label']}",
+                )
+
         if not self._jury_scale_snapshot_refresh_allowed(row):
             return stored_snapshot, "Locked run snapshot"
 
@@ -4883,7 +4957,7 @@ class Battles(commands.Cog):
         refresh_threshold = Decimal(str(stored_power_score)) * Decimal("1.20")
         if current_score >= refresh_threshold:
             bracket_payload = self._jury_bracket_payload_from_snapshot(current_snapshot)
-            current_bracket = self._jury_scale_bracket_key_from_row(row)
+            current_bracket = stored_bracket_key
             if bracket_payload["bracket_key"] != current_bracket:
                 await self._persist_jury_scale_state(
                     ctx.author.id,
@@ -5387,7 +5461,9 @@ class Battles(commands.Cog):
                     name="Get Started",
                     value=(
                         "`$jt start` - enter the tower\n"
-                        "`$jt help` - view the full guide"
+                        "`$jt help` - view the full guide\n"
+                        f"Requirements: **level {JURY_TOWER_MIN_LEVEL}** and "
+                        f"**Battle Tower Prestige {JURY_TOWER_REQUIRED_BATTLE_TOWER_PRESTIGE}**"
                     ),
                     inline=False,
                 )
@@ -5515,6 +5591,8 @@ class Battles(commands.Cog):
         overview.add_field(
             name="Tower Flow",
             value=(
+                f"Requirements: **level {JURY_TOWER_MIN_LEVEL}** and "
+                f"**Battle Tower Prestige {JURY_TOWER_REQUIRED_BATTLE_TOWER_PRESTIGE}**\n"
                 f"`{JURY_TOWER_FLOOR_COUNT}` floors total\n"
                 "Each judge controls 11 floors\n"
                 "Boss floors: `11, 22, 33, 44, 55, 66, 77`\n"
@@ -5618,6 +5696,8 @@ class Battles(commands.Cog):
         if not await self._ensure_jury_tower_dev_access(ctx):
             return
         async with self.bot.pool.acquire() as connection:
+            if not await self._ensure_jury_tower_entry_requirements(ctx, connection):
+                return
             exists = await connection.fetchval("SELECT 1 FROM jurytower WHERE id = $1", ctx.author.id)
             if exists:
                 return await ctx.send("You are already in the Jury Tower. Use `$jt` or `$jt progress` to view your run.")
@@ -5634,6 +5714,8 @@ class Battles(commands.Cog):
         embed.add_field(
             name="Run Rules",
             value=(
+                f"- Requires **level {JURY_TOWER_MIN_LEVEL}** and "
+                f"**Battle Tower Prestige {JURY_TOWER_REQUIRED_BATTLE_TOWER_PRESTIGE}**\n"
                 f"- {JURY_TOWER_FLOOR_COUNT} floors\n"
                 "- Boss floors set checkpoints\n"
                 "- Appeals protect progress away from checkpoint\n"
@@ -6148,6 +6230,9 @@ class Battles(commands.Cog):
             return
         try:
             async with self.bot.pool.acquire() as connection:
+                if not await self._ensure_jury_tower_entry_requirements(ctx, connection):
+                    await self.bot.reset_cooldown(ctx)
+                    return
                 row = await connection.fetchrow(
                 """
                     SELECT level, checkpoint, cycles, prestige, seals, favor, contempt, writs, appeals,
