@@ -4696,6 +4696,39 @@ class Battles(commands.Cog):
                 user_id,
             )
 
+    async def _force_refresh_jury_scale_snapshot_for_user(
+        self,
+        ctx,
+        user_id: int,
+        allow_pets: bool,
+    ) -> bool:
+        """Rebuild and persist a Jury Tower snapshot for a specific user."""
+        try:
+            user = ctx.guild.get_member(user_id) if ctx.guild else None
+            if user is None:
+                user = self.bot.get_user(user_id)
+            if user is None:
+                try:
+                    user = await self.bot.fetch_user(user_id)
+                except Exception:
+                    return False
+
+            current_snapshot = await self.battle_factory.build_jury_tower_scale_snapshot(
+                ctx,
+                user,
+                allow_pets,
+            )
+            bracket_payload = self._jury_bracket_payload_from_snapshot(current_snapshot)
+            await self._persist_jury_scale_state(
+                user_id,
+                bracket_payload["snapshot"],
+                bracket_payload["power_score"],
+                bracket_payload["bracket_key"],
+            )
+            return True
+        except Exception:
+            return False
+
     def _format_jury_bracket(self, row, snapshot: dict[str, int] | None = None) -> str | None:
         bracket_info = self._jury_power_bracket_info_from_snapshot(snapshot) if snapshot else {}
         if not bracket_info:
@@ -5688,6 +5721,57 @@ class Battles(commands.Cog):
 
         for embed in (overview, rewards):
             await ctx.send(embed=embed)
+
+    @is_gm()
+    @jurytower.command(name="forcesnapshot", aliases=["snapshotrefresh", "refreshsnapshot"])
+    async def jurytower_force_snapshot(self, ctx):
+        """[GM only] Rebuild and persist snapshots for every user that currently has one."""
+        if not await self._ensure_jury_tower_dev_access(ctx):
+            return
+
+        async with self.bot.pool.acquire() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT id
+                FROM jurytower
+                WHERE
+                    scale_power_score > 0
+                    OR scale_attack_base > 0
+                    OR scale_hp_base > 0
+                    OR scale_defense_base > 0
+                """
+            )
+
+        if not rows:
+            return await ctx.send("No players currently have a Jury Tower snapshot to refresh.")
+
+        allow_pets = self.battle_factory.settings.get_setting(
+            "jurytower",
+            "allow_pets",
+            default=True,
+        )
+        total = 0
+        failed = []
+
+        for row in rows:
+            user_id = int(row["id"])
+            success = await self._force_refresh_jury_scale_snapshot_for_user(
+                ctx,
+                user_id,
+                allow_pets,
+            )
+            if success:
+                total += 1
+            else:
+                failed.append(user_id)
+
+        message = f"✅ Forced snapshot refresh for **{total}** user(s)."
+        if failed:
+            failed_text = ", ".join(str(user_id) for user_id in failed[:25])
+            if len(failed) > 25:
+                failed_text += ", ..."
+            message += f"\n❌ Failed for **{len(failed)}** user(s): `{failed_text}`"
+        await ctx.send(message)
 
     @is_gm()
     @has_char()
