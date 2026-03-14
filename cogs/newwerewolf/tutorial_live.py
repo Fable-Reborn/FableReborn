@@ -1130,49 +1130,11 @@ class TutorialGame(Game):
             return
 
         learner = self._learner_player()
+        for player in self.alive_players:
+            if self._is_tutorial_npc(player):
+                player.to_check_afk = False
+
         if learner is None or not learner.to_check_afk:
-            for player in self.alive_players:
-                if self._is_tutorial_npc(player):
-                    player.to_check_afk = False
             return
 
-        await self.ctx.send(
-            _(
-                "AFK check: use your DM dropdown to confirm you're still in the game"
-                " ({timer}s)."
-            ).format(timer=self.timer)
-        )
-        try:
-            await learner.send(f"AFK CHECK {learner.user.mention}!")
-            result = await self.ctx.bot.paginator.Choose(
-                entries=[_("Not AFK")],
-                return_index=True,
-                title=_("Confirm you're active to avoid an AFK strike."),
-                timeout=self.timer,
-            ).paginate(self.ctx, learner.user)
-            if result == 0:
-                learner.to_check_afk = False
-                await learner.send(_("You have been verified as not AFK."))
-                return
-        except asyncio.TimeoutError:
-            pass
-        except Exception:
-            pass
-
-        learner.to_check_afk = False
-        learner.afk_strikes += 1
-        if learner.afk_strikes >= 3:
-            await self.ctx.send(
-                _(
-                    "**{player}** has been killed by the game due to having 3 AFK"
-                    " strikes."
-                ).format(player=learner.user.mention)
-            )
-            await learner.kill()
-            return
-        await learner.send(
-            _(
-                "⚠️ **Strike {strikes}!** You were marked AFK. You'll be removed after"
-                " 3 strikes."
-            ).format(strikes=learner.afk_strikes)
-        )
+        await self.resolve_afk_checks([learner])

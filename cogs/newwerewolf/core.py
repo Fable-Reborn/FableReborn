@@ -624,6 +624,7 @@ TRACEBACK_CHUNK_SIZE = 1900
 WW_NIGHT_LOCK_CHANNEL_ID = 1458644607893246024
 WW_ALIVE_ROLE_ID = 1474617968708161618
 WW_DEAD_ROLE_ID = 1474617848071720960
+AFK_STRIKE_LIMIT = 2
 WW_DAY_ANNOUNCEMENT_IMAGE_URL = (
     "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/"
     "295173706496475136_ChatGPT_Image_Feb_24_2026_08_16_32_PM.png"
@@ -1573,6 +1574,111 @@ class EndgameIdsView(discord.ui.View):
         )
 
 
+class AfkCheckView(discord.ui.View):
+    def __init__(
+            self,
+            game: Game,
+            *,
+            role_ping: str,
+            target_player_ids: set[int],
+            timeout: float,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.game = game
+        self.role_ping = role_ping
+        self.target_player_ids = set(target_player_ids)
+        self.message: discord.Message | None = None
+        self._closed = False
+
+    def pending_players(self) -> list[Player]:
+        return [
+            player
+            for player in self.game.alive_players
+            if player.user.id in self.target_player_ids and player.to_check_afk
+        ]
+
+    def _pending_mentions(self) -> str:
+        pending_players = self.pending_players()
+        if not pending_players:
+            return _("None")
+        return ", ".join(player.user.mention for player in pending_players)
+
+    def build_message(self, *, closed: bool = False) -> str:
+        if closed:
+            pending_mentions = self._pending_mentions()
+            if pending_mentions == _("None"):
+                status = _("everyone checked in.")
+            else:
+                status = _("missed: {players}.").format(players=pending_mentions)
+            return _("{role_ping} AFK check closed: {status}").format(
+                role_ping=self.role_ping,
+                status=status,
+            )
+
+        return _(
+            "{role_ping} ⚠️ **AFK check:** any alive player in this game can press"
+            " **I'm Here**, but only listed players need to confirm. You have"
+            " {timer} seconds.\nPending: {players}"
+        ).format(
+            role_ping=self.role_ping,
+            timer=int(self.timeout or 0),
+            players=self._pending_mentions(),
+        )
+
+    async def refresh_message(self) -> None:
+        if self.message is None or self._closed:
+            return
+        try:
+            await self.message.edit(content=self.build_message(), view=self)
+        except (discord.NotFound, discord.HTTPException):
+            pass
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        for child in self.children:
+            child.disabled = True
+        if self.message is None:
+            return
+        try:
+            await self.message.edit(content=self.build_message(closed=True), view=self)
+        except (discord.NotFound, discord.HTTPException):
+            pass
+
+    @discord.ui.button(label="I'm Here", style=discord.ButtonStyle.success)
+    async def acknowledge(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        player = self.game.get_alive_player_by_user_id(interaction.user.id)
+        if player is None:
+            await interaction.response.send_message(
+                _("Only alive players in this game can use this button."),
+                ephemeral=True,
+            )
+            return
+
+        if player.user.id not in self.target_player_ids or not player.to_check_afk:
+            await interaction.response.send_message(
+                _("You're alive and already clear."),
+                ephemeral=True,
+            )
+            return
+
+        player.to_check_afk = False
+        await interaction.response.send_message(
+            _("You have been verified as not AFK."),
+            ephemeral=True,
+        )
+
+        if self.pending_players():
+            await self.refresh_message()
+            return
+
+        await self.close()
+        self.stop()
+
+
 class Game:
     def __init__(
             self,
@@ -2023,6 +2129,12 @@ class Game:
 
     def get_player_with_role(self, role: Role) -> Player | None:
         return discord.utils.get(self.alive_players, role=role)
+
+    def get_alive_player_by_user_id(self, user_id: int) -> Player | None:
+        return discord.utils.find(
+            lambda player: player.user.id == user_id and not player.dead,
+            self.players,
+        )
 
     def _set_pending_night_killer_group(
         self, target: Player | None, killer_group: str, *, overwrite: bool = False
@@ -6755,68 +6867,69 @@ class Game:
     async def handle_afk(self) -> None:
         if self.winner is not None:
             return
-        if len(self.new_afk_players) < 1:
+        afk_players = list(self.new_afk_players)
+        if len(afk_players) < 1:
+            return
+        await self.resolve_afk_checks(afk_players)
+
+    async def resolve_afk_checks(self, afk_players: list[Player]) -> None:
+        if not afk_players:
             return
 
-        await self.ctx.send(
-            _(
-                "Checking AFK players if they're still in the game... Should be done in"
-                " {timer} seconds."
-            ).format(timer=self.timer)
+        alive_role = self._get_ww_alive_role()
+        role_ping = alive_role.mention if alive_role else _("Players")
+        view = AfkCheckView(
+            self,
+            role_ping=role_ping,
+            target_player_ids={player.user.id for player in afk_players},
+            timeout=self.timer,
         )
+        view.message = await self.ctx.send(
+            view.build_message(),
+            view=view,
+            allowed_mentions=discord.AllowedMentions(
+                roles=True,
+                users=True,
+                everyone=False,
+            ),
+        )
+        await view.wait()
+        await view.close()
 
-        afk_players_to_kill = []
+        afk_players_to_kill: list[Player] = []
+        for player in afk_players:
+            if player.dead:
+                player.to_check_afk = False
+                continue
+            if not player.to_check_afk:
+                continue
 
-        async def prompt_player(player):
-            try:
-                await player.send(f"AFK CHECK {player.user.mention}!")
-                result = await self.ctx.bot.paginator.Choose(
-                    entries=["Not AFK"],
-                    return_index=True,
-                    title=("Please use the dropdown"
-                           " so I can acknowledge that you're not AFK. You have {timer}"
-                           " seconds."),
-                    timeout=self.timer,
-                ).paginate(self.ctx, player.user)
+            player.to_check_afk = False
+            player.afk_strikes += 1
+            if player.afk_strikes >= AFK_STRIKE_LIMIT:
+                afk_players_to_kill.append(player)
+                continue
 
-                # Check if the player selected "Not AFK" and send the message
-                if result == 0:  # 0 indicates "Not AFK"
-                    await player.send(_("You have been verified as not AFK."))
-                    return True  # Return True indicating the player responded
+            await self.ctx.send(
+                _(
+                    "⚠️ **Strike {strikes}/{limit}** {player} was marked AFK. Miss"
+                    " one more AFK check and you'll be removed from the game."
+                ).format(
+                    strikes=player.afk_strikes,
+                    limit=AFK_STRIKE_LIMIT,
+                    player=player.user.mention,
+                )
+            )
 
-            except self.ctx.bot.paginator.NoChoice:
-                pass  # Player didn't respond, no need to increment strikes
-
-            # If the function reaches here, it means player didn't respond
-            return False  # Return False indicating the player didn't respond
-
-        # Gather results of the prompt_player function
-        results = await asyncio.gather(*[prompt_player(player) for player in self.new_afk_players])
-
-        for player, result in zip(self.new_afk_players, results):
-            if not result:
-                # Player didn't choose anything
-                player.afk_strikes += 1
-                if player.afk_strikes >= 3:
-                    if not player.dead:
-                        await player.send(
-                            _("**Strike 3!** You will now be killed by"
-                              " the game for having 3 strikes of being AFK. Goodbye!")
-                        )
-                        afk_players_to_kill.append(player)
-                else:
-                    await player.send(
-                        _("⚠️ **Strike {strikes}!** You have been"
-                          " marked as AFK. __You'll be killed after 3 strikes.__"
-                          ).format(strikes=player.afk_strikes)
-                    )
-
-        # Kill the AFK players if needed
         for afk_player in afk_players_to_kill:
             await self.ctx.send(
-                _("**{afk_player}** has been killed by"
-                  " the game due to having 3 strikes of AFK."
-                  ).format(afk_player=afk_player.user.mention)
+                _(
+                    "**{afk_player}** has been killed by the game due to having"
+                    " {limit} AFK strikes."
+                ).format(
+                    afk_player=afk_player.user.mention,
+                    limit=AFK_STRIKE_LIMIT,
+                )
             )
             await afk_player.kill()
 
