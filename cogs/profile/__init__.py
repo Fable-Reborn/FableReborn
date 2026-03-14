@@ -611,12 +611,8 @@ class Profile(commands.Cog):
         )
         draw.text((80, 748), "Ascension", font=label_font, fill=colors["border"])
         draw.text((80, 784), clip(ascension_title, tiny_font, 286), font=tiny_font, fill=colors["muted"])
-        if jury_title:
-            draw.text((80, 816), "Court Title", font=label_font, fill=colors["border"])
-            draw.text((80, 848), clip(jury_title, tiny_font, 286), font=tiny_font, fill=colors["muted"])
-            draw.text((80, 878), f"ID {user.id}", font=tiny_font, fill=colors["muted"])
-        else:
-            draw.text((80, 852), f"ID {user.id}", font=tiny_font, fill=colors["muted"])
+
+        draw.text((80, 852), f"ID {user.id}", font=tiny_font, fill=colors["muted"])
 
         right_hand, left_hand = None, None
         any_count = sum(1 for i in items if i.get("hand") == "any")
