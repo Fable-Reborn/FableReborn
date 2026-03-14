@@ -1281,10 +1281,14 @@ class PetExtension:
             # Find the owner combatant from the team
             owner_combatant = self.find_owner_combatant(pet_combatant)
             if owner_combatant and hasattr(owner_combatant, 'hp') and hasattr(owner_combatant, 'max_hp'):
-                owner_hp_ratio = owner_combatant.hp / owner_combatant.max_hp
-                if owner_hp_ratio < Decimal(str(effects['dark_embrace']['owner_hp_threshold'])):
-                    modified_damage *= (Decimal('1') + Decimal(str(effects['dark_embrace']['damage_bonus'])))
-                    messages.append(f"{pet_combatant.name} draws power from desperation! (+50% damage)")
+                # Dead owners should not trigger desperation-based amplification.
+                if owner_combatant.hp <= 0 or owner_combatant.max_hp <= 0:
+                    pass
+                else:
+                    owner_hp_ratio = owner_combatant.hp / owner_combatant.max_hp
+                    if owner_hp_ratio < Decimal(str(effects['dark_embrace']['owner_hp_threshold'])):
+                        modified_damage *= (Decimal('1') + Decimal(str(effects['dark_embrace']['damage_bonus'])))
+                        messages.append(f"{pet_combatant.name} draws power from desperation! (+50% damage)")
             
         # Shadow Clone - duplicate attack
         if 'shadow_clone' in effects and random.randint(1, 100) <= effects['shadow_clone']['chance']:
