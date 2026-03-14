@@ -712,7 +712,7 @@ class PetExtension:
                 }
             elif "reality tear" in skill_lower:
                 pet_combatant.skill_effects['reality_tear'] = {
-                    'damage_multiplier': 2.0, 'ignore_all': True, 'type': 'void_attack'
+                    'damage_multiplier': 2.0, 'ignore_all': True, 'chance': 15, 'type': 'void_attack'
                 }
             elif "void mastery" in skill_lower:
                 pet_combatant.skill_effects['void_mastery_corrupted'] = {
@@ -1352,8 +1352,8 @@ class PetExtension:
             modified_damage *= Decimal(str(random_mult))
             messages.append(f"{pet_combatant.name}'s Chaos Strike deals {random_mult:.1f}x damage!")
             
-        # Reality Tear - ignore everything
-        if 'reality_tear' in effects:
+        # Reality Tear - ignore everything with 15% chance
+        if 'reality_tear' in effects and random.randint(1, 100) <= int(effects['reality_tear'].get('chance', 15)):
             modified_damage *= Decimal(str(effects['reality_tear']['damage_multiplier']))
             setattr(target, 'ignore_all_defenses', True)
             messages.append(f"{pet_combatant.name} tears through reality itself!")

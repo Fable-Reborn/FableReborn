@@ -556,7 +556,7 @@ class Pets(commands.Cog):
                 "Void": {
                     1: {"name": "Corrupted Affinity", "description": "+30% damage against ALL elements (no weaknesses)", "cost": 1},
                     3: {"name": "Void Sight", "description": "Can see through all illusions and stealth + 40% dodge chance", "cost": 2},
-                    5: {"name": "Reality Tear", "description": "Creates tears dealing 200% pet attack + ignoring ALL defenses", "cost": 3},
+                    5: {"name": "Reality Tear", "description": "15% chance to create tears dealing 200% pet attack + ignoring ALL defenses", "cost": 3},
                     7: {"name": "Chaos Control", "description": "Can manipulate reality: swap positions, reverse damage, etc.", "cost": 4},
                     10: {"name": "Void Lord", "description": "ULTIMATE (15-25% HP): 3x damage + 50% damage reduction + battlefield control for 3 turns + activates at low HP", "cost": 5}
                 }
