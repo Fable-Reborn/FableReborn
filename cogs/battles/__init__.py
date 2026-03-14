@@ -19,6 +19,7 @@ from .jury_tower_data import (
     build_jury_tower_data,
     JURY_BRACKET_BASE_SNAPSHOT,
     JURY_COSMETIC_TITLE,
+    _boss_reward_for_judge,
     JURY_POWER_BRACKETS,
     JURY_TOWER_FLOOR_COUNT,
     JURY_SEGMENT_LENGTH,
@@ -4460,6 +4461,19 @@ class Battles(commands.Cog):
     def _get_jury_floor_data(self, floor: int) -> dict | None:
         return self.jury_tower_data.get("floors", {}).get(str(int(floor)))
 
+    @staticmethod
+    def _jury_clear_cycle_from_row(row) -> int:
+        return int(row["cycles"] if row is not None and row["cycles"] is not None else 0) + 1
+
+    def _resolve_jury_boss_reward(self, row, floor_data: dict) -> dict | None:
+        if not floor_data or not floor_data.get("boss_floor"):
+            return None
+        if int(floor_data.get("floor", 0) or 0) != JURY_TOWER_FLOOR_COUNT:
+            return floor_data.get("boss_reward")
+        judge_index = int(floor_data.get("judge_index", 0) or 0)
+        cycle_clear_number = self._jury_clear_cycle_from_row(row)
+        return _boss_reward_for_judge(judge_index, cycle_clear_number)
+
     def _jury_seal_count(self, seals: int) -> int:
         return int(int(seals or 0)).bit_count()
 
@@ -5125,7 +5139,7 @@ class Battles(commands.Cog):
             snapshot=scale_snapshot,
         )
         reward_lines = [f"{JURY_CURRENCY_LABEL} on Clear: **+{floor_scaled_writs}**"]
-        boss_reward = floor_data.get("boss_reward") or {}
+        boss_reward = self._resolve_jury_boss_reward(row, floor_data) if floor_data.get("boss_floor") else {}
         if boss_reward:
             base_checkpoint_writs = int(boss_reward.get("writs", 0) or 0)
             scaled_checkpoint_writs = self._apply_jury_writ_multiplier(
@@ -5146,7 +5160,7 @@ class Battles(commands.Cog):
 
     async def _handle_jury_victory(self, ctx, floor: int, floor_data: dict, battle):
         verdict = battle.verdict_result or {"favor": 0, "contempt": 0, "writs": floor_data.get("writs_reward", 0), "notes": []}
-        boss_reward = floor_data.get("boss_reward") if floor_data.get("boss_floor") else None
+        boss_reward = None
         verdict_name, verdict_color = self._jury_verdict_label(verdict["favor"], verdict["contempt"])
 
         async with self.bot.pool.acquire() as connection:
@@ -5166,6 +5180,10 @@ class Battles(commands.Cog):
             )
             if not row:
                 return await ctx.send("Your Jury Tower record could not be found.")
+            if floor_data.get("boss_floor"):
+                boss_reward = self._resolve_jury_boss_reward(row, floor_data)
+                if not boss_reward:
+                    boss_reward = floor_data.get("boss_reward")
 
             new_level = min(floor + 1, JURY_TOWER_FLOOR_COUNT + 1)
             current_prestige = int(row["prestige"] or 0)

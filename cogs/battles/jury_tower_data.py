@@ -204,18 +204,22 @@ JURY_JUDGE_SCALE_BIASES = {
 }
 
 
-def _boss_reward_for_judge(judge_index: int) -> dict:
-    crate_cycle = ("common", "uncommon", "rare", "rare", "magic", "fortune", "legendary")
+def _boss_reward_for_judge(judge_index: int, clear_cycle: int) -> dict:
+    crate_cycle = ("common", "uncommon", "rare", "materials", "magic", "fortune", "legendary")
     money_base = (12000, 18000, 25000, 35000, 45000, 65000, 90000)
     writs_base = (24, 30, 38, 48, 60, 75, 100)
+    clear_number = max(1, int(clear_cycle))
+    is_reset_turn = (clear_number % 2 == 1)
     return {
-        "crate_type": crate_cycle[judge_index],
+        "crate_type": crate_cycle[judge_index] if is_reset_turn else "fortune",
         "money": money_base[judge_index],
         "appeals": 1,
         "writs": writs_base[judge_index],
         "reset_fragment": 1 if judge_index in {1, 3, 5} else 0,
-        "reset_potion": 1 if judge_index == len(JUDGES) - 1 else 0,
+        "reset_potion": 1 if is_reset_turn else 0,
     }
+
+
 def _build_enemy_scale_profile(
     judge: JudgeDefinition,
     judge_index: int,
@@ -716,7 +720,7 @@ def build_jury_tower_data() -> dict:
                 "checkpoint": checkpoint,
                 "boss_floor": boss_floor,
                 "writs_reward": reward_writs,
-                "boss_reward": _boss_reward_for_judge(judge_index) if boss_floor else None,
+                "boss_reward": None,
                 "enemy_names": names,
                 **story,
                 "enemies": [
@@ -740,6 +744,11 @@ def build_jury_tower_data() -> dict:
                     },
                 ],
             }
+            if boss_floor:
+                boss_reward = _boss_reward_for_judge(judge_index, 1)
+                if floor != JURY_TOWER_FLOOR_COUNT:
+                    boss_reward["reset_potion"] = 0
+                floors[str(floor)]["boss_reward"] = boss_reward
 
     return {
         "floor_count": JURY_TOWER_FLOOR_COUNT,
