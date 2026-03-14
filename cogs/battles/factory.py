@@ -31,18 +31,7 @@ class BattleFactory:
     PVE_GOD_ENCOUNTER_LEVEL = 100
     PVE_PER_LEVEL_STAT_SCALE = Decimal("0.02")
     PVE_LEGENDARY_SPAWN_CHANCE = 0.01
-    JURY_ATTACK_PET_WEIGHT = Decimal("0.45")
-    JURY_HP_PET_WEIGHT = Decimal("0.35")
-    JURY_DEFENSE_PLAYER_WEIGHT = Decimal("0.60")
-    JURY_DEFENSE_PET_WEIGHT = Decimal("0.40")
-    JURY_ATTACK_PLAYER_GUARDRAIL_WEIGHT = Decimal("1.15")
-    JURY_ATTACK_PET_GUARDRAIL_WEIGHT = Decimal("0.55")
-    JURY_ATTACK_PET_MIN_WEIGHT = Decimal("0.65")
-    JURY_HP_PET_GUARDRAIL_WEIGHT = Decimal("0.40")
-    JURY_HP_PET_MIN_WEIGHT = Decimal("0.50")
-    JURY_DEFENSE_PLAYER_GUARDRAIL_WEIGHT = Decimal("0.70")
-    JURY_DEFENSE_PET_GUARDRAIL_WEIGHT = Decimal("0.45")
-    JURY_DEFENSE_PET_MIN_WEIGHT = Decimal("0.55")
+    JURY_SECONDARY_COMBATANT_SCALE_WEIGHT = Decimal("0.30")
     JURY_PRESTIGE_ATTACK_DEFENSE_STEP = Decimal("0.02")
     JURY_PRESTIGE_HP_STEP = Decimal("0.04")
     
@@ -172,36 +161,27 @@ class BattleFactory:
         hp_base = player_hp
         defense_base = player_defense
         if pet_combatant:
-            weighted_attack_base = player_attack + (pet_attack * self.JURY_ATTACK_PET_WEIGHT)
-            weighted_hp_base = player_hp + (pet_hp * self.JURY_HP_PET_WEIGHT)
-            weighted_defense_base = (
-                (player_defense * self.JURY_DEFENSE_PLAYER_WEIGHT)
-                + (pet_defense * self.JURY_DEFENSE_PET_WEIGHT)
-            )
-            # Keep strong pets from enabling a weak first-entry snapshot via stripped player gear.
-            attack_base = max(
-                weighted_attack_base,
-                (player_attack * self.JURY_ATTACK_PLAYER_GUARDRAIL_WEIGHT)
-                + (pet_attack * self.JURY_ATTACK_PET_GUARDRAIL_WEIGHT),
-                pet_attack * self.JURY_ATTACK_PET_MIN_WEIGHT,
-            )
-            hp_base = max(
-                weighted_hp_base,
-                player_hp + (pet_hp * self.JURY_HP_PET_GUARDRAIL_WEIGHT),
-                pet_hp * self.JURY_HP_PET_MIN_WEIGHT,
-            )
-            defense_base = max(
-                weighted_defense_base,
-                (player_defense * self.JURY_DEFENSE_PLAYER_GUARDRAIL_WEIGHT)
-                + (pet_defense * self.JURY_DEFENSE_PET_GUARDRAIL_WEIGHT),
-                pet_defense * self.JURY_DEFENSE_PET_MIN_WEIGHT,
-            )
+            attack_base = self._build_jury_scale_stat_base(player_attack, pet_attack)
+            hp_base = self._build_jury_scale_stat_base(player_hp, pet_hp)
+            defense_base = self._build_jury_scale_stat_base(player_defense, pet_defense)
 
         return {
             "attack_base": max(1, int(round(float(attack_base)))),
             "hp_base": max(1, int(round(float(hp_base)))),
             "defense_base": max(1, int(round(float(defense_base)))),
         }
+
+    def _build_jury_scale_stat_base(self, player_value: Decimal, pet_value: Decimal) -> Decimal:
+        stronger_value = max(player_value, pet_value)
+        weaker_value = min(player_value, pet_value)
+        if stronger_value <= 0:
+            return Decimal("0")
+
+        # Jury Tower difficulty should follow whichever combatant is actually carrying
+        # the run while still crediting some support power from the other slot.
+        return stronger_value + (
+            weaker_value * self.JURY_SECONDARY_COMBATANT_SCALE_WEIGHT
+        )
 
     async def build_jury_tower_scale_snapshot(self, ctx, player, allow_pets):
         player_combatant = await self.create_player_combatant(ctx, player, include_pet=allow_pets)
