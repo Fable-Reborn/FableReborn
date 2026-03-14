@@ -197,6 +197,10 @@ class JuryTowerBattle(TowerBattle):
                 self.choice_summary = f"Oath: **{label}**. {summary_tail or 'Your guard weakens, but every counterstroke matters.'}"
             else:
                 pet_found = False
+                for combatant in self._alive_players():
+                    combatant.max_hp *= Decimal("0.94")
+                    if combatant.hp > combatant.max_hp:
+                        combatant.hp = combatant.max_hp
                 for combatant in self.player_team.combatants:
                     if combatant.is_pet:
                         pet_found = True
@@ -204,8 +208,12 @@ class JuryTowerBattle(TowerBattle):
                         combatant.max_hp *= Decimal("1.15")
                         combatant.hp = min(combatant.hp, combatant.max_hp)
                 if not pet_found:
+                    for combatant in self._alive_players():
+                        combatant.armor *= Decimal("0.95")
                     self._modify_player_damage(Decimal("1.08"))
-                    self._modify_player_armor(Decimal("1.05"))
+                else:
+                    for combatant in self._alive_players():
+                        combatant.armor *= Decimal("0.90")
                 self.choice_summary = f"Oath: **{label}**. {summary_tail or 'Your companion becomes part of the climb.'}"
 
         elif self.trial_type == "balance":

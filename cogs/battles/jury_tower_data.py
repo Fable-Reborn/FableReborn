@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import random
 
 
 JURY_TOWER_FLOOR_COUNT = 77
 JURY_SEGMENT_LENGTH = 11
-JURY_COSMETIC_TITLE = "Favored by the Seven"
+JURY_COSMETIC_TITLE = "Favored by the Iron Coven"
 
 
 @dataclass(frozen=True)
@@ -26,92 +27,92 @@ class JudgeDefinition:
 JUDGES: tuple[JudgeDefinition, ...] = (
     JudgeDefinition(
         key="mercy",
-        judge_name="Morvane",
-        title="Iron Mercy",
-        element="Light",
+        judge_name="Thane Blackmaul",
+        title="Mercy Hammer",
+        element="Dark",
         color=0xD7C178,
-        chamber_prefix="Hall of Kneeling Iron",
-        minion_one=("Kneeling Reaver", "Ashen Supplicant", "Chainbound Penitent"),
-        minion_two=("Lantern Warden", "Iron Confessor", "Mercy Hound"),
-        bosses=("Pardon Knight", "Halcyon the Absolver", "Morvane's Headsman"),
+        chamber_prefix="Anvil Hall of Obedience",
+        minion_one=("Kneeling Ironborn", "Ashen Penitent", "Chainbound Squire"),
+        minion_two=("Lantern-Helmed Reaver", "Oathbound Ward", "Mercy Hound"),
+        bosses=("The Gilded Pardoner", "The Iron Warden", "Thane's Headsman"),
         trial_type="mercy",
         intro_line="Mercy only matters when it costs you the kill.",
     ),
     JudgeDefinition(
         key="truth",
-        judge_name="Sevrak",
-        title="Veiled Truth",
+        judge_name="Duskwarden Vehl",
+        title="Veil of Deceit",
         element="Wind",
         color=0x70B4E4,
-        chamber_prefix="Crypt of Echoes",
-        minion_one=("Masked Liar", "Tongueless Herald", "Rune-Scar Witness"),
-        minion_two=("Ash Scribe", "Blind Archivist", "Grave Listener"),
-        bosses=("The Perjurer", "Null Archivist", "Sevrak's Inquisitor"),
+        chamber_prefix="Crypt of Broken Helms",
+        minion_one=("Silent Liar", "Tongue-Split Herald", "Rune-Scar Oracle"),
+        minion_two=("Ash Scribe", "Blind Warden", "Grave Listener"),
+        bosses=("The Perjurer", "Null Inquisitor", "Vehl's Mouthpiece"),
         trial_type="truth",
         intro_line="Truth survives the blade, not the rumor.",
     ),
     JudgeDefinition(
         key="resolve",
-        judge_name="Varkhul",
+        judge_name="Kharvul Stonegrip",
         title="Black Bastion",
         element="Earth",
         color=0x9C8F73,
-        chamber_prefix="Gate of Endurance",
-        minion_one=("Stonebound Guard", "Siege Hound", "Unbroken Halberd"),
-        minion_two=("Iron Sentinel", "Gravelord Veteran", "Oath Pike"),
-        bosses=("The Wall That Walks", "Citadel Reaver", "Varkhul the Unmoved"),
+        chamber_prefix="Gate of the Iron Bastion",
+        minion_one=("Stonebound Sentinel", "Siege Hound", "Unbroken Halberd"),
+        minion_two=("Iron Guardian", "Gravelord Veteran", "Oath Pike"),
+        bosses=("The Wall That Walks", "Citadel Reaver", "Kharvul the Unmoved"),
         trial_type="resolve",
         intro_line="If you cannot endure, you do not advance.",
     ),
     JudgeDefinition(
         key="sacrifice",
-        judge_name="Caldris",
+        judge_name="Caldrun the Furnace",
         title="Pyre Tithe",
         element="Fire",
         color=0xD96B39,
         chamber_prefix="Forge of Ashen Oaths",
-        minion_one=("Ember Penitent", "Brand Knight", "Ash Forgebearer"),
+        minion_one=("Ember Penitent", "Brand Reaver", "Ash Forgebearer"),
         minion_two=("Cinder Collector", "Scorch Warden", "Oath Furnace"),
-        bosses=("The Tithe Engine", "High Forger Calvein", "Caldris the Furnace"),
+        bosses=("The Tithe Engine", "High Forger Calvein", "Caldrun the Furnace"),
         trial_type="sacrifice",
         intro_line="Nothing passes the forge unpaid.",
     ),
     JudgeDefinition(
         key="balance",
-        judge_name="Meridrax",
+        judge_name="Meridor Ironchain",
         title="Chain Balance",
         element="Water",
         color=0x5EA8D1,
-        chamber_prefix="Dais of Hanging Chains",
+        chamber_prefix="Dais of the Hanging Chain",
         minion_one=("Chainbearer", "Counterweight Spear", "Measured Reaver"),
         minion_two=("Scale Knight", "Weight Warden", "Mirror Shield"),
-        bosses=("Twin-Pan Executioner", "The Counterpoise", "Meridrax the Leveler"),
+        bosses=("Twin-Pan Executioner", "The Counterpoise", "Meridor the Leveler"),
         trial_type="balance",
         intro_line="A wild swing is just a confession.",
     ),
     JudgeDefinition(
         key="ambition",
-        judge_name="Mordane",
+        judge_name="Mordrake the Uncrowned",
         title="Crown Hunger",
         element="Dark",
         color=0x9655B6,
         chamber_prefix="Throne of Want",
         minion_one=("Laureled Reaver", "Crown-Thief", "Gilded Hound"),
         minion_two=("Vault Breaker", "Glory Collector", "Throne Climber"),
-        bosses=("The Climbing King", "Vault Tyrant", "Mordane the Unfilled"),
+        bosses=("The Climbing King", "Vault Tyrant", "Mordrake the Unfilled"),
         trial_type="ambition",
         intro_line="Hunger makes the strong faster and the foolish blind.",
     ),
     JudgeDefinition(
         key="sentence",
-        judge_name="Septimus",
+        judge_name="Urgrin Blackmaul",
         title="Final Sentence",
         element="Corrupted",
         color=0xC0392B,
         chamber_prefix="Seat of the Black Maul",
         minion_one=("Red Herald", "Sentence Hound", "Gallows Warden"),
         minion_two=("Doom Herald", "Black Jury", "Maul Revenant"),
-        bosses=("The Black Jury", "Execution Prime", "High Judge Septimus"),
+        bosses=("The Black Jury", "Execution Prime", "Urgrin the Final"),
         trial_type="sentence",
         intro_line="Every choice returns to the maul.",
     ),
@@ -125,16 +126,16 @@ JURY_BRACKET_BASE_SNAPSHOT = {
     "defense_base": 2200,
 }
 JURY_POWER_BRACKETS = (
-    {"key": "court_tier_i", "label": "Iron Rank I", "max_score": 6500, "multiplier": 0.78, "writ_multiplier": 1.00},
-    {"key": "court_tier_ii", "label": "Iron Rank II", "max_score": 7800, "multiplier": 0.92, "writ_multiplier": 1.15},
-    {"key": "court_tier_iii", "label": "Iron Rank III", "max_score": 9200, "multiplier": 1.06, "writ_multiplier": 1.30},
-    {"key": "court_tier_iv", "label": "Iron Rank IV", "max_score": 10800, "multiplier": 1.20, "writ_multiplier": 1.45},
-    {"key": "court_tier_v", "label": "Iron Rank V", "max_score": 12600, "multiplier": 1.36, "writ_multiplier": 1.60},
-    {"key": "court_tier_vi", "label": "Iron Rank VI", "max_score": 14600, "multiplier": 1.54, "writ_multiplier": 1.80},
-    {"key": "court_tier_vii", "label": "Iron Rank VII", "max_score": 16800, "multiplier": 1.74, "writ_multiplier": 2.00},
-    {"key": "court_tier_viii", "label": "Iron Rank VIII", "max_score": 19200, "multiplier": 1.88, "writ_multiplier": 2.15},
-    {"key": "court_tier_ix", "label": "Iron Rank IX", "max_score": 21800, "multiplier": 2.02, "writ_multiplier": 2.30},
-    {"key": "court_tier_x", "label": "Iron Rank X", "max_score": None, "multiplier": 2.18, "writ_multiplier": 2.50},
+    {"key": "court_tier_i", "label": "Maul Ring I", "max_score": 6500, "multiplier": 0.78, "writ_multiplier": 1.00},
+    {"key": "court_tier_ii", "label": "Maul Ring II", "max_score": 7800, "multiplier": 0.92, "writ_multiplier": 1.15},
+    {"key": "court_tier_iii", "label": "Maul Ring III", "max_score": 9200, "multiplier": 1.06, "writ_multiplier": 1.30},
+    {"key": "court_tier_iv", "label": "Maul Ring IV", "max_score": 10800, "multiplier": 1.20, "writ_multiplier": 1.45},
+    {"key": "court_tier_v", "label": "Maul Ring V", "max_score": 12600, "multiplier": 1.36, "writ_multiplier": 1.60},
+    {"key": "court_tier_vi", "label": "Maul Ring VI", "max_score": 14600, "multiplier": 1.54, "writ_multiplier": 1.80},
+    {"key": "court_tier_vii", "label": "Maul Ring VII", "max_score": 16800, "multiplier": 1.74, "writ_multiplier": 2.00},
+    {"key": "court_tier_viii", "label": "Maul Ring VIII", "max_score": 19200, "multiplier": 1.88, "writ_multiplier": 2.15},
+    {"key": "court_tier_ix", "label": "Maul Ring IX", "max_score": 21800, "multiplier": 2.02, "writ_multiplier": 2.30},
+    {"key": "court_tier_x", "label": "Maul Ring X", "max_score": None, "multiplier": 2.18, "writ_multiplier": 2.50},
 )
 JURY_JUDGE_BASE_SCALES = (0.68, 0.78, 0.88, 0.98, 1.08, 1.18, 1.28)
 JURY_ROLE_SCALE_TEMPLATES = {
@@ -265,8 +266,9 @@ def _build_choice(judge: JudgeDefinition, local_floor: int, names: dict[str, str
         }
 
     if judge.trial_type == "truth":
-        liar_target = ("minion1", "minion2", "boss")[floor % 3]
-        witness_target = ("minion2", "boss", "minion1")[floor % 3]
+        role_options = ("minion1", "minion2", "boss")
+        liar_target = random.choice(role_options)
+        witness_target = random.choice([role for role in role_options if role != liar_target])
         options = [
             {
                 "key": target_key,
@@ -335,7 +337,7 @@ def _build_choice(judge: JudgeDefinition, local_floor: int, names: dict[str, str
                     "key": "beast",
                     "label": "Beast Oath",
                     "description": "Bind the oath to fang and instinct.",
-                    "effect": "Pet: +25% damage and +15% max HP. No pet: lighter solo damage/armor bonus.",
+                    "effect": "Pet: +25% damage and +15% max HP. No pet: +8% damage and +5% armor. All climbers lose 10% armor and 6% max HP.",
                     "quote": "Trust the beast beside you more than the fear behind you.",
                 },
             ],
@@ -506,16 +508,16 @@ def _build_story_fields(judge: JudgeDefinition, local_floor: int, names: dict[st
             f"The hall wants you cruel or naive. Nothing between.",
         )
         charges = f"{names['boss']} commands the kneeling dead and turns hesitation into a trap."
-        commentary = "Morvane does not reward softness. Only control."
+        commentary = "Thane Blackmaul does not reward softness. Only control."
         victory = (
             "The hall expected slaughter. It got discipline.",
             "The false kneelers fall and the iron lamps burn colder.",
             "Mercy survives deeper into the climb than the hall wanted.",
-            "Morvane lowers the blade. 'Mercy with teeth. Good.'",
+            "Thane Blackmaul lowers the blade. 'Mercy with teeth. Good.'",
         )
     elif judge.key == "truth":
         summaries = (
-            "Sevrak floods the crypt with masks, lies, and one truth worth carrying out alive.",
+            "Duskwarden Vehl floods the crypt with masks, lies, and one truth worth carrying out alive.",
             "A wrong mark feeds the liar. A dead witness feeds the dark.",
             "The deeper vaults echo with half-truths strong enough to kill the careless.",
             "By the end, the truth is visible. Keeping it alive is the hard part.",
@@ -527,12 +529,12 @@ def _build_story_fields(judge: JudgeDefinition, local_floor: int, names: dict[st
             f"The crypt echoes with voices that should not agree this well.",
         )
         charges = f"{names['boss']} buries truth beneath masks and dares you to pick wrong."
-        commentary = "Sevrak never shouts. The crypt does the work for him."
+        commentary = "Vehl never shouts. The crypt does the work for him."
         victory = (
             "The lie breaks first, then the room around it.",
             "A surviving witness slips into the dark with the truth intact.",
             "The echoing lies start tearing each other apart.",
-            "Sevrak closes his helm. 'You kept the truth alive. Rare.'",
+            "Vehl closes his helm. 'You kept the truth alive. Rare.'",
         )
     elif judge.key == "resolve":
         summaries = (
@@ -620,7 +622,7 @@ def _build_story_fields(judge: JudgeDefinition, local_floor: int, names: dict[st
         )
     else:
         summaries = (
-            "Septimus drags every prior law back into the room with you.",
+            "Urgrin drags every prior law back into the room with you.",
             "Mercy, lies, hunger, endurance, and sacrifice start colliding.",
             "The inner vault stops testing one thing at a time. It tests whether you were ever consistent.",
             "The final reckoning is the whole climb swinging back at once.",
@@ -632,7 +634,7 @@ def _build_story_fields(judge: JudgeDefinition, local_floor: int, names: dict[st
             f"{names['boss']} lifts the maul and the tower goes dead silent.",
         )
         charges = f"{names['boss']} means to break you with the weight of your own climb."
-        commentary = "Septimus does not care what you claimed. Only what held."
+        commentary = "Urgrin does not care what you claimed. Only what held."
         victory = (
             "The black hall hears your answer and sharpens around it.",
             "Your contradictions begin to die before you do.",

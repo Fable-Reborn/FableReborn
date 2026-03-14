@@ -6307,7 +6307,7 @@ class Battles(commands.Cog):
     @is_gm()
     @has_char()
     @jurytower.command(name="fight", aliases=["begin"])
-    @user_cooldown(180)
+    @user_cooldown(1800)
     async def jurytower_fight(self, ctx):
         if not await self._ensure_jury_tower_dev_access(ctx):
             await self.bot.reset_cooldown(ctx)
