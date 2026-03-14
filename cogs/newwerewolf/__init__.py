@@ -3836,6 +3836,71 @@ class NewWerewolf(commands.Cog):
                     )
 
     @newwerewolf.command(
+        name="gameroles",
+        aliases=["dumproles", "roledump"],
+        brief=_("GM-only: DM the active game roster with roles"),
+        hidden=True,
+    )
+    @locale_doc
+    async def gameroles(self, ctx, channel: discord.TextChannel = None):
+        _(
+            """GM-only: DM the active NewWerewolf roster with current roles.
+
+            `[channel]` - Optional channel to inspect, defaults to the current channel
+
+            `{prefix}nww gameroles`
+            `{prefix}nww gameroles #werewolf-channel`
+            """
+        )
+        if not await self._is_gm_user(ctx.author.id):
+            return await ctx.send(_("This command is for GMs only."))
+
+        target_channel = channel or ctx.channel
+        game = self.games.get(target_channel.id)
+        if game is None:
+            return await ctx.send(
+                _("No active NWW game in {channel} on this process.").format(
+                    channel=target_channel.mention
+                )
+            )
+        if game == "forming":
+            return await ctx.send(
+                _("The NWW lobby in {channel} is still forming.").format(
+                    channel=target_channel.mention
+                )
+            )
+        if any(player.user.id == ctx.author.id for player in game.players):
+            return await ctx.send(
+                _(
+                    "You can't use this command while you're in the target NWW game."
+                )
+            )
+
+        lines = [
+            f"{'DEAD' if player.dead else 'ALIVE'} | {player.user} ({player.user.id}) -> {player.role_name}"
+            for player in game.players
+        ]
+        if not lines:
+            return await ctx.send(_("That NWW game has no players to report."))
+
+        chunks = self._chunk_lines(lines, max_chars=1800)
+        try:
+            for chunk in chunks:
+                await ctx.author.send(f"```txt\n{chunk}\n```")
+        except discord.Forbidden:
+            return await ctx.send(
+                _("I couldn't DM you the NWW role dump, {author}.").format(
+                    author=ctx.author.mention
+                )
+            )
+
+        return await ctx.send(
+            _(
+                "Sent {entries} role entries to your DMs in {messages} message(s)."
+            ).format(entries=len(lines), messages=len(chunks))
+        )
+
+    @newwerewolf.command(
         name="progress",
         aliases=["xp", "levels"],
         brief=_("View role XP and advanced unlock progress"),
