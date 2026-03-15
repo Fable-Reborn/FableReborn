@@ -126,15 +126,15 @@ JURY_BRACKET_BASE_SNAPSHOT = {
     "defense_base": 2200,
 }
 JURY_POWER_BRACKETS = (
-    {"key": "court_tier_i", "label": "Maul Ring I", "max_score": 6500, "multiplier": 0.78, "writ_multiplier": 1.00},
-    {"key": "court_tier_ii", "label": "Maul Ring II", "max_score": 7800, "multiplier": 0.92, "writ_multiplier": 1.15},
-    {"key": "court_tier_iii", "label": "Maul Ring III", "max_score": 9200, "multiplier": 1.06, "writ_multiplier": 1.30},
-    {"key": "court_tier_iv", "label": "Maul Ring IV", "max_score": 10800, "multiplier": 1.20, "writ_multiplier": 1.45},
-    {"key": "court_tier_v", "label": "Maul Ring V", "max_score": 12600, "multiplier": 1.36, "writ_multiplier": 1.60},
-    {"key": "court_tier_vi", "label": "Maul Ring VI", "max_score": 14600, "multiplier": 1.54, "writ_multiplier": 1.80},
-    {"key": "court_tier_vii", "label": "Maul Ring VII", "max_score": 16800, "multiplier": 1.74, "writ_multiplier": 2.00},
-    {"key": "court_tier_viii", "label": "Maul Ring VIII", "max_score": 19200, "multiplier": 1.88, "writ_multiplier": 2.15},
-    {"key": "court_tier_ix", "label": "Maul Ring IX", "max_score": 21800, "multiplier": 2.02, "writ_multiplier": 2.30},
+    {"key": "court_tier_i", "label": "Maul Ring I", "max_score": 2000, "multiplier": 0.78, "writ_multiplier": 1.00},
+    {"key": "court_tier_ii", "label": "Maul Ring II", "max_score": 4000, "multiplier": 0.92, "writ_multiplier": 1.15},
+    {"key": "court_tier_iii", "label": "Maul Ring III", "max_score": 6000, "multiplier": 1.06, "writ_multiplier": 1.30},
+    {"key": "court_tier_iv", "label": "Maul Ring IV", "max_score": 8000, "multiplier": 1.20, "writ_multiplier": 1.45},
+    {"key": "court_tier_v", "label": "Maul Ring V", "max_score": 10000, "multiplier": 1.36, "writ_multiplier": 1.60},
+    {"key": "court_tier_vi", "label": "Maul Ring VI", "max_score": 12000, "multiplier": 1.54, "writ_multiplier": 1.80},
+    {"key": "court_tier_vii", "label": "Maul Ring VII", "max_score": 14000, "multiplier": 1.74, "writ_multiplier": 2.00},
+    {"key": "court_tier_viii", "label": "Maul Ring VIII", "max_score": 16000, "multiplier": 1.88, "writ_multiplier": 2.15},
+    {"key": "court_tier_ix", "label": "Maul Ring IX", "max_score": 18000, "multiplier": 2.02, "writ_multiplier": 2.30},
     {"key": "court_tier_x", "label": "Maul Ring X", "max_score": None, "multiplier": 2.18, "writ_multiplier": 2.50},
 )
 JURY_JUDGE_BASE_SCALES = (0.68, 0.78, 0.88, 0.98, 1.08, 1.18, 1.28)

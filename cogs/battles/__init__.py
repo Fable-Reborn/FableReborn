@@ -4590,8 +4590,8 @@ class Battles(commands.Cog):
         defense_base = Decimal(str(int(snapshot.get("defense_base", 0) or 0)))
         if attack_base <= 0 and hp_base <= 0 and defense_base <= 0:
             return Decimal("0")
-        # HP contributes less than full base power, but more than before.
-        return attack_base + defense_base + (hp_base * Decimal("0.5"))
+        # HP contributes less than full base power to tighten score progression.
+        return attack_base + defense_base + (hp_base * Decimal("0.4"))
 
     def _jury_power_bracket_for_score(self, power_score: Decimal | int | float) -> dict:
         normalized_score = Decimal(str(power_score or 0))
@@ -5841,7 +5841,7 @@ class Battles(commands.Cog):
         attack_base = Decimal(str(snapshot.get("attack_base", 0) or 0))
         hp_base = Decimal(str(snapshot.get("hp_base", 0) or 0))
         defense_base = Decimal(str(snapshot.get("defense_base", 0) or 0))
-        hp_weight = Decimal("0.5")
+        hp_weight = Decimal("0.4")
         weighted_hp = hp_base * hp_weight
         total_score = attack_base + defense_base + weighted_hp
         bracket_payload = self._jury_bracket_payload_from_score(score)
@@ -5871,7 +5871,7 @@ class Battles(commands.Cog):
             name="Weighted Breakdown",
             value=(
                 f"Attack Contribution: **{attack_base:.1f}**\n"
-                f"HP Contribution (50%): **{weighted_hp:.1f}**\n"
+                f"HP Contribution (40%): **{weighted_hp:.1f}**\n"
                 f"Defense Contribution: **{defense_base:.1f}**\n"
                 f"Total Score: **{total_score:.1f}**"
             ),
