@@ -4590,9 +4590,8 @@ class Battles(commands.Cog):
         defense_base = Decimal(str(int(snapshot.get("defense_base", 0) or 0)))
         if attack_base <= 0 and hp_base <= 0 and defense_base <= 0:
             return Decimal("0")
-        # HP is weighted lower so a tanky swap does not automatically outrank a
-        # more dangerous overall build, while still counting as meaningful power.
-        return attack_base + defense_base + (hp_base * Decimal("0.20"))
+        # HP contributes less than full base power, but more than before.
+        return attack_base + defense_base + (hp_base * Decimal("0.5"))
 
     def _jury_power_bracket_for_score(self, power_score: Decimal | int | float) -> dict:
         normalized_score = Decimal(str(power_score or 0))
