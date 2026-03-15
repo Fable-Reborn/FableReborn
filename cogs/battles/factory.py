@@ -31,7 +31,8 @@ class BattleFactory:
     PVE_GOD_ENCOUNTER_LEVEL = 100
     PVE_PER_LEVEL_STAT_SCALE = Decimal("0.02")
     PVE_LEGENDARY_SPAWN_CHANCE = 0.01
-    JURY_SECONDARY_COMBATANT_SCALE_WEIGHT = Decimal("0.30")
+    JURY_PRIMARY_COMBATANT_SCALE_WEIGHT = Decimal("0.40")
+    JURY_SECONDARY_COMBATANT_SCALE_WEIGHT = Decimal("0.60")
     JURY_PRESTIGE_ATTACK_DEFENSE_STEP = Decimal("0.02")
     JURY_PRESTIGE_HP_STEP = Decimal("0.04")
     
@@ -177,10 +178,11 @@ class BattleFactory:
         if stronger_value <= 0:
             return Decimal("0")
 
-        # Jury Tower difficulty should follow whichever combatant is actually carrying
-        # the run while still crediting some support power from the other slot.
-        return stronger_value + (
-            weaker_value * self.JURY_SECONDARY_COMBATANT_SCALE_WEIGHT
+        # Jury Tower difficulty should balance both combatants, weighting the weaker
+        # slot 60% while still giving 40% credit to the stronger slot.
+        return (
+            (stronger_value * self.JURY_PRIMARY_COMBATANT_SCALE_WEIGHT)
+            + (weaker_value * self.JURY_SECONDARY_COMBATANT_SCALE_WEIGHT)
         )
 
     async def build_jury_tower_scale_snapshot(self, ctx, player, allow_pets):
