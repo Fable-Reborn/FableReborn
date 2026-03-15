@@ -5888,6 +5888,66 @@ class Battles(commands.Cog):
         )
         await ctx.send(embed=embed)
 
+    @jurytower.command(name="setscore", hidden=True, aliases=["editjuryscore", "forcescore"])
+    async def jurytower_set_score(self, ctx, target: discord.Member, attack_base: int, hp_base: int, defense_base: int):
+        """[Owner only] Set a player's Jury Tower raw score components and persist bracket state."""
+        if ctx.author.id != 295173706496475136:
+            return await ctx.send("Only the game owner can run this command.")
+
+        attack_base = max(0, int(attack_base or 0))
+        hp_base = max(0, int(hp_base or 0))
+        defense_base = max(0, int(defense_base or 0))
+        if attack_base == 0 and hp_base == 0 and defense_base == 0:
+            return await ctx.send("At least one component must be greater than zero.")
+
+        snapshot = {
+            "attack_base": attack_base,
+            "hp_base": hp_base,
+            "defense_base": defense_base,
+        }
+        bracket_payload = self._jury_bracket_payload_from_snapshot(snapshot)
+
+        async with self.bot.pool.acquire() as connection:
+            await connection.execute(
+                """
+                INSERT INTO jurytower (
+                    id,
+                    scale_attack_base,
+                    scale_hp_base,
+                    scale_defense_base,
+                    scale_power_score,
+                    scale_bracket
+                ) VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (id) DO UPDATE SET
+                    scale_attack_base = EXCLUDED.scale_attack_base,
+                    scale_hp_base = EXCLUDED.scale_hp_base,
+                    scale_defense_base = EXCLUDED.scale_defense_base,
+                    scale_power_score = EXCLUDED.scale_power_score,
+                    scale_bracket = EXCLUDED.scale_bracket
+                """,
+                target.id,
+                snapshot["attack_base"],
+                snapshot["hp_base"],
+                snapshot["defense_base"],
+                bracket_payload["power_score"],
+                bracket_payload["bracket_key"],
+            )
+
+        weighted_hp = Decimal(str(snapshot["hp_base"])) * Decimal("0.4")
+        total_score = (
+            Decimal(str(snapshot["attack_base"]))
+            + Decimal(str(snapshot["defense_base"]))
+            + weighted_hp
+        )
+        await ctx.send(
+            f"Updated {target.mention} Jury Tower score snapshot.\n"
+            f"Attack: **{snapshot['attack_base']}**\n"
+            f"HP: **{snapshot['hp_base']}**\n"
+            f"Defense: **{snapshot['defense_base']}**\n"
+            f"Weighted score: **{total_score:.1f}**\n"
+            f"Rank: **{bracket_payload['bracket_label']}**"
+        )
+
     @is_gm()
     @has_char()
     @jurytower.command(name="start")
