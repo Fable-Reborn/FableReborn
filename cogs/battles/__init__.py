@@ -5791,6 +5791,104 @@ class Battles(commands.Cog):
         await ctx.send(message)
 
     @is_gm()
+    @jurytower.command(name="score", aliases=["scoresnapshot", "scoredetail"])
+    async def jurytower_score(self, ctx, target: discord.Member):
+        """[GM only] Calculate a target user's current Jury Tower score and show a breakdown."""
+        if not await self._ensure_jury_tower_dev_access(ctx):
+            return
+
+        allow_pets = self.battle_factory.settings.get_setting(
+            "jurytower",
+            "allow_pets",
+            default=True,
+        )
+
+        async with self.bot.pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """
+                SELECT scale_attack_base, scale_hp_base, scale_defense_base, scale_power_score
+                FROM jurytower
+                WHERE id = $1
+                """,
+                target.id,
+            )
+
+        stored_snapshot = self._jury_scale_snapshot_from_row(row)
+        stored_score = self._jury_scale_snapshot_score(stored_snapshot)
+        snapshot_source = "Stored Jury Tower snapshot (fallback)."
+
+        try:
+            snapshot = await self.battle_factory.build_jury_tower_scale_snapshot(
+                ctx,
+                target,
+                allow_pets,
+            )
+            score = self._jury_scale_snapshot_score(snapshot)
+            if score <= 0:
+                raise ValueError("Empty snapshot result.")
+            snapshot_source = "Fresh combatant snapshot."
+            if stored_score > 0:
+                snapshot_source = "Fresh combatant snapshot (ignoring stored snapshot)."
+        except Exception:
+            snapshot = stored_snapshot
+            score = stored_score
+            if score <= 0:
+                return await ctx.send(
+                    "Could not calculate a Jury Tower score for that user (no valid snapshot found)."
+                )
+            snapshot_source = "Stored Jury Tower snapshot (live snapshot generation failed)."
+
+        attack_base = Decimal(str(snapshot.get("attack_base", 0) or 0))
+        hp_base = Decimal(str(snapshot.get("hp_base", 0) or 0))
+        defense_base = Decimal(str(snapshot.get("defense_base", 0) or 0))
+        hp_weight = Decimal("0.5")
+        weighted_hp = hp_base * hp_weight
+        total_score = attack_base + defense_base + weighted_hp
+        bracket_payload = self._jury_bracket_payload_from_score(score)
+        bracket_label = bracket_payload.get("bracket_label", "Unranked")
+        writ_multiplier = Decimal(str(bracket_payload.get("writ_multiplier", 1)))
+
+        embed = discord.Embed(
+            title="Jury Tower Score Breakdown",
+            description=f"{target.mention}",
+            color=0x8B5CF6,
+        )
+        embed.add_field(
+            name="Source",
+            value=snapshot_source,
+            inline=False,
+        )
+        embed.add_field(
+            name="Raw Snapshot",
+            value=(
+                f"Attack Base: **{int(attack_base)}**\n"
+                f"HP Base: **{int(hp_base)}**\n"
+                f"Defense Base: **{int(defense_base)}**"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Weighted Breakdown",
+            value=(
+                f"Attack Contribution: **{attack_base:.1f}**\n"
+                f"HP Contribution (50%): **{weighted_hp:.1f}**\n"
+                f"Defense Contribution: **{defense_base:.1f}**\n"
+                f"Total Score: **{total_score:.1f}**"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Bracket",
+            value=(
+                f"{bracket_label}\n"
+                f"Score stored in DB: **{int(stored_score)}**\n"
+                f"Writ multiplier: **{writ_multiplier}x**"
+            ),
+            inline=False,
+        )
+        await ctx.send(embed=embed)
+
+    @is_gm()
     @has_char()
     @jurytower.command(name="start")
     async def jurytower_start(self, ctx):
