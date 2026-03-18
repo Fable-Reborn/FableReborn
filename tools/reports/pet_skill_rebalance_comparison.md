@@ -260,7 +260,7 @@ Tooltip promised a huge team buff for 5 turns.
 Runtime behavior was closer to a boosted hit plus unreliable secondary effects.
 
 New:
-It is now a real ultimate spike: a 2.5x solar hit, splash damage to other enemies, and a strong timed team buff window.
+It is now a real ultimate spike: a 2.75x solar hit, splash damage to other enemies, and a strong timed team buff window.
 
 ### Phoenix Rebirth
 Old:
@@ -602,6 +602,3 @@ These skills were explicitly added to the ultimate activation list so they now a
 - `Divine Protection`
 - `End of Days`
 
-## Verification Note
-
-No automated syntax/test pass was run after the rebalance because no Python executable is available in this environment.

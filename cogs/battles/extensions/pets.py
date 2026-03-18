@@ -3755,16 +3755,20 @@ class PetExtension:
             pet_combatant.trust_level = trust_level
             
             # Apply skill effects
-            learned_skills = pet.get('learned_skills', [])
-            # Handle JSON string format from database
-            if isinstance(learned_skills, str):
-                try:
-                    import json
-                    learned_skills = json.loads(learned_skills)
-                except (json.JSONDecodeError, TypeError):
+            pets_cog = ctx.bot.get_cog("Pets")
+            if pets_cog and hasattr(pets_cog, "get_effective_learned_skills"):
+                learned_skills = pets_cog.get_effective_learned_skills(pet)
+            else:
+                learned_skills = pet.get('learned_skills', [])
+                # Handle JSON string format from database
+                if isinstance(learned_skills, str):
+                    try:
+                        import json
+                        learned_skills = json.loads(learned_skills)
+                    except (json.JSONDecodeError, TypeError):
+                        learned_skills = []
+                elif learned_skills is None:
                     learned_skills = []
-            elif learned_skills is None:
-                learned_skills = []
             
             self.apply_skill_effects(pet_combatant, learned_skills)
             

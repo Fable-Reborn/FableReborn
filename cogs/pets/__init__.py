@@ -578,6 +578,7 @@ class Pets(commands.Cog):
                     ADD COLUMN IF NOT EXISTS level INTEGER DEFAULT 1,
                     ADD COLUMN IF NOT EXISTS skill_points INTEGER DEFAULT 0,
                     ADD COLUMN IF NOT EXISTS learned_skills JSONB DEFAULT '[]',
+                    ADD COLUMN IF NOT EXISTS gm_all_skills_enabled BOOLEAN DEFAULT FALSE,
                     ADD COLUMN IF NOT EXISTS skill_tree_progress JSONB DEFAULT '{}',
                     ADD COLUMN IF NOT EXISTS xp_multiplier DECIMAL(3,1) DEFAULT 1.0,
                     ADD COLUMN IF NOT EXISTS alt_name TEXT
@@ -702,6 +703,21 @@ class Pets(commands.Cog):
         """Calculate skill points gained from leveling up"""
         return 1 if level % self.PET_SKILL_POINT_INTERVAL == 0 else 0  # 1 skill point every 10 levels
 
+    def get_total_earned_skill_points(self, level):
+        """Calculate total earned skill points from a pet's level."""
+        return max(0, int(level or 0) // self.PET_SKILL_POINT_INTERVAL)
+
+    def get_all_skill_names_for_element(self, element):
+        """Return all skill names for a pet element in tree order."""
+        skill_tree = self.SKILL_TREES.get(element, {})
+        skill_names = []
+        for branch_skills in skill_tree.values():
+            for skill_data in branch_skills.values():
+                skill_name = str(skill_data.get("name", "")).strip()
+                if skill_name:
+                    skill_names.append(skill_name)
+        return skill_names
+
     def normalize_learned_skills(self, learned_skills):
         """Normalize learned skills from DB storage formats into a deduplicated name list."""
         if isinstance(learned_skills, str):
@@ -729,6 +745,12 @@ class Pets(commands.Cog):
             seen.add(key)
             normalized.append(cleaned)
         return normalized
+
+    def get_effective_learned_skills(self, pet):
+        """Return the skill list a pet should currently have access to."""
+        if pet.get("gm_all_skills_enabled"):
+            return self.get_all_skill_names_for_element(pet.get("element"))
+        return self.normalize_learned_skills(pet.get("learned_skills", []))
 
     def estimate_spent_skill_points(self, element, learned_skills):
         """
@@ -3191,30 +3213,24 @@ class Pets(commands.Cog):
             return
 
         skill_tree = self.SKILL_TREES[element]
-        learned_skills = pet.get('learned_skills', [])
-        
-        # Handle cases where learned_skills might be stored as JSON string or None
-        if isinstance(learned_skills, str):
-            import json
-            try:
-                learned_skills = json.loads(learned_skills)
-            except:
-                learned_skills = []
-        elif learned_skills is None:
-            learned_skills = []
-        elif not isinstance(learned_skills, list):
-            learned_skills = []
+        learned_skills = self.get_effective_learned_skills(pet)
+        total_skills = len(self.get_all_skill_names_for_element(element))
         
         # Get element emoji
         element_emoji = {
             "Fire": "🔥", "Water": "💧", "Electric": "⚡", "Nature": "🌿",
             "Wind": "💨", "Light": "🌟", "Dark": "🌑", "Corrupted": "🌀"
         }.get(element, "❓")
+        gm_override_text = (
+            "\n**GM Override:** All element skills enabled"
+            if pet.get("gm_all_skills_enabled")
+            else ""
+        )
         
         embed = discord.Embed(
             title=f"🌳 {pet['name']}'s Skill Tree ({element_emoji} {element})",
             description=f"**Level:** {pet['level']}/{self.PET_MAX_LEVEL} | **Skill Points:** {pet['skill_points']} | **Trust:** {pet['trust_level']}/100\n"
-                       f"**Learned Skills:** {len(learned_skills)}/15",
+                       f"**Learned Skills:** {len(learned_skills)}/{total_skills}{gm_override_text}",
             color=discord.Color.blue()
         )
 
@@ -3283,15 +3299,7 @@ class Pets(commands.Cog):
         Minimum cost is 1.
         """
         # Check if pet has Battery Life ability
-        learned_skills = pet.get('learned_skills', [])
-        if isinstance(learned_skills, str):
-            try:
-                learned_skills = json.loads(learned_skills)
-            except:
-                learned_skills = []
-        
-        if not isinstance(learned_skills, list):
-            learned_skills = []
+        learned_skills = self.get_effective_learned_skills(pet)
         
         # Check if pet knows Battery Life
         has_battery_life = any("battery life" in skill.lower() for skill in learned_skills)
@@ -3341,16 +3349,13 @@ class Pets(commands.Cog):
                 return
 
             # Check if already learned - normalize JSON/text/list storage formats
-            learned_skills = pet.get('learned_skills', [])
-            if isinstance(learned_skills, str):
-                try:
-                    learned_skills = json.loads(learned_skills)
-                except (json.JSONDecodeError, TypeError):
-                    learned_skills = []
-            elif learned_skills is None:
-                learned_skills = []
-            elif not isinstance(learned_skills, list):
-                learned_skills = []
+            learned_skills = self.get_effective_learned_skills(pet)
+
+            if pet.get("gm_all_skills_enabled"):
+                await ctx.send(
+                    f"❌ {pet['name']} has GM all-element-skills mode enabled. Disable it before manually learning skills."
+                )
+                return
                 
             if skill_found['name'] in learned_skills:
                 await ctx.send(f"❌ {pet['name']} already knows {skill_found['name']}!")
@@ -3518,24 +3523,14 @@ class Pets(commands.Cog):
         )
 
         # Show learned skills
-        learned_skills = pet.get('learned_skills', [])
-        
-        # Handle cases where learned_skills might be stored as JSON string or None
-        if isinstance(learned_skills, str):
-            import json
-            try:
-                learned_skills = json.loads(learned_skills)
-            except:
-                learned_skills = []
-        elif learned_skills is None:
-            learned_skills = []
-        elif not isinstance(learned_skills, list):
-            learned_skills = []
+        learned_skills = self.get_effective_learned_skills(pet)
             
         if learned_skills:
             skills_text = "\n".join([f"✅ {skill}" for skill in learned_skills[:5]])
             if len(learned_skills) > 5:
                 skills_text += f"\n... and {len(learned_skills) - 5} more"
+            if pet.get("gm_all_skills_enabled"):
+                skills_text += "\n\n🛠️ GM all-element-skills mode is enabled."
             embed.add_field(
                 name="🎓 Learned Skills",
                 value=skills_text,
@@ -4368,6 +4363,118 @@ class Pets(commands.Cog):
                 f"New SP: {int(new_skill_points)}\n"
                 f"Reason: {reason_text}"
             )
+
+    @is_gm()
+    @commands.command(
+        hidden=True,
+        name="gmtogglepetallskills",
+        aliases=["gmpetallskills", "gmtogglepetallelementskills"],
+    )
+    async def gmtogglepetallskills(
+        self,
+        ctx,
+        target: discord.User,
+        pet_ref: str,
+        state: str = None,
+    ):
+        """
+        GM utility: toggle all skills for the pet's own element tree.
+
+        Usage:
+        - $gmtogglepetallskills <user> <pet_id|alias> [on|off|toggle]
+        """
+        normalized_state = (state or "toggle").strip().lower()
+        if normalized_state in {"toggle", "flip"}:
+            desired_state = None
+        elif normalized_state in {"on", "enable", "enabled", "true", "1"}:
+            desired_state = True
+        elif normalized_state in {"off", "disable", "disabled", "false", "0"}:
+            desired_state = False
+        else:
+            return await ctx.send(
+                "❌ State must be one of: `on`, `off`, or `toggle`."
+            )
+
+        async with self.bot.pool.acquire() as conn:
+            pet, pet_id = await self.fetch_pet_for_user(conn, target.id, pet_ref)
+            if not pet:
+                return await ctx.send(
+                    f"❌ {target.mention} does not have a pet with ID or alias `{pet_ref}`."
+                )
+
+            element = pet.get("element")
+            if element not in self.SKILL_TREES:
+                return await ctx.send(
+                    f"❌ {pet['name']} has an unknown element `{element}`."
+                )
+
+            current_state = bool(pet.get("gm_all_skills_enabled"))
+            new_state = (not current_state) if desired_state is None else desired_state
+            all_element_skills = self.get_all_skill_names_for_element(element)
+
+            if not all_element_skills:
+                return await ctx.send(
+                    f"❌ No skills were found for the `{element}` element tree."
+                )
+
+            if new_state:
+                await conn.execute(
+                    """
+                    UPDATE monster_pets
+                    SET gm_all_skills_enabled = TRUE,
+                        learned_skills = $1
+                    WHERE id = $2;
+                    """,
+                    json.dumps(all_element_skills),
+                    pet_id,
+                )
+                result_text = (
+                    f"✅ Enabled GM all-element-skills mode for **{pet['name']}** "
+                    f"(ID: `{pet_id}`) owned by {target.mention}.\n"
+                    f"Element: **{element}**\n"
+                    f"Unlocked skills: **{len(all_element_skills)}**\n"
+                    f"Skill points left unchanged: **{int(pet.get('skill_points', 0) or 0)}**"
+                )
+                gm_log_text = (
+                    f"**{ctx.author}** enabled GM all-element-skills mode.\n"
+                    f"Target: {target} (`{target.id}`)\n"
+                    f"Pet: {pet['name']} (`{pet_id}`)\n"
+                    f"Element: {element}\n"
+                    f"Unlocked skills: {len(all_element_skills)}"
+                )
+            else:
+                reset_skill_points = self.get_total_earned_skill_points(pet.get("level", 1))
+                await conn.execute(
+                    """
+                    UPDATE monster_pets
+                    SET gm_all_skills_enabled = FALSE,
+                        learned_skills = '[]'::jsonb,
+                        skill_points = $1
+                    WHERE id = $2;
+                    """,
+                    int(reset_skill_points),
+                    pet_id,
+                )
+                result_text = (
+                    f"✅ Disabled GM all-element-skills mode for **{pet['name']}** "
+                    f"(ID: `{pet_id}`) owned by {target.mention}.\n"
+                    f"All learned element skills were cleared.\n"
+                    f"Skill points reset to earned total for level **{int(pet.get('level', 1) or 1)}**: "
+                    f"**{int(reset_skill_points)}**"
+                )
+                gm_log_text = (
+                    f"**{ctx.author}** disabled GM all-element-skills mode.\n"
+                    f"Target: {target} (`{target.id}`)\n"
+                    f"Pet: {pet['name']} (`{pet_id}`)\n"
+                    f"Element: {element}\n"
+                    f"Skill points reset to: {int(reset_skill_points)}"
+                )
+
+        await ctx.send(result_text)
+
+        gm_log_channel = self.bot.get_channel(self.bot.config.game.gm_log_channel)
+        if gm_log_channel:
+            await gm_log_channel.send(gm_log_text)
 
     @is_gm()
     @commands.command(hidden=True, name="gmrevertdoublepetlevels")
@@ -5604,15 +5711,7 @@ class Pets(commands.Cog):
                     return
 
             # Check if pet has Battery Life
-            learned_skills = pet.get('learned_skills', [])
-            if isinstance(learned_skills, str):
-                try:
-                    learned_skills = json.loads(learned_skills)
-                except:
-                    learned_skills = []
-            
-            if not isinstance(learned_skills, list):
-                learned_skills = []
+            learned_skills = self.get_effective_learned_skills(pet)
             
             has_battery_life = any("battery life" in skill.lower() for skill in learned_skills)
             
@@ -5621,12 +5720,18 @@ class Pets(commands.Cog):
                 description=f"Testing cost reduction for **{pet['name']}**",
                 color=discord.Color.blue()
             )
+            gm_all_skills_text = (
+                "\n**GM All Skills:** ✅ Enabled"
+                if pet.get("gm_all_skills_enabled")
+                else ""
+            )
             
             embed.add_field(
                 name="📊 Pet Status",
                 value=f"**Has Battery Life:** {'✅ Yes' if has_battery_life else '❌ No'}\n"
                       f"**Skill Points:** {pet['skill_points']}\n"
-                      f"**Learned Skills:** {len(learned_skills)}",
+                      f"**Learned Skills:** {len(learned_skills)}"
+                      f"{gm_all_skills_text}",
                 inline=False
             )
             

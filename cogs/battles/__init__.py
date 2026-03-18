@@ -9426,19 +9426,6 @@ class Battles(commands.Cog):
                         # Calculate new level and check for level-up
                         new_level = int(rpgtools.xptolevel(current_xp + member_xp))
 
-                        # Debug output for specific member
-                        if self.debug_user_id and member.id == self.debug_user_id:
-                            await ctx.send(
-                                f"**Debug Info for {member.display_name}:**\n"
-                                f"Current XP: {current_xp}\n"
-                                f"Current Level: {current_level}\n"
-                                f"Member Money Awarded: {member_money}\n"
-                                f"Member XP Awarded: {member_xp}\n"
-                                f"New XP Total: {current_xp + member_xp}\n"
-                                f"New Level: {new_level}\n"
-                                f"Level Up: {current_level != new_level}"
-                            )
-
                         if current_level != new_level:
                             await self.bot.process_guildlevelup(ctx, member.id, new_level, current_level)
                         
@@ -9624,18 +9611,6 @@ class Battles(commands.Cog):
 
                     # Calculate new level and check for level-up
                     new_level = int(rpgtools.xptolevel(current_xp + consolation_xp))
-
-                    # Debug output for specific member (if needed)
-                    if self.debug_user_id and member.id == self.debug_user_id:
-                        await ctx.send(
-                            f"**Debug Info for {member.display_name}:**\n"
-                            f"Current XP: {current_xp}\n"
-                            f"Current Level: {current_level}\n"
-                            f"Consolation XP: {consolation_xp}\n"
-                            f"New XP Total: {current_xp + consolation_xp}\n"
-                            f"New Level: {new_level}\n"
-                            f"Level Up: {current_level != new_level}"
-                        )
 
                     if current_level != new_level:
                         await self.bot.process_guildlevelup(ctx, member.id, new_level, current_level, conn)
