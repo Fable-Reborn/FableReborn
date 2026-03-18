@@ -749,6 +749,140 @@ class Sharding(commands.Cog):
 
         cooldowns = await self.bot.redis.execute_command("KEYS", f"cd:{ctx.author.id}:*")
         adv = await self.bot.get_adventure(ctx.author)
+        use_new_view = await self._get_timers_view_preference(ctx.author.id)
+
+        if not use_new_view:
+            emoji_map = {
+                "battle": "⚔️",
+                "raidbattle": "⚔️",
+                "child": "❤️",
+                "familyevent": "❤️",
+                "steal": "🔒",
+                "class": "🛡️",
+                "fun": "🐾",
+                "activeadventure": "🏞️",
+                "activebattle": "⚔️",
+                "date": "❤️",
+                "tournament": "🏆",
+                "raidtournament": "🏆",
+                "bless": "🙏",
+                "pve": "⚔️",
+                "scout": "🐾",
+                "dragonchallenge party": "❄️",
+                "pets feed": "🐾",
+                "pets train": "🐾",
+                "pets play": "🐾",
+                "pets trade": "💰",
+                "pets treat": "🐾",
+                "pets pet": "🐾",
+            }
+
+            general_cooldowns = []
+            battle_cooldowns = []
+            family_cooldowns = []
+            class_cooldowns = []
+            adventure_cooldowns = []
+            pets_cooldowns = []
+
+            if not cooldowns and (not adv or adv[2]):
+                embed = discord.Embed(
+                    title=_("Cooldowns"),
+                    description=_("You don't have any active cooldowns at the moment. 🕒"),
+                    color=discord.Color.green(),
+                )
+                return await ctx.send(embed=embed)
+
+            max_length = 0
+            message_lengths = []
+            for key in cooldowns:
+                key = key.decode()
+                cooldown = await self.bot.redis.execute_command("TTL", key)
+                cmd = key.replace(f"cd:{ctx.author.id}:", "").lower()
+                formatted_time = timedelta(seconds=int(cooldown))
+
+                if cmd in ["battle", "raidbattle", "tournament", "raidtournament"]:
+                    category_cooldowns = battle_cooldowns
+                elif cmd in ["child", "familyevent", "date"]:
+                    category_cooldowns = family_cooldowns
+                elif cmd in ["pets feed", "pets train", "pets play", "pets trade", "pets treat", "pets pet"]:
+                    category_cooldowns = pets_cooldowns
+                elif cmd in ["class", "fun", "hunt", "steal", "bless", "gift", "scout"]:
+                    category_cooldowns = class_cooldowns
+                elif cmd in ["adventure", "activebattle", "pve", "dragonchallenge party", "activeadventure", "battletower fight"]:
+                    category_cooldowns = adventure_cooldowns
+                else:
+                    category_cooldowns = general_cooldowns
+
+                emoji = emoji_map.get(cmd, "⏳")
+                cooldown_message = f"{emoji} • **`{cmd.capitalize()}`** is on cooldown and will be available after {formatted_time}"
+                category_cooldowns.append(cooldown_message)
+                message_lengths.append(len(cooldown_message))
+                max_message_length = max(message_lengths)
+
+            embed = discord.Embed(
+                title=_("Cooldowns"),
+                color=discord.Color.purple(),
+            )
+
+            def add_category_fields(embed, category_list, category_name):
+                if not category_list:
+                    return
+
+                chunks = chunk_lines(category_list)
+                for index, chunk in enumerate(chunks):
+                    field_name = category_name if index == 0 else f"{category_name} (cont.)"
+                    embed.add_field(name=field_name, value=chunk, inline=False)
+                return len(chunks) > 0
+
+            has_content = False
+
+            if general_cooldowns:
+                add_category_fields(embed, general_cooldowns, _("General Cooldowns"))
+                has_content = True
+
+            if battle_cooldowns:
+                if has_content:
+                    embed.add_field(name="\u200B", value="\n", inline=False)
+                add_category_fields(embed, battle_cooldowns, _("Battle Cooldowns"))
+                has_content = True
+
+            if family_cooldowns:
+                if has_content:
+                    embed.add_field(name="\u200B", value="\n", inline=False)
+                add_category_fields(embed, family_cooldowns, _("Family Cooldowns"))
+                has_content = True
+
+            if pets_cooldowns:
+                if has_content:
+                    embed.add_field(name="\u200B", value="\n", inline=False)
+                add_category_fields(embed, pets_cooldowns, _("Pets Cooldowns"))
+                has_content = True
+
+            if class_cooldowns:
+                if has_content:
+                    embed.add_field(name="\u200B", value="\n", inline=False)
+                add_category_fields(embed, class_cooldowns, _("Class Cooldowns"))
+                has_content = True
+
+            if adventure_cooldowns:
+                if has_content:
+                    embed.add_field(name="\u200B", value="\n", inline=False)
+                add_category_fields(embed, adventure_cooldowns, _("Adventure Cooldowns"))
+                has_content = True
+
+            if adv and not adv[2]:
+                if has_content:
+                    embed.add_field(name="\u200B", value="\n", inline=False)
+                adventure_message = _("⏳ Adventure is running and will be done after {time}").format(
+                    time=adv[1]
+                )
+                embed.add_field(
+                    name=_("Adventure Status"),
+                    value=adventure_message,
+                    inline=False,
+                )
+
+            return await ctx.send(embed=embed)
 
         normalized_cooldowns: dict[str, int] = {}
         for key in cooldowns:
@@ -767,38 +901,11 @@ class Sharding(commands.Cog):
             if previous is None or cooldown_seconds > previous:
                 normalized_cooldowns[cmd] = cooldown_seconds
 
-        use_new_view = await self._get_timers_view_preference(ctx.author.id)
         has_ready_adventure = bool(adv and adv[2])
-
-        if not use_new_view:
-            if not normalized_cooldowns and not adv:
-                return await ctx.send(
-                    _("You don't have any active cooldown at the moment.")
-                )
-
-            legacy_lines = [_("Commands on cooldown:")]
-            for cmd, cooldown_seconds in sorted(
-                normalized_cooldowns.items(),
-                key=lambda item: item[1],
-            ):
-                legacy_lines.append(
-                    _("{cmd} is on cooldown and will be available after {time}").format(
-                        cmd=display_name(cmd),
-                        time=timedelta(seconds=cooldown_seconds),
-                    )
-                )
-
-            if has_ready_adventure:
-                legacy_lines.append(_("Adventure is ready to claim."))
-            elif adv:
-                legacy_lines.append(
-                    _("Adventure is running and will be done after {time}").format(
-                        time=adv[1]
-                    )
-                )
-
-            legacy_text = "\n".join(legacy_lines)
-            return await ctx.send(f"```{legacy_text}```")
+        if not normalized_cooldowns and not adv:
+            return await ctx.send(
+                _("You don't have any active cooldown at the moment.")
+            )
 
         sections = {
             "challenges": [],
@@ -820,7 +927,7 @@ class Sharding(commands.Cog):
                         time=format_duration(cooldown_seconds),
                     ),
                 )
-                )
+            )
 
         if adv:
             if has_ready_adventure:
