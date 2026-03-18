@@ -24,6 +24,7 @@ from time import time
 from typing import Any
 from uuid import uuid4
 
+import asyncpg
 import discord
 from discord.ext import commands
 
@@ -382,12 +383,83 @@ class Sharding(commands.Cog):
             json.dumps(payload),
         )
 
+    async def _get_timers_view_preference(self, user_id: int) -> bool:
+        try:
+            preference = await self.bot.pool.fetchval(
+                'SELECT "timers_v2" FROM profile WHERE "user"=$1;',
+                user_id,
+            )
+        except asyncpg.UndefinedColumnError:
+            return True
+        return True if preference is None else bool(preference)
+
+    async def _set_timers_view_preference(
+        self,
+        user_id: int,
+        use_new_view: bool,
+    ) -> str:
+        try:
+            updated = await self.bot.pool.fetchval(
+                'UPDATE profile SET "timers_v2"=$1 WHERE "user"=$2 RETURNING 1;',
+                use_new_view,
+                user_id,
+            )
+        except asyncpg.UndefinedColumnError:
+            return "missing_column"
+        return "updated" if updated else "missing_profile"
+
     @commands.command(
         aliases=["cooldowns", "t", "cds"], brief=_("Lists all your cooldowns")
     )
     @locale_doc
-    async def timers(self, ctx):
-        _("""Lists all your cooldowns, including your adventure timer.""")
+    async def timers(self, ctx, view: str = None):
+        _(
+            """Lists all your cooldowns, including your adventure timer.
+
+            Use `{prefix}timers old`, `{prefix}timers new`, or `{prefix}timers toggle`
+            to save your preferred layout."""
+        )
+
+        if view is not None:
+            normalized_view = view.strip().lower()
+            valid_views = {"old", "legacy", "new", "modern", "toggle"}
+            if normalized_view not in valid_views:
+                return await ctx.send(
+                    _(
+                        "Use `{prefix}timers`, `{prefix}timers old`,"
+                        " `{prefix}timers new`, or `{prefix}timers toggle`."
+                    ).format(prefix=ctx.clean_prefix)
+                )
+
+            current_preference = await self._get_timers_view_preference(ctx.author.id)
+            use_new_view = (
+                not current_preference
+                if normalized_view == "toggle"
+                else normalized_view in {"new", "modern"}
+            )
+            save_status = await self._set_timers_view_preference(
+                ctx.author.id,
+                use_new_view,
+            )
+            if save_status == "missing_column":
+                return await ctx.send(
+                    _(
+                        "The timers preference column is missing. Run the shard"
+                        " communication migration first."
+                    )
+                )
+            if save_status == "missing_profile":
+                return await ctx.send(
+                    _(
+                        "You need a character before you can save a timers layout"
+                        " preference."
+                    )
+                )
+            return await ctx.send(
+                _("Your timers view is now set to **{style}**.").format(
+                    style=_("new") if use_new_view else _("old")
+                )
+            )
 
         def normalize_cmd_id(raw_cmd: str) -> str:
             cmd = " ".join(raw_cmd.strip().lower().split())
@@ -695,6 +767,39 @@ class Sharding(commands.Cog):
             if previous is None or cooldown_seconds > previous:
                 normalized_cooldowns[cmd] = cooldown_seconds
 
+        use_new_view = await self._get_timers_view_preference(ctx.author.id)
+        has_ready_adventure = bool(adv and adv[2])
+
+        if not use_new_view:
+            if not normalized_cooldowns and not adv:
+                return await ctx.send(
+                    _("You don't have any active cooldown at the moment.")
+                )
+
+            legacy_lines = [_("Commands on cooldown:")]
+            for cmd, cooldown_seconds in sorted(
+                normalized_cooldowns.items(),
+                key=lambda item: item[1],
+            ):
+                legacy_lines.append(
+                    _("{cmd} is on cooldown and will be available after {time}").format(
+                        cmd=display_name(cmd),
+                        time=timedelta(seconds=cooldown_seconds),
+                    )
+                )
+
+            if has_ready_adventure:
+                legacy_lines.append(_("Adventure is ready to claim."))
+            elif adv:
+                legacy_lines.append(
+                    _("Adventure is running and will be done after {time}").format(
+                        time=adv[1]
+                    )
+                )
+
+            legacy_text = "\n".join(legacy_lines)
+            return await ctx.send(f"```{legacy_text}```")
+
         sections = {
             "challenges": [],
             "social": [],
@@ -715,10 +820,10 @@ class Sharding(commands.Cog):
                         time=format_duration(cooldown_seconds),
                     ),
                 )
-            )
+                )
 
         if adv:
-            if adv[2]:
+            if has_ready_adventure:
                 sections["challenges"].append(
                     (-1, _("• **Adventure Ready**: claim it whenever you want"))
                 )
