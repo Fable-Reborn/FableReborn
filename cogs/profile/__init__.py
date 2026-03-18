@@ -1814,7 +1814,7 @@ class Profile(commands.Cog):
     async def consume(self, ctx, item_type: str, target_arg: str = None, *, extra: str = None):
         """
         Consume either a reset potion, candy, or premium consumable.
-        Valid types: reset, candy, highcandy, petage <pet_id>, petspeed <pet_id>, petxp <pet_id>, petmindwipe <all|pet_ids>, petelement <pet_id> <element>, weapelement <weapon_id> <element>
+        Valid types: reset, candy, highcandy, petage <pet_id>, petspeed <pet_id>, petxp <pet_id>, petmindwipe, petelement <pet_id> <element>, weapelement <weapon_id> <element>
         """
         try:
             item_type = item_type.lower()
@@ -2068,25 +2068,14 @@ class Profile(commands.Cog):
                 return
 
             elif item_type in ["petmindwipe", "pet mind wipe", "mindwipe"]:
-                target_spec = " ".join(part for part in [target_value, extra] if part).strip()
-                if not target_spec:
-                    await ctx.send(
-                        "Please provide `all`, a pet ID, or a list of pet IDs: "
-                        "`$consume petmindwipe all`, `$consume petmindwipe 123`, or `$consume petmindwipe 123,456`"
-                    )
-                    await self.bot.reset_cooldown(ctx)
-                    return
-
                 premium_cog = self.bot.get_cog("PremiumShop")
                 if not premium_cog:
                     await ctx.send("Premium shop cog not found.")
                     await self.bot.reset_cooldown(ctx)
                     return
 
-                success, message = await premium_cog.consume_pet_mind_wipe(ctx, target_spec)
-                if success:
-                    await ctx.send(message)
-                else:
+                success, message = await premium_cog.consume_pet_mind_wipe(ctx)
+                if not success:
                     await ctx.send(f"Error: {message}")
                     await self.bot.reset_cooldown(ctx)
                 return
@@ -2154,7 +2143,7 @@ class Profile(commands.Cog):
                 await ctx.send(
                     "Unknown item type. Valid types are: reset, candy, highcandy, "
                     "petage <pet_id>, petspeed <pet_id>, petxp <pet_id>, "
-                    "petmindwipe <all|pet_ids>, petelement <pet_id> <element>, "
+                    "petmindwipe, petelement <pet_id> <element>, "
                     "weapelement <weapon_id> <element>"
                 )
                 await self.bot.reset_cooldown(ctx)
@@ -2755,8 +2744,8 @@ class Profile(commands.Cog):
                     name="🧠 Pet Mind Wipe",
                     value=(
                         f"Quantity: {quantity}\nReset learned pet skills and refund SP "
-                        f"(`$consume petmindwipe all`, `$consume petmindwipe <pet_id>`, or "
-                        f"`$consume \"pet mind wipe\" <id1,id2,...>`)"
+                        f"through an interactive all/batch/single dropdown flow "
+                        f"(`$consume petmindwipe` or `$consume \"pet mind wipe\"`)"
                     ),
                     inline=False
                 )

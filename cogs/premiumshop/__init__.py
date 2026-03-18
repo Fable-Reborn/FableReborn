@@ -28,6 +28,495 @@ from classes.converters import IntGreaterThan
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 
 
+class PetMindWipeModeSelect(discord.ui.Select):
+    def __init__(self, parent_view):
+        self.parent_view = parent_view
+        options = [
+            discord.SelectOption(
+                label="All Pets",
+                value="all",
+                description="Use 1 wipe on every pet you currently own.",
+                emoji="🌪️",
+            ),
+            discord.SelectOption(
+                label="Batch Select",
+                value="batch",
+                description="Pick multiple pets from dropdown pages.",
+                emoji="📚",
+            ),
+            discord.SelectOption(
+                label="Single Pet",
+                value="single",
+                description="Pick exactly one pet, then confirm it.",
+                emoji="🎯",
+            ),
+        ]
+        super().__init__(
+            placeholder="Choose how to use your Pet Mind Wipe...",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.parent_view.handle_mode_selection(interaction, self.values[0])
+
+
+class PetMindWipePetSelect(discord.ui.Select):
+    def __init__(self, parent_view, pets, *, multi: bool):
+        self.parent_view = parent_view
+        self.multi = multi
+        options = []
+
+        for pet in pets:
+            pet_id = int(pet["id"])
+            learned_count = len(
+                parent_view.cog._normalize_learned_skills_for_preview(
+                    parent_view.pets_cog,
+                    pet.get("learned_skills"),
+                )
+            )
+            options.append(
+                discord.SelectOption(
+                    label=parent_view.format_pet_option_label(str(pet.get("name") or "Unknown"), pet_id),
+                    value=str(pet_id),
+                    description=(
+                        f"Lv {int(pet.get('level') or 1)} | "
+                        f"{str(pet.get('element') or 'Unknown')} | "
+                        f"{learned_count} learned"
+                    )[:100],
+                    default=pet_id in parent_view.selected_ids,
+                )
+            )
+
+        placeholder = (
+            "Select one pet to wipe..."
+            if not multi
+            else "Select pets on this page, then review your batch..."
+        )
+        super().__init__(
+            placeholder=placeholder,
+            min_values=1,
+            max_values=1 if not multi else max(1, len(options)),
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.parent_view.handle_pet_selection(
+            interaction,
+            {int(value) for value in self.values},
+        )
+
+
+class PetMindWipeFlowView(discord.ui.View):
+    PAGE_SIZE = 25
+
+    def __init__(self, cog, ctx, pets_cog, pets, wipe_quantity: int, timeout: float = 180.0):
+        super().__init__(timeout=timeout)
+        self.cog = cog
+        self.ctx = ctx
+        self.pets_cog = pets_cog
+        self.pets = [dict(pet) for pet in pets]
+        self.wipe_quantity = max(0, int(wipe_quantity or 0))
+        self.stage = "mode"
+        self.mode = None
+        self.page = 0
+        self.selected_ids = set()
+        self.message = None
+        self.finished = False
+        self._rebuild_items()
+
+    @property
+    def max_pages(self):
+        return max(1, ((len(self.pets) - 1) // self.PAGE_SIZE) + 1) if self.pets else 1
+
+    def format_pet_option_label(self, pet_name: str, pet_id: int):
+        suffix = f" (ID: {pet_id})"
+        available = max(1, 100 - len(suffix))
+        safe_name = (pet_name or "Unknown").strip() or "Unknown"
+        if len(safe_name) > available:
+            safe_name = safe_name[: max(1, available - 1)].rstrip() + "…"
+        return f"{safe_name}{suffix}"
+
+    def get_current_page_pets(self):
+        start_index = self.page * self.PAGE_SIZE
+        end_index = start_index + self.PAGE_SIZE
+        return self.pets[start_index:end_index]
+
+    def get_selected_pets(self):
+        if self.mode == "all":
+            return list(self.pets)
+
+        pets_by_id = {int(pet["id"]): pet for pet in self.pets}
+        return [
+            pets_by_id[pet_id]
+            for pet_id in sorted(self.selected_ids)
+            if pet_id in pets_by_id
+        ]
+
+    def get_preview(self):
+        selected_pets = self.get_selected_pets()
+        if not selected_pets:
+            return None
+        return self.cog._build_pet_mind_wipe_plan(self.pets_cog, selected_pets)
+
+    def fit_lines_to_field(self, lines, limit: int = 1000):
+        output = []
+        used = 0
+        for index, line in enumerate(lines):
+            addition = len(line) + (1 if output else 0)
+            if used + addition > limit:
+                remaining = len(lines) - index
+                if remaining > 0:
+                    overflow_line = f"• ... and {remaining} more"
+                    if used + len(overflow_line) + (1 if output else 0) <= limit:
+                        output.append(overflow_line)
+                break
+            output.append(line)
+            used += addition
+        return output
+
+    def build_embed(self, notice: str = None):
+        embed = discord.Embed(
+            title="🧠 Pet Mind Wipe",
+            color=discord.Color.blurple(),
+            timestamp=datetime.datetime.utcnow(),
+        )
+        embed.add_field(
+            name="Inventory",
+            value=f"You currently have **{self.wipe_quantity}** Pet Mind Wipe(s).",
+            inline=False,
+        )
+
+        if notice:
+            embed.add_field(name="Notice", value=notice, inline=False)
+
+        if self.stage == "mode":
+            embed.description = (
+                "Choose whether you want to wipe **all pets**, a **batch**, or a **single** pet."
+            )
+            embed.add_field(
+                name="Modes",
+                value=(
+                    "🌪️ **All Pets**: targets every pet you currently own.\n"
+                    "📚 **Batch Select**: choose multiple pets across dropdown pages.\n"
+                    "🎯 **Single Pet**: choose one pet, then confirm it."
+                ),
+                inline=False,
+            )
+            embed.set_footer(text="Select a mode below or cancel.")
+            return embed
+
+        if self.stage == "select":
+            page_pets = self.get_current_page_pets()
+            embed.description = (
+                "Select one pet from the dropdown."
+                if self.mode == "single"
+                else "Select any pets on this page, then review the batch when ready."
+            )
+
+            if page_pets:
+                lines = []
+                for pet in page_pets:
+                    learned_count = len(
+                        self.cog._normalize_learned_skills_for_preview(
+                            self.pets_cog,
+                            pet.get("learned_skills"),
+                        )
+                    )
+                    marker = "✅ " if int(pet["id"]) in self.selected_ids else ""
+                    lines.append(
+                        f"{marker}**{pet['name']}** (`{pet['id']}`) - "
+                        f"Lv {int(pet.get('level') or 1)} {pet.get('element') or 'Unknown'} - "
+                        f"{learned_count} learned"
+                    )
+                embed.add_field(
+                    name=f"Pets Page {self.page + 1}/{self.max_pages}",
+                    value="\n".join(self.fit_lines_to_field(lines)),
+                    inline=False,
+                )
+
+            if self.mode == "batch":
+                selected_pets = self.get_selected_pets()
+                if selected_pets:
+                    selected_lines = [
+                        f"• **{pet['name']}** (`{pet['id']}`)"
+                        for pet in selected_pets[:10]
+                    ]
+                    if len(selected_pets) > 10:
+                        selected_lines.append(f"• ... and {len(selected_pets) - 10} more")
+                    embed.add_field(
+                        name=f"Current Batch ({len(selected_pets)} selected)",
+                        value="\n".join(self.fit_lines_to_field(selected_lines)),
+                        inline=False,
+                    )
+                embed.set_footer(text="Selections on each page are kept while you browse.")
+            else:
+                embed.set_footer(text="Pick one pet, or cancel.")
+
+            return embed
+
+        preview = self.get_preview()
+        selection_count = len(self.get_selected_pets())
+        embed.description = (
+            f"Are you sure you want to use **1 Pet Mind Wipe** on **{selection_count}** pet(s)?"
+        )
+
+        if preview:
+            embed.add_field(
+                name="Preview",
+                value=(
+                    f"Affected: **{preview['affected_count']}**\n"
+                    f"Skipped: **{preview['skipped_count']}**\n"
+                    f"Refunded: **{preview['refunded_total']} SP**"
+                ),
+                inline=True,
+            )
+            if preview["unknown_skill_entries"] > 0:
+                embed.add_field(
+                    name="Legacy Recovery",
+                    value=f"Unknown entries recovered: **{preview['unknown_skill_entries']}**",
+                    inline=True,
+                )
+
+            target_lines = list(preview["summary_lines"])
+            if len(target_lines) > 10:
+                target_lines = target_lines[:10] + [
+                    f"• ... and {preview['affected_count'] - 10} more pets"
+                ]
+            if target_lines:
+                embed.add_field(
+                    name="Target Preview",
+                    value="\n".join(self.fit_lines_to_field(target_lines)),
+                    inline=False,
+                )
+            elif preview["skipped_count"] > 0:
+                embed.add_field(
+                    name="Target Preview",
+                    value="All selected pets currently have no learned skills to wipe.",
+                    inline=False,
+                )
+
+        embed.set_footer(text="Ownership and inventory are checked again on confirm.")
+        return embed
+
+    def _add_button(self, *, label: str, style, callback, row: int = 1, disabled: bool = False):
+        button = discord.ui.Button(label=label, style=style, row=row, disabled=disabled)
+        button.callback = callback
+        self.add_item(button)
+
+    def _rebuild_items(self):
+        self.clear_items()
+
+        if self.stage == "mode":
+            self.add_item(PetMindWipeModeSelect(self))
+            self._add_button(
+                label="Cancel",
+                style=discord.ButtonStyle.secondary,
+                callback=self.cancel_flow,
+                row=1,
+            )
+            return
+
+        if self.stage == "select":
+            page_pets = self.get_current_page_pets()
+            if page_pets:
+                self.add_item(
+                    PetMindWipePetSelect(
+                        self,
+                        page_pets,
+                        multi=self.mode == "batch",
+                    )
+                )
+
+            self._add_pagination_buttons()
+
+            if self.mode == "batch":
+                self._add_button(
+                    label="Review Selection",
+                    style=discord.ButtonStyle.success,
+                    callback=self.review_batch_selection,
+                    row=2,
+                    disabled=not self.selected_ids,
+                )
+                self._add_button(
+                    label="Clear Selection",
+                    style=discord.ButtonStyle.secondary,
+                    callback=self.clear_selection,
+                    row=2,
+                    disabled=not self.selected_ids,
+                )
+
+            self._add_button(
+                label="Back",
+                style=discord.ButtonStyle.secondary,
+                callback=self.back_to_mode,
+                row=3,
+            )
+            self._add_button(
+                label="Cancel",
+                style=discord.ButtonStyle.danger,
+                callback=self.cancel_flow,
+                row=3,
+            )
+            return
+
+        preview = self.get_preview()
+        self._add_button(
+            label="Confirm Wipe",
+            style=discord.ButtonStyle.success,
+            callback=self.confirm_wipe,
+            row=1,
+            disabled=not preview or preview["affected_count"] <= 0,
+        )
+        self._add_button(
+            label="Back",
+            style=discord.ButtonStyle.secondary,
+            callback=self.back_to_selection,
+            row=1,
+        )
+        self._add_button(
+            label="Cancel",
+            style=discord.ButtonStyle.danger,
+            callback=self.cancel_flow,
+            row=1,
+        )
+
+    def _add_pagination_buttons(self):
+        if self.max_pages <= 1:
+            return
+
+        self._add_button(
+            label="<",
+            style=discord.ButtonStyle.primary,
+            callback=self.previous_page,
+            row=1,
+            disabled=self.page <= 0,
+        )
+        self._add_button(
+            label=f"Page {self.page + 1}/{self.max_pages}",
+            style=discord.ButtonStyle.secondary,
+            callback=self.noop_button,
+            row=1,
+            disabled=True,
+        )
+        self._add_button(
+            label=">",
+            style=discord.ButtonStyle.primary,
+            callback=self.next_page,
+            row=1,
+            disabled=self.page >= self.max_pages - 1,
+        )
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "This Pet Mind Wipe menu is not for you.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_timeout(self):
+        if self.finished:
+            return
+
+        self.finished = True
+        await self.ctx.bot.reset_cooldown(self.ctx)
+        for child in self.children:
+            child.disabled = True
+
+        if self.message:
+            try:
+                await self.message.edit(
+                    embed=self.build_embed(notice="This Pet Mind Wipe selection expired."),
+                    view=self,
+                )
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+    async def refresh(self, interaction: discord.Interaction, notice: str = None):
+        self._rebuild_items()
+        await interaction.response.edit_message(embed=self.build_embed(notice=notice), view=self)
+
+    async def handle_mode_selection(self, interaction: discord.Interaction, mode: str):
+        self.mode = mode
+        self.page = 0
+        self.selected_ids.clear()
+        self.stage = "confirm" if mode == "all" else "select"
+        await self.refresh(interaction)
+
+    async def handle_pet_selection(self, interaction: discord.Interaction, selected_ids):
+        if self.mode == "single":
+            self.selected_ids = set(selected_ids)
+            self.stage = "confirm"
+        else:
+            page_ids = {int(pet["id"]) for pet in self.get_current_page_pets()}
+            self.selected_ids = (self.selected_ids - page_ids) | set(selected_ids)
+        await self.refresh(interaction)
+
+    async def previous_page(self, interaction: discord.Interaction):
+        if self.page > 0:
+            self.page -= 1
+        await self.refresh(interaction)
+
+    async def next_page(self, interaction: discord.Interaction):
+        if self.page < self.max_pages - 1:
+            self.page += 1
+        await self.refresh(interaction)
+
+    async def noop_button(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+    async def review_batch_selection(self, interaction: discord.Interaction):
+        self.stage = "confirm"
+        await self.refresh(interaction)
+
+    async def clear_selection(self, interaction: discord.Interaction):
+        self.selected_ids.clear()
+        await self.refresh(interaction)
+
+    async def back_to_mode(self, interaction: discord.Interaction):
+        self.stage = "mode"
+        self.mode = None
+        self.page = 0
+        self.selected_ids.clear()
+        await self.refresh(interaction)
+
+    async def back_to_selection(self, interaction: discord.Interaction):
+        if self.mode == "all":
+            self.stage = "mode"
+            self.mode = None
+        else:
+            self.stage = "select"
+        await self.refresh(interaction)
+
+    async def cancel_flow(self, interaction: discord.Interaction):
+        self.finished = True
+        self.stop()
+        await self.ctx.bot.reset_cooldown(self.ctx)
+        await interaction.response.edit_message(
+            content="Pet Mind Wipe cancelled.",
+            embed=None,
+            view=None,
+        )
+
+    async def confirm_wipe(self, interaction: discord.Interaction):
+        pet_ids = None if self.mode == "all" else sorted(self.selected_ids)
+        success, message = await self.cog._consume_pet_mind_wipe_targets(
+            self.ctx,
+            mode=self.mode or "single",
+            pet_ids=pet_ids,
+        )
+        if not success:
+            await interaction.response.send_message(f"Error: {message}", ephemeral=True)
+            return
+
+        self.finished = True
+        self.stop()
+        await interaction.response.edit_message(content=message, embed=None, view=None)
+
+
 class PremiumShop(commands.Cog):
     WEAPON_ELEMENTS = (
         "Light",
@@ -109,7 +598,7 @@ class PremiumShop(commands.Cog):
             "<:ageup:1473265287238385797> **Pet Age Potion** - 200 <:dragoncoin:1404860657366728788> (`petage`)\n*Instantly age your pet to the next growth stage*",
             "<:finalpotion:1473265347581710346> **Pet Speed Growth Potion** - 300 <:dragoncoin:1404860657366728788> (`petspeed`)\n*Doubles growth speed for a specific pet*",
             "<:SplicePotion:1473266873612107836> **Pet XP Potion** - 1200 <:dragoncoin:1404860657366728788> (`petxp`)\n*Gives a pet permanent x2 pet-care XP multiplier*",
-            "🧠 **Pet Mind Wipe** - 1500 <:dragoncoin:1404860657366728788> (`petmindwipe`)\n*Resets learned pet skills and refunds SP for one pet, selected pet IDs, or all pets you own*",
+            "🧠 **Pet Mind Wipe** - 1500 <:dragoncoin:1404860657366728788> (`petmindwipe`)\n*Opens a dropdown flow to wipe one pet, a batch, or all pets you own*",
             "🔄 **Pet Element Scroll** - 2200 <:dragoncoin:1404860657366728788> (`petelement`)\n*Changes one pet's element, resets learned skills, and refunds SP. Cannot be used on god pets.*",
             "📜 **Weapon Element Scroll** - 800 <:dragoncoin:1404860657366728788> (`weapelement`)\n*Changes the element of one weapon in your inventory*",
             "<:F_Legendary:1139514868400132116> **Legendary Crate** - 500 <:dragoncoin:1404860657366728788> (`legendary`)\n*Contains items with stats ranging from 41 to 80, may also in rare cases contain dragon coins*",
@@ -269,6 +758,9 @@ class PremiumShop(commands.Cog):
     # PET CONSUMABLES SECTION
     # ========================================
 
+    def _normalize_learned_skills_for_preview(self, pets_cog, learned_skills):
+        return pets_cog.normalize_learned_skills(learned_skills) if pets_cog else []
+
     def _parse_pet_mind_wipe_targets(self, raw_target_spec: str):
         normalized = " ".join(str(raw_target_spec or "").replace("，", ",").split())
         if not normalized:
@@ -343,11 +835,41 @@ class PremiumShop(commands.Cog):
         return None
 
     def _calculate_pet_skill_reset(self, pets_cog, pet):
-        learned_skills = pets_cog.normalize_learned_skills(pet.get("learned_skills"))
-        spent_skill_points, unknown_count = pets_cog.estimate_spent_skill_points(
-            str(pet.get("element") or ""),
+        learned_skills = self._normalize_learned_skills_for_preview(
+            pets_cog,
             pet.get("learned_skills"),
         )
+        skill_tree = pets_cog.SKILL_TREES.get(str(pet.get("element") or ""), {})
+        skill_lookup = {}
+        for branch_skills in skill_tree.values():
+            for skill_data in branch_skills.values():
+                skill_name = str(skill_data.get("name", "")).strip()
+                if not skill_name:
+                    continue
+                skill_lookup[skill_name.lower()] = {
+                    "cost": max(0, int(skill_data.get("cost", 0) or 0)),
+                    "is_battery": "battery life" in skill_name.lower(),
+                }
+
+        spent_skill_points = 0
+        unknown_count = 0
+        battery_active = False
+        for learned_name in learned_skills:
+            meta = skill_lookup.get(learned_name.lower())
+            if not meta:
+                unknown_count += 1
+                continue
+
+            skill_cost = int(meta["cost"])
+            if battery_active:
+                if skill_cost >= 4:
+                    skill_cost = max(1, skill_cost - 2)
+                else:
+                    skill_cost = max(1, skill_cost - 1)
+
+            spent_skill_points += skill_cost
+            if meta["is_battery"]:
+                battery_active = True
 
         current_skill_points = max(0, int(pet.get("skill_points") or 0))
         pet_level = max(1, int(pet.get("level") or 1))
@@ -366,6 +888,166 @@ class PremiumShop(commands.Cog):
             "rebuilt_skill_points": int(rebuilt_skill_points),
             "refunded_delta": int(refunded_delta),
         }
+
+    def _build_pet_mind_wipe_plan(self, pets_cog, pets):
+        plan = {
+            "updates": [],
+            "refunded_total": 0,
+            "affected_count": 0,
+            "skipped_count": 0,
+            "unknown_skill_entries": 0,
+            "summary_lines": [],
+        }
+
+        for pet in pets:
+            reset_data = self._calculate_pet_skill_reset(pets_cog, pet)
+            plan["unknown_skill_entries"] += reset_data["unknown_count"]
+
+            if not reset_data["learned_skills"] and reset_data["unknown_count"] <= 0:
+                plan["skipped_count"] += 1
+                continue
+
+            plan["updates"].append((reset_data["rebuilt_skill_points"], int(pet["id"])))
+            plan["refunded_total"] += reset_data["refunded_delta"]
+            plan["affected_count"] += 1
+            plan["summary_lines"].append(
+                f"• **{pet['name']}** (`{pet['id']}`): +{reset_data['refunded_delta']} SP -> "
+                f"**{reset_data['rebuilt_skill_points']} SP**"
+            )
+
+        return plan
+
+    def _format_pet_mind_wipe_success_message(self, plan):
+        summary_lines = list(plan["summary_lines"])
+        if len(summary_lines) > 10:
+            summary_lines = summary_lines[:10] + [
+                f"• ... and {plan['affected_count'] - 10} more pets"
+            ]
+
+        success_message = (
+            f"🧠 **Pet Mind Wipe consumed!**\n\n"
+            f"Reset **{plan['affected_count']}** pet(s) and refunded **{plan['refunded_total']} SP** total.\n"
+            f"Skipped **{plan['skipped_count']}** pet(s) with no learned skills.\n"
+            + ("\n".join(summary_lines))
+        )
+        if plan["unknown_skill_entries"] > 0:
+            success_message += (
+                f"\n\nRecovered around **{plan['unknown_skill_entries']}** legacy/unknown skill "
+                f"entries while rebuilding SP."
+            )
+
+        return success_message
+
+    async def _fetch_owned_pets_for_mind_wipe(self, conn, user_id: int):
+        return await conn.fetch(
+            """
+            SELECT id, name, level, element, skill_points, learned_skills
+            FROM monster_pets
+            WHERE user_id = $1
+            ORDER BY id;
+            """,
+            user_id,
+        )
+
+    async def _consume_pet_mind_wipe_targets(self, ctx, *, mode: str, pet_ids=None):
+        pets_cog = self.bot.get_cog("Pets")
+        if pets_cog is None:
+            return False, _("Pet system is not available right now.")
+
+        async with self.bot.pool.acquire() as conn:
+            wipe_item = await conn.fetchrow(
+                'SELECT id, quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;',
+                ctx.author.id,
+                'pet_mind_wipe',
+            )
+            if not wipe_item or wipe_item['quantity'] < 1:
+                return False, _("You don't have any Pet Mind Wipes.")
+
+            if mode == "all":
+                pets = await self._fetch_owned_pets_for_mind_wipe(conn, ctx.author.id)
+            else:
+                normalized_ids = []
+                seen = set()
+                for pet_id in pet_ids or []:
+                    pet_id = int(pet_id)
+                    if pet_id <= 0 or pet_id in seen:
+                        continue
+                    seen.add(pet_id)
+                    normalized_ids.append(pet_id)
+
+                if not normalized_ids:
+                    return False, _("Please choose at least one pet for this Pet Mind Wipe.")
+
+                pets = await conn.fetch(
+                    """
+                    SELECT id, name, level, element, skill_points, learned_skills
+                    FROM monster_pets
+                    WHERE user_id = $1 AND id = ANY($2::bigint[])
+                    ORDER BY id;
+                    """,
+                    ctx.author.id,
+                    normalized_ids,
+                )
+
+                found_ids = {int(pet["id"]) for pet in pets}
+                missing_ids = [str(pid) for pid in normalized_ids if pid not in found_ids]
+                if missing_ids:
+                    return False, _("These pet IDs were not found in your stable: {ids}").format(
+                        ids=", ".join(missing_ids)
+                    )
+
+            if not pets:
+                return False, _("No matching pets were found for this Pet Mind Wipe.")
+
+            plan = self._build_pet_mind_wipe_plan(pets_cog, pets)
+            if not plan["updates"]:
+                return False, _("None of the selected pets currently have learned skills to wipe.")
+
+            async with conn.transaction():
+                await conn.executemany(
+                    """
+                    UPDATE monster_pets
+                    SET learned_skills = '[]'::jsonb, skill_tree_progress = '{}'::jsonb, skill_points = $1
+                    WHERE id = $2;
+                    """,
+                    plan["updates"],
+                )
+                await conn.execute(
+                    'UPDATE user_consumables SET quantity = quantity - 1 WHERE id = $1;',
+                    wipe_item['id'],
+                )
+
+        return True, self._format_pet_mind_wipe_success_message(plan)
+
+    async def start_pet_mind_wipe_flow(self, ctx):
+        pets_cog = self.bot.get_cog("Pets")
+        if pets_cog is None:
+            return False, _("Pet system is not available right now.")
+
+        async with self.bot.pool.acquire() as conn:
+            wipe_item = await conn.fetchrow(
+                'SELECT id, quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;',
+                ctx.author.id,
+                'pet_mind_wipe',
+            )
+            if not wipe_item or wipe_item['quantity'] < 1:
+                return False, _("You don't have any Pet Mind Wipes.")
+
+            pets = await self._fetch_owned_pets_for_mind_wipe(conn, ctx.author.id)
+
+        if not pets:
+            return False, _("You do not own any pets.")
+
+        view = PetMindWipeFlowView(
+            self,
+            ctx,
+            pets_cog,
+            pets,
+            wipe_item["quantity"],
+        )
+        message = await ctx.send(embed=view.build_embed(), view=view)
+        view.message = message
+        return True, None
     
     async def consume_pet_age_potion(self, ctx, pet_id: int):
         """
@@ -605,115 +1287,23 @@ class PremiumShop(commands.Cog):
         
         return True, success_message
 
-    async def consume_pet_mind_wipe(self, ctx, target_spec: str):
+    async def consume_pet_mind_wipe(self, ctx, target_spec: str = None):
         """
         Reset pet skills and refund skill points for one pet, selected pets, or all owned pets.
         Called by the consume command in profile cog.
         """
+        if not target_spec:
+            return await self.start_pet_mind_wipe_flow(ctx)
+
         parsed_targets, parse_error = self._parse_pet_mind_wipe_targets(target_spec)
         if parse_error:
             return False, parse_error
 
-        pets_cog = self.bot.get_cog("Pets")
-        if pets_cog is None:
-            return False, _("Pet system is not available right now.")
-
-        async with self.bot.pool.acquire() as conn:
-            wipe_item = await conn.fetchrow(
-                'SELECT id, quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;',
-                ctx.author.id,
-                'pet_mind_wipe',
-            )
-            if not wipe_item or wipe_item['quantity'] < 1:
-                return False, _("You don't have any Pet Mind Wipes.")
-
-            if parsed_targets["mode"] == "all":
-                pets = await conn.fetch(
-                    """
-                    SELECT id, name, level, element, skill_points, learned_skills
-                    FROM monster_pets
-                    WHERE user_id = $1
-                    ORDER BY id;
-                    """,
-                    ctx.author.id,
-                )
-            else:
-                pets = await conn.fetch(
-                    """
-                    SELECT id, name, level, element, skill_points, learned_skills
-                    FROM monster_pets
-                    WHERE user_id = $1 AND id = ANY($2::bigint[])
-                    ORDER BY id;
-                    """,
-                    ctx.author.id,
-                    parsed_targets["ids"],
-                )
-
-            if not pets:
-                return False, _("No matching pets were found for this Pet Mind Wipe.")
-
-            if parsed_targets["mode"] == "ids":
-                found_ids = {int(pet["id"]) for pet in pets}
-                missing_ids = [str(pid) for pid in parsed_targets["ids"] if pid not in found_ids]
-                if missing_ids:
-                    return False, _("These pet IDs were not found in your stable: {ids}").format(
-                        ids=", ".join(missing_ids)
-                    )
-
-            updates = []
-            refunded_total = 0
-            affected_count = 0
-            skipped_count = 0
-            unknown_skill_entries = 0
-            summary_lines = []
-
-            for pet in pets:
-                reset_data = self._calculate_pet_skill_reset(pets_cog, pet)
-                unknown_skill_entries += reset_data["unknown_count"]
-
-                if not reset_data["learned_skills"] and reset_data["unknown_count"] <= 0:
-                    skipped_count += 1
-                    continue
-
-                updates.append((reset_data["rebuilt_skill_points"], int(pet["id"])))
-                refunded_total += reset_data["refunded_delta"]
-                affected_count += 1
-                summary_lines.append(
-                    f"• **{pet['name']}** (`{pet['id']}`): +{reset_data['refunded_delta']} SP -> **{reset_data['rebuilt_skill_points']} SP**"
-                )
-
-            if not updates:
-                return False, _("None of the selected pets currently have learned skills to wipe.")
-
-            async with conn.transaction():
-                await conn.executemany(
-                    """
-                    UPDATE monster_pets
-                    SET learned_skills = '[]'::jsonb, skill_tree_progress = '{}'::jsonb, skill_points = $1
-                    WHERE id = $2;
-                    """,
-                    updates,
-                )
-                await conn.execute(
-                    'UPDATE user_consumables SET quantity = quantity - 1 WHERE id = $1;',
-                    wipe_item['id'],
-                )
-
-        if len(summary_lines) > 10:
-            summary_lines = summary_lines[:10] + [f"• ... and {affected_count - 10} more pets"]
-
-        success_message = (
-            f"🧠 **Pet Mind Wipe consumed!**\n\n"
-            f"Reset **{affected_count}** pet(s) and refunded **{refunded_total} SP** total.\n"
-            f"Skipped **{skipped_count}** pet(s) with no learned skills.\n"
-            + ("\n".join(summary_lines))
+        return await self._consume_pet_mind_wipe_targets(
+            ctx,
+            mode="all" if parsed_targets["mode"] == "all" else "batch",
+            pet_ids=parsed_targets["ids"],
         )
-        if unknown_skill_entries > 0:
-            success_message += (
-                f"\n\nRecovered around **{unknown_skill_entries}** legacy/unknown skill entries while rebuilding SP."
-            )
-
-        return True, success_message
 
     async def consume_pet_element_scroll(self, ctx, pet_id: int, new_element: str):
         """

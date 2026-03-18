@@ -73,6 +73,7 @@ CATEGORY_NAME = '╰• ☣ | ☣ FABLE RPG ☣ | ☣ •╯'
 
 
 class GameMaster(commands.Cog):
+    PET_COMPENSATION_ALLOWED_USER_ID = 295173706496475136
     EVENT_DISPLAY_NAMES = {
         "halloween": "Halloween",
         "wintersday": "Wintersday",
@@ -208,6 +209,86 @@ class GameMaster(commands.Cog):
             return await ctx.send(*args, **kwargs)
         except (discord.Forbidden, discord.HTTPException):
             return None
+
+    async def _grant_consumable_quantity(self, conn, user_id: int, consumable_type: str, amount: int):
+        rows = await conn.fetch(
+            """
+            SELECT id, quantity
+            FROM user_consumables
+            WHERE user_id = $1 AND consumable_type = $2
+            ORDER BY id ASC;
+            """,
+            user_id,
+            consumable_type,
+        )
+
+        if not rows:
+            await conn.execute(
+                """
+                INSERT INTO user_consumables (user_id, consumable_type, quantity)
+                VALUES ($1, $2, $3);
+                """,
+                user_id,
+                consumable_type,
+                amount,
+            )
+            return {"new_quantity": amount, "duplicates_removed": 0}
+
+        primary_id = rows[0]["id"]
+        total_quantity = sum(int(row["quantity"] or 0) for row in rows)
+        new_quantity = total_quantity + amount
+        duplicate_ids = [row["id"] for row in rows[1:]]
+
+        await conn.execute(
+            "UPDATE user_consumables SET quantity = $1 WHERE id = $2;",
+            new_quantity,
+            primary_id,
+        )
+        if duplicate_ids:
+            await conn.execute(
+                "DELETE FROM user_consumables WHERE id = ANY($1::bigint[]);",
+                duplicate_ids,
+            )
+
+        return {
+            "new_quantity": new_quantity,
+            "duplicates_removed": len(duplicate_ids),
+        }
+
+    async def _fetch_pet_compensation_user_ids(self, conn):
+        pet_logs_exists = await conn.fetchval(
+            "SELECT to_regclass('public.pet_logs') IS NOT NULL;"
+        )
+
+        if pet_logs_exists:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT profile."user" AS user_id
+                FROM profile
+                JOIN (
+                    SELECT user_id
+                    FROM monster_pets
+                    WHERE user_id > 0
+                    UNION
+                    SELECT user_id
+                    FROM pet_logs
+                    WHERE user_id > 0
+                ) AS pet_owners ON pet_owners.user_id = profile."user"
+                ORDER BY profile."user" ASC;
+                """
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT profile."user" AS user_id
+                FROM profile
+                JOIN monster_pets ON monster_pets.user_id = profile."user"
+                WHERE monster_pets.user_id > 0
+                ORDER BY profile."user" ASC;
+                """
+            )
+
+        return [int(row["user_id"]) for row in rows]
 
     @is_gm()
     @commands.command(brief=_("Publish an announcement"))
@@ -1143,30 +1224,13 @@ class GameMaster(commands.Cog):
         display_name = item_data["display_name"]
 
         async with self.bot.pool.acquire() as conn:
-            existing = await conn.fetchrow(
-                'SELECT id, quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;',
+            grant_result = await self._grant_consumable_quantity(
+                conn,
                 target.id,
                 consumable_type,
+                amount,
             )
-            if existing:
-                await conn.execute(
-                    'UPDATE user_consumables SET quantity = quantity + $1 WHERE id = $2;',
-                    amount,
-                    existing["id"],
-                )
-            else:
-                await conn.execute(
-                    'INSERT INTO user_consumables (user_id, consumable_type, quantity) VALUES ($1, $2, $3);',
-                    target.id,
-                    consumable_type,
-                    amount,
-                )
-
-            new_quantity = await conn.fetchval(
-                'SELECT quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;',
-                target.id,
-                consumable_type,
-            )
+            new_quantity = grant_result["new_quantity"]
 
         await self._safe_ctx_send(
             ctx,
@@ -1182,6 +1246,62 @@ class GameMaster(commands.Cog):
                     item_name=display_name,
                     target=target,
                     reason=reason or f"<{ctx.message.jump_url}>",
+                )
+        ) as params:
+            await self.bot.http.send_message(
+                self.bot.config.game.gm_log_channel,
+                params=params,
+            )
+
+    @is_gm()
+    @commands.command(
+        hidden=True,
+        name="gmgrantpetcompensation",
+        brief=_("Grant pet compensation consumables"),
+    )
+    async def gmgrantpetcompensation(self, ctx):
+        """Grant pet compensation consumables to every distinct user who has ever owned a pet."""
+        if ctx.author.id != self.PET_COMPENSATION_ALLOWED_USER_ID:
+            return await ctx.send("You are not allowed to run this command.")
+
+        async with self.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                user_ids = await self._fetch_pet_compensation_user_ids(conn)
+                if not user_ids:
+                    return await self._safe_ctx_send(ctx, "No qualifying pet owners were found.")
+
+                duplicate_rows_removed = 0
+                for user_id in user_ids:
+                    element_result = await self._grant_consumable_quantity(
+                        conn,
+                        user_id,
+                        "pet_element_scroll",
+                        2,
+                    )
+                    duplicate_rows_removed += element_result["duplicates_removed"]
+
+                    mind_wipe_result = await self._grant_consumable_quantity(
+                        conn,
+                        user_id,
+                        "pet_mind_wipe",
+                        1,
+                    )
+                    duplicate_rows_removed += mind_wipe_result["duplicates_removed"]
+
+        summary = (
+            f"Granted **2x Pet Element Scroll** and **1x Pet Mind Wipe** to "
+            f"**{len(user_ids)}** distinct pet owners. Removed **{duplicate_rows_removed}** "
+            f"duplicate consumable rows."
+        )
+        await self._safe_ctx_send(ctx, summary)
+
+        with handle_message_parameters(
+                content=(
+                    f"**{ctx.author}** ran `gmgrantpetcompensation` and granted "
+                    f"**2x Pet Element Scroll** and **1x Pet Mind Wipe** to "
+                    f"**{len(user_ids)}** distinct pet owners.\n\n"
+                    f"Duplicate consumable rows removed: **{duplicate_rows_removed}**.\n\n"
+                    f"Reason: *<{ctx.message.jump_url}>*"
                 )
         ) as params:
             await self.bot.http.send_message(
