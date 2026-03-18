@@ -71,6 +71,10 @@ class Battle(ABC):
             "simple": kwargs.get("simple", False),  # Simple battle = classic battle format
             "status_effects": kwargs.get("status_effects", False),  # Enable status effects system
         }
+
+        for team in self.teams:
+            for combatant in getattr(team, "combatants", []):
+                setattr(combatant, "battle", self)
     
     @abstractmethod
     async def start_battle(self):
@@ -131,6 +135,25 @@ class Battle(ABC):
             return f"{number:.2f}"
         # If not a number, return as is
         return str(number)
+
+    def record_damage_event(self, source, target, amount):
+        """Hook for battle types that want to aggregate damage events."""
+        return None
+
+    def apply_damage(self, source, target, amount):
+        """Apply damage and record the actual HP lost after mitigation."""
+        if target is None or not hasattr(target, "take_damage"):
+            return Decimal("0")
+
+        before_hp = Decimal(str(getattr(target, "hp", 0) or 0))
+        target.take_damage(amount)
+        after_hp = Decimal(str(getattr(target, "hp", 0) or 0))
+        actual_damage = max(Decimal("0"), before_hp - after_hp)
+
+        if actual_damage > 0:
+            self.record_damage_event(source, target, actual_damage)
+
+        return actual_damage
 
     def resolve_attack_element(self, attacker):
         """Resolve outgoing element for an attack action."""
@@ -428,7 +451,7 @@ class Battle(ABC):
                 attacker,
                 redirected_damage,
             )
-            ally.take_damage(pet_damage)
+            self.apply_damage(attacker, ally, pet_damage)
             messages = list(pet_messages)
             messages.append(
                 f"💧 **{ally.name}** intercepts **{self.format_number(pet_damage)} HP** "
@@ -500,6 +523,7 @@ class Battle(ABC):
         self,
         *,
         source,
+        summoner=None,
         team,
         name: str,
         hp_scale: Decimal,
@@ -524,6 +548,9 @@ class Battle(ABC):
             attack_priority=True,
             is_pet=False,
         )
+        echo.is_summoned = True
+        echo.summoner = summoner or source
+        setattr(echo, "battle", self)
         team.combatants.append(echo)
         if hasattr(self, "turn_order"):
             self.turn_order.append(echo)
@@ -620,10 +647,11 @@ class Battle(ABC):
                 "pending_true_damage_bypass_shield",
                 existing_true_damage + bonus_damage,
             )
-            target.take_damage(bonus_damage)
+            self.apply_damage(attacker, target, bonus_damage)
 
         self._spawn_ascension_echo(
             source=target,
+            summoner=attacker,
             team=ally_team,
             name=f"Grave Echo of {target.name}",
             hp_scale=Decimal("0.32"),
@@ -669,6 +697,7 @@ class Battle(ABC):
         ally_team = self.get_team_for_combatant(target)
         self._spawn_ascension_echo(
             source=target,
+            summoner=target,
             team=ally_team,
             name=f"Paradox Echo of {target.name}",
             hp_scale=Decimal("0.34"),

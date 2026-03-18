@@ -214,6 +214,13 @@ class PetExtension:
         except Exception:
             return Decimal(str(default))
 
+    def _deal_damage(self, source, target, damage):
+        battle = getattr(source, 'battle', None) or getattr(target, 'battle', None)
+        if battle and hasattr(battle, 'apply_damage'):
+            return battle.apply_damage(source, target, damage)
+        target.take_damage(damage)
+        return Decimal('0')
+
     def _scaled_heal(self, source, target, percent, *, burst=False, self_target=False):
         source_hp = self._to_decimal(getattr(source, 'max_hp', 0))
         target_hp = self._to_decimal(getattr(target, 'max_hp', source_hp))
@@ -382,7 +389,7 @@ class PetExtension:
             enemies_hit = 0
             for enemy in pet_combatant.enemy_team.combatants:
                 if enemy.is_alive():
-                    enemy.take_damage(explosion_damage)
+                    self._deal_damage(pet_combatant, enemy, explosion_damage)
                     enemies_hit += 1
 
             setattr(pet_combatant, 'combustion_triggered', True)
@@ -1231,7 +1238,7 @@ class PetExtension:
             aoe_damage = modified_damage * Decimal(str(effects['heat_wave']['aoe_damage_percent']))
             for enemy in target.team.combatants:
                 if enemy != target and enemy.is_alive():
-                    enemy.take_damage(aoe_damage)
+                    self._deal_damage(pet_combatant, enemy, aoe_damage)
             messages.append(f"{pet_combatant.name}'s Heat Wave hits all enemies!")
             
         # Fire Affinity - elemental bonus
@@ -1298,7 +1305,7 @@ class PetExtension:
                 splash_damage = modified_damage * Decimal('0.60')
                 for enemy in target.team.combatants:
                     if enemy != target and enemy.is_alive():
-                        enemy.take_damage(splash_damage)
+                        self._deal_damage(pet_combatant, enemy, splash_damage)
                     if enemy.is_alive():
                         setattr(
                             enemy,
@@ -1358,7 +1365,7 @@ class PetExtension:
                 splash_damage = modified_damage * Decimal(str(effects['oceans_wrath'].get('splash_multiplier', 0.75)))
                 for enemy in target.team.combatants:
                     if enemy != target and enemy.is_alive():
-                        enemy.take_damage(splash_damage)
+                        self._deal_damage(pet_combatant, enemy, splash_damage)
             if hasattr(pet_combatant, 'team'):
                 for ally in pet_combatant.team.combatants:
                     if ally.is_alive():
@@ -1414,7 +1421,7 @@ class PetExtension:
                 for i, chain_target in enumerate(chain_targets[:effects['thunder_strike']['chain_count']]):
                     if i < len(effects['thunder_strike']['chain_damage']):
                         chain_dmg = modified_damage * Decimal(str(effects['thunder_strike']['chain_damage'][i]))
-                        chain_target.take_damage(chain_dmg)
+                        self._deal_damage(pet_combatant, chain_target, chain_dmg)
                 messages.append(f"{pet_combatant.name}'s Thunder Strike chains to {len(chain_targets)} enemies!")
                 
         # Voltage Surge - stacking damage
@@ -1478,7 +1485,7 @@ class PetExtension:
             for i, chain_target in enumerate(chain_targets[:effects['chain_lightning']['chain_count']]):
                 if i < len(effects['chain_lightning']['chain_damage']):
                     chain_dmg = modified_damage * Decimal(str(effects['chain_lightning']['chain_damage'][i]))
-                    chain_target.take_damage(chain_dmg)
+                    self._deal_damage(pet_combatant, chain_target, chain_dmg)
             messages.append(f"{pet_combatant.name}'s Chain Lightning hits {len(chain_targets)} additional targets!")
 
         # Electric Affinity - elemental bonus
@@ -1785,7 +1792,7 @@ class PetExtension:
             aoe_damage = modified_damage * Decimal('0.5')
             for enemy in target.team.combatants:
                 if enemy != target and enemy.is_alive():
-                    enemy.take_damage(aoe_damage)
+                    self._deal_damage(pet_combatant, enemy, aoe_damage)
             messages.append(f"{pet_combatant.name}'s Light Burst illuminates the battlefield!")
             
         # Solar Flare - ULTIMATE
@@ -1796,7 +1803,7 @@ class PetExtension:
                 splash_damage = modified_damage * Decimal('0.60')
                 for enemy in target.team.combatants:
                     if enemy != target and enemy.is_alive():
-                        enemy.take_damage(splash_damage)
+                        self._deal_damage(pet_combatant, enemy, splash_damage)
             # Purify entire team
             if hasattr(pet_combatant, 'team'):
                 for ally in pet_combatant.team.combatants:
@@ -1933,7 +1940,7 @@ class PetExtension:
         # Shadow Clone - duplicate attack
         if 'shadow_clone' in effects and random.randint(1, 100) <= effects['shadow_clone']['chance']:
             clone_damage = modified_damage * Decimal(str(effects['shadow_clone']['clone_damage']))
-            target.take_damage(clone_damage)
+            self._deal_damage(pet_combatant, target, clone_damage)
             messages.append(f"{pet_combatant.name}'s shadow clone attacks for **{clone_damage:.2f} damage**!")
             
         # Void Mastery - ULTIMATE
@@ -2105,7 +2112,7 @@ class PetExtension:
             aoe_damage = modified_damage * Decimal(str(effects['chaos_storm']['aoe_multiplier']))
             for enemy in target.team.combatants:
                 if enemy != target and enemy.is_alive():
-                    enemy.take_damage(aoe_damage)
+                    self._deal_damage(pet_combatant, enemy, aoe_damage)
                     if random.randint(1, 100) <= effects['chaos_storm'].get('effect_chance', 35):
                         # Random chaos effect
                         chaos_effects = ['stunned', 'confused', 'weakened', 'slowed']
@@ -2294,7 +2301,7 @@ class PetExtension:
         if 'molten_armor' in effects and random.randint(1, 100) <= effects['molten_armor']['chance']:
             reflect_damage = damage * Decimal(str(effects['molten_armor']['reflect_percent']))
             if hasattr(attacker, 'take_damage'):
-                attacker.take_damage(reflect_damage)
+                self._deal_damage(pet_combatant, attacker, reflect_damage)
                 messages.append(f"{pet_combatant.name}'s Molten Armor reflects **{reflect_damage:.2f} damage**!")
                 
         # Flame Barrier - shield
@@ -2379,7 +2386,7 @@ class PetExtension:
             modified_damage -= prevented_damage
             reflected_damage = prevented_damage * Decimal(str(effects['winds_guidance'].get('reflect_fraction', 0.60)))
             if attacker is not None and hasattr(attacker, 'take_damage') and getattr(attacker, 'is_alive', lambda: True)():
-                attacker.take_damage(reflected_damage)
+                self._deal_damage(pet_combatant, attacker, reflected_damage)
                 messages.append(
                     f"{pet_combatant.name}'s Wind's Guidance diverts the blow! "
                     f"**{reflected_damage:.2f} damage** whips back into {attacker.name}."
@@ -2432,7 +2439,7 @@ class PetExtension:
         if 'thorn_shield' in effects:
             poison_damage = damage * Decimal(str(effects['thorn_shield']['reflect_percent']))
             if hasattr(attacker, 'take_damage'):
-                attacker.take_damage(poison_damage)
+                self._deal_damage(pet_combatant, attacker, poison_damage)
                 setattr(attacker, 'poisoned', 3)  # 3 turns of poison
                 messages.append(f"{pet_combatant.name}'s Thorn Shield poisons the attacker!")
                 
@@ -2496,7 +2503,7 @@ class PetExtension:
             if alive_allies:
                 damage_per_ally = shared_damage / Decimal(str(len(alive_allies)))
                 for ally in alive_allies:
-                    ally.take_damage(damage_per_ally)
+                    self._deal_damage(attacker, ally, damage_per_ally)
                 modified_damage = remaining_damage
                 messages.append(f"Soul Bind shares **{shared_damage:.2f} damage** among allies!")
                 
@@ -3356,7 +3363,7 @@ class PetExtension:
             for enemy in pet_combatant.enemy_team.combatants:
                 if enemy.is_alive():
                     rift_damage = enemy.max_hp * Decimal(str(effects['void_rift']['damage_percent']))
-                    enemy.take_damage(rift_damage)
+                    self._deal_damage(pet_combatant, enemy, rift_damage)
                     void_damage += rift_damage
             if void_damage > 0:
                 messages.append(f"Void Rift tears at reality, dealing **{void_damage:.2f} total damage**!")
@@ -3556,7 +3563,7 @@ class PetExtension:
                 tornado_data = getattr(enemy, 'tornado_damage', None)
                 if tornado_data and tornado_data['duration'] > 0:
                     tornado_dmg = tornado_data['damage']
-                    enemy.take_damage(tornado_dmg)
+                    self._deal_damage(pet_combatant, enemy, tornado_dmg)
                     tornado_data['duration'] -= 1
                     messages.append(f"{enemy.name} takes **{tornado_dmg:.2f} tornado damage**!")
                     
@@ -3579,7 +3586,7 @@ class PetExtension:
                             continue
                         else:
                             damage = pet_combatant.max_hp * Decimal('0.05')  # 5% per turn
-                            pet_combatant.take_damage(damage)
+                            self._deal_damage(None, pet_combatant, damage)
                             messages.append(f"{pet_combatant.name} takes **{damage:.2f} {status} damage**!")
                     elif status == 'paralyzed':
                         messages.append(f"{pet_combatant.name} is paralyzed and cannot act!")

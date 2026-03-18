@@ -10,6 +10,7 @@ from collections import deque
 
 import discord
 from utils import misc as rpgtools
+from utils.markdown import escape_markdown
 from discord.ext import commands, tasks
 from discord.ui import View, Button, Select, select
 from discord.enums import ButtonStyle
@@ -1683,6 +1684,21 @@ class Battles(commands.Cog):
                     stage_id INTEGER NOT NULL REFERENCES ice_dragon_stages(id) ON DELETE CASCADE,
                     UNIQUE (preset_id, stage_id)
                 );
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS dragon_damage_leaderboard (
+                    user_id BIGINT PRIMARY KEY,
+                    total_damage NUMERIC(20,2) NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            await conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_dragon_damage_leaderboard_total_damage
+                ON dragon_damage_leaderboard(total_damage DESC);
                 """
             )
             await conn.execute("ALTER TABLE ice_dragon_stages ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;")
@@ -9267,6 +9283,10 @@ class Battles(commands.Cog):
                         return
                     
                     # Handle rewards
+                    combat_summary_embed = None
+                    if hasattr(battle, "create_participant_damage_summary_embed"):
+                        combat_summary_embed = battle.create_participant_damage_summary_embed()
+
                     if victory is True:  # Players won
                         stage_id = getattr(battle, "dragon_stage_id", None)
                         await self._handle_dragon_victory(ctx, view.party_members, stage_id=stage_id)
@@ -9274,6 +9294,9 @@ class Battles(commands.Cog):
                         await self._handle_dragon_defeat(ctx, view.party_members)
                     else:  # Draw
                         await ctx.send("The battle ended in a draw!")
+
+                    if combat_summary_embed is not None:
+                        await ctx.send(embed=combat_summary_embed)
                         
                 finally:
                     # Always remove players from fighting status
@@ -9680,6 +9703,81 @@ class Battles(commands.Cog):
             inline=False
         )
         
+        await ctx.send(embed=embed)
+
+    @dragon_challenge.command(
+        name="damageleaderboard",
+        aliases=["damagelb", "dmglb", "damageboard", "dragondamage"],
+    )
+    async def dragon_damage_leaderboard(self, ctx):
+        """View the all-time Ice Dragon damage leaderboard"""
+        await ctx.typing()
+
+        async with self.bot.pool.acquire() as conn:
+            players = await conn.fetch(
+                """
+                SELECT ddl.user_id, ddl.total_damage, p.name
+                FROM dragon_damage_leaderboard ddl
+                LEFT JOIN profile p ON p.user = ddl.user_id
+                ORDER BY ddl.total_damage DESC, ddl.updated_at ASC, ddl.user_id ASC
+                LIMIT 10
+                """
+            )
+
+            user_profile = await conn.fetchrow(
+                """
+                SELECT ddl.total_damage, p.name
+                FROM dragon_damage_leaderboard ddl
+                LEFT JOIN profile p ON p.user = ddl.user_id
+                WHERE ddl.user_id = $1
+                """,
+                ctx.author.id,
+            )
+
+        result = ""
+        top_10_ids = [player["user_id"] for player in players]
+        user_in_top_10 = ctx.author.id in top_10_ids
+
+        for idx, profile in enumerate(players):
+            username = await rpgtools.lookup(self.bot, profile["user_id"])
+            total_damage = Decimal(str(profile["total_damage"] or 0))
+            text = _(
+                "{name}, a character by {username} with **{damage}** dragon damage"
+            ).format(
+                name=escape_markdown(profile["name"] or "Unknown"),
+                username=escape_markdown(username),
+                damage=f"{total_damage:,.2f}",
+            )
+            result += f"{idx + 1}. {text}\n"
+
+        if not result:
+            result = _("No one has dealt damage to the dragon yet.\n")
+
+        if not user_in_top_10:
+            if user_profile:
+                user_damage = Decimal(str(user_profile["total_damage"] or 0))
+                user_rank = await self.bot.pool.fetchval(
+                    "SELECT COUNT(*) FROM dragon_damage_leaderboard WHERE total_damage > $1;",
+                    user_damage,
+                )
+                username = await rpgtools.lookup(self.bot, ctx.author.id)
+                text = _(
+                    "{name}, a character by {username} with **{damage}** dragon damage"
+                ).format(
+                    name=escape_markdown(user_profile["name"] or "Unknown"),
+                    username=escape_markdown(username),
+                    damage=f"{user_damage:,.2f}",
+                )
+                result += _("\n**Your Rank:**\n")
+                result += f"{int(user_rank or 0) + 1}. {text}\n"
+            elif players:
+                result += _("\nYou are not currently ranked.\n")
+
+        embed = discord.Embed(
+            title=_("The Top Dragon Damage Dealers"),
+            description=result,
+            colour=0xE7CA01,
+        )
         await ctx.send(embed=embed)
     
     @dragon_challenge.command(name="reset")
