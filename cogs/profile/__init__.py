@@ -1811,13 +1811,20 @@ class Profile(commands.Cog):
     @user_cooldown(300)
     @commands.command(aliases=["drink"], brief=_("Consume a potion or candy"))
     @locale_doc
-    async def consume(self, ctx, item_type: str, target_id: int = None, *, extra: str = None):
+    async def consume(self, ctx, item_type: str, target_arg: str = None, *, extra: str = None):
         """
         Consume either a reset potion, candy, or premium consumable.
-        Valid types: reset, candy, highcandy, petage <pet_id>, petspeed <pet_id>, petxp <pet_id>, weapelement <weapon_id> <element>
+        Valid types: reset, candy, highcandy, petage <pet_id>, petspeed <pet_id>, petxp <pet_id>, petmindwipe <all|pet_ids>, petelement <pet_id> <element>, weapelement <weapon_id> <element>
         """
         try:
             item_type = item_type.lower()
+            target_value = str(target_arg).strip() if target_arg is not None else None
+
+            def parse_single_numeric_target():
+                if not target_value:
+                    return None
+                return int(target_value) if target_value.isdigit() else None
+
             async with self.bot.pool.acquire() as conn:
                 profile_query = """
                         SELECT resetpotion, levelcandy, highqualitylevelcandy, xp
@@ -1996,6 +2003,7 @@ class Profile(commands.Cog):
 
             elif item_type in ["petage", "pet age potion"]:
                 # Handle pet age potion consumption
+                target_id = parse_single_numeric_target()
                 if target_id is None:
                     await ctx.send("Please provide a pet ID: `$consume petage <pet_id>` or `$consume \"pet age potion\" <pet_id>`")
                     await self.bot.reset_cooldown(ctx)
@@ -2017,6 +2025,7 @@ class Profile(commands.Cog):
                 
             elif item_type in ["petspeed", "pet speed growth potion"]:
                 # Handle pet speed growth potion consumption
+                target_id = parse_single_numeric_target()
                 if target_id is None:
                     await ctx.send("Please provide a pet ID: `$consume petspeed <pet_id>` or `$consume \"pet speed growth potion\" <pet_id>`")
                     await self.bot.reset_cooldown(ctx)
@@ -2038,6 +2047,7 @@ class Profile(commands.Cog):
                 
             elif item_type in ["petxp", "pet xp potion"]:
                 # Handle pet XP potion consumption
+                target_id = parse_single_numeric_target()
                 if target_id is None:
                     await ctx.send("Please provide a pet ID: `$consume petxp <pet_id>` or `$consume \"pet xp potion\" <pet_id>`")
                     await self.bot.reset_cooldown(ctx)
@@ -2057,8 +2067,62 @@ class Profile(commands.Cog):
                     await self.bot.reset_cooldown(ctx)
                 return
 
+            elif item_type in ["petmindwipe", "pet mind wipe", "mindwipe"]:
+                target_spec = " ".join(part for part in [target_value, extra] if part).strip()
+                if not target_spec:
+                    await ctx.send(
+                        "Please provide `all`, a pet ID, or a list of pet IDs: "
+                        "`$consume petmindwipe all`, `$consume petmindwipe 123`, or `$consume petmindwipe 123,456`"
+                    )
+                    await self.bot.reset_cooldown(ctx)
+                    return
+
+                premium_cog = self.bot.get_cog("PremiumShop")
+                if not premium_cog:
+                    await ctx.send("Premium shop cog not found.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
+
+                success, message = await premium_cog.consume_pet_mind_wipe(ctx, target_spec)
+                if success:
+                    await ctx.send(message)
+                else:
+                    await ctx.send(f"Error: {message}")
+                    await self.bot.reset_cooldown(ctx)
+                return
+
+            elif item_type in ["petelement", "pet element scroll", "pet element change", "petelementscroll"]:
+                target_id = parse_single_numeric_target()
+                if target_id is None or not extra:
+                    await ctx.send(
+                        "Please provide a pet ID and new element: "
+                        "`$consume petelement <pet_id> <element>` or "
+                        "`$consume \"pet element scroll\" <pet_id> <element>`"
+                    )
+                    await self.bot.reset_cooldown(ctx)
+                    return
+
+                premium_cog = self.bot.get_cog("PremiumShop")
+                if not premium_cog:
+                    await ctx.send("Premium shop cog not found.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
+
+                success, message = await premium_cog.consume_pet_element_scroll(
+                    ctx,
+                    target_id,
+                    extra.strip(),
+                )
+                if success:
+                    await ctx.send(message)
+                else:
+                    await ctx.send(f"Error: {message}")
+                    await self.bot.reset_cooldown(ctx)
+                return
+
             elif item_type in ["weapelement", "weapon element scroll", "elementscroll"]:
                 # Handle weapon element scroll consumption
+                target_id = parse_single_numeric_target()
                 if target_id is None or not extra:
                     await ctx.send(
                         "Please provide a weapon ID and element: "
@@ -2090,6 +2154,7 @@ class Profile(commands.Cog):
                 await ctx.send(
                     "Unknown item type. Valid types are: reset, candy, highcandy, "
                     "petage <pet_id>, petspeed <pet_id>, petxp <pet_id>, "
+                    "petmindwipe <all|pet_ids>, petelement <pet_id> <element>, "
                     "weapelement <weapon_id> <element>"
                 )
                 await self.bot.reset_cooldown(ctx)
@@ -2683,6 +2748,27 @@ class Profile(commands.Cog):
                 result.add_field(
                     name="<:splicepotion:1399690724051779745> Pet XP Potion",
                     value=f"Quantity: {quantity}\nGives a pet permanent x2 pet-care XP multiplier (`$consume petxp <pet_id>` or `$consume \"pet xp potion\" <pet_id>`)",
+                    inline=False
+                )
+            elif consumable_type == 'pet_mind_wipe':
+                result.add_field(
+                    name="🧠 Pet Mind Wipe",
+                    value=(
+                        f"Quantity: {quantity}\nReset learned pet skills and refund SP "
+                        f"(`$consume petmindwipe all`, `$consume petmindwipe <pet_id>`, or "
+                        f"`$consume \"pet mind wipe\" <id1,id2,...>`)"
+                    ),
+                    inline=False
+                )
+            elif consumable_type == 'pet_element_scroll':
+                result.add_field(
+                    name="🔄 Pet Element Scroll",
+                    value=(
+                        f"Quantity: {quantity}\nChange one pet's element, wipe learned skills, and refund SP "
+                        f"(cannot target Drakath/Elysia/Sepulchure pets) "
+                        f"(`$consume petelement <pet_id> <element>` or "
+                        f"`$consume \"pet element scroll\" <pet_id> <element>`)"
+                    ),
                     inline=False
                 )
             elif consumable_type == 'weapon_element_scroll':

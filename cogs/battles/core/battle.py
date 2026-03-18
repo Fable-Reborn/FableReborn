@@ -176,10 +176,16 @@ class Battle(ABC):
             priority += Decimal("1000")
         if getattr(combatant, "quick_charge_active", False):
             priority += Decimal("800")
+        if int(getattr(combatant, "storm_lord_haste", 0) or 0) > 0:
+            priority += Decimal("600")
         if getattr(combatant, "air_currents_boost", False):
             priority += Decimal("300")
         if getattr(combatant, "freedom_boost", False):
             priority += Decimal("200")
+        if getattr(combatant, "sky_haste", False):
+            priority += Decimal("250")
+        if int(getattr(combatant, "storm_dominated", 0) or 0) > 0:
+            priority -= Decimal("300")
         if hasattr(combatant, "zephyr_speed"):
             priority += Decimal(str(getattr(combatant, "zephyr_speed", 0))) * Decimal("100")
         if hasattr(combatant, "zephyr_slow"):
@@ -306,6 +312,144 @@ class Battle(ABC):
             if team is not current_team:
                 return team
         return None
+
+    def prepare_pet_context(self, combatant):
+        if combatant is None or not getattr(combatant, "is_pet", False):
+            return False
+
+        team = self.get_team_for_combatant(combatant)
+        enemy_team = self.get_enemy_team_for_combatant(combatant)
+        if team is not None:
+            setattr(combatant, "team", team)
+        if enemy_team is not None:
+            setattr(combatant, "enemy_team", enemy_team)
+        setattr(combatant, "battle", self)
+        return True
+
+    def process_pet_turn_effects(self, combatant):
+        pet_ext = self._get_pet_extension()
+        if not pet_ext or combatant is None or not getattr(combatant, "is_pet", False):
+            return []
+        self.prepare_pet_context(combatant)
+        return pet_ext.process_skill_effects_per_turn(combatant)
+
+    def process_pet_death_effects(self, combatant):
+        pet_ext = self._get_pet_extension()
+        if not pet_ext or combatant is None or not getattr(combatant, "is_pet", False):
+            return []
+        self.prepare_pet_context(combatant)
+        return pet_ext.process_skill_effects_on_death(combatant)
+
+    def consume_pet_skill_action_lock(self, combatant):
+        if combatant is None:
+            return None
+
+        for status_name, message in (
+            ("stunned", "is stunned and cannot act!"),
+            ("paralyzed", "is paralyzed and cannot act!"),
+            ("tidal_delayed", "is swept back by tidal forces and loses the turn!"),
+        ):
+            turns = int(getattr(combatant, status_name, 0) or 0)
+            if turns <= 0:
+                continue
+
+            if turns <= 1:
+                delattr(combatant, status_name)
+            else:
+                setattr(combatant, status_name, turns - 1)
+            return f"{combatant.name} {message}"
+
+        return None
+
+    def maybe_trigger_guardian_angel(self, target):
+        if target is None or getattr(target, "is_pet", False) or target.is_alive():
+            return None
+
+        team = self.get_team_for_combatant(target)
+        pet_ext = self._get_pet_extension()
+        if team is None or pet_ext is None:
+            return None
+
+        for ally in getattr(team, "combatants", []):
+            if ally is target or not getattr(ally, "is_pet", False) or not ally.is_alive():
+                continue
+
+            skill_effects = getattr(ally, "skill_effects", {})
+            if "guardian_angel" not in skill_effects or getattr(ally, "guardian_used", False):
+                continue
+
+            owner = pet_ext.find_owner_combatant(ally)
+            if owner is not target:
+                continue
+
+            ally.guardian_used = True
+            ally.hp = Decimal("0")
+            target.hp = min(target.max_hp, max(Decimal("1"), target.max_hp * Decimal("0.60")))
+            current_shield = Decimal(str(getattr(target, "shield", 0) or 0))
+            target.shield = current_shield + (target.max_hp * Decimal("0.20"))
+            return (
+                f"🕊️ **{ally.name}** sacrifices itself with Guardian Angel! "
+                f"**{target.name}** is restored to **{self.format_number(target.hp)} HP** "
+                "and wrapped in holy light."
+            )
+
+        return None
+
+    def apply_pet_owner_guard(self, attacker, target, damage):
+        damage = Decimal(str(damage))
+        if damage <= 0 or target is None or getattr(target, "is_pet", False):
+            return damage, [], None
+
+        team = self.get_team_for_combatant(target)
+        pet_ext = self._get_pet_extension()
+        if team is None or pet_ext is None:
+            return damage, [], None
+
+        for ally in getattr(team, "combatants", []):
+            if ally is target or not getattr(ally, "is_pet", False) or not ally.is_alive():
+                continue
+
+            self.prepare_pet_context(ally)
+            skill_effects = getattr(ally, "skill_effects", {})
+            embrace = skill_effects.get("oceans_embrace")
+            if not embrace:
+                continue
+
+            owner = pet_ext.find_owner_combatant(ally)
+            if owner is not target:
+                continue
+
+            redirected_damage = damage * Decimal(str(embrace.get("damage_share", 0)))
+            if redirected_damage <= 0:
+                continue
+
+            pet_damage, pet_messages = pet_ext.process_skill_effects_on_damage_taken(
+                ally,
+                attacker,
+                redirected_damage,
+            )
+            ally.take_damage(pet_damage)
+            messages = list(pet_messages)
+            messages.append(
+                f"💧 **{ally.name}** intercepts **{self.format_number(pet_damage)} HP** "
+                f"for **{target.name}** with Ocean's Embrace!"
+            )
+            return damage - redirected_damage, messages, ally
+
+        return damage, [], None
+
+    def apply_bonus_lifesteal(self, attacker, damage):
+        bonus_lifesteal = Decimal(str(getattr(attacker, "bonus_lifesteal", 0) or 0))
+        bonus_lifesteal += Decimal(str(getattr(attacker, "dark_ritual_lifesteal", 0) or 0))
+        if bonus_lifesteal <= 0:
+            return Decimal("0")
+
+        heal_amount = Decimal(str(damage)) * bonus_lifesteal
+        if heal_amount <= 0:
+            return Decimal("0")
+
+        attacker.heal(heal_amount)
+        return heal_amount
 
     def _get_counter_element(self, enemy_team, current_element):
         element_ext = self._get_element_extension()

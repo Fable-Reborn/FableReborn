@@ -17,6 +17,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import datetime
+import re
 import discord
 
 from discord.ext import commands
@@ -38,6 +39,16 @@ class PremiumShop(commands.Cog):
         "Nature",
         "Wind",
         "Earth",
+    )
+    PET_ELEMENTS = (
+        "Light",
+        "Dark",
+        "Corrupted",
+        "Fire",
+        "Water",
+        "Electric",
+        "Nature",
+        "Wind",
     )
 
     def __init__(self, bot):
@@ -98,6 +109,8 @@ class PremiumShop(commands.Cog):
             "<:ageup:1473265287238385797> **Pet Age Potion** - 200 <:dragoncoin:1404860657366728788> (`petage`)\n*Instantly age your pet to the next growth stage*",
             "<:finalpotion:1473265347581710346> **Pet Speed Growth Potion** - 300 <:dragoncoin:1404860657366728788> (`petspeed`)\n*Doubles growth speed for a specific pet*",
             "<:SplicePotion:1473266873612107836> **Pet XP Potion** - 1200 <:dragoncoin:1404860657366728788> (`petxp`)\n*Gives a pet permanent x2 pet-care XP multiplier*",
+            "🧠 **Pet Mind Wipe** - 1500 <:dragoncoin:1404860657366728788> (`petmindwipe`)\n*Resets learned pet skills and refunds SP for one pet, selected pet IDs, or all pets you own*",
+            "🔄 **Pet Element Scroll** - 2200 <:dragoncoin:1404860657366728788> (`petelement`)\n*Changes one pet's element, resets learned skills, and refunds SP. Cannot be used on god pets.*",
             "📜 **Weapon Element Scroll** - 800 <:dragoncoin:1404860657366728788> (`weapelement`)\n*Changes the element of one weapon in your inventory*",
             "<:F_Legendary:1139514868400132116> **Legendary Crate** - 500 <:dragoncoin:1404860657366728788> (`legendary`)\n*Contains items with stats ranging from 41 to 80, may also in rare cases contain dragon coins*",
             "<:f_divine:1169412814612471869> **Divine Crate** - 1000 <:dragoncoin:1404860657366728788> (`divine`)\n*Contains items with stats ranging from 47 to 100*",
@@ -154,6 +167,10 @@ class PremiumShop(commands.Cog):
             "petage": {"name": "Pet Age Potion", "price": 200, "description": "Instantly age your pet", "short": "petage"},
             "petspeed": {"name": "Pet Speed Growth Potion", "price": 300, "description": "Doubles growth speed for a specific pet", "short": "petspeed"},
             "petxp": {"name": "Pet XP Potion", "price": 1200, "description": "Gives a pet permanent x2 pet-care XP multiplier", "short": "petxp"},
+            "petmindwipe": {"name": "Pet Mind Wipe", "price": 1500, "description": "Resets learned pet skills and refunds pet SP", "short": "petmindwipe"},
+            "mindwipe": {"name": "Pet Mind Wipe", "price": 1500, "description": "Resets learned pet skills and refunds pet SP", "short": "petmindwipe"},
+            "petelement": {"name": "Pet Element Scroll", "price": 2200, "description": "Changes one pet's element and resets pet skills", "short": "petelement"},
+            "petelementscroll": {"name": "Pet Element Scroll", "price": 2200, "description": "Changes one pet's element and resets pet skills", "short": "petelement"},
             "weapelement": {"name": "Weapon Element Scroll", "price": 800, "description": "Changes the element of one weapon", "short": "weapelement"},
             "elementscroll": {"name": "Weapon Element Scroll", "price": 800, "description": "Changes the element of one weapon", "short": "weapelement"},
             "legendary": {"name": "Legendary Crate", "price": 500, "description": "Contains items with stats 41-80, may also in rare cases contain dragon coins", "short": "legendary"},
@@ -163,6 +180,9 @@ class PremiumShop(commands.Cog):
             "pet age potion": {"name": "Pet Age Potion", "price": 200, "description": "Instantly age your pet", "short": "petage"},
             "pet speed growth potion": {"name": "Pet Speed Growth Potion", "price": 300, "description": "Doubles growth speed for a specific pet", "short": "petspeed"},
             "pet xp potion": {"name": "Pet XP Potion", "price": 1200, "description": "Gives a pet permanent x2 pet-care XP multiplier", "short": "petxp"},
+            "pet mind wipe": {"name": "Pet Mind Wipe", "price": 1500, "description": "Resets learned pet skills and refunds pet SP", "short": "petmindwipe"},
+            "pet element scroll": {"name": "Pet Element Scroll", "price": 2200, "description": "Changes one pet's element and resets pet skills", "short": "petelement"},
+            "pet element change": {"name": "Pet Element Scroll", "price": 2200, "description": "Changes one pet's element and resets pet skills", "short": "petelement"},
             "weapon element scroll": {"name": "Weapon Element Scroll", "price": 800, "description": "Changes the element of one weapon", "short": "weapelement"},
             "legendary crate": {"name": "Legendary Crate", "price": 500, "description": "Contains items with stats 41-80, may also in rare cases contain dragon coins", "short": "legendary"},
             "divine crate": {"name": "Divine Crate", "price": 1000, "description": "Contains items with stats 47-100, may also in rare cases contain dragon coins", "short": "divine"},
@@ -171,9 +191,9 @@ class PremiumShop(commands.Cog):
         
         # Normalize the item input (lowercase and remove extra spaces)
         normalized_item = " ".join(item.lower().split())
-        
+
         if normalized_item not in items:
-            return await ctx.send(_("Invalid item. Available items: petage/pet age potion, petspeed/pet speed growth potion, petxp/pet xp potion, weapelement/weapon element scroll, legendary/legendary crate, divine/divine crate, materials/materials crate"))
+            return await ctx.send(_("Invalid item. Available items: petage/pet age potion, petspeed/pet speed growth potion, petxp/pet xp potion, petmindwipe/pet mind wipe, petelement/pet element scroll, weapelement/weapon element scroll, legendary/legendary crate, divine/divine crate, materials/materials crate"))
         
         # Get the short name for processing
         item_data = items[normalized_item]
@@ -195,7 +215,7 @@ class PremiumShop(commands.Cog):
             )
             
             # Handle different item types
-            if item in ["petage", "petspeed", "petxp", "weapelement"]:
+            if item in ["petage", "petspeed", "petxp", "petmindwipe", "petelement", "weapelement"]:
                 # Add consumables to user_consumables table
                 if item == "petage":
                     consumable_type = 'pet_age_potion'
@@ -203,6 +223,10 @@ class PremiumShop(commands.Cog):
                     consumable_type = 'pet_speed_growth_potion'
                 elif item == "petxp":
                     consumable_type = 'pet_xp_potion'
+                elif item == "petmindwipe":
+                    consumable_type = 'pet_mind_wipe'
+                elif item == "petelement":
+                    consumable_type = 'pet_element_scroll'
                 elif item == "weapelement":
                     consumable_type = 'weapon_element_scroll'
                 else:
@@ -244,6 +268,104 @@ class PremiumShop(commands.Cog):
     # ========================================
     # PET CONSUMABLES SECTION
     # ========================================
+
+    def _parse_pet_mind_wipe_targets(self, raw_target_spec: str):
+        normalized = " ".join(str(raw_target_spec or "").replace("，", ",").split())
+        if not normalized:
+            return None, _("Please provide `all`, a pet ID, or a comma-separated list of pet IDs.")
+
+        if normalized.lower() == "all":
+            return {"mode": "all", "ids": []}, None
+
+        tokens = [token for token in re.split(r"[\s,]+", normalized) if token]
+        if not tokens:
+            return None, _("Please provide `all`, a pet ID, or a comma-separated list of pet IDs.")
+        if any(token.lower() == "all" for token in tokens):
+            return None, _("Use either `all` or specific pet IDs, not both together.")
+
+        pet_ids = []
+        seen = set()
+        for token in tokens:
+            if not token.isdigit():
+                return None, _("Pet Mind Wipe targets must be `all` or numeric pet IDs separated by commas/spaces.")
+            pet_id = int(token)
+            if pet_id <= 0:
+                return None, _("Pet IDs must be positive numbers.")
+            if pet_id in seen:
+                continue
+            seen.add(pet_id)
+            pet_ids.append(pet_id)
+
+        if not pet_ids:
+            return None, _("Please provide at least one valid pet ID.")
+
+        return {"mode": "ids", "ids": pet_ids}, None
+
+    def _normalize_pet_element(self, raw_element: str):
+        if not raw_element:
+            return None
+        normalized = str(raw_element).strip().lower()
+        aliases = {
+            "corruption": "Corrupted",
+            "corrupted": "Corrupted",
+            "light": "Light",
+            "dark": "Dark",
+            "fire": "Fire",
+            "water": "Water",
+            "electric": "Electric",
+            "electricity": "Electric",
+            "lightning": "Electric",
+            "nature": "Nature",
+            "wind": "Wind",
+        }
+        candidate = aliases.get(normalized)
+        if not candidate:
+            return None
+        return candidate if candidate in self.PET_ELEMENTS else None
+
+    def _canonical_god_pet_name(self, raw_name: str):
+        if not raw_name:
+            return None
+
+        cleaned = " ".join(
+            re.sub(r"\[[^\]]+\]", "", str(raw_name).replace("_", " ").replace("-", " ")).lower().split()
+        )
+        if cleaned.startswith("ultra "):
+            cleaned = cleaned[6:].strip()
+
+        elysia_aliases = {"elysia", "astraea", "asterea"}
+        if cleaned in elysia_aliases:
+            return "Elysia"
+        if cleaned == "sepulchure":
+            return "Sepulchure"
+        if cleaned == "drakath":
+            return "Drakath"
+        return None
+
+    def _calculate_pet_skill_reset(self, pets_cog, pet):
+        learned_skills = pets_cog.normalize_learned_skills(pet.get("learned_skills"))
+        spent_skill_points, unknown_count = pets_cog.estimate_spent_skill_points(
+            str(pet.get("element") or ""),
+            pet.get("learned_skills"),
+        )
+
+        current_skill_points = max(0, int(pet.get("skill_points") or 0))
+        pet_level = max(1, int(pet.get("level") or 1))
+        earned_skill_points = pet_level // pets_cog.PET_SKILL_POINT_INTERVAL
+        rebuilt_skill_points = max(
+            int(earned_skill_points),
+            int(current_skill_points + spent_skill_points),
+        )
+        refunded_delta = max(0, int(rebuilt_skill_points - current_skill_points))
+
+        return {
+            "learned_skills": learned_skills,
+            "spent_skill_points": int(spent_skill_points),
+            "unknown_count": int(unknown_count),
+            "current_skill_points": current_skill_points,
+            "rebuilt_skill_points": int(rebuilt_skill_points),
+            "refunded_delta": int(refunded_delta),
+        }
     
     async def consume_pet_age_potion(self, ctx, pet_id: int):
         """
@@ -481,6 +603,198 @@ class PremiumShop(commands.Cog):
             f"Current stage: **{pet['growth_stage'].capitalize()}** - Growth time cut in half!"
         )
         
+        return True, success_message
+
+    async def consume_pet_mind_wipe(self, ctx, target_spec: str):
+        """
+        Reset pet skills and refund skill points for one pet, selected pets, or all owned pets.
+        Called by the consume command in profile cog.
+        """
+        parsed_targets, parse_error = self._parse_pet_mind_wipe_targets(target_spec)
+        if parse_error:
+            return False, parse_error
+
+        pets_cog = self.bot.get_cog("Pets")
+        if pets_cog is None:
+            return False, _("Pet system is not available right now.")
+
+        async with self.bot.pool.acquire() as conn:
+            wipe_item = await conn.fetchrow(
+                'SELECT id, quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;',
+                ctx.author.id,
+                'pet_mind_wipe',
+            )
+            if not wipe_item or wipe_item['quantity'] < 1:
+                return False, _("You don't have any Pet Mind Wipes.")
+
+            if parsed_targets["mode"] == "all":
+                pets = await conn.fetch(
+                    """
+                    SELECT id, name, level, element, skill_points, learned_skills
+                    FROM monster_pets
+                    WHERE user_id = $1
+                    ORDER BY id;
+                    """,
+                    ctx.author.id,
+                )
+            else:
+                pets = await conn.fetch(
+                    """
+                    SELECT id, name, level, element, skill_points, learned_skills
+                    FROM monster_pets
+                    WHERE user_id = $1 AND id = ANY($2::bigint[])
+                    ORDER BY id;
+                    """,
+                    ctx.author.id,
+                    parsed_targets["ids"],
+                )
+
+            if not pets:
+                return False, _("No matching pets were found for this Pet Mind Wipe.")
+
+            if parsed_targets["mode"] == "ids":
+                found_ids = {int(pet["id"]) for pet in pets}
+                missing_ids = [str(pid) for pid in parsed_targets["ids"] if pid not in found_ids]
+                if missing_ids:
+                    return False, _("These pet IDs were not found in your stable: {ids}").format(
+                        ids=", ".join(missing_ids)
+                    )
+
+            updates = []
+            refunded_total = 0
+            affected_count = 0
+            skipped_count = 0
+            unknown_skill_entries = 0
+            summary_lines = []
+
+            for pet in pets:
+                reset_data = self._calculate_pet_skill_reset(pets_cog, pet)
+                unknown_skill_entries += reset_data["unknown_count"]
+
+                if not reset_data["learned_skills"] and reset_data["unknown_count"] <= 0:
+                    skipped_count += 1
+                    continue
+
+                updates.append((reset_data["rebuilt_skill_points"], int(pet["id"])))
+                refunded_total += reset_data["refunded_delta"]
+                affected_count += 1
+                summary_lines.append(
+                    f"• **{pet['name']}** (`{pet['id']}`): +{reset_data['refunded_delta']} SP -> **{reset_data['rebuilt_skill_points']} SP**"
+                )
+
+            if not updates:
+                return False, _("None of the selected pets currently have learned skills to wipe.")
+
+            async with conn.transaction():
+                await conn.executemany(
+                    """
+                    UPDATE monster_pets
+                    SET learned_skills = '[]'::jsonb, skill_tree_progress = '{}'::jsonb, skill_points = $1
+                    WHERE id = $2;
+                    """,
+                    updates,
+                )
+                await conn.execute(
+                    'UPDATE user_consumables SET quantity = quantity - 1 WHERE id = $1;',
+                    wipe_item['id'],
+                )
+
+        if len(summary_lines) > 10:
+            summary_lines = summary_lines[:10] + [f"• ... and {affected_count - 10} more pets"]
+
+        success_message = (
+            f"🧠 **Pet Mind Wipe consumed!**\n\n"
+            f"Reset **{affected_count}** pet(s) and refunded **{refunded_total} SP** total.\n"
+            f"Skipped **{skipped_count}** pet(s) with no learned skills.\n"
+            + ("\n".join(summary_lines))
+        )
+        if unknown_skill_entries > 0:
+            success_message += (
+                f"\n\nRecovered around **{unknown_skill_entries}** legacy/unknown skill entries while rebuilding SP."
+            )
+
+        return True, success_message
+
+    async def consume_pet_element_scroll(self, ctx, pet_id: int, new_element: str):
+        """
+        Change a pet's element, wipe learned skills, and refund SP for a single owned pet.
+        Cannot be used on god pets.
+        """
+        desired_element = self._normalize_pet_element(new_element)
+        if not desired_element:
+            valid = ", ".join(self.PET_ELEMENTS)
+            return False, _(f"Invalid pet element. Valid elements: {valid}")
+
+        pets_cog = self.bot.get_cog("Pets")
+        if pets_cog is None:
+            return False, _("Pet system is not available right now.")
+
+        async with self.bot.pool.acquire() as conn:
+            scroll = await conn.fetchrow(
+                'SELECT id, quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;',
+                ctx.author.id,
+                'pet_element_scroll',
+            )
+            if not scroll or scroll['quantity'] < 1:
+                return False, _("You don't have any Pet Element Scrolls.")
+
+            pet = await conn.fetchrow(
+                """
+                SELECT id, name, default_name, level, element, skill_points, learned_skills
+                FROM monster_pets
+                WHERE id = $1 AND user_id = $2;
+                """,
+                pet_id,
+                ctx.author.id,
+            )
+            if not pet:
+                return False, _("Pet not found or doesn't belong to you.")
+
+            canonical_god_name = self._canonical_god_pet_name(
+                pet.get("default_name") or pet.get("name")
+            )
+            if canonical_god_name:
+                return False, _(
+                    "Pet Element Scroll cannot be used on god pets like {name}."
+                ).format(name=canonical_god_name)
+
+            current_element = self._normalize_pet_element(str(pet.get("element") or ""))
+            if current_element == desired_element:
+                return False, _("That pet already has this element.")
+
+            reset_data = self._calculate_pet_skill_reset(pets_cog, pet)
+
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    UPDATE monster_pets
+                    SET element = $1,
+                        learned_skills = '[]'::jsonb,
+                        skill_tree_progress = '{}'::jsonb,
+                        skill_points = $2
+                    WHERE id = $3;
+                    """,
+                    desired_element,
+                    reset_data["rebuilt_skill_points"],
+                    pet_id,
+                )
+                await conn.execute(
+                    'UPDATE user_consumables SET quantity = quantity - 1 WHERE id = $1;',
+                    scroll['id'],
+                )
+
+        source_element = current_element or str(pet.get("element") or "Unknown")
+        success_message = _(
+            f"🔄 **Pet Element Scroll consumed!**\n\n"
+            f"**{pet['name']}** (ID: `{pet['id']}`) changed from **{source_element}** to **{desired_element}**.\n"
+            f"Learned pet skills were wiped and **+{reset_data['refunded_delta']} SP** was refunded."
+            f" New total: **{reset_data['rebuilt_skill_points']} SP**."
+        )
+        if reset_data["unknown_count"] > 0:
+            success_message += _(
+                f"\nRecovered around **{reset_data['unknown_count']}** legacy/unknown skill entries while rebuilding SP."
+            )
+
         return True, success_message
 
     @user_cooldown(2764800)  # 32 days cooldown

@@ -1,5 +1,6 @@
 # battles/core/combatant.py
 from decimal import Decimal
+import random
 from typing import List, Dict, Any, Optional, Union
 
 class Combatant:
@@ -75,6 +76,27 @@ class Combatant:
         """Apply damage to the combatant, accounting for shields and immortality"""
         damage = Decimal(str(amount))
 
+        if int(getattr(self, 'divine_invincibility', 0) or 0) > 0:
+            return self.hp
+
+        if int(getattr(self, 'physical_immunity', 0) or 0) > 0:
+            return self.hp
+
+        sky_dodge_duration = int(getattr(self, 'sky_dodge_duration', 0) or 0)
+        if sky_dodge_duration > 0:
+            dodge_chance = Decimal(str(getattr(self, 'sky_dodge', 0) or 0))
+            if dodge_chance > 0 and Decimal(str(random.random())) < dodge_chance:
+                return self.hp
+
+        damage_inverted = int(getattr(self, 'damage_inverted', 0) or 0)
+        if damage_inverted > 0 and damage > 0:
+            self.heal(damage)
+            if damage_inverted <= 1:
+                delattr(self, 'damage_inverted')
+            else:
+                setattr(self, 'damage_inverted', damage_inverted - 1)
+            return self.hp
+
         # Consume pending true damage (from effects like Shadow Strike) first.
         pending_true_damage = Decimal('0')
         if hasattr(self, 'pending_true_damage_bypass_shield'):
@@ -91,8 +113,12 @@ class Combatant:
             if not self.is_alive():
                 return self.hp
 
+        bypass_shield = bool(getattr(self, 'ignore_shield_this_hit', False))
+        if hasattr(self, 'ignore_shield_this_hit'):
+            delattr(self, 'ignore_shield_this_hit')
+
         # Check if combatant has shield attribute.
-        if hasattr(self, 'shield') and self.shield > 0:
+        if not bypass_shield and hasattr(self, 'shield') and self.shield > 0:
             # Shield absorbs damage first
             absorbed = min(self.shield, damage)
             self.shield -= absorbed

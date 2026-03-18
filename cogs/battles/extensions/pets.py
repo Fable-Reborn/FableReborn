@@ -8,6 +8,9 @@ class PetExtension:
     """Extension for pet integration in battles"""
     PET_MAX_LEVEL = 100
     PET_LEVEL_STAT_BONUS = 0.01
+    PASSIVE_ALLY_HEAL_CAP = Decimal('0.12')
+    PASSIVE_SELF_HEAL_CAP = Decimal('0.18')
+    BURST_HEAL_CAP = Decimal('0.40')
     LIGHTS_GUIDANCE_PROC_CHANCE = 0.25
     LIGHTS_GUIDANCE_OFFENSIVE_TYPES = {
         'aoe_attack',
@@ -203,6 +206,325 @@ class PetExtension:
             return True
 
         return bool(getattr(combatant, 'tank_evolution', None) and not getattr(combatant, 'is_pet', False))
+
+    @staticmethod
+    def _to_decimal(value, default='0'):
+        try:
+            return Decimal(str(value))
+        except Exception:
+            return Decimal(str(default))
+
+    def _scaled_heal(self, source, target, percent, *, burst=False, self_target=False):
+        source_hp = self._to_decimal(getattr(source, 'max_hp', 0))
+        target_hp = self._to_decimal(getattr(target, 'max_hp', source_hp))
+        heal_percent = self._to_decimal(percent)
+
+        scale_base = source_hp if self_target else min(source_hp, target_hp)
+        heal_amount = scale_base * heal_percent
+
+        if burst:
+            heal_cap = target_hp * self.BURST_HEAL_CAP
+        elif self_target:
+            heal_cap = target_hp * self.PASSIVE_SELF_HEAL_CAP
+        else:
+            heal_cap = target_hp * self.PASSIVE_ALLY_HEAL_CAP
+
+        return max(Decimal('0'), min(heal_amount, heal_cap))
+
+    def _apply_timed_multiplier(
+        self,
+        target,
+        effect_key,
+        duration,
+        *,
+        damage_mult=1,
+        armor_mult=1,
+        luck_mult=1,
+        extra_attrs=None,
+    ):
+        duration_attr = f'{effect_key}_duration'
+        setattr(target, duration_attr, max(int(getattr(target, duration_attr, 0) or 0), int(duration)))
+
+        stat_multipliers = {
+            'damage': self._to_decimal(damage_mult, '1'),
+            'armor': self._to_decimal(armor_mult, '1'),
+            'luck': self._to_decimal(luck_mult, '1'),
+        }
+
+        for stat_name, multiplier in stat_multipliers.items():
+            if multiplier == Decimal('1'):
+                continue
+            mult_attr = f'{effect_key}_{stat_name}_mult'
+            if hasattr(target, mult_attr):
+                continue
+            current_value = self._to_decimal(getattr(target, stat_name, 0))
+            setattr(target, stat_name, current_value * multiplier)
+            setattr(target, mult_attr, multiplier)
+
+        for attr_name, attr_value in (extra_attrs or {}).items():
+            setattr(target, attr_name, attr_value)
+
+    def _clear_timed_multiplier(self, target, effect_key, extra_attrs=None):
+        for stat_name in ('damage', 'armor', 'luck'):
+            mult_attr = f'{effect_key}_{stat_name}_mult'
+            if not hasattr(target, mult_attr):
+                continue
+            multiplier = self._to_decimal(getattr(target, mult_attr), '1')
+            if multiplier != 0:
+                current_value = self._to_decimal(getattr(target, stat_name, 0))
+                setattr(target, stat_name, current_value / multiplier)
+            delattr(target, mult_attr)
+
+        duration_attr = f'{effect_key}_duration'
+        if hasattr(target, duration_attr):
+            delattr(target, duration_attr)
+
+        for attr_name in extra_attrs or []:
+            if hasattr(target, attr_name):
+                delattr(target, attr_name)
+
+    def _tick_timed_multiplier(self, target, effect_key, messages, *, fade_message=None, extra_attrs=None):
+        duration_attr = f'{effect_key}_duration'
+        turns_left = int(getattr(target, duration_attr, 0) or 0)
+        if turns_left <= 0:
+            return
+
+        if turns_left <= 1:
+            self._clear_timed_multiplier(target, effect_key, extra_attrs=extra_attrs)
+            if fade_message:
+                messages.append(fade_message)
+            return
+
+        setattr(target, duration_attr, turns_left - 1)
+
+    def _tick_simple_duration(self, target, attr_name, messages, *, fade_message=None, clear_attrs=None):
+        turns_left = int(getattr(target, attr_name, 0) or 0)
+        if turns_left <= 0:
+            return
+
+        if turns_left <= 1:
+            delattr(target, attr_name)
+            for clear_attr in clear_attrs or []:
+                if hasattr(target, clear_attr):
+                    delattr(target, clear_attr)
+            if fade_message:
+                messages.append(fade_message)
+            return
+
+        setattr(target, attr_name, turns_left - 1)
+
+    def _restore_barrier(self, combatant, barrier_attr, multiplier, restore_ratio=1):
+        barrier_value = (
+            self._to_decimal(getattr(combatant, 'armor', 0))
+            * self._to_decimal(multiplier)
+            * self._to_decimal(restore_ratio, '1')
+        )
+        setattr(combatant, barrier_attr, max(Decimal('0'), barrier_value))
+        return getattr(combatant, barrier_attr)
+
+    def _tick_barrier_recharge(
+        self,
+        combatant,
+        barrier_attr,
+        recharge_attr,
+        multiplier,
+        restore_ratio,
+        messages,
+        label,
+    ):
+        turns_left = int(getattr(combatant, recharge_attr, 0) or 0)
+        if turns_left <= 0:
+            return
+
+        if turns_left <= 1:
+            restored = self._restore_barrier(combatant, barrier_attr, multiplier, restore_ratio)
+            delattr(combatant, recharge_attr)
+            messages.append(
+                f"{combatant.name}'s {label} recharges to **{restored:.2f} shield**!"
+            )
+            return
+
+        setattr(combatant, recharge_attr, turns_left - 1)
+
+    def process_skill_effects_on_death(self, pet_combatant):
+        """Resolve pet death triggers exactly once."""
+        if not hasattr(pet_combatant, 'skill_effects'):
+            return []
+
+        effects = pet_combatant.skill_effects
+        messages = []
+
+        if 'dark_shield' in effects:
+            self._clear_timed_multiplier(pet_combatant, 'dark_shield')
+        if 'flame_barrier' in effects:
+            for attr_name in ('flame_shield', 'flame_shield_recharge'):
+                if hasattr(pet_combatant, attr_name):
+                    delattr(pet_combatant, attr_name)
+        if 'energy_shield' in effects:
+            for attr_name in ('energy_barrier', 'energy_barrier_recharge'):
+                if hasattr(pet_combatant, attr_name):
+                    delattr(pet_combatant, attr_name)
+        if 'growth_spurt' in effects:
+            self._clear_timed_multiplier(pet_combatant, 'growth_spurt')
+        if 'phoenix_rebirth' in effects:
+            self._clear_timed_multiplier(pet_combatant, 'phoenix_rebirth')
+        if 'dark_ritual' in effects:
+            self._clear_timed_multiplier(pet_combatant, 'dark_ritual', extra_attrs=['dark_ritual_lifesteal'])
+
+        if (
+            'combustion' in effects
+            and not getattr(pet_combatant, 'combustion_triggered', False)
+            and hasattr(pet_combatant, 'enemy_team')
+        ):
+            explosion_damage = pet_combatant.damage * self._to_decimal(
+                effects['combustion']['damage_multiplier']
+            )
+            enemies_hit = 0
+            for enemy in pet_combatant.enemy_team.combatants:
+                if enemy.is_alive():
+                    enemy.take_damage(explosion_damage)
+                    enemies_hit += 1
+
+            setattr(pet_combatant, 'combustion_triggered', True)
+            if enemies_hit > 0:
+                messages.append(
+                    f"💥 {pet_combatant.name} detonates with Combustion! "
+                    f"{enemies_hit} enemies take **{explosion_damage:.2f} damage**."
+                )
+
+        owner_combatant = self.find_owner_combatant(pet_combatant)
+        if owner_combatant:
+            if 'power_surge' in effects:
+                self._clear_timed_multiplier(owner_combatant, 'power_surge')
+            if 'overcharge' in effects:
+                self._clear_timed_multiplier(owner_combatant, 'overcharge', extra_attrs=['overcharge_active'])
+            if 'dark_pact' in effects:
+                self._clear_timed_multiplier(owner_combatant, 'dark_pact', extra_attrs=['dark_pact_active'])
+            if 'void_lord' in effects:
+                self._clear_timed_multiplier(owner_combatant, 'void_lord_blessing')
+            if 'void_mastery_corrupted' in effects:
+                self._clear_timed_multiplier(owner_combatant, 'void_mastery_reality')
+            if 'immortal_waters' in effects and hasattr(owner_combatant, 'water_immortality_duration'):
+                delattr(owner_combatant, 'water_immortality_duration')
+            if 'immortal_waters' in effects and hasattr(owner_combatant, 'water_immortality'):
+                delattr(owner_combatant, 'water_immortality')
+
+        for ally in getattr(getattr(pet_combatant, 'team', None), 'combatants', []):
+            if 'inferno_mastery' in effects:
+                self._clear_timed_multiplier(ally, 'inferno_mastery_aura')
+            if 'sun_gods_blessing' in effects:
+                self._clear_timed_multiplier(ally, 'sun_gods_blessing')
+            if 'poseidons_call' in effects:
+                self._clear_timed_multiplier(ally, 'poseidons_call')
+            if 'storm_lord' in effects:
+                self._clear_timed_multiplier(ally, 'storm_lord')
+                for attr_name in ('storm_lord_haste',):
+                    if hasattr(ally, attr_name):
+                        delattr(ally, attr_name)
+            if 'infinite_energy' in effects:
+                self._clear_timed_multiplier(ally, 'infinite_energy', extra_attrs=['unlimited_abilities'])
+            if 'zeus_wrath' in effects:
+                self._clear_timed_multiplier(ally, 'zeus_wrath')
+                for attr_name in ('debuff_immunity', 'zeus_protection'):
+                    if hasattr(ally, attr_name):
+                        delattr(ally, attr_name)
+            if 'natures_blessing' in effects:
+                self._clear_timed_multiplier(ally, 'natures_blessing')
+            if 'world_trees_gift' in effects:
+                self._clear_timed_multiplier(ally, 'world_trees_gift')
+            if 'lord_of_shadows' in effects:
+                self._clear_timed_multiplier(ally, 'lord_of_shadows')
+            if 'air_currents' in effects:
+                self._clear_timed_multiplier(ally, 'air_currents')
+                for attr_name in ('air_currents_duration', 'air_currents_boost'):
+                    if hasattr(ally, attr_name):
+                        delattr(ally, attr_name)
+            if 'freedoms_call' in effects:
+                self._clear_timed_multiplier(ally, 'freedoms_call')
+                for attr_name in ('freedom_boost_duration', 'freedom_boost'):
+                    if hasattr(ally, attr_name):
+                        delattr(ally, attr_name)
+            if 'void_pact' in effects:
+                self._clear_timed_multiplier(ally, 'void_pact_ally')
+            if 'end_of_days' in effects:
+                self._clear_timed_multiplier(
+                    ally,
+                    'end_of_days_blessing',
+                    extra_attrs=['chaos_powers', 'chaos_damage_immunity', 'reality_break_stacks'],
+                )
+            if 'divine_favor' in effects:
+                self._clear_timed_multiplier(ally, 'divine_favor_damage')
+                self._clear_timed_multiplier(ally, 'divine_favor_armor')
+                self._clear_timed_multiplier(ally, 'divine_favor_luck')
+            if 'celestial_blessing' in effects:
+                self._clear_timed_multiplier(ally, 'celestial_blessing', extra_attrs=['physical_immunity'])
+                if hasattr(ally, 'physical_immunity'):
+                    delattr(ally, 'physical_immunity')
+            if 'eternal_night' in effects:
+                self._clear_timed_multiplier(ally, 'eternal_night', extra_attrs=['bonus_lifesteal'])
+            if 'skys_blessing' in effects:
+                for attr_name in ('sky_dodge_duration', 'sky_dodge'):
+                    if hasattr(ally, attr_name):
+                        delattr(ally, attr_name)
+                for attr_name in ('sky_haste_duration', 'sky_haste'):
+                    if hasattr(ally, attr_name):
+                        delattr(ally, attr_name)
+            if 'zephyrs_dance' in effects:
+                self._clear_timed_multiplier(ally, 'zephyrs_dance')
+                for attr_name in ('zephyr_speed_duration', 'zephyr_speed'):
+                    if hasattr(ally, attr_name):
+                        delattr(ally, attr_name)
+            if 'storm_lord_wind' in effects:
+                self._clear_timed_multiplier(ally, 'storm_lord_wind_ally')
+                if hasattr(ally, 'storm_lord_haste'):
+                    delattr(ally, 'storm_lord_haste')
+            if 'divine_protection' in effects:
+                for attr_name in ('divine_invincibility', 'blessed_by_light'):
+                    if hasattr(ally, attr_name):
+                        delattr(ally, attr_name)
+            if 'immortal_growth' in effects:
+                for attr_name in ('immortal_growth_duration', 'immortal_growth_regen', 'dot_immunity'):
+                    if hasattr(ally, attr_name):
+                        delattr(ally, attr_name)
+
+        for enemy in getattr(getattr(pet_combatant, 'enemy_team', None), 'combatants', []):
+            if 'decay_touch' in effects:
+                self._clear_timed_multiplier(enemy, 'decay_touch')
+            if 'world_trees_gift' in effects:
+                self._clear_timed_multiplier(enemy, 'world_trees_gift_curse')
+            if 'lord_of_shadows' in effects:
+                self._clear_timed_multiplier(enemy, 'lord_of_shadows_fear')
+            if 'poseidons_call' in effects:
+                self._clear_timed_multiplier(enemy, 'poseidons_call_curse')
+            if 'electromagnetic_field' in effects:
+                self._clear_timed_multiplier(enemy, 'electromagnetic_field')
+            if 'gale_force' in effects:
+                self._clear_timed_multiplier(enemy, 'gale_force')
+            if 'light_beam' in effects:
+                self._clear_timed_multiplier(enemy, 'light_beam')
+            if 'vine_whip' in effects:
+                self._clear_timed_multiplier(enemy, 'vine_whip')
+            if 'wind_shear' in effects:
+                self._clear_timed_multiplier(enemy, 'wind_shear')
+            if 'void_pact' in effects:
+                self._clear_timed_multiplier(enemy, 'void_pact_enemy')
+            if 'storm_lord_wind' in effects:
+                self._clear_timed_multiplier(enemy, 'storm_lord_wind')
+                if hasattr(enemy, 'storm_dominated'):
+                    delattr(enemy, 'storm_dominated')
+            if 'void_mastery' in effects:
+                self._clear_timed_multiplier(enemy, 'void_mastery')
+            if 'end_of_days' in effects:
+                self._clear_timed_multiplier(enemy, 'end_of_days_curse')
+                if hasattr(enemy, 'reality_broken'):
+                    delattr(enemy, 'reality_broken')
+            if 'zephyrs_dance' in effects:
+                self._clear_timed_multiplier(enemy, 'zephyrs_dance_slow')
+                for attr_name in ('zephyr_slow_duration', 'zephyr_slow'):
+                    if hasattr(enemy, attr_name):
+                        delattr(enemy, attr_name)
+
+        return messages
     
     def apply_skill_effects(self, pet_combatant, learned_skills):
         """Apply skill effects to pet combatant with actual implementations"""
@@ -225,7 +547,7 @@ class PetExtension:
                 }
             elif "burning rage" in skill_lower:
                 pet_combatant.skill_effects['burning_rage'] = {
-                    'hp_threshold': 0.3, 'damage_bonus': 0.25, 'type': 'conditional_passive'
+                    'hp_threshold': 0.35, 'damage_bonus': 0.20, 'type': 'conditional_passive'
                 }
             elif "phoenix strike" in skill_lower:
                 pet_combatant.skill_effects['phoenix_strike'] = {
@@ -237,15 +559,19 @@ class PetExtension:
                 }
             elif "inferno mastery" in skill_lower:
                 pet_combatant.skill_effects['inferno_mastery'] = {
-                    'fire_effectiveness': 2.0, 'fire_resistance': 0.3, 'type': 'passive'
+                    'fire_effectiveness': 1.45,
+                    'fire_resistance': 0.40,
+                    'active_turns': 4,
+                    'team_buff': 0.15,
+                    'type': 'ultimate',
                 }
             elif "warmth" in skill_lower:
                 pet_combatant.skill_effects['warmth'] = {
-                    'heal_percent': 0.05, 'type': 'owner_heal_on_attack'
+                    'heal_percent': 0.04, 'type': 'owner_heal_on_attack'
                 }
             elif "fire shield" in skill_lower:
                 pet_combatant.skill_effects['fire_shield'] = {
-                    'chance': 20, 'type': 'block_attack'
+                    'chance': 18, 'type': 'block_attack'
                 }
             elif "combustion" in skill_lower:
                 pet_combatant.skill_effects['combustion'] = {
@@ -257,7 +583,11 @@ class PetExtension:
                 }
             elif "phoenix rebirth" in skill_lower:
                 pet_combatant.skill_effects['phoenix_rebirth'] = {
-                    'revive_hp_percent': 0.5, 'uses': 1, 'type': 'revive'
+                    'revive_hp_percent': 0.60,
+                    'uses': 1,
+                    'reborn_power': 0.30,
+                    'duration': 2,
+                    'type': 'revive',
                 }
             elif "fire affinity" in skill_lower:
                 pet_combatant.skill_effects['fire_affinity'] = {
@@ -265,29 +595,41 @@ class PetExtension:
                 }
             elif "heat wave" in skill_lower:
                 pet_combatant.skill_effects['heat_wave'] = {
-                    'aoe_damage_percent': 0.7, 'type': 'aoe_attack'
+                    'aoe_damage_percent': 0.55, 'type': 'aoe_attack'
                 }
             elif "flame barrier" in skill_lower:
                 pet_combatant.skill_effects['flame_barrier'] = {
-                    'shield_multiplier': 3.0, 'type': 'shield'
+                    'shield_multiplier': 2.5,
+                    'recharge_turns': 1,
+                    'restore_ratio': 0.50,
+                    'type': 'shield',
                 }
+                self._restore_barrier(
+                    pet_combatant,
+                    'flame_shield',
+                    pet_combatant.skill_effects['flame_barrier']['shield_multiplier'],
+                )
             elif "burning spirit" in skill_lower:
                 pet_combatant.skill_effects['burning_spirit'] = {
                     'chance': 30, 'burn_percent': 0.1, 'duration': 3, 'type': 'apply_burn'
                 }
             elif "sun god's blessing" in skill_lower:
                 pet_combatant.skill_effects['sun_gods_blessing'] = {
-                    'damage_multiplier': 5.0, 'team_buff': 0.5, 'duration': 5, 'type': 'ultimate'
+                    'damage_multiplier': 2.75,
+                    'team_buff': 0.30,
+                    'duration': 3,
+                    'burn_duration': 2,
+                    'type': 'ultimate',
                 }
                 
             # 💧 WATER SKILLS
             elif "water jet" in skill_lower:
                 pet_combatant.skill_effects['water_jet'] = {
-                    'chance': 25, 'type': 'ignore_armor'
+                    'chance': 15, 'type': 'ignore_armor'
                 }
             elif "tsunami strike" in skill_lower:
                 pet_combatant.skill_effects['tsunami_strike'] = {
-                    'hp_scaling': 0.5, 'type': 'hp_based_damage'
+                    'hp_scaling': 0.4, 'type': 'hp_based_damage'
                 }
             elif "deep pressure" in skill_lower:
                 pet_combatant.skill_effects['deep_pressure'] = {
@@ -299,7 +641,7 @@ class PetExtension:
                 }
             elif "ocean's wrath" in skill_lower:
                 pet_combatant.skill_effects['oceans_wrath'] = {
-                    'damage_multiplier': 4.0, 'heal_multiplier': 1.0, 'type': 'ultimate'
+                    'damage_multiplier': 2.0, 'splash_multiplier': 0.75, 'heal_percent': 0.30, 'type': 'ultimate'
                 }
             elif "purify" in skill_lower:
                 pet_combatant.skill_effects['purify'] = {
@@ -307,7 +649,7 @@ class PetExtension:
                 }
             elif "healing rain" in skill_lower:
                 pet_combatant.skill_effects['healing_rain'] = {
-                    'heal_percent': 0.08, 'type': 'team_heal_per_turn'
+                    'heal_percent': 0.05, 'type': 'team_heal_per_turn'
                 }
             elif "life spring" in skill_lower:
                 pet_combatant.skill_effects['life_spring'] = {
@@ -319,7 +661,7 @@ class PetExtension:
                 }
             elif "immortal waters" in skill_lower:
                 pet_combatant.skill_effects['immortal_waters'] = {
-                    'type': 'owner_immortality'
+                    'duration': 2, 'type': 'owner_immortality'
                 }
             elif "water affinity" in skill_lower:
                 pet_combatant.skill_effects['water_affinity'] = {
@@ -327,7 +669,7 @@ class PetExtension:
                 }
             elif "fluid movement" in skill_lower:
                 pet_combatant.skill_effects['fluid_movement'] = {
-                    'chance': 25, 'type': 'dodge'
+                    'chance': 20, 'type': 'dodge'
                 }
             elif "tidal force" in skill_lower:
                 pet_combatant.skill_effects['tidal_force'] = {
@@ -345,11 +687,11 @@ class PetExtension:
             # ⚡ ELECTRIC SKILLS
             elif "static shock" in skill_lower:
                 pet_combatant.skill_effects['static_shock'] = {
-                    'chance': 30, 'duration': 1, 'type': 'paralyze'
+                    'chance': 20, 'duration': 1, 'type': 'paralyze'
                 }
             elif "thunder strike" in skill_lower:
                 pet_combatant.skill_effects['thunder_strike'] = {
-                    'chain_count': 2, 'chain_damage': [0.6], 'type': 'chain_critical'
+                    'chain_count': 2, 'chain_damage': [0.5, 0.5], 'type': 'chain_critical'
                 }
             elif "voltage surge" in skill_lower:
                 pet_combatant.skill_effects['voltage_surge'] = {
@@ -365,31 +707,46 @@ class PetExtension:
                 pet_element = str(getattr(pet_combatant, 'element', '')).lower()
                 if pet_element == 'wind':
                     pet_combatant.skill_effects['storm_lord_wind'] = {
-                        'damage_multiplier': 5.0, 'battlefield_control': True, 'type': 'ultimate'
+                        'damage_multiplier': 2.8,
+                        'duration': 3,
+                        'battlefield_control': True,
+                        'team_buff': 0.15,
+                        'storm_damage': 0.45,
+                        'enemy_damage_mult': 0.70,
+                        'enemy_luck_mult': 0.75,
+                        'type': 'ultimate',
                     }
                 else:
                     pet_combatant.skill_effects['storm_lord'] = {
-                        'damage_multiplier': 4.5, 'team_speed': 1.0, 'type': 'ultimate'
+                        'damage_multiplier': 3.0, 'team_speed': 0.25, 'duration': 3, 'type': 'ultimate'
                     }
             elif "power surge" in skill_lower:
                 pet_combatant.skill_effects['power_surge'] = {
-                    'attack_bonus': 0.15, 'duration': 4, 'type': 'owner_buff_on_attack'
+                    'attack_bonus': 0.10, 'duration': 3, 'type': 'owner_buff_on_attack'
                 }
             elif "energy shield" in skill_lower:
                 pet_combatant.skill_effects['energy_shield'] = {
-                    'shield_multiplier': 2.5, 'type': 'shield'
+                    'shield_multiplier': 2.0,
+                    'recharge_turns': 1,
+                    'restore_ratio': 0.60,
+                    'type': 'shield',
                 }
+                self._restore_barrier(
+                    pet_combatant,
+                    'energy_barrier',
+                    pet_combatant.skill_effects['energy_shield']['shield_multiplier'],
+                )
             elif "battery life" in skill_lower:
                 # Battery Life is now handled in the pets system for skill learning costs
                 # No battle effect needed
                 pass
             elif "overcharge" in skill_lower:
                 pet_combatant.skill_effects['overcharge'] = {
-                    'hp_sacrifice': 0.25, 'owner_buff': 0.5, 'duration': 3, 'type': 'sacrifice_buff'
+                    'hp_sacrifice': 0.20, 'owner_buff': 0.35, 'duration': 2, 'type': 'sacrifice_buff'
                 }
             elif "infinite energy" in skill_lower:
                 pet_combatant.skill_effects['infinite_energy'] = {
-                    'team_buff': 0.6, 'unlimited_abilities': True, 'duration': 4, 'type': 'ultimate'
+                    'team_buff': 0.35, 'unlimited_abilities': True, 'duration': 3, 'type': 'ultimate'
                 }
             elif "electric affinity" in skill_lower:
                 pet_combatant.skill_effects['electric_affinity'] = {
@@ -397,10 +754,9 @@ class PetExtension:
                 }
             elif "quick charge" in skill_lower:
                 pet_combatant.skill_effects['quick_charge'] = {
-                    'speed_multiplier': 1.5, 'type': 'speed_boost'
+                    'speed_multiplier': 1.25, 'type': 'speed_boost'
                 }
-                # Passive priority skill: should affect turn order from battle start.
-                setattr(pet_combatant, 'attack_priority', True)
+                # Strong initiative pressure without overriding true priority skills.
                 setattr(pet_combatant, 'quick_charge_active', True)
             elif "chain lightning" in skill_lower:
                 pet_combatant.skill_effects['chain_lightning'] = {
@@ -408,21 +764,21 @@ class PetExtension:
                 }
             elif "electromagnetic field" in skill_lower:
                 pet_combatant.skill_effects['electromagnetic_field'] = {
-                    'accuracy_reduction': 0.25, 'type': 'enemy_debuff'
+                    'accuracy_reduction': 0.15, 'duration': 2, 'type': 'enemy_debuff'
                 }
             elif "zeus's wrath" in skill_lower:
                 pet_combatant.skill_effects['zeus_wrath'] = {
-                    'damage_multiplier': 6.0, 'team_protection': True, 'type': 'ultimate'
+                    'damage_multiplier': 3.0, 'protection_turns': 3, 'team_protection': True, 'type': 'ultimate'
                 }
                 
             # 🌿 NATURE SKILLS
             elif "vine whip" in skill_lower:
                 pet_combatant.skill_effects['vine_whip'] = {
-                    'chance': 25, 'damage_reduction': 0.5, 'duration': 2, 'type': 'root'
+                    'chance': 20, 'damage_reduction': 0.35, 'duration': 2, 'type': 'root'
                 }
             elif "photosynthesis" in skill_lower:
                 pet_combatant.skill_effects['photosynthesis'] = {
-                    'time_based': True, 'damage_bonus': 0.2, 'type': 'time_conditional'
+                    'time_based': True, 'damage_bonus': 0.15, 'type': 'time_conditional'
                 }
             elif "nature's fury" in skill_lower:
                 pet_combatant.skill_effects['natures_fury'] = {
@@ -434,27 +790,27 @@ class PetExtension:
                 }
             elif "gaia's wrath" in skill_lower:
                 pet_combatant.skill_effects['gaias_wrath'] = {
-                    'damage_multiplier': 2.0, 'heal_per_turn': 0.07, 'duration': 3, 'type': 'ultimate'
+                    'damage_multiplier': 2.0, 'team_heal_percent': 0.35, 'heal_per_turn': 0.08, 'duration': 3, 'type': 'ultimate'
                 }
             elif "natural healing" in skill_lower:
                 pet_combatant.skill_effects['natural_healing'] = {
-                    'heal_percent': 0.06, 'type': 'regen_per_turn'
+                    'heal_percent': 0.05, 'type': 'regen_per_turn'
                 }
             elif "growth spurt" in skill_lower:
                 pet_combatant.skill_effects['growth_spurt'] = {
-                    'stat_increase': 0.03, 'max_stacks': 10, 'type': 'stacking_stats'
+                    'stat_increase': 0.02, 'max_stacks': 5, 'type': 'stacking_stats'
                 }
             elif "life force" in skill_lower:
                 pet_combatant.skill_effects['life_force'] = {
-                    'hp_sacrifice': 0.3, 'owner_heal': 0.6, 'type': 'hp_transfer'
+                    'hp_sacrifice': 0.20, 'owner_heal': 0.35, 'owner_threshold': 0.60, 'uses': 1, 'type': 'hp_transfer'
                 }
             elif "nature's blessing" in skill_lower:
                 pet_combatant.skill_effects['natures_blessing'] = {
-                    'environment': 'nature', 'team_buff': 0.2, 'type': 'environmental'
+                    'environment': 'nature', 'team_buff': 0.10, 'duration': 2, 'type': 'environmental'
                 }
             elif "immortal growth" in skill_lower:
                 pet_combatant.skill_effects['immortal_growth'] = {
-                    'team_regen': 0.15, 'dot_immunity': True, 'type': 'ultimate'
+                    'team_regen': 0.10, 'duration': 3, 'dot_immunity': True, 'type': 'ultimate'
                 }
             elif "nature affinity" in skill_lower:
                 pet_combatant.skill_effects['nature_affinity'] = {
@@ -462,7 +818,7 @@ class PetExtension:
                 }
             elif "forest camouflage" in skill_lower:
                 pet_combatant.skill_effects['forest_camouflage'] = {
-                    'chance': 30, 'type': 'avoid_targeting'
+                    'chance': 25, 'type': 'avoid_targeting'
                 }
             elif "symbiotic bond" in skill_lower:
                 pet_combatant.skill_effects['symbiotic_bond'] = {
@@ -474,45 +830,56 @@ class PetExtension:
                 }
             elif "world tree's gift" in skill_lower:
                 pet_combatant.skill_effects['world_trees_gift'] = {
-                    'control_turns': 2, 'debuff_immunity': True, 'type': 'ultimate'
+                    'control_turns': 3,
+                    'shield_percent': 0.20,
+                    'team_buff': 0.10,
+                    'enemy_debuff': 0.15,
+                    'debuff_immunity': True,
+                    'type': 'ultimate',
                 }
                 
             # 💨 WIND SKILLS
             elif "wind slash" in skill_lower:
                 pet_combatant.skill_effects['wind_slash'] = {
-                    'chance': 25, 'type': 'bypass_defenses'
+                    'chance': 15, 'type': 'bypass_defenses'
                 }
             elif "gale force" in skill_lower:
                 pet_combatant.skill_effects['gale_force'] = {
-                    'accuracy_reduction': 0.3, 'duration': 1, 'type': 'push_back'
+                    'accuracy_reduction': 0.30, 'damage_reduction': 0.10, 'duration': 2, 'type': 'push_back'
                 }
             elif "tornado strike" in skill_lower:
                 pet_combatant.skill_effects['tornado_strike'] = {
-                    'damage_percent': 0.8, 'duration': 3, 'type': 'persistent_aoe'
+                    'damage_percent': 0.75, 'duration': 3, 'type': 'persistent_aoe'
                 }
             elif "wind shear" in skill_lower:
                 pet_combatant.skill_effects['wind_shear'] = {
-                    'defense_reduction': 0.4, 'duration': 4, 'type': 'defense_debuff'
+                    'defense_reduction': 0.45, 'duration': 4, 'type': 'defense_debuff'
                 }
             elif "wind walk" in skill_lower:
                 pet_combatant.skill_effects['wind_walk'] = {
-                    'dodge_bonus': 0.2, 'type': 'mobility_boost'
+                    'dodge_bonus': 0.15, 'type': 'mobility_boost'
                 }
             elif "air shield" in skill_lower:
                 pet_combatant.skill_effects['air_shield'] = {
-                    'projectile_immunity': True, 'other_reduction': 0.5, 'type': 'selective_defense'
+                    'projectile_immunity': True, 'other_reduction': 0.4, 'type': 'selective_defense'
                 }
             elif "wind's guidance" in skill_lower:
                 pet_combatant.skill_effects['winds_guidance'] = {
-                    'redirects_per_turn': 1, 'type': 'redirect_attack'
+                    'chance': 40,
+                    'damage_reduction': 0.55,
+                    'reflect_fraction': 0.70,
+                    'type': 'redirect_attack',
                 }
             elif "freedom's call" in skill_lower:
                 pet_combatant.skill_effects['freedoms_call'] = {
-                    'team_speed': 0.35, 'type': 'team_speed_buff'
+                    'team_speed': 0.35,
+                    'team_buff': 0.20,
+                    'duration': 3,
+                    'type': 'team_speed_buff',
                 }
             elif "sky's blessing" in skill_lower:
                 pet_combatant.skill_effects['skys_blessing'] = {
-                    'team_dodge': 0.9, 'enemy_stun': 2, 'type': 'ultimate'
+                    'team_dodge': 0.40, 'enemy_stun': 2, 'duration': 2, 'type': 'ultimate'
                 }
             elif "wind affinity" in skill_lower:
                 pet_combatant.skill_effects['wind_affinity'] = {
@@ -520,31 +887,43 @@ class PetExtension:
                 }
             elif "swift strike" in skill_lower:
                 pet_combatant.skill_effects['swift_strike'] = {
-                    'priority': True, 'type': 'always_first'
+                    'priority': True, 'damage_bonus': 0.10, 'type': 'always_first'
                 }
                 # Always-first attacks require persistent turn-order priority.
                 setattr(pet_combatant, 'attack_priority', True)
             elif "wind tunnel" in skill_lower:
                 pet_combatant.skill_effects['wind_tunnel'] = {
-                    'distance_control': True, 'type': 'positioning'
+                    'distance_control': True,
+                    'damage_bonus': 0.30,
+                    'damage_reduction': 0.30,
+                    'type': 'positioning',
                 }
             elif "air currents" in skill_lower:
                 pet_combatant.skill_effects['air_currents'] = {
-                    'turn_order_control': True, 'type': 'initiative_control'
+                    'turn_order_control': True,
+                    'luck_bonus': 0.15,
+                    'team_buff': 0.10,
+                    'duration': 3,
+                    'type': 'initiative_control',
                 }
             elif "zephyr's dance" in skill_lower:
                 pet_combatant.skill_effects['zephyrs_dance'] = {
-                    'team_speed': 1.0, 'enemy_slow': 0.75, 'duration': 6, 'type': 'ultimate'
+                    'team_speed': 3.5,
+                    'enemy_slow': 2.5,
+                    'team_buff': 0.20,
+                    'enemy_damage_reduction': 0.20,
+                    'duration': 4,
+                    'type': 'ultimate',
                 }
                 
             # 🌟 LIGHT SKILLS
             elif "light beam" in skill_lower:
                 pet_combatant.skill_effects['light_beam'] = {
-                    'chance': 30, 'accuracy_reduction': 0.5, 'duration': 2, 'type': 'blind'
+                    'chance': 25, 'accuracy_reduction': 0.35, 'duration': 2, 'type': 'blind'
                 }
             elif "holy strike" in skill_lower:
                 pet_combatant.skill_effects['holy_strike'] = {
-                    'elements': ['Dark', 'Undead', 'Corrupted'], 'damage_bonus': 0.5, 'type': 'elemental_bonus'
+                    'elements': ['Dark', 'Undead', 'Corrupted'], 'damage_bonus': 0.4, 'type': 'elemental_bonus'
                 }
             elif "divine wrath" in skill_lower:
                 pet_combatant.skill_effects['divine_wrath'] = {
@@ -556,15 +935,15 @@ class PetExtension:
                 }
             elif "solar flare" in skill_lower:
                 pet_combatant.skill_effects['solar_flare'] = {
-                    'damage_multiplier': 6.0, 'purify_team': True, 'type': 'ultimate'
+                    'damage_multiplier': 3.0, 'purify_team': True, 'type': 'ultimate'
                 }
             elif "divine shield" in skill_lower:
                 pet_combatant.skill_effects['divine_shield'] = {
-                    'dark_resistance': 0.4, 'general_resistance': 0.1, 'type': 'resistance'
+                    'dark_resistance': 0.3, 'general_resistance': 0.08, 'type': 'resistance'
                 }
             elif "healing light" in skill_lower:
                 pet_combatant.skill_effects['healing_light'] = {
-                    'heal_percent': 0.12, 'type': 'team_heal_per_turn', 'message_shown': False
+                    'heal_percent': 0.07, 'type': 'team_heal_per_turn', 'message_shown': False
                 }
             elif "purification" in skill_lower:
                 pet_combatant.skill_effects['purification'] = {
@@ -576,19 +955,19 @@ class PetExtension:
                 }
             elif "divine protection" in skill_lower:
                 pet_combatant.skill_effects['divine_protection'] = {
-                    'invincibility_turns': 3, 'massive_heal': True, 'type': 'ultimate'
+                    'invincibility_turns': 2, 'heal_percent': 0.45, 'type': 'ultimate'
                 }
             elif "light affinity" in skill_lower:
                 pet_combatant.skill_effects['light_affinity'] = {
-                    'elements': ['Dark', 'Corrupted'], 'damage_bonus': 0.4, 'type': 'elemental_bonus'
+                    'elements': ['Dark', 'Corrupted'], 'damage_bonus': 0.25, 'type': 'elemental_bonus'
                 }
             elif "holy aura" in skill_lower:
                 pet_combatant.skill_effects['holy_aura'] = {
-                    'team_dark_resistance': 0.2, 'debuff_resistance': 0.2, 'type': 'team_protection'
+                    'team_dark_resistance': 0.15, 'debuff_resistance': 0.15, 'type': 'team_protection'
                 }
             elif "divine favor" in skill_lower:
                 pet_combatant.skill_effects['divine_favor'] = {
-                    'chance': 25, 'buff_strength': 0.3, 'duration': 3, 'type': 'random_team_buff'
+                    'chance': 25, 'buff_strength': 0.15, 'duration': 2, 'type': 'random_team_buff'
                 }
             elif "light's guidance" in skill_lower:
                 pet_combatant.skill_effects['lights_guidance'] = {
@@ -596,17 +975,17 @@ class PetExtension:
                 }
             elif "celestial blessing" in skill_lower:
                 pet_combatant.skill_effects['celestial_blessing'] = {
-                    'team_buff': 1.0, 'physical_immunity': 4, 'type': 'ultimate'
+                    'team_buff': 0.25, 'physical_immunity': 2, 'type': 'ultimate'
                 }
                 
             # 🌑 DARK SKILLS
             elif "shadow strike" in skill_lower:
                 pet_combatant.skill_effects['shadow_strike'] = {
-                    'chance': 25, 'type': 'partial_true_damage'
+                    'chance': 25, 'true_damage_portion': 0.4, 'type': 'partial_true_damage'
                 }
             elif "dark embrace" in skill_lower:
                 pet_combatant.skill_effects['dark_embrace'] = {
-                    'owner_hp_threshold': 0.5, 'damage_bonus': 0.5, 'type': 'desperation_power'
+                    'owner_hp_threshold': 0.5, 'damage_bonus': 0.35, 'type': 'desperation_power'
                 }
             elif "soul drain" in skill_lower:
                 pet_combatant.skill_effects['soul_drain'] = {
@@ -622,15 +1001,15 @@ class PetExtension:
                 }
             elif "dark shield" in skill_lower:
                 pet_combatant.skill_effects['dark_shield'] = {
-                    'damage_to_attack': 0.5, 'duration': 2, 'type': 'absorb_convert'
+                    'absorb_percent': 0.2, 'attack_bonus': 0.10, 'duration': 2, 'type': 'absorb_convert'
                 }
             elif "soul bind" in skill_lower:
                 pet_combatant.skill_effects['soul_bind'] = {
-                    'damage_share': 0.5, 'type': 'damage_redistribution'
+                    'damage_share': 0.35, 'type': 'damage_redistribution'
                 }
             elif "dark pact" in skill_lower:
                 pet_combatant.skill_effects['dark_pact'] = {
-                    'hp_sacrifice': 0.4, 'owner_dark_boost': 1.0, 'duration': 4, 'type': 'sacrifice_buff'
+                    'hp_sacrifice': 0.25, 'owner_dark_boost': 0.35, 'duration': 2, 'type': 'sacrifice_buff'
                 }
             elif "shadow form" in skill_lower:
                 pet_combatant.skill_effects['shadow_form'] = {
@@ -638,11 +1017,11 @@ class PetExtension:
                 }
             elif "eternal night" in skill_lower:
                 pet_combatant.skill_effects['eternal_night'] = {
-                    'team_dark_power': 0.75, 'team_lifesteal': True, 'duration': 5, 'type': 'ultimate'
+                    'team_dark_power': 0.35, 'team_lifesteal': 0.15, 'duration': 3, 'type': 'ultimate'
                 }
             elif "dark affinity" in skill_lower:
                 pet_combatant.skill_effects['dark_affinity'] = {
-                    'elements': ['Light', 'Corrupted'], 'damage_bonus': 0.4, 'type': 'elemental_bonus'
+                    'elements': ['Light', 'Corrupted'], 'damage_bonus': 0.25, 'type': 'elemental_bonus'
                 }
             elif "night vision" in skill_lower:
                 pet_combatant.skill_effects['night_vision'] = {
@@ -654,17 +1033,30 @@ class PetExtension:
                 }
             elif "dark ritual" in skill_lower:
                 pet_combatant.skill_effects['dark_ritual'] = {
-                    'hp_sacrifice': 0.5, 'damage_multiplier': 2.0, 'type': 'sacrifice_power'
+                    'hp_sacrifice': 0.20,
+                    'owner_hp_threshold': 0.75,
+                    'damage_multiplier': 1.75,
+                    'duration': 3,
+                    'lifesteal': 0.20,
+                    'type': 'sacrifice_power',
                 }
             elif "lord of shadows" in skill_lower:
                 pet_combatant.skill_effects['lord_of_shadows'] = {
-                    'enemy_control': True, 'shadow_army': True, 'type': 'ultimate'
+                    'enemy_control': True,
+                    'shadow_army': True,
+                    'skeleton_hp': 0.75,
+                    'skeleton_damage': 0.65,
+                    'skeleton_armor': 0.40,
+                    'team_buff': 0.15,
+                    'enemy_debuff': 0.15,
+                    'duration': 3,
+                    'type': 'ultimate',
                 }
                 
             # 🌀 CORRUPTED SKILLS
             elif "chaos strike" in skill_lower:
                 pet_combatant.skill_effects['chaos_strike'] = {
-                    'damage_range': [0.5, 1.5], 'random_element': True, 'type': 'random_attack'
+                    'damage_range': [0.75, 1.25], 'random_element': True, 'type': 'random_attack'
                 }
             elif "corruption wave" in skill_lower:
                 pet_combatant.skill_effects['corruption_wave'] = {
@@ -676,7 +1068,7 @@ class PetExtension:
                 }
             elif "reality warp" in skill_lower:
                 pet_combatant.skill_effects['reality_warp'] = {
-                    'random_conditions': True, 'chance': 0.10, 'cooldown': 3, 'type': 'chaos_field'
+                    'random_conditions': True, 'chance': 0.08, 'cooldown': 4, 'type': 'chaos_field'
                 }
             elif "apocalypse" in skill_lower:
                 pet_combatant.skill_effects['apocalypse'] = {
@@ -720,7 +1112,7 @@ class PetExtension:
                 }
             elif "void lord" in skill_lower:
                 pet_combatant.skill_effects['void_lord'] = {
-                    'complete_control': True, 'rewrite_reality': True, 'duration': 3, 'type': 'ultimate'
+                    'complete_control': True, 'rewrite_reality': True, 'duration': 3, 'owner_buff': 0.25, 'enemy_damage_mult': 0.80, 'enemy_luck_mult': 0.75, 'type': 'ultimate'
                 }
             # NEW MISSING CORRUPTED SKILLS
             elif "void touch" in skill_lower:
@@ -733,11 +1125,11 @@ class PetExtension:
                 }
             elif "corrupt shield" in skill_lower:
                 pet_combatant.skill_effects['corrupt_shield'] = {
-                    'absorb_damage': True, 'corruption_chance': 0.25, 'type': 'absorb_corrupt'
+                    'absorb_percent': 0.20, 'corruption_chance': 0.20, 'type': 'absorb_corrupt'
                 }
             elif "reality distortion" in skill_lower:
                 pet_combatant.skill_effects['reality_distortion'] = {
-                    'chance': 20, 'cooldown': 2, 'stat_swap': True, 'reverse_damage': True, 'type': 'reality_manipulation'
+                    'chance': 15, 'cooldown': 3, 'stat_swap': True, 'reverse_damage': True, 'type': 'reality_manipulation'
                 }
             elif "void pact" in skill_lower:
                 pet_combatant.skill_effects['void_pact'] = {
@@ -749,15 +1141,15 @@ class PetExtension:
                 }
             elif "end of days" in skill_lower:
                 pet_combatant.skill_effects['end_of_days'] = {
-                    'chaos_powers': True, 'reality_break': 4, 'team_chaos': True, 'type': 'ultimate'
+                    'chaos_powers': True, 'reality_break': 3, 'team_damage_boost': 0.50, 'enemy_damage_reduction': 0.25, 'enemy_luck_mult': 0.70, 'type': 'ultimate'
                 }
             elif "corrupted affinity" in skill_lower:
                 pet_combatant.skill_effects['corrupted_affinity'] = {
-                    'universal_damage': 0.3, 'no_weaknesses': True, 'type': 'universal_bonus'
+                    'universal_damage': 0.15, 'no_weaknesses': True, 'type': 'universal_bonus'
                 }
             elif "void sight" in skill_lower:
                 pet_combatant.skill_effects['void_sight'] = {
-                    'illusion_immunity': True, 'stealth_detection': True, 'dodge_bonus': 0.4, 'type': 'enhanced_vision'
+                    'illusion_immunity': True, 'stealth_detection': True, 'dodge_bonus': 0.25, 'type': 'enhanced_vision'
                 }
             elif "chaos control" in skill_lower:
                 pet_combatant.skill_effects['chaos_control'] = {
@@ -818,7 +1210,12 @@ class PetExtension:
             
         # Phoenix Strike - heal on critical
         if 'phoenix_strike' in effects and modified_damage > damage * Decimal('1.2'):  # Critical hit
-            heal_amount = pet_combatant.max_hp * Decimal(str(effects['phoenix_strike']['heal_percent']))
+            heal_amount = self._scaled_heal(
+                pet_combatant,
+                pet_combatant,
+                effects['phoenix_strike']['heal_percent'],
+                self_target=True,
+            )
             pet_combatant.heal(heal_amount)
             messages.append(f"{pet_combatant.name} heals **{heal_amount:.2f} HP** from Phoenix Strike!")
             
@@ -845,27 +1242,81 @@ class PetExtension:
                 
         # Inferno Mastery - fire enhancement
         if 'inferno_mastery' in effects:
-            # Double effectiveness against fire-weak enemies
             if hasattr(target, 'element') and target.element in ['Nature', 'Water']:
+                fire_bonus = Decimal(str(effects['inferno_mastery']['fire_effectiveness'])) - Decimal('1')
                 modified_damage *= Decimal(str(effects['inferno_mastery']['fire_effectiveness']))
-                messages.append(f"{pet_combatant.name}'s Inferno Mastery shows fire superiority! (2x vs {target.element})")
+                messages.append(
+                    f"{pet_combatant.name}'s Inferno Mastery punishes {target.element}! "
+                    f"(+{fire_bonus * Decimal('100'):.0f}% damage)"
+                )
+            inferno_turns = int(getattr(pet_combatant, 'inferno_mastery_turns', 0) or 0)
+            if inferno_turns > 0:
+                modified_damage *= Decimal('1.30')
+                setattr(target, 'burning', max(int(getattr(target, 'burning', 0) or 0), 2))
+                messages.append(f"{pet_combatant.name} fights in infernal overdrive!")
+
+        if ('inferno_mastery' in effects and getattr(pet_combatant, 'ultimate_ready', False)):
+            duration = int(effects['inferno_mastery'].get('active_turns', 4))
+            setattr(pet_combatant, 'inferno_mastery_turns', duration)
+            modified_damage *= Decimal('1.60')
+            if hasattr(pet_combatant, 'team'):
+                for ally in pet_combatant.team.combatants:
+                    if ally.is_alive():
+                        self._apply_timed_multiplier(
+                            ally,
+                            'inferno_mastery_aura',
+                            duration,
+                            damage_mult=Decimal('1') + Decimal(str(effects['inferno_mastery'].get('team_buff', 0.15))),
+                            luck_mult=Decimal('1.10'),
+                        )
+            messages.append(
+                f"{pet_combatant.name}'s Inferno Mastery erupts! "
+                f"The team surges with infernal momentum for {duration} turns!"
+            )
+            pet_combatant.ultimate_ready = False
+
+        if 'burning_spirit' in effects and random.randint(1, 100) <= effects['burning_spirit']['chance']:
+            setattr(target, 'burning', max(int(getattr(target, 'burning', 0) or 0), effects['burning_spirit']['duration']))
+            messages.append(f"{pet_combatant.name}'s Burning Spirit sets {target.name} ablaze!")
             
         # Sun God's Blessing - ULTIMATE
         if ('sun_gods_blessing' in effects and 
             getattr(pet_combatant, 'ultimate_ready', False)):
-            modified_damage *= Decimal('2.5')  # Reduced from 5x to 2.5x
-            # Modest team buff
+            modified_damage *= Decimal(str(effects['sun_gods_blessing']['damage_multiplier']))
             if hasattr(pet_combatant, 'team'):
                 for ally in pet_combatant.team.combatants:
-                    ally.damage *= 1.25  # 25% buff instead of 50%
-            messages.append(f"{pet_combatant.name} channels Sun God's Blessing! Solar power erupts!")
+                    if ally.is_alive():
+                        self._apply_timed_multiplier(
+                            ally,
+                            'sun_gods_blessing',
+                            int(effects['sun_gods_blessing'].get('duration', 3)),
+                            damage_mult=Decimal('1') + Decimal(str(effects['sun_gods_blessing'].get('team_buff', 0.30))),
+                            armor_mult=Decimal('1.20'),
+                            luck_mult=Decimal('1.10'),
+                        )
+            if hasattr(target, 'team'):
+                splash_damage = modified_damage * Decimal('0.60')
+                for enemy in target.team.combatants:
+                    if enemy != target and enemy.is_alive():
+                        enemy.take_damage(splash_damage)
+                    if enemy.is_alive():
+                        setattr(
+                            enemy,
+                            'burning',
+                            max(
+                                int(getattr(enemy, 'burning', 0) or 0),
+                                int(effects['sun_gods_blessing'].get('burn_duration', 2)),
+                            ),
+                        )
+            messages.append(f"{pet_combatant.name} channels Sun God's Blessing! Solar fire engulfs the battlefield!")
             pet_combatant.ultimate_ready = False
             
         # 💧 WATER SKILLS
         # Water Jet - ignore armor
         if 'water_jet' in effects and random.randint(1, 100) <= effects['water_jet']['chance']:
             setattr(target, 'ignore_armor_this_hit', True)
-            messages.append(f"{pet_combatant.name}'s Water Jet pierces armor!")
+            setattr(target, 'ignore_shield_this_hit', True)
+            messages.append(f"{pet_combatant.name}'s Water Jet pierces armor and shields!")
             
         # Tsunami Strike - HP based damage
         if 'tsunami_strike' in effects:
@@ -902,26 +1353,59 @@ class PetExtension:
         # Ocean's Wrath - ULTIMATE
         if ('oceans_wrath' in effects and 
             getattr(pet_combatant, 'ultimate_ready', False)):
-            modified_damage *= Decimal('2.0')  # Reduced from 4x to 2x
-            heal_amount = pet_combatant.max_hp * Decimal('0.3')  # 30% max HP heal
-            pet_combatant.heal(heal_amount)
-            messages.append(f"{pet_combatant.name} unleashes Ocean's Wrath! Tidal forces surge!")
+            modified_damage *= Decimal(str(effects['oceans_wrath']['damage_multiplier']))
+            if hasattr(target, 'team'):
+                splash_damage = modified_damage * Decimal(str(effects['oceans_wrath'].get('splash_multiplier', 0.75)))
+                for enemy in target.team.combatants:
+                    if enemy != target and enemy.is_alive():
+                        enemy.take_damage(splash_damage)
+            if hasattr(pet_combatant, 'team'):
+                for ally in pet_combatant.team.combatants:
+                    if ally.is_alive():
+                        heal_amount = self._scaled_heal(
+                            pet_combatant,
+                            ally,
+                            effects['oceans_wrath'].get('heal_percent', 0.30),
+                            burst=True,
+                            self_target=(ally is pet_combatant),
+                        )
+                        ally.heal(heal_amount)
+            messages.append(f"{pet_combatant.name} unleashes Ocean's Wrath! A crushing tide batters foes and restores allies!")
             pet_combatant.ultimate_ready = False
             
         # Poseidon's Call - ULTIMATE
         if ('poseidons_call' in effects and 
             getattr(pet_combatant, 'ultimate_ready', False)):
-            # Buff team, debuff enemies
             if hasattr(pet_combatant, 'team'):
                 for ally in pet_combatant.team.combatants:
-                    ally.damage *= (Decimal('1') + Decimal(str(effects['poseidons_call']['team_buff'])))
+                    if ally.is_alive():
+                        self._apply_timed_multiplier(
+                            ally,
+                            'poseidons_call',
+                            3,
+                            damage_mult=Decimal('1') + Decimal(str(effects['poseidons_call']['team_buff'])),
+                            armor_mult=Decimal('1.15'),
+                            luck_mult=Decimal('1.10'),
+                        )
             if hasattr(target, 'team'):
                 for enemy in target.team.combatants:
-                    enemy.damage *= (Decimal('1') - Decimal(str(effects['poseidons_call']['enemy_debuff'])))
+                    if enemy.is_alive():
+                        self._apply_timed_multiplier(
+                            enemy,
+                            'poseidons_call_curse',
+                            3,
+                            damage_mult=Decimal('1') - Decimal(str(effects['poseidons_call']['enemy_debuff'])),
+                            armor_mult=Decimal('0.85'),
+                            luck_mult=Decimal('0.90'),
+                        )
             messages.append(f"{pet_combatant.name} calls upon Poseidon! Team buffed, enemies weakened!")
             pet_combatant.ultimate_ready = False
             
         # ⚡ ELECTRIC SKILLS
+        if 'static_shock' in effects and random.randint(1, 100) <= effects['static_shock']['chance']:
+            setattr(target, 'paralyzed', effects['static_shock']['duration'])
+            messages.append(f"{pet_combatant.name}'s Static Shock paralyzes {target.name}!")
+
         # Thunder Strike - chain lightning on crit
         if ('thunder_strike' in effects and modified_damage > damage * Decimal('1.2') and 
             hasattr(target, 'team')):
@@ -948,12 +1432,20 @@ class PetExtension:
         # Storm Lord - ULTIMATE
         if ('storm_lord' in effects and 
             getattr(pet_combatant, 'ultimate_ready', False)):
-            modified_damage *= Decimal('2.5')  # Reduced from 4.5x to 2.5x
-            # Moderate speed boost
+            modified_damage *= Decimal(str(effects['storm_lord']['damage_multiplier']))
+            duration = int(effects['storm_lord'].get('duration', 3))
             if hasattr(pet_combatant, 'team'):
                 for ally in pet_combatant.team.combatants:
-                    setattr(ally, 'speed_boost', 0.3)  # 30% speed increase
-            messages.append(f"{pet_combatant.name} becomes the Storm Lord! Lightning crackles!")
+                    if ally.is_alive():
+                        self._apply_timed_multiplier(
+                            ally,
+                            'storm_lord',
+                            duration,
+                            damage_mult=Decimal('1.15'),
+                            luck_mult=Decimal('1.15'),
+                        )
+                        setattr(ally, 'storm_lord_haste', duration)
+            messages.append(f"{pet_combatant.name} becomes the Storm Lord! The team surges with storm speed!")
             pet_combatant.ultimate_ready = False
 
         # Infinite Energy - ULTIMATE team stat boost
@@ -963,24 +1455,17 @@ class PetExtension:
             duration = int(effects['infinite_energy']['duration'])
 
             if hasattr(pet_combatant, 'team'):
-                targets = [ally for ally in pet_combatant.team.combatants if ally.is_alive()]
-                if not getattr(pet_combatant, 'infinite_energy_active', False):
-                    buff_mult = Decimal('1') + team_buff
-                    for ally in targets:
-                        ally.damage *= buff_mult
-                        ally.armor *= buff_mult
-                        ally.luck += team_buff * Decimal('100')
-                        setattr(ally, 'unlimited_abilities', True)
-                    setattr(pet_combatant, 'infinite_energy_targets', targets)
-                    setattr(pet_combatant, 'infinite_energy_buff', float(team_buff))
-                    setattr(pet_combatant, 'infinite_energy_active', True)
-                else:
-                    # Refresh unlimited abilities while effect is active.
-                    for ally in getattr(pet_combatant, 'infinite_energy_targets', []):
-                        if ally.is_alive():
-                            setattr(ally, 'unlimited_abilities', True)
-
-                setattr(pet_combatant, 'infinite_energy_turns', duration)
+                for ally in pet_combatant.team.combatants:
+                    if ally.is_alive():
+                        self._apply_timed_multiplier(
+                            ally,
+                            'infinite_energy',
+                            duration,
+                            damage_mult=Decimal('1') + team_buff,
+                            armor_mult=Decimal('1') + team_buff,
+                            luck_mult=Decimal('1') + team_buff,
+                            extra_attrs={'unlimited_abilities': True},
+                        )
                 messages.append(
                     f"{pet_combatant.name} unleashes Infinite Energy! "
                     f"The team gains +{int(team_buff * Decimal('100'))}% all stats for {duration} turns!"
@@ -1005,12 +1490,20 @@ class PetExtension:
         # Zeus's Wrath - ULTIMATE
         if ('zeus_wrath' in effects and 
             getattr(pet_combatant, 'ultimate_ready', False)):
-            modified_damage *= Decimal('3.0')  # Reduced from 6x to 3x
-            # Team gets modest protection
+            modified_damage *= Decimal(str(effects['zeus_wrath']['damage_multiplier']))
             if hasattr(pet_combatant, 'team'):
                 for ally in pet_combatant.team.combatants:
-                    setattr(ally, 'zeus_protection', 2)  # 2 turns of protection
-            messages.append(f"{pet_combatant.name} channels Zeus's Wrath! Divine lightning strikes!")
+                    if ally.is_alive():
+                        self._apply_timed_multiplier(
+                            ally,
+                            'zeus_wrath',
+                            int(effects['zeus_wrath'].get('protection_turns', 3)),
+                            damage_mult=Decimal('1.10'),
+                            armor_mult=Decimal('1.10'),
+                        )
+                        setattr(ally, 'zeus_protection', int(effects['zeus_wrath'].get('protection_turns', 3)))
+                        setattr(ally, 'debuff_immunity', int(effects['zeus_wrath'].get('protection_turns', 3)))
+            messages.append(f"{pet_combatant.name} channels Zeus's Wrath! The team is charged with divine protection!")
             pet_combatant.ultimate_ready = False
             
         # 🌿 NATURE SKILLS
@@ -1019,13 +1512,23 @@ class PetExtension:
             happiness = getattr(pet_combatant, 'happiness', 50)
             modified_damage *= (Decimal('1') + min(Decimal('0.5'), Decimal(str(happiness))/Decimal('200') * Decimal(str(effects['natures_fury']['happiness_scaling']))))
             messages.append(f"{pet_combatant.name}'s happiness fuels Nature's Fury!")
+
+        if 'photosynthesis' in effects:
+            current_hour = datetime.datetime.now().hour
+            if 6 <= current_hour <= 18:
+                modified_damage *= (Decimal('1') + Decimal(str(effects['photosynthesis']['damage_bonus'])))
+                messages.append(f"{pet_combatant.name} draws strength from daylight!")
             
         # Vine Whip - root attack
         if 'vine_whip' in effects and random.randint(1, 100) <= effects['vine_whip']['chance']:
-            # Apply root effect
-            setattr(target, 'rooted', effects['vine_whip']['duration'])
-            setattr(target, 'root_damage_reduction', effects['vine_whip']['damage_reduction'])
-            messages.append(f"{pet_combatant.name}'s Vine Whip entangles {target.name}, reducing their power!")
+            damage_reduction = Decimal(str(effects['vine_whip']['damage_reduction']))
+            self._apply_timed_multiplier(
+                target,
+                'vine_whip',
+                int(effects['vine_whip']['duration']),
+                damage_mult=Decimal('1') - damage_reduction,
+            )
+            messages.append(f"{pet_combatant.name}'s Vine Whip entangles {target.name}, sapping their damage!")
             
         # Nature Affinity - elemental bonus
         if 'nature_affinity' in effects and hasattr(target, 'element'):
@@ -1037,32 +1540,69 @@ class PetExtension:
         if ('gaias_wrath' in effects and 
             getattr(pet_combatant, 'ultimate_ready', False)):
             modified_damage *= Decimal(str(effects['gaias_wrath']['damage_multiplier']))
-            
-            # Start the healing over time effect
+
             setattr(pet_combatant, 'gaias_wrath_heal', effects['gaias_wrath']['heal_per_turn'])
             setattr(pet_combatant, 'gaias_wrath_duration', effects['gaias_wrath']['duration'])
-            
-            messages.append(f"{pet_combatant.name} unleashes Gaia's Wrath! Earth's power flows through them for {effects['gaias_wrath']['duration']} turns!")
+
+            if hasattr(pet_combatant, 'team'):
+                for ally in pet_combatant.team.combatants:
+                    if ally.is_alive():
+                        heal_amount = self._scaled_heal(
+                            pet_combatant,
+                            ally,
+                            effects['gaias_wrath'].get('team_heal_percent', 0.35),
+                            burst=True,
+                            self_target=(ally is pet_combatant),
+                        )
+                        ally.heal(heal_amount)
+
+            messages.append(f"{pet_combatant.name} unleashes Gaia's Wrath! The whole team is flooded with ancient life!")
             pet_combatant.ultimate_ready = False
             
         # World Tree's Gift - ULTIMATE
         if ('world_trees_gift' in effects and 
             getattr(pet_combatant, 'ultimate_ready', False)):
-            # Take control of battlefield for 2 turns
-            setattr(pet_combatant, 'battlefield_control', effects['world_trees_gift']['control_turns'])
-            setattr(pet_combatant, 'debuff_immunity', True)
-            messages.append(f"{pet_combatant.name} receives the World Tree's Gift! Battlefield control gained!")
+            duration = int(effects['world_trees_gift'].get('control_turns', 3))
+            setattr(pet_combatant, 'battlefield_control', duration)
+            if hasattr(pet_combatant, 'team'):
+                for ally in pet_combatant.team.combatants:
+                    if ally.is_alive():
+                        current_shield = self._to_decimal(getattr(ally, 'shield', 0))
+                        ally.shield = current_shield + (
+                            ally.max_hp * Decimal(str(effects['world_trees_gift'].get('shield_percent', 0.20)))
+                        )
+                        setattr(ally, 'debuff_immunity', duration)
+                        self._apply_timed_multiplier(
+                            ally,
+                            'world_trees_gift',
+                            duration,
+                            damage_mult=Decimal('1') + Decimal(str(effects['world_trees_gift'].get('team_buff', 0.10))),
+                            armor_mult=Decimal('1.15'),
+                            luck_mult=Decimal('1.10'),
+                        )
+            if hasattr(target, 'team'):
+                for enemy in target.team.combatants:
+                    if enemy.is_alive():
+                        self._apply_timed_multiplier(
+                            enemy,
+                            'world_trees_gift_curse',
+                            duration,
+                            damage_mult=Decimal('1') - Decimal(str(effects['world_trees_gift'].get('enemy_debuff', 0.15))),
+                            luck_mult=Decimal('0.85'),
+                        )
+            messages.append(
+                f"{pet_combatant.name} receives the World Tree's Gift! Roots shield allies and crush enemy momentum!"
+            )
             pet_combatant.ultimate_ready = False
             
         # Immortal Growth - ULTIMATE
         if ('immortal_growth' in effects and 
             getattr(pet_combatant, 'ultimate_ready', False)):
-            # Grant team regeneration and DoT immunity
             if hasattr(pet_combatant, 'team'):
                 for ally in pet_combatant.team.combatants:
                     if ally.is_alive():
                         setattr(ally, 'immortal_growth_regen', effects['immortal_growth']['team_regen'])
-                        setattr(ally, 'immortal_growth_duration', 5)  # 5 turns
+                        setattr(ally, 'immortal_growth_duration', int(effects['immortal_growth'].get('duration', 3)))
                         setattr(ally, 'dot_immunity', True)
                         
                         # Remove existing DoTs
@@ -1077,47 +1617,78 @@ class PetExtension:
         # Wind Slash - bypass defenses
         if 'wind_slash' in effects and random.randint(1, 100) <= effects['wind_slash']['chance']:
             setattr(target, 'bypass_defenses', True)
+            setattr(target, 'ignore_shield_this_hit', True)
             messages.append(f"{pet_combatant.name}'s Wind Slash cuts through all defenses!")
             
         # Tornado Strike - persistent AOE
-        if 'tornado_strike' in effects:
-            # Create persistent damage zone
-            setattr(target, 'tornado_damage', {
-                'damage': modified_damage * Decimal(str(effects['tornado_strike']['damage_percent'])),
-                'duration': effects['tornado_strike']['duration']
-            })
-            messages.append(f"{pet_combatant.name} creates a devastating tornado!")
+        if 'tornado_strike' in effects and hasattr(target, 'team'):
+            tornado_damage = modified_damage * Decimal(str(effects['tornado_strike']['damage_percent']))
+            duration = int(effects['tornado_strike']['duration'])
+            for enemy in target.team.combatants:
+                if enemy.is_alive():
+                    setattr(enemy, 'tornado_damage', {
+                        'damage': tornado_damage,
+                        'duration': duration,
+                    })
+            messages.append(f"{pet_combatant.name} blankets the enemy team in a cutting tornado!")
             
         # Gale Force - pushback with accuracy reduction
         if 'gale_force' in effects and hasattr(target, 'team'):
-            # Push back enemies and reduce their accuracy
-            for enemy in target.team.combatants:
-                if enemy.is_alive():
-                    if not getattr(enemy, 'gale_force_debuff', 0):
-                        enemy.luck *= (Decimal('1') - Decimal(str(effects['gale_force']['accuracy_reduction'])))
-                        setattr(enemy, 'gale_force_debuff', effects['gale_force']['duration'])
-            messages.append(f"{pet_combatant.name}'s Gale Force pushes enemies back and disrupts their aim!")
+            self._apply_timed_multiplier(
+                target,
+                'gale_force',
+                effects['gale_force']['duration'],
+                damage_mult=Decimal('1') - Decimal(str(effects['gale_force'].get('damage_reduction', 0.10))),
+                luck_mult=Decimal('1') - Decimal(str(effects['gale_force']['accuracy_reduction'])),
+            )
+            messages.append(f"{pet_combatant.name}'s Gale Force batters {target.name}'s aim and rhythm!")
              
         # Wind Shear - defense debuff
-        if 'wind_shear' in effects:
-            if not getattr(target, 'wind_shear_debuff', 0):
-                defense_reduction = Decimal(str(effects['wind_shear']['defense_reduction']))
-                target.armor *= (Decimal('1') - defense_reduction)
-                setattr(target, 'wind_shear_debuff', effects['wind_shear']['duration'])
-                messages.append(f"{pet_combatant.name}'s Wind Shear tears through {target.name}'s defenses! (-40% armor)")
+        if 'wind_shear' in effects and hasattr(target, 'team'):
+            defense_reduction = Decimal(str(effects['wind_shear']['defense_reduction']))
+            for enemy in target.team.combatants:
+                if enemy.is_alive():
+                    self._apply_timed_multiplier(
+                        enemy,
+                        'wind_shear',
+                        effects['wind_shear']['duration'],
+                        armor_mult=Decimal('1') - defense_reduction,
+                    )
+            messages.append(f"{pet_combatant.name}'s Wind Shear tears through the enemy line! (-45% armor)")
             
         # Storm Lord Wind - ULTIMATE battlefield control
         if ('storm_lord_wind' in effects and 
             getattr(pet_combatant, 'ultimate_ready', False)):
             modified_damage *= Decimal(str(effects['storm_lord_wind']['damage_multiplier']))
-            # Gain battlefield control
+            duration = int(effects['storm_lord_wind'].get('duration', 3))
+            if hasattr(pet_combatant, 'team'):
+                for ally in pet_combatant.team.combatants:
+                    if ally.is_alive():
+                        self._apply_timed_multiplier(
+                            ally,
+                            'storm_lord_wind_ally',
+                            duration,
+                            damage_mult=Decimal('1') + Decimal(str(effects['storm_lord_wind'].get('team_buff', 0.15))),
+                            luck_mult=Decimal('1.15'),
+                        )
+                        setattr(ally, 'storm_lord_haste', duration)
             if hasattr(target, 'team'):
                 for enemy in target.team.combatants:
-                    setattr(enemy, 'storm_dominated', 4)  # 4 turns of control
-                    enemy.damage *= Decimal('0.6')  # 40% damage reduction
-                    enemy.luck *= Decimal('0.5')   # 50% accuracy reduction
-            setattr(pet_combatant, 'storm_lord_active', 4)
-            messages.append(f"{pet_combatant.name} becomes the Storm Lord! Winds bend to their will!")
+                    if enemy.is_alive():
+                        setattr(enemy, 'storm_dominated', duration)
+                        self._apply_timed_multiplier(
+                            enemy,
+                            'storm_lord_wind',
+                            duration,
+                            damage_mult=Decimal(str(effects['storm_lord_wind'].get('enemy_damage_mult', 0.70))),
+                            luck_mult=Decimal(str(effects['storm_lord_wind'].get('enemy_luck_mult', 0.75))),
+                        )
+                        setattr(enemy, 'tornado_damage', {
+                            'damage': modified_damage * Decimal(str(effects['storm_lord_wind'].get('storm_damage', 0.45))),
+                            'duration': duration,
+                        })
+            setattr(pet_combatant, 'storm_lord_active', duration)
+            messages.append(f"{pet_combatant.name} becomes the Storm Lord! The battlefield is dragged into violent air supremacy!")
             pet_combatant.ultimate_ready = False
             
         # Wind Affinity - elemental bonus
@@ -1129,35 +1700,66 @@ class PetExtension:
         # Swift Strike - priority attack (always goes first)
         if 'swift_strike' in effects:
             setattr(pet_combatant, 'attack_priority', True)
-            modified_damage *= Decimal('1.1')  # 10% bonus for swift precision
+            modified_damage *= (
+                Decimal('1') + Decimal(str(effects['swift_strike'].get('damage_bonus', 0.10)))
+            )
             messages.append(f"{pet_combatant.name} strikes with the speed of wind!")
+
+        # Wind Tunnel - convert positioning into offense
+        if 'wind_tunnel' in effects:
+            modified_damage *= (
+                Decimal('1') + Decimal(str(effects['wind_tunnel'].get('damage_bonus', 0.30)))
+            )
+            messages.append(f"{pet_combatant.name} bends the battlefield with Wind Tunnel! (+30% damage)")
             
         # Sky's Blessing - ULTIMATE
         if ('skys_blessing' in effects and 
             getattr(pet_combatant, 'ultimate_ready', False)):
-            # Team gets moderate dodge boost
+            duration = int(effects['skys_blessing'].get('duration', 2))
             if hasattr(pet_combatant, 'team'):
                 for ally in pet_combatant.team.combatants:
-                    setattr(ally, 'sky_dodge', 0.4)  # 40% dodge chance for 2 turns
-                    setattr(ally, 'sky_dodge_duration', 2)
-            # One enemy gets stunned for 1 turn
+                    if ally.is_alive():
+                        setattr(ally, 'sky_dodge', effects['skys_blessing']['team_dodge'])
+                        setattr(ally, 'sky_dodge_duration', duration)
+                        setattr(ally, 'sky_haste', True)
+                        setattr(ally, 'sky_haste_duration', duration)
             if hasattr(target, 'team'):
-                target_enemy = random.choice([e for e in target.team.combatants if e.is_alive()])
-                setattr(target_enemy, 'stunned', 1)
-            messages.append(f"{pet_combatant.name} calls upon Sky's Blessing! Wind guides the team!")
+                stunned_targets = [e for e in target.team.combatants if e.is_alive()]
+                random.shuffle(stunned_targets)
+                for enemy in stunned_targets[:2]:
+                    setattr(enemy, 'stunned', effects['skys_blessing']['enemy_stun'])
+            messages.append(f"{pet_combatant.name} calls upon Sky's Blessing! The team surges through the heavens!")
             pet_combatant.ultimate_ready = False
             
         # Zephyr's Dance - ULTIMATE
         if ('zephyrs_dance' in effects and 
             getattr(pet_combatant, 'ultimate_ready', False)):
-            # Speed up team, slow enemies
+            duration = int(effects['zephyrs_dance'].get('duration', 4))
             if hasattr(pet_combatant, 'team'):
                 for ally in pet_combatant.team.combatants:
-                    setattr(ally, 'zephyr_speed', effects['zephyrs_dance']['team_speed'])
+                    if ally.is_alive():
+                        setattr(ally, 'zephyr_speed', effects['zephyrs_dance']['team_speed'])
+                        setattr(ally, 'zephyr_speed_duration', duration)
+                        self._apply_timed_multiplier(
+                            ally,
+                            'zephyrs_dance',
+                            duration,
+                            damage_mult=Decimal('1') + Decimal(str(effects['zephyrs_dance'].get('team_buff', 0.20))),
+                            luck_mult=Decimal('1.20'),
+                        )
             if hasattr(target, 'team'):
                 for enemy in target.team.combatants:
-                    setattr(enemy, 'zephyr_slow', effects['zephyrs_dance']['enemy_slow'])
-            messages.append(f"{pet_combatant.name} performs Zephyr's Dance! Time itself bends to their will!")
+                    if enemy.is_alive():
+                        setattr(enemy, 'zephyr_slow', effects['zephyrs_dance']['enemy_slow'])
+                        setattr(enemy, 'zephyr_slow_duration', duration)
+                        self._apply_timed_multiplier(
+                            enemy,
+                            'zephyrs_dance_slow',
+                            duration,
+                            damage_mult=Decimal('1') - Decimal(str(effects['zephyrs_dance'].get('enemy_damage_reduction', 0.20))),
+                            luck_mult=Decimal('0.80'),
+                        )
+            messages.append(f"{pet_combatant.name} performs Zephyr's Dance! The team takes over the turn order completely!")
             pet_combatant.ultimate_ready = False
             
         # 🌟 LIGHT SKILLS
@@ -1170,21 +1772,31 @@ class PetExtension:
         # Light Affinity - bonus vs dark/corrupted
         if 'light_affinity' in effects and hasattr(target, 'element'):
             if target.element in effects['light_affinity']['elements']:
-                modified_damage *= (Decimal('1') + Decimal(str(effects['light_affinity']['damage_bonus'])))
-                messages.append(f"{pet_combatant.name}'s Light Affinity overwhelms darkness! (+40% damage)")
+                damage_bonus = Decimal(str(effects['light_affinity']['damage_bonus']))
+                modified_damage *= (Decimal('1') + damage_bonus)
+                messages.append(
+                    f"{pet_combatant.name}'s Light Affinity overwhelms darkness! "
+                    f"(+{damage_bonus * Decimal('100'):.0f}% damage)"
+                )
                 
         # Light Burst - AOE attack
         if 'light_burst' in effects and hasattr(target, 'team'):
-            aoe_damage = modified_damage * Decimal(str(effects['light_burst']['damage_multiplier']))
+            modified_damage *= Decimal(str(effects['light_burst']['damage_multiplier']))
+            aoe_damage = modified_damage * Decimal('0.5')
             for enemy in target.team.combatants:
                 if enemy != target and enemy.is_alive():
-                    enemy.take_damage(aoe_damage * Decimal('0.5'))  # Reduced for other targets
+                    enemy.take_damage(aoe_damage)
             messages.append(f"{pet_combatant.name}'s Light Burst illuminates the battlefield!")
             
         # Solar Flare - ULTIMATE
         if ('solar_flare' in effects and 
             getattr(pet_combatant, 'ultimate_ready', False)):
             modified_damage *= Decimal(str(effects['solar_flare']['damage_multiplier']))
+            if hasattr(target, 'team'):
+                splash_damage = modified_damage * Decimal('0.60')
+                for enemy in target.team.combatants:
+                    if enemy != target and enemy.is_alive():
+                        enemy.take_damage(splash_damage)
             # Purify entire team
             if hasattr(pet_combatant, 'team'):
                 for ally in pet_combatant.team.combatants:
@@ -1197,20 +1809,33 @@ class PetExtension:
             
         # Light Beam - blinding attack
         if 'light_beam' in effects and random.randint(1, 100) <= effects['light_beam']['chance']:
-            # Blind the target with accuracy reduction
             accuracy_reduction = Decimal(str(effects['light_beam']['accuracy_reduction']))
-            target.luck *= (Decimal('1') - accuracy_reduction)
-            setattr(target, 'blinded', effects['light_beam']['duration'])
-            messages.append(f"{pet_combatant.name}'s Light Beam blinds {target.name}! (-50% accuracy for 2 turns)")
+            self._apply_timed_multiplier(
+                target,
+                'light_beam',
+                int(effects['light_beam']['duration']),
+                luck_mult=Decimal('1') - accuracy_reduction,
+            )
+            messages.append(
+                f"{pet_combatant.name}'s Light Beam blinds {target.name}! "
+                f"(-{accuracy_reduction * Decimal('100'):.0f}% accuracy)"
+            )
             
         # Celestial Blessing - ULTIMATE
         if ('celestial_blessing' in effects and 
             getattr(pet_combatant, 'ultimate_ready', False)):
-            # Massive team buff and physical immunity
             if hasattr(pet_combatant, 'team'):
                 for ally in pet_combatant.team.combatants:
-                    ally.damage *= (Decimal('1') + Decimal(str(effects['celestial_blessing']['team_buff'])))
-                    setattr(ally, 'physical_immunity', effects['celestial_blessing']['physical_immunity'])
+                    if ally.is_alive():
+                        self._apply_timed_multiplier(
+                            ally,
+                            'celestial_blessing',
+                            int(effects['celestial_blessing'].get('physical_immunity', 2)),
+                            damage_mult=Decimal('1') + Decimal(str(effects['celestial_blessing']['team_buff'])),
+                            armor_mult=Decimal('1.15'),
+                            luck_mult=Decimal('1.10'),
+                        )
+                        setattr(ally, 'physical_immunity', int(effects['celestial_blessing']['physical_immunity']))
             messages.append(f"{pet_combatant.name} grants Celestial Blessing! Divine power flows through the team!")
             pet_combatant.ultimate_ready = False
             
@@ -1218,8 +1843,12 @@ class PetExtension:
         # Dark Affinity - bonus vs Light elements
         if 'dark_affinity' in effects and hasattr(target, 'element'):
             if target.element in effects['dark_affinity']['elements']:
-                modified_damage *= (Decimal('1') + Decimal(str(effects['dark_affinity']['damage_bonus'])))
-                messages.append(f"{pet_combatant.name}'s Dark Affinity devastates light creatures! (+40% damage)")
+                damage_bonus = Decimal(str(effects['dark_affinity']['damage_bonus']))
+                modified_damage *= (Decimal('1') + damage_bonus)
+                messages.append(
+                    f"{pet_combatant.name}'s Dark Affinity devastates light creatures! "
+                    f"(+{damage_bonus * Decimal('100'):.0f}% damage)"
+                )
                 
         # Night Vision - perfect accuracy (handled in battle accuracy calculations)
         if 'night_vision' in effects:
@@ -1230,34 +1859,41 @@ class PetExtension:
             modified_damage += Decimal(str(effects['shadow_step']['flat_damage_bonus']))
             messages.append(f"{pet_combatant.name} shadow steps through reality! (+100 raw damage)")
             
-        # Dark Ritual - sacrifice owner HP for double damage
+        # Dark Ritual - once-per-battle blood pact for sustained offense
         if ('dark_ritual' in effects and hasattr(pet_combatant, 'owner')):
-            # Find the owner combatant from the team
             owner_combatant = self.find_owner_combatant(pet_combatant)
             if owner_combatant and hasattr(owner_combatant, 'hp') and hasattr(owner_combatant, 'max_hp'):
-                # Check if we should activate (20% chance per turn when below 75% HP)
                 owner_hp_ratio = owner_combatant.hp / owner_combatant.max_hp
-                should_activate = (owner_hp_ratio < 0.75 and random.randint(1, 100) <= 20 and 
-                                 not getattr(pet_combatant, 'dark_ritual_used', False))
-                
+                should_activate = (
+                    owner_hp_ratio < Decimal(str(effects['dark_ritual'].get('owner_hp_threshold', 0.75)))
+                    and not getattr(pet_combatant, 'dark_ritual_used', False)
+                    and not getattr(pet_combatant, 'dark_ritual_duration', 0)
+                )
                 if should_activate:
                     sacrifice_hp = owner_combatant.max_hp * Decimal(str(effects['dark_ritual']['hp_sacrifice']))
                     current_owner_hp = owner_combatant.hp
-                    
                     if current_owner_hp > sacrifice_hp:
-                        # Sacrifice owner HP
                         owner_combatant.hp = current_owner_hp - sacrifice_hp
-                        
-                        # Double the damage
-                        modified_damage *= Decimal(str(effects['dark_ritual']['damage_multiplier']))
-                        setattr(pet_combatant, 'dark_ritual_used', True)  # Once per battle
-                        
-                        messages.append(f"{pet_combatant.name} performs Dark Ritual! Sacrifices **{sacrifice_hp:.2f} HP** from their owner for double damage!")
+                        power_mult = Decimal(str(effects['dark_ritual']['damage_multiplier']))
+                        self._apply_timed_multiplier(
+                            pet_combatant,
+                            'dark_ritual',
+                            int(effects['dark_ritual'].get('duration', 3)),
+                            damage_mult=power_mult,
+                            luck_mult=Decimal('1.15'),
+                            extra_attrs={'dark_ritual_lifesteal': Decimal(str(effects['dark_ritual'].get('lifesteal', 0.20)))},
+                        )
+                        modified_damage *= power_mult
+                        setattr(pet_combatant, 'dark_ritual_used', True)
+                        messages.append(
+                            f"{pet_combatant.name} performs Dark Ritual! "
+                            f"Sacrifices **{sacrifice_hp:.2f} HP** from their owner for a blood-fueled rampage!"
+                        )
         
         # Shadow Strike - partial true damage
         if 'shadow_strike' in effects and random.randint(1, 100) <= effects['shadow_strike']['chance']:
-            # Deal 50% of damage as true damage, 50% as normal damage in one attack instance.
-            true_damage_portion = modified_damage * Decimal('0.5')
+            true_fraction = Decimal(str(effects['shadow_strike'].get('true_damage_portion', 0.4)))
+            true_damage_portion = modified_damage * true_fraction
             normal_damage_portion = modified_damage - true_damage_portion
 
             # Let battle types combine this with normal damage in a single hit application.
@@ -1287,8 +1923,12 @@ class PetExtension:
                 else:
                     owner_hp_ratio = owner_combatant.hp / owner_combatant.max_hp
                     if owner_hp_ratio < Decimal(str(effects['dark_embrace']['owner_hp_threshold'])):
-                        modified_damage *= (Decimal('1') + Decimal(str(effects['dark_embrace']['damage_bonus'])))
-                        messages.append(f"{pet_combatant.name} draws power from desperation! (+50% damage)")
+                        damage_bonus = Decimal(str(effects['dark_embrace']['damage_bonus']))
+                        modified_damage *= (Decimal('1') + damage_bonus)
+                        messages.append(
+                            f"{pet_combatant.name} draws power from desperation! "
+                            f"(+{damage_bonus * Decimal('100'):.0f}% damage)"
+                        )
             
         # Shadow Clone - duplicate attack
         if 'shadow_clone' in effects and random.randint(1, 100) <= effects['shadow_clone']['chance']:
@@ -1299,53 +1939,88 @@ class PetExtension:
         # Void Mastery - ULTIMATE
         if ('void_mastery' in effects and 
             getattr(pet_combatant, 'ultimate_ready', False)):
-            modified_damage *= Decimal(str(effects['void_mastery']['damage_multiplier']))
-            # Invert all enemy buffs to debuffs
+            modified_damage *= Decimal('2.25')
             if hasattr(target, 'team'):
                 for enemy in target.team.combatants:
-                    setattr(enemy, 'buffs_inverted', True)
-            messages.append(f"{pet_combatant.name} masters the void! Reality bends to darkness!")
+                    if enemy.is_alive():
+                        self._apply_timed_multiplier(
+                            enemy,
+                            'void_mastery',
+                            2,
+                            damage_mult=Decimal('0.85'),
+                            armor_mult=Decimal('0.85'),
+                            luck_mult=Decimal('0.90'),
+                        )
+                        for attr in ('zeus_protection', 'sky_dodge', 'physical_immunity', 'divine_invincibility'):
+                            if hasattr(enemy, attr):
+                                delattr(enemy, attr)
+            messages.append(f"{pet_combatant.name} masters the void! Enemy power is inverted into weakness!")
             pet_combatant.ultimate_ready = False
             
         # Eternal Night - ULTIMATE
         if ('eternal_night' in effects and 
             getattr(pet_combatant, 'ultimate_ready', False)):
-            # Dark power boost and lifesteal for team
             if hasattr(pet_combatant, 'team'):
                 for ally in pet_combatant.team.combatants:
-                    ally.damage *= (Decimal('1') + Decimal(str(effects['eternal_night']['team_dark_power'])))
-                    setattr(ally, 'lifesteal_boost', True)
+                    if ally.is_alive():
+                        self._apply_timed_multiplier(
+                            ally,
+                            'eternal_night',
+                            int(effects['eternal_night'].get('duration', 3)),
+                            damage_mult=Decimal('1') + Decimal(str(effects['eternal_night']['team_dark_power'])),
+                            armor_mult=Decimal('1.10'),
+                        )
+                        setattr(ally, 'bonus_lifesteal', Decimal(str(effects['eternal_night'].get('team_lifesteal', 0.15))))
             messages.append(f"{pet_combatant.name} brings Eternal Night! Darkness empowers the team!")
             pet_combatant.ultimate_ready = False
             
         # Lord of Shadows - ULTIMATE
         if ('lord_of_shadows' in effects and 
             getattr(pet_combatant, 'ultimate_ready', False)):
-            # Summon skeleton allies (up to 2)
             current_skeletons = getattr(pet_combatant, 'skeleton_count', 0)
             max_skeletons = 2
-            
+
             if current_skeletons < max_skeletons:
-                # Create skeleton stats (weaker than the pet but still useful)
-                skeleton_hp = pet_combatant.max_hp * Decimal('0.6')  # 60% of pet's max HP
-                skeleton_damage = pet_combatant.damage * Decimal('0.5')  # 50% of pet's damage
-                skeleton_armor = pet_combatant.armor * Decimal('0.3')  # 30% of pet's armor
-                
-                # Store skeleton info for battle system to process
+                skeleton_hp = pet_combatant.max_hp * Decimal(str(effects['lord_of_shadows'].get('skeleton_hp', 0.75)))
+                skeleton_damage = pet_combatant.damage * Decimal(str(effects['lord_of_shadows'].get('skeleton_damage', 0.65)))
+                skeleton_armor = pet_combatant.armor * Decimal(str(effects['lord_of_shadows'].get('skeleton_armor', 0.40)))
                 setattr(pet_combatant, 'summon_skeleton', {
                     'hp': skeleton_hp,
-                    'damage': skeleton_damage, 
+                    'damage': skeleton_damage,
                     'armor': skeleton_armor,
                     'element': 'Dark'
                 })
-                
-                # Track skeleton count
                 setattr(pet_combatant, 'skeleton_count', current_skeletons + 1)
-                
-                messages.append(f"{pet_combatant.name} becomes Lord of Shadows! A skeleton warrior rises to fight! ({current_skeletons + 1}/2)")
             else:
-                messages.append(f"{pet_combatant.name} tries to summon more skeletons, but the shadow army is at full strength! (2/2)")
-                
+                messages.append(
+                    f"{pet_combatant.name} tries to summon more skeletons, but the shadow army is at full strength! (2/2)"
+                )
+
+            duration = int(effects['lord_of_shadows'].get('duration', 3))
+            if hasattr(pet_combatant, 'team'):
+                for ally in pet_combatant.team.combatants:
+                    if ally.is_alive():
+                        self._apply_timed_multiplier(
+                            ally,
+                            'lord_of_shadows',
+                            duration,
+                            damage_mult=Decimal('1') + Decimal(str(effects['lord_of_shadows'].get('team_buff', 0.15))),
+                            armor_mult=Decimal('1.10'),
+                            luck_mult=Decimal('1.10'),
+                        )
+            if hasattr(target, 'team'):
+                for enemy in target.team.combatants:
+                    if enemy.is_alive():
+                        self._apply_timed_multiplier(
+                            enemy,
+                            'lord_of_shadows_fear',
+                            duration,
+                            damage_mult=Decimal('1') - Decimal(str(effects['lord_of_shadows'].get('enemy_debuff', 0.15))),
+                            luck_mult=Decimal('0.90'),
+                        )
+            messages.append(
+                f"{pet_combatant.name} becomes Lord of Shadows! The shadow host rises and terror grips the battlefield!"
+            )
             pet_combatant.ultimate_ready = False
             
         # 🌀 CORRUPTED SKILLS
@@ -1360,6 +2035,7 @@ class PetExtension:
         if 'reality_tear' in effects and random.randint(1, 100) <= int(effects['reality_tear'].get('chance', 15)):
             modified_damage *= Decimal(str(effects['reality_tear']['damage_multiplier']))
             setattr(target, 'ignore_all_defenses', True)
+            setattr(target, 'ignore_shield_this_hit', True)
             messages.append(f"{pet_combatant.name} tears through reality itself!")
             
         # Apocalypse - ULTIMATE
@@ -1385,36 +2061,22 @@ class PetExtension:
         # VOID LORD - THE ULTIMATE ULTIMATE
         if ('void_lord' in effects and 
             getattr(pet_combatant, 'ultimate_ready', False)):
-            # Powerful but not instant-win
             modified_damage *= Decimal('3.0')  # 3x damage (strong but not broken)
             setattr(pet_combatant, 'void_lord_active', effects['void_lord']['duration'])
             setattr(pet_combatant, 'battlefield_control', True)
-            # Next attack guaranteed to hit and ignores defenses
             setattr(target, 'void_marked', True)
-            messages.append(f"{pet_combatant.name} becomes the VOID LORD! Dark power courses through them!")
-            pet_combatant.ultimate_ready = False
-            
-        # 🌿 NATURE ADDITIONAL SKILLS
-        # Symbiotic Bond - owner sharing (boost owner stats based on pet stats)
-        if ('symbiotic_bond' in effects and hasattr(pet_combatant, 'owner')):
-            # Find the owner combatant from the team
+            setattr(target, 'ignore_all_defenses', True)
+            setattr(target, 'ignore_shield_this_hit', True)
             owner_combatant = self.find_owner_combatant(pet_combatant)
             if owner_combatant:
-                share_percent = Decimal(str(effects['symbiotic_bond']['share_percent']))
-                # Share pet's damage with owner
-                owner_combatant.damage += pet_combatant.damage * share_percent
-                messages.append(f"{pet_combatant.name} shares power through Symbiotic Bond!")
-            
-        # 💨 WIND ADDITIONAL SKILLS  
-        # Wind's Guidance - redirect attack (redirect enemy attack to different target)
-        if ('winds_guidance' in effects and hasattr(target, 'team') and 
-            random.random() < 0.3):  # 30% chance to redirect
-            alive_allies = [a for a in target.team.combatants if a != target and a.is_alive()]
-            if alive_allies:
-                new_target = random.choice(alive_allies)
-                messages.append(f"{pet_combatant.name}'s Wind's Guidance redirects the attack to {new_target.name}!")
-                # This would need battle system support to actually change target
-                setattr(target, 'attack_redirected_to', new_target)
+                self._apply_timed_multiplier(
+                    owner_combatant,
+                    'void_lord_blessing',
+                    int(effects['void_lord'].get('duration', 3)),
+                    damage_mult=Decimal('1') + Decimal(str(effects['void_lord'].get('owner_buff', 0.25))),
+                )
+            messages.append(f"{pet_combatant.name} becomes the VOID LORD! Dark power courses through them!")
+            pet_combatant.ultimate_ready = False
             
         # 🌟 LIGHT ADDITIONAL SKILLS
         # Divine Wrath - dispel on hit (remove all buffs from target)
@@ -1637,29 +2299,54 @@ class PetExtension:
                 
         # Flame Barrier - shield
         if 'flame_barrier' in effects:
-            flame_shield = getattr(pet_combatant, 'flame_shield', 0)
-            if flame_shield == 0:
-                flame_shield = pet_combatant.max_hp * Decimal(str(effects['flame_barrier']['shield_multiplier']))
-                setattr(pet_combatant, 'flame_shield', flame_shield)
-            
+            flame_shield = self._to_decimal(getattr(pet_combatant, 'flame_shield', 0))
             if flame_shield > 0:
                 absorbed = min(flame_shield, modified_damage)
-                setattr(pet_combatant, 'flame_shield', flame_shield - absorbed)
+                remaining_shield = flame_shield - absorbed
+                setattr(pet_combatant, 'flame_shield', remaining_shield)
+                if remaining_shield <= 0:
+                    setattr(
+                        pet_combatant,
+                        'flame_shield_recharge',
+                        max(
+                            int(getattr(pet_combatant, 'flame_shield_recharge', 0) or 0),
+                            int(effects['flame_barrier'].get('recharge_turns', 1)),
+                        ),
+                    )
                 modified_damage -= absorbed
                 messages.append(f"Flame Barrier absorbs **{absorbed:.2f} damage**!")
+
+        # Eternal Flame - pet survives lethal hits while owner is healthy
+        if 'eternal_flame' in effects and modified_damage >= pet_combatant.hp:
+            owner_combatant = self.find_owner_combatant(pet_combatant)
+            if owner_combatant and getattr(owner_combatant, 'max_hp', 0):
+                owner_hp_ratio = self._to_decimal(owner_combatant.hp) / self._to_decimal(owner_combatant.max_hp, '1')
+                threshold = Decimal(str(effects['eternal_flame'].get('owner_hp_threshold', 0.5)))
+                if owner_hp_ratio >= threshold:
+                    modified_damage = max(Decimal('0'), self._to_decimal(pet_combatant.hp) - Decimal('1'))
+                    messages.append(
+                        f"{pet_combatant.name}'s Eternal Flame refuses to go out while their owner stands strong!"
+                    )
                 
         # Phoenix Rebirth - death prevention with revival
         if ('phoenix_rebirth' in effects and modified_damage >= pet_combatant.hp and
             not getattr(pet_combatant, 'phoenix_used', False)):
-            # Prevent death and revive
             revival_hp = pet_combatant.max_hp * Decimal(str(effects['phoenix_rebirth']['revive_hp_percent']))
             pet_combatant.hp = revival_hp
             setattr(pet_combatant, 'phoenix_used', True)
-            
-            # Trigger fire resistance temporarily
             setattr(pet_combatant, 'phoenix_resistance', 3)  # 3 turns of enhanced resistance
-            
-            messages.append(f"🔥 {pet_combatant.name} rises from the ashes with Phoenix Rebirth! Revived with **{revival_hp:.2f} HP**!")
+            self._apply_timed_multiplier(
+                pet_combatant,
+                'phoenix_rebirth',
+                int(effects['phoenix_rebirth'].get('duration', 2)),
+                damage_mult=Decimal('1') + Decimal(str(effects['phoenix_rebirth'].get('reborn_power', 0.30))),
+                armor_mult=Decimal('1.15'),
+                luck_mult=Decimal('1.10'),
+            )
+            messages.append(
+                f"🔥 {pet_combatant.name} rises from the ashes with Phoenix Rebirth! "
+                f"Revived with **{revival_hp:.2f} HP** and reborn in blazing power!"
+            )
             return 0, messages  # No damage taken this hit
             
         # Inferno Mastery - fire resistance
@@ -1668,7 +2355,10 @@ class PetExtension:
             # Resist fire damage
             fire_resistance = Decimal(str(effects['inferno_mastery']['fire_resistance']))
             modified_damage *= (Decimal('1') - fire_resistance)
-            messages.append(f"{pet_combatant.name}'s Inferno Mastery resists fire damage! (-30%)")
+            messages.append(
+                f"{pet_combatant.name}'s Inferno Mastery resists fire damage! "
+                f"(-{fire_resistance * Decimal('100'):.0f}%)"
+            )
             
         # Phoenix Resistance - enhanced resistance after revival
         phoenix_resistance = getattr(pet_combatant, 'phoenix_resistance', 0)
@@ -1677,6 +2367,25 @@ class PetExtension:
             resistance_amount = Decimal('0.5')  # 50% damage reduction
             modified_damage *= (Decimal('1') - resistance_amount)
             messages.append(f"{pet_combatant.name}'s Phoenix flames provide strong resistance! (-50% damage)")
+
+        # Wind's Guidance - once per pet turn, blow a heavy hit off course
+        if (
+            'winds_guidance' in effects
+            and int(getattr(pet_combatant, 'winds_guidance_ready', 0) or 0) > 0
+            and random.randint(1, 100) <= int(effects['winds_guidance'].get('chance', 35))
+        ):
+            setattr(pet_combatant, 'winds_guidance_ready', 0)
+            prevented_damage = modified_damage * Decimal(str(effects['winds_guidance'].get('damage_reduction', 0.50)))
+            modified_damage -= prevented_damage
+            reflected_damage = prevented_damage * Decimal(str(effects['winds_guidance'].get('reflect_fraction', 0.60)))
+            if attacker is not None and hasattr(attacker, 'take_damage') and getattr(attacker, 'is_alive', lambda: True)():
+                attacker.take_damage(reflected_damage)
+                messages.append(
+                    f"{pet_combatant.name}'s Wind's Guidance diverts the blow! "
+                    f"**{reflected_damage:.2f} damage** whips back into {attacker.name}."
+                )
+            else:
+                messages.append(f"{pet_combatant.name}'s Wind's Guidance turns aside the attack!")
                 
         # 💧 WATER DEFENSIVE SKILLS
         # Guardian Wave - damage reduction
@@ -1690,25 +2399,23 @@ class PetExtension:
             messages.append(f"{pet_combatant.name} flows like water, dodging the attack!")
             return 0, messages
             
-        # Ocean's Embrace - damage transfer
-        if ('oceans_embrace' in effects and hasattr(pet_combatant, 'owner') and 
-            hasattr(pet_combatant.owner, 'take_damage')):
-            transfer_amount = modified_damage * Decimal(str(effects['oceans_embrace']['damage_share']))
-            pet_combatant.owner.take_damage(transfer_amount)
-            modified_damage -= transfer_amount
-            messages.append(f"Ocean's Embrace transfers **{transfer_amount:.2f} damage** to owner!")
-            
         # ⚡ ELECTRIC DEFENSIVE SKILLS
         # Energy Shield - shield
         if 'energy_shield' in effects:
-            energy_barrier = getattr(pet_combatant, 'energy_barrier', 0)
-            if energy_barrier == 0:
-                energy_barrier = pet_combatant.max_hp * Decimal(str(effects['energy_shield']['shield_multiplier']))
-                setattr(pet_combatant, 'energy_barrier', energy_barrier)
-            
+            energy_barrier = self._to_decimal(getattr(pet_combatant, 'energy_barrier', 0))
             if energy_barrier > 0:
                 absorbed = min(energy_barrier, modified_damage)
-                setattr(pet_combatant, 'energy_barrier', energy_barrier - absorbed)
+                remaining_barrier = energy_barrier - absorbed
+                setattr(pet_combatant, 'energy_barrier', remaining_barrier)
+                if remaining_barrier <= 0:
+                    setattr(
+                        pet_combatant,
+                        'energy_barrier_recharge',
+                        max(
+                            int(getattr(pet_combatant, 'energy_barrier_recharge', 0) or 0),
+                            int(effects['energy_shield'].get('recharge_turns', 1)),
+                        ),
+                    )
                 modified_damage -= absorbed
                 messages.append(f"Energy Shield absorbs **{absorbed:.2f} damage**!")
                 
@@ -1757,25 +2464,20 @@ class PetExtension:
                 modified_damage *= (Decimal('1') - Decimal(str(effects['divine_shield']['general_resistance'])))
                 messages.append(f"Divine Shield offers minor protection!")
                 
-        # Guardian Angel - death prevention
-        if ('guardian_angel' in effects and modified_damage >= pet_combatant.hp and
-            not getattr(pet_combatant, 'guardian_used', False)):
-            # Sacrifice self to save owner and heal them
-            owner_combatant = self.find_owner_combatant(pet_combatant)
-            if owner_combatant and hasattr(owner_combatant, 'hp') and hasattr(owner_combatant, 'max_hp'):
-                owner_combatant.hp = owner_combatant.max_hp
-                pet_combatant.hp = 1  # Pet survives with 1 HP
-                setattr(pet_combatant, 'guardian_used', True)
-                messages.append(f"{pet_combatant.name} becomes a Guardian Angel, saving their owner!")
-                return 0, messages
-                
         # 🌑 DARK DEFENSIVE SKILLS
-        # Dark Shield - convert damage to attack
+        # Dark Shield - absorb damage and briefly empower the pet
         if 'dark_shield' in effects:
-            conversion = modified_damage * Decimal(str(effects['dark_shield']['damage_to_attack']))
-            pet_combatant.damage += conversion
-            setattr(pet_combatant, 'dark_shield_duration', effects['dark_shield']['duration'])
-            messages.append(f"{pet_combatant.name}'s Dark Shield converts damage to power!")
+            absorbed = modified_damage * Decimal(str(effects['dark_shield']['absorb_percent']))
+            modified_damage -= absorbed
+            self._apply_timed_multiplier(
+                pet_combatant,
+                'dark_shield',
+                int(effects['dark_shield']['duration']),
+                damage_mult=Decimal('1') + Decimal(str(effects['dark_shield']['attack_bonus'])),
+            )
+            messages.append(
+                f"{pet_combatant.name}'s Dark Shield absorbs **{absorbed:.2f} damage** and fuels their next assaults!"
+            )
             
         # Shadow Form - physical immunity
         shadow_form_turns = getattr(pet_combatant, 'shadow_form_turns', 0)
@@ -1806,10 +2508,8 @@ class PetExtension:
             
         # Corrupt Shield - absorb damage and corrupt
         if 'corrupt_shield' in effects:
-            # Absorb some damage
-            absorbed = modified_damage * Decimal('0.3')  # Absorb 30% of damage
+            absorbed = modified_damage * Decimal(str(effects['corrupt_shield'].get('absorb_percent', 0.20)))
             modified_damage -= absorbed
-            # Chance to corrupt attacker
             if random.random() < effects['corrupt_shield']['corruption_chance']:
                 setattr(attacker, 'corrupted', 3)
                 messages.append(f"{pet_combatant.name}'s Corrupt Shield absorbs damage and corrupts the attacker!")
@@ -1882,7 +2582,9 @@ class PetExtension:
         # 💨 WIND DEFENSIVE SKILLS  
         # Wind Tunnel - positioning (manipulate distance to reduce damage)
         if 'wind_tunnel' in effects:
-            modified_damage *= Decimal('0.75')  # 25% damage reduction through positioning
+            modified_damage *= (
+                Decimal('1') - Decimal(str(effects['wind_tunnel'].get('damage_reduction', 0.30)))
+            )
             messages.append(f"{pet_combatant.name} uses Wind Tunnel to reposition and reduce damage!")
             
         # Air Shield - enhanced version with Air Currents synergy
@@ -1940,280 +2642,344 @@ class PetExtension:
                 setattr(pet_combatant, 'ultimate_activated', True)
                 messages.append(f"{pet_combatant.name}'s ultimate power awakens!")
         
-        # Handle Void Lord duration
-        void_lord_active = getattr(pet_combatant, 'void_lord_active', 0)
-        if void_lord_active > 0:
-            setattr(pet_combatant, 'void_lord_active', void_lord_active - 1)
-            if void_lord_active - 1 == 0:
-                messages.append(f"{pet_combatant.name}'s Void Lord power fades...")
-                if hasattr(pet_combatant, 'battlefield_control'):
-                    delattr(pet_combatant, 'battlefield_control')
-        
-        # Handle Overcharge duration
-        if hasattr(pet_combatant, 'owner'):
-            overcharge_duration = getattr(pet_combatant.owner, 'overcharge_duration', 0)
-            if overcharge_duration > 0:
-                setattr(pet_combatant.owner, 'overcharge_duration', overcharge_duration - 1)
-                if overcharge_duration - 1 == 0:
-                    # Remove overcharge buff
-                    if hasattr(pet_combatant.owner, 'overcharge_active'):
-                        delattr(pet_combatant.owner, 'overcharge_active')
-                    messages.append(f"{pet_combatant.name}'s Overcharge effect fades from their owner...")
-        
-        # Handle Void Pact duration
-        if hasattr(pet_combatant, 'team'):
-            for ally in pet_combatant.team.combatants:
-                void_pact_duration = getattr(ally, 'void_pact_duration', 0)
-                if void_pact_duration > 0:
-                    setattr(ally, 'void_pact_duration', void_pact_duration - 1)
-                    if void_pact_duration - 1 == 0:
-                        # Remove void pact effects (ally had both damage and defense)
-                        ally.damage /= Decimal('1.4')  # Remove +40% damage
-                        ally.armor /= Decimal('0.8')   # Remove -20% defense
-                        delattr(ally, 'void_pact_active')
-                        messages.append(f"{ally.name}'s Void Pact effects fade...")
-        
-        if hasattr(pet_combatant, 'enemy_team'):
-            for enemy in pet_combatant.enemy_team.combatants:
-                void_pact_duration = getattr(enemy, 'void_pact_duration', 0)
-                if void_pact_duration > 0:
-                    setattr(enemy, 'void_pact_duration', void_pact_duration - 1)
-                    if void_pact_duration - 1 == 0:
-                        # Remove void pact effects (enemy only had defense penalty)
-                        enemy.armor /= Decimal('0.8')   # Remove -20% defense
-                        delattr(enemy, 'void_pact_active')
-                        messages.append(f"{enemy.name}'s Void Pact defense penalty fades...")
-        
+        owner_combatant = self.find_owner_combatant(pet_combatant) if hasattr(pet_combatant, 'owner') else None
+        team_combatants = list(getattr(getattr(pet_combatant, 'team', None), 'combatants', []))
+        enemy_combatants = list(getattr(getattr(pet_combatant, 'enemy_team', None), 'combatants', []))
+
+        self._tick_simple_duration(
+            pet_combatant,
+            'void_lord_active',
+            messages,
+            fade_message=f"{pet_combatant.name}'s Void Lord power fades...",
+            clear_attrs=['battlefield_control'],
+        )
+        self._tick_simple_duration(
+            pet_combatant,
+            'phoenix_resistance',
+            messages,
+            fade_message=f"{pet_combatant.name}'s phoenix resistance fades...",
+        )
+        self._tick_simple_duration(
+            pet_combatant,
+            'inferno_mastery_turns',
+            messages,
+            fade_message=f"{pet_combatant.name}'s infernal overdrive cools.",
+        )
+        self._tick_simple_duration(
+            pet_combatant,
+            'storm_lord_active',
+            messages,
+            clear_attrs=['battlefield_control'],
+        )
+        self._tick_simple_duration(
+            pet_combatant,
+            'void_pact_duration',
+            messages,
+            clear_attrs=['void_pact_active'],
+        )
+        self._tick_timed_multiplier(pet_combatant, 'dark_shield', messages)
+        self._tick_timed_multiplier(pet_combatant, 'growth_spurt', messages)
+        self._tick_timed_multiplier(pet_combatant, 'phoenix_rebirth', messages)
+        self._tick_timed_multiplier(
+            pet_combatant,
+            'dark_ritual',
+            messages,
+            extra_attrs=['dark_ritual_lifesteal'],
+        )
+        if 'flame_barrier' in effects:
+            self._tick_barrier_recharge(
+                pet_combatant,
+                'flame_shield',
+                'flame_shield_recharge',
+                effects['flame_barrier']['shield_multiplier'],
+                effects['flame_barrier'].get('restore_ratio', 0.50),
+                messages,
+                'Flame Barrier',
+            )
+        if 'energy_shield' in effects:
+            self._tick_barrier_recharge(
+                pet_combatant,
+                'energy_barrier',
+                'energy_barrier_recharge',
+                effects['energy_shield']['shield_multiplier'],
+                effects['energy_shield'].get('restore_ratio', 0.60),
+                messages,
+                'Energy Shield',
+            )
+
+        if owner_combatant:
+            self._tick_timed_multiplier(
+                owner_combatant,
+                'power_surge',
+                messages,
+                fade_message=f"{pet_combatant.name}'s Power Surge fades from their owner.",
+            )
+            self._tick_timed_multiplier(
+                owner_combatant,
+                'overcharge',
+                messages,
+                fade_message=f"{pet_combatant.name}'s Overcharge fades from their owner.",
+                extra_attrs=['overcharge_active'],
+            )
+            self._tick_timed_multiplier(
+                owner_combatant,
+                'dark_pact',
+                messages,
+                fade_message=f"{pet_combatant.name}'s Dark Pact fades from their owner.",
+                extra_attrs=['dark_pact_active'],
+            )
+            self._tick_timed_multiplier(owner_combatant, 'void_lord_blessing', messages)
+            self._tick_timed_multiplier(owner_combatant, 'void_mastery_reality', messages)
+            self._tick_simple_duration(
+                owner_combatant,
+                'water_immortality_duration',
+                messages,
+                fade_message=f"{owner_combatant.name}'s Immortal Waters blessing fades.",
+                clear_attrs=['water_immortality'],
+            )
+
+        for ally in team_combatants:
+            self._tick_timed_multiplier(ally, 'inferno_mastery_aura', messages)
+            self._tick_timed_multiplier(ally, 'sun_gods_blessing', messages)
+            self._tick_timed_multiplier(ally, 'poseidons_call', messages)
+            self._tick_timed_multiplier(ally, 'storm_lord', messages)
+            self._tick_timed_multiplier(
+                ally,
+                'infinite_energy',
+                messages,
+                extra_attrs=['unlimited_abilities'],
+            )
+            self._tick_timed_multiplier(ally, 'zeus_wrath', messages)
+            self._tick_timed_multiplier(ally, 'natures_blessing', messages)
+            self._tick_timed_multiplier(ally, 'world_trees_gift', messages)
+            self._tick_timed_multiplier(ally, 'lord_of_shadows', messages)
+            self._tick_timed_multiplier(ally, 'air_currents', messages)
+            self._tick_timed_multiplier(ally, 'freedoms_call', messages)
+            self._tick_timed_multiplier(ally, 'storm_lord_wind_ally', messages)
+            self._tick_timed_multiplier(ally, 'void_pact_ally', messages)
+            self._tick_timed_multiplier(
+                ally,
+                'end_of_days_blessing',
+                messages,
+                extra_attrs=['chaos_powers', 'chaos_damage_immunity', 'reality_break_stacks'],
+            )
+            self._tick_timed_multiplier(ally, 'divine_favor_damage', messages)
+            self._tick_timed_multiplier(ally, 'divine_favor_armor', messages)
+            self._tick_timed_multiplier(ally, 'divine_favor_luck', messages)
+            self._tick_timed_multiplier(
+                ally,
+                'celestial_blessing',
+                messages,
+                extra_attrs=['physical_immunity'],
+            )
+            self._tick_timed_multiplier(
+                ally,
+                'eternal_night',
+                messages,
+                extra_attrs=['bonus_lifesteal'],
+            )
+            self._tick_timed_multiplier(ally, 'zephyrs_dance', messages)
+            self._tick_simple_duration(ally, 'storm_lord_haste', messages)
+            self._tick_simple_duration(
+                ally,
+                'air_currents_duration',
+                messages,
+                clear_attrs=['air_currents_boost'],
+            )
+            self._tick_simple_duration(
+                ally,
+                'freedom_boost_duration',
+                messages,
+                clear_attrs=['freedom_boost'],
+            )
+            self._tick_simple_duration(
+                ally,
+                'sky_dodge_duration',
+                messages,
+                clear_attrs=['sky_dodge'],
+            )
+            self._tick_simple_duration(
+                ally,
+                'sky_haste_duration',
+                messages,
+                clear_attrs=['sky_haste'],
+            )
+            self._tick_simple_duration(
+                ally,
+                'zephyr_speed_duration',
+                messages,
+                clear_attrs=['zephyr_speed'],
+            )
+            self._tick_simple_duration(ally, 'debuff_immunity', messages)
+            self._tick_simple_duration(ally, 'zeus_protection', messages)
+            self._tick_simple_duration(ally, 'physical_immunity', messages)
+            self._tick_simple_duration(
+                ally,
+                'divine_invincibility',
+                messages,
+                clear_attrs=['blessed_by_light'],
+            )
+
+        for enemy in enemy_combatants:
+            self._tick_timed_multiplier(enemy, 'decay_touch', messages)
+            self._tick_timed_multiplier(enemy, 'poseidons_call_curse', messages)
+            self._tick_timed_multiplier(enemy, 'electromagnetic_field', messages)
+            self._tick_timed_multiplier(enemy, 'gale_force', messages)
+            self._tick_timed_multiplier(enemy, 'light_beam', messages)
+            self._tick_timed_multiplier(enemy, 'world_trees_gift_curse', messages)
+            self._tick_timed_multiplier(enemy, 'lord_of_shadows_fear', messages)
+            self._tick_timed_multiplier(enemy, 'vine_whip', messages)
+            self._tick_timed_multiplier(enemy, 'wind_shear', messages)
+            self._tick_timed_multiplier(enemy, 'void_pact_enemy', messages)
+            self._tick_timed_multiplier(enemy, 'storm_lord_wind', messages)
+            self._tick_timed_multiplier(enemy, 'zephyrs_dance_slow', messages)
+            self._tick_timed_multiplier(enemy, 'void_mastery', messages)
+            self._tick_timed_multiplier(enemy, 'end_of_days_curse', messages)
+            self._tick_simple_duration(enemy, 'storm_dominated', messages)
+            self._tick_simple_duration(
+                enemy,
+                'zephyr_slow_duration',
+                messages,
+                clear_attrs=['zephyr_slow'],
+            )
+
         # 🔥 FIRE PER-TURN EFFECTS
-        # Warmth - heal owner on attack (enhanced version)
-        if ('warmth' in effects and hasattr(pet_combatant, 'owner')):
-            # Find the owner combatant from the team
-            owner_combatant = self.find_owner_combatant(pet_combatant)
-            if owner_combatant and hasattr(owner_combatant, 'max_hp') and hasattr(owner_combatant, 'heal'):
-                # Always provide some warmth, more when attacking
-                base_heal = owner_combatant.max_hp * Decimal(str(effects['warmth']['heal_percent']))
-                if getattr(pet_combatant, 'attacked_this_turn', False):
-                    # Double healing when attacking
-                    heal_amount = base_heal * Decimal('2')
-                    owner_combatant.heal(heal_amount)
-                    messages.append(f"{pet_combatant.name}'s Warmth surges after attacking! Owner healed **{heal_amount:.2f} HP**!")
-                else:
-                    # Base healing even when not attacking
-                    owner_combatant.heal(base_heal)
-                    messages.append(f"{pet_combatant.name}'s Warmth comforts their owner! Owner healed **{base_heal:.2f} HP**!")
-                
-        # Phoenix Resistance - temporary fire immunity
-        phoenix_resistance = getattr(pet_combatant, 'phoenix_resistance', 0)
-        if phoenix_resistance > 0:
-            setattr(pet_combatant, 'phoenix_resistance', phoenix_resistance - 1)
-            if phoenix_resistance == 1:
-                messages.append(f"{pet_combatant.name}'s phoenix resistance fades...")
-                
-        # Process Combustion for dying pets
-        if ('combustion' in pet_combatant.skill_effects and 
-            pet_combatant.hp <= 0 and 
-            not getattr(pet_combatant, 'combustion_triggered', False) and
-            hasattr(pet_combatant, 'enemy_team')):
-            # Trigger explosive death
-            explosion_damage = pet_combatant.max_hp * Decimal(str(pet_combatant.skill_effects['combustion']['damage_multiplier']))
-            for enemy in pet_combatant.enemy_team.combatants:
-                if enemy.is_alive():
-                    enemy.take_damage(explosion_damage)
-                    
-            setattr(pet_combatant, 'combustion_triggered', True)
-            messages.append(f"💥 {pet_combatant.name} explodes in a fiery blaze! All enemies take **{explosion_damage:.2f} damage**!")
-            
-        # Burning Spirit - apply burn
-        if ('burning_spirit' in effects and hasattr(pet_combatant, 'team') and 
-            hasattr(pet_combatant, 'enemy_team')):
-            if random.randint(1, 100) <= effects['burning_spirit']['chance']:
-                for enemy in pet_combatant.enemy_team.combatants:
-                    if enemy.is_alive():
-                        burn_damage = enemy.max_hp * Decimal(str(effects['burning_spirit']['burn_percent']))
-                        enemy.take_damage(burn_damage)
-                        setattr(enemy, 'burning', effects['burning_spirit']['duration'])
-                        messages.append(f"{pet_combatant.name}'s Burning Spirit ignites enemies!")
-                        break
-        
-        # Eternal Flame - conditional immortality
-        if ('eternal_flame' in effects and hasattr(pet_combatant, 'owner')):
-            # Find the owner combatant from the team
-            owner_combatant = self.find_owner_combatant(pet_combatant)
-            if owner_combatant and hasattr(owner_combatant, 'hp') and hasattr(owner_combatant, 'max_hp'):
-                owner_hp_ratio = owner_combatant.hp / owner_combatant.max_hp
-                if owner_hp_ratio < effects['eternal_flame']['owner_hp_threshold']:
-                    setattr(pet_combatant, 'immortal_while_owner_low', True)
-                    messages.append(f"{pet_combatant.name} burns with Eternal Flame - cannot die while owner is in danger!")
-                elif hasattr(pet_combatant, 'immortal_while_owner_low'):
-                    delattr(pet_combatant, 'immortal_while_owner_low')
+        # Warmth - heal owner on attack
+        if (
+            'warmth' in effects
+            and owner_combatant
+            and getattr(pet_combatant, 'attacked_this_turn', False)
+        ):
+            heal_amount = self._scaled_heal(
+                pet_combatant,
+                owner_combatant,
+                effects['warmth']['heal_percent'],
+            )
+            owner_combatant.heal(heal_amount)
+            messages.append(f"{pet_combatant.name}'s Warmth restores **{heal_amount:.2f} HP** to their owner!")
         
         # 💧 WATER PER-TURN EFFECTS
         # Healing Rain - team healing
-        if 'healing_rain' in effects and hasattr(pet_combatant, 'team'):
-            heal_amount = pet_combatant.max_hp * Decimal(str(effects['healing_rain']['heal_percent']))
-            for ally in pet_combatant.team.combatants:
+        if 'healing_rain' in effects and team_combatants:
+            for ally in team_combatants:
                 if ally.is_alive():
+                    heal_amount = self._scaled_heal(
+                        pet_combatant,
+                        ally,
+                        effects['healing_rain']['heal_percent'],
+                    )
                     ally.heal(heal_amount)
-            messages.append(f"{pet_combatant.name}'s Healing Rain restores **{heal_amount:.2f} HP** to all allies!")
+            messages.append(f"{pet_combatant.name}'s Healing Rain restores the team.")
             
         # Life Spring - lifesteal to owner
-        if ('life_spring' in effects and hasattr(pet_combatant, 'owner') and 
-            getattr(pet_combatant, 'attacked_this_turn', False)):
-            # Find the owner combatant from the team
-            owner_combatant = self.find_owner_combatant(pet_combatant)
-            if owner_combatant and hasattr(owner_combatant, 'heal'):
+        if ('life_spring' in effects and owner_combatant and getattr(pet_combatant, 'attacked_this_turn', False)):
+            if hasattr(owner_combatant, 'heal'):
                 heal_amount = pet_combatant.damage * Decimal(str(effects['life_spring']['heal_percent']))
                 owner_combatant.heal(heal_amount)
                 messages.append(f"Life Spring flows healing energy to {pet_combatant.name}'s owner!")
             
         # Purify - remove debuffs
-        if 'purify' in effects and hasattr(pet_combatant, 'team'):
-            for ally in pet_combatant.team.combatants:
-                debuffs_removed = []
-                for debuff in ['poisoned', 'stunned', 'corrupted', 'burning']:
-                    if hasattr(ally, debuff):
-                        delattr(ally, debuff)
-                        debuffs_removed.append(debuff)
-                if debuffs_removed:
-                    messages.append(f"Purify cleanses {ally.name} of {', '.join(debuffs_removed)}!")
+        if 'purify' in effects and owner_combatant:
+            removable_debuffs = [
+                debuff for debuff in ['poisoned', 'stunned', 'corrupted', 'burning', 'paralyzed']
+                if hasattr(owner_combatant, debuff)
+            ]
+            if removable_debuffs:
+                removed_debuff = random.choice(removable_debuffs)
+                delattr(owner_combatant, removed_debuff)
+                messages.append(f"Purify cleanses {owner_combatant.name} of {removed_debuff}!")
                     
         # Immortal Waters - owner immortality
-        if ('immortal_waters' in effects and hasattr(pet_combatant, 'owner')):
-            # Find the owner combatant from the team
-            owner_combatant = self.find_owner_combatant(pet_combatant)
-            if owner_combatant and hasattr(owner_combatant, 'hp') and hasattr(owner_combatant, 'max_hp'):
-                owner_hp_ratio = owner_combatant.hp / owner_combatant.max_hp
-                if owner_hp_ratio < 0.1 and not getattr(owner_combatant, 'immortal_waters_active', False):
-                    # Activate immortality for 3 turns
-                    setattr(owner_combatant, 'immortal_waters_active', 3)
-                    setattr(owner_combatant, 'water_immortality', True)
-                    # Heal owner to 25% HP
-                    heal_amount = owner_combatant.max_hp * Decimal('0.25')
-                    owner_combatant.heal(heal_amount)
-                    messages.append(f"Immortal Waters activates! {owner_combatant.user.display_name} becomes temporarily immortal!")
-                    
-                # Handle active immortality duration
-                immortal_duration = getattr(owner_combatant, 'immortal_waters_active', 0)
-                if immortal_duration > 0:
-                    setattr(owner_combatant, 'immortal_waters_active', immortal_duration - 1)
-                    if immortal_duration == 1:
-                        # Immortality expires
-                        if hasattr(owner_combatant, 'water_immortality'):
-                            delattr(owner_combatant, 'water_immortality')
-                        messages.append(f"{owner_combatant.user.display_name}'s immortality fades...")
+        if ('immortal_waters' in effects and owner_combatant and getattr(pet_combatant, 'ultimate_ready', False)):
+            duration = int(effects['immortal_waters'].get('duration', 2))
+            setattr(owner_combatant, 'water_immortality', True)
+            setattr(owner_combatant, 'water_immortality_duration', duration)
+            heal_amount = self._scaled_heal(
+                pet_combatant,
+                owner_combatant,
+                Decimal('0.25'),
+                burst=True,
+            )
+            owner_combatant.heal(heal_amount)
+            messages.append(f"{pet_combatant.name} invokes Immortal Waters! {owner_combatant.name} cannot fall for {duration} turns!")
+            pet_combatant.ultimate_ready = False
             
-        # Tidal Force - process turn delays
-        if hasattr(pet_combatant, 'enemy_team'):
-            for enemy in pet_combatant.enemy_team.combatants:
-                tidal_delay = getattr(enemy, 'tidal_delayed', 0)
-                if tidal_delay > 0:
-                    # Reduce enemy's actions this turn
-                    setattr(enemy, 'tidal_delayed', tidal_delay - 1)
-                    # Could reduce accuracy or damage as "delayed" effect
-                    enemy.luck *= Decimal('0.85')  # 15% accuracy reduction while delayed
-                    if tidal_delay == 1:  # Last turn of delay
-                        messages.append(f"{enemy.name} recovers from tidal forces...")
+        # Tidal Force is resolved when the affected combatant attempts to act.
             
         # ⚡ ELECTRIC PER-TURN EFFECTS
         # Quick Charge - persistent initiative lock.
         if 'quick_charge' in effects:
-            setattr(pet_combatant, 'attack_priority', True)
             setattr(pet_combatant, 'quick_charge_active', True)
-
-        # Static Shock - paralyze chance
-        if ('static_shock' in effects and hasattr(pet_combatant, 'enemy_team')):
-            if random.randint(1, 100) <= effects['static_shock']['chance']:
-                for enemy in pet_combatant.enemy_team.combatants:
-                    if enemy.is_alive() and not getattr(enemy, 'paralyzed', False):
-                        setattr(enemy, 'paralyzed', effects['static_shock']['duration'])
-                        messages.append(f"{pet_combatant.name}'s Static Shock paralyzes {enemy.name}!")
-                        break
                         
         # Power Surge - owner attack bonus
-        if ('power_surge' in effects and hasattr(pet_combatant, 'owner') and 
-            getattr(pet_combatant, 'attacked_this_turn', False)):
-            # Find the owner combatant from the team
-            owner_combatant = self.find_owner_combatant(pet_combatant)
-            if owner_combatant and hasattr(owner_combatant, 'damage'):
-                owner_combatant.damage *= (Decimal('1') + Decimal(str(effects['power_surge']['attack_bonus'])))
-                setattr(owner_combatant, 'power_surge_duration', effects['power_surge']['duration'])
+        if ('power_surge' in effects and owner_combatant and getattr(pet_combatant, 'attacked_this_turn', False)):
+            if hasattr(owner_combatant, 'damage'):
+                self._apply_timed_multiplier(
+                    owner_combatant,
+                    'power_surge',
+                    int(effects['power_surge']['duration']),
+                    damage_mult=Decimal('1') + Decimal(str(effects['power_surge']['attack_bonus'])),
+                )
                 messages.append(f"Power Surge electrifies {pet_combatant.name}'s owner!")
-
-        # Infinite Energy - maintain/expire team-wide buff
-        infinite_energy_turns = getattr(pet_combatant, 'infinite_energy_turns', 0)
-        if infinite_energy_turns > 0:
-            setattr(pet_combatant, 'infinite_energy_turns', infinite_energy_turns - 1)
-            if infinite_energy_turns == 1 and getattr(pet_combatant, 'infinite_energy_active', False):
-                team_buff = Decimal(str(getattr(pet_combatant, 'infinite_energy_buff', 0)))
-                buff_mult = Decimal('1') + team_buff if team_buff > 0 else Decimal('1')
-                for ally in getattr(pet_combatant, 'infinite_energy_targets', []):
-                    if buff_mult > 0:
-                        ally.damage /= buff_mult
-                        ally.armor /= buff_mult
-                    ally.luck -= team_buff * Decimal('100')
-                    if hasattr(ally, 'unlimited_abilities'):
-                        delattr(ally, 'unlimited_abilities')
-                for attr in ['infinite_energy_targets', 'infinite_energy_buff', 'infinite_energy_active']:
-                    if hasattr(pet_combatant, attr):
-                        delattr(pet_combatant, attr)
-                messages.append(f"{pet_combatant.name}'s Infinite Energy fades as the surge dissipates.")
             
         # Battery Life - now handled in pets system for skill learning costs
         # No battle effect needed
                     
         # Electromagnetic Field - enemy accuracy reduction
-        if ('electromagnetic_field' in effects and hasattr(pet_combatant, 'enemy_team')):
-            for enemy in pet_combatant.enemy_team.combatants:
+        if ('electromagnetic_field' in effects and enemy_combatants):
+            for enemy in enemy_combatants:
                 if enemy.is_alive():
-                    enemy.luck *= (Decimal('1') - Decimal(str(effects['electromagnetic_field']['accuracy_reduction'])))
+                    self._apply_timed_multiplier(
+                        enemy,
+                        'electromagnetic_field',
+                        int(effects['electromagnetic_field'].get('duration', 2)),
+                        luck_mult=Decimal('1') - Decimal(str(effects['electromagnetic_field']['accuracy_reduction'])),
+                    )
             messages.append(f"{pet_combatant.name}'s Electromagnetic Field disrupts enemy accuracy!")
             
         # Overcharge - sacrifice HP for owner damage boost
-        if ('overcharge' in effects and hasattr(pet_combatant, 'owner')):
-            # Check if we should activate overcharge (random chance or low HP trigger)
-            should_activate = False
-            current_hp_ratio = pet_combatant.hp / pet_combatant.max_hp
-            
-            # Activate when pet is at moderate HP (50-75%) with 20% chance per turn
-            if 0.5 <= current_hp_ratio <= 0.75 and random.randint(1, 100) <= 20:
-                should_activate = True
-            # Or activate when pet is at low HP (25-50%) with 40% chance per turn  
-            elif 0.25 <= current_hp_ratio <= 0.5 and random.randint(1, 100) <= 40:
-                should_activate = True
-                
-            # Find the owner combatant from the team
-            owner_combatant = self.find_owner_combatant(pet_combatant)
-            if (owner_combatant and should_activate and not getattr(owner_combatant, 'overcharge_active', False)):
+        if ('overcharge' in effects and owner_combatant):
+            current_hp_ratio = pet_combatant.hp / pet_combatant.max_hp if pet_combatant.max_hp else Decimal('0')
+            if (
+                current_hp_ratio <= Decimal('0.60')
+                and not getattr(owner_combatant, 'overcharge_active', False)
+                and not getattr(pet_combatant, 'overcharge_used', False)
+            ):
                 sacrifice_hp = pet_combatant.max_hp * Decimal(str(effects['overcharge']['hp_sacrifice']))
                 current_hp = Decimal(str(getattr(pet_combatant, 'hp', 0)))
                 
                 if current_hp > sacrifice_hp:
-                    # Sacrifice pet HP
                     setattr(pet_combatant, 'hp', current_hp - sacrifice_hp)
-                    
-                    # Boost owner damage
-                    owner_combatant.damage *= (Decimal('1') + Decimal(str(effects['overcharge']['owner_buff'])))
-                    setattr(owner_combatant, 'overcharge_duration', effects['overcharge']['duration'])
                     setattr(owner_combatant, 'overcharge_active', True)
-                    
+                    setattr(pet_combatant, 'overcharge_used', True)
+                    self._apply_timed_multiplier(
+                        owner_combatant,
+                        'overcharge',
+                        int(effects['overcharge']['duration']),
+                        damage_mult=Decimal('1') + Decimal(str(effects['overcharge']['owner_buff'])),
+                        armor_mult=Decimal('1') + Decimal(str(effects['overcharge']['owner_buff'])),
+                        luck_mult=Decimal('1') + Decimal(str(effects['overcharge']['owner_buff'])),
+                    )
                     messages.append(f"{pet_combatant.name} overcharges! Sacrifices **{sacrifice_hp:.2f} HP** to empower their owner!")
         
         # 🌿 NATURE PER-TURN EFFECTS
         # Natural Healing - regeneration
         if 'natural_healing' in effects:
-            heal_amount = pet_combatant.max_hp * Decimal(str(effects['natural_healing']['heal_percent']))
+            heal_amount = self._scaled_heal(
+                pet_combatant,
+                pet_combatant,
+                effects['natural_healing']['heal_percent'],
+                self_target=True,
+            )
             pet_combatant.heal(heal_amount)
             messages.append(f"{pet_combatant.name} naturally heals **{heal_amount:.2f} HP**!")
             
             # Check for Symbiotic Bond healing sharing
-            if ('symbiotic_bond' in effects and hasattr(pet_combatant, 'owner')):
-                # Find the owner combatant from the team
-                owner_combatant = self.find_owner_combatant(pet_combatant)
-                if owner_combatant and hasattr(owner_combatant, 'heal') and hasattr(owner_combatant, 'user'):
-                    share_percent = Decimal(str(effects['symbiotic_bond']['share_percent']))
-                    shared_heal = heal_amount * share_percent
-                    owner_combatant.heal(shared_heal)
-                    messages.append(f"Symbiotic Bond shares **{shared_heal:.2f} healing** with {owner_combatant.user.display_name}!")
+            if ('symbiotic_bond' in effects and owner_combatant and hasattr(owner_combatant, 'heal') and hasattr(owner_combatant, 'user')):
+                share_percent = Decimal(str(effects['symbiotic_bond']['share_percent']))
+                shared_heal = heal_amount * share_percent
+                owner_combatant.heal(shared_heal)
+                messages.append(f"Symbiotic Bond shares **{shared_heal:.2f} healing** with {owner_combatant.user.display_name}!")
             
         # Growth Spurt - stacking stats
         if 'growth_spurt' in effects:
@@ -2221,75 +2987,102 @@ class PetExtension:
                 pet_combatant.growth_stacks = 0
             if pet_combatant.growth_stacks < effects['growth_spurt']['max_stacks']:
                 pet_combatant.growth_stacks += 1
-                stat_boost = effects['growth_spurt']['stat_increase']
-                pet_combatant.damage *= (Decimal('1') + Decimal(str(stat_boost)))
-                pet_combatant.armor *= (Decimal('1') + Decimal(str(stat_boost)))
-                messages.append(f"{pet_combatant.name} grows stronger! (Stack {pet_combatant.growth_stacks})")
+            total_bonus = Decimal(str(effects['growth_spurt']['stat_increase'])) * Decimal(
+                str(pet_combatant.growth_stacks)
+            )
+            self._clear_timed_multiplier(pet_combatant, 'growth_spurt')
+            self._apply_timed_multiplier(
+                pet_combatant,
+                'growth_spurt',
+                2,
+                damage_mult=Decimal('1') + total_bonus,
+                armor_mult=Decimal('1') + total_bonus,
+                luck_mult=Decimal('1') + total_bonus,
+            )
+            messages.append(
+                f"{pet_combatant.name} grows stronger! "
+                f"(Stack {pet_combatant.growth_stacks}/{effects['growth_spurt']['max_stacks']})"
+            )
                 
         # Life Force - HP transfer to owner
-        if ('life_force' in effects and hasattr(pet_combatant, 'owner')):
-            # Find the owner combatant from the team
-            owner_combatant = self.find_owner_combatant(pet_combatant)
-            if owner_combatant and hasattr(owner_combatant, 'heal'):
+        if ('life_force' in effects and owner_combatant and hasattr(owner_combatant, 'heal')):
+            owner_hp_ratio = owner_combatant.hp / owner_combatant.max_hp if owner_combatant.max_hp else Decimal('1')
+            uses_left = int(getattr(pet_combatant, 'life_force_uses_left', effects['life_force'].get('uses', 1)) or 0)
+            if owner_hp_ratio <= Decimal(str(effects['life_force'].get('owner_threshold', 0.60))) and uses_left > 0:
                 sacrifice_hp = pet_combatant.max_hp * Decimal(str(effects['life_force']['hp_sacrifice']))
-                heal_owner = pet_combatant.max_hp * Decimal(str(effects['life_force']['owner_heal']))
                 current_hp = Decimal(str(getattr(pet_combatant, 'hp', 0)))
                 if current_hp > sacrifice_hp:
                     setattr(pet_combatant, 'hp', current_hp - sacrifice_hp)
+                    heal_owner = self._scaled_heal(
+                        pet_combatant,
+                        owner_combatant,
+                        effects['life_force']['owner_heal'],
+                        burst=True,
+                    )
                     owner_combatant.heal(heal_owner)
+                    setattr(pet_combatant, 'life_force_uses_left', uses_left - 1)
                     messages.append(f"{pet_combatant.name} sacrifices life force to heal their owner!")
                 
-        # Photosynthesis - time-based damage bonus
-        if 'photosynthesis' in effects:
-            import datetime
-            current_hour = datetime.datetime.now().hour
-            if 6 <= current_hour <= 18:  # Daytime
-                pet_combatant.damage *= (Decimal('1') + Decimal(str(effects['photosynthesis']['damage_bonus'])))
-                messages.append(f"{pet_combatant.name} absorbs sunlight, growing stronger!")
-                
         # Nature's Blessing - environmental bonus
-        if ('natures_blessing' in effects and hasattr(pet_combatant, 'team')):
-            # Assume we're in nature environment for now
-            for ally in pet_combatant.team.combatants:
+        if ('natures_blessing' in effects and team_combatants):
+            for ally in team_combatants:
                 if ally.is_alive():
-                    ally.damage *= (Decimal('1') + Decimal(str(effects['natures_blessing']['team_buff'])))
+                    self._apply_timed_multiplier(
+                        ally,
+                        'natures_blessing',
+                        int(effects['natures_blessing'].get('duration', 2)),
+                        damage_mult=Decimal('1') + Decimal(str(effects['natures_blessing']['team_buff'])),
+                        armor_mult=Decimal('1') + Decimal(str(effects['natures_blessing']['team_buff'])),
+                        luck_mult=Decimal('1') + Decimal(str(effects['natures_blessing']['team_buff'])),
+                    )
             messages.append(f"Nature's Blessing empowers the team!")
             
         # Gaia's Wrath - healing over time
         gaias_wrath_duration = getattr(pet_combatant, 'gaias_wrath_duration', 0)
         if gaias_wrath_duration > 0:
             heal_percent = getattr(pet_combatant, 'gaias_wrath_heal', 0.07)
-            heal_amount = pet_combatant.max_hp * Decimal(str(heal_percent))
+            heal_amount = self._scaled_heal(
+                pet_combatant,
+                pet_combatant,
+                heal_percent,
+                self_target=True,
+            )
             pet_combatant.heal(heal_amount)
             messages.append(f"{pet_combatant.name} draws strength from Gaia! Healed **{heal_amount:.2f} HP** ({heal_percent*100:.0f}%)")
             
             # Check for Symbiotic Bond healing sharing
-            if (hasattr(pet_combatant, 'skill_effects') and 
-                'symbiotic_bond' in pet_combatant.skill_effects and 
-                hasattr(pet_combatant, 'owner')):
-                # Find the owner combatant from the team
-                owner_combatant = self.find_owner_combatant(pet_combatant)
-                if owner_combatant and hasattr(owner_combatant, 'heal') and hasattr(owner_combatant, 'user'):
-                    share_percent = Decimal(str(pet_combatant.skill_effects['symbiotic_bond']['share_percent']))
-                    shared_heal = heal_amount * share_percent
-                    owner_combatant.heal(shared_heal)
-                    messages.append(f"Symbiotic Bond shares **{shared_heal:.2f} Gaia healing** with {owner_combatant.user.display_name}!")
+            if (
+                hasattr(pet_combatant, 'skill_effects')
+                and 'symbiotic_bond' in pet_combatant.skill_effects
+                and owner_combatant
+                and hasattr(owner_combatant, 'heal')
+                and hasattr(owner_combatant, 'user')
+            ):
+                share_percent = Decimal(str(pet_combatant.skill_effects['symbiotic_bond']['share_percent']))
+                shared_heal = heal_amount * share_percent
+                owner_combatant.heal(shared_heal)
+                messages.append(f"Symbiotic Bond shares **{shared_heal:.2f} Gaia healing** with {owner_combatant.user.display_name}!")
             
-            # Countdown duration
-            setattr(pet_combatant, 'gaias_wrath_duration', gaias_wrath_duration - 1)
-            if gaias_wrath_duration == 1:
+            if gaias_wrath_duration <= 1:
+                delattr(pet_combatant, 'gaias_wrath_duration')
+                if hasattr(pet_combatant, 'gaias_wrath_heal'):
+                    delattr(pet_combatant, 'gaias_wrath_heal')
                 messages.append(f"{pet_combatant.name}'s connection to Gaia fades...")
+            else:
+                setattr(pet_combatant, 'gaias_wrath_duration', gaias_wrath_duration - 1)
             
         # 🌟 LIGHT PER-TURN EFFECTS
         # Healing Light - team healing
-        if 'healing_light' in effects and hasattr(pet_combatant, 'team'):
-            heal_amount = pet_combatant.max_hp * Decimal(str(effects['healing_light']['heal_percent']))
-            for ally in pet_combatant.team.combatants:
+        if 'healing_light' in effects and team_combatants:
+            for ally in team_combatants:
                 if ally.is_alive():
+                    heal_amount = self._scaled_heal(
+                        pet_combatant,
+                        ally,
+                        effects['healing_light']['heal_percent'],
+                    )
                     ally.heal(heal_amount)
-            if not effects['healing_light'].get('message_shown'):
-                messages.append(f"{pet_combatant.name}'s Healing Light bathes allies in restoration!")
-                effects['healing_light']['message_shown'] = True
+            messages.append(f"{pet_combatant.name}'s Healing Light bathes allies in restoration!")
             
         # Purification - team cleanse
         if 'purification' in effects and hasattr(pet_combatant, 'team'):
@@ -2308,34 +3101,52 @@ class PetExtension:
             messages.append(f"Holy Aura protects the team from darkness and debuffs!")
             
         # Divine Favor - random team buff
-        if ('divine_favor' in effects and hasattr(pet_combatant, 'team')):
-            if random.randint(1, 100) <= effects['divine_favor']['chance']:
-                ally = random.choice([a for a in pet_combatant.team.combatants if a.is_alive()])
+        if ('divine_favor' in effects and team_combatants):
+            living_allies = [a for a in team_combatants if a.is_alive()]
+            if living_allies and random.randint(1, 100) <= effects['divine_favor']['chance']:
+                ally = random.choice(living_allies)
                 buff_type = random.choice(['damage', 'armor', 'luck'])
                 buff_value = effects['divine_favor']['buff_strength']
                 
                 if buff_type == 'damage':
-                    ally.damage *= (Decimal('1') + Decimal(str(buff_value)))
+                    self._apply_timed_multiplier(
+                        ally,
+                        'divine_favor_damage',
+                        int(effects['divine_favor']['duration']),
+                        damage_mult=Decimal('1') + Decimal(str(buff_value)),
+                    )
                 elif buff_type == 'armor':
-                    ally.armor *= (Decimal('1') + Decimal(str(buff_value)))
-                elif buff_type == 'luck':
-                    ally.luck += Decimal(str(buff_value)) * Decimal('100')
-                    
-                setattr(ally, f'divine_{buff_type}_duration', effects['divine_favor']['duration'])
+                    self._apply_timed_multiplier(
+                        ally,
+                        'divine_favor_armor',
+                        int(effects['divine_favor']['duration']),
+                        armor_mult=Decimal('1') + Decimal(str(buff_value)),
+                    )
+                else:
+                    self._apply_timed_multiplier(
+                        ally,
+                        'divine_favor_luck',
+                        int(effects['divine_favor']['duration']),
+                        luck_mult=Decimal('1') + Decimal(str(buff_value)),
+                    )
                 messages.append(f"Divine Favor blesses {ally.name} with enhanced {buff_type}!")
                 
         # Divine Protection - ULTIMATE invincibility
         if ('divine_protection' in effects and 
             getattr(pet_combatant, 'ultimate_ready', False)):
-            # Grant team invincibility and massive healing
-            if hasattr(pet_combatant, 'team'):
-                for ally in pet_combatant.team.combatants:
+            if team_combatants:
+                for ally in team_combatants:
                     if ally.is_alive():
-                        setattr(ally, 'divine_invincibility', effects['divine_protection']['invincibility_turns'])
-                        # Massive heal
-                        heal_amount = ally.max_hp * Decimal('0.8')  # 80% max HP heal
-                        ally.heal(heal_amount)
+                        turns = int(effects['divine_protection']['invincibility_turns'])
+                        setattr(ally, 'divine_invincibility', turns)
                         setattr(ally, 'blessed_by_light', True)
+                        heal_amount = self._scaled_heal(
+                            pet_combatant,
+                            ally,
+                            effects['divine_protection'].get('heal_percent', 0.45),
+                            burst=True,
+                        )
+                        ally.heal(heal_amount)
             messages.append(f"{pet_combatant.name} grants Divine Protection! The team becomes untouchable!")
             pet_combatant.ultimate_ready = False
         
@@ -2361,49 +3172,68 @@ class PetExtension:
             messages.append(f"{pet_combatant.name} drains **{lifesteal:.2f} life force**!")
             
         # Dark Pact - sacrifice for owner boost
-        if ('dark_pact' in effects and hasattr(pet_combatant, 'owner')):
-            # Find the owner combatant from the team
-            owner_combatant = self.find_owner_combatant(pet_combatant)
-            if owner_combatant and hasattr(owner_combatant, 'damage'):
+        if ('dark_pact' in effects and owner_combatant and hasattr(owner_combatant, 'damage')):
+            owner_hp_ratio = owner_combatant.hp / owner_combatant.max_hp if owner_combatant.max_hp else Decimal('1')
+            if (
+                owner_hp_ratio <= Decimal('0.70')
+                and not getattr(owner_combatant, 'dark_pact_active', False)
+                and not getattr(pet_combatant, 'dark_pact_used', False)
+            ):
                 sacrifice = pet_combatant.max_hp * Decimal(str(effects['dark_pact']['hp_sacrifice']))
                 current_hp = Decimal(str(getattr(pet_combatant, 'hp', 0)))
                 if current_hp > sacrifice:
                     setattr(pet_combatant, 'hp', current_hp - sacrifice)
-                    owner_combatant.damage *= (Decimal('1') + Decimal(str(effects['dark_pact']['owner_dark_boost'])))
-                    setattr(owner_combatant, 'dark_pact_duration', effects['dark_pact']['duration'])
+                    setattr(owner_combatant, 'dark_pact_active', True)
+                    setattr(pet_combatant, 'dark_pact_used', True)
+                    self._apply_timed_multiplier(
+                        owner_combatant,
+                        'dark_pact',
+                        int(effects['dark_pact']['duration']),
+                        damage_mult=Decimal('1') + Decimal(str(effects['dark_pact']['owner_dark_boost'])),
+                    )
                     messages.append(f"{pet_combatant.name} makes a Dark Pact, empowering their owner!")
         
         # 🌀 CORRUPTED PER-TURN EFFECTS
         # Decay Touch - proximity debuff
-        if ('decay_touch' in effects and hasattr(pet_combatant, 'enemy_team')):
-            for enemy in pet_combatant.enemy_team.combatants:
+        if ('decay_touch' in effects and enemy_combatants):
+            decay_mult = Decimal('1') - Decimal(str(effects['decay_touch']['stat_decay']))
+            for enemy in enemy_combatants:
                 if enemy.is_alive():
-                    enemy.damage *= (Decimal('1') - Decimal(str(effects['decay_touch']['stat_decay'])))
-                    enemy.armor *= (Decimal('1') - Decimal(str(effects['decay_touch']['stat_decay'])))
+                    self._apply_timed_multiplier(
+                        enemy,
+                        'decay_touch',
+                        2,
+                        damage_mult=decay_mult,
+                        armor_mult=decay_mult,
+                    )
                     
         # Void Pact - sacrifice defense for power (5-turn duration)
         if ('void_pact' in effects and not getattr(pet_combatant, 'void_pact_active', False)):
-            # Apply to team: +40% damage, -20% defense
-            if hasattr(pet_combatant, 'team'):
-                for ally in pet_combatant.team.combatants:
+            duration = int(effects['void_pact']['duration'])
+            if team_combatants:
+                for ally in team_combatants:
                     if ally.is_alive():
-                        ally.damage *= (Decimal('1') + Decimal(str(effects['void_pact']['damage_boost'])))
-                        ally.armor *= (Decimal('1') - Decimal(str(effects['void_pact']['defense_penalty'])))
-                        # Set duration for this combatant
-                        setattr(ally, 'void_pact_duration', effects['void_pact']['duration'])
-                        setattr(ally, 'void_pact_active', True)
+                        self._apply_timed_multiplier(
+                            ally,
+                            'void_pact_ally',
+                            duration,
+                            damage_mult=Decimal('1') + Decimal(str(effects['void_pact']['damage_boost'])),
+                            armor_mult=Decimal('1') - Decimal(str(effects['void_pact']['defense_penalty'])),
+                        )
             
-            # Apply to enemies: only -20% defense (no damage boost)
-            if hasattr(pet_combatant, 'enemy_team'):
-                for enemy in pet_combatant.enemy_team.combatants:
+            if enemy_combatants:
+                for enemy in enemy_combatants:
                     if enemy.is_alive():
-                        enemy.armor *= (Decimal('1') - Decimal(str(effects['void_pact']['defense_penalty'])))
-                        # Set duration for this combatant
-                        setattr(enemy, 'void_pact_duration', effects['void_pact']['duration'])
-                        setattr(enemy, 'void_pact_active', True)
+                        self._apply_timed_multiplier(
+                            enemy,
+                            'void_pact_enemy',
+                            duration,
+                            armor_mult=Decimal('1') - Decimal(str(effects['void_pact']['defense_penalty'])),
+                        )
                     
             messages.append(f"{pet_combatant.name} makes a Void Pact - team gains power but all lose defense for 5 turns!")
             pet_combatant.void_pact_active = True
+            pet_combatant.void_pact_duration = duration
                     
         # Chaos Form - random effects each turn
         if 'chaos_form' in effects:
@@ -2420,26 +3250,36 @@ class PetExtension:
             
         # End of Days - ULTIMATE chaos powers
         if ('end_of_days' in effects and getattr(pet_combatant, 'ultimate_ready', False)):
-            # Grant chaos powers to entire team
-            if hasattr(pet_combatant, 'team'):
-                for ally in pet_combatant.team.combatants:
+            duration = int(effects['end_of_days'].get('reality_break', 3))
+            if team_combatants:
+                for ally in team_combatants:
                     if ally.is_alive():
-                        setattr(ally, 'chaos_powers', effects['end_of_days']['reality_break'])
-                        setattr(ally, 'reality_break_stacks', 4)  # 4 turns of reality break
-                        ally.damage *= Decimal('2.0')  # Double damage
-                        setattr(ally, 'chaos_damage_immunity', 4)  # 4 turns immunity
-                        setattr(ally, 'apocalypse_blessed', True)
+                        self._apply_timed_multiplier(
+                            ally,
+                            'end_of_days_blessing',
+                            duration,
+                            damage_mult=Decimal('1') + Decimal(str(effects['end_of_days'].get('team_damage_boost', 0.50))),
+                            armor_mult=Decimal('1.20'),
+                            luck_mult=Decimal('1.10'),
+                            extra_attrs={
+                                'chaos_powers': effects['end_of_days']['reality_break'],
+                                'chaos_damage_immunity': duration,
+                                'reality_break_stacks': effects['end_of_days']['reality_break'],
+                            },
+                        )
                         
-            # Break reality for enemies
-            if hasattr(pet_combatant, 'enemy_team'):
-                for enemy in pet_combatant.enemy_team.combatants:
+            if enemy_combatants:
+                for enemy in enemy_combatants:
                     if enemy.is_alive():
-                        setattr(enemy, 'reality_broken', 4)  # 4 turns confused/weakened
-                        setattr(enemy, 'apocalypse_cursed', True)
-                        enemy.luck *= Decimal('0.5')  # Half accuracy
-                        enemy.damage *= Decimal('0.7')  # Reduced damage
-                        
-            setattr(pet_combatant, 'apocalypse_active', 4)  # Track apocalypse duration
+                        self._apply_timed_multiplier(
+                            enemy,
+                            'end_of_days_curse',
+                            duration,
+                            damage_mult=Decimal('1') - Decimal(str(effects['end_of_days'].get('enemy_damage_reduction', 0.25))),
+                            armor_mult=Decimal('0.85'),
+                            luck_mult=Decimal(str(effects['end_of_days'].get('enemy_luck_mult', 0.70))),
+                        )
+                        setattr(enemy, 'reality_broken', duration)
             messages.append(f"{pet_combatant.name} brings the END OF DAYS! Reality collapses around the battlefield!")
             pet_combatant.ultimate_ready = False
             
@@ -2477,36 +3317,27 @@ class PetExtension:
                         setattr(pet_combatant, 'reality_master', 2)  # 2 turns of reality control
                         owner_combatant = self.find_owner_combatant(pet_combatant)
                         if owner_combatant and hasattr(owner_combatant, 'damage'):
-                            owner_combatant.damage *= Decimal('1.3')  # 30% damage boost
+                            self._apply_timed_multiplier(
+                                owner_combatant,
+                                'void_mastery_reality',
+                                2,
+                                damage_mult=Decimal('1.3'),
+                            )
                         messages.append(f"Void Mastery bends reality to {pet_combatant.name}'s will!")
                         
         # Void Lord - enhanced battlefield control
         if getattr(pet_combatant, 'void_lord_active', 0) > 0:
-            # Enhanced void lord effects beyond the basic damage reduction
-            if hasattr(pet_combatant, 'enemy_team'):
-                dominated_enemies = 0
-                for enemy in pet_combatant.enemy_team.combatants:
-                    if enemy.is_alive():
-                        # More severe debuffs
-                        enemy.damage *= Decimal('0.75')  # -25% damage
-                        enemy.luck *= Decimal('0.6')    # -40% accuracy
-                        
-                        # Chance to dominate enemy actions
-                        if random.random() < 0.25:  # 25% chance per enemy
-                            setattr(enemy, 'void_dominated', 2)  # 2 turns dominated
-                            setattr(enemy, 'domination_source', pet_combatant)
-                            dominated_enemies += 1
-                            
-                if dominated_enemies > 0:
-                    messages.append(f"Void Lord dominates {dominated_enemies} enemies - they serve the void!")
-                    
-            # Grant battlefield control powers
-            owner_combatant = self.find_owner_combatant(pet_combatant)
-            if owner_combatant and hasattr(owner_combatant, 'damage'):
-                setattr(owner_combatant, 'void_lord_blessed', True)
-                owner_combatant.damage *= Decimal('1.4')  # +40% damage for owner
-                
-            messages.append(f"{pet_combatant.name}'s Void Lord power reshapes the battlefield!")
+            dominated_enemies = 0
+            for enemy in enemy_combatants:
+                if enemy.is_alive() and random.random() < 0.25:
+                    setattr(enemy, 'void_dominated', 2)
+                    setattr(enemy, 'domination_source', pet_combatant)
+                    dominated_enemies += 1
+
+            if dominated_enemies > 0:
+                messages.append(f"Void Lord dominates {dominated_enemies} enemies - they serve the void!")
+            else:
+                messages.append(f"{pet_combatant.name}'s Void Lord power twists the battlefield!")
             
         # Soul Harvest - heal on kill
         if ('soul_harvest' in effects and getattr(pet_combatant, 'killed_enemy_this_turn', False)):
@@ -2597,25 +3428,37 @@ class PetExtension:
                             setattr(combatant, 'element_chaos_duration', 2)
                 
         # 💨 WIND PER-TURN EFFECTS
+        if 'winds_guidance' in effects:
+            setattr(pet_combatant, 'winds_guidance_ready', 1)
+
         # Air Currents - initiative control (manipulate turn order)
         if ('air_currents' in effects and hasattr(pet_combatant, 'team')):
-            # Boost team member speed/priority
             for ally in pet_combatant.team.combatants:
-                if ally.is_alive() and ally != pet_combatant:
-                    if not getattr(ally, 'air_currents_boost', False):
-                        setattr(ally, 'air_currents_boost', True)
-                        ally.luck += Decimal('10')  # Increased chance to act first
-            messages.append(f"{pet_combatant.name} controls Air Currents, boosting team initiative!")
+                if ally.is_alive():
+                    setattr(ally, 'air_currents_boost', True)
+                    setattr(ally, 'air_currents_duration', int(effects['air_currents'].get('duration', 2)))
+                    self._apply_timed_multiplier(
+                        ally,
+                        'air_currents',
+                        int(effects['air_currents'].get('duration', 2)),
+                        damage_mult=Decimal('1') + Decimal(str(effects['air_currents'].get('team_buff', 0.10))),
+                        luck_mult=Decimal('1') + Decimal(str(effects['air_currents'].get('luck_bonus', 0.10))),
+                    )
+            messages.append(f"{pet_combatant.name} controls Air Currents, accelerating and sharpening the whole team!")
              
         # Freedom's Call - team speed buff
         if ('freedoms_call' in effects and hasattr(pet_combatant, 'team')):
             for ally in pet_combatant.team.combatants:
                 if ally.is_alive():
-                    if not getattr(ally, 'freedom_boost', False):
-                        speed_boost = Decimal(str(effects['freedoms_call']['team_speed']))
-                        ally.damage *= (Decimal('1') + speed_boost)  # Speed translates to attack frequency/power
-                        ally.luck += Decimal('15')  # Better initiative
-                        setattr(ally, 'freedom_boost', True)
+                    setattr(ally, 'freedom_boost', True)
+                    setattr(ally, 'freedom_boost_duration', int(effects['freedoms_call'].get('duration', 2)))
+                    self._apply_timed_multiplier(
+                        ally,
+                        'freedoms_call',
+                        int(effects['freedoms_call'].get('duration', 2)),
+                        damage_mult=Decimal('1') + Decimal(str(effects['freedoms_call'].get('team_buff', 0.15))),
+                        luck_mult=Decimal('1') + Decimal(str(effects['freedoms_call'].get('team_speed', 0.25))),
+                    )
             messages.append(f"{pet_combatant.name} calls for Freedom! The team feels liberated and empowered!")
             
         # 🌿 NATURE PER-TURN EFFECTS  
@@ -2639,98 +3482,73 @@ class PetExtension:
                 messages.append(f"{pet_combatant.name} uses Natural Balance to share {', '.join(shared_buffs)} with allies!")
                 
         # Immortal Growth - team regeneration
-        immortal_growth_duration = getattr(pet_combatant, 'immortal_growth_duration', 0)
-        if immortal_growth_duration > 0:
-            regen_percent = getattr(pet_combatant, 'immortal_growth_regen', 0.15)
-            heal_amount = pet_combatant.max_hp * Decimal(str(regen_percent))
-            pet_combatant.heal(heal_amount)
-            messages.append(f"{pet_combatant.name} regenerates **{heal_amount:.2f} HP** from Immortal Growth!")
-            
-            # Check for Symbiotic Bond healing sharing
-            if (hasattr(pet_combatant, 'skill_effects') and 
-                'symbiotic_bond' in pet_combatant.skill_effects and 
-                hasattr(pet_combatant, 'owner')):
-                owner_combatant = self.find_owner_combatant(pet_combatant)
-                if owner_combatant and hasattr(owner_combatant, 'heal'):
-                    share_percent = Decimal(str(pet_combatant.skill_effects['symbiotic_bond']['share_percent']))
-                    shared_heal = heal_amount * share_percent
-                    owner_combatant.heal(shared_heal)
-                    owner_name = getattr(
-                        getattr(owner_combatant, 'user', None),
-                        'display_name',
-                        getattr(owner_combatant, 'name', 'their owner')
-                    )
-                    messages.append(f"Symbiotic Bond shares **{shared_heal:.2f} regeneration** with {owner_name}!")
-            
-            # Countdown duration
-            setattr(pet_combatant, 'immortal_growth_duration', immortal_growth_duration - 1)
-            if immortal_growth_duration == 1:
-                # Effect expires
-                if hasattr(pet_combatant, 'dot_immunity'):
-                    delattr(pet_combatant, 'dot_immunity')
-                messages.append(f"{pet_combatant.name}'s Immortal Growth effect fades...")
+        for ally in team_combatants:
+            immortal_growth_duration = int(getattr(ally, 'immortal_growth_duration', 0) or 0)
+            if immortal_growth_duration <= 0 or not ally.is_alive():
+                continue
+
+            regen_percent = getattr(ally, 'immortal_growth_regen', 0.15)
+            heal_amount = self._scaled_heal(
+                pet_combatant,
+                ally,
+                regen_percent,
+                self_target=(ally is pet_combatant),
+            )
+            ally.heal(heal_amount)
+            messages.append(f"{ally.name} regenerates **{heal_amount:.2f} HP** from Immortal Growth!")
+
+            if ally is pet_combatant and 'symbiotic_bond' in effects and owner_combatant and hasattr(owner_combatant, 'heal'):
+                share_percent = Decimal(str(effects['symbiotic_bond']['share_percent']))
+                shared_heal = heal_amount * share_percent
+                owner_combatant.heal(shared_heal)
+                owner_name = getattr(
+                    getattr(owner_combatant, 'user', None),
+                    'display_name',
+                    getattr(owner_combatant, 'name', 'their owner')
+                )
+                messages.append(f"Symbiotic Bond shares **{shared_heal:.2f} regeneration** with {owner_name}!")
+
+            if immortal_growth_duration <= 1:
+                if hasattr(ally, 'dot_immunity'):
+                    delattr(ally, 'dot_immunity')
+                if hasattr(ally, 'immortal_growth_duration'):
+                    delattr(ally, 'immortal_growth_duration')
+                if hasattr(ally, 'immortal_growth_regen'):
+                    delattr(ally, 'immortal_growth_regen')
+                messages.append(f"{ally.name}'s Immortal Growth effect fades...")
+            else:
+                setattr(ally, 'immortal_growth_duration', immortal_growth_duration - 1)
         
-        # Handle status effect durations
-        for attr_name in list(vars(pet_combatant).keys()):
-            if attr_name.endswith('_duration'):
-                duration = getattr(pet_combatant, attr_name)
-                if duration > 0:
-                    setattr(pet_combatant, attr_name, duration - 1)
-                    if duration == 1:  # About to expire
-                        effect_name = attr_name.replace('_duration', '')
-                        messages.append(f"{pet_combatant.name}'s {effect_name} effect expires!")
-                        
-                        # Clear associated effects when duration expires
-                        if attr_name == 'sky_dodge_duration' and hasattr(pet_combatant, 'sky_dodge'):
-                            delattr(pet_combatant, 'sky_dodge')
-                        elif attr_name == 'stats_flux_duration':
-                            # Restore original stats
-                            if hasattr(pet_combatant, 'original_damage'):
-                                pet_combatant.damage = getattr(pet_combatant, 'original_damage')
-                                delattr(pet_combatant, 'original_damage')
-                            if hasattr(pet_combatant, 'original_armor'):
-                                pet_combatant.armor = getattr(pet_combatant, 'original_armor')
-                                delattr(pet_combatant, 'original_armor')
-                            if hasattr(pet_combatant, 'original_luck'):
-                                pet_combatant.luck = getattr(pet_combatant, 'original_luck')
-                                delattr(pet_combatant, 'original_luck')
-                        elif attr_name == 'element_chaos_duration':
-                            # Restore original element
-                            if hasattr(pet_combatant, 'original_element'):
-                                pet_combatant.element = getattr(pet_combatant, 'original_element')
-                                delattr(pet_combatant, 'original_element')
-                        elif attr_name == 'reality_warp_duration':
-                            # Clear reality warp effects
-                            if hasattr(pet_combatant, 'reality_warp_active'):
-                                delattr(pet_combatant, 'reality_warp_active')
-                        elif attr_name == 'apocalypse_active':
-                            # End of Days effects fade
-                            if hasattr(pet_combatant, 'team'):
-                                for ally in pet_combatant.team.combatants:
-                                    if hasattr(ally, 'apocalypse_blessed'):
-                                        delattr(ally, 'apocalypse_blessed')
-                                    if hasattr(ally, 'reality_break_stacks'):
-                                        delattr(ally, 'reality_break_stacks')
-                                    if hasattr(ally, 'chaos_damage_immunity'):
-                                        delattr(ally, 'chaos_damage_immunity')
-                            if hasattr(pet_combatant, 'enemy_team'):
-                                for enemy in pet_combatant.enemy_team.combatants:
-                                    if hasattr(enemy, 'apocalypse_cursed'):
-                                        delattr(enemy, 'apocalypse_cursed')
-                                    if hasattr(enemy, 'reality_broken'):
-                                        delattr(enemy, 'reality_broken')
-                            messages.append(f"The apocalypse ends - reality slowly returns to normal...")
-                        elif attr_name == 'gaias_wrath_duration':
-                            # Gaia's Wrath healing effect ends
-                            if hasattr(pet_combatant, 'gaias_wrath_heal'):
-                                delattr(pet_combatant, 'gaias_wrath_heal')
-                        elif attr_name == 'storm_lord_active':
-                            # Storm Lord wind control effect ends
-                            if hasattr(pet_combatant, 'enemy_team'):
-                                for enemy in pet_combatant.enemy_team.combatants:
-                                    if hasattr(enemy, 'storm_dominated'):
-                                        delattr(enemy, 'storm_dominated')
-                            messages.append(f"{pet_combatant.name}'s Storm Lord power fades...")
+        # Handle self-contained duration effects that are not managed by the timed buff helpers.
+        for attr_name in ('stats_flux_duration', 'element_chaos_duration', 'reality_warp_duration'):
+            duration = int(getattr(pet_combatant, attr_name, 0) or 0)
+            if duration <= 0:
+                continue
+
+            setattr(pet_combatant, attr_name, duration - 1)
+            if duration > 1:
+                continue
+
+            effect_name = attr_name.replace('_duration', '')
+            messages.append(f"{pet_combatant.name}'s {effect_name} effect expires!")
+
+            if attr_name == 'stats_flux_duration':
+                if hasattr(pet_combatant, 'original_damage'):
+                    pet_combatant.damage = getattr(pet_combatant, 'original_damage')
+                    delattr(pet_combatant, 'original_damage')
+                if hasattr(pet_combatant, 'original_armor'):
+                    pet_combatant.armor = getattr(pet_combatant, 'original_armor')
+                    delattr(pet_combatant, 'original_armor')
+                if hasattr(pet_combatant, 'original_luck'):
+                    pet_combatant.luck = getattr(pet_combatant, 'original_luck')
+                    delattr(pet_combatant, 'original_luck')
+            elif attr_name == 'element_chaos_duration':
+                if hasattr(pet_combatant, 'original_element'):
+                    pet_combatant.element = getattr(pet_combatant, 'original_element')
+                    delattr(pet_combatant, 'original_element')
+            elif attr_name == 'reality_warp_duration':
+                if hasattr(pet_combatant, 'reality_warp_active'):
+                    delattr(pet_combatant, 'reality_warp_active')
                         
         # Process tornado damage zones
         if hasattr(pet_combatant, 'enemy_team'):
@@ -2747,7 +3565,7 @@ class PetExtension:
                         messages.append(f"The tornado around {enemy.name} dissipates!")
                         
         # Handle status effects (poison, burn, etc.)
-        all_statuses = ['poisoned', 'burning', 'paralyzed', 'stunned', 'corrupted', 'corrupted_mind', 'void_dominated', 'mind_swapped', 'reality_broken', 'rooted', 'storm_dominated', 'gale_force_debuff', 'wind_shear_debuff', 'blinded', 'divine_invincibility']
+        all_statuses = ['poisoned', 'burning', 'paralyzed', 'stunned', 'corrupted', 'corrupted_mind', 'void_dominated', 'mind_swapped', 'reality_broken', 'rooted', 'storm_dominated', 'gale_force_debuff', 'wind_shear_debuff', 'blinded']
         for status in all_statuses:
             if hasattr(pet_combatant, status):
                 status_duration = getattr(pet_combatant, status)
@@ -2952,10 +3770,14 @@ class PetExtension:
             
             # Check for ultimate skills and set up activation
             ultimate_skills = [
-                'sun_gods_blessing', 'oceans_wrath', 'poseidons_call', 'storm_lord', 'zeus_wrath',
-                'gaias_wrath', 'world_trees_gift', 'skys_blessing', 'zephyrs_dance', 'solar_flare',
-                'celestial_blessing', 'void_mastery', 'eternal_night', 'lord_of_shadows',
-                'apocalypse', 'corruption_mastery', 'void_lord'
+                'inferno_mastery', 'phoenix_rebirth', 'sun_gods_blessing',
+                'oceans_wrath', 'immortal_waters', 'poseidons_call',
+                'storm_lord', 'infinite_energy', 'zeus_wrath',
+                'gaias_wrath', 'immortal_growth', 'world_trees_gift',
+                'storm_lord_wind', 'skys_blessing', 'zephyrs_dance',
+                'solar_flare', 'divine_protection', 'celestial_blessing',
+                'void_mastery', 'eternal_night', 'lord_of_shadows',
+                'apocalypse', 'corruption_mastery', 'void_lord', 'end_of_days'
             ]
             
             has_ultimate = any(skill in getattr(pet_combatant, 'skill_effects', {}) for skill in ultimate_skills)

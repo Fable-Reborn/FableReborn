@@ -527,10 +527,11 @@ DESCRIPTIONS = {
         " dead players are available for you to raid."
     ),
     Role.RITUALIST: _(
-        "You are the Ritualist. At night, you can talk anonymously with the dead."
-        " Once per game, you can cast a delayed resurrection spell on a dead player"
-        " from your own team. The resurrection completes after a full phase, even if"
-        " you die before it resolves."
+        "You are the Ritualist. At night, you can talk anonymously with the dead and"
+        " mark any living player. If that player later dies, your latest mark will"
+        " attempt to return after a full phase, even if you are already dead. If the"
+        " marked player dies as a Werewolf or solo role, the ritual fails and is"
+        " consumed. Head Hunter is the one non-Villager exception."
     ),
     Role.TROUBLEMAKER: _(
         "You are the Troublemaker of the Village. You can exchange the roles of two"
@@ -4674,6 +4675,20 @@ class Game:
             await target.send_information()
         return targets
 
+    async def _send_kitten_wolf_team_notice(self, message: str) -> None:
+        recipients = [
+            player
+            for player in self.alive_players
+            if player.side in (Side.WOLVES, Side.WHITE_WOLF)
+        ]
+        for recipient in dict.fromkeys(recipients):
+            await recipient.send(
+                _("{message}\n{game_link}").format(
+                    message=message,
+                    game_link=self.game_link,
+                )
+            )
+
     async def apply_kitten_wolf_conversion(
         self,
         targets: list[Player],
@@ -4689,7 +4704,7 @@ class Game:
             self.pending_night_killer_group_by_player_id.pop(
                 conversion_target.user.id, None
             )
-            await self.ctx.send(
+            await self._send_kitten_wolf_team_notice(
                 _(
                     "🐺 The Kitten Wolf conversion target died before conversion could"
                     " happen. The conversion chance was wasted."
@@ -4703,11 +4718,11 @@ class Game:
             self.pending_night_killer_group_by_player_id.pop(
                 conversion_target.user.id, None
             )
-            await self.ctx.send(
+            await self._send_kitten_wolf_team_notice(
                 _(
                     "🐺 The Kitten Wolf conversion attack on **{target}** was blocked."
                     " The conversion chance was wasted."
-                ).format(target=conversion_target.user.mention)
+                ).format(target=conversion_target.user)
             )
             return targets
 
@@ -4715,11 +4730,11 @@ class Game:
             conversion_target.user.id
         )
         if attack_source != NIGHT_KILLER_GROUP_WOLVES:
-            await self.ctx.send(
+            await self._send_kitten_wolf_team_notice(
                 _(
                     "🐺 The Kitten Wolf conversion on **{target}** failed due to"
                     " conflicting attacks. The conversion chance was wasted."
-                ).format(target=conversion_target.user.mention)
+                ).format(target=conversion_target.user)
             )
             return targets
 
@@ -4730,24 +4745,24 @@ class Game:
         )
 
         if conversion_target.side != Side.VILLAGERS:
-            await self.ctx.send(
+            await self._send_kitten_wolf_team_notice(
                 _(
                     "🐺 The Kitten Wolf conversion failed because **{target}** is not"
                     " a Villager-team player. The conversion chance was wasted."
-                ).format(target=conversion_target.user.mention)
+                ).format(target=conversion_target.user)
             )
             return targets
 
+        await self._send_kitten_wolf_team_notice(
+            _(
+                "🐺 The Kitten Wolf conversion on **{target}** succeeded. They joined"
+                " the Werewolves."
+            ).format(target=conversion_target.user)
+        )
         if conversion_target.initial_roles[-1] != conversion_target.role:
             conversion_target.initial_roles.append(conversion_target.role)
         conversion_target.role = Role.WEREWOLF
         conversion_target.cursed = False
-        await self.ctx.send(
-            _(
-                "🐺 The werewolves used the Kitten Wolf power and converted"
-                " **{target}** into a **Werewolf**!"
-            ).format(target=conversion_target.user.mention)
-        )
         await conversion_target.send(
             _(
                 "🐺 You were attacked by the werewolves and turned into a"
@@ -6188,8 +6203,11 @@ class Game:
             await ritualist.send(
                 _(
                     "🔮 At night, you can anonymously communicate with the dead."
-                    " During your turn, you may cast one delayed resurrection spell on"
-                    " a dead teammate.\n{game_link}"
+                    " During your turn, you may update your mark on any living player."
+                    " If that player later dies, your latest mark will attempt to"
+                    " return after a full phase, even if you are already dead. If"
+                    " they die as a Werewolf or solo role, the ritual fails."
+                    "\n{game_link}"
                 ).format(game_link=self.game_link)
             )
         await self._ensure_medium_relay()
@@ -6377,7 +6395,7 @@ class Game:
                 fortune_teller_acted = True
             self.ex_maid = None
         if ritualist := self.get_player_with_role(Role.RITUALIST):
-            await ritualist.resurrect()
+            await ritualist.set_ritualist_mark()
         if medium := self.get_player_with_role(Role.MEDIUM):
             await medium.medium_resurrect()
         if wolf_necro := self.get_player_with_role(Role.WOLF_NECROMANCER):
@@ -7019,6 +7037,47 @@ class Game:
         await self._ensure_medium_relay()
         await self.handle_seer_apprentice_source_resurrected(to_resurrect)
 
+    async def trigger_ritualist_marked_resurrection(self, dead_player: Player) -> bool:
+        triggered = False
+        ritualists = [
+            player
+            for player in self.players
+            if player.role == Role.RITUALIST
+            and player.has_ritualist_ability
+            and player.ritualist_mark_target == dead_player
+        ]
+        for ritualist in ritualists:
+            triggered = True
+            ritualist.has_ritualist_ability = False
+            ritualist.ritualist_mark_target = None
+
+            queued = await self.queue_night_resurrection(
+                ritualist,
+                dead_player,
+                delay_cycles=1 if self.is_night_phase else 0,
+            )
+            if not queued:
+                await ritualist.send(
+                    _(
+                        "Your ritual on **{target}** failed because that player"
+                        " was already set to be resurrected. The ritual was"
+                        " consumed.\n{game_link}"
+                    ).format(target=dead_player.user, game_link=self.game_link)
+                )
+                continue
+
+            await ritualist.send(
+                _(
+                    "Your ritual on **{target}** has been sealed. If they stay"
+                    " dead, they will return after a full phase.\n{game_link}"
+                ).format(target=dead_player.user, game_link=self.game_link)
+            )
+        return triggered
+
+    @staticmethod
+    def _is_valid_ritualist_resurrection_target(player: Player) -> bool:
+        return player.side in (Side.VILLAGERS, Side.HEAD_HUNTER)
+
     async def queue_night_resurrection(
             self,
             caster: Player,
@@ -7051,8 +7110,40 @@ class Game:
                     self.pending_night_resurrections.append(
                         (caster, to_resurrect, source_role, remaining_cycles - 1)
                     )
+                elif source_role == Role.RITUALIST:
+                    await caster.send(
+                        _(
+                            "Your ritual on **{target}** fizzled because they"
+                            " returned to life before it resolved.\n{game_link}"
+                        ).format(target=to_resurrect.user, game_link=self.game_link)
+                    )
                 continue
             if not to_resurrect.dead:
+                if source_role == Role.RITUALIST:
+                    await caster.send(
+                        _(
+                            "Your ritual on **{target}** fizzled because they"
+                            " returned to life before it resolved.\n{game_link}"
+                        ).format(target=to_resurrect.user, game_link=self.game_link)
+                    )
+                continue
+
+            if (
+                source_role == Role.RITUALIST
+                and not self._is_valid_ritualist_resurrection_target(to_resurrect)
+            ):
+                await self.ctx.send(
+                    _(
+                        "🔮 A **Ritualist** attempted to resurrect **{target}**, but"
+                        " the ritual failed."
+                    ).format(target=to_resurrect.user.mention)
+                )
+                await caster.send(
+                    _(
+                        "Your ritual on **{target}** failed because they died as a"
+                        " Werewolf or solo role.\n{game_link}"
+                    ).format(target=to_resurrect.user, game_link=self.game_link)
+                )
                 continue
 
             await self.handle_resurrection(to_resurrect)
@@ -7581,6 +7672,7 @@ class Player:
 
         # Ritualist
         self.has_ritualist_ability = True
+        self.ritualist_mark_target: Player | None = None
 
         # lawyer
         self.has_objected = False
@@ -10133,37 +10225,33 @@ class Player:
         elif self.role == Role.THE_OLD:
             self.lives = 2
 
-    async def resurrect(self) -> None:
-        if not self.has_ritualist_ability:
+    async def set_ritualist_mark(self) -> None:
+        if self.dead or self.role != Role.RITUALIST or not self.has_ritualist_ability:
             return
 
-        team_side = self.side
-        dead_same_team = [
-            p
-            for p in self.game.dead_players
-            if p.dead and p.side == team_side
-        ]
-        if len(dead_same_team) == 0:
+        alive_players = [player for player in self.game.alive_players if player != self]
+        current_mark = self.ritualist_mark_target
+        if len(alive_players) == 0 and current_mark is None:
             return
+
         await self.game.ctx.send(
             _("**The {role} awakes...**").format(role=self.role_name)
         )
+
+        if current_mark is None:
+            current_label = _("None")
+        else:
+            current_label = current_mark.user
+
         try:
-            to_resurrect = await self.choose_users(
-                _("Choose one dead teammate to cast your ritual spell on."),
-                list_of_users=dead_same_team,
+            chosen_mark = await self.choose_users(
+                _(
+                    "Choose one living player to mark. Current mark: **{current}**."
+                ).format(current=current_label),
+                list_of_users=alive_players,
                 amount=1,
                 required=False,
             )
-            if not to_resurrect:
-                await self.send(
-                    _("You didn't want to use your ability.\n{game_link}").format(
-                        game_link=self.game.game_link
-                    )
-                )
-                return
-            else:
-                to_resurrect = to_resurrect[0]
         except asyncio.TimeoutError:
             await self.send(
                 _("You've ran out of time, slowpoke.\n{game_link}").format(
@@ -10171,26 +10259,39 @@ class Player:
                 )
             )
             return
-        queued = await self.game.queue_night_resurrection(
-            self,
-            to_resurrect,
-            delay_cycles=1,
-        )
-        if not queued:
-            await self.send(
-                _(
-                    "That player is already marked for resurrection."
-                    "\n{game_link}"
-                ).format(game_link=self.game.game_link)
-            )
+
+        if not chosen_mark:
+            if current_mark is not None:
+                await self.send(
+                    _(
+                        "You kept your current ritual mark at **{target}**."
+                        "\n{game_link}"
+                    ).format(
+                        target=current_mark.user,
+                        game_link=self.game.game_link,
+                    )
+                )
+            else:
+                await self.send(
+                    _("You chose not to mark anyone tonight.\n{game_link}").format(
+                        game_link=self.game.game_link
+                    )
+                )
             return
-        self.has_ritualist_ability = False
+
+        self.ritualist_mark_target = chosen_mark[0]
         await self.send(
             _(
-                "You cast your ritual spell on **{to_resurrect}**. If successful,"
-                " they will return after a full phase, even if you die before then."
-                "\n{game_link}"
-            ).format(to_resurrect=to_resurrect.user, game_link=self.game.game_link)
+                "You marked **{target}**. If they later die, your latest mark"
+                " will attempt to return after a full phase, even if you are"
+                " already dead. If they die as a Werewolf or solo role, the"
+                " ritual fails and is consumed. Head Hunter is the one"
+                " non-Villager exception. You can change this mark on later"
+                " nights while you are alive.\n{game_link}"
+            ).format(
+                target=self.ritualist_mark_target.user,
+                game_link=self.game.game_link,
+            )
         )
 
     async def medium_resurrect(self) -> None:
@@ -10685,6 +10786,7 @@ class Player:
                 self.is_sheriff = False
             self.game.recent_deaths.append(self)
             await self.game.sync_player_ww_role(self)
+            await self.game.trigger_ritualist_marked_resurrection(self)
             whisperer = self.game._get_active_medium()
             if self.role in (Role.MEDIUM, Role.RITUALIST) and whisperer is None:
                 for dead_player in [

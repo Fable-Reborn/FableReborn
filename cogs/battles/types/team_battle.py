@@ -83,6 +83,13 @@ class TeamBattle(Battle):
             await self.update_display()
             await asyncio.sleep(1)
             return True
+
+        locked_message = self.consume_pet_skill_action_lock(current_combatant)
+        if locked_message:
+            await self.add_to_log(locked_message)
+            await self.update_display()
+            await asyncio.sleep(1)
+            return True
             
         # Determine which team the combatant belongs to
         current_team = None
@@ -109,6 +116,8 @@ class TeamBattle(Battle):
         has_perfect_accuracy = getattr(current_combatant, 'perfect_accuracy', False)
         hit_success = has_perfect_accuracy or (luck_roll <= current_combatant.luck)
         
+        guard_source = None
+
         if hit_success:
             # Attack hits
             blocked_damage = Decimal("0")
@@ -135,10 +144,16 @@ class TeamBattle(Battle):
                 
                 damage = (current_combatant.damage + Decimal(random.randint(0, 100)) - target.armor) * Decimal(str(damage_multiplier))
                 damage = max(damage, Decimal('10'))
-                
+
+                damage, guard_messages, guard_source = self.apply_pet_owner_guard(
+                    current_combatant,
+                    target,
+                    damage,
+                )
                 target.take_damage(damage)
-                
                 message = f"{current_combatant.name} casts Fireball! {target.name} takes **{self.format_number(damage)} HP** damage."
+                if guard_messages:
+                    message += "\n" + "\n".join(guard_messages)
                 used_fireball = True
             else:
                 # Regular attack
@@ -161,9 +176,16 @@ class TeamBattle(Battle):
                 defender_messages = outcome.defender_messages
                 ignore_reflection_this_hit = bool(outcome.metadata.get("ignore_reflection_this_hit", False))
 
+                damage, guard_messages, guard_source = self.apply_pet_owner_guard(
+                    current_combatant,
+                    target,
+                    damage,
+                )
                 target.take_damage(damage)
 
                 message = f"{current_combatant.name} attacks! {target.name} takes **{self.format_number(damage)} HP** damage."
+                if guard_messages:
+                    message += "\n" + "\n".join(guard_messages)
 
                 # Add skill effect messages
                 if skill_messages:
@@ -230,6 +252,13 @@ class TeamBattle(Battle):
                 lifesteal_amount = (float(damage) * float(current_combatant.lifesteal_percent) / 100.0)
                 current_combatant.heal(lifesteal_amount)
                 message += f" Lifesteals: **{self.format_number(lifesteal_amount)} HP**"
+
+            bonus_lifesteal = self.apply_bonus_lifesteal(current_combatant, damage)
+            if bonus_lifesteal > 0:
+                message += (
+                    f"\n{current_combatant.name} siphons **{self.format_number(bonus_lifesteal)} HP** "
+                    "from bonus lifesteal!"
+                )
             
             # Handle damage reflection if applicable
             # Apply tank evolution reflection multiplier if applicable
@@ -266,8 +295,13 @@ class TeamBattle(Battle):
             
             # Check if target is defeated
             if not target.is_alive():
+                guardian_message = self.maybe_trigger_guardian_angel(target)
+                if guardian_message:
+                    message += f"\n{guardian_message}"
                 # Check for cheat death ability
-                if (self.config["class_buffs"] and 
+                if target.is_alive():
+                    pass
+                elif (self.config["class_buffs"] and 
                     self.config["cheat_death"] and
                     not target.is_pet and 
                     target.death_cheat_chance > 0 and
@@ -293,29 +327,19 @@ class TeamBattle(Battle):
         
         # Add message to battle log
         await self.add_to_log(message)
-        
-        # PROCESS PET SKILL EFFECTS PER TURN
-        if hasattr(self.ctx.bot.cogs["Battles"], "battle_factory"):
-            pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-            for team in self.teams:
-                for combatant in team.combatants:
-                    if combatant.is_pet and combatant.is_alive():
-                        # Set team references for skills that need them
-                        setattr(combatant, 'team', team)
-                        enemy_team = self.teams[1] if team == self.teams[0] else self.teams[0]
-                        setattr(combatant, 'enemy_team', enemy_team)
-                        
-                        # Process per-turn effects
-                        turn_messages = pet_ext.process_skill_effects_per_turn(combatant)
-                        if turn_messages:
-                            for turn_msg in turn_messages:
-                                await self.add_to_log(turn_msg)
-        
-        # Check for death from turn effects
-        if hasattr(target, 'is_alive') and not target.is_alive():
-            # Mark if pet killed an enemy for Soul Harvest
-            if current_combatant.is_pet:
-                setattr(current_combatant, 'killed_enemy_this_turn', True)
+
+        if current_combatant.is_pet and not target.is_alive():
+            setattr(current_combatant, 'killed_enemy_this_turn', True)
+
+        for combatant in (target, current_combatant, guard_source):
+            if combatant is None or not getattr(combatant, "is_pet", False) or combatant.is_alive():
+                continue
+            for death_msg in self.process_pet_death_effects(combatant):
+                await self.add_to_log(death_msg)
+
+        if current_combatant.is_pet and current_combatant.is_alive():
+            for turn_msg in self.process_pet_turn_effects(current_combatant):
+                await self.add_to_log(turn_msg)
         
         # Update the battle display
         await self.update_display()

@@ -380,185 +380,185 @@ class Pets(commands.Cog):
             "Fire": {
                 "Inferno": {
                     1: {"name": "Flame Burst", "description": "15% chance to deal 1.5x damage on attacks", "cost": 1},
-                    3: {"name": "Burning Rage", "description": "When pet HP drops below 30%, gain +25% attack damage permanently until healed", "cost": 2},
+                    3: {"name": "Burning Rage", "description": "While pet HP is below 35%, gain +20% attack damage", "cost": 2},
                     5: {"name": "Phoenix Strike", "description": "Critical hits heal pet for 15% of damage dealt to enemy", "cost": 3},
                     7: {"name": "Molten Armor", "description": "20% chance to reflect 40% of received damage back to attacker as fire damage", "cost": 4},
-                    10: {"name": "Inferno Mastery", "description": "ULTIMATE (15-25% HP): All fire skills 2x effectiveness + 30% fire resistance + activates at low HP", "cost": 5}
+                    10: {"name": "Inferno Mastery", "description": "ULTIMATE (15-25% HP): Fire skills become 45% stronger, gain 40% fire resistance, and the team gains infernal momentum for 4 turns", "cost": 5}
                 },
                 "Ember": {
-                    1: {"name": "Warmth", "description": "Owner heals 5% of pet's max HP every time pet attacks", "cost": 1},
-                    3: {"name": "Fire Shield", "description": "20% chance to completely block incoming attacks (0 damage)", "cost": 2},
+                    1: {"name": "Warmth", "description": "Owner heals for 4% of the lower max HP between pet and owner whenever pet attacks", "cost": 1},
+                    3: {"name": "Fire Shield", "description": "18% chance to completely block incoming attacks (0 damage)", "cost": 2},
                     5: {"name": "Combustion", "description": "When pet dies, deals 200% of pet's attack as fire damage to all enemies", "cost": 3},
                     7: {"name": "Eternal Flame", "description": "Pet cannot die while owner is above 50% HP (minimum 1 HP)", "cost": 4},
-                    10: {"name": "Phoenix Rebirth", "description": "ULTIMATE (15-25% HP): Pet revives once per battle with 50% HP + activates at low HP", "cost": 5}
+                    10: {"name": "Phoenix Rebirth", "description": "ULTIMATE (15-25% HP): Pet revives once per battle with 60% HP, phoenix resistance, and reborn power", "cost": 5}
                 },
                 "Blaze": {
                     1: {"name": "Fire Affinity", "description": "+20% damage against Nature and Water element enemies", "cost": 1},
-                    3: {"name": "Heat Wave", "description": "Attacks hit all nearby enemies for 70% of main target damage", "cost": 2},
-                    5: {"name": "Flame Barrier", "description": "Creates shield that absorbs damage equal to 300% of pet's defense stat", "cost": 3},
+                    3: {"name": "Heat Wave", "description": "Attacks hit all nearby enemies for 55% of main target damage", "cost": 2},
+                    5: {"name": "Flame Barrier", "description": "Creates a shield equal to 250% of pet's defense stat. If broken, it reignites at 50% strength on the pet's next turn", "cost": 3},
                     7: {"name": "Burning Spirit", "description": "30% chance attacks inflict burn: 10% of target's max HP per turn for 3 turns", "cost": 4},
-                    10: {"name": "Sun God's Blessing", "description": "ULTIMATE (15-25% HP): 2.5x damage to all enemies + team gains +25% all stats for 5 turns + activates at low HP", "cost": 5}
+                    10: {"name": "Sun God's Blessing", "description": "ULTIMATE (15-25% HP): 2.75x solar strike + 60% splash + burns enemies + team gains +30% power for 3 turns", "cost": 5}
                 }
             },
             "Water": {
                 "Tidal": {
-                    1: {"name": "Water Jet", "description": "25% chance to completely ignore enemy armor and shields", "cost": 1},
-                    3: {"name": "Tsunami Strike", "description": "Damage increases by 1% for every 2% of pet's current HP (max +50% at full HP)", "cost": 2},
+                    1: {"name": "Water Jet", "description": "15% chance to completely ignore enemy armor and shields", "cost": 1},
+                    3: {"name": "Tsunami Strike", "description": "Damage increases by 1% for every 2.5% of pet's current HP (max +40% at full HP)", "cost": 2},
                     5: {"name": "Deep Pressure", "description": "Enemies below 50% HP take +25% damage from all sources", "cost": 3},
                     7: {"name": "Abyssal Grip", "description": "20% chance to stun enemy for 1 turn (they skip their action)", "cost": 4},
-                    10: {"name": "Ocean's Wrath", "description": "ULTIMATE (15-25% HP): 2x damage to all enemies + heal all allies for 30% of pet's max HP + activates at low HP", "cost": 5}
+                    10: {"name": "Ocean's Wrath", "description": "ULTIMATE (15-25% HP): 2x crushing strike + tidal splash + burst-heal all allies for 30% of the lower max HP between pet and ally", "cost": 5}
                 },
                 "Healing": {
                     1: {"name": "Purify", "description": "Removes one random debuff from owner at the start of each turn", "cost": 1},
-                    3: {"name": "Healing Rain", "description": "All allies heal 8% of pet's max HP at the start of each turn", "cost": 2},
+                    3: {"name": "Healing Rain", "description": "All allies heal 5% of the lower max HP between pet and ally at the start of each pet turn", "cost": 2},
                     5: {"name": "Life Spring", "description": "Pet's attacks heal owner for 20% of damage dealt", "cost": 3},
                     7: {"name": "Guardian Wave", "description": "35% chance to reduce incoming damage by 60%", "cost": 4},
-                    10: {"name": "Immortal Waters", "description": "ULTIMATE (15-25% HP): Owner cannot die while pet is alive (minimum 1 HP) + activates at low HP", "cost": 5}
+                    10: {"name": "Immortal Waters", "description": "ULTIMATE (15-25% HP): Owner cannot die for 2 turns and is healed for 25% HP", "cost": 5}
                 },
                 "Flow": {
                     1: {"name": "Water Affinity", "description": "+20% damage against Fire and Electric element enemies", "cost": 1},
-                    3: {"name": "Fluid Movement", "description": "25% chance to completely dodge attacks (0 damage)", "cost": 2},
+                    3: {"name": "Fluid Movement", "description": "20% chance to completely dodge attacks (0 damage)", "cost": 2},
                     5: {"name": "Tidal Force", "description": "Attacks push enemies back, delaying their next action by 1 turn", "cost": 3},
                     7: {"name": "Ocean's Embrace", "description": "Pet absorbs 50% of damage intended for owner", "cost": 4},
-                    10: {"name": "Poseidon's Call", "description": "ULTIMATE (15-25% HP): Team +40% all stats, enemies -30% all stats for 6 turns + activates at low HP", "cost": 5}
+                    10: {"name": "Poseidon's Call", "description": "ULTIMATE (15-25% HP): Team gains a 3-turn tide blessing while enemies are weakened for 3 turns", "cost": 5}
                 }
             },
             "Electric": {
                 "Lightning": {
-                    1: {"name": "Static Shock", "description": "30% chance to paralyze enemy for 1 turn (they skip their action)", "cost": 1},
-                    3: {"name": "Thunder Strike", "description": "Critical hits chain to 2 nearby enemies for 60% damage each", "cost": 2},
+                    1: {"name": "Static Shock", "description": "20% chance to paralyze enemy for 1 turn (they skip their action)", "cost": 2},
+                    3: {"name": "Thunder Strike", "description": "Critical hits chain to 2 nearby enemies for 50% damage each", "cost": 2},
                     5: {"name": "Voltage Surge", "description": "Each consecutive attack increases damage by 15% (stacks up to 5 times, max +75%)", "cost": 3},
                     7: {"name": "Lightning Rod", "description": "Absorbs electric damage and converts to +25% attack for 3 turns", "cost": 4},
-                    10: {"name": "Storm Lord", "description": "ULTIMATE (15-25% HP): 2.5x damage as chain lightning + team acts twice per turn for 3 turns + activates at low HP", "cost": 5}
+                    10: {"name": "Storm Lord", "description": "ULTIMATE (15-25% HP): 3x lightning strike + the team gains storm speed and offensive pressure for 3 turns", "cost": 5}
                 },
                 "Energy": {
-                    1: {"name": "Power Surge", "description": "Owner gains +15% attack for 4 turns whenever pet attacks", "cost": 1},
-                    3: {"name": "Energy Shield", "description": "Creates shield that absorbs damage equal to 250% of pet's defense stat", "cost": 2},
+                    1: {"name": "Power Surge", "description": "Owner gains +10% attack for 3 turns whenever pet attacks (refreshes, does not stack)", "cost": 1},
+                    3: {"name": "Energy Shield", "description": "Creates a shield equal to 200% of pet's defense stat. If broken, it recharges to 60% strength on the pet's next turn", "cost": 2},
                     5: {"name": "Battery Life", "description": "Reduces skill learning costs by 1 SP (or 2 SP if cost is 4+). Minimum cost is 1 SP.", "cost": 3},
-                    7: {"name": "Overcharge", "description": "Pet can sacrifice 25% HP to give owner +50% all stats for 3 turns", "cost": 4},
-                    10: {"name": "Infinite Energy", "description": "ULTIMATE (15-25% HP): Team +60% all stats + unlimited ability uses for 4 turns + activates at low HP", "cost": 5}
+                    7: {"name": "Overcharge", "description": "Once per battle below 60% HP, pet sacrifices 20% HP to give owner +35% all stats for 2 turns", "cost": 4},
+                    10: {"name": "Infinite Energy", "description": "ULTIMATE (15-25% HP): Team gains +35% all stats and unlimited ability uses for 3 turns", "cost": 5}
                 },
                 "Spark": {
                     1: {"name": "Electric Affinity", "description": "+20% damage against Water and Nature element enemies", "cost": 1},
-                    3: {"name": "Quick Charge", "description": "Pet always acts first in turn order (highest initiative)", "cost": 2},
+                    3: {"name": "Quick Charge", "description": "Pet gains a major initiative boost and usually acts before non-priority combatants", "cost": 2},
                     5: {"name": "Chain Lightning", "description": "Attacks bounce to 3 enemies: 100% → 75% → 50% damage", "cost": 3},
-                    7: {"name": "Electromagnetic Field", "description": "All enemies have 25% reduced accuracy (miss chance)", "cost": 4},
-                    10: {"name": "Zeus's Wrath", "description": "ULTIMATE (15-25% HP): 3x damage to all enemies + team immunity to debuffs for 5 turns + activates at low HP", "cost": 5}
+                    7: {"name": "Electromagnetic Field", "description": "All enemies suffer 15% reduced accuracy while the field is active", "cost": 4},
+                    10: {"name": "Zeus's Wrath", "description": "ULTIMATE (15-25% HP): 3x lightning strike + team protection and debuff immunity for 3 turns", "cost": 5}
                 }
             },
             "Nature": {
                 "Growth": {
-                    1: {"name": "Vine Whip", "description": "25% chance to root enemy in place (50% damage reduction for 2 turns)", "cost": 1},
-                    3: {"name": "Photosynthesis", "description": "Pet gains +20% attack during day battles (6 AM - 6 PM server time)", "cost": 2},
+                    1: {"name": "Vine Whip", "description": "20% chance to entangle an enemy, reducing their damage by 35% for 2 turns", "cost": 1},
+                    3: {"name": "Photosynthesis", "description": "Pet gains +15% attack during day battles (6 AM - 6 PM server time)", "cost": 2},
                     5: {"name": "Nature's Fury", "description": "+1% damage for every 2% of pet's happiness (max +50% at 100 happiness)", "cost": 3},
                     7: {"name": "Thorn Shield", "description": "Attackers take 35% of dealt damage as poison (ignores armor)", "cost": 4},
-                    10: {"name": "Gaia's Wrath", "description": "ULTIMATE (15-25% HP): 2x damage to all enemies + heal team for 150% of pet's HP + activates at low HP", "cost": 5}
+                    10: {"name": "Gaia's Wrath", "description": "ULTIMATE (15-25% HP): 2x ancient strike + heal the team for 35% + pet regenerates 8% HP for 3 turns", "cost": 5}
                 },
                 "Life": {
-                    1: {"name": "Natural Healing", "description": "Pet regenerates 6% of max HP at the start of each turn", "cost": 1},
-                    3: {"name": "Growth Spurt", "description": "Pet gains +3% all stats each turn (stacks up to 10 times, max +30%)", "cost": 2},
-                    5: {"name": "Life Force", "description": "Pet can sacrifice 30% HP to heal owner for 60% of pet's max HP", "cost": 3},
-                    7: {"name": "Nature's Blessing", "description": "Team gains +20% all stats in nature environments/areas", "cost": 4},
-                    10: {"name": "Immortal Growth", "description": "ULTIMATE (15-25% HP): Team regenerates 15% HP per turn + immunity to poison/disease for 5 turns + activates at low HP", "cost": 5}
+                    1: {"name": "Natural Healing", "description": "Pet regenerates 5% of its max HP at the start of each turn", "cost": 1},
+                    3: {"name": "Growth Spurt", "description": "Pet gains +2% all stats each turn (stacks up to 5 times, max +10%)", "cost": 2},
+                    5: {"name": "Life Force", "description": "Once per battle, if owner drops below 60% HP, pet sacrifices 20% HP to burst-heal the owner for 35%", "cost": 3},
+                    7: {"name": "Nature's Blessing", "description": "Team gains +10% all stats for 2 turns while the blessing is refreshed", "cost": 4},
+                    10: {"name": "Immortal Growth", "description": "ULTIMATE (15-25% HP): Team regenerates 10% HP per turn and gains poison/disease immunity for 3 turns", "cost": 5}
                 },
                 "Harmony": {
                     1: {"name": "Nature Affinity", "description": "+20% damage against Electric and Wind element enemies", "cost": 1},
-                    3: {"name": "Forest Camouflage", "description": "30% chance to avoid being targeted by enemies", "cost": 2},
+                    3: {"name": "Forest Camouflage", "description": "25% chance to avoid being targeted by enemies", "cost": 2},
                     5: {"name": "Symbiotic Bond", "description": "Pet and owner share 50% of healing and damage taken", "cost": 3},
                     7: {"name": "Natural Balance", "description": "Pet can transfer buffs/debuffs between allies and enemies", "cost": 4},
-                    10: {"name": "World Tree's Gift", "description": "ULTIMATE (15-25% HP): Control battlefield for 2 turns + team immunity to debuffs + activates at low HP", "cost": 5}
+                    10: {"name": "World Tree's Gift", "description": "ULTIMATE (15-25% HP): Seize the battlefield for 3 turns, grant 20% team shields, empower allies, and suppress enemy offense", "cost": 5}
                 }
             },
             "Wind": {
                 "Storm": {
-                    1: {"name": "Wind Slash", "description": "25% chance to deal true damage (bypasses all armor and shields)", "cost": 1},
-                    3: {"name": "Gale Force", "description": "Attacks reduce enemy accuracy by 30% for 1 turn", "cost": 2},
-                    5: {"name": "Tornado Strike", "description": "Creates persistent tornado: 80% of attack damage to all enemies for 3 turns", "cost": 3},
-                    7: {"name": "Wind Shear", "description": "Reduces all enemy defense by 40% for 4 turns", "cost": 4},
-                    10: {"name": "Storm Lord", "description": "ULTIMATE (15-25% HP): 2.5x damage tornado + control enemy positions for 3 turns + activates at low HP", "cost": 5}
+                    1: {"name": "Wind Slash", "description": "15% chance to deal true damage (bypasses all armor and shields)", "cost": 1},
+                    3: {"name": "Gale Force", "description": "Attacks batter enemies with disorienting winds, reducing accuracy by 30% and damage by 10% for 2 turns", "cost": 2},
+                    5: {"name": "Tornado Strike", "description": "Creates a persistent tornado around the enemy team, dealing 75% of attack damage for 3 turns", "cost": 3},
+                    7: {"name": "Wind Shear", "description": "Reduces all enemy defense by 45% for 4 turns", "cost": 4},
+                    10: {"name": "Storm Lord", "description": "ULTIMATE (15-25% HP): 2.8x tornado strike + haste and empower allies while crushing enemy momentum for 3 turns", "cost": 5}
                 },
                 "Freedom": {
-                    1: {"name": "Wind Walk", "description": "+20% dodge chance from enhanced mobility", "cost": 1},
-                    3: {"name": "Air Shield", "description": "Blocks all projectile attacks + 50% damage reduction from other attacks", "cost": 2},
-                    5: {"name": "Wind's Guidance", "description": "Can redirect 1 enemy attack per turn to different target", "cost": 3},
-                    7: {"name": "Freedom's Call", "description": "Team gains +35% movement and action speed", "cost": 4},
-                    10: {"name": "Sky's Blessing", "description": "ULTIMATE (15-25% HP): Team gains 40% dodge chance + enemies lose 2 turns + activates at low HP", "cost": 5}
+                    1: {"name": "Wind Walk", "description": "+15% dodge chance from enhanced mobility", "cost": 1},
+                    3: {"name": "Air Shield", "description": "Blocks all projectile attacks + 40% damage reduction from other attacks", "cost": 2},
+                    5: {"name": "Wind's Guidance", "description": "Once per turn, 40% chance to divert a heavy hit, reducing its damage and flinging force back at the attacker", "cost": 3},
+                    7: {"name": "Freedom's Call", "description": "Team gains surging tempo, +20% damage, and much faster turn pressure while active", "cost": 4},
+                    10: {"name": "Sky's Blessing", "description": "ULTIMATE (15-25% HP): Team gains 40% dodge and sky-swiftness for 2 turns while up to 2 enemies are stunned", "cost": 5}
                 },
                 "Breeze": {
                     1: {"name": "Wind Affinity", "description": "+20% damage against Electric and Nature element enemies", "cost": 1},
-                    3: {"name": "Swift Strike", "description": "Pet's attacks always have highest priority (acts first)", "cost": 2},
-                    5: {"name": "Wind Tunnel", "description": "Can pull enemies closer (+50% damage) or push away (-30% their damage)", "cost": 3},
-                    7: {"name": "Air Currents", "description": "Can manipulate turn order, making allies act sooner", "cost": 4},
-                    10: {"name": "Zephyr's Dance", "description": "ULTIMATE (15-25% HP): Team speed doubles + enemies move at 25% speed for 6 turns + activates at low HP", "cost": 5}
+                    3: {"name": "Swift Strike", "description": "Pet's attacks always have highest priority and deal +10% damage", "cost": 2},
+                    5: {"name": "Wind Tunnel", "description": "Manipulate distance to deal +30% damage while taking 30% less damage", "cost": 3},
+                    7: {"name": "Air Currents", "description": "Refreshes allied initiative flow, granting faster turns, +10% damage, and sharper accuracy", "cost": 4},
+                    10: {"name": "Zephyr's Dance", "description": "ULTIMATE (15-25% HP): Team seizes the turn order and gains +20% damage while enemies are dragged into punishing slow winds for 4 turns", "cost": 5}
                 }
             },
             "Light": {
                 "Radiance": {
-                    1: {"name": "Light Beam", "description": "30% chance to blind enemy (50% accuracy reduction for 2 turns)", "cost": 1},
-                    3: {"name": "Holy Strike", "description": "+50% damage against Dark, and Corrupted enemies", "cost": 2},
+                    1: {"name": "Light Beam", "description": "25% chance to blind enemy (-35% accuracy for 2 turns)", "cost": 1},
+                    3: {"name": "Holy Strike", "description": "+40% damage against Dark, Undead, and Corrupted enemies", "cost": 2},
                     5: {"name": "Divine Wrath", "description": "Attacks remove all buffs from enemies hit", "cost": 3},
                     7: {"name": "Light Burst", "description": "AOE attack dealing 120% damage to primary target and 60% to other enemies", "cost": 4},
-                    10: {"name": "Solar Flare", "description": "ULTIMATE (15-25% HP): 3x damage to all enemies + remove all team debuffs + activates at low HP", "cost": 5}
+                    10: {"name": "Solar Flare", "description": "ULTIMATE (15-25% HP): 3x damage to the main target, 60% splash to all others, and cleanse team debuffs", "cost": 5}
                 },
                 "Protection": {
-                    1: {"name": "Divine Shield", "description": "40% resistance to dark damage + 10% resistance to all other damage", "cost": 1},
-                    3: {"name": "Healing Light", "description": "Heals all allies for 12% of pet's max HP each turn", "cost": 2},
+                    1: {"name": "Divine Shield", "description": "30% resistance to dark and corrupted damage + 8% resistance to all other damage", "cost": 1},
+                    3: {"name": "Healing Light", "description": "Heals all allies for 7% of the lower max HP between pet and ally each turn", "cost": 3},
                     5: {"name": "Purification", "description": "Removes all debuffs from entire team at start of each turn", "cost": 3},
-                    7: {"name": "Guardian Angel", "description": "Pet can sacrifice itself to prevent owner death (owner heals to full)", "cost": 4},
-                    10: {"name": "Divine Protection", "description": "ULTIMATE (15-25% HP): Team invincibility for 3 turns + massive healing + activates at low HP", "cost": 5}
+                    7: {"name": "Guardian Angel", "description": "Pet can sacrifice itself to prevent owner death, restore 60% HP, and grant a holy shield", "cost": 4},
+                    10: {"name": "Divine Protection", "description": "ULTIMATE (15-25% HP): Team invincibility for 2 turns + a huge burst heal", "cost": 5}
                 },
                 "Grace": {
-                    1: {"name": "Light Affinity", "description": "+40% damage against Dark and Corrupted enemies", "cost": 1},
-                    3: {"name": "Holy Aura", "description": "Team gains +20% resistance to dark attacks and debuffs", "cost": 2},
-                    5: {"name": "Divine Favor", "description": "25% chance pet attacks bless random ally (+30% stats for 3 turns)", "cost": 3},
+                    1: {"name": "Light Affinity", "description": "+25% damage against Dark and Corrupted enemies", "cost": 1},
+                    3: {"name": "Holy Aura", "description": "Team gains +15% resistance to dark attacks and debuffs", "cost": 2},
+                    5: {"name": "Divine Favor", "description": "25% chance pet attacks bless a random ally with +15% damage, armor, or luck for 2 turns", "cost": 3},
                     7: {"name": "Light's Guidance", "description": "Can predict and counter enemy abilities before they activate", "cost": 4},
-                    10: {"name": "Celestial Blessing", "description": "ULTIMATE (15-25% HP): Team +50% all stats + immunity to physical damage for 4 turns + activates at low HP", "cost": 5}
+                    10: {"name": "Celestial Blessing", "description": "ULTIMATE (15-25% HP): Team gains +25% all stats and immunity to physical damage for 2 turns", "cost": 5}
                 }
             },
             "Dark": {
                 "Shadow": {
-                    1: {"name": "Shadow Strike", "description": "25% chance for 50% of damage to bypass armor and shields", "cost": 1},
-                    3: {"name": "Dark Embrace", "description": "Pet gains +50% damage when owner is below 50% HP", "cost": 2},
+                    1: {"name": "Shadow Strike", "description": "25% chance for 40% of damage to bypass armor and shields", "cost": 1},
+                    3: {"name": "Dark Embrace", "description": "Pet gains +35% damage when owner is below 50% HP", "cost": 2},
                     5: {"name": "Soul Drain", "description": "Pet's attacks heal pet for 25% of damage dealt (lifesteal)", "cost": 3},
                     7: {"name": "Shadow Clone", "description": "30% chance attacks hit twice (second hit for 75% damage)", "cost": 4},
                     10: {"name": "Void Mastery", "description": "ULTIMATE (15-25% HP): 2.5x damage + invert all enemy buffs to debuffs + activates at low HP", "cost": 5}
                 },
                 "Corruption": {
-                    1: {"name": "Dark Shield", "description": "Absorbs damage and converts 50% to pet's attack for 2 turns", "cost": 1},
-                    3: {"name": "Soul Bind", "description": "Pet can transfer 50% of damage between allies bidirectionally", "cost": 2},
-                    5: {"name": "Dark Pact", "description": "Pet sacrifices 40% HP to give owner +100% dark abilities for 4 turns", "cost": 3},
+                    1: {"name": "Dark Shield", "description": "Absorbs 20% of incoming damage and grants the pet +10% attack for 2 turns when struck", "cost": 1},
+                    3: {"name": "Soul Bind", "description": "Pet can transfer 35% of damage between allies bidirectionally", "cost": 2},
+                    5: {"name": "Dark Pact", "description": "Once per battle when owner is low, pet sacrifices 25% HP to give owner +35% damage for 2 turns", "cost": 3},
                     7: {"name": "Shadow Form", "description": "Pet becomes intangible for 2 turns (immune to physical damage)", "cost": 4},
-                    10: {"name": "Eternal Night", "description": "ULTIMATE (15-25% HP): Team gains +75% damage + lifesteal on all attacks for 5 turns + activates at low HP", "cost": 5}
+                    10: {"name": "Eternal Night", "description": "ULTIMATE (15-25% HP): Team gains +35% damage and 15% lifesteal for 3 turns", "cost": 5}
                 },
                 "Night": {
-                    1: {"name": "Dark Affinity", "description": "+40% damage against Light and Corrupted enemies", "cost": 1},
+                    1: {"name": "Dark Affinity", "description": "+25% damage against Light and Corrupted enemies", "cost": 1},
                     3: {"name": "Night Vision", "description": "Can see through stealth/invisibility + 20% accuracy in darkness", "cost": 2},
                     5: {"name": "Shadow Step", "description": "Can teleport behind enemy for guaranteed critical hit", "cost": 3},
-                    7: {"name": "Dark Ritual", "description": "Can sacrifice ally HP to grant massive power boost to pet", "cost": 4},
-                    10: {"name": "Lord of Shadows", "description": "ULTIMATE (15-25% HP): Summon skeleton warriors to fight alongside you (max 2 skeletons)", "cost": 5}
+                    7: {"name": "Dark Ritual", "description": "Once per battle below 75% owner HP, sacrifice 20% owner HP to send the pet into a blood-fueled rampage", "cost": 4},
+                    10: {"name": "Lord of Shadows", "description": "ULTIMATE (15-25% HP): Summon an elite skeleton, empower allies, and shroud enemies in fear for 3 turns", "cost": 5}
                 }
             },
             "Corrupted": {
                 "Chaos": {
-                    1: {"name": "Chaos Strike", "description": "Random damage 50-150% + random elemental type each attack", "cost": 1},
-                    3: {"name": "Reality Warp", "description": "Pet's attacks have random effects (buff, debuff, heal, damage over time)", "cost": 2},
+                    1: {"name": "Chaos Strike", "description": "Random damage 75-125% + random elemental type each attack", "cost": 1},
+                    3: {"name": "Reality Warp", "description": "8% chance to trigger a battlefield warp with a 4-turn cooldown", "cost": 2},
                     5: {"name": "Void Touch", "description": "Pet's attacks corrupt enemies (permanent -10% all stats)", "cost": 3},
                     7: {"name": "Chaos Storm", "description": "AOE chaos damage with random effects to all enemies", "cost": 4},
                     10: {"name": "Apocalypse", "description": "ULTIMATE (15-25% HP): 3.5x damage to all + battlefield enters chaos realm for 5 turns + activates at low HP", "cost": 5}
                 },
                 "Corruption": {
-                    1: {"name": "Corrupt Shield", "description": "Absorbs damage and corrupts attackers (25% chance)", "cost": 1},
-                    3: {"name": "Reality Distortion", "description": "Pet can manipulate battle mechanics (swap stats, reverse damage)", "cost": 2},
+                    1: {"name": "Corrupt Shield", "description": "Absorbs 20% of incoming damage and has a 20% chance to corrupt attackers", "cost": 1},
+                    3: {"name": "Reality Distortion", "description": "15% chance to swap enemy stats or reverse damage with a 3-turn cooldown", "cost": 2},
                     5: {"name": "Void Pact", "description": "Sacrifice defense for power: team +40% damage, all -20% defense for 5 turns", "cost": 3},
                     7: {"name": "Chaos Form", "description": "Pet becomes unpredictable (random effects each turn)", "cost": 4},
-                    10: {"name": "End of Days", "description": "ULTIMATE (15-25% HP): Team gains chaos powers + reality breaks for 4 turns + activates at low HP", "cost": 5}
+                    10: {"name": "End of Days", "description": "ULTIMATE (15-25% HP): Team gains chaos power and +50% damage while enemies lose damage, armor, and accuracy for 3 turns", "cost": 5}
                 },
                 "Void": {
-                    1: {"name": "Corrupted Affinity", "description": "+30% damage against ALL elements (no weaknesses)", "cost": 1},
-                    3: {"name": "Void Sight", "description": "Can see through all illusions and stealth + 40% dodge chance", "cost": 2},
+                    1: {"name": "Corrupted Affinity", "description": "+15% damage against all elements and ignores elemental weakness penalties", "cost": 2},
+                    3: {"name": "Void Sight", "description": "Can see through all illusions and stealth + 25% dodge chance", "cost": 2},
                     5: {"name": "Reality Tear", "description": "15% chance to create tears dealing 200% pet attack + ignoring ALL defenses", "cost": 3},
                     7: {"name": "Chaos Control", "description": "Can manipulate reality: swap positions, reverse damage, etc.", "cost": 4},
-                    10: {"name": "Void Lord", "description": "ULTIMATE (15-25% HP): 3x damage + 50% damage reduction + battlefield control for 3 turns + activates at low HP", "cost": 5}
+                    10: {"name": "Void Lord", "description": "ULTIMATE (15-25% HP): 3x damage + 50% damage reduction + owner empowerment and battlefield domination for 3 turns", "cost": 5}
                 }
             }
         }

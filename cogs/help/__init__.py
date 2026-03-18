@@ -1331,6 +1331,8 @@ class Help(commands.Cog):
                                     "value": (
                                         "• pet_age_potion\n"
                                         "• pet_speed_growth_potion\n"
+                                        "• pet_mind_wipe\n"
+                                        "• pet_element_scroll\n"
                                         "• splice_final_potion\n"
                                         "• weapon_element_scroll"
                                     ),

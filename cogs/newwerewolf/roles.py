@@ -348,8 +348,10 @@ ROLE_DEFS: dict[RoleId, RoleDef] = {
         RoleId.RITUALIST,
         implemented=True,
         description=(
-            "Advanced Medium role. Talks anonymously with dead players at night and"
-            " can cast a one-time delayed resurrection spell on a dead teammate."
+            "Advanced Medium role. Talks anonymously with dead players at night,"
+            " marks a living player, and if that player later dies attempts a"
+            " delayed resurrection on the latest mark. Head Hunter is the one"
+            " non-Villager exception."
         ),
     ),
     RoleId.TROUBLEMAKER: _villager_def(

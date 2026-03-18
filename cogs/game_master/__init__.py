@@ -147,6 +147,13 @@ class GameMaster(commands.Cog):
         },
         "pet xp potion": {"consumable_type": "pet_xp_potion", "display_name": "Pet XP Potion"},
         "petxp": {"consumable_type": "pet_xp_potion", "display_name": "Pet XP Potion"},
+        "pet mind wipe": {"consumable_type": "pet_mind_wipe", "display_name": "Pet Mind Wipe"},
+        "petmindwipe": {"consumable_type": "pet_mind_wipe", "display_name": "Pet Mind Wipe"},
+        "mindwipe": {"consumable_type": "pet_mind_wipe", "display_name": "Pet Mind Wipe"},
+        "petelement": {"consumable_type": "pet_element_scroll", "display_name": "Pet Element Scroll"},
+        "petelementscroll": {"consumable_type": "pet_element_scroll", "display_name": "Pet Element Scroll"},
+        "pet element scroll": {"consumable_type": "pet_element_scroll", "display_name": "Pet Element Scroll"},
+        "pet element change": {"consumable_type": "pet_element_scroll", "display_name": "Pet Element Scroll"},
         "weapelement": {
             "consumable_type": "weapon_element_scroll",
             "display_name": "Weapon Element Scroll",
@@ -1108,7 +1115,7 @@ class GameMaster(commands.Cog):
     ):
         _(
             """`<target>` - A discord User with character
-            `<item>` - One of: petage, petspeed, petxp, weapelement (or long aliases)
+            `<item>` - One of: petage, petspeed, petxp, petmindwipe, petelement, weapelement (or long aliases)
             `[amount]` - Optional amount to grant, defaults to 1
             `[reason]` - The reason this action was done, defaults to the command message link
 
@@ -1124,6 +1131,8 @@ class GameMaster(commands.Cog):
                 "petage, pet age potion, pet_age_potion, petspeed, "
                 "pet speed growth potion, pet_speed_growth_potion, "
                 "petxp, pet xp potion, pet_xp_potion, "
+                "petmindwipe, mindwipe, pet mind wipe, pet_mind_wipe, "
+                "petelement, petelementscroll, pet element scroll, pet element change, pet_element_scroll, "
                 "weapelement, elementscroll, weapon element scroll, weapon_element_scroll"
             )
             return await ctx.send(
