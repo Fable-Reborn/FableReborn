@@ -1475,6 +1475,15 @@
             "element": "Dark",
             "url": "https://image2url.com/r2/default/images/1768569992080-9ebca168-69c4-4473-8b75-3d2d251c7a06.jpg",
             "ispublic": true
+        },
+        {
+            "name": "Xenocaraspace",
+            "hp": 650,
+            "attack": 780,
+            "defense": 1950,
+            "element": "Dark",
+            "url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_ChatGPT_Image_Mar_18_2026_08_29_16_PM.png",
+            "ispublic": true
         }
     ],
     "11": [
