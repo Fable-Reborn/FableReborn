@@ -647,7 +647,7 @@ class Crates(commands.Cog):
                         if dragon_coins_gained > 0:
                             embed.add_field(
                                 name="🎉 Bonus Dragon Coins!",
-                                value=f"You also found **{dragon_coins_gained} <:dragoncoin:1398714322372395008> Dragon Coins**!",
+                                value=f"You also found **{dragon_coins_gained} <:dragoncoin:1404860657366728788> Dragon Coins**!",
                                 inline=False
                             )
                         
@@ -698,7 +698,7 @@ class Crates(commands.Cog):
                         
                         # Add Dragon Coin message if gained
                         if total_dragon_coins_gained > 0:
-                            message += f"\n\n🎉 **Bonus Dragon Coins:** You also found **{total_dragon_coins_gained} <:dragoncoin:1398714322372395008> Dragon Coins**!"
+                            message += f"\n\n🎉 **Bonus Dragon Coins:** You also found **{total_dragon_coins_gained} <:dragoncoin:1404860657366728788> Dragon Coins**!"
                         
                         await ctx.send(message)
                         if rarity == "legendary":

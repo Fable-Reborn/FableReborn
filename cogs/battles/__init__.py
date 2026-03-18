@@ -9504,7 +9504,7 @@ class Battles(commands.Cog):
                         continue
                 if dragon_coin_reward > 0:
                     reward_text += (
-                        f"🐉 Dragon Coin Bonus: Each party member also received {dragon_coin_reward} <:dragoncoin:1398714322372395008> Dragon Coins\n"
+                        f"🐉 Dragon Coin Bonus: Each party member also received {dragon_coin_reward} <:dragoncoin:1404860657366728788> Dragon Coins\n"
                     )
         except Exception:
             # Try to continue with embed even if rewards failed

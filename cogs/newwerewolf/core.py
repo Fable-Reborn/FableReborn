@@ -392,8 +392,9 @@ DESCRIPTIONS = {
     Role.MARKSMAN: _(
         "You are the Marksman, an advanced Priest role. Every night, you mark one"
         " target. During the day, you may spend an arrow to kill your marked target"
-        " or change your target. If you shoot a villager-team target, you die"
-        " instead. You have 2 arrows."
+        " or change your target for free. If you shoot a villager-team target, you"
+        " die instead. You have 2 arrows, and once they are gone you can no longer"
+        " mark anyone."
     ),
     Role.PACIFIST: _(
         "You are the Pacifist. Once per game during the day, you may reveal one"
@@ -583,8 +584,10 @@ DESCRIPTIONS = {
         "You are an advanced **Wolf Seer**. You are on the Werewolves team, but you"
         " are not a normal werewolf at night: you cannot nominate/vote in wolf kill"
         " chat. You can still read wolf messages. Each night you privately inspect one"
-        " player's role. Twice per game, you may reveal the role of a player you have"
-        " checked to the werewolf team. You can resign to become a regular Werewolf."
+        " player's role. At the start of the game, you are disguised as a random"
+        " eligible informer role in the match except Seer. Twice per game, you may"
+        " reveal the role of a player you have checked to the werewolf team. You can"
+        " resign to become a regular Werewolf."
     ),
     Role.WOLF_PACIFIST: _(
         "Your objective is to kill all villagers together with the other Werewolves."
@@ -1263,8 +1266,9 @@ INHERITABLE_INFORMATION_ROLES = {
 }
 
 # Sorcerer disguise logic:
-# - Sorcerer appears as one of these informer roles to other informer checks.
-# - Seer/Seer Apprentice/Red Lady are excluded from disguise pool by request.
+# - Sorcerer appears as one of the present informer roles to other informer checks.
+# - Seer is never chosen as the disguise; Seer Apprentice is also excluded until it
+#   inherits a real informer role.
 SORCERER_INFORMER_ROLES = {
     Role.SEER,
     Role.ANALYST,
@@ -1281,7 +1285,6 @@ SORCERER_INFORMER_ROLES = {
 SORCERER_DISGUISE_EXCLUDED_ROLES = {
     Role.SEER,
     Role.SEER_APPRENTICE,
-    Role.RED_LADY,
 }
 
 # Wolf Shaman enchant logic:
@@ -1907,12 +1910,19 @@ class Game:
             and role not in SORCERER_DISGUISE_EXCLUDED_ROLES
             and role != Role.SORCERER
         ]
-        fallback = Role.SEER
 
         for sorcerer in sorcerers:
             if sorcerer.sorcerer_disguise_role is not None:
                 continue
-            chosen_disguise = random.choice(disguise_pool) if disguise_pool else fallback
+            if not disguise_pool:
+                await sorcerer.send(
+                    _(
+                        "🪄 No eligible informer disguise is present in this match,"
+                        " so you start without a disguise.\n{game_link}"
+                    ).format(game_link=self.game_link)
+                )
+                continue
+            chosen_disguise = random.choice(disguise_pool)
             sorcerer.sorcerer_disguise_role = chosen_disguise
             await sorcerer.send(
                 _(
@@ -9444,7 +9454,10 @@ class Player:
                     self.sorcerer_mark_reveals_left = max(
                         0, self.sorcerer_mark_reveals_left - 1
                     )
-                    revealed_role = self.game.get_observed_role(marked_target)
+                    revealed_role = self.revealed_roles.get(
+                        marked_target,
+                        self.game.get_observed_role(marked_target, observer=self),
+                    )
                     wolves_to_inform = [
                         player
                         for player in self.game.alive_players
@@ -9574,7 +9587,7 @@ class Player:
             )
 
     async def set_marksman_target(self) -> None:
-        if self.role != Role.MARKSMAN or self.dead:
+        if self.role != Role.MARKSMAN or self.dead or self.marksman_arrows <= 0:
             return
         await self.game.ctx.send(
             _("**The {role} marks a target...**").format(role=self.role_name)

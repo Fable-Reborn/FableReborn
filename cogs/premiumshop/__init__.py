@@ -749,7 +749,7 @@ class PremiumShop(commands.Cog):
             else:
                 return await ctx.send(_("Unknown item type."))
         
-        await ctx.send(_("Successfully purchased **{amount}x {item_name}** for **{cost} <:dragoncoin:1398714322372395008>**!").format(
+        await ctx.send(_("Successfully purchased **{amount}x {item_name}** for **{cost} <:dragoncoin:1404860657366728788>**!").format(
             amount=amount, item_name=item_data["name"], cost=total_cost
         ))
 
@@ -1396,10 +1396,10 @@ class PremiumShop(commands.Cog):
             """Redeem dragon coins based on your tier level.
             
             **Tier Rewards:**
-            • Tier 1: 350 <:dragoncoin:1398714322372395008>
-            • Tier 2: 800 <:dragoncoin:1398714322372395008>
-            • Tier 3: 1600 <:dragoncoin:1398714322372395008>
-            • Tier 4: 3500 <:dragoncoin:1398714322372395008>
+            • Tier 1: 350 <:dragoncoin:1404860657366728788>
+            • Tier 2: 800 <:dragoncoin:1404860657366728788>
+            • Tier 3: 1600 <:dragoncoin:1404860657366728788>
+            • Tier 4: 3500 <:dragoncoin:1404860657366728788>
             """
         )
         
@@ -1444,9 +1444,9 @@ class PremiumShop(commands.Cog):
             title=_("🎉 Dragon Coins Redeemed!"),
             description=_(
                 "You have successfully redeemed your tier rewards!\n\n"
-                "**Tier {tier} Reward:** +{coins} <:dragoncoin:1398714322372395008>\n"
-                "**Previous Balance:** {previous} <:dragoncoin:1398714322372395008>\n"
-                "**New Balance:** {new} <:dragoncoin:1398714322372395008>"
+                "**Tier {tier} Reward:** +{coins} <:dragoncoin:1404860657366728788>\n"
+                "**Previous Balance:** {previous} <:dragoncoin:1404860657366728788>\n"
+                "**New Balance:** {new} <:dragoncoin:1404860657366728788>"
             ).format(
                 tier=tier,
                 coins=coins_to_add,
@@ -1469,10 +1469,10 @@ class PremiumShop(commands.Cog):
             """Show information about tier rewards and dragon coin redemption.
             
             **Tier Rewards:**
-            • Tier 1: 300 <:dragoncoin:1398714322372395008>
-            • Tier 2: 700 <:dragoncoin:1398714322372395008>
-            • Tier 3: 1300 <:dragoncoin:1398714322372395008>
-            • Tier 4: 3000 <:dragoncoin:1398714322372395008>
+            • Tier 1: 300 <:dragoncoin:1404860657366728788>
+            • Tier 2: 700 <:dragoncoin:1404860657366728788>
+            • Tier 3: 1300 <:dragoncoin:1404860657366728788>
+            • Tier 4: 3000 <:dragoncoin:1404860657366728788>
             """
         )
         
@@ -1490,10 +1490,10 @@ class PremiumShop(commands.Cog):
             description=_(
                 "Redeem dragon coins based on your tier level!\n\n"
                 "**Available Rewards:**\n"
-                "• **Tier 1:** 300 <:dragoncoin:1398714322372395008>\n"
-                "• **Tier 2:** 700 <:dragoncoin:1398714322372395008>\n"
-                "• **Tier 3:** 1300 <:dragoncoin:1398714322372395008>\n"
-                "• **Tier 4:** 3000 <:dragoncoin:1398714322372395008>\n\n"
+                "• **Tier 1:** 300 <:dragoncoin:1404860657366728788>\n"
+                "• **Tier 2:** 700 <:dragoncoin:1404860657366728788>\n"
+                "• **Tier 3:** 1300 <:dragoncoin:1404860657366728788>\n"
+                "• **Tier 4:** 3000 <:dragoncoin:1404860657366728788>\n\n"
                 "**Your Current Tier:** {tier}\n"
                 "**Command:** `{prefix}redeemcoins`\n"
                 "**Cooldown:** 32 days"

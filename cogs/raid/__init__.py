@@ -1227,7 +1227,7 @@ class Raid(commands.Cog):
                             )
                             if dragon_coins_awarded:
                                 await current_channel.send(
-                                    f"🐉 Bonus drop! All surviving raiders also received **{dragon_coin_bonus} <:dragoncoin:1398714322372395008> Dragon Coins**."
+                                    f"🐉 Bonus drop! All surviving raiders also received **{dragon_coin_bonus} <:dragoncoin:1404860657366728788> Dragon Coins**."
                                 )
 
                         summary_text = (
@@ -1866,7 +1866,7 @@ class Raid(commands.Cog):
                             )
                             if dragon_coins_awarded:
                                 await channel.send(
-                                    f"🐉 Bonus drop! All surviving raiders also received **{dragon_coin_bonus} <:dragoncoin:1398714322372395008> Dragon Coins**."
+                                    f"🐉 Bonus drop! All surviving raiders also received **{dragon_coin_bonus} <:dragoncoin:1404860657366728788> Dragon Coins**."
                                 )
 
                         summary_text = (
@@ -3082,7 +3082,7 @@ class Raid(commands.Cog):
                 )
                 if dragon_coins_awarded:
                     await ctx.send(
-                        f"🐉 Bonus drop! All ritual participants also received **{dragon_coin_bonus} <:dragoncoin:1398714322372395008> Dragon Coins**."
+                        f"🐉 Bonus drop! All ritual participants also received **{dragon_coin_bonus} <:dragoncoin:1404860657366728788> Dragon Coins**."
                     )
 
             else:
@@ -3413,7 +3413,7 @@ class Raid(commands.Cog):
                     if dragon_coins_awarded:
                         await send_to_channels(
                             content=(
-                                f"🐉 Bonus drop! All surviving followers also received **{dragon_coin_bonus} <:dragoncoin:1398714322372395008> Dragon Coins**."
+                                f"🐉 Bonus drop! All surviving followers also received **{dragon_coin_bonus} <:dragoncoin:1404860657366728788> Dragon Coins**."
                             )
                         )
                     await self.clear_raid_timer()

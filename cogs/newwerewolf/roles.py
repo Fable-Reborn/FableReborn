@@ -530,9 +530,10 @@ ROLE_DEFS: dict[RoleId, RoleDef] = {
         team=Team.WOLVES,
         description=(
             "Advanced Wolf Seer role. Cannot vote/chat with wolves at night but can"
-            " read wolf messages. Each night privately inspects one role, may reveal"
-            " checked targets to wolves twice per game, and can resign to become a"
-            " regular Werewolf."
+            " read wolf messages. Starts disguised as a random eligible informer role"
+            " in the match except Seer, privately inspects one role each night, may"
+            " reveal checked targets to wolves twice per game, and can resign to"
+            " become a regular Werewolf."
         ),
         implemented=True,
     ),
@@ -603,8 +604,9 @@ ROLE_DEFS: dict[RoleId, RoleDef] = {
         implemented=True,
         description=(
             "Advanced Priest role. Marks one target at night. During the day may"
-            " spend an arrow to kill the marked target or change target. If they shoot"
-            " a villager-team target, the Marksman dies instead. Has 2 arrows."
+            " spend an arrow to kill the marked target or change target for free. If"
+            " they shoot a villager-team target, the Marksman dies instead. Has 2"
+            " arrows and cannot mark once out of ammo."
         ),
     ),
     RoleId.PACIFIST: _villager_def(
