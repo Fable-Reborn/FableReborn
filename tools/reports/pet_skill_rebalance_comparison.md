@@ -9,16 +9,86 @@
 
 ## System-Level Comparison
 
-| Area | Old | New |
-| --- | --- | --- |
-| Passive trigger cadence | Many pet passives processed after every combat action for every living pet. | Per-turn pet effects now process on the acting pet's turn only. Death effects process once on death. |
-| Passive healing formula | Passive heals scaled straight from pet max HP with no effective ceiling. High-HP pets produced absurd sustain. | Passive heals now scale from the lower max HP between source and target and use hard caps. Ally passive cap: 12% target max HP. Self passive cap: 18%. Burst cap: 40%. |
-| Temporary buffs/debuffs | Many skills multiplied live stats directly and never reverted cleanly. | Temporary stat changes now use timed multipliers with refresh, expiry, and death cleanup. |
-| Owner protection | `Ocean's Embrace` was backwards and moved pet damage to the owner. `Guardian Angel` did not reliably save the owner. | Owner guard/intercept logic now lives in the shared battle engine. `Ocean's Embrace` intercepts owner damage before it lands. `Guardian Angel` now reliably sacrifices the pet to save the owner. |
-| Action denial | `stunned` and `paralyzed` were inconsistent. `Tidal Force` delay logic degraded in the wrong place. | Shared action-lock handling now consumes `stunned`, `paralyzed`, and `tidal_delayed` on the affected combatant's action. |
-| Shield and bypass rules | Several "ignore armor and shields" skills only ignored armor. `Flame Barrier` and `Energy Shield` secretly scaled from max HP. | Shield bypass is supported cleanly, and defense-based shields now scale from armor as their descriptions claim. |
-| Ultimate registration | Multiple tier-10 skills were missing from the low-HP ultimate activation list. | Missing ultimates were registered, so they now actually arm and fire as ultimates. |
-| Death cleanup | Buffs created by a pet could outlive the pet and remain on allies/enemies indefinitely. | Pet-owned timed effects are now cleared when that pet dies. |
+CHANGELOG
+=========================================================================
+ 
+ 
+PASSIVE TRIGGER CADENCE
+-------------------------------------------------------------------------
+Old: Many pet passives processed after every combat action for every
+     living pet.
+ 
+New: Per-turn pet effects now process on the acting pet's turn only.
+     Death effects process once on death.
+ 
+ 
+PASSIVE HEALING FORMULA
+-------------------------------------------------------------------------
+Old: Passive heals scaled straight from pet max HP with no effective
+     ceiling. High-HP pets produced absurd sustain.
+ 
+New: Passive heals now scale from the lower max HP between source and
+     target and use hard caps.
+       - Ally passive cap : 12% target max HP
+       - Self passive cap  : 18%
+       - Burst cap         : 40%
+ 
+ 
+TEMPORARY BUFFS / DEBUFFS
+-------------------------------------------------------------------------
+Old: Many skills multiplied live stats directly and never reverted
+     cleanly.
+ 
+New: Temporary stat changes now use timed multipliers with refresh,
+     expiry, and death cleanup.
+ 
+ 
+OWNER PROTECTION
+-------------------------------------------------------------------------
+Old: Ocean's Embrace was backwards and moved pet damage to the owner.
+     Guardian Angel did not reliably save the owner.
+ 
+New: Owner guard/intercept logic now lives in the shared battle engine.
+     Ocean's Embrace intercepts owner damage before it lands.
+     Guardian Angel now reliably sacrifices the pet to save the owner.
+ 
+ 
+ACTION DENIAL
+-------------------------------------------------------------------------
+Old: "stunned" and "paralyzed" were inconsistent. Tidal Force delay
+     logic degraded in the wrong place.
+ 
+New: Shared action-lock handling now consumes "stunned", "paralyzed",
+     and "tidal_delayed" on the affected combatant's action.
+ 
+ 
+SHIELD AND BYPASS RULES
+-------------------------------------------------------------------------
+Old: Several "ignore armor and shields" skills only ignored armor.
+     Flame Barrier and Energy Shield secretly scaled from max HP.
+ 
+New: Shield bypass is supported cleanly, and defense-based shields now
+     scale from armor as their descriptions claim.
+ 
+ 
+ULTIMATE REGISTRATION
+-------------------------------------------------------------------------
+Old: Multiple tier-10 skills were missing from the low-HP ultimate
+     activation list.
+ 
+New: Missing ultimates were registered, so they now actually arm and
+     fire as ultimates.
+ 
+ 
+DEATH CLEANUP
+-------------------------------------------------------------------------
+Old: Buffs created by a pet could outlive the pet and remain on
+     allies/enemies indefinitely.
+ 
+New: Pet-owned timed effects are now cleared when that pet dies.
+ 
+ 
+=========================================================================
 
 ## Low-Tier Rebalance Pass
 
