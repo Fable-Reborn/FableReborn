@@ -31,7 +31,8 @@ from discord.ui.button import Button
 from discord.enums import ButtonStyle
 
 from classes import logger
-from classes.classes import Ranger, class_from_string
+from classes.classes import Ranger
+from classes.classes import from_string as class_from_string
 from classes.converters import IntGreaterThan
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils import random
