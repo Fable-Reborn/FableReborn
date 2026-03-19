@@ -1177,7 +1177,13 @@ class DaycareBoardingLauncherView(discord.ui.View):
             if active_count >= self.cog.get_daycare_caps(daycare)["kennels"]:
                 if self.cog.has_daycare_reception_upgrade(daycare):
                     return await interaction.response.send_message(
-                        embed=self.cog.build_daycare_notice_embed(daycare, self.owner, "full"),
+                        embed=self.cog.build_daycare_notice_embed(
+                            daycare,
+                            self.owner,
+                            "full",
+                            active_slots=active_count,
+                            slot_cap=self.cog.get_daycare_caps(daycare)["kennels"],
+                        ),
                     )
                 return await interaction.response.send_message(
                     "❌ That daycare is currently full.",
@@ -1667,6 +1673,24 @@ class Pets(commands.Cog):
                 await conn.execute(
                     "ALTER TABLE pet_daycares ADD COLUMN IF NOT EXISTS reception_message TEXT;"
                 )
+                await conn.execute(
+                    "ALTER TABLE pet_daycares ADD COLUMN IF NOT EXISTS reception_full_image_url TEXT;"
+                )
+                await conn.execute(
+                    "ALTER TABLE pet_daycares ADD COLUMN IF NOT EXISTS reception_full_message TEXT;"
+                )
+                await conn.execute(
+                    "ALTER TABLE pet_daycares ADD COLUMN IF NOT EXISTS reception_booked_image_url TEXT;"
+                )
+                await conn.execute(
+                    "ALTER TABLE pet_daycares ADD COLUMN IF NOT EXISTS reception_booked_message TEXT;"
+                )
+                await conn.execute(
+                    "ALTER TABLE pet_daycares ADD COLUMN IF NOT EXISTS reception_collection_image_url TEXT;"
+                )
+                await conn.execute(
+                    "ALTER TABLE pet_daycares ADD COLUMN IF NOT EXISTS reception_collection_message TEXT;"
+                )
 
                 await conn.execute(
                     """
@@ -1881,6 +1905,12 @@ class Pets(commands.Cog):
             query += " FOR UPDATE"
         query += ";"
         return await conn.fetchrow(query, owner_user_id)
+
+    async def get_daycare_by_id(self, conn, daycare_id: int):
+        return await conn.fetchrow(
+            "SELECT * FROM pet_daycares WHERE id = $1;",
+            daycare_id,
+        )
 
     async def is_ranger_owner(self, ctx) -> bool:
         if not hasattr(ctx, "character_data"):
@@ -2604,6 +2634,8 @@ class Pets(commands.Cog):
         return {
             "boarding_id": int(boarding["id"]),
             "customer_user_id": int(boarding["customer_user_id"]),
+            "owner_user_id": int(boarding["owner_user_id"]),
+            "daycare_id": int(boarding["daycare_id"]),
             "pet_name": pet["name"],
             "package_name": boarding["package_name"],
             "daycare_name": boarding["daycare_name"],
@@ -2650,24 +2682,121 @@ class Pets(commands.Cog):
             user = self.bot.get_user(settlement["customer_user_id"])
             if user is None:
                 user = await self.bot.fetch_user(settlement["customer_user_id"])
-            if user:
+            if not user:
+                return
+
+            async with self.bot.pool.acquire() as conn:
+                daycare = await self.get_daycare_by_id(conn, settlement["daycare_id"])
+
+            if not daycare or not self.has_daycare_reception_upgrade(daycare):
+                await user.send(self.format_daycare_settlement_message(settlement, auto_return=True))
+                return
+
+            owner = self.bot.get_user(settlement["owner_user_id"])
+            if owner is None:
+                owner = await self.bot.fetch_user(settlement["owner_user_id"])
+            if owner and self.has_daycare_reception_template(daycare, "collection"):
+                await user.send(embed=self.build_daycare_collection_dm_embed(daycare, owner, settlement))
+            else:
                 await user.send(self.format_daycare_settlement_message(settlement, auto_return=True))
         except Exception:
             pass
 
-    def has_daycare_custom_reception(self, daycare) -> bool:
-        if not daycare or int(daycare.get("reception_level", 0) or 0) <= 0:
-            return False
-        return bool(
-            str(daycare.get("reception_message") or "").strip()
-            or str(daycare.get("reception_image_url") or "").strip()
-        )
-
     def has_daycare_reception_upgrade(self, daycare) -> bool:
         return bool(daycare and int(daycare.get("reception_level", 0) or 0) > 0)
 
+    def get_daycare_reception_template_keys(self) -> list[str]:
+        return ["default", "full", "booked", "collection"]
+
+    def normalize_daycare_reception_template_key(self, raw_key: str | None) -> str | None:
+        if raw_key is None:
+            return None
+        aliases = {
+            "default": "default",
+            "intro": "default",
+            "greeting": "default",
+            "full": "full",
+            "filled": "full",
+            "booked": "booked",
+            "booking": "booked",
+            "boarded": "booked",
+            "collection": "collection",
+            "collect": "collection",
+            "collected": "collection",
+            "dm": "collection",
+        }
+        return aliases.get(str(raw_key).strip().lower())
+
+    def get_daycare_reception_column_map(self) -> dict[str, tuple[str, str]]:
+        return {
+            "default": ("reception_image_url", "reception_message"),
+            "full": ("reception_full_image_url", "reception_full_message"),
+            "booked": ("reception_booked_image_url", "reception_booked_message"),
+            "collection": ("reception_collection_image_url", "reception_collection_message"),
+        }
+
+    def get_daycare_reception_template_values(self, daycare, template_key: str) -> dict[str, str | None]:
+        image_column, message_column = self.get_daycare_reception_column_map()[template_key]
+        image_url = str(daycare.get(image_column) or "").strip() or None
+        message = str(daycare.get(message_column) or "").strip() or None
+        if template_key != "default" and not image_url:
+            image_url = str(daycare.get("reception_image_url") or "").strip() or None
+        return {
+            "image_url": image_url,
+            "message": message,
+        }
+
+    def has_daycare_reception_template(self, daycare, template_key: str) -> bool:
+        if not self.has_daycare_reception_upgrade(daycare):
+            return False
+        image_column, message_column = self.get_daycare_reception_column_map()[template_key]
+        return bool(
+            str(daycare.get(image_column) or "").strip()
+            or str(daycare.get(message_column) or "").strip()
+        )
+
+    def has_daycare_custom_reception(self, daycare) -> bool:
+        return self.has_daycare_reception_template(daycare, "default")
+
+    def render_daycare_template(self, template: str | None, context: dict[str, object]) -> str | None:
+        if not template:
+            return None
+
+        def replace_tag(match: re.Match) -> str:
+            key = match.group(1)
+            value = context.get(key)
+            return "" if value is None else str(value)
+
+        return re.sub(r"\{([a-z_]+)\}", replace_tag, template)
+
+    def apply_daycare_reception_embed_style(
+        self,
+        embed: discord.Embed,
+        daycare,
+        owner: discord.abc.User,
+        *,
+        image_url: str | None = None,
+        footer: str | None = None,
+    ) -> discord.Embed:
+        embed.set_author(
+            name=f"{owner.display_name}'s Reception",
+            icon_url=owner.display_avatar.url,
+        )
+        if image_url:
+            embed.set_thumbnail(url=image_url)
+        if footer:
+            embed.set_footer(text=footer)
+        return embed
+
     def build_daycare_reception_embed(self, daycare, owner: discord.abc.User) -> discord.Embed:
-        description = str(daycare.get("reception_message") or "").strip()
+        template = self.get_daycare_reception_template_values(daycare, "default")
+        description = self.render_daycare_template(
+            template["message"],
+            {
+                "daycare_name": daycare["name"],
+                "owner_name": owner.display_name,
+            },
+        )
         if not description:
             description = (
                 f"Welcome to **{daycare['name']}**.\n"
@@ -2679,15 +2808,13 @@ class Pets(commands.Cog):
             color=discord.Color.teal(),
             description=description,
         )
-        embed.set_author(
-            name=f"{owner.display_name}'s Reception",
-            icon_url=owner.display_avatar.url,
+        return self.apply_daycare_reception_embed_style(
+            embed,
+            daycare,
+            owner,
+            image_url=template["image_url"],
+            footer="Use the button below to start a private boarding request.",
         )
-        image_url = str(daycare.get("reception_image_url") or "").strip()
-        if image_url:
-            embed.set_thumbnail(url=image_url)
-        embed.set_footer(text="Use the button below to start a private boarding request.")
-        return embed
 
     def build_daycare_notice_embed(
         self,
@@ -2696,15 +2823,31 @@ class Pets(commands.Cog):
         notice_type: str,
         *,
         boarding_result: dict | None = None,
+        active_slots: int | None = None,
+        slot_cap: int | None = None,
     ) -> discord.Embed:
+        template_key = "full" if notice_type == "full" else "booked"
+        template = self.get_daycare_reception_template_values(daycare, template_key)
+
         if notice_type == "full":
+            description = self.render_daycare_template(
+                template["message"],
+                {
+                    "daycare_name": daycare["name"],
+                    "owner_name": owner.display_name,
+                    "active_slots": active_slots if active_slots is not None else "",
+                    "slot_cap": slot_cap if slot_cap is not None else "",
+                },
+            )
+            if not description:
+                description = (
+                    "All kennels are currently occupied.\n"
+                    "No new boardings can be accepted right now."
+                )
             embed = discord.Embed(
                 title=f"{daycare['name']} Reception",
                 color=discord.Color.orange(),
-                description=(
-                    "All kennels are currently occupied.\n"
-                    "No new boardings can be accepted right now."
-                ),
+                description=description,
             )
             embed.add_field(
                 name="Status",
@@ -2713,13 +2856,29 @@ class Pets(commands.Cog):
             )
             footer = "This notice is public."
         elif notice_type == "boarding_complete" and boarding_result is not None:
+            description = self.render_daycare_template(
+                template["message"],
+                {
+                    "daycare_name": daycare["name"],
+                    "owner_name": owner.display_name,
+                    "pet_name": boarding_result["pet"]["name"],
+                    "package_name": boarding_result["package"]["name"],
+                    "days_booked": int(boarding_result["days_booked"]),
+                    "charge": f"${int(boarding_result['price_to_charge']):,}",
+                    "projected_xp": f"{int(boarding_result['projected_xp_display']):,}",
+                    "trust": int(boarding_result["projection"]["total_trust"]),
+                    "auto_return_at": boarding_result["ends_at"].strftime("%Y-%m-%d %H:%M UTC"),
+                },
+            )
+            if not description:
+                description = (
+                    f"**{boarding_result['pet']['name']}** has been checked into "
+                    f"**{boarding_result['package']['name']}**."
+                )
             embed = discord.Embed(
                 title=f"{daycare['name']} Reception",
                 color=discord.Color.green(),
-                description=(
-                    f"**{boarding_result['pet']['name']}** has been checked into "
-                    f"**{boarding_result['package']['name']}**."
-                ),
+                description=description,
             )
             embed.add_field(
                 name="Boarding Summary",
@@ -2750,15 +2909,153 @@ class Pets(commands.Cog):
             )
             footer = "This notice is public."
 
-        embed.set_author(
-            name=f"{owner.display_name}'s Reception",
-            icon_url=owner.display_avatar.url,
+        return self.apply_daycare_reception_embed_style(
+            embed,
+            daycare,
+            owner,
+            image_url=template["image_url"],
+            footer=footer,
         )
-        image_url = str(daycare.get("reception_image_url") or "").strip()
-        if image_url:
-            embed.set_thumbnail(url=image_url)
-        embed.set_footer(text=footer)
-        return embed
+
+    def build_daycare_collection_dm_embed(
+        self,
+        daycare,
+        owner: discord.abc.User,
+        settlement: dict,
+    ) -> discord.Embed:
+        template = self.get_daycare_reception_template_values(daycare, "collection")
+        levels_gained = max(0, int(settlement["new_level"]) - int(settlement["old_level"]))
+        description = self.render_daycare_template(
+            template["message"],
+            {
+                "daycare_name": settlement["daycare_name"],
+                "owner_name": owner.display_name,
+                "pet_name": settlement["pet_name"],
+                "package_name": settlement["package_name"],
+                "xp_gained": f"{int(settlement['actual_xp_gained']):,}",
+                "trust_gained": int(settlement["trust_gained"]),
+                "old_hunger": int(settlement["old_hunger"]),
+                "new_hunger": int(settlement["new_hunger"]),
+                "old_happiness": int(settlement["old_happiness"]),
+                "new_happiness": int(settlement["new_happiness"]),
+                "old_level": int(settlement["old_level"]),
+                "new_level": int(settlement["new_level"]),
+                "levels_gained": levels_gained,
+                "skill_points_gained": int(settlement["skill_points_gained"]),
+            },
+        )
+        if not description:
+            description = self.format_daycare_settlement_message(settlement, auto_return=True)
+
+        embed = discord.Embed(
+            title=f"{settlement['daycare_name']} Collection Notice",
+            color=discord.Color.blue(),
+            description=description,
+        )
+        embed.add_field(
+            name="Collection Summary",
+            value=(
+                f"XP Gained: `{int(settlement['actual_xp_gained']):,}`\n"
+                f"Trust Gained: `{int(settlement['trust_gained'])}`\n"
+                f"Level: `{int(settlement['old_level'])} -> {int(settlement['new_level'])}`\n"
+                f"Hunger/Happiness: `{int(settlement['old_hunger'])} -> {int(settlement['new_hunger'])}` / "
+                f"`{int(settlement['old_happiness'])} -> {int(settlement['new_happiness'])}`"
+            ),
+            inline=False,
+        )
+        if settlement["restore_equipped"]:
+            embed.add_field(
+                name="Re-Equipped",
+                value="Your pet was re-equipped automatically.",
+                inline=False,
+            )
+        return self.apply_daycare_reception_embed_style(
+            embed,
+            daycare,
+            owner,
+            image_url=template["image_url"],
+            footer="Your daycare booking finished and the pet was returned automatically.",
+        )
+
+    def get_daycare_reception_available_tags(self, template_key: str) -> list[str]:
+        tags = {
+            "default": ["{daycare_name}", "{owner_name}"],
+            "full": ["{daycare_name}", "{owner_name}", "{active_slots}", "{slot_cap}"],
+            "booked": [
+                "{daycare_name}",
+                "{owner_name}",
+                "{pet_name}",
+                "{package_name}",
+                "{days_booked}",
+                "{charge}",
+                "{projected_xp}",
+                "{trust}",
+                "{auto_return_at}",
+            ],
+            "collection": [
+                "{daycare_name}",
+                "{owner_name}",
+                "{pet_name}",
+                "{package_name}",
+                "{xp_gained}",
+                "{trust_gained}",
+                "{old_level}",
+                "{new_level}",
+                "{levels_gained}",
+                "{skill_points_gained}",
+                "{old_hunger}",
+                "{new_hunger}",
+                "{old_happiness}",
+                "{new_happiness}",
+            ],
+        }
+        return tags.get(template_key, [])
+
+    def build_daycare_reception_preview_embed(self, daycare, owner: discord.abc.User, template_key: str) -> discord.Embed:
+        if template_key == "default":
+            return self.build_daycare_reception_embed(daycare, owner)
+        if template_key == "full":
+            caps = self.get_daycare_caps(daycare)
+            return self.build_daycare_notice_embed(
+                daycare,
+                owner,
+                "full",
+                active_slots=caps["kennels"],
+                slot_cap=caps["kennels"],
+            )
+        if template_key == "booked":
+            sample_result = {
+                "pet": {"name": "Katie"},
+                "package": {"name": "Balanced Care"},
+                "days_booked": 3,
+                "price_to_charge": 540000,
+                "projected_xp_display": 24500,
+                "projection": {"total_trust": 6, "total_xp": 24500},
+                "xp_multiplier": 1.0,
+                "ends_at": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=3),
+            }
+            return self.build_daycare_notice_embed(
+                daycare,
+                owner,
+                "boarding_complete",
+                boarding_result=sample_result,
+            )
+        sample_settlement = {
+            "daycare_name": daycare["name"],
+            "pet_name": "Katie",
+            "package_name": "Balanced Care",
+            "actual_xp_gained": 24500,
+            "trust_gained": 6,
+            "old_hunger": 70,
+            "new_hunger": 100,
+            "old_happiness": 62,
+            "new_happiness": 88,
+            "old_level": 12,
+            "new_level": 16,
+            "skill_points_gained": 0,
+            "restore_equipped": True,
+        }
+        return self.build_daycare_collection_dm_embed(daycare, owner, sample_settlement)
 
     def is_valid_daycare_reception_url(self, value: str) -> bool:
         if not value:
@@ -2798,7 +3095,7 @@ class Pets(commands.Cog):
             f"`{prefix}pets daycare upgrade`\n"
             f"`{prefix}pets daycare packagecreate`\n"
             f"`{prefix}pets daycare packages`\n"
-            f"`{prefix}pets daycare reception [image_url | greeting]`"
+            f"`{prefix}pets daycare reception [default|full|booked|collection] ...`"
             if can_open_daycare
             else "You need the Ranger class line to open a daycare. Owner management commands are GM-only."
         )
@@ -3538,7 +3835,7 @@ class Pets(commands.Cog):
                 f"`{ctx.clean_prefix}pets daycare open [name]`\n"
                 f"`{ctx.clean_prefix}pets daycare close`\n"
                 f"`{ctx.clean_prefix}pets daycare upgrade`\n"
-                f"`{ctx.clean_prefix}pets daycare reception`\n"
+                f"`{ctx.clean_prefix}pets daycare reception [template]`\n"
                 f"`{ctx.clean_prefix}pets daycare packages`\n"
                 f"`{ctx.clean_prefix}pets daycare packagecreate`\n"
                 f"`{ctx.clean_prefix}pets daycare packagedelete <package_id>`\n"
@@ -3858,70 +4155,86 @@ class Pets(commands.Cog):
                     title="Daycare Reception",
                     color=discord.Color.teal(),
                     description=(
-                        "Set the greeting embed customers see when they start boarding into your daycare.\n"
-                        "If you clear it, the normal default boarding prompt is used instead."
+                        "Configure separate receptionist templates for the normal greeting, full notices, booked notices, and the collection DM.\n"
+                        "Old syntax without a target still edits the default greeting."
                     ),
                 )
-                current_message = str(daycare.get("reception_message") or "").strip() or "Not set"
-                current_image = str(daycare.get("reception_image_url") or "").strip() or "Not set"
-                embed.add_field(
-                    name="Current Setup",
-                    value=(
-                        f"**Message:** {current_message}\n"
-                        f"**Image URL:** {current_image}"
-                    ),
-                    inline=False,
-                )
+                for template_key in self.get_daycare_reception_template_keys():
+                    image_column, message_column = self.get_daycare_reception_column_map()[template_key]
+                    current_message = str(daycare.get(message_column) or "").strip() or "Not set"
+                    current_image = str(daycare.get(image_column) or "").strip() or "Not set"
+                    embed.add_field(
+                        name=template_key.title(),
+                        value=(
+                            f"**Message:** {current_message}\n"
+                            f"**Image URL:** {current_image}\n"
+                            f"**Tags:** {' '.join(self.get_daycare_reception_available_tags(template_key)) or 'None'}"
+                        ),
+                        inline=False,
+                    )
                 embed.add_field(
                     name="Examples",
                     value=(
-                        f"`{ctx.clean_prefix}pets daycare reception Welcome to my daycare. Pick a package below.`\n"
-                        f"`{ctx.clean_prefix}pets daycare reception https://example.com/clerk.png | Welcome in. Choose a boarding plan below.`\n"
-                        f"`{ctx.clean_prefix}pets daycare reception clear`"
+                        f"`{ctx.clean_prefix}pets daycare reception default https://example.com/clerk.png | Welcome to {ctx.author.display_name}'s daycare.`\n"
+                        f"`{ctx.clean_prefix}pets daycare reception full {daycare['name']} is full right now. ({{active_slots}}/{{slot_cap}})`\n"
+                        f"`{ctx.clean_prefix}pets daycare reception booked {{pet_name}} is now checked in for {{days_booked}} day(s).`\n"
+                        f"`{ctx.clean_prefix}pets daycare reception collection {{pet_name}} gained {{levels_gained}} level(s)!`\n"
+                        f"`{ctx.clean_prefix}pets daycare reception booked clear`"
                     ),
                     inline=False,
                 )
-                if self.has_daycare_custom_reception(daycare):
-                    embed.add_field(
-                        name="Current Preview",
-                        value="Customers currently see your custom reception embed before the boarding button.",
-                        inline=False,
-                    )
-                    return await ctx.send(
-                        embed=embed,
-                        view=None,
-                    )
                 return await ctx.send(embed=embed)
 
             raw_spec = str(spec).strip()
             if not raw_spec:
                 return await ctx.send("❌ Reception text cannot be empty.")
 
-            if raw_spec.lower() in {"clear", "reset", "off", "disable"}:
+            first_part, remainder = (raw_spec.split(maxsplit=1) + [""])[:2]
+            template_key = self.normalize_daycare_reception_template_key(first_part)
+            if template_key is None:
+                template_key = "default"
+                template_spec = raw_spec
+            else:
+                template_spec = remainder.strip() or None
+
+            if template_spec is None:
+                preview_embed = self.build_daycare_reception_preview_embed(daycare, ctx.author, template_key)
+                tag_text = " ".join(self.get_daycare_reception_available_tags(template_key)) or "None"
+                return await ctx.send(
+                    f"Current `{template_key}` reception template.\nAvailable tags: {tag_text}",
+                    embed=preview_embed,
+                )
+
+            image_column, message_column = self.get_daycare_reception_column_map()[template_key]
+
+            if template_spec.lower() in {"clear", "reset", "off", "disable"}:
                 await conn.execute(
-                    """
+                    f"""
                     UPDATE pet_daycares
-                    SET reception_image_url = NULL,
-                        reception_message = NULL
+                    SET {image_column} = NULL,
+                        {message_column} = NULL
                     WHERE owner_user_id = $1;
                     """,
                     ctx.author.id,
                 )
+                daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
+                clear_target = "default boarding prompt" if template_key == "default" else f"`{template_key}` receptionist template"
                 return await ctx.send(
-                    "✅ Cleared your custom reception. Customers will now see the default boarding prompt."
+                    f"✅ Cleared the {clear_target}.",
+                    embed=self.build_daycare_reception_preview_embed(daycare, ctx.author, template_key),
                 )
 
-            new_image = str(daycare.get("reception_image_url") or "").strip() or None
-            new_message = str(daycare.get("reception_message") or "").strip() or None
+            new_image = str(daycare.get(image_column) or "").strip() or None
+            new_message = str(daycare.get(message_column) or "").strip() or None
 
-            if "|" in raw_spec:
-                image_raw, message_raw = [part.strip() for part in raw_spec.split("|", 1)]
+            if "|" in template_spec:
+                image_raw, message_raw = [part.strip() for part in template_spec.split("|", 1)]
                 new_image = image_raw or None
                 new_message = message_raw or None
-            elif self.is_valid_daycare_reception_url(raw_spec):
-                new_image = raw_spec
+            elif self.is_valid_daycare_reception_url(template_spec):
+                new_image = template_spec
             else:
-                new_message = raw_spec
+                new_message = template_spec
 
             if new_image and not self.is_valid_daycare_reception_url(new_image):
                 return await ctx.send("❌ Reception image URL must start with `http://` or `https://`.")
@@ -3931,10 +4244,10 @@ class Pets(commands.Cog):
                 return await ctx.send("❌ Provide a greeting, an image URL, or both.")
 
             await conn.execute(
-                """
+                f"""
                 UPDATE pet_daycares
-                SET reception_image_url = $1,
-                    reception_message = $2
+                SET {image_column} = $1,
+                    {message_column} = $2
                 WHERE owner_user_id = $3;
                 """,
                 new_image,
@@ -3943,9 +4256,9 @@ class Pets(commands.Cog):
             )
             daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
 
-        preview_embed = self.build_daycare_reception_embed(daycare, ctx.author)
+        preview_embed = self.build_daycare_reception_preview_embed(daycare, ctx.author, template_key)
         await ctx.send(
-            "✅ Updated your reception. This is what customers will see before opening the private boarding panel.",
+            f"✅ Updated the `{template_key}` reception template.",
             embed=preview_embed,
         )
 
@@ -3988,7 +4301,15 @@ class Pets(commands.Cog):
                 )
                 if active_count >= self.get_daycare_caps(daycare)["kennels"]:
                     if self.has_daycare_reception_upgrade(daycare):
-                        return await ctx.send(embed=self.build_daycare_notice_embed(daycare, owner, "full"))
+                        return await ctx.send(
+                            embed=self.build_daycare_notice_embed(
+                                daycare,
+                                owner,
+                                "full",
+                                active_slots=active_count,
+                                slot_cap=self.get_daycare_caps(daycare)["kennels"],
+                            )
+                        )
                     return await ctx.send("❌ That daycare is currently full.")
                 pets = await self.get_boardable_pets_for_user(conn, ctx.author.id)
                 if not pets:
