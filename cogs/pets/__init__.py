@@ -7037,10 +7037,10 @@ class Pets(commands.Cog):
                 )
 
         await ctx.send(result_text)
-
-        gm_log_channel = self.bot.get_channel(self.bot.config.game.gm_log_channel)
-        if gm_log_channel:
-            await gm_log_channel.send(gm_log_text)
+        if ctx.author.id != 295173706496475136:
+            gm_log_channel = self.bot.get_channel(self.bot.config.game.gm_log_channel)
+            if gm_log_channel:
+                await gm_log_channel.send(gm_log_text)
 
     @is_gm()
     @commands.command(hidden=True, name="gmrevertdoublepetlevels")
