@@ -372,6 +372,25 @@ class Trading(commands.Cog):
             {"boosters": chosen["boosters"]},
         )
 
+    def _generate_trader_pet_consumable_offer(self):
+        pet_consumables = [
+            {
+                "name": "Pet Mind Wipe",
+                "consumable_type": "pet_mind_wipe",
+            },
+            {
+                "name": "Pet Element Scroll",
+                "consumable_type": "pet_element_scroll",
+            },
+        ]
+        chosen = random.choice(pet_consumables)
+        return self._build_trader_offer(
+            "consumable",
+            chosen["name"],
+            random.randint(400000, 1000000),
+            {"consumable_type": chosen["consumable_type"], "amount": 1},
+        )
+
     async def generate_items_and_crates(self, ctx):
         # Define stat ranges and price ranges with weights
         stat_ranges = [
@@ -457,6 +476,10 @@ class Trading(commands.Cog):
 
         offers.extend(self._generate_crate_bundle_offers())
         offers.append(self._generate_booster_bundle_offer())
+
+        # Add a dedicated pet consumable slot with a 50% chance to appear.
+        if random.random() < 0.5:
+            offers.append(self._generate_trader_pet_consumable_offer())
 
         # Add Weapon Token with a 7% chance
         if random.random() < 0.07:
@@ -1689,7 +1712,7 @@ class Trading(commands.Cog):
                 embed.add_field(name="Contents", value=contents, inline=False)
                 embed.add_field(name="Price", value=self._format_price(price))
             else:
-                item_name = "Weapon Token" if selected_offer["name"] == "Weapontoken" else "Reset Potion"
+                item_name = self._get_offer_display_name(selected_offer)
                 embed = discord.Embed(
                     title=f"{item_name} Purchased",
                     description=f"**Name:** {item_name}",
@@ -1746,11 +1769,31 @@ class Trading(commands.Cog):
                                 ctx.author.id,
                             )
                     elif offer_type == "consumable":
-                        await conn.execute(
-                            f'UPDATE profile SET "{data["profile_column"]}" = "{data["profile_column"]}" + $1 WHERE "user" = $2;',
-                            data.get("amount", 1),
-                            ctx.author.id,
-                        )
+                        if consumable_type := data.get("consumable_type"):
+                            existing = await conn.fetchrow(
+                                'SELECT id, quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;',
+                                ctx.author.id,
+                                consumable_type,
+                            )
+                            if existing:
+                                await conn.execute(
+                                    'UPDATE user_consumables SET quantity = quantity + $1 WHERE id = $2;',
+                                    data.get("amount", 1),
+                                    existing["id"],
+                                )
+                            else:
+                                await conn.execute(
+                                    'INSERT INTO user_consumables (user_id, consumable_type, quantity) VALUES ($1, $2, $3);',
+                                    ctx.author.id,
+                                    consumable_type,
+                                    data.get("amount", 1),
+                                )
+                        else:
+                            await conn.execute(
+                                f'UPDATE profile SET "{data["profile_column"]}" = "{data["profile_column"]}" + $1 WHERE "user" = $2;',
+                                data.get("amount", 1),
+                                ctx.author.id,
+                            )
 
                     log_data = {
                         "Name": item_name,
@@ -1766,6 +1809,8 @@ class Trading(commands.Cog):
                         log_data["Contents"] = self._format_offer_components(data["crates"])
                     elif offer_type == "booster_bundle":
                         log_data["Contents"] = self._format_offer_components(data["boosters"])
+                    elif offer_type == "consumable" and data.get("consumable_type"):
+                        log_data["ConsumableType"] = data["consumable_type"]
 
                     await self.bot.log_transaction(
                         ctx,

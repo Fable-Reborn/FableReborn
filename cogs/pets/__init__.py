@@ -306,14 +306,14 @@ class Pets(commands.Cog):
     PET_SKILL_POINT_INTERVAL = 10
     PET_LEVEL_STAT_BONUS = 0.01
     PET_XP_CURVE_MULTIPLIER = 2.5
-    PET_BATTLE_DAILY_XP_CAP = 12000
-    PET_BATTLE_XP_BASE = 80
-    PET_BATTLE_XP_PER_TIER = 25
+    PET_BATTLE_DAILY_XP_CAP = 24000
+    PET_BATTLE_XP_BASE = 160
+    PET_BATTLE_XP_PER_TIER = 50
     PET_COMMAND_XP_VALUES = {
-        "pet": 25,
-        "play": 100,
-        "treat": 250,
-        "train": 500,
+        "pet": 50,
+        "play": 200,
+        "treat": 500,
+        "train": 1000,
     }
     PET_LEVEL_MIGRATION_LEGACY_KEY = "double_pet_levels_to_100_v1"  # legacy x8 rollout
     PET_LEVEL_MIGRATION_KEY = "double_pet_levels_to_100_v2"  # current x2 rollout
@@ -2728,7 +2728,7 @@ class Pets(commands.Cog):
             """, new_hunger, new_happiness, datetime.datetime.utcnow(), pet["id"])
             
             # Award experience and trust
-            xp_gain = food_data["cost"] // 75  # XP based on food cost (further reduced for meaningful progression)
+            xp_gain = (food_data["cost"] // 75) * 5  # Food XP buffed to make feeding a meaningful progression path
             level_result = await self.gain_experience(pet["id"], xp_gain, trust_gain)
             
             # Deduct money
@@ -4590,10 +4590,10 @@ class Pets(commands.Cog):
                 name=_("🍖 Care & Bonding Commands"),
                 value=_(
                     "• `$pets feed [id|alias] [food_type]` - Feed with different food types (defaults to equipped/only pet; use `$pets feedhelp` for details)\n"
-                    "• `$pets pet [id|alias]` - Pet for happiness (+0-1 trust, +25 XP, 5min cooldown; defaults to equipped/only pet)\n"
-                    "• `$pets play [id|alias]` - Play for bonuses (+1 trust, +100 XP, 5min cooldown; defaults to equipped/only pet)\n"
-                    "• `$pets treat [id|alias]` - Give treats (+5 trust, +250 XP, 10min cooldown; defaults to equipped/only pet)\n"
-                    "• `$pets train [id|alias]` - Train for experience and trust (+500 XP, +2 trust, 30min cooldown; defaults to equipped/only pet)"
+                    "• `$pets pet [id|alias]` - Pet for happiness (+0-1 trust, +50 XP, 5min cooldown; defaults to equipped/only pet)\n"
+                    "• `$pets play [id|alias]` - Play for bonuses (+1 trust, +200 XP, 5min cooldown; defaults to equipped/only pet)\n"
+                    "• `$pets treat [id|alias]` - Give treats (+5 trust, +500 XP, 10min cooldown; defaults to equipped/only pet)\n"
+                    "• `$pets train [id|alias]` - Train for experience and trust (+1000 XP, +2 trust, 30min cooldown; defaults to equipped/only pet)"
                 ),
                 inline=False,
             )
@@ -4690,27 +4690,27 @@ class Pets(commands.Cog):
             value=(
                 "**Basic Food** ($10,000) - 1 hour cooldown\n"
                 "• +50 hunger, +25 happiness, +1 trust\n"
-                "• +133 XP per feeding\n"
-                "• Most cost-efficient for trust building\n\n"
+                "• +665 XP per feeding\n"
+                "• Cheap starter option\n\n"
                 
                 "**Premium Food** ($25,000) - 1 hour cooldown\n"
                 "• +100 hunger, +50 happiness, +2 trust\n"
-                "• +333 XP per feeding\n"
+                "• +1,665 XP per feeding\n"
                 "• Balanced progression choice\n\n"
                 
                 "**Deluxe Food** ($50,000) - 1 hour cooldown\n"
                 "• +100 hunger, +100 happiness, +3 trust\n"
-                "• +666 XP per feeding\n"
+                "• +3,330 XP per feeding\n"
                 "• Maximum happiness gains\n\n"
                 
                 "**Elemental Food** ($75,000) - **Warrior and above+ only**\n"
                 "• +75 hunger, +75 happiness, +4 trust\n"
-                "• +1,000 XP per feeding\n"
+                "• +5,000 XP per feeding\n"
                 "• Fastest progression (warrior tier required)\n\n"
                 
                 "**Treats** ($5,000) - 1 hour cooldown\n"
                 "• +10 hunger, +50 happiness, +2 trust\n"
-                "• +66 XP per feeding\n"
+                "• +330 XP per feeding\n"
                 "• Cheapest happiness booster"
             ),
             inline=False
