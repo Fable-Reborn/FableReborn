@@ -1097,16 +1097,32 @@ class DaycareBoardingView(discord.ui.View):
                         self.days,
                     )
                 except ValueError as exc:
+                    error_message = str(exc)
+                    if error_message == "That daycare is currently full." and self.cog.has_daycare_reception_upgrade(self.daycare):
+                        return await interaction.response.send_message(
+                            embed=self.cog.build_daycare_notice_embed(self.daycare, self.owner, "full"),
+                        )
                     return await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
 
         self.is_locked = True
         for item in self.children:
             item.disabled = True
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
-        await interaction.followup.send(
-            self.cog.format_daycare_boarding_success_message(result),
-            ephemeral=True,
-        )
+        if self.cog.has_daycare_reception_upgrade(self.daycare):
+            await interaction.followup.send(
+                embed=self.cog.build_daycare_notice_embed(
+                    self.daycare,
+                    self.owner,
+                    "boarding_complete",
+                    boarding_result=result,
+                ),
+                ephemeral=False,
+            )
+        else:
+            await interaction.followup.send(
+                self.cog.format_daycare_boarding_success_message(result),
+                ephemeral=True,
+            )
         self.stop()
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=2)
@@ -1152,6 +1168,19 @@ class DaycareBoardingLauncherView(discord.ui.View):
             if not pets:
                 return await interaction.response.send_message(
                     "❌ You do not have any pets available for boarding right now.",
+                    ephemeral=True,
+                )
+            active_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM pet_daycare_boardings WHERE daycare_id = $1 AND status = 'active';",
+                daycare["id"],
+            )
+            if active_count >= self.cog.get_daycare_caps(daycare)["kennels"]:
+                if self.cog.has_daycare_reception_upgrade(daycare):
+                    return await interaction.response.send_message(
+                        embed=self.cog.build_daycare_notice_embed(daycare, self.owner, "full"),
+                    )
+                return await interaction.response.send_message(
+                    "❌ That daycare is currently full.",
                     ephemeral=True,
                 )
 
@@ -2408,6 +2437,7 @@ class Pets(commands.Cog):
 
         return {
             "boarding_id": boarding_id,
+            "daycare": daycare,
             "pet": pet,
             "package": package,
             "projection": projection,
@@ -2633,6 +2663,9 @@ class Pets(commands.Cog):
             or str(daycare.get("reception_image_url") or "").strip()
         )
 
+    def has_daycare_reception_upgrade(self, daycare) -> bool:
+        return bool(daycare and int(daycare.get("reception_level", 0) or 0) > 0)
+
     def build_daycare_reception_embed(self, daycare, owner: discord.abc.User) -> discord.Embed:
         description = str(daycare.get("reception_message") or "").strip()
         if not description:
@@ -2654,6 +2687,77 @@ class Pets(commands.Cog):
         if image_url:
             embed.set_thumbnail(url=image_url)
         embed.set_footer(text="Use the button below to start a private boarding request.")
+        return embed
+
+    def build_daycare_notice_embed(
+        self,
+        daycare,
+        owner: discord.abc.User,
+        notice_type: str,
+        *,
+        boarding_result: dict | None = None,
+    ) -> discord.Embed:
+        if notice_type == "full":
+            embed = discord.Embed(
+                title=f"{daycare['name']} Reception",
+                color=discord.Color.orange(),
+                description=(
+                    "All kennels are currently occupied.\n"
+                    "No new boardings can be accepted right now."
+                ),
+            )
+            embed.add_field(
+                name="Status",
+                value="Please try again later once a boarding slot opens up.",
+                inline=False,
+            )
+            footer = "This notice is public."
+        elif notice_type == "boarding_complete" and boarding_result is not None:
+            embed = discord.Embed(
+                title=f"{daycare['name']} Reception",
+                color=discord.Color.green(),
+                description=(
+                    f"**{boarding_result['pet']['name']}** has been checked into "
+                    f"**{boarding_result['package']['name']}**."
+                ),
+            )
+            embed.add_field(
+                name="Boarding Summary",
+                value=(
+                    f"Days: `{int(boarding_result['days_booked'])}`\n"
+                    f"Charge: `${int(boarding_result['price_to_charge']):,}`\n"
+                    f"Projected XP: `{int(boarding_result['projected_xp_display']):,}`\n"
+                    f"Trust: `{int(boarding_result['projection']['total_trust'])}`\n"
+                    f"Auto-Return: `{boarding_result['ends_at'].strftime('%Y-%m-%d %H:%M UTC')}`"
+                ),
+                inline=False,
+            )
+            if float(boarding_result.get("xp_multiplier", 1.0) or 1.0) > 1.0:
+                embed.add_field(
+                    name="XP Multiplier",
+                    value=(
+                        f"`{int(boarding_result['projection']['total_xp']):,}`"
+                        f" -> `{int(boarding_result['projected_xp_display']):,}`"
+                    ),
+                    inline=False,
+                )
+            footer = "Boarding completed successfully. This notice is public."
+        else:
+            embed = discord.Embed(
+                title=f"{daycare['name']} Reception",
+                color=discord.Color.teal(),
+                description="Reception notice.",
+            )
+            footer = "This notice is public."
+
+        embed.set_author(
+            name=f"{owner.display_name}'s Reception",
+            icon_url=owner.display_avatar.url,
+        )
+        image_url = str(daycare.get("reception_image_url") or "").strip()
+        if image_url:
+            embed.set_thumbnail(url=image_url)
+        embed.set_footer(text=footer)
         return embed
 
     def is_valid_daycare_reception_url(self, value: str) -> bool:
@@ -3878,6 +3982,14 @@ class Pets(commands.Cog):
                 packages = await self.get_active_daycare_packages(conn, daycare["id"])
                 if not packages:
                     return await ctx.send("That daycare does not currently have any active packages.")
+                active_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM pet_daycare_boardings WHERE daycare_id = $1 AND status = 'active';",
+                    daycare["id"],
+                )
+                if active_count >= self.get_daycare_caps(daycare)["kennels"]:
+                    if self.has_daycare_reception_upgrade(daycare):
+                        return await ctx.send(embed=self.build_daycare_notice_embed(daycare, owner, "full"))
+                    return await ctx.send("❌ That daycare is currently full.")
                 pets = await self.get_boardable_pets_for_user(conn, ctx.author.id)
                 if not pets:
                     return await ctx.send("❌ You do not have any pets available for boarding right now.")
@@ -3912,9 +4024,22 @@ class Pets(commands.Cog):
                         days,
                     )
                 except ValueError as exc:
+                    daycare = await self.get_daycare_for_owner(conn, owner.id)
+                    if str(exc) == "That daycare is currently full." and self.has_daycare_reception_upgrade(daycare):
+                        return await ctx.send(embed=self.build_daycare_notice_embed(daycare, owner, "full"))
                     return await ctx.send(f"❌ {exc}")
 
-        await ctx.send(self.format_daycare_boarding_success_message(result))
+        if self.has_daycare_reception_upgrade(result["daycare"]):
+            await ctx.send(
+                embed=self.build_daycare_notice_embed(
+                    result["daycare"],
+                    owner,
+                    "boarding_complete",
+                    boarding_result=result,
+                )
+            )
+        else:
+            await ctx.send(self.format_daycare_boarding_success_message(result))
 
     @daycare.command(brief=_("Collect a pet after daycare boarding finishes"))
     @has_char()
