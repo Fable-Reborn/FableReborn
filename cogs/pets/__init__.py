@@ -27,6 +27,7 @@ import asyncpg
 import discord
 from discord.ext import commands, tasks
 from discord.http import handle_message_parameters
+from discord.ui import Modal, TextInput
 from discord.ui.button import Button
 from discord.enums import ButtonStyle
 
@@ -243,6 +244,396 @@ class PetPaginator(discord.ui.View):
 
         await interaction.message.delete()
         self.stop()
+
+
+class DaycarePackageScheduleModal(Modal, title="Set Daycare Schedule"):
+    def __init__(self, builder_view):
+        super().__init__()
+        self.builder_view = builder_view
+        self.feeds_input = TextInput(
+            label="Feeds per day",
+            default=str(builder_view.state["feeds_per_day"]),
+            required=True,
+            max_length=2,
+        )
+        self.plays_input = TextInput(
+            label="Plays per day",
+            default=str(builder_view.state["plays_per_day"]),
+            required=True,
+            max_length=2,
+        )
+        self.trains_input = TextInput(
+            label="Trains per day",
+            default=str(builder_view.state["trains_per_day"]),
+            required=True,
+            max_length=2,
+        )
+        self.add_item(self.feeds_input)
+        self.add_item(self.plays_input)
+        self.add_item(self.trains_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.builder_view.author.id:
+            return await interaction.response.send_message("❌ This builder is not for you.", ephemeral=True)
+
+        try:
+            feeds_per_day = int(self.feeds_input.value)
+            plays_per_day = int(self.plays_input.value)
+            trains_per_day = int(self.trains_input.value)
+        except ValueError:
+            return await interaction.response.send_message(
+                "❌ Feeds, plays, and trains must be numbers.",
+                ephemeral=True,
+            )
+
+        validation_error = self.builder_view.cog.validate_daycare_package_inputs(
+            self.builder_view.daycare,
+            self.builder_view.state["food_type"],
+            feeds_per_day,
+            plays_per_day,
+            trains_per_day,
+            self.builder_view.state["room_type"],
+        )
+        if validation_error:
+            return await interaction.response.send_message(f"❌ {validation_error}", ephemeral=True)
+
+        self.builder_view.state["feeds_per_day"] = feeds_per_day
+        self.builder_view.state["plays_per_day"] = plays_per_day
+        self.builder_view.state["trains_per_day"] = trains_per_day
+        await interaction.response.defer(ephemeral=True)
+        await self.builder_view.refresh_message()
+
+
+class DaycarePackageDetailsModal(Modal, title="Set Package Details"):
+    def __init__(self, builder_view):
+        super().__init__()
+        self.builder_view = builder_view
+        self.name_input = TextInput(
+            label="Package name",
+            default=builder_view.state["name"],
+            required=True,
+            max_length=50,
+        )
+        self.price_input = TextInput(
+            label="Price per day",
+            default=str(builder_view.state["price_per_day"]),
+            required=True,
+            max_length=12,
+        )
+        self.add_item(self.name_input)
+        self.add_item(self.price_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.builder_view.author.id:
+            return await interaction.response.send_message("❌ This builder is not for you.", ephemeral=True)
+
+        name = self.name_input.value.strip()
+        if len(name) < 2 or len(name) > 50:
+            return await interaction.response.send_message(
+                "❌ Package name must be between 2 and 50 characters.",
+                ephemeral=True,
+            )
+
+        try:
+            price_per_day = int(self.price_input.value.replace(",", "").strip())
+        except ValueError:
+            return await interaction.response.send_message(
+                "❌ Price per day must be a number.",
+                ephemeral=True,
+            )
+
+        if price_per_day < 0:
+            return await interaction.response.send_message(
+                "❌ Price per day cannot be negative.",
+                ephemeral=True,
+            )
+
+        self.builder_view.state["name"] = name
+        self.builder_view.state["price_per_day"] = price_per_day
+        await interaction.response.defer(ephemeral=True)
+        await self.builder_view.refresh_message()
+
+
+class DaycareFoodSelect(discord.ui.Select):
+    def __init__(self, builder_view):
+        self.builder_view = builder_view
+        options = []
+        for food_key in builder_view.get_allowed_food_types():
+            label = food_key.replace("_", " ").title()
+            cost = int(builder_view.cog.FOOD_TYPES[food_key]["cost"])
+            options.append(
+                discord.SelectOption(
+                    label=label,
+                    value=food_key,
+                    description=f"${cost:,} food cost",
+                    default=food_key == builder_view.state["food_type"],
+                )
+            )
+        super().__init__(
+            placeholder="Choose the food type",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.builder_view.author.id:
+            return await interaction.response.send_message("❌ This builder is not for you.", ephemeral=True)
+
+        self.builder_view.state["food_type"] = self.values[0]
+        await self.builder_view.refresh_from_interaction(interaction)
+
+
+class DaycareRoomSelect(discord.ui.Select):
+    def __init__(self, builder_view):
+        self.builder_view = builder_view
+        options = []
+        for room_key in builder_view.get_allowed_room_types():
+            label = builder_view.cog.DAYCARE_ROOM_LABELS.get(
+                room_key, room_key.replace("_", " ").title()
+            )
+            upkeep = int(builder_view.cog.DAYCARE_ROOM_UPKEEPS.get(room_key, 0))
+            options.append(
+                discord.SelectOption(
+                    label=label,
+                    value=room_key,
+                    description=f"${upkeep:,} room upkeep/day",
+                    default=room_key == builder_view.state["room_type"],
+                )
+            )
+        super().__init__(
+            placeholder="Choose the daycare room",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.builder_view.author.id:
+            return await interaction.response.send_message("❌ This builder is not for you.", ephemeral=True)
+
+        self.builder_view.state["room_type"] = self.values[0]
+        await self.builder_view.refresh_from_interaction(interaction)
+
+
+class DaycarePackageBuilderView(discord.ui.View):
+    def __init__(self, cog, author, daycare):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.author = author
+        self.daycare = daycare
+        self.message = None
+        self.state = {
+            "name": "New Package",
+            "food_type": self.get_allowed_food_types()[0],
+            "feeds_per_day": 1,
+            "plays_per_day": 0,
+            "trains_per_day": 0,
+            "room_type": self.get_allowed_room_types()[0],
+            "price_per_day": 0,
+        }
+        self.add_item(DaycareFoodSelect(self))
+        self.add_item(DaycareRoomSelect(self))
+
+    def get_allowed_food_types(self):
+        foods = ["basic_food", "premium_food", "deluxe_food"]
+        if int(self.daycare["elemental_level"]) > 0:
+            foods.append("elemental_food")
+        return foods
+
+    def get_allowed_room_types(self):
+        rooms = ["standard", "play_yard", "training_ring", "luxury_suite"]
+        if int(self.daycare["nursery_level"]) > 0:
+            rooms.append("nursery")
+        if int(self.daycare["elemental_level"]) > 1:
+            rooms.append("elemental_habitat")
+        return rooms
+
+    def build_embed(self):
+        caps = self.cog.get_daycare_caps(self.daycare)
+        food_label = self.state["food_type"].replace("_", " ").title()
+        room_label = self.cog.DAYCARE_ROOM_LABELS.get(
+            self.state["room_type"], self.state["room_type"].replace("_", " ").title()
+        )
+        embed = discord.Embed(
+            title="Daycare Package Builder",
+            color=discord.Color.teal(),
+            description="Private builder for daycare packages. Choose settings, then save when the preview looks right.",
+        )
+        embed.add_field(
+            name="Current Setup",
+            value=(
+                f"**Name:** {self.state['name']}\n"
+                f"**Food:** {food_label}\n"
+                f"**Room:** {room_label}\n"
+                f"**Feeds/Plays/Trains:** {self.state['feeds_per_day']}/{self.state['plays_per_day']}/{self.state['trains_per_day']}\n"
+                f"**Price/Day:** ${int(self.state['price_per_day']):,}"
+            ),
+            inline=False,
+        )
+
+        validation_error = self.cog.validate_daycare_package_inputs(
+            self.daycare,
+            self.state["food_type"],
+            self.state["feeds_per_day"],
+            self.state["plays_per_day"],
+            self.state["trains_per_day"],
+            self.state["room_type"],
+        )
+
+        if validation_error:
+            embed.add_field(name="Preview", value=f"❌ {validation_error}", inline=False)
+        else:
+            metrics = self.cog.calculate_daycare_package_metrics(
+                self.state["food_type"],
+                self.state["feeds_per_day"],
+                self.state["plays_per_day"],
+                self.state["trains_per_day"],
+                self.state["room_type"],
+                int(self.daycare["efficiency_level"]),
+            )
+            min_growth_stage = self.cog.get_minimum_safe_growth_stage(
+                self.state["food_type"],
+                self.state["feeds_per_day"],
+                self.state["plays_per_day"],
+            )
+            profit_per_day = int(self.state["price_per_day"]) - int(metrics["operating_cost_per_day"])
+            profit_label = "Profit/Day" if profit_per_day >= 0 else "Loss/Day"
+            embed.add_field(
+                name="Preview",
+                value=(
+                    f"**Operating Cost/Day:** ${int(metrics['operating_cost_per_day']):,}\n"
+                    f"**Break-Even/Day:** ${int(metrics['operating_cost_per_day']):,}\n"
+                    f"**10% Margin/Day:** ${int(metrics['min_list_price_per_day']):,}\n"
+                    f"**Suggested/Day:** ${int(metrics['suggested_list_price_per_day']):,}\n"
+                    f"**{profit_label}:** ${abs(profit_per_day):,}\n"
+                    f"**XP/Day:** {int(metrics['xp_per_day']):,}\n"
+                    f"**Trust/Day:** {int(metrics['trust_per_day'])}\n"
+                    f"**Min Stage:** {min_growth_stage or 'Unsafe'}"
+                ),
+                inline=False,
+            )
+
+        embed.add_field(
+            name="Your Current Caps",
+            value=(
+                f"Feeds/Day: {caps['feeds']}\n"
+                f"Plays/Day: {caps['plays']}\n"
+                f"Trains/Day: {caps['trains']}\n"
+                f"Package Slots: {caps['package_slots']}"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Use the dropdowns and buttons below to configure this package.")
+        return embed
+
+    async def refresh_message(self):
+        if self.message:
+            try:
+                await self.message.edit(embed=self.build_embed(), view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+    async def refresh_from_interaction(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        await self.refresh_message()
+
+    @discord.ui.button(label="Set Schedule", style=discord.ButtonStyle.primary, row=2)
+    async def set_schedule_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("❌ This builder is not for you.", ephemeral=True)
+        await interaction.response.send_modal(DaycarePackageScheduleModal(self))
+
+    @discord.ui.button(label="Set Name & Price", style=discord.ButtonStyle.secondary, row=2)
+    async def set_details_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("❌ This builder is not for you.", ephemeral=True)
+        await interaction.response.send_modal(DaycarePackageDetailsModal(self))
+
+    @discord.ui.button(label="Save Package", style=discord.ButtonStyle.success, row=2)
+    async def save_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("❌ This builder is not for you.", ephemeral=True)
+
+        validation_error = self.cog.validate_daycare_package_inputs(
+            self.daycare,
+            self.state["food_type"],
+            self.state["feeds_per_day"],
+            self.state["plays_per_day"],
+            self.state["trains_per_day"],
+            self.state["room_type"],
+        )
+        if validation_error:
+            return await interaction.response.send_message(f"❌ {validation_error}", ephemeral=True)
+
+        async with self.cog.bot.pool.acquire() as conn:
+            try:
+                package_id, metrics, min_growth_stage, profit_per_day = await self.cog.create_daycare_package_record(
+                    conn,
+                    self.author.id,
+                    self.state["name"],
+                    self.state["food_type"],
+                    self.state["feeds_per_day"],
+                    self.state["plays_per_day"],
+                    self.state["trains_per_day"],
+                    self.state["room_type"],
+                    self.state["price_per_day"],
+                )
+            except ValueError as exc:
+                return await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        result_label = "Profit/Day" if profit_per_day >= 0 else "Loss/Day"
+        await interaction.followup.send(
+            (
+                f"✅ Created package **#{package_id} {self.state['name']}**.\n"
+                f"Operating cost/day: `${int(metrics['operating_cost_per_day']):,}`\n"
+                f"Break-even/day: `${int(metrics['operating_cost_per_day']):,}`\n"
+                f"Suggested/day: `${int(metrics['suggested_list_price_per_day']):,}`\n"
+                f"{result_label}: `${abs(int(profit_per_day)):,}`\n"
+                f"XP/day: `{int(metrics['xp_per_day']):,}` | Trust/day: `{int(metrics['trust_per_day'])}` | Min Stage: `{min_growth_stage}`"
+            ),
+            ephemeral=True,
+        )
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=2)
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("❌ This builder is not for you.", ephemeral=True)
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        self.stop()
+
+
+class DaycarePackageBuilderLauncherView(discord.ui.View):
+    def __init__(self, cog, author, daycare):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.author = author
+        self.daycare = daycare
+
+    @discord.ui.button(label="Open Private Builder", style=discord.ButtonStyle.primary)
+    async def open_builder_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("❌ This package builder is not for you.", ephemeral=True)
+
+        builder = DaycarePackageBuilderView(self.cog, self.author, self.daycare)
+        await interaction.response.send_message(embed=builder.build_embed(), view=builder, ephemeral=True)
+        builder.message = await interaction.original_response()
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
 
 
 class SellConfirmationView(discord.ui.View):
@@ -967,6 +1358,95 @@ class Pets(commands.Cog):
             return "Unknown daycare room type."
         return None
 
+    async def create_daycare_package_record(
+        self,
+        conn,
+        owner_user_id: int,
+        name: str,
+        food_type: str,
+        feeds_per_day: int,
+        plays_per_day: int,
+        trains_per_day: int,
+        room_type: str,
+        price_per_day: int,
+    ):
+        name = str(name).strip()
+        if len(name) < 2 or len(name) > 50:
+            raise ValueError("Package name must be between 2 and 50 characters.")
+
+        try:
+            feeds_per_day = int(feeds_per_day)
+            plays_per_day = int(plays_per_day)
+            trains_per_day = int(trains_per_day)
+            price_per_day = int(price_per_day)
+        except (TypeError, ValueError):
+            raise ValueError("Feeds, plays, trains, and price must all be numbers.")
+
+        if price_per_day < 0:
+            raise ValueError("Price/day cannot be negative.")
+
+        daycare = await self.get_daycare_for_owner(conn, owner_user_id)
+        if not daycare:
+            raise ValueError("You do not own a daycare yet.")
+
+        package_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM pet_daycare_packages WHERE daycare_id = $1 AND is_active = TRUE;",
+            daycare["id"],
+        )
+        if package_count >= self.get_daycare_caps(daycare)["package_slots"]:
+            raise ValueError("You have reached your current package slot limit.")
+
+        validation_error = self.validate_daycare_package_inputs(
+            daycare,
+            food_type,
+            feeds_per_day,
+            plays_per_day,
+            trains_per_day,
+            room_type,
+        )
+        if validation_error:
+            raise ValueError(validation_error)
+
+        metrics = self.calculate_daycare_package_metrics(
+            food_type,
+            feeds_per_day,
+            plays_per_day,
+            trains_per_day,
+            room_type,
+            int(daycare["efficiency_level"]),
+        )
+
+        min_growth_stage = self.get_minimum_safe_growth_stage(food_type, feeds_per_day, plays_per_day)
+        if min_growth_stage is None:
+            raise ValueError("This package is unsafe for all growth stages.")
+        adults_only = min_growth_stage == "adult"
+
+        package_id = await conn.fetchval(
+            """
+            INSERT INTO pet_daycare_packages (
+                daycare_id, name, food_type, feeds_per_day, plays_per_day, trains_per_day,
+                room_type, adults_only, min_growth_stage, operating_cost_per_day,
+                min_list_price_per_day, list_price_per_day
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            RETURNING id;
+            """,
+            daycare["id"],
+            name,
+            food_type,
+            feeds_per_day,
+            plays_per_day,
+            trains_per_day,
+            room_type,
+            adults_only,
+            min_growth_stage,
+            metrics["operating_cost_per_day"],
+            metrics["min_list_price_per_day"],
+            price_per_day,
+        )
+        profit_per_day = int(price_per_day) - int(metrics["operating_cost_per_day"])
+        return package_id, metrics, min_growth_stage, profit_per_day
+
     def calculate_daycare_boarding_projection(self, package, pet, days_booked: int) -> dict[str, int]:
         days_booked = max(1, int(days_booked))
         food = self.FOOD_TYPES[package["food_type"]]
@@ -998,7 +1478,7 @@ class Pets(commands.Cog):
             "final_happiness": final_happiness,
             "total_operating_cost": total_operating_cost,
             "total_price": total_price,
-            "total_profit": max(0, total_price - total_operating_cost),
+            "total_profit": total_price - total_operating_cost,
             "food_cost_total": int(food["cost"]) * int(package["feeds_per_day"]) * days_booked,
         }
 
@@ -1847,14 +2327,34 @@ class Pets(commands.Cog):
     @daycare.command(brief=_("Create a daycare package"))
     @has_char()
     @is_gm()
-    async def packagecreate(self, ctx, *, spec: str):
+    async def packagecreate(self, ctx, *, spec: str = None):
         if not await self.is_ranger_owner(ctx):
             return await ctx.send("❌ You need to be in the Ranger class line to manage a daycare.")
+
+        async with self.bot.pool.acquire() as conn:
+            daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
+            if not daycare:
+                return await ctx.send("❌ You do not own a daycare yet.")
+
+            package_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM pet_daycare_packages WHERE daycare_id = $1 AND is_active = TRUE;",
+                daycare["id"],
+            )
+            if package_count >= self.get_daycare_caps(daycare)["package_slots"]:
+                return await ctx.send("❌ You have reached your current package slot limit.")
+
+        if spec is None:
+            launcher = DaycarePackageBuilderLauncherView(self, ctx.author, daycare)
+            return await ctx.send(
+                "Use the button below to open the private daycare package builder.",
+                view=launcher,
+            )
 
         parts = [part.strip() for part in spec.split("|")]
         if len(parts) not in {6, 7}:
             return await ctx.send(
                 f"Usage: `{ctx.clean_prefix}pets daycare packagecreate Name | food_type | feeds/day | plays/day | trains/day | [room] | price/day`\n"
+                "Or run the command with no arguments to open the private builder.\n"
                 "Example: `Basic Growth | basic_food | 4 | 0 | 2 | standard | 208000`"
             )
 
@@ -1883,74 +2383,29 @@ class Pets(commands.Cog):
             return await ctx.send("❌ Package name must be between 2 and 50 characters.")
 
         async with self.bot.pool.acquire() as conn:
-            daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
-            if not daycare:
-                return await ctx.send("❌ You do not own a daycare yet.")
-
-            package_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM pet_daycare_packages WHERE daycare_id = $1 AND is_active = TRUE;",
-                daycare["id"],
-            )
-            if package_count >= self.get_daycare_caps(daycare)["package_slots"]:
-                return await ctx.send("❌ You have reached your current package slot limit.")
-
-            validation_error = self.validate_daycare_package_inputs(
-                daycare,
-                food_type,
-                feeds_per_day,
-                plays_per_day,
-                trains_per_day,
-                room_type,
-            )
-            if validation_error:
-                return await ctx.send(f"❌ {validation_error}")
-
-            metrics = self.calculate_daycare_package_metrics(
-                food_type,
-                feeds_per_day,
-                plays_per_day,
-                trains_per_day,
-                room_type,
-                int(daycare["efficiency_level"]),
-            )
-            if price_per_day < metrics["min_list_price_per_day"]:
-                return await ctx.send(
-                    f"❌ Price/day must be at least **${metrics['min_list_price_per_day']:,}** based on operating cost."
+            try:
+                _, metrics, min_growth_stage, profit_per_day = await self.create_daycare_package_record(
+                    conn,
+                    ctx.author.id,
+                    name,
+                    food_type,
+                    feeds_per_day,
+                    plays_per_day,
+                    trains_per_day,
+                    room_type,
+                    price_per_day,
                 )
+            except ValueError as exc:
+                return await ctx.send(f"❌ {exc}")
 
-            min_growth_stage = self.get_minimum_safe_growth_stage(food_type, feeds_per_day, plays_per_day)
-            if min_growth_stage is None:
-                return await ctx.send("❌ This package is unsafe for all growth stages.")
-            adults_only = min_growth_stage == "adult"
-
-            await conn.execute(
-                """
-                INSERT INTO pet_daycare_packages (
-                    daycare_id, name, food_type, feeds_per_day, plays_per_day, trains_per_day,
-                    room_type, adults_only, min_growth_stage, operating_cost_per_day,
-                    min_list_price_per_day, list_price_per_day
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
-                """,
-                daycare["id"],
-                name,
-                food_type,
-                feeds_per_day,
-                plays_per_day,
-                trains_per_day,
-                room_type,
-                adults_only,
-                min_growth_stage,
-                metrics["operating_cost_per_day"],
-                metrics["min_list_price_per_day"],
-                price_per_day,
-            )
-
+        result_label = "Profit/day" if profit_per_day >= 0 else "Loss/day"
         await ctx.send(
             f"✅ Created **{name}**.\n"
             f"Operating cost/day: `${metrics['operating_cost_per_day']:,}`\n"
-            f"Min price/day: `${metrics['min_list_price_per_day']:,}`\n"
+            f"Break-even/day: `${metrics['operating_cost_per_day']:,}`\n"
+            f"10% margin/day: `${metrics['min_list_price_per_day']:,}`\n"
             f"Suggested price/day: `${metrics['suggested_list_price_per_day']:,}`\n"
+            f"{result_label}: `${abs(int(profit_per_day)):,}`\n"
             f"XP/day: `{metrics['xp_per_day']:,}` | Trust/day: `{metrics['trust_per_day']}` | Min Stage: `{min_growth_stage}`"
         )
 
@@ -2225,7 +2680,7 @@ class Pets(commands.Cog):
                     boarding_id,
                 )
 
-                if boarding["owner_user_id"] != ctx.author.id and int(boarding["projected_profit"]) > 0:
+                if boarding["owner_user_id"] != ctx.author.id:
                     await conn.execute(
                         'UPDATE profile SET money = money + $1 WHERE "user" = $2;',
                         int(boarding["projected_profit"]),
@@ -2243,9 +2698,9 @@ class Pets(commands.Cog):
                         conn,
                         boarding["daycare_id"],
                         boarding_id,
-                        "boarding_profit",
-                        int(boarding["projected_profit"]),
-                        f"{boarding['package_name']} profit",
+                        "boarding_revenue",
+                        int(boarding["prepaid_amount"]),
+                        f"{boarding['package_name']} customer payment",
                     )
                 else:
                     await self.add_daycare_ledger_entry(
