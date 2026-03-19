@@ -2652,7 +2652,7 @@ class Pets(commands.Cog):
         )
         image_url = str(daycare.get("reception_image_url") or "").strip()
         if image_url:
-            embed.set_image(url=image_url)
+            embed.set_thumbnail(url=image_url)
         embed.set_footer(text="Use the button below to start a private boarding request.")
         return embed
 
