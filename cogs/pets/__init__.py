@@ -1135,6 +1135,29 @@ class DaycareBoardingLauncherView(discord.ui.View):
         if interaction.user.id != self.author.id:
             return await interaction.response.send_message("❌ This boarding launcher is not for you.", ephemeral=True)
 
+        async with self.cog.bot.pool.acquire() as conn:
+            daycare = await self.cog.get_daycare_for_owner(conn, self.owner.id)
+            if not daycare or not daycare["is_open"]:
+                return await interaction.response.send_message(
+                    "❌ That daycare is no longer open for new boardings.",
+                    ephemeral=True,
+                )
+            packages = await self.cog.get_active_daycare_packages(conn, daycare["id"])
+            if not packages:
+                return await interaction.response.send_message(
+                    "❌ That daycare does not currently have any active packages.",
+                    ephemeral=True,
+                )
+            pets = await self.cog.get_boardable_pets_for_user(conn, self.author.id)
+            if not pets:
+                return await interaction.response.send_message(
+                    "❌ You do not have any pets available for boarding right now.",
+                    ephemeral=True,
+                )
+
+        self.daycare = daycare
+        self.packages = packages
+        self.pets = pets
         panel = DaycareBoardingView(
             self.cog,
             self.author,
@@ -1276,6 +1299,7 @@ class Pets(commands.Cog):
         "elemental": 0,
         "efficiency": 0,
         "packages": 1,
+        "reception": 0,
     }
     DAYCARE_UPGRADE_COSTS = {
         "kennels": [300000, 600000, 1000000, 1600000],
@@ -1286,6 +1310,7 @@ class Pets(commands.Cog):
         "elemental": [900000, 1500000],
         "efficiency": [500000, 900000, 1400000, 2000000, 2750000],
         "packages": [150000, 300000, 500000],
+        "reception": [25000],
     }
 
     def __init__(self, bot):
@@ -1604,6 +1629,15 @@ class Pets(commands.Cog):
                     );
                     """
                 )
+                await conn.execute(
+                    "ALTER TABLE pet_daycares ADD COLUMN IF NOT EXISTS reception_level INTEGER NOT NULL DEFAULT 0;"
+                )
+                await conn.execute(
+                    "ALTER TABLE pet_daycares ADD COLUMN IF NOT EXISTS reception_image_url TEXT;"
+                )
+                await conn.execute(
+                    "ALTER TABLE pet_daycares ADD COLUMN IF NOT EXISTS reception_message TEXT;"
+                )
 
                 await conn.execute(
                     """
@@ -1812,11 +1846,12 @@ class Pets(commands.Cog):
                 return stage.lower()
         return None
 
-    async def get_daycare_for_owner(self, conn, owner_user_id: int):
-        return await conn.fetchrow(
-            "SELECT * FROM pet_daycares WHERE owner_user_id = $1;",
-            owner_user_id,
-        )
+    async def get_daycare_for_owner(self, conn, owner_user_id: int, *, for_update: bool = False):
+        query = "SELECT * FROM pet_daycares WHERE owner_user_id = $1"
+        if for_update:
+            query += " FOR UPDATE"
+        query += ";"
+        return await conn.fetchrow(query, owner_user_id)
 
     async def is_ranger_owner(self, ctx) -> bool:
         if not hasattr(ctx, "character_data"):
@@ -1863,6 +1898,7 @@ class Pets(commands.Cog):
             "elemental",
             "efficiency",
             "packages",
+            "reception",
         ]
 
     def get_daycare_upgrade_aliases(self) -> dict[str, str]:
@@ -1880,6 +1916,9 @@ class Pets(commands.Cog):
             "efficiency": "efficiency",
             "packages": "packages",
             "package": "packages",
+            "reception": "reception",
+            "frontdesk": "reception",
+            "front_desk": "reception",
         }
 
     def normalize_daycare_upgrade_key(self, raw_key: str | None) -> str | None:
@@ -1897,6 +1936,7 @@ class Pets(commands.Cog):
             "elemental": "elemental_level",
             "efficiency": "efficiency_level",
             "packages": "package_slots_level",
+            "reception": "reception_level",
         }
 
     def get_daycare_upgrade_display_name(self, upgrade_key: str) -> str:
@@ -1909,6 +1949,7 @@ class Pets(commands.Cog):
             "elemental": "Elemental Facilities",
             "efficiency": "Efficiency Office",
             "packages": "Package Desk",
+            "reception": "Reception Desk",
         }
         return labels.get(upgrade_key, upgrade_key.replace("_", " ").title())
 
@@ -1943,6 +1984,10 @@ class Pets(commands.Cog):
             if int(level) == 1:
                 return "Elemental food unlocked"
             return "Elemental habitat unlocked"
+        if upgrade_key == "reception":
+            if int(level) <= 0:
+                return "Locked"
+            return "Custom clerk greeting unlocked"
         return "Unknown"
 
     def get_daycare_upgrade_next_unlock_text(self, upgrade_key: str, current_level: int) -> str:
@@ -1978,6 +2023,8 @@ class Pets(commands.Cog):
             if next_level == 2:
                 return "Unlock elemental habitat room packages"
             return "Maxed"
+        if upgrade_key == "reception":
+            return "Unlock a custom receptionist embed for boarding visitors"
         return "Unknown"
 
     async def purchase_daycare_upgrade(self, conn, owner_user_id: int, upgrade_key: str):
@@ -2254,7 +2301,7 @@ class Pets(commands.Cog):
         if days_booked < 1 or days_booked > 7:
             raise ValueError("Boarding duration must be between 1 and 7 days.")
 
-        daycare = await self.get_daycare_for_owner(conn, owner_user_id)
+        daycare = await self.get_daycare_for_owner(conn, owner_user_id, for_update=True)
         if not daycare or not daycare["is_open"]:
             raise ValueError("That user does not have an open daycare.")
 
@@ -2578,6 +2625,43 @@ class Pets(commands.Cog):
         except Exception:
             pass
 
+    def has_daycare_custom_reception(self, daycare) -> bool:
+        if not daycare or int(daycare.get("reception_level", 0) or 0) <= 0:
+            return False
+        return bool(
+            str(daycare.get("reception_message") or "").strip()
+            or str(daycare.get("reception_image_url") or "").strip()
+        )
+
+    def build_daycare_reception_embed(self, daycare, owner: discord.abc.User) -> discord.Embed:
+        description = str(daycare.get("reception_message") or "").strip()
+        if not description:
+            description = (
+                f"Welcome to **{daycare['name']}**.\n"
+                "Use the button below to open a private boarding panel and review your projected XP, price, and care plan."
+            )
+
+        embed = discord.Embed(
+            title=f"Welcome to {daycare['name']}",
+            color=discord.Color.teal(),
+            description=description,
+        )
+        embed.set_author(
+            name=f"{owner.display_name}'s Reception",
+            icon_url=owner.display_avatar.url,
+        )
+        image_url = str(daycare.get("reception_image_url") or "").strip()
+        if image_url:
+            embed.set_image(url=image_url)
+        embed.set_footer(text="Use the button below to start a private boarding request.")
+        return embed
+
+    def is_valid_daycare_reception_url(self, value: str) -> bool:
+        if not value:
+            return False
+        lowered = value.strip().lower()
+        return len(value.strip()) <= 500 and lowered.startswith(("http://", "https://"))
+
     def build_daycare_help_embed(self, prefix: str, can_open_daycare: bool) -> discord.Embed:
         embed = discord.Embed(
             title="Daycare Help",
@@ -2606,9 +2690,11 @@ class Pets(commands.Cog):
         )
         owner_text = (
             f"`{prefix}pets daycare open [name]`\n"
+            f"`{prefix}pets daycare close`\n"
             f"`{prefix}pets daycare upgrade`\n"
             f"`{prefix}pets daycare packagecreate`\n"
-            f"`{prefix}pets daycare packages`"
+            f"`{prefix}pets daycare packages`\n"
+            f"`{prefix}pets daycare reception [image_url | greeting]`"
             if can_open_daycare
             else "You need the Ranger class line to open a daycare. Owner management commands are GM-only."
         )
@@ -3325,6 +3411,7 @@ class Pets(commands.Cog):
             title=f"Daycare: {daycare['name']}",
             color=discord.Color.teal(),
             description=(
+                f"**Status:** {'Open' if daycare['is_open'] else 'Closed'}\n"
                 f"**Packages:** {package_count}/{caps['package_slots']}\n"
                 f"**Active Boardings:** {owned_active}/{caps['kennels']}\n"
                 f"**Current Daily Cost:** ${int(current_daily_cost or 0):,}\n"
@@ -3344,7 +3431,10 @@ class Pets(commands.Cog):
         embed.add_field(
             name="Owner Commands",
             value=(
+                f"`{ctx.clean_prefix}pets daycare open [name]`\n"
+                f"`{ctx.clean_prefix}pets daycare close`\n"
                 f"`{ctx.clean_prefix}pets daycare upgrade`\n"
+                f"`{ctx.clean_prefix}pets daycare reception`\n"
                 f"`{ctx.clean_prefix}pets daycare packages`\n"
                 f"`{ctx.clean_prefix}pets daycare packagecreate`\n"
                 f"`{ctx.clean_prefix}pets daycare packagedelete <package_id>`\n"
@@ -3381,27 +3471,86 @@ class Pets(commands.Cog):
         if not await self.is_ranger_owner(ctx):
             return await ctx.send("❌ You need to be in the Ranger class line to open a daycare.")
 
-        daycare_name = (name or f"{ctx.author.display_name}'s Daycare").strip()
-        if not daycare_name:
-            return await ctx.send("❌ Daycare name cannot be empty.")
-        if len(daycare_name) > 60:
-            return await ctx.send("❌ Daycare name cannot exceed 60 characters.")
+        requested_name = None
+        if name is not None:
+            requested_name = str(name).strip()
+            if not requested_name:
+                return await ctx.send("❌ Daycare name cannot be empty.")
+            if len(requested_name) > 60:
+                return await ctx.send("❌ Daycare name cannot exceed 60 characters.")
 
         async with self.bot.pool.acquire() as conn:
-            existing = await self.get_daycare_for_owner(conn, ctx.author.id)
-            if existing:
-                return await ctx.send("❌ You already own a daycare.")
+            async with conn.transaction():
+                existing = await self.get_daycare_for_owner(conn, ctx.author.id, for_update=True)
+                if existing:
+                    if existing["is_open"]:
+                        return await ctx.send("❌ You already own an open daycare.")
 
-            await conn.execute(
-                """
-                INSERT INTO pet_daycares (owner_user_id, name)
-                VALUES ($1, $2);
-                """,
-                ctx.author.id,
-                daycare_name,
+                    daycare_name = requested_name or str(existing["name"])
+                    await conn.execute(
+                        """
+                        UPDATE pet_daycares
+                        SET is_open = TRUE,
+                            name = $1
+                        WHERE owner_user_id = $2;
+                        """,
+                        daycare_name,
+                        ctx.author.id,
+                    )
+                    reopened = True
+                else:
+                    daycare_name = requested_name or f"{ctx.author.display_name}'s Daycare"
+                    await conn.execute(
+                        """
+                        INSERT INTO pet_daycares (owner_user_id, name)
+                        VALUES ($1, $2);
+                        """,
+                        ctx.author.id,
+                        daycare_name,
+                    )
+                    reopened = False
+
+        if reopened:
+            await ctx.send(
+                f"✅ Reopened **{daycare_name}**. New boardings are open again."
+            )
+        else:
+            await ctx.send(
+                f"✅ Opened **{daycare_name}**. Use `{ctx.clean_prefix}pets daycare packagecreate` to add packages."
             )
 
-        await ctx.send(f"✅ Opened **{daycare_name}**. Use `{ctx.clean_prefix}pets daycare packagecreate` to add packages.")
+    @daycare.command(brief=_("Close your daycare to new boardings"))
+    @has_char()
+    @is_gm()
+    async def close(self, ctx):
+        if not await self.is_ranger_owner(ctx):
+            return await ctx.send("❌ You need to be in the Ranger class line to manage a daycare.")
+
+        async with self.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                daycare = await self.get_daycare_for_owner(conn, ctx.author.id, for_update=True)
+                if not daycare:
+                    return await ctx.send("❌ You do not own a daycare yet.")
+                if not daycare["is_open"]:
+                    return await ctx.send("❌ Your daycare is already closed.")
+
+                active_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM pet_daycare_boardings WHERE daycare_id = $1 AND status = 'active';",
+                    daycare["id"],
+                )
+                if active_count:
+                    return await ctx.send(
+                        "❌ You cannot close your daycare while pets are still boarded inside."
+                    )
+
+                await conn.execute(
+                    "UPDATE pet_daycares SET is_open = FALSE WHERE id = $1;",
+                    daycare["id"],
+                )
+
+        await ctx.send(
+            f"✅ Closed **{daycare['name']}**. New boardings are now blocked until you reopen it."
+        )
 
     @daycare.command(brief=_("Upgrade your daycare facilities"))
     @has_char()
@@ -3425,7 +3574,7 @@ class Pets(commands.Cog):
         upgrade_key = self.normalize_daycare_upgrade_key(upgrade_name)
         if not upgrade_key:
             return await ctx.send(
-                "❌ Unknown upgrade. Use one of: kennels, feeders, recreation, training, nursery, elemental, efficiency, packages."
+                "❌ Unknown upgrade. Use one of: kennels, feeders, recreation, training, nursery, elemental, efficiency, packages, reception."
             )
 
         async with self.bot.pool.acquire() as conn:
@@ -3584,6 +3733,118 @@ class Pets(commands.Cog):
             )
         await ctx.send(f"✅ Deleted package **{package['name']}**.")
 
+    @daycare.command(brief=_("Configure your daycare reception greeting"))
+    @has_char()
+    @is_gm()
+    async def reception(self, ctx, *, spec: str = None):
+        if not await self.is_ranger_owner(ctx):
+            return await ctx.send("❌ You need to be in the Ranger class line to manage a daycare.")
+
+        async with self.bot.pool.acquire() as conn:
+            daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
+            if not daycare:
+                return await ctx.send("❌ You do not own a daycare yet.")
+            if int(daycare["reception_level"]) <= 0:
+                return await ctx.send(
+                    "❌ Buy the **Reception Desk** upgrade first. It only costs `$25,000`."
+                )
+
+            if spec is None:
+                embed = discord.Embed(
+                    title="Daycare Reception",
+                    color=discord.Color.teal(),
+                    description=(
+                        "Set the greeting embed customers see when they start boarding into your daycare.\n"
+                        "If you clear it, the normal default boarding prompt is used instead."
+                    ),
+                )
+                current_message = str(daycare.get("reception_message") or "").strip() or "Not set"
+                current_image = str(daycare.get("reception_image_url") or "").strip() or "Not set"
+                embed.add_field(
+                    name="Current Setup",
+                    value=(
+                        f"**Message:** {current_message}\n"
+                        f"**Image URL:** {current_image}"
+                    ),
+                    inline=False,
+                )
+                embed.add_field(
+                    name="Examples",
+                    value=(
+                        f"`{ctx.clean_prefix}pets daycare reception Welcome to my daycare. Pick a package below.`\n"
+                        f"`{ctx.clean_prefix}pets daycare reception https://example.com/clerk.png | Welcome in. Choose a boarding plan below.`\n"
+                        f"`{ctx.clean_prefix}pets daycare reception clear`"
+                    ),
+                    inline=False,
+                )
+                if self.has_daycare_custom_reception(daycare):
+                    embed.add_field(
+                        name="Current Preview",
+                        value="Customers currently see your custom reception embed before the boarding button.",
+                        inline=False,
+                    )
+                    return await ctx.send(
+                        embed=embed,
+                        view=None,
+                    )
+                return await ctx.send(embed=embed)
+
+            raw_spec = str(spec).strip()
+            if not raw_spec:
+                return await ctx.send("❌ Reception text cannot be empty.")
+
+            if raw_spec.lower() in {"clear", "reset", "off", "disable"}:
+                await conn.execute(
+                    """
+                    UPDATE pet_daycares
+                    SET reception_image_url = NULL,
+                        reception_message = NULL
+                    WHERE owner_user_id = $1;
+                    """,
+                    ctx.author.id,
+                )
+                return await ctx.send(
+                    "✅ Cleared your custom reception. Customers will now see the default boarding prompt."
+                )
+
+            new_image = str(daycare.get("reception_image_url") or "").strip() or None
+            new_message = str(daycare.get("reception_message") or "").strip() or None
+
+            if "|" in raw_spec:
+                image_raw, message_raw = [part.strip() for part in raw_spec.split("|", 1)]
+                new_image = image_raw or None
+                new_message = message_raw or None
+            elif self.is_valid_daycare_reception_url(raw_spec):
+                new_image = raw_spec
+            else:
+                new_message = raw_spec
+
+            if new_image and not self.is_valid_daycare_reception_url(new_image):
+                return await ctx.send("❌ Reception image URL must start with `http://` or `https://`.")
+            if new_message and len(new_message) > 1000:
+                return await ctx.send("❌ Reception greeting cannot exceed 1000 characters.")
+            if not new_image and not new_message:
+                return await ctx.send("❌ Provide a greeting, an image URL, or both.")
+
+            await conn.execute(
+                """
+                UPDATE pet_daycares
+                SET reception_image_url = $1,
+                    reception_message = $2
+                WHERE owner_user_id = $3;
+                """,
+                new_image,
+                new_message,
+                ctx.author.id,
+            )
+            daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
+
+        preview_embed = self.build_daycare_reception_embed(daycare, ctx.author)
+        await ctx.send(
+            "✅ Updated your reception. This is what customers will see before opening the private boarding panel.",
+            embed=preview_embed,
+        )
+
     @daycare.command(brief=_("Browse another player's daycare packages"))
     @has_char()
     async def browse(self, ctx, owner: discord.Member):
@@ -3622,6 +3883,11 @@ class Pets(commands.Cog):
                     return await ctx.send("❌ You do not have any pets available for boarding right now.")
 
             launcher = DaycareBoardingLauncherView(self, ctx.author, owner, daycare, pets, packages)
+            if self.has_daycare_custom_reception(daycare):
+                return await ctx.send(
+                    embed=self.build_daycare_reception_embed(daycare, owner),
+                    view=launcher,
+                )
             return await ctx.send(
                 f"Use the button below to open a private boarding panel for **{daycare['name']}**.",
                 view=launcher,
