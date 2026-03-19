@@ -19,6 +19,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import asyncio
 import datetime
 import json
+import math
 import random as randomm
 import re
 
@@ -30,6 +31,7 @@ from discord.ui.button import Button
 from discord.enums import ButtonStyle
 
 from classes import logger
+from classes.classes import Ranger, class_from_string
 from classes.converters import IntGreaterThan
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils import random
@@ -320,6 +322,64 @@ class Pets(commands.Cog):
     PET_LEVEL_MIGRATION_XP_FIX_KEY = "double_pet_levels_to_100_v1_x8_to_x2_fix"
     PET_LEVEL_MIGRATION_SP_BACKFILL_KEY = "double_pet_levels_to_100_sp_backfill_v1"
     PET_SKILL_POINT_RECONCILE_KEY = "pet_skill_points_reconcile_v1"
+    # Daycare pricing should feel like paid convenience, not a better version of manual care.
+    DAYCARE_BASE_SLOT_UPKEEP = 10000
+    DAYCARE_PLAY_UPKEEP = 6000
+    DAYCARE_TRAIN_UPKEEP = 25000
+    DAYCARE_FOOD_AUTOMATION_RATE = 0.10
+    DAYCARE_MIN_MARGIN_RATE = 1.10
+    DAYCARE_SUGGESTED_MARGIN_RATE = 1.18
+    DAYCARE_SELF_BOARDING_RATE = 1.20
+    DAYCARE_TRUST_RATE = 0.35
+    DAYCARE_TRUST_CAP_PER_DAY = 6
+    DAYCARE_ROOM_UPKEEPS = {
+        "standard": 0,
+        "nursery": 8000,
+        "play_yard": 5000,
+        "training_ring": 15000,
+        "elemental_habitat": 20000,
+        "luxury_suite": 30000,
+    }
+    DAYCARE_ROOM_LABELS = {
+        "standard": "Standard",
+        "nursery": "Nursery",
+        "play_yard": "Play Yard",
+        "training_ring": "Training Ring",
+        "elemental_habitat": "Elemental Habitat",
+        "luxury_suite": "Luxury Suite",
+    }
+    DAYCARE_STAGE_DECAY = {
+        "baby": {"hunger": 20, "happiness": 10},
+        "juvenile": {"hunger": 16, "happiness": 8},
+        "young": {"hunger": 12, "happiness": 6},
+        "adult": {"hunger": 0, "happiness": 0},
+    }
+    DAYCARE_KENNEL_CAPS = [2, 4, 6, 8, 10]
+    DAYCARE_FEEDER_CAPS = [4, 6, 8, 10, 12]
+    DAYCARE_RECREATION_CAPS = [1, 2, 3, 4, 5]
+    DAYCARE_TRAINING_CAPS = [1, 2, 3, 4, 5]
+    DAYCARE_PACKAGE_SLOT_CAPS = [3, 5, 8, 12]
+    DAYCARE_EFFICIENCY_DISCOUNTS = [0.0, 0.05, 0.10, 0.15, 0.20, 0.25]
+    DAYCARE_UPGRADE_BASE_LEVELS = {
+        "kennels": 1,
+        "feeders": 1,
+        "recreation": 1,
+        "training": 1,
+        "nursery": 0,
+        "elemental": 0,
+        "efficiency": 0,
+        "packages": 1,
+    }
+    DAYCARE_UPGRADE_COSTS = {
+        "kennels": [300000, 600000, 1000000, 1600000],
+        "feeders": [250000, 500000, 900000, 1400000],
+        "recreation": [200000, 400000, 700000, 1100000],
+        "training": [300000, 650000, 1100000, 1700000],
+        "nursery": [500000, 900000, 1400000],
+        "elemental": [900000, 1500000],
+        "efficiency": [500000, 900000, 1400000, 2000000, 2750000],
+        "packages": [150000, 300000, 500000],
+    }
 
     def __init__(self, bot):
         self.bot = bot
@@ -581,7 +641,8 @@ class Pets(commands.Cog):
                     ADD COLUMN IF NOT EXISTS gm_all_skills_enabled BOOLEAN DEFAULT FALSE,
                     ADD COLUMN IF NOT EXISTS skill_tree_progress JSONB DEFAULT '{}',
                     ADD COLUMN IF NOT EXISTS xp_multiplier DECIMAL(3,1) DEFAULT 1.0,
-                    ADD COLUMN IF NOT EXISTS alt_name TEXT
+                    ADD COLUMN IF NOT EXISTS alt_name TEXT,
+                    ADD COLUMN IF NOT EXISTS daycare_boarding_id BIGINT
                 """)
 
                 await conn.execute("""
@@ -606,10 +667,352 @@ class Pets(commands.Cog):
                         PRIMARY KEY (user_id, day)
                     );
                 """)
+
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS pet_daycares (
+                        id BIGSERIAL PRIMARY KEY,
+                        owner_user_id BIGINT NOT NULL UNIQUE,
+                        name TEXT NOT NULL,
+                        kennels_level INTEGER NOT NULL DEFAULT 1,
+                        feeder_level INTEGER NOT NULL DEFAULT 1,
+                        recreation_level INTEGER NOT NULL DEFAULT 1,
+                        training_level INTEGER NOT NULL DEFAULT 1,
+                        nursery_level INTEGER NOT NULL DEFAULT 0,
+                        elemental_level INTEGER NOT NULL DEFAULT 0,
+                        efficiency_level INTEGER NOT NULL DEFAULT 0,
+                        package_slots_level INTEGER NOT NULL DEFAULT 1,
+                        is_open BOOLEAN NOT NULL DEFAULT TRUE,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS pet_daycare_packages (
+                        id BIGSERIAL PRIMARY KEY,
+                        daycare_id BIGINT NOT NULL REFERENCES pet_daycares(id) ON DELETE CASCADE,
+                        name TEXT NOT NULL,
+                        food_type TEXT NOT NULL,
+                        feeds_per_day INTEGER NOT NULL,
+                        plays_per_day INTEGER NOT NULL,
+                        trains_per_day INTEGER NOT NULL,
+                        room_type TEXT NOT NULL DEFAULT 'standard',
+                        adults_only BOOLEAN NOT NULL DEFAULT FALSE,
+                        min_growth_stage TEXT NOT NULL DEFAULT 'baby',
+                        operating_cost_per_day BIGINT NOT NULL,
+                        min_list_price_per_day BIGINT NOT NULL,
+                        list_price_per_day BIGINT NOT NULL,
+                        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS pet_daycare_boardings (
+                        id BIGSERIAL PRIMARY KEY,
+                        daycare_id BIGINT NOT NULL REFERENCES pet_daycares(id) ON DELETE CASCADE,
+                        package_id BIGINT NOT NULL REFERENCES pet_daycare_packages(id) ON DELETE RESTRICT,
+                        owner_user_id BIGINT NOT NULL,
+                        customer_user_id BIGINT NOT NULL,
+                        pet_id BIGINT NOT NULL,
+                        pet_stage_at_start TEXT NOT NULL,
+                        food_type TEXT NOT NULL,
+                        feeds_per_day INTEGER NOT NULL,
+                        plays_per_day INTEGER NOT NULL,
+                        trains_per_day INTEGER NOT NULL,
+                        room_type TEXT NOT NULL DEFAULT 'standard',
+                        days_booked INTEGER NOT NULL,
+                        was_equipped BOOLEAN NOT NULL DEFAULT FALSE,
+                        prepaid_amount BIGINT NOT NULL,
+                        projected_operating_cost BIGINT NOT NULL,
+                        projected_profit BIGINT NOT NULL,
+                        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        ends_at TIMESTAMPTZ NOT NULL,
+                        settled_xp BIGINT NOT NULL DEFAULT 0,
+                        settled_trust INTEGER NOT NULL DEFAULT 0,
+                        settled_hunger_delta INTEGER NOT NULL DEFAULT 0,
+                        settled_happiness_delta INTEGER NOT NULL DEFAULT 0,
+                        settled_at TIMESTAMPTZ NULL,
+                        collected_at TIMESTAMPTZ NULL,
+                        status TEXT NOT NULL DEFAULT 'active'
+                    );
+                    """
+                )
+
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS pet_daycare_ledger (
+                        id BIGSERIAL PRIMARY KEY,
+                        daycare_id BIGINT NOT NULL REFERENCES pet_daycares(id) ON DELETE CASCADE,
+                        boarding_id BIGINT NULL REFERENCES pet_daycare_boardings(id) ON DELETE SET NULL,
+                        entry_type TEXT NOT NULL,
+                        amount BIGINT NOT NULL,
+                        note TEXT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS pet_daycare_packages_daycare_idx ON pet_daycare_packages(daycare_id);"
+                )
+                await conn.execute(
+                    "ALTER TABLE pet_daycare_packages ADD COLUMN IF NOT EXISTS min_growth_stage TEXT NOT NULL DEFAULT 'baby';"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS pet_daycare_boardings_customer_idx ON pet_daycare_boardings(customer_user_id, status);"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS pet_daycare_boardings_owner_idx ON pet_daycare_boardings(owner_user_id, status);"
+                )
+                await conn.execute("ALTER TABLE pet_daycare_boardings ADD COLUMN IF NOT EXISTS food_type TEXT NOT NULL DEFAULT 'basic_food';")
+                await conn.execute("ALTER TABLE pet_daycare_boardings ADD COLUMN IF NOT EXISTS feeds_per_day INTEGER NOT NULL DEFAULT 0;")
+                await conn.execute("ALTER TABLE pet_daycare_boardings ADD COLUMN IF NOT EXISTS plays_per_day INTEGER NOT NULL DEFAULT 0;")
+                await conn.execute("ALTER TABLE pet_daycare_boardings ADD COLUMN IF NOT EXISTS trains_per_day INTEGER NOT NULL DEFAULT 0;")
+                await conn.execute("ALTER TABLE pet_daycare_boardings ADD COLUMN IF NOT EXISTS room_type TEXT NOT NULL DEFAULT 'standard';")
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS pet_daycare_ledger_daycare_idx ON pet_daycare_ledger(daycare_id, created_at DESC);"
+                )
                 
                 print("Enhanced pet system database tables initialized successfully!")
         except Exception as e:
             print(f"Error initializing enhanced pet tables: {e}")
+
+    def get_daycare_caps(self, daycare):
+        return {
+            "kennels": self.DAYCARE_KENNEL_CAPS[max(0, min(int(daycare["kennels_level"]) - 1, len(self.DAYCARE_KENNEL_CAPS) - 1))],
+            "feeds": self.DAYCARE_FEEDER_CAPS[max(0, min(int(daycare["feeder_level"]) - 1, len(self.DAYCARE_FEEDER_CAPS) - 1))],
+            "plays": self.DAYCARE_RECREATION_CAPS[max(0, min(int(daycare["recreation_level"]) - 1, len(self.DAYCARE_RECREATION_CAPS) - 1))],
+            "trains": self.DAYCARE_TRAINING_CAPS[max(0, min(int(daycare["training_level"]) - 1, len(self.DAYCARE_TRAINING_CAPS) - 1))],
+            "package_slots": self.DAYCARE_PACKAGE_SLOT_CAPS[max(0, min(int(daycare["package_slots_level"]) - 1, len(self.DAYCARE_PACKAGE_SLOT_CAPS) - 1))],
+            "efficiency_discount": self.DAYCARE_EFFICIENCY_DISCOUNTS[max(0, min(int(daycare["efficiency_level"]), len(self.DAYCARE_EFFICIENCY_DISCOUNTS) - 1))],
+        }
+
+    def get_room_upkeep(self, room_type: str) -> int:
+        return int(self.DAYCARE_ROOM_UPKEEPS.get(room_type, 0))
+
+    def get_stage_decay(self, growth_stage: str) -> dict[str, int]:
+        return self.DAYCARE_STAGE_DECAY.get(str(growth_stage or "adult").lower(), self.DAYCARE_STAGE_DECAY["adult"])
+
+    def resolve_food_type(self, raw_food_type: str | None) -> str | None:
+        if raw_food_type is None:
+            return None
+        key = str(raw_food_type).strip().lower()
+        if not key:
+            return None
+        if key in self.FOOD_ALIASES:
+            return self.FOOD_ALIASES[key]
+        if key in self.FOOD_TYPES:
+            return key
+        return None
+
+    def calculate_daycare_package_metrics(
+        self,
+        food_type: str,
+        feeds_per_day: int,
+        plays_per_day: int,
+        trains_per_day: int,
+        room_type: str,
+        efficiency_level: int = 0,
+        days: int = 1,
+    ) -> dict[str, int]:
+        food = self.FOOD_TYPES[food_type]
+        feeds_per_day = max(0, int(feeds_per_day))
+        plays_per_day = max(0, int(plays_per_day))
+        trains_per_day = max(0, int(trains_per_day))
+        days = max(1, int(days))
+
+        food_xp = (food["cost"] // 75) * 5
+        xp_per_day = (feeds_per_day * food_xp) + (plays_per_day * self.PET_COMMAND_XP_VALUES["play"]) + (trains_per_day * self.PET_COMMAND_XP_VALUES["train"])
+
+        raw_trust_per_day = (
+            feeds_per_day * int(food["trust_gain"])
+            + plays_per_day
+            + (trains_per_day * 2)
+        )
+        trust_per_day = min(
+            self.DAYCARE_TRUST_CAP_PER_DAY,
+            max(0, int(math.floor(raw_trust_per_day * self.DAYCARE_TRUST_RATE))),
+        )
+
+        hunger_gain_per_day = feeds_per_day * int(food["hunger"])
+        happiness_gain_per_day = (feeds_per_day * int(food["happiness"])) + (plays_per_day * 25)
+
+        gross_operating_cost = (
+            self.DAYCARE_BASE_SLOT_UPKEEP
+            + (feeds_per_day * int(food["cost"]))
+            + int(math.ceil((feeds_per_day * int(food["cost"])) * self.DAYCARE_FOOD_AUTOMATION_RATE))
+            + (plays_per_day * self.DAYCARE_PLAY_UPKEEP)
+            + (trains_per_day * self.DAYCARE_TRAIN_UPKEEP)
+            + self.get_room_upkeep(room_type)
+        )
+
+        efficiency_discount = self.DAYCARE_EFFICIENCY_DISCOUNTS[max(0, min(int(efficiency_level), len(self.DAYCARE_EFFICIENCY_DISCOUNTS) - 1))]
+        operating_cost_per_day = int(math.ceil(gross_operating_cost * (1 - efficiency_discount)))
+        min_list_price_per_day = int(math.ceil(operating_cost_per_day * self.DAYCARE_MIN_MARGIN_RATE))
+        suggested_list_price_per_day = int(math.ceil(operating_cost_per_day * self.DAYCARE_SUGGESTED_MARGIN_RATE))
+
+        return {
+            "xp_per_day": xp_per_day,
+            "raw_trust_per_day": raw_trust_per_day,
+            "trust_per_day": trust_per_day,
+            "hunger_gain_per_day": hunger_gain_per_day,
+            "happiness_gain_per_day": happiness_gain_per_day,
+            "operating_cost_per_day": operating_cost_per_day,
+            "min_list_price_per_day": min_list_price_per_day,
+            "suggested_list_price_per_day": suggested_list_price_per_day,
+        }
+
+    def describe_stage_safety(
+        self,
+        food_type: str,
+        feeds_per_day: int,
+        plays_per_day: int,
+    ) -> list[str]:
+        food = self.FOOD_TYPES[food_type]
+        labels = []
+        for stage_name, decay in self.DAYCARE_STAGE_DECAY.items():
+            hunger_delta = (feeds_per_day * int(food["hunger"])) - decay["hunger"]
+            happiness_delta = (feeds_per_day * int(food["happiness"])) + (plays_per_day * 25) - decay["happiness"]
+            if hunger_delta >= 0 and happiness_delta >= 0:
+                labels.append(stage_name.capitalize())
+        return labels
+
+    def get_minimum_safe_growth_stage(
+        self,
+        food_type: str,
+        feeds_per_day: int,
+        plays_per_day: int,
+    ) -> str | None:
+        compatible = self.describe_stage_safety(food_type, feeds_per_day, plays_per_day)
+        order = ["Baby", "Juvenile", "Young", "Adult"]
+        for stage in order:
+            if stage in compatible:
+                return stage.lower()
+        return None
+
+    async def get_daycare_for_owner(self, conn, owner_user_id: int):
+        return await conn.fetchrow(
+            "SELECT * FROM pet_daycares WHERE owner_user_id = $1;",
+            owner_user_id,
+        )
+
+    async def is_ranger_owner(self, ctx) -> bool:
+        if not hasattr(ctx, "character_data"):
+            ctx.character_data = await ctx.bot.pool.fetchrow(
+                'SELECT * FROM profile WHERE "user"=$1;',
+                ctx.author.id,
+            )
+        if not ctx.character_data:
+            return False
+        classes = [class_from_string(name) for name in ctx.character_data["class"]]
+        return any(class_ and class_.in_class_line(Ranger) for class_ in classes)
+
+    async def ensure_pet_not_boarded(self, ctx, pet) -> bool:
+        if pet and pet.get("daycare_boarding_id"):
+            await ctx.send("❌ This pet is currently boarded in daycare and cannot be used directly.")
+            return False
+        return True
+
+    def normalize_room_type(self, raw_room: str | None) -> str | None:
+        if raw_room is None:
+            return "standard"
+        room_key = str(raw_room).strip().lower().replace(" ", "_")
+        if room_key in self.DAYCARE_ROOM_UPKEEPS:
+            return room_key
+        return None
+
+    def get_daycare_upgrade_cost(self, upgrade_key: str, current_level: int) -> int | None:
+        costs = self.DAYCARE_UPGRADE_COSTS.get(upgrade_key)
+        if not costs:
+            return None
+        base_level = int(self.DAYCARE_UPGRADE_BASE_LEVELS.get(upgrade_key, 0))
+        index = int(current_level) - base_level
+        if index < 0 or index >= len(costs):
+            return None
+        return int(costs[index])
+
+    def validate_daycare_package_inputs(
+        self,
+        daycare,
+        food_type: str,
+        feeds_per_day: int,
+        plays_per_day: int,
+        trains_per_day: int,
+        room_type: str,
+    ) -> str | None:
+        caps = self.get_daycare_caps(daycare)
+        if feeds_per_day < 0 or plays_per_day < 0 or trains_per_day < 0:
+            return "All package activity counts must be zero or higher."
+        if feeds_per_day == 0 and plays_per_day == 0 and trains_per_day == 0:
+            return "A daycare package must include at least one automated service."
+        if feeds_per_day > caps["feeds"]:
+            return f"Your feeder system supports at most {caps['feeds']} feeds per day."
+        if plays_per_day > caps["plays"]:
+            return f"Your recreation wing supports at most {caps['plays']} play sessions per day."
+        if trains_per_day > caps["trains"]:
+            return f"Your training yard supports at most {caps['trains']} training sessions per day."
+        if food_type == "elemental_food" and int(daycare["elemental_level"]) <= 0:
+            return "You need the Elemental upgrade before offering elemental food."
+        if room_type == "nursery" and int(daycare["nursery_level"]) <= 0:
+            return "You need the Nursery upgrade before offering nursery packages."
+        if room_type == "elemental_habitat" and int(daycare["elemental_level"]) <= 1:
+            return "You need Elemental level 2 before offering elemental habitat packages."
+        if room_type not in {"standard", "play_yard", "training_ring", "luxury_suite"} and room_type not in {"nursery", "elemental_habitat"}:
+            return "Unknown daycare room type."
+        return None
+
+    def calculate_daycare_boarding_projection(self, package, pet, days_booked: int) -> dict[str, int]:
+        days_booked = max(1, int(days_booked))
+        food = self.FOOD_TYPES[package["food_type"]]
+        metrics = self.calculate_daycare_package_metrics(
+            package["food_type"],
+            int(package["feeds_per_day"]),
+            int(package["plays_per_day"]),
+            int(package["trains_per_day"]),
+            package["room_type"],
+            0,
+            days_booked,
+        )
+        decay = self.get_stage_decay(pet["growth_stage"])
+        hunger_delta_per_day = metrics["hunger_gain_per_day"] - decay["hunger"]
+        happiness_delta_per_day = metrics["happiness_gain_per_day"] - decay["happiness"]
+        final_hunger = max(0, min(100, int(pet["hunger"]) + (hunger_delta_per_day * days_booked)))
+        final_happiness = max(0, min(100, int(pet["happiness"]) + (happiness_delta_per_day * days_booked)))
+        total_xp = metrics["xp_per_day"] * days_booked
+        total_trust = metrics["trust_per_day"] * days_booked
+        total_operating_cost = int(package["operating_cost_per_day"]) * days_booked
+        total_price = int(package["list_price_per_day"]) * days_booked
+
+        return {
+            "total_xp": total_xp,
+            "total_trust": total_trust,
+            "hunger_delta": hunger_delta_per_day * days_booked,
+            "happiness_delta": happiness_delta_per_day * days_booked,
+            "final_hunger": final_hunger,
+            "final_happiness": final_happiness,
+            "total_operating_cost": total_operating_cost,
+            "total_price": total_price,
+            "total_profit": max(0, total_price - total_operating_cost),
+            "food_cost_total": int(food["cost"]) * int(package["feeds_per_day"]) * days_booked,
+        }
+
+    async def add_daycare_ledger_entry(self, conn, daycare_id: int, boarding_id: int | None, entry_type: str, amount: int, note: str | None = None):
+        await conn.execute(
+            """
+            INSERT INTO pet_daycare_ledger (daycare_id, boarding_id, entry_type, amount, note)
+            VALUES ($1, $2, $3, $4, $5);
+            """,
+            daycare_id,
+            boarding_id,
+            entry_type,
+            int(amount),
+            note,
+        )
 
     async def resolve_pet_id(self, conn, user_id: int, pet_ref):
         """Resolve a pet reference (ID or alias) to a pet ID."""
@@ -814,9 +1217,9 @@ class Pets(commands.Cog):
 
         return spent, unknown_count
 
-    async def gain_experience(self, pet_id, xp_amount, trust_gain=0, apply_xp_multiplier=True):
+    async def gain_experience(self, pet_id, xp_amount, trust_gain=0, apply_xp_multiplier=True, conn=None):
         """Award experience and trust to a pet"""
-        async with self.bot.pool.acquire() as conn:
+        async def _apply(conn):
             # Get current pet stats including XP multiplier
             pet = await conn.fetchrow(
                 "SELECT experience, level, trust_level, skill_points, xp_multiplier FROM monster_pets WHERE id = $1",
@@ -860,16 +1263,22 @@ class Pets(commands.Cog):
                 'adjusted_xp': adjusted_xp_amount
             }
 
+        if conn is not None:
+            return await _apply(conn)
+
+        async with self.bot.pool.acquire() as owned_conn:
+            return await _apply(owned_conn)
+
     async def _get_default_pet_for_user(self, conn, user_id):
         pet = await conn.fetchrow(
-            "SELECT id, name FROM monster_pets WHERE user_id = $1 AND equipped = TRUE ORDER BY id ASC LIMIT 1;",
+            "SELECT id, name FROM monster_pets WHERE user_id = $1 AND equipped = TRUE AND daycare_boarding_id IS NULL ORDER BY id ASC LIMIT 1;",
             user_id,
         )
         if pet:
             return pet
 
         pets = await conn.fetch(
-            "SELECT id, name FROM monster_pets WHERE user_id = $1 ORDER BY id ASC LIMIT 2;",
+            "SELECT id, name FROM monster_pets WHERE user_id = $1 AND daycare_boarding_id IS NULL ORDER BY id ASC LIMIT 2;",
             user_id,
         )
         if len(pets) == 1:
@@ -1056,8 +1465,8 @@ class Pets(commands.Cog):
 
             results = []
             for pet in pets:
-                # Skip adults
-                if pet['growth_stage'] == 'adult':
+                # Skip adults and actively boarded pets.
+                if pet['growth_stage'] == 'adult' or pet.get("daycare_boarding_id"):
                     results.append(pet)
                     continue
 
@@ -1236,6 +1645,662 @@ class Pets(commands.Cog):
         except Exception as e:
             await ctx.send(e)
 
+    @pets.group(invoke_without_command=True, brief=_("Manage automated pet daycare packages and boardings"))
+    @has_char()
+    @is_gm()
+    async def daycare(self, ctx):
+        async with self.bot.pool.acquire() as conn:
+            daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
+            active_boardings = await conn.fetch(
+                """
+                SELECT b.id, b.ends_at, p.name AS package_name
+                FROM pet_daycare_boardings b
+                JOIN pet_daycare_packages p ON p.id = b.package_id
+                WHERE b.customer_user_id = $1 AND b.status = 'active'
+                ORDER BY b.ends_at ASC
+                LIMIT 5;
+                """,
+                ctx.author.id,
+            )
+
+            if not daycare:
+                ranger_ok = await self.is_ranger_owner(ctx)
+                lines = []
+                if ranger_ok:
+                    lines.append(f"You don't own a daycare yet. Use `{ctx.clean_prefix}pets daycare open [name]` to open one.")
+                else:
+                    lines.append("You need to be in the Ranger class line to open a daycare.")
+                if active_boardings:
+                    lines.append("")
+                    lines.append("Your active boardings:")
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                    for boarding in active_boardings:
+                        remaining = boarding["ends_at"] - now
+                        hours_left = max(0, int(remaining.total_seconds() // 3600))
+                        lines.append(f"• #{boarding['id']} {boarding['package_name']} ({hours_left}h left)")
+                return await ctx.send("\n".join(lines))
+
+            package_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM pet_daycare_packages WHERE daycare_id = $1 AND is_active = TRUE;",
+                daycare["id"],
+            )
+            owned_active = await conn.fetchval(
+                "SELECT COUNT(*) FROM pet_daycare_boardings WHERE daycare_id = $1 AND status = 'active';",
+                daycare["id"],
+            )
+            ledger_net = await conn.fetchval(
+                "SELECT COALESCE(SUM(amount), 0) FROM pet_daycare_ledger WHERE daycare_id = $1;",
+                daycare["id"],
+            )
+
+        caps = self.get_daycare_caps(daycare)
+        embed = discord.Embed(
+            title=f"Daycare: {daycare['name']}",
+            color=discord.Color.teal(),
+            description=(
+                f"**Packages:** {package_count}/{caps['package_slots']}\n"
+                f"**Active Boardings:** {owned_active}/{caps['kennels']}\n"
+                f"**Ledger Net:** ${int(ledger_net or 0):,}"
+            ),
+        )
+        embed.add_field(
+            name="Upgrade Caps",
+            value=(
+                f"Feeds/day: {caps['feeds']}\n"
+                f"Plays/day: {caps['plays']}\n"
+                f"Trains/day: {caps['trains']}\n"
+                f"Efficiency: -{int(caps['efficiency_discount'] * 100)}%"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Commands",
+            value=(
+                f"`{ctx.clean_prefix}pets daycare packages`\n"
+                f"`{ctx.clean_prefix}pets daycare packagecreate`\n"
+                f"`{ctx.clean_prefix}pets daycare browse @user`\n"
+                f"`{ctx.clean_prefix}pets daycare board @user <package_id> <pet> [days]`\n"
+                f"`{ctx.clean_prefix}pets daycare collect <boarding_id>`"
+            ),
+            inline=True,
+        )
+        await ctx.send(embed=embed)
+
+    @daycare.command(brief=_("Open your automated daycare business"))
+    @has_char()
+    @is_gm()
+    async def open(self, ctx, *, name: str = None):
+        if not await self.is_ranger_owner(ctx):
+            return await ctx.send("❌ You need to be in the Ranger class line to open a daycare.")
+
+        daycare_name = (name or f"{ctx.author.display_name}'s Daycare").strip()
+        if not daycare_name:
+            return await ctx.send("❌ Daycare name cannot be empty.")
+        if len(daycare_name) > 60:
+            return await ctx.send("❌ Daycare name cannot exceed 60 characters.")
+
+        async with self.bot.pool.acquire() as conn:
+            existing = await self.get_daycare_for_owner(conn, ctx.author.id)
+            if existing:
+                return await ctx.send("❌ You already own a daycare.")
+
+            await conn.execute(
+                """
+                INSERT INTO pet_daycares (owner_user_id, name)
+                VALUES ($1, $2);
+                """,
+                ctx.author.id,
+                daycare_name,
+            )
+
+        await ctx.send(f"✅ Opened **{daycare_name}**. Use `{ctx.clean_prefix}pets daycare packagecreate` to add packages.")
+
+    @daycare.command(brief=_("Upgrade your daycare facilities"))
+    @has_char()
+    @is_gm()
+    async def upgrade(self, ctx, upgrade_name: str):
+        if not await self.is_ranger_owner(ctx):
+            return await ctx.send("❌ You need to be in the Ranger class line to manage a daycare.")
+
+        aliases = {
+            "kennels": "kennels",
+            "kennel": "kennels",
+            "feeders": "feeders",
+            "feeder": "feeders",
+            "recreation": "recreation",
+            "play": "recreation",
+            "training": "training",
+            "train": "training",
+            "nursery": "nursery",
+            "elemental": "elemental",
+            "efficiency": "efficiency",
+            "packages": "packages",
+            "package": "packages",
+        }
+        upgrade_key = aliases.get(str(upgrade_name).strip().lower())
+        if not upgrade_key:
+            return await ctx.send("❌ Unknown upgrade. Use one of: kennels, feeders, recreation, training, nursery, elemental, efficiency, packages.")
+
+        column_map = {
+            "kennels": "kennels_level",
+            "feeders": "feeder_level",
+            "recreation": "recreation_level",
+            "training": "training_level",
+            "nursery": "nursery_level",
+            "elemental": "elemental_level",
+            "efficiency": "efficiency_level",
+            "packages": "package_slots_level",
+        }
+
+        async with self.bot.pool.acquire() as conn:
+            daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
+            if not daycare:
+                return await ctx.send("❌ You do not own a daycare yet.")
+
+            column = column_map[upgrade_key]
+            current_level = int(daycare[column])
+            cost = self.get_daycare_upgrade_cost(upgrade_key, current_level)
+            if cost is None:
+                return await ctx.send("❌ That upgrade is already maxed.")
+            if not await has_money(self.bot, ctx.author.id, cost, conn=conn):
+                return await ctx.send(f"❌ You need ${cost:,} to buy this upgrade.")
+
+            await conn.execute('UPDATE profile SET money = money - $1 WHERE "user" = $2;', cost, ctx.author.id)
+            await conn.execute(
+                f"UPDATE pet_daycares SET {column} = {column} + 1 WHERE owner_user_id = $1;",
+                ctx.author.id,
+            )
+
+        await ctx.send(f"✅ Upgraded **{upgrade_key}** for **${cost:,}**.")
+
+    @daycare.command(brief=_("List your daycare packages"))
+    @has_char()
+    @is_gm()
+    async def packages(self, ctx):
+        async with self.bot.pool.acquire() as conn:
+            daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
+            if not daycare:
+                return await ctx.send("❌ You do not own a daycare yet.")
+            packages = await conn.fetch(
+                """
+                SELECT *
+                FROM pet_daycare_packages
+                WHERE daycare_id = $1 AND is_active = TRUE
+                ORDER BY id ASC;
+                """,
+                daycare["id"],
+            )
+        if not packages:
+            return await ctx.send("You do not have any daycare packages yet.")
+
+        lines = []
+        for package in packages:
+            room_label = self.DAYCARE_ROOM_LABELS.get(package["room_type"], package["room_type"].replace("_", " ").title())
+            lines.append(
+                f"**#{package['id']} {package['name']}**\n"
+                f"Food: `{package['food_type']}` | F/P/T: `{package['feeds_per_day']}/{package['plays_per_day']}/{package['trains_per_day']}` | Room: `{room_label}`\n"
+                f"Min Stage: `{package['min_growth_stage']}` | Cost/day: `${int(package['operating_cost_per_day']):,}` | Price/day: `${int(package['list_price_per_day']):,}`"
+            )
+        await ctx.send("\n\n".join(lines[:8]))
+
+    @daycare.command(brief=_("Create a daycare package"))
+    @has_char()
+    @is_gm()
+    async def packagecreate(self, ctx, *, spec: str):
+        if not await self.is_ranger_owner(ctx):
+            return await ctx.send("❌ You need to be in the Ranger class line to manage a daycare.")
+
+        parts = [part.strip() for part in spec.split("|")]
+        if len(parts) not in {6, 7}:
+            return await ctx.send(
+                f"Usage: `{ctx.clean_prefix}pets daycare packagecreate Name | food_type | feeds/day | plays/day | trains/day | [room] | price/day`\n"
+                "Example: `Basic Growth | basic_food | 4 | 0 | 2 | standard | 208000`"
+            )
+
+        if len(parts) == 6:
+            name, food_raw, feeds_raw, plays_raw, trains_raw, price_raw = parts
+            room_raw = "standard"
+        else:
+            name, food_raw, feeds_raw, plays_raw, trains_raw, room_raw, price_raw = parts
+
+        food_type = self.resolve_food_type(food_raw)
+        room_type = self.normalize_room_type(room_raw)
+        if not food_type:
+            return await ctx.send("❌ Unknown food type.")
+        if not room_type:
+            return await ctx.send("❌ Unknown room type.")
+
+        try:
+            feeds_per_day = int(feeds_raw)
+            plays_per_day = int(plays_raw)
+            trains_per_day = int(trains_raw)
+            price_per_day = int(price_raw.replace(",", ""))
+        except ValueError:
+            return await ctx.send("❌ Feeds, plays, trains, and price must all be numbers.")
+
+        if len(name) < 2 or len(name) > 50:
+            return await ctx.send("❌ Package name must be between 2 and 50 characters.")
+
+        async with self.bot.pool.acquire() as conn:
+            daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
+            if not daycare:
+                return await ctx.send("❌ You do not own a daycare yet.")
+
+            package_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM pet_daycare_packages WHERE daycare_id = $1 AND is_active = TRUE;",
+                daycare["id"],
+            )
+            if package_count >= self.get_daycare_caps(daycare)["package_slots"]:
+                return await ctx.send("❌ You have reached your current package slot limit.")
+
+            validation_error = self.validate_daycare_package_inputs(
+                daycare,
+                food_type,
+                feeds_per_day,
+                plays_per_day,
+                trains_per_day,
+                room_type,
+            )
+            if validation_error:
+                return await ctx.send(f"❌ {validation_error}")
+
+            metrics = self.calculate_daycare_package_metrics(
+                food_type,
+                feeds_per_day,
+                plays_per_day,
+                trains_per_day,
+                room_type,
+                int(daycare["efficiency_level"]),
+            )
+            if price_per_day < metrics["min_list_price_per_day"]:
+                return await ctx.send(
+                    f"❌ Price/day must be at least **${metrics['min_list_price_per_day']:,}** based on operating cost."
+                )
+
+            min_growth_stage = self.get_minimum_safe_growth_stage(food_type, feeds_per_day, plays_per_day)
+            if min_growth_stage is None:
+                return await ctx.send("❌ This package is unsafe for all growth stages.")
+            adults_only = min_growth_stage == "adult"
+
+            await conn.execute(
+                """
+                INSERT INTO pet_daycare_packages (
+                    daycare_id, name, food_type, feeds_per_day, plays_per_day, trains_per_day,
+                    room_type, adults_only, min_growth_stage, operating_cost_per_day,
+                    min_list_price_per_day, list_price_per_day
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
+                """,
+                daycare["id"],
+                name,
+                food_type,
+                feeds_per_day,
+                plays_per_day,
+                trains_per_day,
+                room_type,
+                adults_only,
+                min_growth_stage,
+                metrics["operating_cost_per_day"],
+                metrics["min_list_price_per_day"],
+                price_per_day,
+            )
+
+        await ctx.send(
+            f"✅ Created **{name}**.\n"
+            f"Operating cost/day: `${metrics['operating_cost_per_day']:,}`\n"
+            f"Min price/day: `${metrics['min_list_price_per_day']:,}`\n"
+            f"Suggested price/day: `${metrics['suggested_list_price_per_day']:,}`\n"
+            f"XP/day: `{metrics['xp_per_day']:,}` | Trust/day: `{metrics['trust_per_day']}` | Min Stage: `{min_growth_stage}`"
+        )
+
+    @daycare.command(brief=_("Delete a daycare package"))
+    @has_char()
+    @is_gm()
+    async def packagedelete(self, ctx, package_id: int):
+        if not await self.is_ranger_owner(ctx):
+            return await ctx.send("❌ You need to be in the Ranger class line to manage a daycare.")
+
+        async with self.bot.pool.acquire() as conn:
+            daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
+            if not daycare:
+                return await ctx.send("❌ You do not own a daycare yet.")
+            package = await conn.fetchrow(
+                "SELECT * FROM pet_daycare_packages WHERE daycare_id = $1 AND id = $2 AND is_active = TRUE;",
+                daycare["id"],
+                package_id,
+            )
+            if not package:
+                return await ctx.send("❌ Package not found.")
+            active_uses = await conn.fetchval(
+                "SELECT COUNT(*) FROM pet_daycare_boardings WHERE package_id = $1 AND status = 'active';",
+                package_id,
+            )
+            if active_uses:
+                return await ctx.send("❌ You cannot delete a package while it has active boardings.")
+            await conn.execute(
+                "UPDATE pet_daycare_packages SET is_active = FALSE WHERE id = $1;",
+                package_id,
+            )
+        await ctx.send(f"✅ Deleted package **{package['name']}**.")
+
+    @daycare.command(brief=_("Browse another player's daycare packages"))
+    @has_char()
+    @is_gm()
+    async def browse(self, ctx, owner: discord.Member):
+        async with self.bot.pool.acquire() as conn:
+            daycare = await self.get_daycare_for_owner(conn, owner.id)
+            if not daycare or not daycare["is_open"]:
+                return await ctx.send("❌ That user does not have an open daycare.")
+            packages = await conn.fetch(
+                """
+                SELECT *
+                FROM pet_daycare_packages
+                WHERE daycare_id = $1 AND is_active = TRUE
+                ORDER BY id ASC;
+                """,
+                daycare["id"],
+            )
+        if not packages:
+            return await ctx.send("That daycare does not currently have any active packages.")
+
+        lines = [f"**{daycare['name']}**"]
+        for package in packages[:8]:
+            lines.append(
+                f"**#{package['id']} {package['name']}**\n"
+                f"Food `{package['food_type']}` | F/P/T `{package['feeds_per_day']}/{package['plays_per_day']}/{package['trains_per_day']}` | "
+                f"Min Stage `{package['min_growth_stage']}` | Price/day `${int(package['list_price_per_day']):,}`"
+            )
+        await ctx.send("\n\n".join(lines))
+
+    @daycare.command(brief=_("Board your pet into a daycare package"))
+    @has_char()
+    @is_gm()
+    async def board(self, ctx, owner: discord.Member, package_id: int, pet_ref: str, days: int = 1):
+        if days < 1 or days > 7:
+            return await ctx.send("❌ Boarding duration must be between 1 and 7 days.")
+
+        async with self.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                daycare = await self.get_daycare_for_owner(conn, owner.id)
+                if not daycare or not daycare["is_open"]:
+                    return await ctx.send("❌ That user does not have an open daycare.")
+
+                active_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM pet_daycare_boardings WHERE daycare_id = $1 AND status = 'active';",
+                    daycare["id"],
+                )
+                if active_count >= self.get_daycare_caps(daycare)["kennels"]:
+                    return await ctx.send("❌ That daycare is currently full.")
+
+                package = await conn.fetchrow(
+                    """
+                    SELECT *
+                    FROM pet_daycare_packages
+                    WHERE daycare_id = $1 AND id = $2 AND is_active = TRUE;
+                    """,
+                    daycare["id"],
+                    package_id,
+                )
+                if not package:
+                    return await ctx.send("❌ Package not found in that daycare.")
+
+                pet, pet_id = await self.fetch_pet_for_user(conn, ctx.author.id, pet_ref)
+                if not pet:
+                    return await ctx.send("❌ You do not own that pet.")
+                if not await self.ensure_pet_not_boarded(ctx, pet):
+                    return
+                if pet["growth_stage"] not in {"baby", "juvenile", "young", "adult"}:
+                    return await ctx.send("❌ This pet cannot be boarded right now.")
+
+                stage_order = {"baby": 0, "juvenile": 1, "young": 2, "adult": 3}
+                if stage_order[str(pet["growth_stage"])] < stage_order[str(package["min_growth_stage"])]:
+                    return await ctx.send(
+                        f"❌ This package requires at least the **{package['min_growth_stage']}** stage."
+                    )
+
+                projection = self.calculate_daycare_boarding_projection(package, pet, days)
+                if pet["growth_stage"] != "adult" and (projection["final_hunger"] <= 0 or projection["final_happiness"] <= 0):
+                    return await ctx.send("❌ This package would not keep that pet safe for the full booking.")
+
+                price_to_charge = projection["total_price"]
+                owner_profit = projection["total_profit"]
+                if owner.id == ctx.author.id:
+                    price_to_charge = int(math.ceil(projection["total_operating_cost"] * self.DAYCARE_SELF_BOARDING_RATE))
+                    owner_profit = 0
+
+                if not await has_money(self.bot, ctx.author.id, price_to_charge, conn=conn):
+                    return await ctx.send(f"❌ You need ${price_to_charge:,} for this boarding.")
+
+                was_equipped = bool(pet["equipped"])
+                xp_multiplier = float(pet.get("xp_multiplier", 1.0) or 1.0)
+                projected_xp_display = int(projection["total_xp"] * xp_multiplier)
+                now = datetime.datetime.now(datetime.timezone.utc)
+                ends_at = now + datetime.timedelta(days=days)
+
+                boarding_id = await conn.fetchval(
+                    """
+                    INSERT INTO pet_daycare_boardings (
+                        daycare_id, package_id, owner_user_id, customer_user_id, pet_id,
+                        pet_stage_at_start, food_type, feeds_per_day, plays_per_day, trains_per_day, room_type,
+                        days_booked, was_equipped, prepaid_amount,
+                        projected_operating_cost, projected_profit, started_at, ends_at
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                    RETURNING id;
+                    """,
+                    daycare["id"],
+                    package["id"],
+                    owner.id,
+                    ctx.author.id,
+                    pet_id,
+                    pet["growth_stage"],
+                    package["food_type"],
+                    int(package["feeds_per_day"]),
+                    int(package["plays_per_day"]),
+                    int(package["trains_per_day"]),
+                    package["room_type"],
+                    days,
+                    was_equipped,
+                    price_to_charge,
+                    projection["total_operating_cost"],
+                    owner_profit,
+                    now,
+                    ends_at,
+                )
+
+                await conn.execute('UPDATE profile SET money = money - $1 WHERE "user" = $2;', price_to_charge, ctx.author.id)
+                await conn.execute(
+                    "UPDATE monster_pets SET daycare_boarding_id = $1, equipped = FALSE WHERE id = $2;",
+                    boarding_id,
+                    pet_id,
+                )
+
+        await ctx.send(
+            f"✅ Boarded **{pet['name']}** into **{package['name']}** for **{days} day(s)**.\n"
+            f"Charge: `${price_to_charge:,}` | Projected XP: `{projected_xp_display:,}` | Trust: `{projection['total_trust']}`\n"
+            f"Collect after: `{ends_at.strftime('%Y-%m-%d %H:%M UTC')}`"
+        )
+
+    @daycare.command(brief=_("Collect a pet after daycare boarding finishes"))
+    @has_char()
+    @is_gm()
+    async def collect(self, ctx, boarding_id: int):
+        async with self.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                boarding = await conn.fetchrow(
+                    """
+                    SELECT b.*, p.name AS package_name, p.min_growth_stage, d.name AS daycare_name
+                    FROM pet_daycare_boardings b
+                    JOIN pet_daycare_packages p ON p.id = b.package_id
+                    JOIN pet_daycares d ON d.id = b.daycare_id
+                    WHERE b.id = $1 AND b.customer_user_id = $2;
+                    """,
+                    boarding_id,
+                    ctx.author.id,
+                )
+                if not boarding:
+                    return await ctx.send("❌ Boarding not found.")
+                if boarding["status"] != "active":
+                    return await ctx.send("❌ This boarding has already been collected.")
+                now = datetime.datetime.now(datetime.timezone.utc)
+                if boarding["ends_at"] > now:
+                    remaining = boarding["ends_at"] - now
+                    hours_left = max(0, int(remaining.total_seconds() // 3600))
+                    return await ctx.send(f"❌ This boarding is still active for about {hours_left} more hour(s).")
+
+                pet = await conn.fetchrow(
+                    "SELECT * FROM monster_pets WHERE id = $1 AND user_id = $2;",
+                    boarding["pet_id"],
+                    ctx.author.id,
+                )
+                if not pet:
+                    return await ctx.send("❌ That pet could not be found in your collection anymore.")
+
+                pet_projection = dict(pet)
+                pet_projection["growth_stage"] = boarding["pet_stage_at_start"]
+                projection = self.calculate_daycare_boarding_projection(
+                    {
+                        "food_type": boarding["food_type"],
+                        "feeds_per_day": boarding["feeds_per_day"],
+                        "plays_per_day": boarding["plays_per_day"],
+                        "trains_per_day": boarding["trains_per_day"],
+                        "room_type": boarding["room_type"],
+                        "operating_cost_per_day": max(0, int(boarding["projected_operating_cost"]) // max(1, int(boarding["days_booked"]))),
+                        "list_price_per_day": max(0, int(boarding["prepaid_amount"]) // max(1, int(boarding["days_booked"]))),
+                    },
+                    pet_projection,
+                    int(boarding["days_booked"]),
+                )
+                level_result = await self.gain_experience(
+                    pet["id"],
+                    projection["total_xp"],
+                    projection["total_trust"],
+                    conn=conn,
+                )
+
+                new_hunger = max(0, min(100, int(pet["hunger"]) + projection["hunger_delta"]))
+                new_happiness = max(0, min(100, int(pet["happiness"]) + projection["happiness_delta"]))
+                restore_equipped = False
+                if bool(boarding["was_equipped"]):
+                    other_equipped_pet = await conn.fetchval(
+                        "SELECT id FROM monster_pets WHERE user_id = $1 AND equipped = TRUE AND id != $2 LIMIT 1;",
+                        ctx.author.id,
+                        pet["id"],
+                    )
+                    restore_equipped = other_equipped_pet is None
+
+                await conn.execute(
+                    """
+                    UPDATE monster_pets
+                    SET hunger = $1,
+                        happiness = $2,
+                        daycare_boarding_id = NULL,
+                        equipped = $3,
+                        last_update = $4
+                    WHERE id = $5;
+                    """,
+                    new_hunger,
+                    new_happiness,
+                    restore_equipped,
+                    datetime.datetime.now(datetime.timezone.utc),
+                    pet["id"],
+                )
+                await conn.execute(
+                    """
+                    UPDATE pet_daycare_boardings
+                    SET settled_xp = $1,
+                        settled_trust = $2,
+                        settled_hunger_delta = $3,
+                        settled_happiness_delta = $4,
+                        settled_at = NOW(),
+                        collected_at = NOW(),
+                        status = 'collected'
+                    WHERE id = $5;
+                    """,
+                    projection["total_xp"],
+                    projection["total_trust"],
+                    projection["hunger_delta"],
+                    projection["happiness_delta"],
+                    boarding_id,
+                )
+
+                if boarding["owner_user_id"] != ctx.author.id and int(boarding["projected_profit"]) > 0:
+                    await conn.execute(
+                        'UPDATE profile SET money = money + $1 WHERE "user" = $2;',
+                        int(boarding["projected_profit"]),
+                        boarding["owner_user_id"],
+                    )
+                    await self.add_daycare_ledger_entry(
+                        conn,
+                        boarding["daycare_id"],
+                        boarding_id,
+                        "operating_cost",
+                        -int(boarding["projected_operating_cost"]),
+                        f"{boarding['package_name']} operating cost",
+                    )
+                    await self.add_daycare_ledger_entry(
+                        conn,
+                        boarding["daycare_id"],
+                        boarding_id,
+                        "boarding_profit",
+                        int(boarding["projected_profit"]),
+                        f"{boarding['package_name']} profit",
+                    )
+                else:
+                    await self.add_daycare_ledger_entry(
+                        conn,
+                        boarding["daycare_id"],
+                        boarding_id,
+                        "self_service",
+                        -int(boarding["prepaid_amount"]),
+                        f"Self-boarding cost for {boarding['package_name']}",
+                    )
+
+        actual_xp_gained = int(level_result.get("adjusted_xp", projection["total_xp"])) if level_result else int(projection["total_xp"])
+        xp_multiplier_text = ""
+        if level_result and level_result.get("xp_multiplier_applied"):
+            xp_multiplier_text = (
+                f"\nXP Multiplier: `{level_result.get('original_xp', projection['total_xp']):,}`"
+                f" → `{actual_xp_gained:,}`"
+            )
+
+        level_text = ""
+        if level_result and level_result.get("leveled_up"):
+            level_text = f"\nLevel Up: **{level_result['new_level']}** (+{level_result['skill_points_gained']} SP)"
+        await ctx.send(
+            f"✅ Collected **{pet['name']}** from **{boarding['daycare_name']}**.\n"
+            f"XP Gained: `{actual_xp_gained:,}` | Trust Gained: `{projection['total_trust']}`\n"
+            f"Hunger: `{pet['hunger']} -> {new_hunger}` | Happiness: `{pet['happiness']} -> {new_happiness}`"
+            f"{xp_multiplier_text}{level_text}"
+        )
+
+    @daycare.command(brief=_("View your daycare ledger"))
+    @has_char()
+    @is_gm()
+    async def ledger(self, ctx):
+        async with self.bot.pool.acquire() as conn:
+            daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
+            if not daycare:
+                return await ctx.send("❌ You do not own a daycare yet.")
+            entries = await conn.fetch(
+                """
+                SELECT entry_type, amount, note, created_at
+                FROM pet_daycare_ledger
+                WHERE daycare_id = $1
+                ORDER BY created_at DESC
+                LIMIT 10;
+                """,
+                daycare["id"],
+            )
+        if not entries:
+            return await ctx.send("Your daycare ledger is empty.")
+
+        lines = []
+        for entry in entries:
+            stamp = entry["created_at"].strftime("%Y-%m-%d")
+            lines.append(f"`{stamp}` **{entry['entry_type']}** `{entry['amount']:+,}` - {entry['note'] or 'No note'}")
+        await ctx.send("\n".join(lines))
+
     @user_cooldown(600)
     @pets.command(brief="Trade your pet or egg with another user's pet or egg")
     @has_char()  # Assuming this is a custom check
@@ -1265,6 +2330,10 @@ class Pets(commands.Cog):
                     ctx.author.id,
                     your_item_id
                 )
+                if your_item and your_item.get("daycare_boarding_id"):
+                    await ctx.send("❌ You cannot trade a pet that is currently boarded in daycare.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
                 your_table = 'monster_pets'
             else:  # egg
                 if not str(your_item_ref).isdigit():
@@ -1293,6 +2362,10 @@ class Pets(commands.Cog):
                     "SELECT * FROM monster_pets WHERE id = $1;",
                     their_item_id
                 )
+                if their_item and their_item.get("daycare_boarding_id"):
+                    await ctx.send("❌ That pet is currently boarded in daycare and cannot be traded.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
                 their_table = 'monster_pets'
             else:  # egg
                 their_item = await conn.fetchrow(
@@ -1666,6 +2739,10 @@ class Pets(commands.Cog):
                     ctx.author.id,
                     your_item_id
                 )
+                if your_item and your_item.get("daycare_boarding_id"):
+                    await ctx.send("❌ You cannot sell a pet that is currently boarded in daycare.")
+                    await self.bot.reset_cooldown(ctx)
+                    return
                 your_table = 'monster_pets'
             else:  # egg
                 if not str(your_item_ref).isdigit():
@@ -2080,6 +3157,10 @@ class Pets(commands.Cog):
                         await ctx.send(_("❌ No pet or egg with ID `{id}` found in your collection.").format(id=item_id))
                     return
 
+                if pet and pet.get("daycare_boarding_id"):
+                    await ctx.send(_("❌ You cannot release a pet while it is boarded in daycare."))
+                    return
+
                 # Determine the name and type (pet or egg)
                 item_name = pet['name'] if pet else egg['egg_type']
                 # Select a random story based on type
@@ -2121,6 +3202,9 @@ class Pets(commands.Cog):
                             if not pet and not egg:
                                 await ctx.send(
                                     _("❌ No pet or egg with ID `{id}` found in your collection.").format(id=item_id))
+                                return
+                            if pet and pet.get("daycare_boarding_id"):
+                                await ctx.send(_("❌ You cannot release a pet while it is boarded in daycare."))
                                 return
                         async with self.bot.pool.acquire() as conn:
                             if pet:
@@ -2713,6 +3797,10 @@ class Pets(commands.Cog):
                         await self.bot.reset_cooldown(ctx)
                         return
 
+            if not await self.ensure_pet_not_boarded(ctx, pet):
+                await self.bot.reset_cooldown(ctx)
+                return
+
             # Calculate new values
             new_hunger = min(100, pet['hunger'] + food_data["hunger"])
             new_happiness = min(100, pet['happiness'] + food_data["happiness"])
@@ -2819,6 +3907,10 @@ class Pets(commands.Cog):
                         await self.bot.reset_cooldown(ctx)
                         return
 
+            if not await self.ensure_pet_not_boarded(ctx, pet):
+                await self.bot.reset_cooldown(ctx)
+                return
+
             # Calculate happiness increase (more if pet is happy)
             happiness_boost = 10 if pet['happiness'] > 50 else 5
             new_happiness = min(100, pet['happiness'] + happiness_boost)
@@ -2918,6 +4010,10 @@ class Pets(commands.Cog):
                         await ctx.send("❌ You don't have an equipped pet. Equip one or use `$pets play <id|alias>`.")
                         await self.bot.reset_cooldown(ctx)
                         return
+
+            if not await self.ensure_pet_not_boarded(ctx, pet):
+                await self.bot.reset_cooldown(ctx)
+                return
 
             # Play gives significant boosts
             happiness_boost = 25
@@ -3024,6 +4120,10 @@ class Pets(commands.Cog):
                         await self.bot.reset_cooldown(ctx)
                         return
 
+            if not await self.ensure_pet_not_boarded(ctx, pet):
+                await self.bot.reset_cooldown(ctx)
+                return
+
             # Treats give massive boosts
             happiness_boost = 50
             new_happiness = min(100, pet['happiness'] + happiness_boost)
@@ -3128,6 +4228,10 @@ class Pets(commands.Cog):
                         await ctx.send("❌ You don't have an equipped pet. Equip one or use `$pets train <id|alias>`.")
                         await self.bot.reset_cooldown(ctx)
                         return
+
+            if not await self.ensure_pet_not_boarded(ctx, pet):
+                await self.bot.reset_cooldown(ctx)
+                return
 
             # Training gives significant XP and some trust
             xp_gain = self.PET_COMMAND_XP_VALUES["train"]
@@ -3551,6 +4655,9 @@ class Pets(commands.Cog):
                 
                 if not pet:
                     await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
+                    return
+
+                if not await self.ensure_pet_not_boarded(ctx, pet):
                     return
                     
                 # Check if the pet is at least "young"

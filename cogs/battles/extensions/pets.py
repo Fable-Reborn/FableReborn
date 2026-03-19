@@ -3693,7 +3693,7 @@ class PetExtension:
         async with ctx.bot.pool.acquire() as conn:
             # Check if user has an equipped pet
             pet = await conn.fetchrow(
-                "SELECT * FROM monster_pets WHERE user_id = $1 AND equipped = TRUE;",
+                "SELECT * FROM monster_pets WHERE user_id = $1 AND equipped = TRUE AND daycare_boarding_id IS NULL;",
                 user.id
             )
             
