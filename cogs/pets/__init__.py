@@ -1299,6 +1299,8 @@ class Pets(commands.Cog):
             self.check_egg_hatches.start()
         if not self.check_pet_growth.is_running():
             self.check_pet_growth.start()
+        if not self.auto_return_daycare_boardings.is_running():
+            self.auto_return_daycare_boardings.start()
             
         self.emoji_to_element = {
             "<:f_corruption:1170192253256466492>": "Corrupted",
@@ -1532,6 +1534,14 @@ class Pets(commands.Cog):
 
         # Initialize database tables
         self.bot.loop.create_task(self.initialize_enhanced_tables())
+
+    def cog_unload(self):
+        if self.check_egg_hatches.is_running():
+            self.check_egg_hatches.cancel()
+        if self.check_pet_growth.is_running():
+            self.check_pet_growth.cancel()
+        if self.auto_return_daycare_boardings.is_running():
+            self.auto_return_daycare_boardings.cancel()
 
     async def initialize_enhanced_tables(self):
         """Initialize the enhanced pet system database tables"""
@@ -2378,13 +2388,201 @@ class Pets(commands.Cog):
                 f"\nXP Multiplier: `{int(boarding_result['projection']['total_xp']):,} -> "
                 f"{int(boarding_result['projected_xp_display']):,}`"
             )
+        message += "\nThe pet will be auto-returned when the booking ends."
         return message
+
+    async def settle_daycare_boarding(self, conn, boarding, pet=None):
+        if pet is None:
+            pet = await conn.fetchrow(
+                "SELECT * FROM monster_pets WHERE id = $1 AND user_id = $2;",
+                boarding["pet_id"],
+                boarding["customer_user_id"],
+            )
+        if not pet:
+            raise ValueError("That pet could not be found in the owner's collection anymore.")
+
+        pet_projection = dict(pet)
+        pet_projection["growth_stage"] = boarding["pet_stage_at_start"]
+        projection = self.calculate_daycare_boarding_projection(
+            {
+                "food_type": boarding["food_type"],
+                "feeds_per_day": boarding["feeds_per_day"],
+                "plays_per_day": boarding["plays_per_day"],
+                "trains_per_day": boarding["trains_per_day"],
+                "room_type": boarding["room_type"],
+                "operating_cost_per_day": max(
+                    0,
+                    int(boarding["projected_operating_cost"]) // max(1, int(boarding["days_booked"])),
+                ),
+                "list_price_per_day": max(
+                    0,
+                    int(boarding["prepaid_amount"]) // max(1, int(boarding["days_booked"])),
+                ),
+            },
+            pet_projection,
+            int(boarding["days_booked"]),
+        )
+        starting_level = int(pet.get("level", 1) or 1)
+        level_result = await self.gain_experience(
+            pet["id"],
+            projection["total_xp"],
+            projection["total_trust"],
+            conn=conn,
+        )
+
+        new_hunger = max(0, min(100, int(pet["hunger"]) + projection["hunger_delta"]))
+        new_happiness = max(0, min(100, int(pet["happiness"]) + projection["happiness_delta"]))
+        restore_equipped = False
+        if bool(boarding["was_equipped"]):
+            other_equipped_pet = await conn.fetchval(
+                "SELECT id FROM monster_pets WHERE user_id = $1 AND equipped = TRUE AND id != $2 LIMIT 1;",
+                boarding["customer_user_id"],
+                pet["id"],
+            )
+            restore_equipped = other_equipped_pet is None
+
+        await conn.execute(
+            """
+            UPDATE monster_pets
+            SET hunger = $1,
+                happiness = $2,
+                daycare_boarding_id = NULL,
+                equipped = $3,
+                last_update = $4
+            WHERE id = $5;
+            """,
+            new_hunger,
+            new_happiness,
+            restore_equipped,
+            datetime.datetime.now(datetime.timezone.utc),
+            pet["id"],
+        )
+        await conn.execute(
+            """
+            UPDATE pet_daycare_boardings
+            SET settled_xp = $1,
+                settled_trust = $2,
+                settled_hunger_delta = $3,
+                settled_happiness_delta = $4,
+                settled_at = NOW(),
+                collected_at = NOW(),
+                status = 'collected'
+            WHERE id = $5;
+            """,
+            projection["total_xp"],
+            projection["total_trust"],
+            projection["hunger_delta"],
+            projection["happiness_delta"],
+            boarding["id"],
+        )
+
+        if boarding["owner_user_id"] != boarding["customer_user_id"]:
+            owner_payout = max(0, int(boarding["projected_profit"]))
+            if owner_payout > 0:
+                await conn.execute(
+                    'UPDATE profile SET money = money + $1 WHERE "user" = $2;',
+                    owner_payout,
+                    boarding["owner_user_id"],
+                )
+            await self.add_daycare_ledger_entry(
+                conn,
+                boarding["daycare_id"],
+                boarding["id"],
+                "operating_cost",
+                -int(boarding["projected_operating_cost"]),
+                f"{boarding['package_name']} operating cost",
+            )
+            await self.add_daycare_ledger_entry(
+                conn,
+                boarding["daycare_id"],
+                boarding["id"],
+                "boarding_revenue",
+                int(boarding["prepaid_amount"]),
+                f"{boarding['package_name']} customer payment",
+            )
+            if int(boarding["projected_profit"]) < 0:
+                await self.add_daycare_ledger_entry(
+                    conn,
+                    boarding["daycare_id"],
+                    boarding["id"],
+                    "legacy_loss_guard",
+                    0,
+                    f"Negative projected profit skipped for legacy boarding: {boarding['package_name']}",
+                )
+        else:
+            await self.add_daycare_ledger_entry(
+                conn,
+                boarding["daycare_id"],
+                boarding["id"],
+                "self_service",
+                -int(boarding["prepaid_amount"]),
+                f"Self-boarding cost for {boarding['package_name']}",
+            )
+
+        actual_xp_gained = (
+            int(level_result.get("adjusted_xp", projection["total_xp"]))
+            if level_result
+            else int(projection["total_xp"])
+        )
+        return {
+            "boarding_id": int(boarding["id"]),
+            "customer_user_id": int(boarding["customer_user_id"]),
+            "pet_name": pet["name"],
+            "package_name": boarding["package_name"],
+            "daycare_name": boarding["daycare_name"],
+            "actual_xp_gained": actual_xp_gained,
+            "trust_gained": int(projection["total_trust"]),
+            "old_hunger": int(pet["hunger"]),
+            "new_hunger": new_hunger,
+            "old_happiness": int(pet["happiness"]),
+            "new_happiness": new_happiness,
+            "old_level": starting_level,
+            "new_level": int(level_result.get("new_level", starting_level)) if level_result else starting_level,
+            "skill_points_gained": int(level_result.get("skill_points_gained", 0)) if level_result else 0,
+            "xp_multiplier_applied": bool(level_result and level_result.get("xp_multiplier_applied")),
+            "original_xp": int(level_result.get("original_xp", projection["total_xp"])) if level_result else int(projection["total_xp"]),
+            "restore_equipped": restore_equipped,
+        }
+
+    def format_daycare_settlement_message(self, settlement: dict, auto_return: bool = False) -> str:
+        prefix = "📦 Auto-returned" if auto_return else "✅ Collected"
+        message = (
+            f"{prefix} **{settlement['pet_name']}** from **{settlement['daycare_name']}**.\n"
+            f"XP Gained: `{settlement['actual_xp_gained']:,}` | Trust Gained: `{settlement['trust_gained']}`\n"
+            f"Hunger: `{settlement['old_hunger']} -> {settlement['new_hunger']}` | "
+            f"Happiness: `{settlement['old_happiness']} -> {settlement['new_happiness']}`"
+        )
+        if settlement["xp_multiplier_applied"]:
+            message += (
+                f"\nXP Multiplier: `{settlement['original_xp']:,}`"
+                f" -> `{settlement['actual_xp_gained']:,}`"
+            )
+        if settlement["new_level"] > settlement["old_level"]:
+            message += (
+                f"\nLevel: **{settlement['old_level']} -> {settlement['new_level']}**"
+                f" (+{settlement['skill_points_gained']} SP)"
+            )
+        if settlement["restore_equipped"]:
+            message += "\nYour pet was re-equipped automatically."
+        if auto_return:
+            message += "\nYour daycare booking finished and the pet was returned automatically."
+        return message
+
+    async def send_daycare_auto_return_dm(self, settlement: dict):
+        try:
+            user = self.bot.get_user(settlement["customer_user_id"])
+            if user is None:
+                user = await self.bot.fetch_user(settlement["customer_user_id"])
+            if user:
+                await user.send(self.format_daycare_settlement_message(settlement, auto_return=True))
+        except Exception:
+            pass
 
     def build_daycare_help_embed(self, prefix: str, can_open_daycare: bool) -> discord.Embed:
         embed = discord.Embed(
             title="Daycare Help",
             color=discord.Color.teal(),
-            description="How to browse another player's daycare, board a pet, and collect it later.",
+            description="How to browse another player's daycare, board a pet, and understand how auto-return works.",
         )
         embed.add_field(
             name="How To Attend",
@@ -2394,7 +2592,7 @@ class Pets(commands.Cog):
                 f"`{prefix}pets daycare board @user`\n"
                 f"Open the private boarding panel to pick your pet and package.\n\n"
                 f"`{prefix}pets daycare collect <boarding_id>`\n"
-                f"Collect your pet after the boarding has finished."
+                f"Manual fallback if the booking has ended and auto-return has not processed yet."
             ),
             inline=False,
         )
@@ -2402,7 +2600,7 @@ class Pets(commands.Cog):
             name="Boarding Notes",
             value=(
                 "The preview shows expected XP, including your pet's XP multiplier, total cost, trust, and final hunger/happiness.\n"
-                "A boarded pet is unequipped and cannot be used until you collect it."
+                "A boarded pet is unequipped while boarded. When the booking finishes, it is auto-returned and you get a DM summary."
             ),
             inline=False,
         )
@@ -3471,7 +3669,7 @@ class Pets(commands.Cog):
                 if not boarding:
                     return await ctx.send("❌ Boarding not found.")
                 if boarding["status"] != "active":
-                    return await ctx.send("❌ This boarding has already been collected.")
+                    return await ctx.send("❌ This boarding has already been collected or auto-returned.")
                 now = datetime.datetime.now(datetime.timezone.utc)
                 if boarding["ends_at"] > now:
                     remaining = boarding["ends_at"] - now
@@ -3485,135 +3683,9 @@ class Pets(commands.Cog):
                 )
                 if not pet:
                     return await ctx.send("❌ That pet could not be found in your collection anymore.")
+                settlement = await self.settle_daycare_boarding(conn, boarding, pet=pet)
 
-                pet_projection = dict(pet)
-                pet_projection["growth_stage"] = boarding["pet_stage_at_start"]
-                projection = self.calculate_daycare_boarding_projection(
-                    {
-                        "food_type": boarding["food_type"],
-                        "feeds_per_day": boarding["feeds_per_day"],
-                        "plays_per_day": boarding["plays_per_day"],
-                        "trains_per_day": boarding["trains_per_day"],
-                        "room_type": boarding["room_type"],
-                        "operating_cost_per_day": max(0, int(boarding["projected_operating_cost"]) // max(1, int(boarding["days_booked"]))),
-                        "list_price_per_day": max(0, int(boarding["prepaid_amount"]) // max(1, int(boarding["days_booked"]))),
-                    },
-                    pet_projection,
-                    int(boarding["days_booked"]),
-                )
-                level_result = await self.gain_experience(
-                    pet["id"],
-                    projection["total_xp"],
-                    projection["total_trust"],
-                    conn=conn,
-                )
-
-                new_hunger = max(0, min(100, int(pet["hunger"]) + projection["hunger_delta"]))
-                new_happiness = max(0, min(100, int(pet["happiness"]) + projection["happiness_delta"]))
-                restore_equipped = False
-                if bool(boarding["was_equipped"]):
-                    other_equipped_pet = await conn.fetchval(
-                        "SELECT id FROM monster_pets WHERE user_id = $1 AND equipped = TRUE AND id != $2 LIMIT 1;",
-                        ctx.author.id,
-                        pet["id"],
-                    )
-                    restore_equipped = other_equipped_pet is None
-
-                await conn.execute(
-                    """
-                    UPDATE monster_pets
-                    SET hunger = $1,
-                        happiness = $2,
-                        daycare_boarding_id = NULL,
-                        equipped = $3,
-                        last_update = $4
-                    WHERE id = $5;
-                    """,
-                    new_hunger,
-                    new_happiness,
-                    restore_equipped,
-                    datetime.datetime.now(datetime.timezone.utc),
-                    pet["id"],
-                )
-                await conn.execute(
-                    """
-                    UPDATE pet_daycare_boardings
-                    SET settled_xp = $1,
-                        settled_trust = $2,
-                        settled_hunger_delta = $3,
-                        settled_happiness_delta = $4,
-                        settled_at = NOW(),
-                        collected_at = NOW(),
-                        status = 'collected'
-                    WHERE id = $5;
-                    """,
-                    projection["total_xp"],
-                    projection["total_trust"],
-                    projection["hunger_delta"],
-                    projection["happiness_delta"],
-                    boarding_id,
-                )
-
-                if boarding["owner_user_id"] != ctx.author.id:
-                    owner_payout = max(0, int(boarding["projected_profit"]))
-                    if owner_payout > 0:
-                        await conn.execute(
-                            'UPDATE profile SET money = money + $1 WHERE "user" = $2;',
-                            owner_payout,
-                            boarding["owner_user_id"],
-                        )
-                    await self.add_daycare_ledger_entry(
-                        conn,
-                        boarding["daycare_id"],
-                        boarding_id,
-                        "operating_cost",
-                        -int(boarding["projected_operating_cost"]),
-                        f"{boarding['package_name']} operating cost",
-                    )
-                    await self.add_daycare_ledger_entry(
-                        conn,
-                        boarding["daycare_id"],
-                        boarding_id,
-                        "boarding_revenue",
-                        int(boarding["prepaid_amount"]),
-                        f"{boarding['package_name']} customer payment",
-                    )
-                    if int(boarding["projected_profit"]) < 0:
-                        await self.add_daycare_ledger_entry(
-                            conn,
-                            boarding["daycare_id"],
-                            boarding_id,
-                            "legacy_loss_guard",
-                            0,
-                            f"Negative projected profit skipped for legacy boarding: {boarding['package_name']}",
-                        )
-                else:
-                    await self.add_daycare_ledger_entry(
-                        conn,
-                        boarding["daycare_id"],
-                        boarding_id,
-                        "self_service",
-                        -int(boarding["prepaid_amount"]),
-                        f"Self-boarding cost for {boarding['package_name']}",
-                    )
-
-        actual_xp_gained = int(level_result.get("adjusted_xp", projection["total_xp"])) if level_result else int(projection["total_xp"])
-        xp_multiplier_text = ""
-        if level_result and level_result.get("xp_multiplier_applied"):
-            xp_multiplier_text = (
-                f"\nXP Multiplier: `{level_result.get('original_xp', projection['total_xp']):,}`"
-                f" → `{actual_xp_gained:,}`"
-            )
-
-        level_text = ""
-        if level_result and level_result.get("leveled_up"):
-            level_text = f"\nLevel Up: **{level_result['new_level']}** (+{level_result['skill_points_gained']} SP)"
-        await ctx.send(
-            f"✅ Collected **{pet['name']}** from **{boarding['daycare_name']}**.\n"
-            f"XP Gained: `{actual_xp_gained:,}` | Trust Gained: `{projection['total_trust']}`\n"
-            f"Hunger: `{pet['hunger']} -> {new_hunger}` | Happiness: `{pet['happiness']} -> {new_happiness}`"
-            f"{xp_multiplier_text}{level_text}"
-        )
+        await ctx.send(self.format_daycare_settlement_message(settlement))
 
     @daycare.command(brief=_("View your daycare ledger"))
     @has_char()
@@ -6088,6 +6160,52 @@ class Pets(commands.Cog):
         
         embed.set_footer(text="Your pet will no longer participate in battles until re-equipped.")
         await ctx.send(embed=embed)
+
+    @tasks.loop(minutes=1)
+    async def auto_return_daycare_boardings(self):
+        try:
+            async with self.bot.pool.acquire() as conn:
+                pending = await conn.fetch(
+                    """
+                    SELECT id
+                    FROM pet_daycare_boardings
+                    WHERE status = 'active' AND ends_at <= NOW()
+                    ORDER BY ends_at ASC
+                    LIMIT 50;
+                    """
+                )
+
+            for entry in pending:
+                settlement = None
+                async with self.bot.pool.acquire() as conn:
+                    async with conn.transaction():
+                        boarding = await conn.fetchrow(
+                            """
+                            SELECT b.*, p.name AS package_name, p.min_growth_stage, d.name AS daycare_name
+                            FROM pet_daycare_boardings b
+                            JOIN pet_daycare_packages p ON p.id = b.package_id
+                            JOIN pet_daycares d ON d.id = b.daycare_id
+                            WHERE b.id = $1 AND b.status = 'active';
+                            """,
+                            entry["id"],
+                        )
+                        if not boarding:
+                            continue
+
+                        pet = await conn.fetchrow(
+                            "SELECT * FROM monster_pets WHERE id = $1 AND user_id = $2;",
+                            boarding["pet_id"],
+                            boarding["customer_user_id"],
+                        )
+                        if not pet:
+                            continue
+
+                        settlement = await self.settle_daycare_boarding(conn, boarding, pet=pet)
+
+                if settlement:
+                    await self.send_daycare_auto_return_dm(settlement)
+        except Exception as e:
+            print(f"Error in auto_return_daycare_boardings: {e}")
 
     @tasks.loop(minutes=1)
     async def check_pet_growth(self):
