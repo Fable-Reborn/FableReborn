@@ -802,6 +802,355 @@ class DaycareUpgradeLauncherView(discord.ui.View):
             item.disabled = True
 
 
+class DaycareBoardingDaysModal(Modal, title="Set Boarding Days"):
+    def __init__(self, boarding_view):
+        super().__init__()
+        self.boarding_view = boarding_view
+        self.days_input = TextInput(
+            label="Days to board (1-7)",
+            default=str(boarding_view.days),
+            required=True,
+            max_length=1,
+        )
+        self.add_item(self.days_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.boarding_view.author.id:
+            return await interaction.response.send_message("❌ This boarding panel is not for you.", ephemeral=True)
+
+        try:
+            days = int(self.days_input.value)
+        except ValueError:
+            return await interaction.response.send_message("❌ Boarding days must be a number.", ephemeral=True)
+
+        if days < 1 or days > 7:
+            return await interaction.response.send_message(
+                "❌ Boarding duration must be between 1 and 7 days.",
+                ephemeral=True,
+            )
+
+        self.boarding_view.days = days
+        await interaction.response.defer(ephemeral=True)
+        await self.boarding_view.refresh_message()
+
+
+class DaycareBoardingPetSelect(discord.ui.Select):
+    def __init__(self, boarding_view):
+        self.boarding_view = boarding_view
+        super().__init__(
+            placeholder="Choose one of your pets",
+            min_values=1,
+            max_values=1,
+            options=[],
+            row=0,
+        )
+        self.refresh_options()
+
+    def refresh_options(self):
+        stage_icons = {
+            "baby": "🍼",
+            "juvenile": "🌱",
+            "young": "🐕",
+            "adult": "🦁",
+        }
+        options = []
+        for pet in self.boarding_view.pets[:25]:
+            stage = str(pet["growth_stage"]).lower()
+            label = f"{pet['name']} (ID: {pet['id']})"
+            description = f"{pet['element']} | {stage.title()} | x{float(pet.get('xp_multiplier', 1.0) or 1.0):g} XP"
+            options.append(
+                discord.SelectOption(
+                    label=label[:100],
+                    value=str(pet["id"]),
+                    description=description[:100],
+                    emoji=stage_icons.get(stage, "🐾"),
+                    default=int(pet["id"]) == int(self.boarding_view.selected_pet_id or 0),
+                )
+            )
+        self.options = options
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.boarding_view.author.id:
+            return await interaction.response.send_message("❌ This boarding panel is not for you.", ephemeral=True)
+
+        self.boarding_view.selected_pet_id = int(self.values[0])
+        await self.boarding_view.refresh_from_interaction(interaction)
+
+
+class DaycareBoardingPackageSelect(discord.ui.Select):
+    def __init__(self, boarding_view):
+        self.boarding_view = boarding_view
+        super().__init__(
+            placeholder="Choose a daycare package",
+            min_values=1,
+            max_values=1,
+            options=[],
+            row=1,
+        )
+        self.refresh_options()
+
+    def refresh_options(self):
+        options = []
+        for package in self.boarding_view.packages:
+            label = f"#{package['id']} {package['name']}"
+            description = (
+                f"${int(package['list_price_per_day']):,}/day | "
+                f"{int(package['feeds_per_day'])}/{int(package['plays_per_day'])}/{int(package['trains_per_day'])} F/P/T"
+            )
+            options.append(
+                discord.SelectOption(
+                    label=label[:100],
+                    value=str(package["id"]),
+                    description=description[:100],
+                    default=int(package["id"]) == int(self.boarding_view.selected_package_id or 0),
+                )
+            )
+        self.options = options
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.boarding_view.author.id:
+            return await interaction.response.send_message("❌ This boarding panel is not for you.", ephemeral=True)
+
+        self.boarding_view.selected_package_id = int(self.values[0])
+        await self.boarding_view.refresh_from_interaction(interaction)
+
+
+class DaycareBoardingView(discord.ui.View):
+    def __init__(self, cog, author, owner, daycare, pets, packages, days=1):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.author = author
+        self.owner = owner
+        self.daycare = daycare
+        self.pets = pets
+        self.packages = packages
+        self.days = max(1, min(int(days), 7))
+        self.message = None
+        self.is_locked = False
+        self.selected_pet_id = int(pets[0]["id"]) if len(pets) == 1 else None
+        self.selected_package_id = int(packages[0]["id"]) if len(packages) == 1 else None
+        self.pet_select = DaycareBoardingPetSelect(self)
+        self.package_select = DaycareBoardingPackageSelect(self)
+        self.add_item(self.pet_select)
+        self.add_item(self.package_select)
+        self.sync_component_state()
+
+    def get_selected_pet(self):
+        if self.selected_pet_id is None:
+            return None
+        for pet in self.pets:
+            if int(pet["id"]) == int(self.selected_pet_id):
+                return pet
+        return None
+
+    def get_selected_package(self):
+        if self.selected_package_id is None:
+            return None
+        for package in self.packages:
+            if int(package["id"]) == int(self.selected_package_id):
+                return package
+        return None
+
+    def get_preview(self):
+        pet = self.get_selected_pet()
+        package = self.get_selected_package()
+        if not pet or not package:
+            return None
+        return self.cog.get_daycare_boarding_preview_data(
+            package,
+            pet,
+            self.days,
+            self.owner.id,
+            self.author.id,
+        )
+
+    def sync_component_state(self):
+        self.pet_select.refresh_options()
+        self.package_select.refresh_options()
+        preview = self.get_preview()
+        self.confirm_button.disabled = self.is_locked or preview is None or bool(preview.get("error"))
+
+    def build_embed(self):
+        embed = discord.Embed(
+            title=f"Board Into {self.daycare['name']}",
+            color=discord.Color.gold(),
+            description=(
+                f"Private boarding panel for **{self.owner.display_name}**'s daycare.\n"
+                f"Select your pet, choose a package, and review the full projection before confirming."
+            ),
+        )
+
+        pet = self.get_selected_pet()
+        package = self.get_selected_package()
+        pet_value = "Choose a pet from the dropdown above."
+        if pet:
+            xp_multiplier = float(pet.get("xp_multiplier", 1.0) or 1.0)
+            pet_value = (
+                f"**{pet['name']}** (ID: `{pet['id']}`)\n"
+                f"Stage: `{str(pet['growth_stage']).title()}` | Element: `{pet['element']}`\n"
+                f"Hunger: `{int(pet['hunger'])}%` | Happiness: `{int(pet['happiness'])}%` | XP Multiplier: `x{xp_multiplier:g}`"
+            )
+
+        package_value = "Choose a package from the dropdown above."
+        if package:
+            room_label = self.cog.DAYCARE_ROOM_LABELS.get(
+                package["room_type"],
+                str(package["room_type"]).replace("_", " ").title(),
+            )
+            package_value = (
+                f"**#{package['id']} {package['name']}**\n"
+                f"Food: `{package['food_type']}` | Room: `{room_label}`\n"
+                f"F/P/T: `{int(package['feeds_per_day'])}/{int(package['plays_per_day'])}/{int(package['trains_per_day'])}` | "
+                f"Min Stage: `{str(package['min_growth_stage']).title()}`\n"
+                f"Charge/Day: `${int(package['list_price_per_day']):,}`"
+            )
+
+        embed.add_field(name="Pet", value=pet_value, inline=False)
+        embed.add_field(name="Package", value=package_value, inline=False)
+
+        preview = self.get_preview()
+        if not preview:
+            preview_value = "Choose both a pet and a package to see the boarding projection."
+        elif preview["error"]:
+            preview_value = f"❌ {preview['error']}"
+        else:
+            xp_line = f"**Projected XP:** `{int(preview['adjusted_total_xp']):,}` total"
+            if int(preview["adjusted_total_xp"]) != int(preview["projection"]["total_xp"]):
+                xp_line += (
+                    f"\n**Base XP -> Adjusted XP:** "
+                    f"`{int(preview['projection']['total_xp']):,} -> {int(preview['adjusted_total_xp']):,}`"
+                )
+                xp_line += (
+                    f"\n**Adjusted XP/Day:** `{int(preview['adjusted_xp_per_day']):,}`"
+                )
+            else:
+                xp_line += f"\n**XP/Day:** `{int(preview['base_xp_per_day']):,}`"
+            pricing_label = "Self-Boarding Charge" if preview["is_self_boarding"] else "Charge"
+            preview_value = (
+                f"**Days:** `{self.days}`\n"
+                f"**{pricing_label}:** `${int(preview['price_to_charge']):,}` total "
+                f"(`{int(preview['price_per_day']):,}/day`)\n"
+                f"{xp_line}\n"
+                f"**Projected Trust:** `{int(preview['projection']['total_trust'])}`\n"
+                f"**Final Hunger/Happiness:** `{int(preview['projection']['final_hunger'])}% / {int(preview['projection']['final_happiness'])}%`\n"
+                f"**Collect After:** `{preview['ends_at'].strftime('%Y-%m-%d %H:%M UTC')}`"
+            )
+            if preview["is_self_boarding"]:
+                preview_value += "\n`Self-boarding uses the private self-use rate.`"
+            elif int(preview.get("owner_subsidy_total", 0)) > 0:
+                preview_value += (
+                    f"\n**Owner Subsidy:** `${int(preview['owner_subsidy_total']):,}` "
+                    f"(the daycare owner has to cover this loss up front)"
+                )
+
+        embed.add_field(name="Projection", value=preview_value, inline=False)
+        footer = "Only you can use this panel."
+        if len(self.pets) > 25:
+            footer += " Showing the first 25 available pets. Use the text command for others."
+        embed.set_footer(text=footer)
+        return embed
+
+    async def refresh_message(self):
+        self.sync_component_state()
+        if self.message:
+            try:
+                await self.message.edit(embed=self.build_embed(), view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+    async def refresh_from_interaction(self, interaction: discord.Interaction):
+        self.sync_component_state()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def on_timeout(self):
+        self.is_locked = True
+        for item in self.children:
+            item.disabled = True
+        await self.refresh_message()
+
+    @discord.ui.button(label="Set Days", style=discord.ButtonStyle.primary, row=2)
+    async def set_days_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("❌ This boarding panel is not for you.", ephemeral=True)
+        await interaction.response.send_modal(DaycareBoardingDaysModal(self))
+
+    @discord.ui.button(label="Confirm Boarding", style=discord.ButtonStyle.success, row=2)
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("❌ This boarding panel is not for you.", ephemeral=True)
+
+        if self.selected_pet_id is None or self.selected_package_id is None:
+            return await interaction.response.send_message(
+                "❌ Select both a pet and a package first.",
+                ephemeral=True,
+            )
+
+        async with self.cog.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                try:
+                    result = await self.cog.create_daycare_boarding_record(
+                        conn,
+                        self.author.id,
+                        self.owner.id,
+                        self.selected_package_id,
+                        self.selected_pet_id,
+                        self.days,
+                    )
+                except ValueError as exc:
+                    return await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+
+        self.is_locked = True
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        await interaction.followup.send(
+            self.cog.format_daycare_boarding_success_message(result),
+            ephemeral=True,
+        )
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=2)
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("❌ This boarding panel is not for you.", ephemeral=True)
+        self.is_locked = True
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        self.stop()
+
+
+class DaycareBoardingLauncherView(discord.ui.View):
+    def __init__(self, cog, author, owner, daycare, pets, packages):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.author = author
+        self.owner = owner
+        self.daycare = daycare
+        self.pets = pets
+        self.packages = packages
+
+    @discord.ui.button(label="Open Private Boarding Panel", style=discord.ButtonStyle.primary)
+    async def open_boarding_panel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("❌ This boarding launcher is not for you.", ephemeral=True)
+
+        panel = DaycareBoardingView(
+            self.cog,
+            self.author,
+            self.owner,
+            self.daycare,
+            self.pets,
+            self.packages,
+        )
+        await interaction.response.send_message(embed=panel.build_embed(), view=panel, ephemeral=True)
+        panel.message = await interaction.original_response()
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+
 class SellConfirmationView(discord.ui.View):
     def __init__(self, initiator: discord.Member, receiver: discord.Member, price: int, timeout=120):
         super().__init__(timeout=timeout)
@@ -1800,6 +2149,275 @@ class Pets(commands.Cog):
             "food_cost_total": int(food["cost"]) * int(package["feeds_per_day"]) * days_booked,
         }
 
+    def get_daycare_boarding_preview_data(
+        self,
+        package,
+        pet,
+        days_booked: int,
+        owner_user_id: int,
+        customer_user_id: int,
+    ) -> dict:
+        days_booked = int(days_booked)
+        if days_booked < 1 or days_booked > 7:
+            return {"error": "Boarding duration must be between 1 and 7 days."}
+
+        growth_stage = str(pet.get("growth_stage", "")).lower()
+        if growth_stage not in {"baby", "juvenile", "young", "adult"}:
+            return {"error": "This pet cannot be boarded right now."}
+
+        stage_order = {"baby": 0, "juvenile": 1, "young": 2, "adult": 3}
+        required_stage = str(package["min_growth_stage"]).lower()
+        if stage_order[growth_stage] < stage_order[required_stage]:
+            return {"error": f"This package requires at least the {required_stage.title()} stage."}
+
+        projection = self.calculate_daycare_boarding_projection(package, pet, days_booked)
+        if growth_stage != "adult" and (
+            projection["final_hunger"] <= 0 or projection["final_happiness"] <= 0
+        ):
+            return {"error": "This package would not keep that pet safe for the full booking."}
+
+        price_to_charge = projection["total_price"]
+        owner_profit = projection["total_profit"]
+        is_self_boarding = int(owner_user_id) == int(customer_user_id)
+        if is_self_boarding:
+            price_to_charge = int(
+                math.ceil(projection["total_operating_cost"] * self.DAYCARE_SELF_BOARDING_RATE)
+            )
+            owner_profit = 0
+
+        xp_multiplier = float(pet.get("xp_multiplier", 1.0) or 1.0)
+        adjusted_total_xp = int(projection["total_xp"] * xp_multiplier)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        ends_at = now + datetime.timedelta(days=days_booked)
+
+        return {
+            "error": None,
+            "projection": projection,
+            "price_to_charge": price_to_charge,
+            "owner_profit": owner_profit,
+            "owner_subsidy_total": max(0, -int(owner_profit)),
+            "price_per_day": int(math.ceil(price_to_charge / max(days_booked, 1))),
+            "base_xp_per_day": int(projection["total_xp"] / max(days_booked, 1)),
+            "adjusted_xp_per_day": int((projection["total_xp"] / max(days_booked, 1)) * xp_multiplier),
+            "adjusted_total_xp": adjusted_total_xp,
+            "xp_multiplier": xp_multiplier,
+            "is_self_boarding": is_self_boarding,
+            "ends_at": ends_at,
+            "days_booked": days_booked,
+        }
+
+    async def get_boardable_pets_for_user(self, conn, user_id: int):
+        pets = await conn.fetch(
+            """
+            SELECT *
+            FROM monster_pets
+            WHERE user_id = $1
+              AND daycare_boarding_id IS NULL
+            ORDER BY equipped DESC, id ASC;
+            """,
+            user_id,
+        )
+        valid_stages = {"baby", "juvenile", "young", "adult"}
+        return [pet for pet in pets if str(pet["growth_stage"]).lower() in valid_stages]
+
+    async def get_active_daycare_packages(self, conn, daycare_id: int):
+        return await conn.fetch(
+            """
+            SELECT *
+            FROM pet_daycare_packages
+            WHERE daycare_id = $1 AND is_active = TRUE
+            ORDER BY id ASC;
+            """,
+            daycare_id,
+        )
+
+    async def create_daycare_boarding_record(
+        self,
+        conn,
+        customer_user_id: int,
+        owner_user_id: int,
+        package_id: int,
+        pet_ref,
+        days_booked: int,
+    ):
+        days_booked = int(days_booked)
+        if days_booked < 1 or days_booked > 7:
+            raise ValueError("Boarding duration must be between 1 and 7 days.")
+
+        daycare = await self.get_daycare_for_owner(conn, owner_user_id)
+        if not daycare or not daycare["is_open"]:
+            raise ValueError("That user does not have an open daycare.")
+
+        active_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM pet_daycare_boardings WHERE daycare_id = $1 AND status = 'active';",
+            daycare["id"],
+        )
+        if active_count >= self.get_daycare_caps(daycare)["kennels"]:
+            raise ValueError("That daycare is currently full.")
+
+        package = await conn.fetchrow(
+            """
+            SELECT *
+            FROM pet_daycare_packages
+            WHERE daycare_id = $1 AND id = $2 AND is_active = TRUE;
+            """,
+            daycare["id"],
+            int(package_id),
+        )
+        if not package:
+            raise ValueError("Package not found in that daycare.")
+
+        pet, pet_id = await self.fetch_pet_for_user(conn, customer_user_id, pet_ref)
+        if not pet:
+            raise ValueError("You do not own that pet.")
+        if pet.get("daycare_boarding_id"):
+            raise ValueError("This pet is currently boarded in daycare and cannot be used directly.")
+
+        preview = self.get_daycare_boarding_preview_data(
+            package,
+            pet,
+            days_booked,
+            owner_user_id,
+            customer_user_id,
+        )
+        if preview["error"]:
+            raise ValueError(preview["error"])
+
+        if not await has_money(self.bot, customer_user_id, preview["price_to_charge"], conn=conn):
+            raise ValueError(f"You need ${int(preview['price_to_charge']):,} for this boarding.")
+
+        owner_subsidy_total = 0
+        projected_profit_to_store = int(preview["owner_profit"])
+        if not preview["is_self_boarding"] and int(preview["owner_profit"]) < 0:
+            owner_subsidy_total = abs(int(preview["owner_profit"]))
+            if not await has_money(self.bot, owner_user_id, owner_subsidy_total, conn=conn):
+                raise ValueError(
+                    "That daycare owner does not have enough money to cover this package's loss right now."
+                )
+            projected_profit_to_store = 0
+
+        was_equipped = bool(pet["equipped"])
+        now = datetime.datetime.now(datetime.timezone.utc)
+        ends_at = now + datetime.timedelta(days=days_booked)
+        projection = preview["projection"]
+
+        boarding_id = await conn.fetchval(
+            """
+            INSERT INTO pet_daycare_boardings (
+                daycare_id, package_id, owner_user_id, customer_user_id, pet_id,
+                pet_stage_at_start, food_type, feeds_per_day, plays_per_day, trains_per_day, room_type,
+                days_booked, was_equipped, prepaid_amount,
+                projected_operating_cost, projected_profit, started_at, ends_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+            RETURNING id;
+            """,
+            daycare["id"],
+            package["id"],
+            owner_user_id,
+            customer_user_id,
+            pet_id,
+            pet["growth_stage"],
+            package["food_type"],
+            int(package["feeds_per_day"]),
+            int(package["plays_per_day"]),
+            int(package["trains_per_day"]),
+            package["room_type"],
+            days_booked,
+            was_equipped,
+            preview["price_to_charge"],
+            projection["total_operating_cost"],
+            projected_profit_to_store,
+            now,
+            ends_at,
+        )
+
+        await conn.execute(
+            'UPDATE profile SET money = money - $1 WHERE "user" = $2;',
+            preview["price_to_charge"],
+            customer_user_id,
+        )
+        if owner_subsidy_total > 0:
+            await conn.execute(
+                'UPDATE profile SET money = money - $1 WHERE "user" = $2;',
+                owner_subsidy_total,
+                owner_user_id,
+            )
+        await conn.execute(
+            "UPDATE monster_pets SET daycare_boarding_id = $1, equipped = FALSE WHERE id = $2;",
+            boarding_id,
+            pet_id,
+        )
+
+        return {
+            "boarding_id": boarding_id,
+            "pet": pet,
+            "package": package,
+            "projection": projection,
+            "price_to_charge": preview["price_to_charge"],
+            "projected_xp_display": preview["adjusted_total_xp"],
+            "xp_multiplier": preview["xp_multiplier"],
+            "ends_at": ends_at,
+            "days_booked": days_booked,
+            "owner_profit": projected_profit_to_store,
+            "owner_subsidy_total": owner_subsidy_total,
+            "is_self_boarding": preview["is_self_boarding"],
+        }
+
+    def format_daycare_boarding_success_message(self, boarding_result: dict) -> str:
+        message = (
+            f"✅ Boarded **{boarding_result['pet']['name']}** into **{boarding_result['package']['name']}** "
+            f"for **{int(boarding_result['days_booked'])} day(s)**.\n"
+            f"Charge: `${int(boarding_result['price_to_charge']):,}` | "
+            f"Projected XP: `{int(boarding_result['projected_xp_display']):,}` | "
+            f"Trust: `{int(boarding_result['projection']['total_trust'])}`\n"
+            f"Collect after: `{boarding_result['ends_at'].strftime('%Y-%m-%d %H:%M UTC')}`"
+        )
+        if float(boarding_result.get("xp_multiplier", 1.0) or 1.0) > 1.0:
+            message += (
+                f"\nXP Multiplier: `{int(boarding_result['projection']['total_xp']):,} -> "
+                f"{int(boarding_result['projected_xp_display']):,}`"
+            )
+        return message
+
+    def build_daycare_help_embed(self, prefix: str, can_open_daycare: bool) -> discord.Embed:
+        embed = discord.Embed(
+            title="Daycare Help",
+            color=discord.Color.teal(),
+            description="How to browse another player's daycare, board a pet, and collect it later.",
+        )
+        embed.add_field(
+            name="How To Attend",
+            value=(
+                f"`{prefix}pets daycare browse @user`\n"
+                f"View a player's daycare packages and prices.\n\n"
+                f"`{prefix}pets daycare board @user`\n"
+                f"Open the private boarding panel to pick your pet and package.\n\n"
+                f"`{prefix}pets daycare collect <boarding_id>`\n"
+                f"Collect your pet after the boarding has finished."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Boarding Notes",
+            value=(
+                "The preview shows expected XP, including your pet's XP multiplier, total cost, trust, and final hunger/happiness.\n"
+                "A boarded pet is unequipped and cannot be used until you collect it."
+            ),
+            inline=False,
+        )
+        owner_text = (
+            f"`{prefix}pets daycare open [name]`\n"
+            f"`{prefix}pets daycare upgrade`\n"
+            f"`{prefix}pets daycare packagecreate`\n"
+            f"`{prefix}pets daycare packages`"
+            if can_open_daycare
+            else "You need the Ranger class line to open a daycare. Owner management commands are GM-only."
+        )
+        embed.add_field(name="Owner Side", value=owner_text, inline=False)
+        embed.set_footer(text=f"Text fallback: {prefix}pets daycare board @user <package_id> <pet> [days]")
+        return embed
+
     async def add_daycare_ledger_entry(self, conn, daycare_id: int, boarding_id: int | None, entry_type: str, amount: int, note: str | None = None):
         await conn.execute(
             """
@@ -2446,8 +3064,8 @@ class Pets(commands.Cog):
 
     @pets.group(invoke_without_command=True, brief=_("Manage automated pet daycare packages and boardings"))
     @has_char()
-    @is_gm()
     async def daycare(self, ctx):
+        ranger_ok = await self.is_ranger_owner(ctx)
         async with self.bot.pool.acquire() as conn:
             daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
             active_boardings = await conn.fetch(
@@ -2463,21 +3081,25 @@ class Pets(commands.Cog):
             )
 
             if not daycare:
-                ranger_ok = await self.is_ranger_owner(ctx)
-                lines = []
+                embed = self.build_daycare_help_embed(ctx.clean_prefix, ranger_ok)
                 if ranger_ok:
-                    lines.append(f"You don't own a daycare yet. Use `{ctx.clean_prefix}pets daycare open [name]` to open one.")
+                    embed.description = (
+                        f"You don't own a daycare yet. Use `{ctx.clean_prefix}pets daycare open [name]` to open one.\n\n"
+                        "You can still browse and attend other players' daycares."
+                    )
                 else:
-                    lines.append("You need to be in the Ranger class line to open a daycare.")
+                    embed.description = (
+                        "You do not own a daycare, but you can still browse and attend other players' daycares."
+                    )
                 if active_boardings:
-                    lines.append("")
-                    lines.append("Your active boardings:")
                     now = datetime.datetime.now(datetime.timezone.utc)
+                    lines = []
                     for boarding in active_boardings:
                         remaining = boarding["ends_at"] - now
                         hours_left = max(0, int(remaining.total_seconds() // 3600))
                         lines.append(f"• #{boarding['id']} {boarding['package_name']} ({hours_left}h left)")
-                return await ctx.send("\n".join(lines))
+                    embed.add_field(name="Your Active Boardings", value="\n".join(lines), inline=False)
+                return await ctx.send(embed=embed)
 
             package_count = await conn.fetchval(
                 "SELECT COUNT(*) FROM pet_daycare_packages WHERE daycare_id = $1 AND is_active = TRUE;",
@@ -2522,18 +3144,36 @@ class Pets(commands.Cog):
             inline=True,
         )
         embed.add_field(
-            name="Commands",
+            name="Owner Commands",
             value=(
                 f"`{ctx.clean_prefix}pets daycare upgrade`\n"
                 f"`{ctx.clean_prefix}pets daycare packages`\n"
                 f"`{ctx.clean_prefix}pets daycare packagecreate`\n"
+                f"`{ctx.clean_prefix}pets daycare packagedelete <package_id>`\n"
+                f"`{ctx.clean_prefix}pets daycare ledger`"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Customer Commands",
+            value=(
                 f"`{ctx.clean_prefix}pets daycare browse @user`\n"
-                f"`{ctx.clean_prefix}pets daycare board @user <package_id> <pet> [days]`\n"
-                f"`{ctx.clean_prefix}pets daycare collect <boarding_id>`"
+                f"`{ctx.clean_prefix}pets daycare board @user`\n"
+                f"`{ctx.clean_prefix}pets daycare collect <boarding_id>`\n"
+                f"`{ctx.clean_prefix}pets daycare help`"
             ),
             inline=True,
         )
         embed.set_footer(text="No active boardings means your daycare costs $0/day.")
+        await ctx.send(embed=embed)
+
+    @daycare.command(name="help", brief=_("Show daycare browsing and boarding help"))
+    @has_char()
+    async def daycare_help(self, ctx):
+        embed = self.build_daycare_help_embed(
+            ctx.clean_prefix,
+            await self.is_ranger_owner(ctx),
+        )
         await ctx.send(embed=embed)
 
     @daycare.command(brief=_("Open your automated daycare business"))
@@ -2748,21 +3388,12 @@ class Pets(commands.Cog):
 
     @daycare.command(brief=_("Browse another player's daycare packages"))
     @has_char()
-    @is_gm()
     async def browse(self, ctx, owner: discord.Member):
         async with self.bot.pool.acquire() as conn:
             daycare = await self.get_daycare_for_owner(conn, owner.id)
             if not daycare or not daycare["is_open"]:
                 return await ctx.send("❌ That user does not have an open daycare.")
-            packages = await conn.fetch(
-                """
-                SELECT *
-                FROM pet_daycare_packages
-                WHERE daycare_id = $1 AND is_active = TRUE
-                ORDER BY id ASC;
-                """,
-                daycare["id"],
-            )
+            packages = await self.get_active_daycare_packages(conn, daycare["id"])
         if not packages:
             return await ctx.send("That daycare does not currently have any active packages.")
 
@@ -2773,120 +3404,56 @@ class Pets(commands.Cog):
                 f"Food `{package['food_type']}` | F/P/T `{package['feeds_per_day']}/{package['plays_per_day']}/{package['trains_per_day']}` | "
                 f"Min Stage `{package['min_growth_stage']}` | Price/day `${int(package['list_price_per_day']):,}`"
             )
+        lines.append(f"Use `{ctx.clean_prefix}pets daycare board {owner.mention}` to open the private boarding panel.")
+        lines.append(f"Need the full walkthrough? Use `{ctx.clean_prefix}pets daycare help`.")
         await ctx.send("\n\n".join(lines))
 
     @daycare.command(brief=_("Board your pet into a daycare package"))
     @has_char()
-    @is_gm()
-    async def board(self, ctx, owner: discord.Member, package_id: int, pet_ref: str, days: int = 1):
-        if days < 1 or days > 7:
-            return await ctx.send("❌ Boarding duration must be between 1 and 7 days.")
-
-        async with self.bot.pool.acquire() as conn:
-            async with conn.transaction():
+    async def board(self, ctx, owner: discord.Member, package_id: int = None, pet_ref: str = None, days: int = 1):
+        if package_id is None and pet_ref is None:
+            async with self.bot.pool.acquire() as conn:
                 daycare = await self.get_daycare_for_owner(conn, owner.id)
                 if not daycare or not daycare["is_open"]:
                     return await ctx.send("❌ That user does not have an open daycare.")
+                packages = await self.get_active_daycare_packages(conn, daycare["id"])
+                if not packages:
+                    return await ctx.send("That daycare does not currently have any active packages.")
+                pets = await self.get_boardable_pets_for_user(conn, ctx.author.id)
+                if not pets:
+                    return await ctx.send("❌ You do not have any pets available for boarding right now.")
 
-                active_count = await conn.fetchval(
-                    "SELECT COUNT(*) FROM pet_daycare_boardings WHERE daycare_id = $1 AND status = 'active';",
-                    daycare["id"],
-                )
-                if active_count >= self.get_daycare_caps(daycare)["kennels"]:
-                    return await ctx.send("❌ That daycare is currently full.")
+            launcher = DaycareBoardingLauncherView(self, ctx.author, owner, daycare, pets, packages)
+            return await ctx.send(
+                f"Use the button below to open a private boarding panel for **{daycare['name']}**.",
+                view=launcher,
+            )
 
-                package = await conn.fetchrow(
-                    """
-                    SELECT *
-                    FROM pet_daycare_packages
-                    WHERE daycare_id = $1 AND id = $2 AND is_active = TRUE;
-                    """,
-                    daycare["id"],
-                    package_id,
-                )
-                if not package:
-                    return await ctx.send("❌ Package not found in that daycare.")
+        if package_id is None or pet_ref is None:
+            return await ctx.send(
+                f"Usage: `{ctx.clean_prefix}pets daycare board @user`\n"
+                f"Or: `{ctx.clean_prefix}pets daycare board @user <package_id> <pet> [days]`\n"
+                f"Need a quick guide? Use `{ctx.clean_prefix}pets daycare help`."
+            )
 
-                pet, pet_id = await self.fetch_pet_for_user(conn, ctx.author.id, pet_ref)
-                if not pet:
-                    return await ctx.send("❌ You do not own that pet.")
-                if not await self.ensure_pet_not_boarded(ctx, pet):
-                    return
-                if pet["growth_stage"] not in {"baby", "juvenile", "young", "adult"}:
-                    return await ctx.send("❌ This pet cannot be boarded right now.")
-
-                stage_order = {"baby": 0, "juvenile": 1, "young": 2, "adult": 3}
-                if stage_order[str(pet["growth_stage"])] < stage_order[str(package["min_growth_stage"])]:
-                    return await ctx.send(
-                        f"❌ This package requires at least the **{package['min_growth_stage']}** stage."
+        async with self.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                try:
+                    result = await self.create_daycare_boarding_record(
+                        conn,
+                        ctx.author.id,
+                        owner.id,
+                        package_id,
+                        pet_ref,
+                        days,
                     )
+                except ValueError as exc:
+                    return await ctx.send(f"❌ {exc}")
 
-                projection = self.calculate_daycare_boarding_projection(package, pet, days)
-                if pet["growth_stage"] != "adult" and (projection["final_hunger"] <= 0 or projection["final_happiness"] <= 0):
-                    return await ctx.send("❌ This package would not keep that pet safe for the full booking.")
-
-                price_to_charge = projection["total_price"]
-                owner_profit = projection["total_profit"]
-                if owner.id == ctx.author.id:
-                    price_to_charge = int(math.ceil(projection["total_operating_cost"] * self.DAYCARE_SELF_BOARDING_RATE))
-                    owner_profit = 0
-
-                if not await has_money(self.bot, ctx.author.id, price_to_charge, conn=conn):
-                    return await ctx.send(f"❌ You need ${price_to_charge:,} for this boarding.")
-
-                was_equipped = bool(pet["equipped"])
-                xp_multiplier = float(pet.get("xp_multiplier", 1.0) or 1.0)
-                projected_xp_display = int(projection["total_xp"] * xp_multiplier)
-                now = datetime.datetime.now(datetime.timezone.utc)
-                ends_at = now + datetime.timedelta(days=days)
-
-                boarding_id = await conn.fetchval(
-                    """
-                    INSERT INTO pet_daycare_boardings (
-                        daycare_id, package_id, owner_user_id, customer_user_id, pet_id,
-                        pet_stage_at_start, food_type, feeds_per_day, plays_per_day, trains_per_day, room_type,
-                        days_booked, was_equipped, prepaid_amount,
-                        projected_operating_cost, projected_profit, started_at, ends_at
-                    )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-                    RETURNING id;
-                    """,
-                    daycare["id"],
-                    package["id"],
-                    owner.id,
-                    ctx.author.id,
-                    pet_id,
-                    pet["growth_stage"],
-                    package["food_type"],
-                    int(package["feeds_per_day"]),
-                    int(package["plays_per_day"]),
-                    int(package["trains_per_day"]),
-                    package["room_type"],
-                    days,
-                    was_equipped,
-                    price_to_charge,
-                    projection["total_operating_cost"],
-                    owner_profit,
-                    now,
-                    ends_at,
-                )
-
-                await conn.execute('UPDATE profile SET money = money - $1 WHERE "user" = $2;', price_to_charge, ctx.author.id)
-                await conn.execute(
-                    "UPDATE monster_pets SET daycare_boarding_id = $1, equipped = FALSE WHERE id = $2;",
-                    boarding_id,
-                    pet_id,
-                )
-
-        await ctx.send(
-            f"✅ Boarded **{pet['name']}** into **{package['name']}** for **{days} day(s)**.\n"
-            f"Charge: `${price_to_charge:,}` | Projected XP: `{projected_xp_display:,}` | Trust: `{projection['total_trust']}`\n"
-            f"Collect after: `{ends_at.strftime('%Y-%m-%d %H:%M UTC')}`"
-        )
+        await ctx.send(self.format_daycare_boarding_success_message(result))
 
     @daycare.command(brief=_("Collect a pet after daycare boarding finishes"))
     @has_char()
-    @is_gm()
     async def collect(self, ctx, boarding_id: int):
         async with self.bot.pool.acquire() as conn:
             async with conn.transaction():
@@ -2988,11 +3555,13 @@ class Pets(commands.Cog):
                 )
 
                 if boarding["owner_user_id"] != ctx.author.id:
-                    await conn.execute(
-                        'UPDATE profile SET money = money + $1 WHERE "user" = $2;',
-                        int(boarding["projected_profit"]),
-                        boarding["owner_user_id"],
-                    )
+                    owner_payout = max(0, int(boarding["projected_profit"]))
+                    if owner_payout > 0:
+                        await conn.execute(
+                            'UPDATE profile SET money = money + $1 WHERE "user" = $2;',
+                            owner_payout,
+                            boarding["owner_user_id"],
+                        )
                     await self.add_daycare_ledger_entry(
                         conn,
                         boarding["daycare_id"],
@@ -3009,6 +3578,15 @@ class Pets(commands.Cog):
                         int(boarding["prepaid_amount"]),
                         f"{boarding['package_name']} customer payment",
                     )
+                    if int(boarding["projected_profit"]) < 0:
+                        await self.add_daycare_ledger_entry(
+                            conn,
+                            boarding["daycare_id"],
+                            boarding_id,
+                            "legacy_loss_guard",
+                            0,
+                            f"Negative projected profit skipped for legacy boarding: {boarding['package_name']}",
+                        )
                 else:
                     await self.add_daycare_ledger_entry(
                         conn,
