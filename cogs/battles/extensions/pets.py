@@ -176,6 +176,22 @@ class PetExtension:
         """Convert internal skill ids into readable battle-log text."""
         return str(skill_name).replace('_', ' ')
 
+    def _consume_quick_charge_opener(self, pet_combatant, target):
+        """Resolve Quick Charge's once-per-battle guaranteed electric opener."""
+        effects = getattr(pet_combatant, 'skill_effects', {})
+        if 'quick_charge' not in effects or getattr(pet_combatant, 'quick_charge_opener_used', False):
+            return None
+
+        setattr(pet_combatant, 'quick_charge_opener_used', True)
+
+        if 'static_shock' in effects:
+            return 'static_shock'
+        if 'voltage_surge' in effects:
+            return 'voltage_surge'
+        if 'thunder_strike' in effects and hasattr(target, 'team'):
+            return 'thunder_strike'
+        return None
+
     def _get_lights_guidance_candidates(self, skill_effects, allowed_types, allowed_skills):
         """Collect only skills that can reasonably affect the current hit exchange."""
         if not isinstance(skill_effects, dict):
@@ -1175,6 +1191,7 @@ class PetExtension:
         messages = []
         countered_attacker_skill_name = None
         countered_attacker_skill_effect = None
+        quick_charge_opener = self._consume_quick_charge_opener(pet_combatant, target)
 
         # Decrement internal balance cooldowns before evaluating new procs.
         for cooldown_attr in (
@@ -1409,25 +1426,52 @@ class PetExtension:
             pet_combatant.ultimate_ready = False
             
         # ⚡ ELECTRIC SKILLS
-        if 'static_shock' in effects and random.randint(1, 100) <= effects['static_shock']['chance']:
+        if 'static_shock' in effects and (
+            quick_charge_opener == 'static_shock' or
+            random.randint(1, 100) <= effects['static_shock']['chance']
+        ):
             setattr(target, 'paralyzed', effects['static_shock']['duration'])
-            messages.append(f"{pet_combatant.name}'s Static Shock paralyzes {target.name}!")
+            if quick_charge_opener == 'static_shock':
+                messages.append(
+                    f"{pet_combatant.name}'s Quick Charge guarantees Static Shock! "
+                    f"{target.name} is paralyzed!"
+                )
+            else:
+                messages.append(f"{pet_combatant.name}'s Static Shock paralyzes {target.name}!")
 
         # Thunder Strike - chain lightning on crit
-        if ('thunder_strike' in effects and modified_damage > damage * Decimal('1.2') and 
-            hasattr(target, 'team')):
+        thunder_strike_ready = (
+            'thunder_strike' in effects and
+            hasattr(target, 'team') and (
+                quick_charge_opener == 'thunder_strike' or
+                modified_damage > damage * Decimal('1.2')
+            )
+        )
+        if thunder_strike_ready:
             chain_targets = [e for e in target.team.combatants if e != target and e.is_alive()]
             if chain_targets:
                 for i, chain_target in enumerate(chain_targets[:effects['thunder_strike']['chain_count']]):
                     if i < len(effects['thunder_strike']['chain_damage']):
                         chain_dmg = modified_damage * Decimal(str(effects['thunder_strike']['chain_damage'][i]))
                         self._deal_damage(pet_combatant, chain_target, chain_dmg)
-                messages.append(f"{pet_combatant.name}'s Thunder Strike chains to {len(chain_targets)} enemies!")
+                if quick_charge_opener == 'thunder_strike':
+                    messages.append(
+                        f"{pet_combatant.name}'s Quick Charge forces Thunder Strike to chain through "
+                        f"{len(chain_targets)} enemies!"
+                    )
+                else:
+                    messages.append(f"{pet_combatant.name}'s Thunder Strike chains to {len(chain_targets)} enemies!")
                 
         # Voltage Surge - stacking damage
         if 'voltage_surge' in effects:
             if not hasattr(pet_combatant, 'voltage_stacks'):
                 pet_combatant.voltage_stacks = 0
+            if quick_charge_opener == 'voltage_surge':
+                pet_combatant.voltage_stacks = max(
+                    int(pet_combatant.voltage_stacks),
+                    int(effects['voltage_surge']['max_stacks']) - 1,
+                )
+                messages.append(f"{pet_combatant.name}'s Quick Charge fully primes Voltage Surge!")
             pet_combatant.voltage_stacks = min(
                 pet_combatant.voltage_stacks + 1, 
                 effects['voltage_surge']['max_stacks']

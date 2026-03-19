@@ -1409,7 +1409,7 @@ class Pets(commands.Cog):
                 },
                 "Spark": {
                     1: {"name": "Electric Affinity", "description": "+20% damage against Water and Nature element enemies", "cost": 1},
-                    3: {"name": "Quick Charge", "description": "Pet gains a major initiative boost and usually acts before non-priority combatants", "cost": 2},
+                    3: {"name": "Quick Charge", "description": "Pet gains a major initiative boost and usually acts before non-priority combatants. On its first attack each battle, it guarantees Static Shock if learned, otherwise fully primes Voltage Surge, otherwise forces Thunder Strike if applicable", "cost": 2},
                     5: {"name": "Chain Lightning", "description": "Attacks bounce to 3 enemies: 100% → 75% → 50% damage", "cost": 3},
                     7: {"name": "Electromagnetic Field", "description": "All enemies suffer 15% reduced accuracy while the field is active", "cost": 4},
                     10: {"name": "Zeus's Wrath", "description": "ULTIMATE (15-25% HP): 3x lightning strike + team protection and debuff immunity for 3 turns", "cost": 5}
