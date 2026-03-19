@@ -504,10 +504,10 @@ class DaycarePackageBuilderView(discord.ui.View):
             embed.add_field(
                 name="Preview",
                 value=(
-                    f"**Operating Cost/Day:** ${int(metrics['operating_cost_per_day']):,}\n"
-                    f"**Break-Even/Day:** ${int(metrics['operating_cost_per_day']):,}\n"
-                    f"**10% Margin/Day:** ${int(metrics['min_list_price_per_day']):,}\n"
-                    f"**Suggested/Day:** ${int(metrics['suggested_list_price_per_day']):,}\n"
+                    f"**Cost per Active Boarding/Day:** ${int(metrics['operating_cost_per_day']):,}\n"
+                    f"**Break-Even Charge/Day:** ${int(metrics['operating_cost_per_day']):,}\n"
+                    f"**10% Margin Charge/Day:** ${int(metrics['min_list_price_per_day']):,}\n"
+                    f"**Suggested Charge/Day:** ${int(metrics['suggested_list_price_per_day']):,}\n"
                     f"**{profit_label}:** ${abs(profit_per_day):,}\n"
                     f"**XP/Day:** {int(metrics['xp_per_day']):,}\n"
                     f"**Trust/Day:** {int(metrics['trust_per_day'])}\n"
@@ -526,7 +526,7 @@ class DaycarePackageBuilderView(discord.ui.View):
             ),
             inline=False,
         )
-        embed.set_footer(text="Use the dropdowns and buttons below to configure this package.")
+        embed.set_footer(text="Idle daycare cost is $0/day. Package cost only applies while a pet is boarded.")
         return embed
 
     async def refresh_message(self):
@@ -595,9 +595,9 @@ class DaycarePackageBuilderView(discord.ui.View):
         await interaction.followup.send(
             (
                 f"✅ Created package **#{package_id} {self.state['name']}**.\n"
-                f"Operating cost/day: `${int(metrics['operating_cost_per_day']):,}`\n"
-                f"Break-even/day: `${int(metrics['operating_cost_per_day']):,}`\n"
-                f"Suggested/day: `${int(metrics['suggested_list_price_per_day']):,}`\n"
+                f"Cost per active boarding/day: `${int(metrics['operating_cost_per_day']):,}`\n"
+                f"Break-even charge/day: `${int(metrics['operating_cost_per_day']):,}`\n"
+                f"Suggested charge/day: `${int(metrics['suggested_list_price_per_day']):,}`\n"
                 f"{result_label}: `${abs(int(profit_per_day)):,}`\n"
                 f"XP/day: `{int(metrics['xp_per_day']):,}` | Trust/day: `{int(metrics['trust_per_day'])}` | Min Stage: `{min_growth_stage}`"
             ),
@@ -630,6 +630,172 @@ class DaycarePackageBuilderLauncherView(discord.ui.View):
         builder = DaycarePackageBuilderView(self.cog, self.author, self.daycare)
         await interaction.response.send_message(embed=builder.build_embed(), view=builder, ephemeral=True)
         builder.message = await interaction.original_response()
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+
+class DaycareUpgradeSelect(discord.ui.Select):
+    def __init__(self, panel_view):
+        self.panel_view = panel_view
+        super().__init__(
+            placeholder="Choose a daycare upgrade",
+            min_values=1,
+            max_values=1,
+            options=[],
+            row=0,
+        )
+        self.refresh_options()
+
+    def refresh_options(self):
+        options = []
+        column_map = self.panel_view.cog.get_daycare_upgrade_column_map()
+        for upgrade_key in self.panel_view.cog.get_daycare_upgrade_order():
+            column = column_map[upgrade_key]
+            current_level = int(self.panel_view.daycare[column])
+            cost = self.panel_view.cog.get_daycare_upgrade_cost(upgrade_key, current_level)
+            status_text = self.panel_view.cog.get_daycare_upgrade_status_text(upgrade_key, current_level)
+            description = status_text[:100] if cost is None else f"{status_text} | Next ${cost:,}"[:100]
+            options.append(
+                discord.SelectOption(
+                    label=self.panel_view.cog.get_daycare_upgrade_display_name(upgrade_key),
+                    value=upgrade_key,
+                    description=description,
+                    default=upgrade_key == self.panel_view.selected_key,
+                )
+            )
+        self.options = options
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.panel_view.author.id:
+            return await interaction.response.send_message("❌ This upgrade panel is not for you.", ephemeral=True)
+
+        self.panel_view.selected_key = self.values[0]
+        self.refresh_options()
+        await interaction.response.edit_message(embed=self.panel_view.build_embed(), view=self.panel_view)
+
+
+class DaycareUpgradePanelView(discord.ui.View):
+    def __init__(self, cog, author, daycare):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.author = author
+        self.daycare = daycare
+        self.message = None
+        self.selected_key = self.cog.get_daycare_upgrade_order()[0]
+        self.upgrade_select = DaycareUpgradeSelect(self)
+        self.add_item(self.upgrade_select)
+
+    def build_embed(self):
+        column_map = self.cog.get_daycare_upgrade_column_map()
+        column = column_map[self.selected_key]
+        current_level = int(self.daycare[column])
+        current_text = self.cog.get_daycare_upgrade_status_text(self.selected_key, current_level)
+        next_text = self.cog.get_daycare_upgrade_next_unlock_text(self.selected_key, current_level)
+        next_cost = self.cog.get_daycare_upgrade_cost(self.selected_key, current_level)
+        all_lines = []
+        for upgrade_key in self.cog.get_daycare_upgrade_order():
+            level = int(self.daycare[column_map[upgrade_key]])
+            status = self.cog.get_daycare_upgrade_status_text(upgrade_key, level)
+            all_lines.append(f"**{self.cog.get_daycare_upgrade_display_name(upgrade_key)}**: L{level} | {status}")
+
+        embed = discord.Embed(
+            title="Daycare Upgrade Panel",
+            color=discord.Color.blurple(),
+            description="Private daycare upgrade panel. Select an upgrade to see what it does before buying it.",
+        )
+        embed.add_field(
+            name="Selected Upgrade",
+            value=(
+                f"**{self.cog.get_daycare_upgrade_display_name(self.selected_key)}**\n"
+                f"Current Level: `L{current_level}`\n"
+                f"Current Effect: {current_text}"
+            ),
+            inline=False,
+        )
+
+        if next_cost is None:
+            embed.add_field(name="Next Unlock", value="This upgrade is maxed.", inline=False)
+        else:
+            embed.add_field(
+                name="Next Unlock",
+                value=(
+                    f"Next Effect: {next_text}\n"
+                    f"Upgrade Cost: `${int(next_cost):,}`"
+                ),
+                inline=False,
+            )
+
+        embed.add_field(name="All Upgrades", value="\n".join(all_lines), inline=False)
+        embed.set_footer(text="Only you can use this panel.")
+        return embed
+
+    async def refresh_message(self):
+        self.upgrade_select.refresh_options()
+        if self.message:
+            try:
+                await self.message.edit(embed=self.build_embed(), view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        await self.refresh_message()
+
+    @discord.ui.button(label="Buy Selected Upgrade", style=discord.ButtonStyle.success, row=1)
+    async def buy_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("❌ This upgrade panel is not for you.", ephemeral=True)
+
+        async with self.cog.bot.pool.acquire() as conn:
+            try:
+                cost, new_level, updated_daycare = await self.cog.purchase_daycare_upgrade(
+                    conn,
+                    self.author.id,
+                    self.selected_key,
+                )
+            except ValueError as exc:
+                return await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+
+        self.daycare = updated_daycare
+        self.upgrade_select.refresh_options()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        await interaction.followup.send(
+            (
+                f"✅ Upgraded **{self.cog.get_daycare_upgrade_display_name(self.selected_key)}** "
+                f"to `L{new_level}` for `${int(cost):,}`.\n"
+                f"Current Effect: {self.cog.get_daycare_upgrade_status_text(self.selected_key, new_level)}"
+            ),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, row=1)
+    async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("❌ This upgrade panel is not for you.", ephemeral=True)
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        self.stop()
+
+
+class DaycareUpgradeLauncherView(discord.ui.View):
+    def __init__(self, cog, author, daycare):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.author = author
+        self.daycare = daycare
+
+    @discord.ui.button(label="Open Private Upgrade Panel", style=discord.ButtonStyle.primary)
+    async def open_upgrade_panel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("❌ This upgrade panel launcher is not for you.", ephemeral=True)
+
+        panel = DaycareUpgradePanelView(self.cog, self.author, self.daycare)
+        await interaction.response.send_message(embed=panel.build_embed(), view=panel, ephemeral=True)
+        panel.message = await interaction.original_response()
 
     async def on_timeout(self):
         for item in self.children:
@@ -1327,6 +1493,158 @@ class Pets(commands.Cog):
         if index < 0 or index >= len(costs):
             return None
         return int(costs[index])
+
+    def get_daycare_upgrade_order(self) -> list[str]:
+        return [
+            "kennels",
+            "feeders",
+            "recreation",
+            "training",
+            "nursery",
+            "elemental",
+            "efficiency",
+            "packages",
+        ]
+
+    def get_daycare_upgrade_aliases(self) -> dict[str, str]:
+        return {
+            "kennels": "kennels",
+            "kennel": "kennels",
+            "feeders": "feeders",
+            "feeder": "feeders",
+            "recreation": "recreation",
+            "play": "recreation",
+            "training": "training",
+            "train": "training",
+            "nursery": "nursery",
+            "elemental": "elemental",
+            "efficiency": "efficiency",
+            "packages": "packages",
+            "package": "packages",
+        }
+
+    def normalize_daycare_upgrade_key(self, raw_key: str | None) -> str | None:
+        if raw_key is None:
+            return None
+        return self.get_daycare_upgrade_aliases().get(str(raw_key).strip().lower())
+
+    def get_daycare_upgrade_column_map(self) -> dict[str, str]:
+        return {
+            "kennels": "kennels_level",
+            "feeders": "feeder_level",
+            "recreation": "recreation_level",
+            "training": "training_level",
+            "nursery": "nursery_level",
+            "elemental": "elemental_level",
+            "efficiency": "efficiency_level",
+            "packages": "package_slots_level",
+        }
+
+    def get_daycare_upgrade_display_name(self, upgrade_key: str) -> str:
+        labels = {
+            "kennels": "Kennels",
+            "feeders": "Feeder System",
+            "recreation": "Recreation Wing",
+            "training": "Training Yard",
+            "nursery": "Nursery",
+            "elemental": "Elemental Facilities",
+            "efficiency": "Efficiency Office",
+            "packages": "Package Desk",
+        }
+        return labels.get(upgrade_key, upgrade_key.replace("_", " ").title())
+
+    def get_daycare_upgrade_status_text(self, upgrade_key: str, level: int) -> str:
+        if upgrade_key == "kennels":
+            index = max(0, min(int(level) - 1, len(self.DAYCARE_KENNEL_CAPS) - 1))
+            return f"{self.DAYCARE_KENNEL_CAPS[index]} active pet slots"
+        if upgrade_key == "feeders":
+            index = max(0, min(int(level) - 1, len(self.DAYCARE_FEEDER_CAPS) - 1))
+            return f"{self.DAYCARE_FEEDER_CAPS[index]} feeds/day cap"
+        if upgrade_key == "recreation":
+            index = max(0, min(int(level) - 1, len(self.DAYCARE_RECREATION_CAPS) - 1))
+            return f"{self.DAYCARE_RECREATION_CAPS[index]} plays/day cap"
+        if upgrade_key == "training":
+            index = max(0, min(int(level) - 1, len(self.DAYCARE_TRAINING_CAPS) - 1))
+            return f"{self.DAYCARE_TRAINING_CAPS[index]} trains/day cap"
+        if upgrade_key == "packages":
+            index = max(0, min(int(level) - 1, len(self.DAYCARE_PACKAGE_SLOT_CAPS) - 1))
+            return f"{self.DAYCARE_PACKAGE_SLOT_CAPS[index]} package slots"
+        if upgrade_key == "efficiency":
+            index = max(0, min(int(level), len(self.DAYCARE_EFFICIENCY_DISCOUNTS) - 1))
+            return f"{int(self.DAYCARE_EFFICIENCY_DISCOUNTS[index] * 100)}% operating cost reduction"
+        if upgrade_key == "nursery":
+            if int(level) <= 0:
+                return "Locked"
+            if int(level) == 1:
+                return "Nursery room unlocked"
+            return "Nursery room unlocked"
+        if upgrade_key == "elemental":
+            if int(level) <= 0:
+                return "Locked"
+            if int(level) == 1:
+                return "Elemental food unlocked"
+            return "Elemental habitat unlocked"
+        return "Unknown"
+
+    def get_daycare_upgrade_next_unlock_text(self, upgrade_key: str, current_level: int) -> str:
+        next_level = int(current_level) + 1
+        max_level = int(self.DAYCARE_UPGRADE_BASE_LEVELS.get(upgrade_key, 0)) + len(self.DAYCARE_UPGRADE_COSTS.get(upgrade_key, []))
+        if next_level > max_level:
+            return "Maxed"
+        if upgrade_key == "kennels":
+            index = max(0, min(next_level - 1, len(self.DAYCARE_KENNEL_CAPS) - 1))
+            return f"Raise capacity to {self.DAYCARE_KENNEL_CAPS[index]} active pets"
+        if upgrade_key == "feeders":
+            index = max(0, min(next_level - 1, len(self.DAYCARE_FEEDER_CAPS) - 1))
+            return f"Raise feeding cap to {self.DAYCARE_FEEDER_CAPS[index]}/day"
+        if upgrade_key == "recreation":
+            index = max(0, min(next_level - 1, len(self.DAYCARE_RECREATION_CAPS) - 1))
+            return f"Raise play cap to {self.DAYCARE_RECREATION_CAPS[index]}/day"
+        if upgrade_key == "training":
+            index = max(0, min(next_level - 1, len(self.DAYCARE_TRAINING_CAPS) - 1))
+            return f"Raise train cap to {self.DAYCARE_TRAINING_CAPS[index]}/day"
+        if upgrade_key == "packages":
+            index = max(0, min(next_level - 1, len(self.DAYCARE_PACKAGE_SLOT_CAPS) - 1))
+            return f"Raise saved package slots to {self.DAYCARE_PACKAGE_SLOT_CAPS[index]}"
+        if upgrade_key == "efficiency":
+            index = max(0, min(next_level, len(self.DAYCARE_EFFICIENCY_DISCOUNTS) - 1))
+            return f"Reduce operating cost by {int(self.DAYCARE_EFFICIENCY_DISCOUNTS[index] * 100)}%"
+        if upgrade_key == "nursery":
+            if next_level == 1:
+                return "Unlock nursery room packages"
+            return "No additional runtime effect currently"
+        if upgrade_key == "elemental":
+            if next_level == 1:
+                return "Unlock elemental food packages"
+            if next_level == 2:
+                return "Unlock elemental habitat room packages"
+            return "Maxed"
+        return "Unknown"
+
+    async def purchase_daycare_upgrade(self, conn, owner_user_id: int, upgrade_key: str):
+        column_map = self.get_daycare_upgrade_column_map()
+        column = column_map.get(upgrade_key)
+        if not column:
+            raise ValueError("Unknown upgrade.")
+
+        daycare = await self.get_daycare_for_owner(conn, owner_user_id)
+        if not daycare:
+            raise ValueError("You do not own a daycare yet.")
+
+        current_level = int(daycare[column])
+        cost = self.get_daycare_upgrade_cost(upgrade_key, current_level)
+        if cost is None:
+            raise ValueError("That upgrade is already maxed.")
+        if not await has_money(self.bot, owner_user_id, cost, conn=conn):
+            raise ValueError(f"You need ${cost:,} to buy this upgrade.")
+
+        await conn.execute('UPDATE profile SET money = money - $1 WHERE "user" = $2;', cost, owner_user_id)
+        await conn.execute(
+            f"UPDATE pet_daycares SET {column} = {column} + 1 WHERE owner_user_id = $1;",
+            owner_user_id,
+        )
+        updated_daycare = await self.get_daycare_for_owner(conn, owner_user_id)
+        return cost, int(updated_daycare[column]), updated_daycare
 
     def validate_daycare_package_inputs(
         self,
@@ -2173,6 +2491,14 @@ class Pets(commands.Cog):
                 "SELECT COALESCE(SUM(amount), 0) FROM pet_daycare_ledger WHERE daycare_id = $1;",
                 daycare["id"],
             )
+            current_daily_cost = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(projected_operating_cost / GREATEST(days_booked, 1)), 0)
+                FROM pet_daycare_boardings
+                WHERE daycare_id = $1 AND status = 'active';
+                """,
+                daycare["id"],
+            )
 
         caps = self.get_daycare_caps(daycare)
         embed = discord.Embed(
@@ -2181,6 +2507,7 @@ class Pets(commands.Cog):
             description=(
                 f"**Packages:** {package_count}/{caps['package_slots']}\n"
                 f"**Active Boardings:** {owned_active}/{caps['kennels']}\n"
+                f"**Current Daily Cost:** ${int(current_daily_cost or 0):,}\n"
                 f"**Ledger Net:** ${int(ledger_net or 0):,}"
             ),
         )
@@ -2197,6 +2524,7 @@ class Pets(commands.Cog):
         embed.add_field(
             name="Commands",
             value=(
+                f"`{ctx.clean_prefix}pets daycare upgrade`\n"
                 f"`{ctx.clean_prefix}pets daycare packages`\n"
                 f"`{ctx.clean_prefix}pets daycare packagecreate`\n"
                 f"`{ctx.clean_prefix}pets daycare browse @user`\n"
@@ -2205,6 +2533,7 @@ class Pets(commands.Cog):
             ),
             inline=True,
         )
+        embed.set_footer(text="No active boardings means your daycare costs $0/day.")
         await ctx.send(embed=embed)
 
     @daycare.command(brief=_("Open your automated daycare business"))
@@ -2239,60 +2568,38 @@ class Pets(commands.Cog):
     @daycare.command(brief=_("Upgrade your daycare facilities"))
     @has_char()
     @is_gm()
-    async def upgrade(self, ctx, upgrade_name: str):
+    async def upgrade(self, ctx, upgrade_name: str = None):
         if not await self.is_ranger_owner(ctx):
             return await ctx.send("❌ You need to be in the Ranger class line to manage a daycare.")
-
-        aliases = {
-            "kennels": "kennels",
-            "kennel": "kennels",
-            "feeders": "feeders",
-            "feeder": "feeders",
-            "recreation": "recreation",
-            "play": "recreation",
-            "training": "training",
-            "train": "training",
-            "nursery": "nursery",
-            "elemental": "elemental",
-            "efficiency": "efficiency",
-            "packages": "packages",
-            "package": "packages",
-        }
-        upgrade_key = aliases.get(str(upgrade_name).strip().lower())
-        if not upgrade_key:
-            return await ctx.send("❌ Unknown upgrade. Use one of: kennels, feeders, recreation, training, nursery, elemental, efficiency, packages.")
-
-        column_map = {
-            "kennels": "kennels_level",
-            "feeders": "feeder_level",
-            "recreation": "recreation_level",
-            "training": "training_level",
-            "nursery": "nursery_level",
-            "elemental": "elemental_level",
-            "efficiency": "efficiency_level",
-            "packages": "package_slots_level",
-        }
 
         async with self.bot.pool.acquire() as conn:
             daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
             if not daycare:
                 return await ctx.send("❌ You do not own a daycare yet.")
 
-            column = column_map[upgrade_key]
-            current_level = int(daycare[column])
-            cost = self.get_daycare_upgrade_cost(upgrade_key, current_level)
-            if cost is None:
-                return await ctx.send("❌ That upgrade is already maxed.")
-            if not await has_money(self.bot, ctx.author.id, cost, conn=conn):
-                return await ctx.send(f"❌ You need ${cost:,} to buy this upgrade.")
-
-            await conn.execute('UPDATE profile SET money = money - $1 WHERE "user" = $2;', cost, ctx.author.id)
-            await conn.execute(
-                f"UPDATE pet_daycares SET {column} = {column} + 1 WHERE owner_user_id = $1;",
-                ctx.author.id,
+        if upgrade_name is None:
+            launcher = DaycareUpgradeLauncherView(self, ctx.author, daycare)
+            return await ctx.send(
+                "Use the button below to open the private daycare upgrade panel.",
+                view=launcher,
             )
 
-        await ctx.send(f"✅ Upgraded **{upgrade_key}** for **${cost:,}**.")
+        upgrade_key = self.normalize_daycare_upgrade_key(upgrade_name)
+        if not upgrade_key:
+            return await ctx.send(
+                "❌ Unknown upgrade. Use one of: kennels, feeders, recreation, training, nursery, elemental, efficiency, packages."
+            )
+
+        async with self.bot.pool.acquire() as conn:
+            try:
+                cost, new_level, _ = await self.purchase_daycare_upgrade(conn, ctx.author.id, upgrade_key)
+            except ValueError as exc:
+                return await ctx.send(f"❌ {exc}")
+
+        await ctx.send(
+            f"✅ Upgraded **{self.get_daycare_upgrade_display_name(upgrade_key)}** to **L{new_level}** for **${int(cost):,}**.\n"
+            f"Current effect: {self.get_daycare_upgrade_status_text(upgrade_key, new_level)}"
+        )
 
     @daycare.command(brief=_("List your daycare packages"))
     @has_char()
@@ -2320,7 +2627,7 @@ class Pets(commands.Cog):
             lines.append(
                 f"**#{package['id']} {package['name']}**\n"
                 f"Food: `{package['food_type']}` | F/P/T: `{package['feeds_per_day']}/{package['plays_per_day']}/{package['trains_per_day']}` | Room: `{room_label}`\n"
-                f"Min Stage: `{package['min_growth_stage']}` | Cost/day: `${int(package['operating_cost_per_day']):,}` | Price/day: `${int(package['list_price_per_day']):,}`"
+                f"Min Stage: `{package['min_growth_stage']}` | Cost/active pet/day: `${int(package['operating_cost_per_day']):,}` | Price/day: `${int(package['list_price_per_day']):,}`"
             )
         await ctx.send("\n\n".join(lines[:8]))
 
@@ -2401,10 +2708,10 @@ class Pets(commands.Cog):
         result_label = "Profit/day" if profit_per_day >= 0 else "Loss/day"
         await ctx.send(
             f"✅ Created **{name}**.\n"
-            f"Operating cost/day: `${metrics['operating_cost_per_day']:,}`\n"
-            f"Break-even/day: `${metrics['operating_cost_per_day']:,}`\n"
-            f"10% margin/day: `${metrics['min_list_price_per_day']:,}`\n"
-            f"Suggested price/day: `${metrics['suggested_list_price_per_day']:,}`\n"
+            f"Cost per active boarding/day: `${metrics['operating_cost_per_day']:,}`\n"
+            f"Break-even charge/day: `${metrics['operating_cost_per_day']:,}`\n"
+            f"10% margin charge/day: `${metrics['min_list_price_per_day']:,}`\n"
+            f"Suggested charge/day: `${metrics['suggested_list_price_per_day']:,}`\n"
             f"{result_label}: `${abs(int(profit_per_day)):,}`\n"
             f"XP/day: `{metrics['xp_per_day']:,}` | Trust/day: `{metrics['trust_per_day']}` | Min Stage: `{min_growth_stage}`"
         )
