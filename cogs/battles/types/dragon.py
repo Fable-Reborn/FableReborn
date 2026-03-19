@@ -369,6 +369,13 @@ class DragonBattle(Battle):
             await self.update_display()
             return True
 
+        # Skip turn if paralyzed by pet electric effects.
+        if self.consume_paralyzed_turn(current_combatant):
+            await self.add_to_log(f"{current_combatant.name} is paralyzed and cannot act!")
+            self._decrement_status_effects(current_combatant)
+            await self.update_display()
+            return True
+
         # Skip turn if affected by terror panic
         panic_effect = self._get_effect(current_combatant, "turn_skip_chance")
         if panic_effect:
@@ -1675,6 +1682,22 @@ class DragonBattle(Battle):
                 return True
                 
         return False
+
+    def consume_paralyzed_turn(self, combatant):
+        """Consume one turn of direct paralysis applied by pet skills."""
+        turns = int(getattr(combatant, "paralyzed", 0) or 0)
+        if turns <= 0:
+            return False
+
+        remaining = turns - 1
+        if remaining > 0:
+            setattr(combatant, "paralyzed", remaining)
+        else:
+            try:
+                delattr(combatant, "paralyzed")
+            except AttributeError:
+                setattr(combatant, "paralyzed", 0)
+        return True
         
     async def apply_effect(self, target, effect_type, damage):
         """Apply a status effect to a target"""
