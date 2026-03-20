@@ -210,11 +210,316 @@ def parse_custom_roles(raw_roles: str) -> tuple[list[Role], list[str]]:
     return parsed, invalid
 
 
-def _normalize_mode_token(mode: str | None) -> str:
+COMEDY_MODE_TOKENS = {"comedy", "funny", "shitpost", "shitshow"}
+
+
+def _raw_mode_token(mode: str | None) -> str:
     if mode is None:
         return "classic"
     token = re.sub(r"[^a-z0-9]+", "", str(mode).casefold())
     return token or "classic"
+
+
+def _normalize_mode_token(mode: str | None) -> str:
+    token = _raw_mode_token(mode)
+    if token in COMEDY_MODE_TOKENS:
+        return "classic"
+    return token
+
+
+COMEDY_NIGHT_ANNOUNCEMENTS = (
+    _("💤 **Night falls and the village starts quietly drafting tomorrow's obituary.**"),
+    _("💤 **Night falls and every locked door suddenly feels like a great idea.**"),
+    _("💤 **Night falls, and somewhere a coroner feels the paperwork approaching.**"),
+    _("💤 **Night falls. The wolves clock in. The villagers are blissfully unaware they're the product.**"),
+    _("💤 **Night falls and someone is absolutely about to have the worst sleep of their life. Permanently.**"),
+    _("💤 **Night falls. Somewhere a wolf is stretching. This is not a yoga update.**"),
+    _("💤 **Night falls and the village remembers too late that they left the window open.**"),
+    _("💤 **Night falls. The predators begin their shift. HR has no jurisdiction here.**"),
+    _("💤 **Night falls and at least one person is about to become a very compelling ghost story.**"),
+    _("💤 **Night falls. The innocent sleep. The guilty plan. The wolves do both.**"),
+    _("💤 **Night falls and the village survival rate quietly updates itself.**"),
+    _("💤 **Night falls. Someone locked their door. The wolves respect this and come in through the window.**"),
+    _("💤 **Night falls. The town's life insurance premiums are about to go through the roof.**"),
+)
+COMEDY_DAY_ANNOUNCEMENTS = (
+    _("🌤️ **The sun rises and accountability arrives dragging a body bag.**"),
+    _("🌤️ **Morning breaks, along with several alibis.**"),
+    _("🌤️ **The sun rises and the village pretends this keeps happening to other towns.**"),
+    _("🌤️ **Morning arrives. The living begin their daily ritual of blaming each other. Progress!**"),
+    _("🌤️ **The sun rises. The village counts heads. Someone forgot to carry the one.**"),
+    _("🌤️ **Dawn arrives and so does the part where everyone lies confidently to each other's faces.**"),
+    _("🌤️ **The sun rises and the village gathers to democratically choose their next mistake.**"),
+    _("🌤️ **Morning breaks. The survivors look around, realize the math is getting worse, and proceed anyway.**"),
+    _("🌤️ **The sun rises over a village that has learned absolutely nothing and is ready to vote again.**"),
+    _("🌤️ **Dawn. The wolves went home. The villagers inherited the crime scene. Democracy time.**"),
+    _("🌤️ **The sun rises and somewhere a wolf is already yawning and workshopping their alibi.**"),
+    _("🌤️ **Morning arrives with all the comfort of finding out what that smell was.**"),
+)
+COMEDY_NIGHT_RECAP_TEMPLATES = (
+    _(
+        "☀️ **Night recap:** the reaper worked overtime. {count} player(s) were"
+        " removed from payroll overnight: {players}."
+    ),
+    _(
+        "☀️ **Night recap:** the town's survival statistics took another public"
+        " beating. {count} player(s) died overnight: {players}."
+    ),
+    _(
+        "☀️ **Night recap:** the graveyard just got new reservations. {count}"
+        " player(s) vanished from tomorrow: {players}."
+    ),
+    _(
+        "☀️ **Night recap:** the wolves had a productive evening. {count} player(s)"
+        " clocked out permanently: {players}."
+    ),
+    _(
+        "☀️ **Night recap:** the village took a headcount and found it upsettingly low."
+        " {count} player(s) are now in a better place. Allegedly: {players}."
+    ),
+    _(
+        "☀️ **Night recap:** another great night for everyone except {count} player(s),"
+        " who had a terrible, awful, no-good, very dead night: {players}."
+    ),
+    _(
+        "☀️ **Night recap:** the mortality rate continues to be everyone's problem."
+        " {count} player(s) will not be attending today's meeting: {players}."
+    ),
+    _(
+        "☀️ **Night recap:** the wolves ate well. {count} player(s) were on the menu"
+        " and did not receive a say in the matter: {players}."
+    ),
+    _(
+        "☀️ **Night recap:** history was made, and not the fun kind. {count} player(s)"
+        " are now history: {players}."
+    ),
+    _(
+        "☀️ **Night recap:** the village gene pool has been narrowed by {count}"
+        " player(s), whether it needed to be or not: {players}."
+    ),
+)
+COMEDY_NIGHT_RECAP_EMPTY = (
+    _("☀️ **Night recap:** somehow nobody died tonight. Very disappointing work ethic from the killers."),
+    _("☀️ **Night recap:** no one died tonight, which feels medically suspicious."),
+    _("☀️ **Night recap:** the cemetery remains underbooked for one more day."),
+    _("☀️ **Night recap:** nobody died, which means either the wolves are planning something big or they all got food poisoning."),
+    _("☀️ **Night recap:** everyone survived the night. The wolves would like to assure you this was a fluke."),
+    _("☀️ **Night recap:** the coroner went to bed early for once. Nobody died. Enjoy it while it lasts."),
+    _("☀️ **Night recap:** no deaths tonight. The village takes this as a sign things are turning around. They are wrong."),
+    _("☀️ **Night recap:** zero casualties. The wolves are calling it a 'strategic rest night.' Sure."),
+    _("☀️ **Night recap:** miraculously, everyone is still breathing. The wolves are embarrassed and would prefer not to discuss it."),
+    _("☀️ **Night recap:** nobody died! This village has officially had its first successful night. The bar was on the floor."),
+)
+COMEDY_NO_LYNCH_TEMPLATES = (
+    _("The village spent all day rehearsing a murder and forgot to commit one."),
+    _("After hours of accusations, the town achieved the rare feat of being bloodthirsty and useless."),
+    _("The mob assembled, delivered terrible speeches, and still produced no corpse."),
+    _("The village held a vote and unanimously elected to accomplish absolutely nothing."),
+    _("No one was lynched. The wolves watched from the crowd and honestly couldn't believe their luck."),
+    _("The village argued for hours and walked away with zero executions and a lot of personal beef."),
+    _("Democracy spoke and what it said was: 'not today, we're cowards.'"),
+    _("The village collectively decided that being useless together was better than being decisive alone. No lynch."),
+    _("No one died. The villagers went home thinking they did great. At least one wolf suppressed a laugh."),
+    _("After exhaustive debate, the village landed on no lynch. The Jester, if present, wept tears of joy."),
+    _("The pitchforks came out, the torches were lit, and then everyone just... went home. Incredible."),
+    _("No lynch today. The wolves gave the village a standing ovation from inside their own disguises."),
+)
+COMEDY_SECOND_NO_LYNCH_TEMPLATES = (
+    _("The Judge demanded an encore, and the village still could not produce a funeral."),
+    _("Even with a second election, the town botched murder like it was a committee project."),
+    _("Round two ended exactly the same way: loud confidence, zero body count."),
+    _("The village was given a second chance to be decisive. They treated it as a second chance to be confused."),
+    _("A second vote was held. The result was the same. The universe is sending a message and the village is not reading it."),
+    _("The revote delivered the same result: organized chaos, no corpse. Outstanding."),
+    _("Two elections. Zero lynches. The wolves are starting to think they don't even need to try."),
+    _("A second shot at democratic execution and the village fumbled it just as hard. Respect."),
+)
+COMEDY_VILLAGER_DEATH_TEMPLATES = (
+    _("{user} got turned into a Happy Meal with no toy. They were a **{role}**!{initial_role_info}"),
+    _("{user} lost an argument with fate, and the coroner sided with fate. They were a **{role}**!{initial_role_info}"),
+    _("{user} got written out of the story by something with claws. They were a **{role}**!{initial_role_info}"),
+    _("{user} is now a cautionary tale told to anyone hearing footsteps after dark. They were a **{role}**!{initial_role_info}"),
+    _("{user} has been removed from the village's group chat permanently. They were a **{role}**!{initial_role_info}"),
+    _("{user} trusted the night and the night did not trust them back. They were a **{role}**!{initial_role_info}"),
+    _("{user} is now survived by their terrible decisions and a slightly lighter roster. They were a **{role}**!{initial_role_info}"),
+    _("{user} peaked at being alive and unfortunately that was last night. They were a **{role}**!{initial_role_info}"),
+    _("{user} was found this morning in a condition best described as 'non-participating.' They were a **{role}**!{initial_role_info}"),
+    _("{user} got got. Deeply and thoroughly got. They were a **{role}**!{initial_role_info}"),
+    _("{user} has been retired from the game via fangs. They were a **{role}**!{initial_role_info}"),
+    _("{user} went to bed a villager and woke up an anecdote. They were a **{role}**!{initial_role_info}"),
+    _("{user} is no longer with us in the census-countable sense of the phrase. They were a **{role}**!{initial_role_info}"),
+    _("{user} had a great personality and it unfortunately wasn't enough. They were a **{role}**!{initial_role_info}"),
+)
+COMEDY_WOLF_DEATH_TEMPLATES = (
+    _("{user} got dragged out of girls' night and straight onto the autopsy table. They were a **{role}**!{initial_role_info}"),
+    _("{user} tried to run homicide like a DoorDash side hustle and got turned into evidence. They were a **{role}**!{initial_role_info}"),
+    _("{user} fumbled the evil act so badly daylight put them on public trial. They were a **{role}**!{initial_role_info}"),
+    _("{user} played the long game and lost it in a single very public afternoon. They were a **{role}**!{initial_role_info}"),
+    _("{user} thought the disguise was bulletproof. Spoiler: it was not even pitch-proof. They were a **{role}**!{initial_role_info}"),
+    _("{user} ran a masterclass in being suspicious and the village finally took notes. They were a **{role}**!{initial_role_info}"),
+    _("{user} spent all game blending in and then got absolutely cooked at the vote. They were a **{role}**!{initial_role_info}"),
+    _("{user} got clocked, locked, and dropped from the wolf payroll. They were a **{role}**!{initial_role_info}"),
+    _("{user} had one job: don't get caught. Two jobs if you count 'the murders.' Failed both. They were a **{role}**!{initial_role_info}"),
+    _("{user} is now former wolf, current cautionary tale for the pack's next all-hands meeting. They were a **{role}**!{initial_role_info}"),
+    _("{user} got voted out with a confidence the village hasn't felt since the first night. They were a **{role}**!{initial_role_info}"),
+    _("{user} bit off more than they could chew and the village bit back. They were a **{role}**!{initial_role_info}"),
+)
+COMEDY_LONER_DEATH_TEMPLATES = (
+    _("{user} died exactly how loners live: dramatically and with terrible odds. They were a **{role}**!{initial_role_info}"),
+    _("{user} made one last awful choice and the mortician called game. They were a **{role}**!{initial_role_info}"),
+    _("{user} got removed from the timeline like an HR liability. They were a **{role}**!{initial_role_info}"),
+    _("{user} played by their own rules right up until the rules had them removed. They were a **{role}**!{initial_role_info}"),
+    _("{user} ran a solo operation in a game where solo operations have a terrible survival rate. They were a **{role}**!{initial_role_info}"),
+    _("{user} was a chaos agent in a world that finally pushed back. They were a **{role}**!{initial_role_info}"),
+    _("{user} was doing great right up until they were doing nothing at all. They were a **{role}**!{initial_role_info}"),
+    _("{user} refused to pick a team, and both teams agreed on something for once. They were a **{role}**!{initial_role_info}"),
+    _("{user} entered as a wildcard and exited as a dead card. They were a **{role}**!{initial_role_info}"),
+    _("{user} had a unique win condition and uniquely failed to reach it. They were a **{role}**!{initial_role_info}"),
+)
+COMEDY_WOLF_WAKE_TEMPLATES = (
+    _("**{role} is awake and treating homicide like girls' night out with a DoorDash coupon...**"),
+    _("**{role} is awake, checking the menu, and deciding who becomes tomorrow's closed-casket rumor...**"),
+    _("**{role} is awake and planning murder with the calm efficiency of people ordering appetizers...**"),
+    _("**{role} is awake and selecting tonight's victim with the focus of someone choosing a Netflix show...**"),
+    _("**{role} is awake. The village is not. This is the whole plan and it is working beautifully...**"),
+    _("**{role} is awake and doing team bonding activities that HR would describe as 'multiple felonies'...**"),
+    _("**{role} is awake, motivated, and deeply unqualified for the career they've chosen...**"),
+    _("**{role} is awake and approaching tonight's kill with the energy of a project manager who REALLY needed this to work out...**"),
+    _("**{role} is awake and the village is about to find out what 'natural causes' looks like with claw marks...**"),
+    _("**{role} is awake, clocked in, and ready to ensure at least one villager doesn't clock in tomorrow...**"),
+    _("**{role} is awake and conducting a one-sided performance review. The target's score is zero out of alive...**"),
+    _("**{role} is awake and picking a victim with the precision of someone who has definitely done this before...**"),
+)
+COMEDY_INVESTIGATION_WAKE_TEMPLATES = (
+    _("**{role} is awake and about to ruin lives with evidence they barely understand...**"),
+    _("**{role} is awake, building a case like a detective who definitely planted something...**"),
+    _("**{role} is awake and doing late-night forensics off pure audacity...**"),
+    _("**{role} is awake and snooping around with the energy of someone who reads everyone's texts...**"),
+    _("**{role} is awake, squinting at someone suspiciously, and calling it 'investigation'...**"),
+    _("**{role} is awake and about to learn something they probably wished they hadn't...**"),
+    _("**{role} is awake and conducting background checks on people who very much didn't consent...**"),
+    _("**{role} is awake and about to get the answer wrong and trust it completely...**"),
+    _("**{role} is awake, staring into someone's soul, and hoping the soul is straightforward about its alignment...**"),
+    _("**{role} is awake and deploying their one (1) ability with the focus of a final exam...**"),
+)
+COMEDY_PROTECTIVE_WAKE_TEMPLATES = (
+    _("**{role} is awake and trying to keep this obituary factory under budget...**"),
+    _("**{role} is awake, one bad decision away from demanding hazard pay and a priest...**"),
+    _("**{role} is awake and doing emergency response for idiots who still answer noises outside...**"),
+    _("**{role} is awake and standing between one villager and the worst night of their life...**"),
+    _("**{role} is awake and picking someone to babysit like it isn't a life-or-death decision. It is.**"),
+    _("**{role} is awake and doing their best in a town that consistently makes their best harder...**"),
+    _("**{role} is awake and guarding someone who is almost certainly going to make this difficult...**"),
+    _("**{role} is awake, armed with one job and the crushing awareness of how often it fails...**"),
+    _("**{role} is awake and about to heroically protect the wrong person for the fourth night running...**"),
+    _("**{role} is awake and saving someone from death tonight so they can be voted out tomorrow. You're welcome.**"),
+)
+COMEDY_CHAOS_WAKE_TEMPLATES = (
+    _("**{role} is awake and ready to turn a manageable homicide into a civic event...**"),
+    _("**{role} is awake and bringing the exact energy that gets documentaries made later...**"),
+    _("**{role} is awake and treating public collapse like performance art...**"),
+    _("**{role} is awake and about to make every single other player's night worse in unique and creative ways...**"),
+    _("**{role} is awake and the situation was already bad, so naturally they're here to help...**"),
+    _("**{role} is awake and operating on a personal agenda that cannot be explained without a whiteboard...**"),
+    _("**{role} is awake and about to become tomorrow's 'wait what happened' moment...**"),
+    _("**{role} is awake. The village will not understand what they did until it is far too late...**"),
+    _("**{role} is awake and their victory condition is everyone else's nightmare condition...**"),
+    _("**{role} is awake and the wolves are somehow more worried about them than the villagers are...**"),
+)
+COMEDY_DEFAULT_WAKE_TEMPLATES = (
+    _("**{role} is awake and about to make tomorrow's funeral everybody else's problem...**"),
+    _("**{role} is awake like a bad omen that just found shoes...**"),
+    _("**{role} is awake and moving with the confidence of someone else filling out the paperwork...**"),
+    _("**{role} is awake and doing whatever they do at this hour, which is somehow worse than sleeping...**"),
+    _("**{role} is awake and the night shift has officially started being everyone's problem...**"),
+    _("**{role} is awake. The details of why are between them and the morning body count...**"),
+    _("**{role} is awake and quietly becoming the reason tomorrow's discussion gets complicated...**"),
+    _("**{role} is awake and has exactly one task, which they will either nail or catastrophically fumble...**"),
+    _("**{role} is awake and operating with the silent confidence of someone who read ahead in the script...**"),
+    _("**{role} is awake and doing night things. Ominously. With intent.**"),
+)
+COMEDY_IDOL_WAKE_TEMPLATES = (
+    _("**{role} is awake and choosing which future tragedy to make deeply personal...**"),
+    _("**{role} is awake and picking the one death most likely to ruin their whole brand...**"),
+    _("**{role} is awake and selecting their emotional support corpse for the rest of the game...**"),
+    _("**{role} is awake and about to make one choice that the rest of the game will absolutely judge them for...**"),
+)
+COMEDY_ARROW_WAKE_TEMPLATES = (
+    _("**{role} is awake and pairing people up like a florist with a body count...**"),
+    _("**{role} is awake and creating couples therapy business for the undertaker...**"),
+    _("**{role} is awake and about to ruin two people's lives in the most romantic way possible...**"),
+    _("**{role} is awake and playing matchmaker in a town where love is a death sentence...**"),
+    _("**{role} is awake and the two people they pick are about to become very codependent very fast...**"),
+)
+COMEDY_GAMBLE_WAKE_TEMPLATES = (
+    _("**{role} is awake and gambling with odds last seen in an obituary column...**"),
+    _("**{role} is awake and making casino decisions with cemetery consequences...**"),
+    _("**{role} is awake and treating people's lives like a scratch card they found on the floor...**"),
+    _("**{role} is awake and the house always wins, except in this case the house is a wolf...**"),
+)
+COMEDY_MARK_WAKE_TEMPLATES = (
+    _("**{role} is awake and selecting a future headline like a very personal editor...**"),
+    _("**{role} is awake and circling a name like the coroner asked for suggestions...**"),
+    _("**{role} is awake and putting a target on someone with the care of a person who will never be asked about it publicly...**"),
+    _("**{role} is awake and marking their chosen one for reasons that would take too long to explain at trial...**"),
+)
+COMEDY_CURSE_WAKE_TEMPLATES = (
+    _("**{role} is awake and writing the magical equivalent of 'you shut up forever'...**"),
+    _("**{role} is awake and drafting a silence order straight from hell's HR department...**"),
+    _("**{role} is awake and about to curse someone with the practiced efficiency of a bitter bureaucrat...**"),
+    _("**{role} is awake and someone is about to have a very supernatural HR violation filed against them...**"),
+)
+COMEDY_STALK_WAKE_TEMPLATES = (
+    _("**{role} is awake and moving like tomorrow's courtroom sketch...**"),
+    _("**{role} is awake and prowling like the apology letter will be posthumous...**"),
+    _("**{role} is awake and following someone home in the least metaphorical way possible...**"),
+    _("**{role} is awake and about to shadow someone who would very much prefer not to be shadowed...**"),
+)
+COMEDY_HUNGER_WAKE_TEMPLATES = (
+    _("**{role} is awake and looking at the village like a menu with unresolved trauma...**"),
+    _("**{role} is awake, starving, and one intrusive thought away from a documentary voice-over...**"),
+    _("**{role} is awake and the phrase 'you are what you eat' has taken on troubling implications...**"),
+    _("**{role} is awake and the village is on the menu whether they agreed to the reservation or not...**"),
+)
+COMEDY_COMMUNE_WAKE_TEMPLATES = (
+    _("**{role} is awake and checking whether the dead have any useful gossip...**"),
+    _("**{role} is awake and opening a hotline staffed entirely by regrets...**"),
+    _("**{role} is awake and consulting the dead, who at this point outnumber the living and have opinions...**"),
+    _("**{role} is awake and doing spiritual reconnaissance with people who died mad about it...**"),
+)
+COMEDY_INVESTIGATION_ROLES = {
+    Role.SEER,
+    Role.ANALYST,
+    Role.AURA_SEER,
+    Role.WOLF_SEER,
+    Role.DETECTIVE,
+    Role.MORTICIAN,
+    Role.FORTUNE_TELLER,
+    Role.PREACHER,
+}
+COMEDY_PROTECTIVE_ROLES = {
+    Role.HEALER,
+    Role.DOCTOR,
+    Role.BODYGUARD,
+    Role.BUTCHER,
+    Role.JAILER,
+    Role.WARDEN,
+    Role.FLOWER_CHILD,
+    Role.PACIFIST,
+    Role.WOLF_PACIFIST,
+    Role.GUARDIAN_WOLF,
+}
+COMEDY_CHAOS_ROLES = {
+    Role.JESTER,
+    Role.SERIAL_KILLER,
+    Role.CANNIBAL,
+    Role.FLUTIST,
+    Role.SUPERSPREADER,
+    Role.HEAD_HUNTER,
+    Role.TROUBLEMAKER,
+    Role.GAMBLER,
+    Role.RAIDER,
+}
 
 
 DESCRIPTIONS = {
@@ -1826,6 +2131,143 @@ class Game:
             role_name += role.name.title().replace("_", " ")
         return role_name
 
+    @property
+    def is_comedy_mode(self) -> bool:
+        return _raw_mode_token(self.mode) in COMEDY_MODE_TOKENS
+
+    def get_night_announcement_text(self, moon: str = "🌘") -> str:
+        if self.is_comedy_mode:
+            return f"{moon} {random.choice(COMEDY_NIGHT_ANNOUNCEMENTS)}"
+        return f"{moon}" + _(" 💤 **Night falls, the town is asleep...**")
+
+    def get_day_announcement_text(self) -> str:
+        if self.is_comedy_mode:
+            return random.choice(COMEDY_DAY_ANNOUNCEMENTS)
+        return _("🌤️ **The sun rises...**")
+
+    def get_night_recap_text(self, deaths: list[Player]) -> str:
+        if deaths:
+            death_mentions = ", ".join(player.user.mention for player in deaths)
+            if self.is_comedy_mode:
+                return random.choice(COMEDY_NIGHT_RECAP_TEMPLATES).format(
+                    count=len(deaths),
+                    players=death_mentions,
+                )
+            return _(
+                "☀️ **Night recap:** {count} player(s) died overnight: {players}."
+            ).format(count=len(deaths), players=death_mentions)
+        if self.is_comedy_mode:
+            return random.choice(COMEDY_NIGHT_RECAP_EMPTY)
+        return _("☀️ **Night recap:** no one died tonight.")
+
+    def get_no_lynch_text(self, *, second_election: bool = False) -> str:
+        if self.is_comedy_mode:
+            templates = (
+                COMEDY_SECOND_NO_LYNCH_TEMPLATES
+                if second_election
+                else COMEDY_NO_LYNCH_TEMPLATES
+            )
+            return random.choice(templates)
+        if second_election:
+            return _("Indecisively, the community has not lynched anyone.")
+        return _("Indecisively, the community has killed noone.")
+
+    def get_death_reveal_text(
+        self,
+        *,
+        player: Player,
+        death_reveal_role: Role,
+        initial_role_info: str,
+    ) -> str:
+        role_name = self.get_role_name(death_reveal_role)
+        if not self.is_comedy_mode:
+            return _(
+                "{user} has died. They were a **{role}**!{initial_role_info}"
+            ).format(
+                user=player.user.mention,
+                role=role_name,
+                initial_role_info=initial_role_info,
+            )
+
+        role_side = side_from_role(death_reveal_role)
+        if role_side == Side.WOLVES or death_reveal_role == Role.WHITE_WOLF:
+            templates = COMEDY_WOLF_DEATH_TEMPLATES
+        elif role_side == Side.VILLAGERS:
+            templates = COMEDY_VILLAGER_DEATH_TEMPLATES
+        else:
+            templates = COMEDY_LONER_DEATH_TEMPLATES
+
+        return random.choice(templates).format(
+            user=player.user.mention,
+            role=role_name,
+            initial_role_info=initial_role_info,
+        )
+
+    def get_role_awake_text(
+        self,
+        *,
+        role: Role,
+        role_name: str,
+        variant: str = "default",
+    ) -> str:
+        if not self.is_comedy_mode:
+            if variant == "idol":
+                return _("**The {role} awakes and chooses its idol...**").format(
+                    role=role_name
+                )
+            if variant == "arrows":
+                return _("**{role} awakes and shoots their arrows...**").format(
+                    role=role_name
+                )
+            if variant == "gamble":
+                return _("**The {role} takes a gamble...**").format(role=role_name)
+            if variant == "mark":
+                return _("**The {role} marks a target...**").format(role=role_name)
+            if variant == "curse":
+                return _("**The {role} weaves a mute curse...**").format(
+                    role=role_name
+                )
+            if variant == "stalk":
+                return _("**The {role} stalks the village...**").format(
+                    role=role_name
+                )
+            if variant == "hunger":
+                return _("**The {role} hungers...**").format(role=role_name)
+            if variant == "commune":
+                return _("**The {role} communes with the dead...**").format(
+                    role=role_name
+                )
+            return _("**The {role} awakes...**").format(role=role_name)
+
+        if variant == "idol":
+            templates = COMEDY_IDOL_WAKE_TEMPLATES
+        elif variant == "arrows":
+            templates = COMEDY_ARROW_WAKE_TEMPLATES
+        elif variant == "gamble":
+            templates = COMEDY_GAMBLE_WAKE_TEMPLATES
+        elif variant == "mark":
+            templates = COMEDY_MARK_WAKE_TEMPLATES
+        elif variant == "curse":
+            templates = COMEDY_CURSE_WAKE_TEMPLATES
+        elif variant == "stalk":
+            templates = COMEDY_STALK_WAKE_TEMPLATES
+        elif variant == "hunger":
+            templates = COMEDY_HUNGER_WAKE_TEMPLATES
+        elif variant == "commune":
+            templates = COMEDY_COMMUNE_WAKE_TEMPLATES
+        elif role in COMEDY_INVESTIGATION_ROLES:
+            templates = COMEDY_INVESTIGATION_WAKE_TEMPLATES
+        elif role in COMEDY_PROTECTIVE_ROLES:
+            templates = COMEDY_PROTECTIVE_WAKE_TEMPLATES
+        elif role in COMEDY_CHAOS_ROLES:
+            templates = COMEDY_CHAOS_WAKE_TEMPLATES
+        elif side_from_role(role) == Side.WOLVES or role == Role.WHITE_WOLF:
+            templates = COMEDY_WOLF_WAKE_TEMPLATES
+        else:
+            templates = COMEDY_DEFAULT_WAKE_TEMPLATES
+
+        return random.choice(templates).format(role=role_name)
+
     @staticmethod
     def _is_public_maskable_advanced_role(role: Role) -> bool:
         base_role = ADVANCED_BASE_ROLE_BY_ADVANCED.get(role)
@@ -2479,7 +2921,7 @@ class Game:
                 )
 
     async def send_night_announcement(self, moon: str = "🌘") -> None:
-        description = f"{moon}" + _(" 💤 **Night falls, the town is asleep...**")
+        description = self.get_night_announcement_text(moon)
         embed = discord.Embed(
             description=description,
             colour=self.ctx.bot.config.game.primary_colour,
@@ -2489,7 +2931,7 @@ class Game:
 
     async def send_day_announcement(self) -> None:
         embed = discord.Embed(
-            description=_("🌤️ **The sun rises...**"),
+            description=self.get_day_announcement_text(),
             colour=self.ctx.bot.config.game.primary_colour,
         )
         embed.set_image(url=WW_DAY_ANNOUNCEMENT_IMAGE_URL)
@@ -7220,15 +7662,7 @@ class Game:
                 continue
             seen_night_death_ids.add(death.user.id)
             unique_night_deaths.append(death)
-        if unique_night_deaths:
-            death_mentions = ", ".join(player.user.mention for player in unique_night_deaths)
-            await self.ctx.send(
-                _(
-                    "☀️ **Night recap:** {count} player(s) died overnight: {players}."
-                ).format(count=len(unique_night_deaths), players=death_mentions)
-            )
-        else:
-            await self.ctx.send(_("☀️ **Night recap:** no one died tonight."))
+        await self.ctx.send(self.get_night_recap_text(unique_night_deaths))
         await self.resolve_preacher_predictions(unique_night_deaths)
         if self.task:
             self.task.cancel()
@@ -7296,9 +7730,7 @@ class Game:
                     if self.winner is not None:
                         return
                 else:
-                    await self.ctx.send(
-                        _("Indecisively, the community has killed noone.")
-                    )
+                    await self.ctx.send(self.get_no_lynch_text())
                 await self.handle_afk()
             else:
                 second_election = False
@@ -7316,7 +7748,7 @@ class Game:
                         return
                 else:
                     await self.ctx.send(
-                        _("Indecisively, the community has not lynched anyone.")
+                        self.get_no_lynch_text(second_election=True)
                     )
                 await self.handle_afk()
         finally:
@@ -8018,9 +8450,7 @@ class Player:
         if not self.fortune_cards_remaining or self.fortune_cards_remaining <= 0:
             return
 
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         possible_targets = [p for p in self.game.alive_players if p != self]
         if not possible_targets:
             await self.send(
@@ -8109,11 +8539,7 @@ class Player:
         return True
 
     async def choose_idol(self) -> None:
-        await self.game.ctx.send(
-            _("**The {role} awakes and chooses its idol...**").format(
-                role=self.role_name
-            )
-        )
+        await self.announce_awake(variant="idol")
         # Prefer alive players, but fall back to the game roster if state gets
         # desynced during reloads/interrupted interactions.
         possible_idols = [p for p in self.game.alive_players if p != self]
@@ -8166,9 +8592,7 @@ class Player:
                 ).format(game_link=self.game.game_link)
             )
             return
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         self.game.judge_spoken = False
         await self.send(
             _(
@@ -8264,9 +8688,7 @@ class Player:
         await self.send(self.game.game_link)
 
     async def set_healer_target(self) -> Player:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         available = [
             player for player in self.game.alive_players if player != self.last_target
         ]
@@ -8305,9 +8727,7 @@ class Player:
         )
 
     async def set_doctor_target(self) -> None:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         available = [player for player in self.game.alive_players if player != self]
         if not available:
             await self.send(
@@ -8351,9 +8771,7 @@ class Player:
         )
 
     async def set_butcher_targets(self) -> None:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         if self.butcher_meat_left <= 0:
             await self.send(
                 _(
@@ -8429,9 +8847,7 @@ class Player:
         )
 
     async def choose_werewolf(self) -> Player | None:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         possible_targets = [
             p
             for p in self.game.alive_players
@@ -8476,9 +8892,7 @@ class Player:
             return target
 
     async def choose_villager_to_kill(self, targets: list[Player]) -> Player | None:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         if not targets:
             await self.game.ctx.send(
                 embed=discord.Embed(
@@ -8533,9 +8947,7 @@ class Player:
             return target
 
     async def witch_actions(self, targets: list[Player]) -> list[Player]:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         if (
             not self.witch_protect_potion_available
             and not self.witch_poison_potion_available
@@ -8679,9 +9091,7 @@ class Player:
     async def serial_killer_kill(self) -> Player | None:
         if self.dead or self.role != Role.SERIAL_KILLER:
             return None
-        await self.game.ctx.send(
-            _("**The {role} stalks the village...**").format(role=self.role_name)
-        )
+        await self.announce_awake(variant="stalk")
         possible_targets = [
             player
             for player in self.game.alive_players
@@ -8731,9 +9141,7 @@ class Player:
 
         # Gains 1 hunger every night even if role-blocked.
         self.cannibal_hunger = min(5, self.cannibal_hunger + 1)
-        await self.game.ctx.send(
-            _("**The {role} hungers...**").format(role=self.role_name)
-        )
+        await self.announce_awake(variant="hunger")
         await self.send(
             _("🍖 Hunger stacks: **{stacks}/5**.\n{game_link}").format(
                 stacks=self.cannibal_hunger,
@@ -8825,9 +9233,7 @@ class Player:
         return eaten_targets
 
     async def enchant(self) -> None:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         possible_targets = [
             p for p in self.game.alive_players if not p.enchanted and p != self
         ]
@@ -8901,9 +9307,7 @@ class Player:
         )
 
     async def check_same_team(self) -> None:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         possible_targets = [p for p in self.game.alive_players if p != self]
         if len(possible_targets) < 2:
             await self.send(
@@ -8956,9 +9360,7 @@ class Player:
         )
 
     async def mortician_autopsy(self) -> None:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         eligible_dead = [
             player
             for player in self.game.dead_players
@@ -9071,9 +9473,7 @@ class Player:
         )
 
     async def check_player_card(self) -> None:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         try:
             to_inspect = await self.choose_users(
                 _("👁️ Choose someone whose identity you would like to see."),
@@ -9110,9 +9510,7 @@ class Player:
         )
 
     async def check_player_aura(self) -> None:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         try:
             to_inspect = await self.choose_users(
                 _("🌗 Choose someone whose aura you would like to inspect."),
@@ -9148,9 +9546,7 @@ class Player:
         )
 
     async def check_analyst_auras(self) -> None:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         if self.analyst_blocked_next_night:
             self.analyst_blocked_next_night = False
             await self.send(
@@ -9224,9 +9620,7 @@ class Player:
             )
 
     async def guess_player_team_as_gambler(self) -> None:
-        await self.game.ctx.send(
-            _("**The {role} takes a gamble...**").format(role=self.role_name)
-        )
+        await self.announce_awake(variant="gamble")
         try:
             to_guess = await self.choose_users(
                 _("🎲 Choose one player whose team you want to guess."),
@@ -9324,9 +9718,7 @@ class Player:
         )
 
     async def check_wolf_seer_target(self) -> None:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         possible_targets = [
             p
             for p in self.game.alive_players
@@ -9376,9 +9768,7 @@ class Player:
     async def check_sorcerer_target(self) -> None:
         if self.role != Role.SORCERER or self.dead:
             return
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
 
         possible_targets = [p for p in self.game.alive_players if p != self]
         if not possible_targets:
@@ -9511,9 +9901,7 @@ class Player:
             await self.game.convert_sorcerer_to_werewolf(self, reason="resign")
 
     async def set_red_lady_target(self) -> None:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         self.red_lady_visit_target = None
         if self.role == Role.GHOST_LADY and self.ghost_lady_bound_target is not None:
             if self.ghost_lady_bound_target.dead:
@@ -9589,9 +9977,7 @@ class Player:
     async def set_marksman_target(self) -> None:
         if self.role != Role.MARKSMAN or self.dead or self.marksman_arrows <= 0:
             return
-        await self.game.ctx.send(
-            _("**The {role} marks a target...**").format(role=self.role_name)
-        )
+        await self.announce_awake(variant="mark")
         if self.marksman_target is not None and self.marksman_target.dead:
             self.marksman_target = None
 
@@ -9660,9 +10046,7 @@ class Player:
         if self.voodoo_mute_uses_left <= 0:
             return
 
-        await self.game.ctx.send(
-            _("**The {role} weaves a mute curse...**").format(role=self.role_name)
-        )
+        await self.announce_awake(variant="curse")
         available = [
             player
             for player in self.game.alive_players
@@ -9729,9 +10113,7 @@ class Player:
             )
             return
 
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         available = [player for player in self.game.alive_players if player != self]
         if not available:
             await self.send(
@@ -9776,9 +10158,7 @@ class Player:
         )
 
     async def set_preacher_prediction(self) -> None:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         available = [player for player in self.game.alive_players if player != self]
         if not available:
             self.preacher_predicted_player_id = None
@@ -9828,9 +10208,7 @@ class Player:
         )
 
     async def set_bodyguard_target(self) -> None:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         available = [player for player in self.game.alive_players if player != self]
         try:
             target = await self.choose_users(
@@ -9865,9 +10243,7 @@ class Player:
         )
 
     async def set_jailer_target(self) -> None:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         available = [player for player in self.game.alive_players if player != self]
         try:
             target = await self.choose_users(
@@ -9910,9 +10286,7 @@ class Player:
     async def choose_thief_role(self) -> None:
         current_identity_role = self.role
         identity_role_name = self.role_name
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         entries = [self.game.get_role_name(role) for role in self.game.extra_roles]
         await self.send(
             _(
@@ -9976,9 +10350,7 @@ class Player:
             await self.send_information()
 
     async def choose_wolfhound_role(self, roles: list[Role]) -> None:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         entries = [self.game.get_role_name(role) for role in roles]
         await self.send(
             _(
@@ -10024,9 +10396,7 @@ class Player:
                 await self.game.start_avenger_target_selection()
 
     async def check_3_werewolves(self) -> None:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         if not self.has_fox_ability:
             # Delay is given here so that the Fox will not be accused of losing the ability already
             await asyncio.sleep(random.randint(5, int(self.game.timer / 2)))
@@ -10101,11 +10471,7 @@ class Player:
         await asyncio.sleep(3)  # Give time to read
 
     async def choose_lovers(self) -> None:
-        await self.game.ctx.send(
-            _("**{role} awakes and shoots their arrows...**").format(
-                role=self.role_name
-            )
-        )
+        await self.announce_awake(variant="arrows")
         if len(self.game.alive_players) < 2:
             await self.send(
                 _("Not enough players to choose lovers.\n{game_link}").format(
@@ -10166,9 +10532,7 @@ class Player:
         )
         if self.has_raided or len(self.game.recent_deaths) == 0:
             return
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         possible_targets = [p for p in self.game.recent_deaths]
         try:
             to_raid = await self.choose_users(
@@ -10247,9 +10611,7 @@ class Player:
         if len(alive_players) == 0 and current_mark is None:
             return
 
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
 
         if current_mark is None:
             current_label = _("None")
@@ -10317,9 +10679,7 @@ class Player:
         if not dead_villagers:
             return
 
-        await self.game.ctx.send(
-            _("**The {role} communes with the dead...**").format(role=self.role_name)
-        )
+        await self.announce_awake(variant="commune")
         try:
             to_resurrect = await self.choose_users(
                 _("Choose one dead Villager-team player to resurrect (one-time)."),
@@ -10371,9 +10731,7 @@ class Player:
         ]
         if len(dead_wolves) == 0:
             return
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         try:
             to_resurrect = await self.choose_users(
                 _("Choose a werewolf to resurrect."),
@@ -10428,9 +10786,7 @@ class Player:
         ]
         if not dead_wolves:
             return
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         try:
             to_summon = await self.choose_users(
                 _(
@@ -10494,9 +10850,7 @@ class Player:
         )
 
     async def choose_2_to_exchange(self) -> None:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         possible_targets = [p for p in self.game.alive_players if p != self]
         try:
             exchanged = await self.choose_users(
@@ -10692,9 +11046,7 @@ class Player:
         return
 
     async def infect_virus(self) -> None:
-        await self.game.ctx.send(
-            _("**The {role} awakes...**").format(role=self.role_name)
-        )
+        await self.announce_awake()
         possible_targets = [
             p
             for p in self.game.alive_players
@@ -10776,6 +11128,15 @@ class Player:
     def dead(self) -> bool:
         return self.lives < 1
 
+    async def announce_awake(self, *, variant: str = "default") -> None:
+        await self.game.ctx.send(
+            self.game.get_role_awake_text(
+                role=self.role,
+                role_name=self.role_name,
+                variant=variant,
+            )
+        )
+
     async def kill(self) -> None:
         if self.dead:
             return
@@ -10854,9 +11215,9 @@ class Player:
             for p in self.game.players:
                 p.revealed_roles.update({self: death_reveal_role})
             await self.game.ctx.send(
-                _("{user} has died. They were a **{role}**!{initial_role_info}").format(
-                    user=self.user.mention,
-                    role=self.game.get_role_name(death_reveal_role),
+                self.game.get_death_reveal_text(
+                    player=self,
+                    death_reveal_role=death_reveal_role,
                     initial_role_info=initial_role_info,
                 )
             )

@@ -3217,6 +3217,7 @@ class NewWerewolf(commands.Cog):
         ).format(prefix=ctx.clean_prefix)
 
         mode_emojis = {
+            "Comedy": "🤡",
             "Huntergame": "🔫",
             "Avengergame": "🗡️",
             "Valentines": "💕",
@@ -3338,17 +3339,18 @@ class NewWerewolf(commands.Cog):
             """
             `[mode]` - The mode to play, see below for available options. (optional and defaults to Classic)
             `[speed]` - The game speed to play, see below available options. (optional and defaults to Normal)
-            `[min_players]` - The minimum players needed to play. (optional and defaults depending on the game mode: Classic: 5, Imbalanced: 5, Huntergame: 8, Villagergame: 5, Avengergame: 5, Valentines: 8, IdleRPG: 5)
+            `[min_players]` - The minimum players needed to play. (optional and defaults depending on the game mode: Classic: 5, Comedy: 5, Imbalanced: 5, Huntergame: 8, Villagergame: 5, Avengergame: 5, Valentines: 8, IdleRPG: 5)
 
             Starts a game of NewWerewolf. Find the werewolves, before they find you!
             Your goal to win is indicated on the role you have.
             The command starter is not auto-joined. Click the lobby's **Join** button if you want to play, or **Leave** before the game begins if you want to spectate.
-            **Game modes:** `Classic` (default), `Imbalanced`, `Huntergame`, `Villagergame`, `Avengergame`, `Valentines`, `IdleRPG`. Use `{prefix}nww modes` for detailed info.
+            **Game modes:** `Classic` (default), `Comedy`, `Imbalanced`, `Huntergame`, `Villagergame`, `Avengergame`, `Valentines`, `IdleRPG`. Use `{prefix}nww modes` for detailed info.
             **Game speeds** (in seconds): `Normal`: 60 (default), `Extended`: 90, `Fast`: 45, `Blitz`: 30. Use `{prefix}nww speeds` for detailed info.
             **Aliases:**
             `nww`
             **Examples:**
             `{prefix}nww Blitz` for Classic mode on Blitz speed
+            `{prefix}nww Comedy` for Classic rules with cursed/funny narration
             `{prefix}nww Imbalanced` for Imbalanced mode on Normal speed
             `{prefix}nww Valentines Extended` for Valentines mode on Extended speed
             `{prefix}nww Huntergame Fast` for Huntergame mode on Fast speed
@@ -3362,16 +3364,18 @@ class NewWerewolf(commands.Cog):
 
         game_modes = [
             "Classic",
+            "Comedy",
             "Imbalanced",
             "Huntergame",
             "Villagergame",
             "Avengergame",
             "Valentines",
-            "Idlerpg",
+            "IdleRPG",
         ]
         game_speeds = ["Normal", "Extended", "Fast", "Blitz"]
         minimum_players = {
             "Classic": 5,
+            "Comedy": 5,
             "Imbalanced": 5,
             "Huntergame": 8,
             "Villagergame": 5,
@@ -3382,6 +3386,14 @@ class NewWerewolf(commands.Cog):
 
         mode_token = str(mode or "Classic").strip().title()
         speed_token = str(speed or "Normal").strip().title()
+        mode_aliases = {
+            "Funny": "Comedy",
+            "Shitpost": "Comedy",
+            "Shitshow": "Comedy",
+            "Idlerpg": "IdleRPG",
+        }
+        mode_token = mode_aliases.get(mode_token, mode_token)
+        speed_token = mode_aliases.get(speed_token, speed_token)
 
         # Support shorthand like `nww Blitz` and keep roster behavior tied to mode.
         # Blitz/Fast/Extended/Normal are speeds, not separate role rosters.
@@ -3407,9 +3419,6 @@ class NewWerewolf(commands.Cog):
                     " command."
                 ).format(prefix=ctx.clean_prefix)
             )
-        if mode_token == "Idlerpg":
-            mode_token = "IdleRPG"
-
         if not min_players:
             min_players = minimum_players.get(mode_token, 5)
 
@@ -3495,8 +3504,9 @@ class NewWerewolf(commands.Cog):
                 title=_("Werewolf Game Modes"),
                 description=_(
                     """\
-**Game modes:** `Classic` (default), `Imbalanced`, `Huntergame`, `Villagergame`, `Avengergame`, `Valentines`, `IdleRPG`, `Custom`.
+**Game modes:** `Classic` (default), `Comedy`, `Imbalanced`, `Huntergame`, `Villagergame`, `Avengergame`, `Valentines`, `IdleRPG`, `Custom`.
 `Classic`: Play the classic werewolf game. (default)
+`Comedy`: Uses the same role roster and rules as `Classic`, but the public narration is chaotic and funny.
 `Imbalanced`: Some roles that are only available in larger games have chances to join even in smaller games. (The size of the game being referred here is about the number of players, i.e. 5-player game is small)
 `Huntergame`: Only Hunters and Werewolves are available.
 `Villagergame`: No special roles, only Villagers and Werewolves are available.
