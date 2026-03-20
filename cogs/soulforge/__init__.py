@@ -3,7 +3,7 @@ import discord
 from discord.ext import commands
 from discord.ui import Button, View
 import asyncio
-from typing import Optional, List, Dict, Tuple, Union
+from typing import Optional, List, Dict, Tuple, Union, Any
 from discord import ButtonStyle, SelectOption, ui
 from discord.ui import Button, View, Select
 import firebase_admin
@@ -13,6 +13,584 @@ import json
 import aiohttp
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils.checks import has_char, is_gm, is_patreon
+
+SPLICE_ELEMENT_ORDER = [
+    "Fire",
+    "Water",
+    "Earth",
+    "Wind",
+    "Nature",
+    "Electric",
+    "Light",
+    "Dark",
+    "Corrupted",
+    "Ice",
+]
+
+SPLICE_ELEMENT_EMOJIS = {
+    "fire": "🔥",
+    "water": "💧",
+    "earth": "🪨",
+    "wind": "💨",
+    "nature": "🌿",
+    "electric": "⚡",
+    "light": "✨",
+    "dark": "🌑",
+    "corrupted": "☠️",
+    "ice": "❄️",
+}
+
+SPLICE_ELEMENT_COLORS = {
+    "fire": 0xFF5733,
+    "water": 0x3498DB,
+    "earth": 0x8B4513,
+    "wind": 0x7FFF00,
+    "nature": 0x228B22,
+    "electric": 0xFFFF00,
+    "light": 0xFFD700,
+    "dark": 0x36454F,
+    "corrupted": 0x800080,
+    "ice": 0xADD8E6,
+}
+
+SPLICE_SORT_OPTIONS = [
+    ("name", "Name A-Z", "Alphabetical by splice name"),
+    ("newest", "Newest", "Most recently discovered first"),
+    ("oldest", "Oldest", "Earliest discovered first"),
+    ("element", "Element", "Grouped by element"),
+    ("hp", "HP", "Highest HP first"),
+    ("attack", "Attack", "Highest attack first"),
+    ("defense", "Defense", "Highest defense first"),
+    ("total", "Total Power", "Highest total stats first"),
+]
+
+SPLICE_SCOPE_OPTIONS = [
+    ("all", "All Splices", "Browse every discovered splice"),
+    ("mine", "My Splices", "Only splices you currently own"),
+    ("favorites", "Favorites", "Only your bookmarked splices"),
+    ("mine_favorites", "My Favorites", "Your owned bookmarked splices"),
+]
+
+
+class SpliceSearchModal(discord.ui.Modal, title="Search Splices"):
+    def __init__(self, browser_view: "SpliceBrowserView"):
+        super().__init__()
+        self.browser_view = browser_view
+        self.query_input = discord.ui.TextInput(
+            label="Search by splice or parent name",
+            placeholder="Leave blank to clear search",
+            required=False,
+            default=browser_view.search_query or "",
+            max_length=100,
+        )
+        self.add_item(self.query_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.browser_view.search_query = str(self.query_input.value).strip() or None
+        self.browser_view.current_page = 0
+        self.browser_view.selected_splice_id = None
+        await self.browser_view.refresh(interaction)
+
+
+class SpliceBrowserSortSelect(discord.ui.Select):
+    def __init__(self, browser_view: "SpliceBrowserView"):
+        self.browser_view = browser_view
+        options = [
+            discord.SelectOption(
+                label=label,
+                value=value,
+                description=description,
+                default=browser_view.sort_key == value,
+            )
+            for value, label, description in SPLICE_SORT_OPTIONS
+        ]
+        super().__init__(
+            placeholder="Sort splices...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.browser_view.sort_key = self.values[0]
+        self.browser_view.current_page = 0
+        self.browser_view.selected_splice_id = None
+        await self.browser_view.refresh(interaction)
+
+
+class SpliceBrowserScopeSelect(discord.ui.Select):
+    def __init__(self, browser_view: "SpliceBrowserView"):
+        self.browser_view = browser_view
+        options = [
+            discord.SelectOption(
+                label=label,
+                value=value,
+                description=description,
+                default=browser_view.scope_key == value,
+            )
+            for value, label, description in SPLICE_SCOPE_OPTIONS
+        ]
+        super().__init__(
+            placeholder="Choose a splice scope...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.browser_view.scope_key = self.values[0]
+        self.browser_view.current_page = 0
+        self.browser_view.selected_splice_id = None
+        await self.browser_view.refresh(interaction)
+
+
+class SpliceBrowserElementSelect(discord.ui.Select):
+    def __init__(self, browser_view: "SpliceBrowserView"):
+        self.browser_view = browser_view
+        options = [
+            discord.SelectOption(
+                label="All Elements",
+                value="all",
+                description="Show every element",
+                default=browser_view.element_filter == "all",
+            )
+        ]
+
+        for element in SPLICE_ELEMENT_ORDER:
+            emoji = SPLICE_ELEMENT_EMOJIS.get(element.lower(), "🧬")
+            options.append(
+                discord.SelectOption(
+                    label=element,
+                    value=element.lower(),
+                    description=f"{emoji} Filter to {element} splices",
+                    default=browser_view.element_filter == element.lower(),
+                )
+            )
+
+        super().__init__(
+            placeholder="Filter by element...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.browser_view.element_filter = self.values[0]
+        self.browser_view.current_page = 0
+        self.browser_view.selected_splice_id = None
+        await self.browser_view.refresh(interaction)
+
+
+class SpliceBrowserEntrySelect(discord.ui.Select):
+    def __init__(self, browser_view: "SpliceBrowserView", page_rows: List[Dict[str, Any]]):
+        self.browser_view = browser_view
+        options = []
+        for row in page_rows[:25]:
+            name_prefix = "⭐ " if row["is_favorite"] else ""
+            owned_suffix = f" • Own {row['owned_count']}" if row["owned_count"] else ""
+            description = (
+                f"{row['element']} • HP {row['hp']} ATK {row['attack']} DEF {row['defense']}"
+            )
+            if row["pending_count"]:
+                description += f" • Pending {row['pending_count']}"
+            elif row["completed_count"]:
+                description += f" • Done {row['completed_count']}"
+            elif owned_suffix:
+                description += owned_suffix
+            options.append(
+                discord.SelectOption(
+                    label=f"{name_prefix}{row['result_name']}"[:100],
+                    value=str(row["id"]),
+                    description=description[:100],
+                )
+            )
+
+        super().__init__(
+            placeholder="Select a splice for details...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=3,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.browser_view.selected_splice_id = int(self.values[0])
+        await self.browser_view.refresh(interaction)
+
+
+class SpliceBrowserView(discord.ui.View):
+    def __init__(
+        self,
+        cog: "Soulforge",
+        ctx: commands.Context,
+        initial_query: Optional[str] = None,
+        page_size: int = 6,
+    ):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.ctx = ctx
+        self.page_size = page_size
+        self.current_page = 0
+        self.sort_key = "name"
+        self.scope_key = "all"
+        self.element_filter = "all"
+        self.search_query = initial_query.strip() if initial_query else None
+        self.selected_splice_id: Optional[int] = None
+        self.message: Optional[discord.Message] = None
+        self.all_rows: List[Dict[str, Any]] = []
+        self.filtered_rows: List[Dict[str, Any]] = []
+
+    async def start(self):
+        await self.refresh()
+        return self.message
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "This splice browser belongs to someone else.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_timeout(self):
+        if self.message:
+            for child in self.children:
+                child.disabled = True
+            await self.message.edit(view=self)
+
+    async def refresh(self, interaction: Optional[discord.Interaction] = None):
+        self.all_rows = await self.cog.get_splice_browser_rows(self.ctx.author.id)
+        self.filtered_rows = self._apply_filters(self.all_rows)
+
+        if self.selected_splice_id and not any(
+            row["id"] == self.selected_splice_id for row in self.filtered_rows
+        ):
+            self.selected_splice_id = None
+
+        max_pages = max(1, (len(self.filtered_rows) + self.page_size - 1) // self.page_size)
+        self.current_page = max(0, min(self.current_page, max_pages - 1))
+
+        self._rebuild_components()
+        embed = self._build_embed()
+
+        if interaction is None:
+            if self.message is None:
+                self.message = await self.ctx.send(embed=embed, view=self)
+            else:
+                await self.message.edit(embed=embed, view=self)
+            return
+
+        if interaction.response.is_done():
+            if self.message:
+                await self.message.edit(embed=embed, view=self)
+            else:
+                self.message = await self.ctx.send(embed=embed, view=self)
+        else:
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    def _apply_filters(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        filtered = list(rows)
+
+        if self.scope_key == "mine":
+            filtered = [row for row in filtered if row["is_mine"]]
+        elif self.scope_key == "favorites":
+            filtered = [row for row in filtered if row["is_favorite"]]
+        elif self.scope_key == "mine_favorites":
+            filtered = [
+                row
+                for row in filtered
+                if row["is_favorite"] and row["is_mine"]
+            ]
+
+        if self.element_filter != "all":
+            filtered = [
+                row
+                for row in filtered
+                if str(row.get("element", "")).lower() == self.element_filter
+            ]
+
+        if self.search_query:
+            lowered = self.search_query.lower()
+            filtered = [
+                row
+                for row in filtered
+                if lowered in row["result_name"].lower()
+                or lowered in row["pet1_default"].lower()
+                or lowered in row["pet2_default"].lower()
+            ]
+
+        def name_key(row: Dict[str, Any]):
+            return row["result_name"].lower()
+
+        sort_map = {
+            "name": lambda row: (name_key(row), row["id"]),
+            "newest": lambda row: (row["created_at"] or datetime.datetime.min, row["id"]),
+            "oldest": lambda row: (row["created_at"] or datetime.datetime.min, row["id"]),
+            "element": lambda row: (
+                str(row.get("element", "")).lower(),
+                name_key(row),
+                row["id"],
+            ),
+            "hp": lambda row: (row["hp"], name_key(row), row["id"]),
+            "attack": lambda row: (row["attack"], name_key(row), row["id"]),
+            "defense": lambda row: (row["defense"], name_key(row), row["id"]),
+            "total": lambda row: (row["total_power"], name_key(row), row["id"]),
+        }
+
+        reverse = self.sort_key in {"newest", "hp", "attack", "defense", "total"}
+        filtered.sort(key=sort_map.get(self.sort_key, sort_map["name"]), reverse=reverse)
+        return filtered
+
+    def _get_page_rows(self) -> List[Dict[str, Any]]:
+        start = self.current_page * self.page_size
+        end = start + self.page_size
+        return self.filtered_rows[start:end]
+
+    def _get_selected_row(self) -> Optional[Dict[str, Any]]:
+        if self.selected_splice_id is None:
+            return None
+        for row in self.filtered_rows:
+            if row["id"] == self.selected_splice_id:
+                return row
+        return None
+
+    def _rebuild_components(self):
+        self.clear_items()
+        self.add_item(SpliceBrowserSortSelect(self))
+        self.add_item(SpliceBrowserScopeSelect(self))
+        self.add_item(SpliceBrowserElementSelect(self))
+
+        page_rows = self._get_page_rows()
+        if page_rows:
+            self.add_item(SpliceBrowserEntrySelect(self, page_rows))
+
+        search_button = discord.ui.Button(
+            label="Search",
+            style=discord.ButtonStyle.secondary,
+            row=4,
+        )
+        search_button.callback = self.open_search_modal
+        self.add_item(search_button)
+
+        list_button = discord.ui.Button(
+            label="Back to List",
+            style=discord.ButtonStyle.secondary,
+            disabled=self.selected_splice_id is None,
+            row=4,
+        )
+        list_button.callback = self.clear_selection
+        self.add_item(list_button)
+
+        favorite_label = "Favorite"
+        selected_row = self._get_selected_row()
+        if selected_row and selected_row["is_favorite"]:
+            favorite_label = "Unfavorite"
+
+        favorite_button = discord.ui.Button(
+            label=favorite_label,
+            style=discord.ButtonStyle.primary,
+            disabled=selected_row is None,
+            row=4,
+        )
+        favorite_button.callback = self.toggle_favorite
+        self.add_item(favorite_button)
+
+        max_pages = max(1, (len(self.filtered_rows) + self.page_size - 1) // self.page_size)
+        prev_button = discord.ui.Button(
+            emoji="◀️",
+            style=discord.ButtonStyle.primary,
+            disabled=self.current_page <= 0,
+            row=4,
+        )
+        prev_button.callback = self.prev_page
+        self.add_item(prev_button)
+
+        next_button = discord.ui.Button(
+            emoji="▶️",
+            style=discord.ButtonStyle.primary,
+            disabled=self.current_page >= max_pages - 1,
+            row=4,
+        )
+        next_button.callback = self.next_page
+        self.add_item(next_button)
+
+    def _build_embed(self) -> discord.Embed:
+        selected_row = self._get_selected_row()
+        if selected_row:
+            return self._build_detail_embed(selected_row)
+        return self._build_list_embed()
+
+    def _build_list_embed(self) -> discord.Embed:
+        color = 0x9C44DC
+        if self.element_filter != "all":
+            color = SPLICE_ELEMENT_COLORS.get(self.element_filter, color)
+
+        embed = discord.Embed(
+            title="🧬 Splice Index",
+            description=(
+                f"Browsing **{len(self.filtered_rows)}** splice"
+                f"{'' if len(self.filtered_rows) == 1 else 's'}."
+            ),
+            color=color,
+        )
+
+        sort_label = next(
+            label for value, label, _ in SPLICE_SORT_OPTIONS if value == self.sort_key
+        )
+        scope_label = next(
+            label for value, label, _ in SPLICE_SCOPE_OPTIONS if value == self.scope_key
+        )
+        element_label = (
+            "All Elements"
+            if self.element_filter == "all"
+            else self.element_filter.capitalize()
+        )
+        search_label = self.search_query or "None"
+
+        embed.add_field(
+            name="Filters",
+            value=(
+                f"**Sort:** {sort_label}\n"
+                f"**Scope:** {scope_label}\n"
+                f"**Element:** {element_label}\n"
+                f"**Search:** {search_label}"
+            ),
+            inline=False,
+        )
+
+        page_rows = self._get_page_rows()
+        if not page_rows:
+            empty_message = "No splices match the current filters."
+            if not self.all_rows:
+                empty_message = "No splice combinations have been discovered yet."
+            embed.add_field(
+                name="Splices",
+                value=empty_message,
+                inline=False,
+            )
+        else:
+            lines = []
+            for row in page_rows:
+                favorite_marker = "⭐ " if row["is_favorite"] else ""
+                owned_marker = f"📦x{row['owned_count']} " if row["owned_count"] else ""
+                result_name = row["result_name"]
+                if len(result_name) > 50:
+                    result_name = f"{result_name[:47]}..."
+                parent_summary = f"{row['pet1_default']} + {row['pet2_default']}"
+                if len(parent_summary) > 58:
+                    parent_summary = f"{parent_summary[:55]}..."
+                element_emoji = SPLICE_ELEMENT_EMOJIS.get(
+                    str(row.get("element", "")).lower(),
+                    "🧬",
+                )
+                lines.append(
+                    f"`#{row['id']}` {favorite_marker}{owned_marker}"
+                    f"**{result_name}** {element_emoji}\n"
+                    f"`HP {row['hp']} ATK {row['attack']} DEF {row['defense']} TOT {row['total_power']}`"
+                    f" • {parent_summary}"
+                )
+
+            embed.add_field(
+                name="Splices",
+                value="\n\n".join(lines),
+                inline=False,
+            )
+
+        max_pages = max(1, (len(self.filtered_rows) + self.page_size - 1) // self.page_size)
+        embed.set_footer(
+            text=(
+                f"Page {self.current_page + 1}/{max_pages} • "
+                "Use the splice dropdown for details • Search supports splice and parent names"
+            )
+        )
+        return embed
+
+    def _build_detail_embed(self, row: Dict[str, Any]) -> discord.Embed:
+        element_key = str(row.get("element", "")).lower()
+        color = SPLICE_ELEMENT_COLORS.get(element_key, 0x9C44DC)
+        favorite_prefix = "⭐ " if row["is_favorite"] else ""
+        embed = discord.Embed(
+            title=f"{favorite_prefix}{row['result_name']}",
+            description=(
+                f"`#{row['id']}` • {row['element']} splice\n"
+                f"Parents: **{row['pet1_default']}** + **{row['pet2_default']}**"
+            ),
+            color=color,
+        )
+        embed.add_field(name="HP", value=str(row["hp"]), inline=True)
+        embed.add_field(name="Attack", value=str(row["attack"]), inline=True)
+        embed.add_field(name="Defense", value=str(row["defense"]), inline=True)
+        embed.add_field(name="Total Power", value=str(row["total_power"]), inline=True)
+        embed.add_field(name="Owned Copies", value=str(row["owned_count"]), inline=True)
+        embed.add_field(name="Requests", value=str(row["request_count"]), inline=True)
+        embed.add_field(
+            name="Favorited",
+            value="Yes" if row["is_favorite"] else "No",
+            inline=True,
+        )
+        embed.add_field(name="Pending", value=str(row["pending_count"]), inline=True)
+        embed.add_field(name="Completed", value=str(row["completed_count"]), inline=True)
+        embed.add_field(
+            name="Counts As Mine",
+            value="Yes" if row["is_mine"] else "No",
+            inline=True,
+        )
+
+        created_at = row.get("created_at")
+        if isinstance(created_at, datetime.datetime):
+            created_display = created_at.strftime("%Y-%m-%d %H:%M")
+        else:
+            created_display = "Unknown"
+        embed.add_field(name="Discovered", value=created_display, inline=False)
+
+        if row.get("url"):
+            embed.set_thumbnail(url=row["url"])
+
+        embed.set_footer(
+            text="Use Favorite to bookmark this splice • Back to List returns to the current page"
+        )
+        return embed
+
+    async def open_search_modal(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(SpliceSearchModal(self))
+
+    async def clear_selection(self, interaction: discord.Interaction):
+        self.selected_splice_id = None
+        await self.refresh(interaction)
+
+    async def toggle_favorite(self, interaction: discord.Interaction):
+        selected_row = self._get_selected_row()
+        if selected_row is None:
+            await interaction.response.send_message(
+                "Pick a splice first.",
+                ephemeral=True,
+            )
+            return
+
+        is_now_favorite = await self.cog.toggle_splice_favorite(
+            self.ctx.author.id,
+            selected_row["id"],
+        )
+        if not is_now_favorite and self.scope_key in {"favorites", "mine_favorites"}:
+            self.selected_splice_id = None
+        await self.refresh(interaction)
+
+    async def prev_page(self, interaction: discord.Interaction):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.selected_splice_id = None
+        await self.refresh(interaction)
+
+    async def next_page(self, interaction: discord.Interaction):
+        max_pages = max(1, (len(self.filtered_rows) + self.page_size - 1) // self.page_size)
+        if self.current_page < max_pages - 1:
+            self.current_page += 1
+            self.selected_splice_id = None
+        await self.refresh(interaction)
 
 class SpliceStatusPaginator(discord.ui.View):
     """A paginator for splice status entries using a dropdown menu for navigation"""
@@ -492,6 +1070,149 @@ class Soulforge(commands.Cog):
             )
 
         return int((pet_count or 0) + (egg_count or 0) + (pending_splice_count or 0))
+
+    async def ensure_splice_browser_tables(self, conn) -> None:
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS splice_combinations (
+                id SERIAL PRIMARY KEY,
+                pet1_default TEXT,
+                pet2_default TEXT,
+                result_name TEXT,
+                hp INTEGER,
+                attack INTEGER,
+                defense INTEGER,
+                element TEXT,
+                url TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS splice_favorites (
+                user_id BIGINT NOT NULL,
+                splice_id INTEGER NOT NULL REFERENCES splice_combinations(id) ON DELETE CASCADE,
+                created_at TIMESTAMP DEFAULT NOW(),
+                PRIMARY KEY (user_id, splice_id)
+            )
+            """
+        )
+
+    async def get_splice_browser_rows(self, user_id: int) -> List[Dict[str, Any]]:
+        async with self.bot.pool.acquire() as conn:
+            await self.ensure_splice_browser_tables(conn)
+            splice_requests_exists = await conn.fetchval(
+                "SELECT to_regclass('public.splice_requests') IS NOT NULL"
+            )
+            history_join = ""
+            history_select = (
+                "0::INTEGER AS request_count,"
+                " 0::INTEGER AS pending_count,"
+                " 0::INTEGER AS completed_count,"
+            )
+
+            if splice_requests_exists:
+                history_select = (
+                    "COALESCE(my_history.request_count, 0) AS request_count,"
+                    " COALESCE(my_history.pending_count, 0) AS pending_count,"
+                    " COALESCE(my_history.completed_count, 0) AS completed_count,"
+                )
+                history_join = """
+                LEFT JOIN (
+                    SELECT
+                        pet1_default,
+                        pet2_default,
+                        COUNT(*)::INTEGER AS request_count,
+                        COUNT(*) FILTER (WHERE status = 'pending')::INTEGER AS pending_count,
+                        COUNT(*) FILTER (WHERE status = 'completed')::INTEGER AS completed_count
+                    FROM splice_requests
+                    WHERE user_id = $1
+                    GROUP BY pet1_default, pet2_default
+                ) my_history
+                    ON (
+                        (my_history.pet1_default = sc.pet1_default AND my_history.pet2_default = sc.pet2_default)
+                        OR
+                        (my_history.pet1_default = sc.pet2_default AND my_history.pet2_default = sc.pet1_default)
+                    )
+                """
+
+            query = f"""
+                SELECT
+                    sc.id,
+                    sc.pet1_default,
+                    sc.pet2_default,
+                    sc.result_name,
+                    sc.hp,
+                    sc.attack,
+                    sc.defense,
+                    sc.element,
+                    sc.url,
+                    sc.created_at,
+                    COALESCE(owned.owned_count, 0) AS owned_count,
+                    {history_select}
+                    (sf.splice_id IS NOT NULL) AS is_favorite
+                FROM splice_combinations sc
+                LEFT JOIN (
+                    SELECT default_name, COUNT(*)::INTEGER AS owned_count
+                    FROM monster_pets
+                    WHERE user_id = $1
+                    GROUP BY default_name
+                ) owned
+                    ON owned.default_name = sc.result_name
+                {history_join}
+                LEFT JOIN splice_favorites sf
+                    ON sf.user_id = $1 AND sf.splice_id = sc.id
+            """
+            rows = await conn.fetch(query, user_id)
+
+        parsed_rows: List[Dict[str, Any]] = []
+        for row in rows:
+            parsed = dict(row)
+            parsed["pet1_default"] = str(parsed.get("pet1_default") or "Unknown")
+            parsed["pet2_default"] = str(parsed.get("pet2_default") or "Unknown")
+            parsed["result_name"] = str(parsed.get("result_name") or "Unknown Splice")
+            parsed["element"] = str(parsed.get("element") or "Unknown")
+            parsed["owned_count"] = int(parsed.get("owned_count") or 0)
+            parsed["request_count"] = int(parsed.get("request_count") or 0)
+            parsed["pending_count"] = int(parsed.get("pending_count") or 0)
+            parsed["completed_count"] = int(parsed.get("completed_count") or 0)
+            parsed["is_favorite"] = bool(parsed.get("is_favorite"))
+            parsed["is_mine"] = bool(parsed["request_count"] > 0 or parsed["owned_count"] > 0)
+            parsed["total_power"] = int(
+                (parsed.get("hp") or 0)
+                + (parsed.get("attack") or 0)
+                + (parsed.get("defense") or 0)
+            )
+            parsed_rows.append(parsed)
+        return parsed_rows
+
+    async def toggle_splice_favorite(self, user_id: int, splice_id: int) -> bool:
+        async with self.bot.pool.acquire() as conn:
+            await self.ensure_splice_browser_tables(conn)
+            existing = await conn.fetchval(
+                "SELECT 1 FROM splice_favorites WHERE user_id = $1 AND splice_id = $2",
+                user_id,
+                splice_id,
+            )
+            if existing:
+                await conn.execute(
+                    "DELETE FROM splice_favorites WHERE user_id = $1 AND splice_id = $2",
+                    user_id,
+                    splice_id,
+                )
+                return False
+
+            await conn.execute(
+                """
+                INSERT INTO splice_favorites (user_id, splice_id)
+                VALUES ($1, $2)
+                ON CONFLICT (user_id, splice_id) DO NOTHING
+                """,
+                user_id,
+                splice_id,
+            )
+            return True
 
     def create_god_forging_pages(
         self,
@@ -2707,6 +3428,12 @@ class Soulforge(commands.Cog):
             )
 
         await ctx.send(embed=embed)
+
+    @commands.command(name="splices", aliases=["splicedex", "spliceindex"], brief="Browse discovered splices")
+    async def splices(self, ctx, *, query: str = None):
+        """Browse discovered splice combinations with sorting, filters, and favorites."""
+        browser = SpliceBrowserView(self, ctx, initial_query=query)
+        await browser.start()
 
 
     async def suggest_element(self, element1, element2):
