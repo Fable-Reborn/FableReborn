@@ -2,6 +2,7 @@ import datetime
 import mimetypes
 from operator import truediv
 from collections import defaultdict, deque, OrderedDict
+import re
 import discord
 from discord.ext import commands
 from discord.ui import Button, View
@@ -336,6 +337,43 @@ class PetEditView(View):
         self.parent_view = parent_view
         self.pet_index = pet_index
         self.openai_client = openai_client
+
+    def _get_preserved_splice_tag(self) -> str:
+        splice_type = str(self.pet.get("splice_type") or "").strip().upper()
+        tag_by_type = {
+            "FINAL": "[FINAL]",
+            "SPECIAL": "[SPECIAL]",
+            "UNSTABLE": "[UNSTABLE]",
+            "DESTABILIZED": "[DESTABILISED]",
+            "DESTABILISED": "[DESTABILISED]",
+        }
+        if splice_type in tag_by_type:
+            return tag_by_type[splice_type]
+
+        current_name = str(self.pet.get("name") or "").upper()
+        for tag in (
+            "[FINAL]",
+            "[SPECIAL]",
+            "[UNSTABLE]",
+            "[DESTABILISED]",
+        ):
+            if tag in current_name:
+                return tag
+        return ""
+
+    def _apply_preserved_splice_tag(self, raw_name: str) -> str:
+        cleaned = (raw_name or "").strip()
+        preserved_tag = self._get_preserved_splice_tag()
+        if not preserved_tag:
+            return cleaned
+
+        cleaned = re.sub(
+            r"\s+\[(FINAL|SPECIAL|UNSTABLE|DESTABILISED)\]\s*$",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        ).strip()
+        return f"{cleaned} {preserved_tag}" if cleaned else preserved_tag
     
     @discord.ui.button(label="1. Edit Name", style=discord.ButtonStyle.primary, emoji="📝")
     async def edit_name(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -394,15 +432,19 @@ class PetEditView(View):
                     choice = choice_msg.content.strip()
                     
                     if choice.isdigit() and 1 <= int(choice) <= len(names):
-                        self.pet['name'] = names[int(choice) - 1]
+                        self.pet['name'] = self._apply_preserved_splice_tag(
+                            names[int(choice) - 1]
+                        )
                     else:
-                        self.pet['name'] = choice
+                        self.pet['name'] = self._apply_preserved_splice_tag(choice)
                 else:
                     await self.ctx.send("Failed to generate names. Please type a custom name:")
                     custom_msg = await self.ctx.bot.wait_for('message', check=check, timeout=60)
-                    self.pet['name'] = custom_msg.content.strip()
+                    self.pet['name'] = self._apply_preserved_splice_tag(
+                        custom_msg.content
+                    )
             else:
-                self.pet['name'] = msg.content.strip()
+                self.pet['name'] = self._apply_preserved_splice_tag(msg.content)
             
             await self.ctx.send(f"✅ Name updated to: **{self.pet['name']}**")
             
