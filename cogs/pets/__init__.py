@@ -3927,6 +3927,7 @@ class Pets(commands.Cog):
         if not await self.is_ranger_owner(ctx):
             return await ctx.send("❌ You need to be in the Ranger class line to manage a daycare.")
 
+        active_count = 0
         async with self.bot.pool.acquire() as conn:
             async with conn.transaction():
                 daycare = await self.get_daycare_for_owner(conn, ctx.author.id, for_update=True)
@@ -3939,19 +3940,21 @@ class Pets(commands.Cog):
                     "SELECT COUNT(*) FROM pet_daycare_boardings WHERE daycare_id = $1 AND status = 'active';",
                     daycare["id"],
                 )
-                if active_count:
-                    return await ctx.send(
-                        "❌ You cannot close your daycare while pets are still boarded inside."
-                    )
 
                 await conn.execute(
                     "UPDATE pet_daycares SET is_open = FALSE WHERE id = $1;",
                     daycare["id"],
                 )
 
-        await ctx.send(
+        message = (
             f"✅ Closed **{daycare['name']}**. New boardings are now blocked until you reopen it."
         )
+        if active_count:
+            message += (
+                f" Existing boarded pets will stay checked in until their bookings end or they are collected "
+                f"({int(active_count)} active)."
+            )
+        await ctx.send(message)
 
     @daycare.command(brief=_("Upgrade your daycare facilities"))
     @has_char()
