@@ -1098,6 +1098,13 @@ class DaycareBoardingView(discord.ui.View):
                     )
                 except ValueError as exc:
                     error_message = str(exc)
+                    if (
+                        error_message == "That daycare is currently closed to new boardings."
+                        and self.cog.has_daycare_reception_upgrade(self.daycare)
+                    ):
+                        return await interaction.response.send_message(
+                            embed=self.cog.build_daycare_notice_embed(self.daycare, self.owner, "closed"),
+                        )
                     if error_message == "That daycare is currently full." and self.cog.has_daycare_reception_upgrade(self.daycare):
                         return await interaction.response.send_message(
                             embed=self.cog.build_daycare_notice_embed(self.daycare, self.owner, "full"),
@@ -1154,8 +1161,12 @@ class DaycareBoardingLauncherView(discord.ui.View):
         async with self.cog.bot.pool.acquire() as conn:
             daycare = await self.cog.get_daycare_for_owner(conn, self.owner.id)
             if not daycare or not daycare["is_open"]:
+                if daycare and self.cog.has_daycare_reception_upgrade(daycare):
+                    return await interaction.response.send_message(
+                        embed=self.cog.build_daycare_notice_embed(daycare, self.owner, "closed"),
+                    )
                 return await interaction.response.send_message(
-                    "❌ That daycare is no longer open for new boardings.",
+                    "❌ That daycare is currently closed to new boardings.",
                     ephemeral=True,
                 )
             packages = await self.cog.get_active_daycare_packages(conn, daycare["id"])
@@ -1678,6 +1689,12 @@ class Pets(commands.Cog):
                 )
                 await conn.execute(
                     "ALTER TABLE pet_daycares ADD COLUMN IF NOT EXISTS reception_full_message TEXT;"
+                )
+                await conn.execute(
+                    "ALTER TABLE pet_daycares ADD COLUMN IF NOT EXISTS reception_closed_image_url TEXT;"
+                )
+                await conn.execute(
+                    "ALTER TABLE pet_daycares ADD COLUMN IF NOT EXISTS reception_closed_message TEXT;"
                 )
                 await conn.execute(
                     "ALTER TABLE pet_daycares ADD COLUMN IF NOT EXISTS reception_booked_image_url TEXT;"
@@ -2361,8 +2378,10 @@ class Pets(commands.Cog):
             raise ValueError("Boarding duration must be between 1 and 7 days.")
 
         daycare = await self.get_daycare_for_owner(conn, owner_user_id, for_update=True)
-        if not daycare or not daycare["is_open"]:
-            raise ValueError("That user does not have an open daycare.")
+        if not daycare:
+            raise ValueError("That user does not have a daycare.")
+        if not daycare["is_open"]:
+            raise ValueError("That daycare is currently closed to new boardings.")
 
         active_count = await conn.fetchval(
             "SELECT COUNT(*) FROM pet_daycare_boardings WHERE daycare_id = $1 AND status = 'active';",
@@ -2706,7 +2725,7 @@ class Pets(commands.Cog):
         return bool(daycare and int(daycare.get("reception_level", 0) or 0) > 0)
 
     def get_daycare_reception_template_keys(self) -> list[str]:
-        return ["default", "full", "booked", "collection"]
+        return ["default", "closed", "full", "booked", "collection"]
 
     def normalize_daycare_reception_template_key(self, raw_key: str | None) -> str | None:
         if raw_key is None:
@@ -2715,6 +2734,9 @@ class Pets(commands.Cog):
             "default": "default",
             "intro": "default",
             "greeting": "default",
+            "closed": "closed",
+            "close": "closed",
+            "intake": "closed",
             "full": "full",
             "filled": "full",
             "booked": "booked",
@@ -2730,6 +2752,7 @@ class Pets(commands.Cog):
     def get_daycare_reception_column_map(self) -> dict[str, tuple[str, str]]:
         return {
             "default": ("reception_image_url", "reception_message"),
+            "closed": ("reception_closed_image_url", "reception_closed_message"),
             "full": ("reception_full_image_url", "reception_full_message"),
             "booked": ("reception_booked_image_url", "reception_booked_message"),
             "collection": ("reception_collection_image_url", "reception_collection_message"),
@@ -2826,10 +2849,39 @@ class Pets(commands.Cog):
         active_slots: int | None = None,
         slot_cap: int | None = None,
     ) -> discord.Embed:
-        template_key = "full" if notice_type == "full" else "booked"
+        template_key_map = {
+            "closed": "closed",
+            "full": "full",
+            "boarding_complete": "booked",
+        }
+        template_key = template_key_map.get(notice_type, "default")
         template = self.get_daycare_reception_template_values(daycare, template_key)
 
-        if notice_type == "full":
+        if notice_type == "closed":
+            description = self.render_daycare_template(
+                template["message"],
+                {
+                    "daycare_name": daycare["name"],
+                    "owner_name": owner.display_name,
+                },
+            )
+            if not description:
+                description = (
+                    "This daycare is not accepting new boardings right now.\n"
+                    "Please check back later after intake is reopened."
+                )
+            embed = discord.Embed(
+                title=f"{daycare['name']} Reception",
+                color=discord.Color.orange(),
+                description=description,
+            )
+            embed.add_field(
+                name="Status",
+                value="The owner has closed intake. Existing bookings can still finish normally.",
+                inline=False,
+            )
+            footer = "This notice is public."
+        elif notice_type == "full":
             description = self.render_daycare_template(
                 template["message"],
                 {
@@ -2980,6 +3032,7 @@ class Pets(commands.Cog):
     def get_daycare_reception_available_tags(self, template_key: str) -> list[str]:
         tags = {
             "default": ["{daycare_name}", "{owner_name}"],
+            "closed": ["{daycare_name}", "{owner_name}"],
             "full": ["{daycare_name}", "{owner_name}", "{active_slots}", "{slot_cap}"],
             "booked": [
                 "{daycare_name}",
@@ -3014,6 +3067,8 @@ class Pets(commands.Cog):
     def build_daycare_reception_preview_embed(self, daycare, owner: discord.abc.User, template_key: str) -> discord.Embed:
         if template_key == "default":
             return self.build_daycare_reception_embed(daycare, owner)
+        if template_key == "closed":
+            return self.build_daycare_notice_embed(daycare, owner, "closed")
         if template_key == "full":
             caps = self.get_daycare_caps(daycare)
             return self.build_daycare_notice_embed(
@@ -3095,7 +3150,7 @@ class Pets(commands.Cog):
             f"`{prefix}pets daycare upgrade`\n"
             f"`{prefix}pets daycare packagecreate`\n"
             f"`{prefix}pets daycare packages`\n"
-            f"`{prefix}pets daycare reception [default|full|booked|collection] ...`"
+            f"`{prefix}pets daycare reception [default|closed|full|booked|collection] ...`"
             if can_open_daycare
             else "You need the Ranger class line to open a daycare. Owner management commands are GM-only."
         )
@@ -4158,7 +4213,7 @@ class Pets(commands.Cog):
                     title="Daycare Reception",
                     color=discord.Color.teal(),
                     description=(
-                        "Configure separate receptionist templates for the normal greeting, full notices, booked notices, and the collection DM.\n"
+                        "Configure separate receptionist templates for the normal greeting, closed notices, full notices, booked notices, and the collection DM.\n"
                         "Old syntax without a target still edits the default greeting."
                     ),
                 )
@@ -4179,10 +4234,11 @@ class Pets(commands.Cog):
                     name="Examples",
                     value=(
                         f"`{ctx.clean_prefix}pets daycare reception default https://example.com/clerk.png | Welcome to {ctx.author.display_name}'s daycare.`\n"
+                        f"`{ctx.clean_prefix}pets daycare reception closed {daycare['name']} is closed for new check-ins right now.`\n"
                         f"`{ctx.clean_prefix}pets daycare reception full {daycare['name']} is full right now. ({{active_slots}}/{{slot_cap}})`\n"
                         f"`{ctx.clean_prefix}pets daycare reception booked {{pet_name}} is now checked in for {{days_booked}} day(s).`\n"
                         f"`{ctx.clean_prefix}pets daycare reception collection {{pet_name}} gained {{levels_gained}} level(s)!`\n"
-                        f"`{ctx.clean_prefix}pets daycare reception booked clear`"
+                        f"`{ctx.clean_prefix}pets daycare reception closed clear`"
                     ),
                     inline=False,
                 )
@@ -4270,8 +4326,14 @@ class Pets(commands.Cog):
     async def browse(self, ctx, owner: discord.Member):
         async with self.bot.pool.acquire() as conn:
             daycare = await self.get_daycare_for_owner(conn, owner.id)
-            if not daycare or not daycare["is_open"]:
-                return await ctx.send("❌ That user does not have an open daycare.")
+            if not daycare:
+                return await ctx.send("❌ That user does not have a daycare.")
+            if not daycare["is_open"]:
+                if self.has_daycare_reception_upgrade(daycare):
+                    return await ctx.send(
+                        embed=self.build_daycare_notice_embed(daycare, owner, "closed")
+                    )
+                return await ctx.send("❌ That daycare is currently closed to new boardings.")
             packages = await self.get_active_daycare_packages(conn, daycare["id"])
         if not packages:
             return await ctx.send("That daycare does not currently have any active packages.")
@@ -4293,8 +4355,14 @@ class Pets(commands.Cog):
         if package_id is None and pet_ref is None:
             async with self.bot.pool.acquire() as conn:
                 daycare = await self.get_daycare_for_owner(conn, owner.id)
-                if not daycare or not daycare["is_open"]:
-                    return await ctx.send("❌ That user does not have an open daycare.")
+                if not daycare:
+                    return await ctx.send("❌ That user does not have a daycare.")
+                if not daycare["is_open"]:
+                    if self.has_daycare_reception_upgrade(daycare):
+                        return await ctx.send(
+                            embed=self.build_daycare_notice_embed(daycare, owner, "closed")
+                        )
+                    return await ctx.send("❌ That daycare is currently closed to new boardings.")
                 packages = await self.get_active_daycare_packages(conn, daycare["id"])
                 if not packages:
                     return await ctx.send("That daycare does not currently have any active packages.")
@@ -4349,6 +4417,12 @@ class Pets(commands.Cog):
                     )
                 except ValueError as exc:
                     daycare = await self.get_daycare_for_owner(conn, owner.id)
+                    if (
+                        str(exc) == "That daycare is currently closed to new boardings."
+                        and daycare
+                        and self.has_daycare_reception_upgrade(daycare)
+                    ):
+                        return await ctx.send(embed=self.build_daycare_notice_embed(daycare, owner, "closed"))
                     if str(exc) == "That daycare is currently full." and self.has_daycare_reception_upgrade(daycare):
                         return await ctx.send(embed=self.build_daycare_notice_embed(daycare, owner, "full"))
                     return await ctx.send(f"❌ {exc}")
