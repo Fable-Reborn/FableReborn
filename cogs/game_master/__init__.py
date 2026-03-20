@@ -210,6 +210,36 @@ class GameMaster(commands.Cog):
         except (discord.Forbidden, discord.HTTPException):
             return None
 
+    async def _scan_redis_keys(self, match_pattern: str, count: int = 1000) -> list[str]:
+        cursor = 0
+        found_keys: list[str] = []
+
+        while True:
+            cursor_value, batch = await self.bot.redis.execute_command(
+                "SCAN",
+                cursor,
+                "MATCH",
+                match_pattern,
+                "COUNT",
+                count,
+            )
+
+            if isinstance(cursor_value, (bytes, bytearray)):
+                cursor = int(cursor_value.decode())
+            else:
+                cursor = int(cursor_value)
+
+            for key in batch or []:
+                if isinstance(key, (bytes, bytearray)):
+                    found_keys.append(key.decode())
+                else:
+                    found_keys.append(str(key))
+
+            if cursor == 0:
+                break
+
+        return list(dict.fromkeys(found_keys))
+
     async def _grant_consumable_quantity(self, conn, user_id: int, consumable_type: str, amount: int):
         rows = await conn.fetch(
             """
@@ -3023,6 +3053,80 @@ class GameMaster(commands.Cog):
                 _(
                     "Cooldown setting unsuccessful (maybe you mistyped the command name"
                     " or there is no cooldown for the user?)."
+                )
+            )
+
+    @is_gm()
+    @commands.command(
+        aliases=["gmcdall", "gmsetcdall"], hidden=True, brief=_("Clear a cooldown for everyone")
+    )
+    @locale_doc
+    async def gmsetcooldownall(
+            self,
+            ctx,
+            command: str,
+            *,
+            reason: str = None,
+    ):
+        _(
+            """`<command>` - the command whose cooldown should be cleared for everyone currently on it (subcommands in double quotes, i.e. "guild create")
+            `[reason]` - The reason this action was done, defaults to the command message link
+
+            Reset a cooldown for every user who currently has that cooldown key.
+
+            Only Game Masters can use this command."""
+        )
+
+        cooldown_keys = await self._scan_redis_keys(f"cd:*:{command}")
+
+        if not cooldown_keys:
+            return await ctx.send(
+                _(
+                    "No active cooldown entries were found for that command."
+                )
+            )
+
+        deleted_count = 0
+        batch_size = 500
+        for i in range(0, len(cooldown_keys), batch_size):
+            batch = cooldown_keys[i:i + batch_size]
+            deleted_count += int(
+                await self.bot.redis.execute_command("DEL", *batch) or 0
+            )
+
+        if deleted_count > 0:
+            await self._safe_ctx_send(
+                ctx,
+                _(
+                    "Cleared {count} cooldown entr{suffix} for `{command}`."
+                ).format(
+                    count=deleted_count,
+                    suffix="y" if deleted_count == 1 else "ies",
+                    command=command,
+                ),
+            )
+            if not self.protected_user_id or ctx.author.id != self.protected_user_id:
+                with handle_message_parameters(
+                        content=(
+                            "**{gm}** reset **{count}** cooldown entr{suffix} for the "
+                            "{command} command.\n\nReason: *{reason}*"
+                        ).format(
+                            gm=ctx.author,
+                            count=deleted_count,
+                            suffix="y" if deleted_count == 1 else "ies",
+                            command=command,
+                            reason=reason or f"<{ctx.message.jump_url}>",
+                        )
+                ) as params:
+                    await self.bot.http.send_message(
+                        self.bot.config.game.gm_log_channel,
+                        params=params,
+                    )
+        else:
+            await ctx.send(
+                _(
+                    "Cooldown clearing unsuccessful (maybe you mistyped the command name"
+                    " or there are no active cooldowns for it?)."
                 )
             )
 
