@@ -2058,14 +2058,14 @@ class Soulforge(commands.Cog):
                     pet1_data["default_name"], pet2_data["default_name"]
                 )
             if existing_splice and "[FINAL]" in existing_splice["result_name"]:
-                self.bot.reset_cooldown(ctx)
+                await self.bot.reset_cooldown(ctx)
                 return await ctx.send(
                     "The Crucible shudders violently, its mercurial surface hardening into impenetrable obsidian. "
                     "Morrigan's voice echoes with finality: \"This union has already birthed a [FINAL] form. "
                     "The forge refuses to reweave what has been perfected.\""
                 )
             if existing_splice and "[Event]" in existing_splice["result_name"]:
-                self.bot.reset_cooldown(ctx)
+                await self.bot.reset_cooldown(ctx)
                 return await ctx.send(
                     "The Crucible shudders violently, its mercurial surface hardening into impenetrable obsidian. "
                     "Morrigan's voice echoes with finality: \"This union has already birthed a [Event] form. "
@@ -2073,11 +2073,29 @@ class Soulforge(commands.Cog):
                 )
             
             # Ask for confirmation
-            confirm_msg = f"Are you sure you want to splice {pet1_data['name']} and {pet2_data['name']} together into a new beast? This action cannot be undone."
+            known_combination = existing_splice is not None
+            if known_combination:
+                confirm_msg = (
+                    f"Are you sure you want to splice {pet1_data['name']} and {pet2_data['name']} together into a new beast? "
+                    "This action cannot be undone.\n\n"
+                    "Known combination: **Yes**\n"
+                    "This splice has been discovered before, so it will use a **1 day cooldown** instead of 5 days."
+                )
+            else:
+                confirm_msg = (
+                    f"Are you sure you want to splice {pet1_data['name']} and {pet2_data['name']} together into a new beast? "
+                    "This action cannot be undone.\n\n"
+                    "Known combination: **No**\n"
+                    "This splice is new, so it will keep the normal **5 day cooldown**."
+                )
             confirmed = await ctx.confirm(confirm_msg)
             
             if not confirmed:
+                await self.bot.reset_cooldown(ctx)
                 return await ctx.send("Splice canceled.")
+
+            if known_combination:
+                await self.bot.set_cooldown(ctx, 86400)
             
             # Generate narrative sequence
             name = player_data["name"]
