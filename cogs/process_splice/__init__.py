@@ -30,6 +30,160 @@ import secrets
 # Constants for auto splice persistence
 AUTO_SPLICE_SAVE_FILE = "auto_splice_saves.json"
 
+SPLICE_BACKGROUND_THEME_DATA = {
+    "auto": {
+        "label": "Forge's Choice",
+        "prompt": (
+            "Let the environment emerge naturally from the creature's essence, element, and silhouette. "
+            "Use a cinematic fantasy backdrop that supports the creature without overpowering it."
+        ),
+    },
+    "wildlands": {
+        "label": "Wildlands",
+        "prompt": (
+            "Set the creature in untamed wildlands with windswept terrain, cliffs, tall grass, dust, and distant scale cues."
+        ),
+    },
+    "ruins": {
+        "label": "Ancient Ruins",
+        "prompt": (
+            "Place the creature among ancient ruins with broken arches, weathered stone, relic fragments, and subtle overgrowth."
+        ),
+    },
+    "astral": {
+        "label": "Astral",
+        "prompt": (
+            "Use an astral environment with nebula light, starfields, floating debris, and cosmic depth behind the creature."
+        ),
+    },
+    "storm": {
+        "label": "Stormfront",
+        "prompt": (
+            "Frame the creature against a stormfront with charged clouds, rain haze, wind, and distant lightning."
+        ),
+    },
+    "volcanic": {
+        "label": "Volcanic",
+        "prompt": (
+            "Use a volcanic setting with obsidian rock, lava glow, smoke plumes, ember drift, and heat shimmer."
+        ),
+    },
+    "glacial": {
+        "label": "Frozen",
+        "prompt": (
+            "Use a frozen landscape with glacial light, frost crystals, snow haze, icy ground, and cold atmospheric depth."
+        ),
+    },
+    "abyssal": {
+        "label": "Abyssal",
+        "prompt": (
+            "Place the creature above an abyssal void with eerie mist, dim bioluminescence, darkness, and immense depth."
+        ),
+    },
+    "verdant": {
+        "label": "Verdant",
+        "prompt": (
+            "Use a verdant primordial environment with giant roots, dense foliage, filtered light, spores, and lush scale."
+        ),
+    },
+    "ossuary": {
+        "label": "Crimson Ossuary",
+        "prompt": (
+            "Place the creature in a blood-soaked ossuary of human remains, shattered bones, dark crimson pools, and battlefield aftermath."
+        ),
+    },
+    "bioluminescent_forest": {
+        "label": "Bioluminescent Forest",
+        "prompt": (
+            "Use a bioluminescent forest with glowing plants, luminous spores, drifting mist, and deep enchanted woodland light."
+        ),
+    },
+    "cute_clouds": {
+        "label": "Cute Clouds",
+        "prompt": (
+            "Use a whimsical cloudscape with soft pastel clouds, warm sunlight, airy depth, and charming dreamlike softness."
+        ),
+    },
+    "hell": {
+        "label": "Hellscape",
+        "prompt": (
+            "Place the creature in a hellish inferno of ash, brimstone, lava fissures, black rock, and oppressive red firelight."
+        ),
+    },
+    "desert": {
+        "label": "Desert Expanse",
+        "prompt": (
+            "Use a desert expanse with sweeping dunes, sun-bleached ruins, dust trails, and severe heat haze."
+        ),
+    },
+    "cathedral": {
+        "label": "Grand Cathedral",
+        "prompt": (
+            "Place the creature inside a grand cathedral with towering arches, stained-glass light shafts, and sacred monumental scale."
+        ),
+    },
+    "crystal_cavern": {
+        "label": "Crystal Cavern",
+        "prompt": (
+            "Use a crystal cavern filled with reflective mineral spires, refracted light, cave mist, and luminous facets."
+        ),
+    },
+    "moonlit_marsh": {
+        "label": "Moonlit Marsh",
+        "prompt": (
+            "Set the creature in a moonlit marsh with black water, reeds, fog banks, and cold silver moonlight."
+        ),
+    },
+    "sunken_temple": {
+        "label": "Sunken Temple",
+        "prompt": (
+            "Use a sunken temple with flooded stone halls, submerged relics, algae-covered carvings, and ancient aquatic ruin."
+        ),
+    },
+    "arcane_lab": {
+        "label": "Arcane Laboratory",
+        "prompt": (
+            "Place the creature inside an arcane laboratory with runic devices, alchemical vessels, magical machinery, and controlled mystical light."
+        ),
+    },
+    "fungal_grove": {
+        "label": "Fungal Grove",
+        "prompt": (
+            "Use a fungal grove filled with giant mushrooms, spores, damp earth, strange growths, and eerie natural biolight."
+        ),
+    },
+    "industrial_forge": {
+        "label": "Industrial Forge",
+        "prompt": (
+            "Set the creature in an industrial forge of chains, catwalks, furnaces, sparks, smoke, and molten metal glow."
+        ),
+    },
+    "royal_garden": {
+        "label": "Royal Garden",
+        "prompt": (
+            "Use an opulent royal garden with sculpted hedges, marble fountains, floral symmetry, and refined aristocratic atmosphere."
+        ),
+    },
+    "graveyard": {
+        "label": "Graveyard",
+        "prompt": (
+            "Place the creature in a graveyard of crooked tombstones, dead trees, drifting mist, and haunted nocturnal silence."
+        ),
+    },
+    "coral_reef": {
+        "label": "Coral Reef",
+        "prompt": (
+            "Use a coral reef environment with vivid corals, suspended particles, underwater light shafts, and layered ocean depth."
+        ),
+    },
+    "dreamscape": {
+        "label": "Dreamscape",
+        "prompt": (
+            "Set the creature in a surreal dreamscape of impossible geometry, floating fragments, strange gradients, and reality-bending atmosphere."
+        ),
+    },
+}
+
 
 class AutoSpliceReview(View):
     """Interactive review system for auto splice"""
@@ -448,6 +602,7 @@ class SpliceRequestPaginator(View):
                 value=(
                     f"🐾 **{splice['pet1_name']}** (`{splice['pet1_default']}`) + "
                     f"**{splice['pet2_name']}** (`{splice['pet2_default']}`)\n"
+                    f"🎨 Background: `{SPLICE_BACKGROUND_THEME_DATA.get(splice['background_theme'] if 'background_theme' in splice else 'auto', SPLICE_BACKGROUND_THEME_DATA['auto'])['label']}`\n"
                     f"🔗 [Pet 1]({splice['pet1_url']}) • [Pet 2]({splice['pet2_url']})"
                 ),
                 inline=False
@@ -516,6 +671,42 @@ class ProcessSplice(commands.Cog):
         self._r2_client = None
         self._r2_bucket = None
         self._r2_public_base_url = None
+
+    @staticmethod
+    def _normalize_splice_background_theme(theme_key: Optional[str]) -> str:
+        key = str(theme_key or "auto").strip().lower()
+        if key not in SPLICE_BACKGROUND_THEME_DATA:
+            return "auto"
+        return key
+
+    def _get_splice_background_theme_label(self, theme_key: Optional[str]) -> str:
+        key = self._normalize_splice_background_theme(theme_key)
+        return SPLICE_BACKGROUND_THEME_DATA[key]["label"]
+
+    def _get_splice_background_theme_prompt(self, theme_key: Optional[str]) -> str:
+        key = self._normalize_splice_background_theme(theme_key)
+        return SPLICE_BACKGROUND_THEME_DATA[key]["prompt"]
+
+    async def _ensure_splice_request_background_column(self, conn) -> None:
+        exists = await conn.fetchval(
+            "SELECT to_regclass('public.splice_requests') IS NOT NULL;"
+        )
+        if not exists:
+            return
+        await conn.execute(
+            "ALTER TABLE splice_requests ADD COLUMN IF NOT EXISTS background_theme TEXT NOT NULL DEFAULT 'auto';"
+        )
+
+    def _build_batch_splice_ai_prompt(self, theme_key: Optional[str]) -> str:
+        background_prompt = self._get_splice_background_theme_prompt(theme_key)
+        return (
+            "Fuse these two monsters into one impossible hybrid creature. "
+            "Merge their strongest visual traits into a single anatomically coherent fantasy beast. "
+            "Show exactly one fully visible creature in a dynamic pose with clean silhouette readability. "
+            "Use a polished splash-art presentation with dramatic lighting and strong focal clarity. "
+            f"Background direction: {background_prompt} "
+            "Keep the environment secondary to the creature, with no extra creatures, no humanoids, no text, and no collage effect."
+        )
 
     def _create_openai_client(self):
         openai_key = self.bot.config.external.openai
@@ -2258,6 +2449,7 @@ class ProcessSplice(commands.Cog):
         # 1) pull pending requests
         # ──────────────────────────────────────────────────────────
         async with self.bot.pool.acquire() as conn:
+            await self._ensure_splice_request_background_column(conn)
             rows = await conn.fetch(
                 """
                 SELECT  id, user_id, pet1_name, pet2_name,
@@ -2265,7 +2457,7 @@ class ProcessSplice(commands.Cog):
                         pet1_url, pet2_url,
                         pet1_hp, pet1_attack, pet1_defense,
                         pet2_hp, pet2_attack, pet2_defense,
-                        pet1_element, pet2_element, temp_name
+                        pet1_element, pet2_element, temp_name, background_theme
                 FROM    splice_requests
                 WHERE   status='pending'
                 ORDER BY created_at
@@ -2299,6 +2491,7 @@ class ProcessSplice(commands.Cog):
                     pet2_element=r["pet2_element"],
                     pet1_url=r["pet1_url"],
                     pet2_url=r["pet2_url"],
+                    background_theme=r["background_theme"],
                     url=None,
                     hp=None,
                     attack=None,
@@ -2358,7 +2551,7 @@ class ProcessSplice(commands.Cog):
             "DO: Give it asymmetrical or unusual anatomical proportions.",
             "DON'T: Show humanoid faces or human-like expressions.",
             "DON'T: Create a simple mashup of overlaid parts - truly integrate the elements.",
-            "DON'T: Include backgrounds, environments, or other creatures.",
+            "DON'T: Let the background overpower the creature or turn into a busy scene.",
             "DON'T: Add weapons, clothing, or artificial accessories unless they're fused into anatomy."
         ]
 
@@ -2424,6 +2617,9 @@ class ProcessSplice(commands.Cog):
                 
                 # Select 3 random dos/don'ts
                 selected_guidelines = random.sample(dos_and_donts, 3)
+                background_prompt = self._get_splice_background_theme_prompt(
+                    pet.get("background_theme")
+                )
                 
                 # Generate a unique random seed for this creature to ensure distinctiveness
                 unique_seed = random.randint(10000, 99999)
@@ -2457,7 +2653,8 @@ class ProcessSplice(commands.Cog):
                     "Cinematic composition with dramatic perspective and strong visual hierarchy. "
                     "Volumetric lighting, atmospheric effects, glowing energy interactions, environmental storytelling. "
 
-                    "Create an epic, immersive background appropriate to the creature’s nature — whether natural, supernatural, cosmic, elemental, or otherworldly — enhancing scale, mood, and narrative impact."
+                    f"Background direction: {background_prompt} "
+                    "Build an epic, immersive background that reinforces scale, mood, and narrative impact while remaining secondary to the creature. "
                     f"Guidelines: {selected_guidelines[0]} {selected_guidelines[1]} {selected_guidelines[2]}"
                 )
                 
@@ -3242,6 +3439,7 @@ class ProcessSplice(commands.Cog):
         # 1) pull pending requests
         # ──────────────────────────────────────────────────────────
         async with self.bot.pool.acquire() as conn:
+            await self._ensure_splice_request_background_column(conn)
             rows = await conn.fetch(
                 """
                 SELECT  id, user_id, pet1_name, pet2_name,
@@ -3249,7 +3447,7 @@ class ProcessSplice(commands.Cog):
                         pet1_url, pet2_url,
                         pet1_hp, pet1_attack, pet1_defense,
                         pet2_hp, pet2_attack, pet2_defense,
-                        pet1_element, pet2_element, temp_name
+                        pet1_element, pet2_element, temp_name, background_theme
                 FROM    splice_requests
                 WHERE   status='pending'
                 ORDER BY created_at
@@ -3283,6 +3481,7 @@ class ProcessSplice(commands.Cog):
                     pet2_element=r["pet2_element"],
                     pet1_url=r["pet1_url"],
                     pet2_url=r["pet2_url"],
+                    background_theme=r["background_theme"],
                     url=None,
                     hp=None,
                     attack=None,
@@ -3358,10 +3557,11 @@ class ProcessSplice(commands.Cog):
                         with open(p2_file, "wb") as f:
                             f.write(p2_bytes)
 
-                        default_prompt = (
-                            "Fuse these two monsters into one impossible hybrid creature. Merge their most striking features into a single, otherworldly beast that combines the essence of both. Create a seamless genetic splice with no background - just the pure, evolved fusion floating in white/transparent space."
+                        default_prompt = self._build_batch_splice_ai_prompt(
+                            pet.get("background_theme")
                         )
                         await ctx.send(
+                            f"Background preference: **{self._get_splice_background_theme_label(pet.get('background_theme'))}**\n"
                             f"Default prompt:\n`{default_prompt}`\nAdd anything? (`yes`/`no`)"
                         )
                         extra = (await admin_wait()).content.lower().startswith("y")
@@ -3757,12 +3957,13 @@ class ProcessSplice(commands.Cog):
             if not splice_id:
                 # List pending splice requests
                 async with self.bot.pool.acquire() as conn:
+                    await self._ensure_splice_request_background_column(conn)
                     splices = await conn.fetch(
                         """
                         SELECT 
                             id, user_id, pet1_name, pet2_name, 
                             pet1_default, pet2_default, created_at,
-                            pet1_url, pet2_url, temp_name
+                            pet1_url, pet2_url, temp_name, background_theme
                         FROM splice_requests 
                         WHERE status = 'pending' 
                         ORDER BY created_at ASC
@@ -3782,6 +3983,7 @@ class ProcessSplice(commands.Cog):
 
         # Get splice request details
         async with self.bot.pool.acquire() as conn:
+            await self._ensure_splice_request_background_column(conn)
             splice = await conn.fetchrow(
                 "SELECT * FROM splice_requests WHERE id = $1 AND status = 'pending'",
                 splice_id
@@ -3806,6 +4008,13 @@ class ProcessSplice(commands.Cog):
         embed.add_field(name="Pet 2 Stats",
                         value=f"HP: {splice['pet2_hp']}, ATK: {splice['pet2_attack']}, DEF: {splice['pet2_defense']}, Element: {splice['pet2_element']}\nURL: {splice['pet2_url']}",
                         inline=True)
+        embed.add_field(
+            name="Background Preference",
+            value=self._get_splice_background_theme_label(
+                splice["background_theme"] if "background_theme" in splice else None
+            ),
+            inline=False,
+        )
 
         await ctx.send(embed=embed)
 

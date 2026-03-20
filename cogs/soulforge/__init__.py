@@ -71,6 +71,38 @@ SPLICE_SCOPE_OPTIONS = [
     ("mine_favorites", "My Favorites", "Your owned bookmarked splices"),
 ]
 
+SPLICE_BACKGROUND_OPTIONS = [
+    ("auto", "Forge's Choice", "Let the forge choose a fitting backdrop"),
+    ("wildlands", "Wildlands", "Primal terrain, cliffs, and open untamed land"),
+    ("ruins", "Ancient Ruins", "Broken stonework, relics, and overgrowth"),
+    ("astral", "Astral", "Cosmic sky, nebula light, and floating fragments"),
+    ("storm", "Stormfront", "Dark clouds, charged air, and distant lightning"),
+    ("volcanic", "Volcanic", "Obsidian, lava glow, and heat shimmer"),
+    ("glacial", "Frozen", "Snow haze, frost, and blue glacial light"),
+    ("abyssal", "Abyssal", "Void-dark depth, eerie mist, and dim bioluminescence"),
+    ("verdant", "Verdant", "Lush roots, giant flora, and filtered forest light"),
+    ("ossuary", "Crimson Ossuary", "Bloodied remains, broken bones, and red-soaked ground"),
+    ("bioluminescent_forest", "Bioluminescent Forest", "Glowing flora, mist, and luminous woodland"),
+    ("cute_clouds", "Cute Clouds", "Soft pastel clouds, warm sky, and dreamy charm"),
+    ("hell", "Hellscape", "Infernal fire, ash, sulfur, and demonic atmosphere"),
+    ("desert", "Desert Expanse", "Dunes, heat haze, and ancient sand-worn stone"),
+    ("cathedral", "Grand Cathedral", "Towering arches, stained light, and sacred scale"),
+    ("crystal_cavern", "Crystal Cavern", "Reflective crystals, cave glow, and refracted light"),
+    ("moonlit_marsh", "Moonlit Marsh", "Wetland fog, still water, and pale moonlight"),
+    ("sunken_temple", "Sunken Temple", "Flooded ruins, mossy stone, and submerged relics"),
+    ("arcane_lab", "Arcane Laboratory", "Runic machinery, alchemical glow, and magical apparatus"),
+    ("fungal_grove", "Fungal Grove", "Towering mushrooms, spores, and strange organic growth"),
+    ("industrial_forge", "Industrial Forge", "Chains, furnaces, sparks, and metal catwalks"),
+    ("royal_garden", "Royal Garden", "Manicured hedges, ornate fountains, and noble grandeur"),
+    ("graveyard", "Graveyard", "Crooked tombstones, dead trees, and drifting fog"),
+    ("coral_reef", "Coral Reef", "Vivid coral, drifting particles, and aquatic depth"),
+    ("dreamscape", "Dreamscape", "Impossible shapes, surreal color, and floating fragments"),
+]
+
+SPLICE_BACKGROUND_LABELS = {
+    key: label for key, label, _description in SPLICE_BACKGROUND_OPTIONS
+}
+
 
 class SpliceSearchModal(discord.ui.Modal, title="Search Splices"):
     def __init__(self, browser_view: "SpliceBrowserView"):
@@ -853,6 +885,123 @@ class LoreView(View):
         self.update_buttons()
         await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
 
+
+class SpliceBackgroundPreferenceView(View):
+    def __init__(self, ctx, pet1_name: str, pet2_name: str):
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.pet1_name = pet1_name
+        self.pet2_name = pet2_name
+        self.selected_theme = "auto"
+        self.confirmed = False
+        self.message = None
+
+        self.theme_select = Select(
+            placeholder="Choose a background influence",
+            min_values=1,
+            max_values=1,
+            options=self._build_options(),
+        )
+        self.theme_select.callback = self.theme_select_callback
+        self.add_item(self.theme_select)
+
+    def _build_options(self) -> List[SelectOption]:
+        return [
+            SelectOption(
+                label=label,
+                value=key,
+                description=description,
+                default=key == self.selected_theme,
+            )
+            for key, label, description in SPLICE_BACKGROUND_OPTIONS
+        ]
+
+    def _build_embed(self) -> discord.Embed:
+        label = SPLICE_BACKGROUND_LABELS.get(self.selected_theme, "Forge's Choice")
+        embed = discord.Embed(
+            title="Choose Background Influence",
+            description=(
+                f"Your splice between **{self.pet1_name}** and **{self.pet2_name}** is a new combination.\n"
+                "Pick a background direction to slightly influence the generated art. "
+                "The creature will still remain the main focus."
+            ),
+            color=0x9d4edd,
+        )
+        embed.add_field(name="Current Selection", value=label, inline=False)
+        embed.set_footer(text="This only affects newly generated art for this splice request.")
+        return embed
+
+    async def start(self):
+        self.message = await self.ctx.send(embed=self._build_embed(), view=self)
+        return self.message
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "This splice selection belongs to someone else.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_timeout(self):
+        if self.message:
+            for child in self.children:
+                child.disabled = True
+            try:
+                await self.message.edit(
+                    content="⏰ Background selection timed out.",
+                    embed=self._build_embed(),
+                    view=self,
+                )
+            except discord.HTTPException:
+                pass
+
+    async def theme_select_callback(self, interaction: discord.Interaction):
+        self.selected_theme = self.theme_select.values[0]
+        self.theme_select.options = self._build_options()
+        await interaction.response.edit_message(embed=self._build_embed(), view=self)
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.confirmed = True
+        selected_label = SPLICE_BACKGROUND_LABELS.get(
+            self.selected_theme, "Forge's Choice"
+        )
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(
+            content=f"✅ Background influence locked to **{selected_label}**.",
+            embed=self._build_embed(),
+            view=self,
+        )
+        self.stop()
+
+    @discord.ui.button(label="Skip", style=discord.ButtonStyle.secondary)
+    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.selected_theme = "auto"
+        self.confirmed = True
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(
+            content="✅ Background influence left to the forge.",
+            embed=self._build_embed(),
+            view=self,
+        )
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(
+            content="❌ Splice cancelled before the ritual began.",
+            embed=self._build_embed(),
+            view=self,
+        )
+        self.stop()
+
+
 class MorriganConversationView(View):
     def __init__(self, cog, ctx, player_data):
         super().__init__(timeout=300)
@@ -1042,6 +1191,49 @@ class Soulforge(commands.Cog):
             max_slots = 25
 
         return max_slots
+
+    @staticmethod
+    def _normalize_splice_background_theme(theme_key: Optional[str]) -> str:
+        key = str(theme_key or "auto").strip().lower()
+        if key not in SPLICE_BACKGROUND_LABELS:
+            return "auto"
+        return key
+
+    def _get_splice_background_label(self, theme_key: Optional[str]) -> str:
+        return SPLICE_BACKGROUND_LABELS[self._normalize_splice_background_theme(theme_key)]
+
+    async def _ensure_splice_request_schema(self, conn) -> None:
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS splice_requests (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                pet1_id INTEGER,
+                pet2_id INTEGER,
+                pet1_name TEXT,
+                pet2_name TEXT,
+                pet1_default TEXT,
+                pet2_default TEXT,
+                temp_name TEXT,
+                pet1_hp INTEGER,
+                pet1_attack INTEGER,
+                pet1_defense INTEGER,
+                pet1_element TEXT,
+                pet1_url TEXT,
+                pet2_hp INTEGER,
+                pet2_attack INTEGER,
+                pet2_defense INTEGER,
+                pet2_element TEXT,
+                pet2_url TEXT,
+                background_theme TEXT NOT NULL DEFAULT 'auto',
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+            """
+        )
+        await conn.execute(
+            "ALTER TABLE splice_requests ADD COLUMN IF NOT EXISTS background_theme TEXT NOT NULL DEFAULT 'auto';"
+        )
 
     async def _count_user_pet_capacity_items(self, conn, user_id: int) -> int:
         pet_count = await conn.fetchval(
@@ -2815,6 +3007,24 @@ class Soulforge(commands.Cog):
                 await self.bot.reset_cooldown(ctx)
                 return await ctx.send("Splice canceled.")
 
+            background_theme = "auto"
+            if not known_combination:
+                background_view = SpliceBackgroundPreferenceView(
+                    ctx,
+                    pet1_data["name"],
+                    pet2_data["name"],
+                )
+                await background_view.start()
+                timed_out = await background_view.wait()
+                if not background_view.confirmed:
+                    await self.bot.reset_cooldown(ctx)
+                    if timed_out:
+                        return await ctx.send("Splice canceled because background selection timed out.")
+                    return await ctx.send("Splice canceled.")
+                background_theme = self._normalize_splice_background_theme(
+                    background_view.selected_theme
+                )
+
             if known_combination:
                 await self.bot.set_cooldown(ctx, 86400)
             
@@ -3067,40 +3277,15 @@ class Soulforge(commands.Cog):
                 
                 # Store the splice request
                 async with self.bot.pool.acquire() as conn:
-                    # Create table if it doesn't exist
-                    await conn.execute("""
-                        CREATE TABLE IF NOT EXISTS splice_requests (
-                            id SERIAL PRIMARY KEY,
-                            user_id BIGINT,
-                            pet1_id INTEGER,
-                            pet2_id INTEGER,
-                            pet1_name TEXT,
-                            pet2_name TEXT,
-                            pet1_default TEXT,
-                            pet2_default TEXT,
-                            temp_name TEXT,
-                            pet1_hp INTEGER,
-                            pet1_attack INTEGER,
-                            pet1_defense INTEGER,
-                            pet1_element TEXT,
-                            pet1_url TEXT,
-                            pet2_hp INTEGER,
-                            pet2_attack INTEGER,
-                            pet2_defense INTEGER,
-                            pet2_element TEXT,
-                            pet2_url TEXT,
-                            status TEXT DEFAULT 'pending',
-                            created_at TIMESTAMP DEFAULT NOW()
-                        )
-                    """)
+                    await self._ensure_splice_request_schema(conn)
                     
                     splice_id = await conn.fetchval(
                         """
                         INSERT INTO splice_requests 
                         (user_id, pet1_id, pet2_id, pet1_name, pet2_name, pet1_default, pet2_default, temp_name,
                         pet1_hp, pet1_attack, pet1_defense, pet1_element, pet1_url,
-                        pet2_hp, pet2_attack, pet2_defense, pet2_element, pet2_url) 
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) 
+                        pet2_hp, pet2_attack, pet2_defense, pet2_element, pet2_url, background_theme) 
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) 
                         RETURNING id
                         """,
                         ctx.author.id,
@@ -3120,7 +3305,8 @@ class Soulforge(commands.Cog):
                         pet2_data["attack"],
                         pet2_data["defense"],
                         pet2_data["element"],
-                        pet2_data["url"]
+                        pet2_data["url"],
+                        background_theme,
                     )
                 
                 # Notify the splice request channel
@@ -3146,6 +3332,11 @@ class Soulforge(commands.Cog):
                     embed.add_field(name="Pet 1", value=f"{pet1_data['name']} (Default: {pet1_data['default_name']})", inline=True)
                     embed.add_field(name="Pet 2", value=f"{pet2_data['name']} (Default: {pet2_data['default_name']})", inline=True)
                     embed.add_field(name="Temporary Name", value=temp_name, inline=False)
+                    embed.add_field(
+                        name="Background Preference",
+                        value=self._get_splice_background_label(background_theme),
+                        inline=False,
+                    )
                     embed.add_field(name="Pet 1 Stats", value=f"HP: {pet1_data['hp']}, ATK: {pet1_data['attack']}, DEF: {pet1_data['defense']}, Element: {pet1_data['element']}\nURL: {pet1_data['url']}", inline=True)
                     embed.add_field(name="Pet 2 Stats", value=f"HP: {pet2_data['hp']}, ATK: {pet2_data['attack']}, DEF: {pet2_data['defense']}, Element: {pet2_data['element']}\nURL: {pet2_data['url']}", inline=True)
                     embed.add_field(name="Command", value=f"Splice ID {splice_id}`", inline=False)
@@ -3157,6 +3348,7 @@ class Soulforge(commands.Cog):
                 await ctx.send(
                     f"*The Soulforge begins pulsing with purple and blue energies as primordial forces embrace your offering. The essence of your creatures slowly dissolves into the ancient crucible, where Eidolith fragments commence their delicate dance of transformation.*\n\n"
                     f"As Vaedrith's ancient texts warn: soul-binding cannot be rushed. The patterns must align naturally, following rhythms older than the gods themselves.\n\n"
+                    f"Requested background influence: **{self._get_splice_background_label(background_theme)}**\n\n"
                     f"Check your creation's progress: `$splicestatus {splice_id}`\n\n"
                     f"*Note: This splicing has reduced your forge's condition to {new_condition}% and increased divine scrutiny to {new_divine_attention}%.*"
                 )
@@ -3381,6 +3573,7 @@ class Soulforge(commands.Cog):
         if not splice_id:
             # If no ID provided, list all pending splices for the user
             async with self.bot.pool.acquire() as conn:
+                await self._ensure_splice_request_schema(conn)
                 splices = await conn.fetch(
                     "SELECT id, pet1_name, pet2_name, status, created_at FROM splice_requests WHERE user_id = $1 ORDER BY created_at DESC",
                     ctx.author.id
@@ -3396,6 +3589,7 @@ class Soulforge(commands.Cog):
         
         # Check specific splice status
         async with self.bot.pool.acquire() as conn:
+            await self._ensure_splice_request_schema(conn)
             splice = await conn.fetchrow(
                 "SELECT * FROM splice_requests WHERE id = $1 AND user_id = $2",
                 splice_id, ctx.author.id
@@ -3412,6 +3606,13 @@ class Soulforge(commands.Cog):
         
         embed.add_field(name="Pets Being Spliced", value=f"{splice['pet1_name']} + {splice['pet2_name']}", inline=False)
         embed.add_field(name="Requested", value=splice["created_at"].strftime("%Y-%m-%d %H:%M"), inline=False)
+        embed.add_field(
+            name="Background Preference",
+            value=self._get_splice_background_label(
+                splice["background_theme"] if "background_theme" in splice else None
+            ),
+            inline=False,
+        )
         
         
         if splice["status"] == "pending":
