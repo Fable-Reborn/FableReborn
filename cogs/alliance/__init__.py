@@ -674,40 +674,43 @@ class Alliance(commands.Cog):
         _(
             """Show all cities, their tiers, owners, available buildings and current defense."""
         )
-        async with self.bot.pool.acquire() as conn:
-            cities = await conn.fetch(
-                'SELECT c.*, g."name" AS "gname" FROM city c JOIN guild g ON c."owner"=g."id";'
-            )
-            city_defense_totals = {}
-            for city_row in cities:
-                active_defenses, _ = await self._load_city_defenses(conn, city_row["name"])
-                city_defense_totals[city_row["name"]] = sum(
-                    int(defense["defense"]) for defense in active_defenses
+        try:
+            async with self.bot.pool.acquire() as conn:
+                cities = await conn.fetch(
+                    'SELECT c.*, g."name" AS "gname" FROM city c JOIN guild g ON c."owner"=g."id";'
                 )
-        em = discord.Embed(
-            title=_("Cities"), colour=self.bot.config.game.primary_colour
-        ).set_image(url="https://idlerpg.xyz/city.png")
-        for city in sorted(cities, key=lambda c: -self.cities[c["name"]]["tier"]):
-            em.add_field(
-                name=_("{name} (Tier {tier})").format(
-                    name=city["name"], tier=self.cities[city["name"]]["tier"]
-                ),
-                value=_(
-                    "Owned by {alliance}'s alliance\nBuildings: {buildings}\nTotal"
-                    " defense: {defense}"
-                ).format(
-                    alliance=city["gname"],
-                    buildings=", ".join(
-                        [
-                            i.title()
-                            for i in ("thief", "raid", "trade", "adventure")
-                            if self.cities[city["name"]][i]
-                        ]
+                city_defense_totals = {}
+                for city_row in cities:
+                    active_defenses, _ = await self._load_city_defenses(conn, city_row["name"])
+                    city_defense_totals[city_row["name"]] = sum(
+                        int(defense["defense"]) for defense in active_defenses
+                    )
+            em = discord.Embed(
+                title=_("Cities"), colour=self.bot.config.game.primary_colour
+            ).set_image(url="https://idlerpg.xyz/city.png")
+            for city in sorted(cities, key=lambda c: -self.cities[c["name"]]["tier"]):
+                em.add_field(
+                    name=_("{name} (Tier {tier})").format(
+                        name=city["name"], tier=self.cities[city["name"]]["tier"]
                     ),
-                    defense=city_defense_totals.get(city["name"], 0),
-                ),
-            )
-        await ctx.send(embed=em)
+                    value=_(
+                        "Owned by {alliance}'s alliance\nBuildings: {buildings}\nTotal"
+                        " defense: {defense}"
+                    ).format(
+                        alliance=city["gname"],
+                        buildings=", ".join(
+                            [
+                                i.title()
+                                for i in ("thief", "raid", "trade", "adventure")
+                                if self.cities[city["name"]][i]
+                            ]
+                        ),
+                        defense=city_defense_totals.get(city["name"], 0),
+                    ),
+                )
+            await ctx.send(embed=em)
+        except Exception as e:
+            await ctx.send(f"Error loading cities: {e}")
 
     @has_char()
     @has_guild()
