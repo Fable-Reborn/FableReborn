@@ -83,7 +83,7 @@ class CityWarUserProxy:
 class Alliance(commands.Cog):
     def __init__(self, bot: Bot):
         self.bot = bot
-        self.cities = {name.title(): i for name, i in bot.config.cities.items()}
+        self.city_configs = {name.title(): i for name, i in bot.config.cities.items()}
 
     def _build_city_help_overview_embed(self, ctx: Context) -> discord.Embed:
         embed = discord.Embed(
@@ -668,45 +668,60 @@ class Alliance(commands.Cog):
             )
         return lost_gold, defending_guild["name"]
 
-    @commands.command(brief=_("Shows cities and owners."))
+    @commands.command(name="cities", brief=_("Shows cities and owners."))
     @locale_doc
-    async def cities(self, ctx: Context) -> None:
+    async def show_cities(self, ctx: Context) -> None:
         _(
             """Show all cities, their tiers, owners, available buildings and current defense."""
         )
         try:
             async with self.bot.pool.acquire() as conn:
-                cities = await conn.fetch(
-                    'SELECT c.*, g."name" AS "gname" FROM city c JOIN guild g ON c."owner"=g."id";'
-                )
+                city_rows = {
+                    row["name"]: dict(row)
+                    for row in await conn.fetch(
+                        'SELECT c.*, g."name" AS "gname" FROM city c LEFT JOIN guild g ON c."owner"=g."id";'
+                    )
+                }
                 city_defense_totals = {}
-                for city_row in cities:
-                    active_defenses, _ = await self._load_city_defenses(conn, city_row["name"])
-                    city_defense_totals[city_row["name"]] = sum(
+                for city_name in self.city_configs:
+                    active_defenses, _ = await self._load_city_defenses(conn, city_name)
+                    city_defense_totals[city_name] = sum(
                         int(defense["defense"]) for defense in active_defenses
                     )
             em = discord.Embed(
                 title=_("Cities"), colour=self.bot.config.game.primary_colour
             ).set_image(url="https://idlerpg.xyz/city.png")
-            for city in sorted(cities, key=lambda c: -self.cities[c["name"]]["tier"]):
+            for city_name, city_config in sorted(
+                self.city_configs.items(),
+                key=lambda item: -int(item[1]["tier"]),
+            ):
+                city = city_rows.get(city_name)
+                owner_name = city.get("gname") if city else None
+                if city and city.get("owner") not in (None, 1) and owner_name:
+                    owner_text = _("Owned by {alliance}'s alliance").format(
+                        alliance=owner_name
+                    )
+                else:
+                    owner_text = _("Owned by the System Guild Alliance")
                 em.add_field(
                     name=_("{name} (Tier {tier})").format(
-                        name=city["name"], tier=self.cities[city["name"]]["tier"]
+                        name=city_name, tier=city_config["tier"]
                     ),
                     value=_(
-                        "Owned by {alliance}'s alliance\nBuildings: {buildings}\nTotal"
+                        "{owner_text}\nBuildings: {buildings}\nTotal"
                         " defense: {defense}"
                     ).format(
-                        alliance=city["gname"],
+                        owner_text=owner_text,
                         buildings=", ".join(
                             [
                                 i.title()
                                 for i in ("thief", "raid", "trade", "adventure")
-                                if self.cities[city["name"]][i]
+                                if city_config[i]
                             ]
                         ),
-                        defense=city_defense_totals.get(city["name"], 0),
+                        defense=city_defense_totals.get(city_name, 0),
                     ),
+                    inline=False,
                 )
             await ctx.send(embed=em)
         except Exception as e:
@@ -1073,7 +1088,7 @@ class Alliance(commands.Cog):
                 "guild"
             ],  # can only be done by the leading g:uild so this works here
         )
-        if self.cities[city["name"]].get(name, False) is False:
+        if self.city_configs[city["name"]].get(name, False) is False:
             await self.bot.reset_alliance_cooldown(ctx)
             return await ctx.send(
                 _(
@@ -1262,7 +1277,7 @@ class Alliance(commands.Cog):
             colour=self.bot.config.game.primary_colour,
         ).set_image(url="https://idlerpg.xyz/market.png")
         for i in ("thief", "raid", "trade", "adventure"):
-            if self.cities[buildings["name"]][i]:
+            if self.city_configs[buildings["name"]][i]:
                 embed.add_field(
                     name=f"{i.capitalize()} building",
                     value=_("Level {level}").format(level=buildings[f"{i}_building"]),
@@ -1732,7 +1747,7 @@ class Alliance(commands.Cog):
             You cannot occupy a city if your alliance already owns one.
             Only the alliance leader can use this command."""
         )
-        if city not in self.cities:
+        if city not in self.city_configs:
             return await ctx.send(_("Invalid city name."))
         async with self.bot.pool.acquire() as conn:
             previous_owner = await conn.fetchval(
@@ -1839,7 +1854,7 @@ class Alliance(commands.Cog):
             Only the alliance leader can use this command.
             (This command has a cooldown of 24 hours.)"""
         )
-        if city not in self.cities:
+        if city not in self.city_configs:
             await self.bot.reset_alliance_cooldown(ctx)
             return await ctx.send(_("Invalid city."))
 
