@@ -55,6 +55,13 @@ from utils.i18n import _
 
 
 LEVEL_100_ANNOUNCE_CHANNEL_ID = 1406296535443963935
+CITY_VAULT_MULTIPLIERS = {
+    0: (1, 1),
+    1: (3, 2),
+    2: (2, 1),
+    3: (3, 1),
+    4: (4, 1),
+}
 
 
 class Bot(commands.AutoShardedBot):
@@ -107,6 +114,8 @@ class Bot(commands.AutoShardedBot):
         self.donator_cooldown = CooldownMapping(
             Cooldown(3, 3, 1, 2, commands.BucketType.user)
         )
+        self._city_war_tables_ready = False
+        self._city_war_table_lock = asyncio.Lock()
         self._xp_watch_tables_ready = False
         self._xp_watch_table_lock = asyncio.Lock()
         self._xp_watch_user_ids = set()
@@ -1443,6 +1452,275 @@ class Bot(commands.AutoShardedBot):
             await self.http.send_message(
                 self.config.game.bot_event_channel, params=params
             )
+
+    async def _ensure_city_war_tables(self) -> None:
+        if self._city_war_tables_ready:
+            return
+        async with self._city_war_table_lock:
+            if self._city_war_tables_ready:
+                return
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS city_guards (
+                        user_id bigint PRIMARY KEY,
+                        guild_id bigint NOT NULL,
+                        city text NOT NULL,
+                        assigned_by bigint NOT NULL,
+                        assigned_at timestamp with time zone NOT NULL DEFAULT now()
+                    );
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS city_guards_city_idx
+                    ON city_guards (city);
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS city_guards_guild_idx
+                    ON city_guards (guild_id);
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS city_guard_pet (
+                        city text PRIMARY KEY,
+                        guild_id bigint NOT NULL,
+                        user_id bigint NOT NULL,
+                        pet_id bigint NOT NULL,
+                        assigned_by bigint NOT NULL,
+                        assigned_at timestamp with time zone NOT NULL DEFAULT now()
+                    );
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS city_guard_pet_guild_idx
+                    ON city_guard_pet (guild_id);
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS city_guard_pet_user_idx
+                    ON city_guard_pet (user_id);
+                    """
+                )
+            self._city_war_tables_ready = True
+
+    def normalize_city_vault_tier(self, tier: int | None) -> int:
+        if tier is None:
+            return 0
+        return max(0, min(int(tier), 4))
+
+    def get_city_vault_multiplier(self, tier: int | None) -> tuple[int, int]:
+        return CITY_VAULT_MULTIPLIERS[self.normalize_city_vault_tier(tier)]
+
+    def get_guild_bank_base_limit(self, guild) -> int:
+        return int(guild["banklimit"])
+
+    def get_guild_effective_banklimit(self, guild, city=None) -> int:
+        base_limit = self.get_guild_bank_base_limit(guild)
+        if not city:
+            return base_limit
+        numerator, denominator = self.get_city_vault_multiplier(city["tier"])
+        return (base_limit * numerator) // denominator
+
+    async def get_owned_city(self, guild_id: int, conn=None):
+        if not guild_id:
+            return False
+        obj = conn or self.pool
+        return await obj.fetchrow('SELECT * FROM city WHERE "owner"=$1;', guild_id)
+
+    async def get_guild_bank_caps(self, guild_id: int, conn=None) -> dict | None:
+        local = False
+        if conn is None:
+            conn = await self.pool.acquire()
+            local = True
+        try:
+            guild = await conn.fetchrow('SELECT * FROM guild WHERE "id"=$1;', guild_id)
+            if not guild:
+                return None
+            city = await self.get_owned_city(guild_id, conn=conn)
+            return {
+                "guild": guild,
+                "city": city,
+                "base_limit": self.get_guild_bank_base_limit(guild),
+                "effective_limit": self.get_guild_effective_banklimit(guild, city=city),
+                "city_tier": self.normalize_city_vault_tier(city["tier"]) if city else 0,
+            }
+        finally:
+            if local:
+                await self.pool.release(conn)
+
+    async def get_city_guard(self, user_id: int, conn=None):
+        await self._ensure_city_war_tables()
+        local = False
+        if conn is None:
+            conn = await self.pool.acquire()
+            local = True
+        try:
+            guard = await conn.fetchrow(
+                'SELECT * FROM city_guards WHERE "user_id"=$1;',
+                int(user_id),
+            )
+            if not guard:
+                return None
+            valid_guard = await conn.fetchrow(
+                """
+                SELECT cg.*
+                FROM city_guards cg
+                JOIN city c ON c."name"=cg."city"
+                JOIN profile p ON p."user"=cg."user_id"
+                WHERE cg."user_id"=$1
+                  AND p."guild"=c."owner";
+                """,
+                int(user_id),
+            )
+            if valid_guard:
+                return valid_guard
+            await conn.execute('DELETE FROM city_guards WHERE "user_id"=$1;', int(user_id))
+            return None
+        finally:
+            if local:
+                await self.pool.release(conn)
+
+    async def get_city_guards(self, city: str, conn=None) -> list:
+        await self._ensure_city_war_tables()
+        local = False
+        if conn is None:
+            conn = await self.pool.acquire()
+            local = True
+        try:
+            await conn.execute(
+                """
+                DELETE FROM city_guards cg
+                WHERE cg."city"=$1
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM city c
+                    JOIN profile p ON p."user"=cg."user_id"
+                    WHERE c."name"=cg."city"
+                      AND p."guild"=c."owner"
+                  );
+                """,
+                city,
+            )
+            return await conn.fetch(
+                """
+                SELECT cg.*
+                FROM city_guards cg
+                JOIN city c ON c."name"=cg."city"
+                JOIN profile p ON p."user"=cg."user_id"
+                WHERE cg."city"=$1
+                  AND p."guild"=c."owner"
+                ORDER BY cg."assigned_at" ASC;
+                """,
+                city,
+            )
+        finally:
+            if local:
+                await self.pool.release(conn)
+
+    async def get_city_guard_pet(self, city: str, conn=None):
+        await self._ensure_city_war_tables()
+        local = False
+        if conn is None:
+            conn = await self.pool.acquire()
+            local = True
+        try:
+            pet = await conn.fetchrow(
+                """
+                SELECT cgp.*, mp."name" AS "pet_name", mp."alt_name", mp."growth_stage"
+                FROM city_guard_pet cgp
+                JOIN city c ON c."name"=cgp."city"
+                JOIN profile p ON p."user"=cgp."user_id"
+                JOIN monster_pets mp ON mp."id"=cgp."pet_id" AND mp."user_id"=cgp."user_id"
+                WHERE cgp."city"=$1
+                  AND p."guild"=c."owner"
+                  AND mp."daycare_boarding_id" IS NULL;
+                """,
+                city,
+            )
+            if pet:
+                return pet
+            await conn.execute('DELETE FROM city_guard_pet WHERE "city"=$1;', city)
+            return None
+        finally:
+            if local:
+                await self.pool.release(conn)
+
+    async def clear_city_guard_pet(
+        self,
+        *,
+        city: str | None = None,
+        guild_id: int | None = None,
+        user_id: int | None = None,
+        pet_id: int | None = None,
+        conn=None,
+    ) -> None:
+        await self._ensure_city_war_tables()
+        local = False
+        if conn is None:
+            conn = await self.pool.acquire()
+            local = True
+        try:
+            if city is not None:
+                await conn.execute('DELETE FROM city_guard_pet WHERE "city"=$1;', city)
+            elif guild_id is not None:
+                await conn.execute(
+                    'DELETE FROM city_guard_pet WHERE "guild_id"=$1;',
+                    int(guild_id),
+                )
+            elif user_id is not None:
+                await conn.execute(
+                    'DELETE FROM city_guard_pet WHERE "user_id"=$1;',
+                    int(user_id),
+                )
+            elif pet_id is not None:
+                await conn.execute(
+                    'DELETE FROM city_guard_pet WHERE "pet_id"=$1;',
+                    int(pet_id),
+                )
+        finally:
+            if local:
+                await self.pool.release(conn)
+
+    async def clear_city_guards(
+        self,
+        *,
+        city: str | None = None,
+        guild_id: int | None = None,
+        user_id: int | None = None,
+        conn=None,
+    ) -> None:
+        await self._ensure_city_war_tables()
+        local = False
+        if conn is None:
+            conn = await self.pool.acquire()
+            local = True
+        try:
+            if city is not None:
+                await conn.execute('DELETE FROM city_guards WHERE "city"=$1;', city)
+                await conn.execute('DELETE FROM city_guard_pet WHERE "city"=$1;', city)
+            elif guild_id is not None:
+                await conn.execute(
+                    'DELETE FROM city_guards WHERE "guild_id"=$1;',
+                    int(guild_id),
+                )
+                await conn.execute(
+                    'DELETE FROM city_guard_pet WHERE "guild_id"=$1;',
+                    int(guild_id),
+                )
+            elif user_id is not None:
+                await conn.execute(
+                    'DELETE FROM city_guards WHERE "user_id"=$1;',
+                    int(user_id),
+                )
+        finally:
+            if local:
+                await self.pool.release(conn)
 
     async def get_city_buildings(self, guild_id, conn=None):
         if not guild_id:  # also catches guild_id = 0

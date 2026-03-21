@@ -104,6 +104,14 @@ class GuildAdventureJoinView(View):
                 _("The join window has closed."), ephemeral=True
             )
 
+        if guard_assignment := await self.bot.get_city_guard(interaction.user.id):
+            return await interaction.response.send_message(
+                _(
+                    "You are currently stationed as a city guard in **{city}** and cannot join guild adventures."
+                ).format(city=guard_assignment["city"]),
+                ephemeral=True,
+            )
+
         added = await self.bot.redis.sadd(self.members_key, interaction.user.id)
         if added:
             await interaction.response.send_message(
@@ -122,6 +130,19 @@ class Guild(commands.Cog):
         self._resume_guild_adventure_joins_task = self.bot.loop.create_task(
             self._resume_guild_adventure_joins()
         )
+
+    async def _guild_city_under_attack(self, guild_id: int, conn=None) -> str | None:
+        if not guild_id:
+            return None
+
+        city = await self.bot.get_owned_city(guild_id, conn=conn)
+        if not city:
+            return None
+
+        city_status = await self.bot.redis.execute_command("GET", f"city:{city['name']}")
+        if city_status and city_status.decode() == "under attack":
+            return city["name"]
+        return None
 
     def cog_unload(self):
         if self._resume_guild_adventure_joins_task:
@@ -287,7 +308,8 @@ class Guild(commands.Cog):
                     'SELECT "xp" FROM profile WHERE "user"=$1;',
                     starter_id,
                 )
-                if starter_profile:
+                starter_guard = await self.bot.get_city_guard(starter_id, conn=conn)
+                if starter_profile and not starter_guard:
                     difficulty += int(rpgtools.xptolevel(starter_profile["xp"]))
                     starter_user = self.bot.get_user(starter_id) or await self.bot.fetch_user(
                         starter_id
@@ -304,7 +326,10 @@ class Guild(commands.Cog):
                     user = await conn.fetchrow(
                         'SELECT * FROM profile WHERE "user"=$1;', user_id
                     )
-                    if user and user["guild"] == guild["id"]:
+                    if user and user["guild"] == guild["id"] and not await self.bot.get_city_guard(
+                        user_id,
+                        conn=conn,
+                    ):
                         difficulty += int(rpgtools.xptolevel(user["xp"]))
                         user_obj = self.bot.get_user(user_id) or await self.bot.fetch_user(
                             user_id
@@ -672,6 +697,7 @@ class Guild(commands.Cog):
             membercount = await conn.fetchval(
                 'SELECT count(*) FROM profile WHERE "guild"=$1;', guild["id"]
             )
+            bank_caps = await self.bot.get_guild_bank_caps(guild["id"], conn=conn)
         text = _("Members")
         embed = discord.Embed(title=guild["name"], description=guild["description"])
         embed.add_field(
@@ -679,10 +705,23 @@ class Guild(commands.Cog):
             value=f"{membercount}/{guild['memberlimit']} {text}",
         )
         leader = await rpgtools.lookup(self.bot, guild["leader"])
+        effective_bank_limit = (
+            bank_caps["effective_limit"] if bank_caps else int(guild["banklimit"])
+        )
+        bank_value = f"**${guild['money']}** / **${effective_bank_limit}**"
+        if bank_caps and effective_bank_limit != bank_caps["base_limit"]:
+            city_bonus = effective_bank_limit - bank_caps["base_limit"]
+            bank_value = (
+                f"{bank_value}\n"
+                + _("Base cap: ${base} (+${bonus} city bonus)").format(
+                    base=bank_caps["base_limit"],
+                    bonus=city_bonus,
+                )
+            )
         embed.add_field(name=_("Leader"), value=leader)
         embed.add_field(
             name="Guild Bank",
-            value=f"**${guild['money']}** / **${guild['banklimit']}**",
+            value=bank_value,
         )
         url = await ImageUrl(ImageFormat.all_static).convert(
             ctx, guild["icon"], silent=True
@@ -1481,7 +1520,11 @@ class Guild(commands.Cog):
             g = await conn.fetchrow(
                 'SELECT * FROM guild WHERE "id"=$1;', ctx.character_data["guild"]
             )
-            if g["banklimit"] < g["money"] + amount:
+            bank_caps = await self.bot.get_guild_bank_caps(g["id"], conn=conn)
+            effective_limit = (
+                bank_caps["effective_limit"] if bank_caps else int(g["banklimit"])
+            )
+            if effective_limit < g["money"] + amount:
                 return await ctx.send(_("The bank would be full."))
             profile_money = await conn.fetchval(
                 'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2 RETURNING'
@@ -1552,6 +1595,12 @@ class Guild(commands.Cog):
             guild = await conn.fetchrow(
                 'SELECT * FROM guild WHERE "id"=$1;', ctx.character_data["guild"]
             )
+            if city_name := await self._guild_city_under_attack(guild["id"], conn=conn):
+                return await ctx.send(
+                    _("Your city **{city}** is under attack, so guild bank withdrawals are disabled right now.").format(
+                        city=city_name
+                    )
+                )
             if guild["money"] < amount:
                 return await ctx.send(_("Your guild is too poor."))
             await conn.execute(
@@ -1626,6 +1675,12 @@ class Guild(commands.Cog):
             guild = await conn.fetchrow(
                 'SELECT * FROM guild WHERE "id"=$1;', ctx.character_data["guild"]
             )
+            if city_name := await self._guild_city_under_attack(guild["id"], conn=conn):
+                return await ctx.send(
+                    _("Your city **{city}** is under attack, so guild bank withdrawals are disabled right now.").format(
+                        city=city_name
+                    )
+                )
             if guild["money"] < amount:
                 return await ctx.send(_("Your guild is too poor."))
 
@@ -1672,6 +1727,12 @@ class Guild(commands.Cog):
             guild = await conn.fetchrow(
                 'SELECT * FROM guild WHERE "id"=$1;', ctx.character_data["guild"]
             )
+            if city_name := await self._guild_city_under_attack(guild["id"], conn=conn):
+                return await ctx.send(
+                    _("Your city **{city}** is under attack, so guild bank withdrawals are disabled right now.").format(
+                        city=city_name
+                    )
+                )
 
             current_limit = guild["banklimit"]  # e.g. 500000, 1000000, etc.
             current_upgrades = guild["upgrade"]  # how many 250k base upgrades
@@ -1729,6 +1790,12 @@ class Guild(commands.Cog):
                 'SELECT * FROM guild WHERE "id"=$1;',
                 ctx.character_data["guild"]
             )
+            if city_name := await self._guild_city_under_attack(guild_data["id"], conn=conn):
+                return await ctx.send(
+                    _("Your city **{city}** came under attack, so guild bank withdrawals are disabled right now.").format(
+                        city=city_name
+                    )
+                )
             if guild_data["money"] < cost:
                 return await ctx.send(
                     _(
@@ -1812,6 +1879,19 @@ class Guild(commands.Cog):
         async with self.bot.pool.acquire() as conn:
             guild1 = await conn.fetchrow('SELECT * FROM guild WHERE "id"=$1;', guild1)
             guild2 = await conn.fetchrow('SELECT * FROM guild WHERE "id"=$1;', guild2)
+            if city_name := await self._guild_city_under_attack(guild1["id"], conn=conn):
+                return await ctx.send(
+                    _("Your city **{city}** is under attack, so your guild cannot risk bank gold right now.").format(
+                        city=city_name
+                    )
+                )
+            if city_name := await self._guild_city_under_attack(guild2["id"], conn=conn):
+                return await ctx.send(
+                    _("{enemy}'s city **{city}** is under attack, so their guild cannot risk bank gold right now.").format(
+                        enemy=enemy,
+                        city=city_name,
+                    )
+                )
             if guild1["money"] < amount or guild2["money"] < amount:
                 return await ctx.send(_("One of the guilds can't pay the price."))
             size1 = await conn.fetchval(
@@ -1966,12 +2046,26 @@ class Guild(commands.Cog):
                 )
             )
         async with self.bot.pool.acquire() as conn:
-            money1, bank1 = await conn.fetchval(
-                'SELECT ("money", "banklimit") FROM guild WHERE "id"=$1;', guild1["id"]
-            )
-            money2, bank2 = await conn.fetchval(
-                'SELECT ("money", "banklimit") FROM guild WHERE "id"=$1;', guild2["id"]
-            )
+            bank1_caps = await self.bot.get_guild_bank_caps(guild1["id"], conn=conn)
+            bank2_caps = await self.bot.get_guild_bank_caps(guild2["id"], conn=conn)
+            if city_name := await self._guild_city_under_attack(guild1["id"], conn=conn):
+                return await ctx.send(
+                    _("Guild battle payout was cancelled because **{guild}** is defending **{city}** right now.").format(
+                        guild=guild1["name"],
+                        city=city_name,
+                    )
+                )
+            if city_name := await self._guild_city_under_attack(guild2["id"], conn=conn):
+                return await ctx.send(
+                    _("Guild battle payout was cancelled because **{guild}** is defending **{city}** right now.").format(
+                        guild=guild2["name"],
+                        city=city_name,
+                    )
+                )
+            money1 = bank1_caps["guild"]["money"]
+            bank1 = bank1_caps["effective_limit"]
+            money2 = bank2_caps["guild"]["money"]
+            bank2 = bank2_caps["effective_limit"]
             if money1 < amount or money2 < amount:
                 return await ctx.send(_("Some guild spent the money??? Bad looser!"))
             if wins1 > wins2:
@@ -2097,6 +2191,13 @@ class Guild(commands.Cog):
             if timer > 86400:
                 return await ctx.send("Timer cannot exceed 1 day")
             guild_id = ctx.character_data["guild"]
+            if guard_assignment := await self.bot.get_city_guard(ctx.author.id):
+                await self.bot.reset_guild_cooldown(ctx)
+                return await ctx.send(
+                    _(
+                        "You are currently stationed as a city guard in **{city}** and cannot start a guild adventure."
+                    ).format(city=guard_assignment["city"])
+                )
 
             if await self.bot.get_guild_adventure(guild_id):
                 await self.bot.reset_guild_cooldown(ctx)

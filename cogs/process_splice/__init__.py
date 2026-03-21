@@ -739,6 +739,81 @@ class ProcessSplice(commands.Cog):
             "ALTER TABLE splice_requests ADD COLUMN IF NOT EXISTS background_theme TEXT NOT NULL DEFAULT 'auto';"
         )
 
+    def _calculate_level_adjusted_splice_stats(
+        self,
+        hp: int | float | None,
+        attack: int | float | None,
+        defense: int | float | None,
+        level: int | None,
+    ) -> tuple[int, int, int, float]:
+        pets_cog = self.bot.get_cog("Pets")
+        max_level = int(getattr(pets_cog, "PET_MAX_LEVEL", 100))
+        level_bonus_per_level = float(getattr(pets_cog, "PET_LEVEL_STAT_BONUS", 0.01))
+        effective_level = max(1, min(int(level or 1), max_level))
+        splice_level_bonus_multiplier = 0.5
+        level_bonus = effective_level * level_bonus_per_level * splice_level_bonus_multiplier
+        level_multiplier = 1 + level_bonus
+
+        adjusted_hp = int(round(float(hp or 0) * level_multiplier))
+        adjusted_attack = int(round(float(attack or 0) * level_multiplier))
+        adjusted_defense = int(round(float(defense or 0) * level_multiplier))
+        level_bonus_pct = round(level_bonus * 100, 1)
+        return adjusted_hp, adjusted_attack, adjusted_defense, level_bonus_pct
+
+    async def _hydrate_splice_parent_stats(self, conn, rows):
+        if not rows:
+            return []
+
+        hydrated_rows = [dict(row) for row in rows]
+        parent_ids = sorted(
+            {
+                int(parent_id)
+                for row in hydrated_rows
+                for parent_id in (row.get("pet1_id"), row.get("pet2_id"))
+                if parent_id
+            }
+        )
+
+        if not parent_ids:
+            return hydrated_rows
+
+        parent_rows = await conn.fetch(
+            """
+            SELECT id, hp, attack, defense, level
+            FROM monster_pets
+            WHERE id = ANY($1::bigint[])
+            """,
+            parent_ids,
+        )
+        parents_by_id = {int(row["id"]): dict(row) for row in parent_rows}
+
+        for row in hydrated_rows:
+            for prefix in ("pet1", "pet2"):
+                parent_id = row.get(f"{prefix}_id")
+                if not parent_id:
+                    continue
+
+                parent = parents_by_id.get(int(parent_id))
+                if not parent:
+                    continue
+
+                adjusted_hp, adjusted_attack, adjusted_defense, level_bonus_pct = (
+                    self._calculate_level_adjusted_splice_stats(
+                        parent.get("hp"),
+                        parent.get("attack"),
+                        parent.get("defense"),
+                        parent.get("level"),
+                    )
+                )
+
+                row[f"{prefix}_hp"] = adjusted_hp
+                row[f"{prefix}_attack"] = adjusted_attack
+                row[f"{prefix}_defense"] = adjusted_defense
+                row[f"{prefix}_level"] = max(1, int(parent.get("level") or 1))
+                row[f"{prefix}_level_bonus_pct"] = level_bonus_pct
+
+        return hydrated_rows
+
     def _build_batch_splice_ai_prompt(self, theme_key: Optional[str]) -> str:
         background_prompt = self._get_splice_background_theme_prompt(theme_key)
         return (
@@ -2494,7 +2569,7 @@ class ProcessSplice(commands.Cog):
             await self._ensure_splice_request_background_column(conn)
             rows = await conn.fetch(
                 """
-                SELECT  id, user_id, pet1_name, pet2_name,
+                SELECT  id, user_id, pet1_id, pet2_id, pet1_name, pet2_name,
                         pet1_default, pet2_default, created_at,
                         pet1_url, pet2_url,
                         pet1_hp, pet1_attack, pet1_defense,
@@ -2507,6 +2582,7 @@ class ProcessSplice(commands.Cog):
                 """,
                 count,
             )
+            rows = await self._hydrate_splice_parent_stats(conn, rows)
 
         if not rows:
             return await ctx.send("No pending splice requests.")
@@ -2521,6 +2597,8 @@ class ProcessSplice(commands.Cog):
                     splice_id=r["id"],
                     user_id=r["user_id"],
                     name=r["temp_name"],
+                    pet1_id=r["pet1_id"],
+                    pet2_id=r["pet2_id"],
                     pet1_default=r["pet1_default"],
                     pet2_default=r["pet2_default"],
                     pet1_hp=r["pet1_hp"],
@@ -3484,7 +3562,7 @@ class ProcessSplice(commands.Cog):
             await self._ensure_splice_request_background_column(conn)
             rows = await conn.fetch(
                 """
-                SELECT  id, user_id, pet1_name, pet2_name,
+                SELECT  id, user_id, pet1_id, pet2_id, pet1_name, pet2_name,
                         pet1_default, pet2_default, created_at,
                         pet1_url, pet2_url,
                         pet1_hp, pet1_attack, pet1_defense,
@@ -3497,6 +3575,7 @@ class ProcessSplice(commands.Cog):
                 """,
                 count,
             )
+            rows = await self._hydrate_splice_parent_stats(conn, rows)
 
         if not rows:
             return await ctx.send("No pending splice requests.")
@@ -3511,6 +3590,8 @@ class ProcessSplice(commands.Cog):
                     splice_id=r["id"],
                     user_id=r["user_id"],
                     name=r["temp_name"],
+                    pet1_id=r["pet1_id"],
+                    pet2_id=r["pet2_id"],
                     pet1_default=r["pet1_default"],
                     pet2_default=r["pet2_default"],
                     pet1_hp=r["pet1_hp"],
@@ -4026,10 +4107,15 @@ class ProcessSplice(commands.Cog):
         # Get splice request details
         async with self.bot.pool.acquire() as conn:
             await self._ensure_splice_request_background_column(conn)
-            splice = await conn.fetchrow(
+            splice_row = await conn.fetchrow(
                 "SELECT * FROM splice_requests WHERE id = $1 AND status = 'pending'",
                 splice_id
             )
+            hydrated_rows = await self._hydrate_splice_parent_stats(
+                conn,
+                [splice_row] if splice_row else [],
+            )
+            splice = hydrated_rows[0] if hydrated_rows else None
 
         if not splice:
             return await ctx.send(f"No pending splice request found with ID {splice_id}.")
@@ -4045,10 +4131,20 @@ class ProcessSplice(commands.Cog):
         )
 
         embed.add_field(name="Pet 1 Stats",
-                        value=f"HP: {splice['pet1_hp']}, ATK: {splice['pet1_attack']}, DEF: {splice['pet1_defense']}, Element: {splice['pet1_element']}\nURL: {splice['pet1_url']}",
+                        value=(
+                            f"HP: {splice['pet1_hp']}, ATK: {splice['pet1_attack']}, DEF: {splice['pet1_defense']}, "
+                            f"Element: {splice['pet1_element']}\n"
+                            f"Splice Level Bonus: +{splice.get('pet1_level_bonus_pct', 0):g}%\n"
+                            f"URL: {splice['pet1_url']}"
+                        ),
                         inline=True)
         embed.add_field(name="Pet 2 Stats",
-                        value=f"HP: {splice['pet2_hp']}, ATK: {splice['pet2_attack']}, DEF: {splice['pet2_defense']}, Element: {splice['pet2_element']}\nURL: {splice['pet2_url']}",
+                        value=(
+                            f"HP: {splice['pet2_hp']}, ATK: {splice['pet2_attack']}, DEF: {splice['pet2_defense']}, "
+                            f"Element: {splice['pet2_element']}\n"
+                            f"Splice Level Bonus: +{splice.get('pet2_level_bonus_pct', 0):g}%\n"
+                            f"URL: {splice['pet2_url']}"
+                        ),
                         inline=True)
         embed.add_field(
             name="Background Preference",
@@ -4057,6 +4153,7 @@ class ProcessSplice(commands.Cog):
             ),
             inline=False,
         )
+        embed.set_footer(text="Parent stats include 50% of each sacrificed pet's combat level bonus.")
 
         await ctx.send(embed=embed)
 

@@ -74,6 +74,19 @@ CATEGORY_NAME = '╰• ☣ | ☣ FABLE RPG ☣ | ☣ •╯'
 
 class GameMaster(commands.Cog):
     PET_COMPENSATION_ALLOWED_USER_ID = 295173706496475136
+    CITY_ATTACK_LOCK_ALLOWED_USER_ID = 295173706496475136
+    CITY_DEFENSE_REFUND_ALLOWED_USER_ID = 295173706496475136
+    CITY_ATTACK_LOCK_CHANNEL_ID = 1403273049284804730
+    CITY_ATTACK_LOCK_KEY = "citywars:lock_until"
+    CITY_DEFENSE_REFUND_COSTS = {
+        "cannons": 200000,
+        "archers": 100000,
+        "outer wall": 500000,
+        "inner wall": 200000,
+        "moat": 150000,
+        "tower": 200000,
+        "ballista": 100000,
+    }
     EVENT_DISPLAY_NAMES = {
         "halloween": "Halloween",
         "wintersday": "Wintersday",
@@ -209,6 +222,153 @@ class GameMaster(commands.Cog):
             return await ctx.send(*args, **kwargs)
         except (discord.Forbidden, discord.HTTPException):
             return None
+
+    @commands.command(hidden=True, brief=_("Disable city attacks for a number of days"))
+    async def gmlockcityattacks(self, ctx, days: float):
+        """Disable city attacks for X days. Use 0 to re-enable them."""
+        if ctx.author.id != self.CITY_ATTACK_LOCK_ALLOWED_USER_ID:
+            return await self._safe_ctx_send(ctx, "You are not allowed to run this command.")
+
+        if days < 0:
+            return await self._safe_ctx_send(ctx, "Days must be zero or greater.")
+
+        announcement_channel = self.bot.get_channel(self.CITY_ATTACK_LOCK_CHANNEL_ID)
+        if announcement_channel is None:
+            try:
+                announcement_channel = await self.bot.fetch_channel(self.CITY_ATTACK_LOCK_CHANNEL_ID)
+            except Exception:
+                announcement_channel = None
+
+        if days == 0:
+            await self.bot.redis.execute_command("DEL", self.CITY_ATTACK_LOCK_KEY)
+            announcement = "City attacks have been re-enabled."
+            if announcement_channel:
+                await announcement_channel.send(announcement)
+            return await self._safe_ctx_send(ctx, announcement)
+
+        seconds = max(1, int(days * 86400))
+        unlock_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=seconds)
+        unlock_timestamp = int(unlock_time.timestamp())
+
+        await self.bot.redis.execute_command(
+            "SET",
+            self.CITY_ATTACK_LOCK_KEY,
+            unlock_timestamp,
+            "EX",
+            seconds,
+        )
+
+        announcement = (
+            "City attacks have been disabled until "
+            f"{discord.utils.format_dt(unlock_time, style='F')} "
+            f"({discord.utils.format_dt(unlock_time, style='R')})."
+        )
+        if announcement_channel:
+            await announcement_channel.send(announcement)
+
+        await self._safe_ctx_send(ctx, announcement)
+
+    @commands.command(
+        hidden=True,
+        aliases=["gmrefunddefenses", "gmrefundcitydefences", "gmrefunddefences"],
+        brief=_("Refund and clear all city defenses"),
+    )
+    async def gmrefundcitydefenses(self, ctx):
+        """Refund all stored city defenses to the current owner guild bank and clear them."""
+        if ctx.author.id != self.CITY_DEFENSE_REFUND_ALLOWED_USER_ID:
+            return await self._safe_ctx_send(
+                ctx,
+                "You are not allowed to run this command.",
+            )
+
+        if not await ctx.confirm(
+            _(
+                "Refund every city defense to the owning guild bank and delete all defense rows? This ignores bank-cap overflow."
+            )
+        ):
+            return await self._safe_ctx_send(ctx, _("City defense refund cancelled."))
+
+        async with self.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                defense_rows = await conn.fetch(
+                    """
+                    SELECT
+                        d.id,
+                        d.city,
+                        LOWER(d.name) AS defense_name,
+                        c.owner AS guild_id,
+                        g.name AS guild_name
+                    FROM defenses d
+                    LEFT JOIN city c ON c.name = d.city
+                    LEFT JOIN guild g ON g.id = c.owner
+                    ORDER BY d.city, d.id;
+                    """
+                )
+
+                if not defense_rows:
+                    return await self._safe_ctx_send(
+                        ctx,
+                        _("There are no stored city defenses to refund."),
+                    )
+
+                refund_totals = defaultdict(int)
+                refunded_rows = 0
+                total_refunded = 0
+                orphaned_rows = 0
+                unknown_rows = 0
+                guild_names = {}
+
+                for row in defense_rows:
+                    defense_cost = self.CITY_DEFENSE_REFUND_COSTS.get(
+                        row["defense_name"],
+                        0,
+                    )
+
+                    if defense_cost <= 0:
+                        unknown_rows += 1
+                        continue
+
+                    guild_id = row["guild_id"]
+                    if guild_id in (None, 1):
+                        orphaned_rows += 1
+                        continue
+
+                    refund_totals[int(guild_id)] += int(defense_cost)
+                    guild_names[int(guild_id)] = row["guild_name"] or str(guild_id)
+                    refunded_rows += 1
+                    total_refunded += int(defense_cost)
+
+                for guild_id, amount in refund_totals.items():
+                    await conn.execute(
+                        'UPDATE guild SET "money"="money"+$1 WHERE "id"=$2;',
+                        amount,
+                        guild_id,
+                    )
+
+                deleted_count = len(defense_rows)
+                await conn.execute("DELETE FROM defenses;")
+
+        guild_summary = ", ".join(
+            f"{guild_names[guild_id]}: ${amount:,}"
+            for guild_id, amount in sorted(
+                refund_totals.items(),
+                key=lambda item: (-item[1], guild_names[item[0]].casefold()),
+            )
+        )
+        if not guild_summary:
+            guild_summary = "No guild refunds were applied."
+
+        summary = (
+            f"Refunded {refunded_rows} city defenses for ${total_refunded:,} "
+            f"across {len(refund_totals)} guilds, then removed {deleted_count} defense rows."
+        )
+        if orphaned_rows:
+            summary += f" {orphaned_rows} defenses in system-owned or missing cities were removed without refund."
+        if unknown_rows:
+            summary += f" {unknown_rows} defenses had no known refund value and were removed without refund."
+
+        await self._safe_ctx_send(ctx, summary)
+        await self._safe_ctx_send(ctx, guild_summary)
 
     async def _scan_redis_keys(self, match_pattern: str, count: int = 1000) -> list[str]:
         cursor = 0

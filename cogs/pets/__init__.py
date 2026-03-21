@@ -627,6 +627,24 @@ class DaycarePackageBuilderLauncherView(discord.ui.View):
         if interaction.user.id != self.author.id:
             return await interaction.response.send_message("❌ This package builder is not for you.", ephemeral=True)
 
+        async with self.cog.bot.pool.acquire() as conn:
+            has_access, auto_closed = await self.cog.ensure_daycare_management_access(
+                conn,
+                self.author.id,
+            )
+            if not has_access:
+                return await interaction.response.send_message(
+                    self.cog.get_daycare_management_locked_message(auto_closed=auto_closed),
+                    ephemeral=True,
+                )
+            daycare = await self.cog.get_daycare_for_owner(conn, self.author.id)
+            if not daycare:
+                return await interaction.response.send_message(
+                    "❌ You do not own a daycare yet.",
+                    ephemeral=True,
+                )
+
+        self.daycare = daycare
         builder = DaycarePackageBuilderView(self.cog, self.author, self.daycare)
         await interaction.response.send_message(embed=builder.build_embed(), view=builder, ephemeral=True)
         builder.message = await interaction.original_response()
@@ -793,6 +811,24 @@ class DaycareUpgradeLauncherView(discord.ui.View):
         if interaction.user.id != self.author.id:
             return await interaction.response.send_message("❌ This upgrade panel launcher is not for you.", ephemeral=True)
 
+        async with self.cog.bot.pool.acquire() as conn:
+            has_access, auto_closed = await self.cog.ensure_daycare_management_access(
+                conn,
+                self.author.id,
+            )
+            if not has_access:
+                return await interaction.response.send_message(
+                    self.cog.get_daycare_management_locked_message(auto_closed=auto_closed),
+                    ephemeral=True,
+                )
+            daycare = await self.cog.get_daycare_for_owner(conn, self.author.id)
+            if not daycare:
+                return await interaction.response.send_message(
+                    "❌ You do not own a daycare yet.",
+                    ephemeral=True,
+                )
+
+        self.daycare = daycare
         panel = DaycareUpgradePanelView(self.cog, self.author, self.daycare)
         await interaction.response.send_message(embed=panel.build_embed(), view=panel, ephemeral=True)
         panel.message = await interaction.original_response()
@@ -1314,6 +1350,7 @@ class Pets(commands.Cog):
     DAYCARE_SELF_BOARDING_RATE = 1.20
     DAYCARE_TRUST_RATE = 0.35
     DAYCARE_TRUST_CAP_PER_DAY = 6
+    DAYCARE_REQUIRED_PATREON_TIER = 1
     DAYCARE_ROOM_UPKEEPS = {
         "standard": 0,
         "nursery": 8000,
@@ -1927,7 +1964,15 @@ class Pets(commands.Cog):
         if for_update:
             query += " FOR UPDATE"
         query += ";"
-        return await conn.fetchrow(query, owner_user_id)
+        daycare = await conn.fetchrow(query, owner_user_id)
+        if (
+            daycare
+            and daycare["is_open"]
+            and not await self.user_has_daycare_management_access(conn, owner_user_id)
+        ):
+            await self.close_daycare_for_ineligible_owner(conn, owner_user_id)
+            daycare = await conn.fetchrow(query, owner_user_id)
+        return daycare
 
     async def get_daycare_by_id(self, conn, daycare_id: int):
         return await conn.fetchrow(
@@ -1945,6 +1990,55 @@ class Pets(commands.Cog):
             return False
         classes = [class_from_string(name) for name in ctx.character_data["class"]]
         return any(class_ and class_.in_class_line(Ranger) for class_ in classes)
+
+    async def get_patreon_tier_for_user(self, conn, user_id: int) -> int:
+        tier = await conn.fetchval(
+            'SELECT tier FROM profile WHERE "user" = $1;',
+            user_id,
+        )
+        try:
+            return int(tier or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    async def user_has_daycare_management_access(self, conn, user_id: int) -> bool:
+        return (
+            await self.get_patreon_tier_for_user(conn, user_id)
+            >= self.DAYCARE_REQUIRED_PATREON_TIER
+        )
+
+    async def close_daycare_for_ineligible_owner(self, conn, owner_user_id: int) -> bool:
+        result = await conn.execute(
+            """
+            UPDATE pet_daycares
+            SET is_open = FALSE
+            WHERE owner_user_id = $1
+              AND is_open = TRUE;
+            """,
+            owner_user_id,
+        )
+        return result != "UPDATE 0"
+
+    async def ensure_daycare_management_access(
+        self,
+        conn,
+        owner_user_id: int,
+    ) -> tuple[bool, bool]:
+        if await self.user_has_daycare_management_access(conn, owner_user_id):
+            return True, False
+        auto_closed = await self.close_daycare_for_ineligible_owner(conn, owner_user_id)
+        return False, auto_closed
+
+    def get_daycare_management_locked_message(self, *, auto_closed: bool = False) -> str:
+        base = (
+            f"❌ Daycare ownership requires Patreon Tier {self.DAYCARE_REQUIRED_PATREON_TIER} or higher."
+        )
+        if auto_closed:
+            return (
+                base
+                + " Your daycare has been auto-closed, and daycare owner commands are disabled until your Patreon tier is restored."
+            )
+        return base + " Daycare owner commands are disabled until your Patreon tier is restored."
 
     async def ensure_pet_not_boarded(self, ctx, pet) -> bool:
         if pet and pet.get("daycare_boarding_id"):
@@ -2115,6 +2209,15 @@ class Pets(commands.Cog):
         if not column:
             raise ValueError("Unknown upgrade.")
 
+        has_access, auto_closed = await self.ensure_daycare_management_access(
+            conn,
+            owner_user_id,
+        )
+        if not has_access:
+            raise ValueError(
+                self.get_daycare_management_locked_message(auto_closed=auto_closed)
+            )
+
         daycare = await self.get_daycare_for_owner(conn, owner_user_id)
         if not daycare:
             raise ValueError("You do not own a daycare yet.")
@@ -2190,6 +2293,15 @@ class Pets(commands.Cog):
 
         if price_per_day < 0:
             raise ValueError("Price/day cannot be negative.")
+
+        has_access, auto_closed = await self.ensure_daycare_management_access(
+            conn,
+            owner_user_id,
+        )
+        if not has_access:
+            raise ValueError(
+                self.get_daycare_management_locked_message(auto_closed=auto_closed)
+            )
 
         daycare = await self.get_daycare_for_owner(conn, owner_user_id)
         if not daycare:
@@ -3158,7 +3270,10 @@ class Pets(commands.Cog):
             f"`{prefix}pets daycare packages`\n"
             f"`{prefix}pets daycare reception [default|closed|full|booked|collection] ...`"
             if can_open_daycare
-            else "You need the Ranger class line to open a daycare. Owner management commands are GM-only."
+            else (
+                f"You need the Ranger class line and Patreon Tier {self.DAYCARE_REQUIRED_PATREON_TIER}+ "
+                "to own or manage a daycare. Owner management commands are GM-only."
+            )
         )
         embed.add_field(name="Owner Side", value=owner_text, inline=False)
         embed.set_footer(text=f"Text fallback: {prefix}pets daycare board @user <package_id> <pet> [days]")
@@ -3813,6 +3928,7 @@ class Pets(commands.Cog):
     async def daycare(self, ctx):
         ranger_ok = await self.is_ranger_owner(ctx)
         async with self.bot.pool.acquire() as conn:
+            patron_ok = await self.user_has_daycare_management_access(conn, ctx.author.id)
             daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
             active_boardings = await conn.fetch(
                 """
@@ -3827,10 +3943,18 @@ class Pets(commands.Cog):
             )
 
             if not daycare:
-                embed = self.build_daycare_help_embed(ctx.clean_prefix, ranger_ok)
-                if ranger_ok:
+                embed = self.build_daycare_help_embed(
+                    ctx.clean_prefix,
+                    ranger_ok and patron_ok,
+                )
+                if ranger_ok and patron_ok:
                     embed.description = (
                         f"You don't own a daycare yet. Use `{ctx.clean_prefix}pets daycare open [name]` to open one.\n\n"
+                        "You can still browse and attend other players' daycares."
+                    )
+                elif ranger_ok:
+                    embed.description = (
+                        f"Daycare ownership requires Patreon Tier {self.DAYCARE_REQUIRED_PATREON_TIER} or higher.\n\n"
                         "You can still browse and attend other players' daycares."
                     )
                 else:
@@ -3880,6 +4004,10 @@ class Pets(commands.Cog):
                 f"**Ledger Net:** ${int(ledger_net or 0):,}"
             ),
         )
+        if not patron_ok:
+            embed.description += (
+                f"\n**Owner Access:** Locked (Patreon Tier {self.DAYCARE_REQUIRED_PATREON_TIER}+ required)"
+            )
         embed.add_field(
             name="Upgrade Caps",
             value=(
@@ -3893,14 +4021,18 @@ class Pets(commands.Cog):
         embed.add_field(
             name="Owner Commands",
             value=(
-                f"`{ctx.clean_prefix}pets daycare open [name]`\n"
-                f"`{ctx.clean_prefix}pets daycare close`\n"
-                f"`{ctx.clean_prefix}pets daycare upgrade`\n"
-                f"`{ctx.clean_prefix}pets daycare reception [template]`\n"
-                f"`{ctx.clean_prefix}pets daycare packages`\n"
-                f"`{ctx.clean_prefix}pets daycare packagecreate`\n"
-                f"`{ctx.clean_prefix}pets daycare packagedelete <package_id>`\n"
-                f"`{ctx.clean_prefix}pets daycare ledger`"
+                (
+                    f"`{ctx.clean_prefix}pets daycare open [name]`\n"
+                    f"`{ctx.clean_prefix}pets daycare close`\n"
+                    f"`{ctx.clean_prefix}pets daycare upgrade`\n"
+                    f"`{ctx.clean_prefix}pets daycare reception [template]`\n"
+                    f"`{ctx.clean_prefix}pets daycare packages`\n"
+                    f"`{ctx.clean_prefix}pets daycare packagecreate`\n"
+                    f"`{ctx.clean_prefix}pets daycare packagedelete <package_id>`\n"
+                    f"`{ctx.clean_prefix}pets daycare ledger`"
+                )
+                if patron_ok
+                else f"Locked until Patreon Tier {self.DAYCARE_REQUIRED_PATREON_TIER}+ is restored."
             ),
             inline=True,
         )
@@ -3920,9 +4052,12 @@ class Pets(commands.Cog):
     @daycare.command(name="help", brief=_("Show daycare browsing and boarding help"))
     @has_char()
     async def daycare_help(self, ctx):
+        ranger_ok = await self.is_ranger_owner(ctx)
+        async with self.bot.pool.acquire() as conn:
+            patron_ok = await self.user_has_daycare_management_access(conn, ctx.author.id)
         embed = self.build_daycare_help_embed(
             ctx.clean_prefix,
-            await self.is_ranger_owner(ctx),
+            ranger_ok and patron_ok,
         )
         await ctx.send(embed=embed)
 
@@ -3943,6 +4078,16 @@ class Pets(commands.Cog):
 
         async with self.bot.pool.acquire() as conn:
             async with conn.transaction():
+                has_access, auto_closed = await self.ensure_daycare_management_access(
+                    conn,
+                    ctx.author.id,
+                )
+                if not has_access:
+                    return await ctx.send(
+                        self.get_daycare_management_locked_message(
+                            auto_closed=auto_closed
+                        )
+                    )
                 existing = await self.get_daycare_for_owner(conn, ctx.author.id, for_update=True)
                 if existing:
                     if existing["is_open"]:
@@ -3991,6 +4136,16 @@ class Pets(commands.Cog):
         active_count = 0
         async with self.bot.pool.acquire() as conn:
             async with conn.transaction():
+                has_access, auto_closed = await self.ensure_daycare_management_access(
+                    conn,
+                    ctx.author.id,
+                )
+                if not has_access:
+                    return await ctx.send(
+                        self.get_daycare_management_locked_message(
+                            auto_closed=auto_closed
+                        )
+                    )
                 daycare = await self.get_daycare_for_owner(conn, ctx.author.id, for_update=True)
                 if not daycare:
                     return await ctx.send("❌ You do not own a daycare yet.")
@@ -4025,6 +4180,14 @@ class Pets(commands.Cog):
             return await ctx.send("❌ You need to be in the Ranger class line to manage a daycare.")
 
         async with self.bot.pool.acquire() as conn:
+            has_access, auto_closed = await self.ensure_daycare_management_access(
+                conn,
+                ctx.author.id,
+            )
+            if not has_access:
+                return await ctx.send(
+                    self.get_daycare_management_locked_message(auto_closed=auto_closed)
+                )
             daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
             if not daycare:
                 return await ctx.send("❌ You do not own a daycare yet.")
@@ -4058,6 +4221,14 @@ class Pets(commands.Cog):
     @is_gm()
     async def packages(self, ctx):
         async with self.bot.pool.acquire() as conn:
+            has_access, auto_closed = await self.ensure_daycare_management_access(
+                conn,
+                ctx.author.id,
+            )
+            if not has_access:
+                return await ctx.send(
+                    self.get_daycare_management_locked_message(auto_closed=auto_closed)
+                )
             daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
             if not daycare:
                 return await ctx.send("❌ You do not own a daycare yet.")
@@ -4091,6 +4262,14 @@ class Pets(commands.Cog):
             return await ctx.send("❌ You need to be in the Ranger class line to manage a daycare.")
 
         async with self.bot.pool.acquire() as conn:
+            has_access, auto_closed = await self.ensure_daycare_management_access(
+                conn,
+                ctx.author.id,
+            )
+            if not has_access:
+                return await ctx.send(
+                    self.get_daycare_management_locked_message(auto_closed=auto_closed)
+                )
             daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
             if not daycare:
                 return await ctx.send("❌ You do not own a daycare yet.")
@@ -4176,6 +4355,14 @@ class Pets(commands.Cog):
             return await ctx.send("❌ You need to be in the Ranger class line to manage a daycare.")
 
         async with self.bot.pool.acquire() as conn:
+            has_access, auto_closed = await self.ensure_daycare_management_access(
+                conn,
+                ctx.author.id,
+            )
+            if not has_access:
+                return await ctx.send(
+                    self.get_daycare_management_locked_message(auto_closed=auto_closed)
+                )
             daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
             if not daycare:
                 return await ctx.send("❌ You do not own a daycare yet.")
@@ -4206,6 +4393,14 @@ class Pets(commands.Cog):
             return await ctx.send("❌ You need to be in the Ranger class line to manage a daycare.")
 
         async with self.bot.pool.acquire() as conn:
+            has_access, auto_closed = await self.ensure_daycare_management_access(
+                conn,
+                ctx.author.id,
+            )
+            if not has_access:
+                return await ctx.send(
+                    self.get_daycare_management_locked_message(auto_closed=auto_closed)
+                )
             daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
             if not daycare:
                 return await ctx.send("❌ You do not own a daycare yet.")
@@ -4487,6 +4682,14 @@ class Pets(commands.Cog):
     @is_gm()
     async def ledger(self, ctx):
         async with self.bot.pool.acquire() as conn:
+            has_access, auto_closed = await self.ensure_daycare_management_access(
+                conn,
+                ctx.author.id,
+            )
+            if not has_access:
+                return await ctx.send(
+                    self.get_daycare_management_locked_message(auto_closed=auto_closed)
+                )
             daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
             if not daycare:
                 return await ctx.send("❌ You do not own a daycare yet.")

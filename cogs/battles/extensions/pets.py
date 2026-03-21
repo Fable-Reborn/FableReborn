@@ -3729,89 +3729,71 @@ class PetExtension:
         
         return messages
     
-    async def get_pet_combatant(self, ctx, user, include_element=True):
-        """Create a combatant object for a player's pet if they have one equipped"""
-        if not user:
+    async def build_pet_combatant(self, ctx, user, pet, include_element=True, conn=None):
+        """Create a pet combatant from a specific monster_pets record."""
+        if not user or not pet:
             return None
-            
-        async with ctx.bot.pool.acquire() as conn:
-            # Check if user has an equipped pet
-            pet = await conn.fetchrow(
-                "SELECT * FROM monster_pets WHERE user_id = $1 AND equipped = TRUE AND daycare_boarding_id IS NULL;",
-                user.id
-            )
-            
-            if not pet:
-                return None
-                
-            # Get pet's element
+
+        owns_connection = conn is None
+        if owns_connection:
+            conn = await ctx.bot.pool.acquire()
+
+        try:
             pet_element = pet["element"].capitalize() if pet["element"] and include_element else "Unknown"
-            
-            # Get owner's stats
+
             owner_stats = await conn.fetchrow(
                 "SELECT * FROM profile WHERE \"user\" = $1;",
                 user.id
             )
-                
-            # Get owner's luck if available, or use default
+
             owner_luck = owner_stats["luck"] if owner_stats and "luck" in owner_stats else 0.6
-            # Convert owner_luck to float to avoid decimal/float type mismatch
             owner_luck = float(owner_luck)
-            
-            # Apply the same luck calculation formula as the main character
-            # Copy from the battle factory logic
+
             pet_luck = 20 if owner_luck <= 0.3 else ((owner_luck - 0.3) / (1.5 - 0.3)) * 80 + 20
             pet_luck = round(pet_luck, 2)
-            pet_luck = min(pet_luck, 100.0)  # Cap at 100% like owner
-            
-            # Calculate trust bonus
+            pet_luck = min(pet_luck, 100.0)
+
             trust_level = pet.get('trust_level', 0)
             trust_bonus = self.get_trust_bonus(trust_level)
             pet_level = max(1, min(int(pet.get("level", 1)), self.PET_MAX_LEVEL))
             level_multiplier = 1 + (pet_level * self.PET_LEVEL_STAT_BONUS)
-            
-            # Apply +1% base stat scaling per level (level 100 => +100%).
+
             base_hp = float(pet["hp"]) * level_multiplier
             base_armor = float(pet["defense"]) * level_multiplier
             base_damage = float(pet["attack"]) * level_multiplier
-            
+
             bonus_hp = base_hp * trust_bonus
             bonus_armor = base_armor * trust_bonus
             bonus_damage = base_damage * trust_bonus
-            
+
             final_hp = base_hp + bonus_hp
             final_armor = base_armor + bonus_armor
             final_damage = base_damage + bonus_damage
-            
-            # Store additional pet data for skills
+
             happiness = pet.get('happiness', 50)
-            
-            # Create pet combatant
+
             pet_combatant = Combatant(
-                user=user,  # Reference to owner
+                user=user,
                 hp=final_hp,
                 max_hp=final_hp,
                 armor=final_armor,
                 damage=final_damage,
-                luck=pet_luck,  # Use owner's luck instead of fixed value
+                luck=pet_luck,
                 element=pet_element,
                 is_pet=True,
                 owner=user,
                 name=pet["name"],
                 pet_id=pet["id"]
             )
-            
-            # Store pet-specific attributes for skill calculations
+
             pet_combatant.happiness = happiness
             pet_combatant.trust_level = trust_level
-            
-            # Apply skill effects
+
             pets_cog = ctx.bot.get_cog("Pets")
             if pets_cog and hasattr(pets_cog, "get_effective_learned_skills"):
                 learned_skills = pets_cog.get_effective_learned_skills(pet)
             else:
                 learned_skills = pet.get('learned_skills', [])
-                # Handle JSON string format from database
                 if isinstance(learned_skills, str):
                     try:
                         import json
@@ -3820,10 +3802,9 @@ class PetExtension:
                         learned_skills = []
                 elif learned_skills is None:
                     learned_skills = []
-            
+
             self.apply_skill_effects(pet_combatant, learned_skills)
-            
-            # Check for ultimate skills and set up activation
+
             ultimate_skills = [
                 'inferno_mastery', 'phoenix_rebirth', 'sun_gods_blessing',
                 'oceans_wrath', 'immortal_waters', 'poseidons_call',
@@ -3834,17 +3815,57 @@ class PetExtension:
                 'void_mastery', 'eternal_night', 'lord_of_shadows',
                 'apocalypse', 'corruption_mastery', 'void_lord', 'end_of_days'
             ]
-            
-            has_ultimate = any(skill in getattr(pet_combatant, 'skill_effects', {}) for skill in ultimate_skills)
+
+            has_ultimate = any(
+                skill in getattr(pet_combatant, 'skill_effects', {})
+                for skill in ultimate_skills
+            )
             if has_ultimate:
-                # Ultimate skills activate when pet reaches low HP (based on trust)
-                activation_threshold = 0.15 + (trust_level / 100) * 0.1  # 15-25% HP threshold
-                # DEBUG LINE activation_threshold = 1.0  # DEBUG: Always trigger at full HP
+                activation_threshold = 0.15 + (trust_level / 100) * 0.1
                 setattr(pet_combatant, 'ultimate_threshold', activation_threshold)
                 setattr(pet_combatant, 'ultimate_ready', False)
                 setattr(pet_combatant, 'ultimate_activated', False)
-            
+
             return pet_combatant
+        finally:
+            if owns_connection:
+                await ctx.bot.pool.release(conn)
+
+    async def get_pet_combatant(self, ctx, user, include_element=True, pet_id=None, conn=None):
+        """Create a combatant object for a player's pet."""
+        if not user:
+            return None
+
+        owns_connection = conn is None
+        if owns_connection:
+            conn = await ctx.bot.pool.acquire()
+
+        try:
+            if pet_id is None:
+                pet = await conn.fetchrow(
+                    "SELECT * FROM monster_pets WHERE user_id = $1 AND equipped = TRUE AND daycare_boarding_id IS NULL;",
+                    user.id
+                )
+            else:
+                pet = await conn.fetchrow(
+                    "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2 AND daycare_boarding_id IS NULL;",
+                    user.id,
+                    int(pet_id),
+                )
+
+            if not pet:
+                return None
+
+            return await self.build_pet_combatant(
+                ctx,
+                user,
+                pet,
+                include_element=include_element,
+                conn=conn,
+            )
+        finally:
+            if owns_connection:
+                await ctx.bot.pool.release(conn)
     
     def apply_pet_bonuses(self, pet_combatant, owner_combatant):
         """Apply any special bonuses between pet and owner"""

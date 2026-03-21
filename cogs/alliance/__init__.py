@@ -16,11 +16,14 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import asyncio
+import math
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 import discord
 
+from classes.errors import NoChoice
 from discord.enums import ButtonStyle
 from discord.ext import commands
 from discord.ui.button import Button
@@ -28,6 +31,8 @@ from discord.ui.button import Button
 from classes.bot import Bot
 from classes.context import Context
 from classes.converters import MemberWithCharacter
+from cogs.battles.core.combatant import Combatant
+from cogs.battles.core.team import Team
 from cogs.shard_communication import alliance_on_cooldown as alliance_cooldown
 from utils import misc as rpgtools
 from utils.checks import (
@@ -41,6 +46,38 @@ from utils.checks import (
 )
 from utils.i18n import _, locale_doc
 from utils.joins import JoinView
+from utils.paginator import Choose
+
+
+CITY_GUARD_LIMIT = 3
+CITY_CONQUEST_OVERFLOW_LOSS_PERCENT = 25
+CITY_ATTACK_LOCK_KEY = "citywars:lock_until"
+CITY_WAR_ATTACKER_LIMIT = 3
+CITY_WAR_PET_BUDGET_MULTIPLIER = Decimal("1.10")
+CITY_WAR_DEFENSE_SLOTS = ("wall", "weapon", "utility")
+CITY_WAR_DEFENSES = {
+    "cannons": {"hp": 1000, "def": 120, "cost": 200000, "slot": "weapon", "priority": 2},
+    "archers": {"hp": 2000, "def": 100, "cost": 100000, "slot": "weapon", "priority": 1},
+    "outer wall": {"hp": 80000, "def": 0, "cost": 500000, "slot": "wall", "priority": 2},
+    "inner wall": {"hp": 40000, "def": 0, "cost": 200000, "slot": "wall", "priority": 1},
+    "moat": {"hp": 20000, "def": 50, "cost": 150000, "slot": "utility", "priority": 1},
+    "tower": {"hp": 5000, "def": 100, "cost": 200000, "slot": "weapon", "priority": 3},
+    "ballista": {"hp": 1000, "def": 60, "cost": 100000, "slot": "weapon", "priority": 0},
+}
+CITY_WAR_DEFENSE_SLOT_LABELS = {
+    "wall": "Wall",
+    "weapon": "Weapon",
+    "utility": "Utility",
+}
+
+
+class CityWarUserProxy:
+    def __init__(self, user_id: int, display_name: str):
+        self.id = int(user_id)
+        self.display_name = display_name
+
+    def __str__(self) -> str:
+        return self.display_name
 
 
 class Alliance(commands.Cog):
@@ -48,17 +85,605 @@ class Alliance(commands.Cog):
         self.bot = bot
         self.cities = {name.title(): i for name, i in bot.config.cities.items()}
 
+    def _build_city_help_overview_embed(self, ctx: Context) -> discord.Embed:
+        embed = discord.Embed(
+            title=_("City War Help"),
+            colour=self.bot.config.game.primary_colour,
+            description=_(
+                "Use `{prefix}alliance cityhelp attack` for attacker guidance and `{prefix}alliance cityhelp defend` for defender setup."
+            ).format(prefix=ctx.clean_prefix),
+        )
+        embed.add_field(
+            name=_("Attack Commands"),
+            value=_(
+                "`{prefix}alliance attack <city>`\n"
+                "`{prefix}alliance occupy <city>`\n"
+                "`{prefix}alliance cityhelp attack`"
+            ).format(prefix=ctx.clean_prefix),
+            inline=False,
+        )
+        embed.add_field(
+            name=_("Defense Commands"),
+            value=_(
+                "`{prefix}alliance defenses`\n"
+                "`{prefix}alliance build defense <name>`\n"
+                "`{prefix}alliance guards`\n"
+                "`{prefix}alliance guards pet`\n"
+                "`{prefix}alliance cityhelp defend`"
+            ).format(prefix=ctx.clean_prefix),
+            inline=False,
+        )
+        embed.add_field(
+            name=_("Core Rules"),
+            value=_(
+                "City wars are guild-based. Attackers bring a live `3`-person frontline and defenders use preset fortifications, guards, and one city pet."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name=_("Win Condition"),
+            value=_(
+                "A city can only be occupied after all active fortifications, city guards, and the stationed city pet are gone."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name=_("Vault Stakes"),
+            value=_(
+                "Owning a city increases guild vault cap by city tier. Losing the city removes `25%` of vault gold stored above the guild's base cap."
+            ),
+            inline=False,
+        )
+        return embed
+
+    def _build_city_help_attack_embed(self, ctx: Context) -> discord.Embed:
+        embed = discord.Embed(
+            title=_("City War Help: Attacking"),
+            colour=self.bot.config.game.primary_colour,
+            description=_("How to launch and finish a city attack."),
+        )
+        embed.add_field(
+            name=_("Start"),
+            value=_(
+                "`{prefix}alliance attack <city>`\n"
+                "Only the alliance leader can launch it.\n"
+                "You cannot attack your own city.\n"
+                "The city must not already be under attack or on cooldown."
+            ).format(prefix=ctx.clean_prefix),
+            inline=False,
+        )
+        embed.add_field(
+            name=_("Rally Phase"),
+            value=_(
+                "A join button stays open for `10 minutes`.\n"
+                "You need at least `3` eligible members from the same guild.\n"
+                "Stationed city guards cannot join attacks.\n"
+                "After rally, the leader chooses the `3` frontline attackers."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name=_("Pets"),
+            value=_(
+                "The attack can bring `1` pet.\n"
+                "The pet owner must be one of the chosen frontline attackers.\n"
+                "The pet does not need to be equipped.\n"
+                "It must not be in daycare and must be `young` or `adult`."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name=_("Battle"),
+            value=_(
+                "City war uses city-war scaled stats, not raw stats.\n"
+                "Active fortifications are fought first.\n"
+                "After that, guards and the stationed city pet fight.\n"
+                "The attack has a `15 minute` limit."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name=_("After Winning"),
+            value=_(
+                "Use `{prefix}alliance occupy <city>` immediately after clearing the city.\n"
+                "If you wait too long, another guild may take it first."
+            ).format(prefix=ctx.clean_prefix),
+            inline=False,
+        )
+        return embed
+
+    def _build_city_help_defend_embed(self, ctx: Context) -> discord.Embed:
+        embed = discord.Embed(
+            title=_("City War Help: Defending"),
+            colour=self.bot.config.game.primary_colour,
+            description=_("How to prepare a city so it can defend itself while your guild is offline."),
+        )
+        embed.add_field(
+            name=_("Defense Slots"),
+            value=_(
+                "Cities have `3` active defense slots:\n"
+                "`1` wall slot\n"
+                "`1` weapon slot\n"
+                "`1` utility slot\n"
+                "Use `{prefix}alliance build defense <name>` and view them with `{prefix}alliance defenses`."
+            ).format(prefix=ctx.clean_prefix),
+            inline=False,
+        )
+        embed.add_field(
+            name=_("City Guards"),
+            value=_(
+                "Cities can station up to `3` city guards.\n"
+                "`{prefix}alliance guards`\n"
+                "`{prefix}alliance guards add <member>`\n"
+                "`{prefix}alliance guards remove <member>`"
+            ).format(prefix=ctx.clean_prefix),
+            inline=False,
+        )
+        embed.add_field(
+            name=_("Guard Duty Restrictions"),
+            value=_(
+                "Stationed guards cannot:\n"
+                "join city attacks\n"
+                "start guild adventures\n"
+                "join guild adventures"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name=_("City Pet"),
+            value=_(
+                "Each city can station `1` guard pet.\n"
+                "Use `{prefix}alliance guards pet set <member> <pet>`.\n"
+                "The owner must be a currently assigned city guard.\n"
+                "The pet does not need to be equipped but must be `young` or `adult` and not in daycare."
+            ).format(prefix=ctx.clean_prefix),
+            inline=False,
+        )
+        embed.add_field(
+            name=_("Risk and Reward"),
+            value=_(
+                "City ownership increases the guild vault cap by tier.\n"
+                "If the city falls, the guild loses `25%` of stored gold above its normal base vault cap."
+            ),
+            inline=False,
+        )
+        return embed
+
+    async def _get_city_attack_lock(self) -> int | None:
+        raw_value = await self.bot.redis.execute_command("GET", CITY_ATTACK_LOCK_KEY)
+        if not raw_value:
+            return None
+
+        try:
+            lock_until = int(raw_value.decode() if isinstance(raw_value, bytes) else raw_value)
+        except (TypeError, ValueError):
+            await self.bot.redis.execute_command("DEL", CITY_ATTACK_LOCK_KEY)
+            return None
+
+        if lock_until <= int(datetime.now(timezone.utc).timestamp()):
+            await self.bot.redis.execute_command("DEL", CITY_ATTACK_LOCK_KEY)
+            return None
+
+        return lock_until
+
+    def _format_city_attack_lock(self, lock_until: int) -> str:
+        unlock_time = datetime.fromtimestamp(lock_until, tz=timezone.utc)
+        return _(
+            "City attacks are currently disabled until {unlock_time}."
+        ).format(unlock_time=discord.utils.format_dt(unlock_time, style="F"))
+
+    def _get_city_war_defense_meta(self, defense_name: str) -> dict | None:
+        if not defense_name:
+            return None
+        return CITY_WAR_DEFENSES.get(str(defense_name).lower())
+
+    def _get_city_war_defense_slot(self, defense_name: str) -> str | None:
+        meta = self._get_city_war_defense_meta(defense_name)
+        return None if meta is None else meta["slot"]
+
+    def _get_city_war_defense_choice_key(self, defense: dict) -> tuple[int, int, int]:
+        meta = self._get_city_war_defense_meta(defense["name"]) or {}
+        return (
+            int(meta.get("priority", -1)),
+            int(defense.get("hp", 0)),
+            -int(defense.get("id", 0)),
+        )
+
+    def _partition_city_defenses(self, defenses: list[dict]) -> tuple[list[dict], list[dict]]:
+        active_by_slot: dict[str, dict] = {}
+        inactive: list[dict] = []
+
+        for defense in defenses:
+            slot = self._get_city_war_defense_slot(defense["name"])
+            if slot is None:
+                inactive.append(defense)
+                continue
+
+            current = active_by_slot.get(slot)
+            if current is None or self._get_city_war_defense_choice_key(defense) > self._get_city_war_defense_choice_key(current):
+                if current is not None:
+                    inactive.append(current)
+                active_by_slot[slot] = defense
+            else:
+                inactive.append(defense)
+
+        active = [
+            active_by_slot[slot]
+            for slot in CITY_WAR_DEFENSE_SLOTS
+            if slot in active_by_slot
+        ]
+        return active, inactive
+
+    async def _load_city_defenses(self, conn, city: str) -> tuple[list[dict], list[dict]]:
+        defenses = [
+            dict(row)
+            for row in await conn.fetch(
+                'SELECT * FROM defenses WHERE "city"=$1 ORDER BY "id" ASC;',
+                city,
+            )
+        ]
+        return self._partition_city_defenses(defenses)
+
+    def _scale_city_war_stat(self, raw_value, *, base: int, factor: int) -> int:
+        value = max(0.0, float(raw_value or 0))
+        return max(1, int(round(base + (factor * math.sqrt(value)))))
+
+    def _apply_city_war_scaling(self, combatant: Combatant) -> Combatant:
+        current_hp = float(getattr(combatant, "hp", 0) or 0)
+        max_hp = float(getattr(combatant, "max_hp", current_hp) or current_hp or 1)
+        hp_ratio = 1.0 if max_hp <= 0 else max(0.0, min(1.0, current_hp / max_hp))
+
+        scaled_max_hp = self._scale_city_war_stat(
+            getattr(combatant, "max_hp", current_hp),
+            base=2500,
+            factor=40,
+        )
+        scaled_damage = self._scale_city_war_stat(
+            getattr(combatant, "damage", 0),
+            base=150,
+            factor=18,
+        )
+        scaled_armor = self._scale_city_war_stat(
+            getattr(combatant, "armor", 0),
+            base=100,
+            factor=15,
+        )
+
+        scaled_current_hp = max(
+            0,
+            int(round(scaled_max_hp * hp_ratio)),
+        )
+        if getattr(combatant, "is_alive", lambda: True)():
+            scaled_current_hp = max(1, scaled_current_hp)
+
+        combatant.max_hp = Decimal(str(scaled_max_hp))
+        combatant.hp = Decimal(str(scaled_current_hp))
+        combatant.damage = Decimal(str(scaled_damage))
+        combatant.armor = Decimal(str(scaled_armor))
+        combatant.city_war_scaled = True
+        return combatant
+
+    def _get_city_war_budget(self, combatant: Combatant) -> Decimal:
+        return (
+            (Decimal(str(getattr(combatant, "max_hp", 0) or 0)) / Decimal("5"))
+            + Decimal(str(getattr(combatant, "damage", 0) or 0))
+            + Decimal(str(getattr(combatant, "armor", 0) or 0))
+        )
+
+    def _cap_city_war_pet(self, pet_combatant: Combatant, owner_combatant: Combatant | None) -> Combatant:
+        if not pet_combatant or not owner_combatant:
+            return pet_combatant
+
+        pet_budget = self._get_city_war_budget(pet_combatant)
+        owner_budget = self._get_city_war_budget(owner_combatant)
+        max_budget = owner_budget * CITY_WAR_PET_BUDGET_MULTIPLIER
+
+        if pet_budget <= 0 or pet_budget <= max_budget:
+            return pet_combatant
+
+        scale = max_budget / pet_budget
+        scaled_max_hp = max(
+            1,
+            int(
+                round(
+                    float(Decimal(str(getattr(pet_combatant, "max_hp", 1) or 1)) * scale)
+                )
+            ),
+        )
+        scaled_damage = max(
+            1,
+            int(
+                round(
+                    float(Decimal(str(getattr(pet_combatant, "damage", 1) or 1)) * scale)
+                )
+            ),
+        )
+        scaled_armor = max(
+            1,
+            int(
+                round(
+                    float(Decimal(str(getattr(pet_combatant, "armor", 1) or 1)) * scale)
+                )
+            ),
+        )
+        current_hp = float(getattr(pet_combatant, "hp", 0) or 0)
+        max_hp = float(getattr(pet_combatant, "max_hp", current_hp) or current_hp or 1)
+        hp_ratio = 1.0 if max_hp <= 0 else max(0.0, min(1.0, current_hp / max_hp))
+        scaled_current_hp = max(1, int(round(scaled_max_hp * hp_ratio)))
+
+        pet_combatant.max_hp = Decimal(str(scaled_max_hp))
+        pet_combatant.hp = Decimal(str(scaled_current_hp))
+        pet_combatant.damage = Decimal(str(scaled_damage))
+        pet_combatant.armor = Decimal(str(scaled_armor))
+        pet_combatant.city_war_pet_capped = True
+        return pet_combatant
+
+    def _sort_city_attackers(self, ctx: Context, attackers: list[discord.abc.User]) -> list[discord.abc.User]:
+        return sorted(
+            attackers,
+            key=lambda member: (
+                0 if member.id == ctx.author.id else 1,
+                member.display_name.casefold(),
+                member.id,
+            ),
+        )
+
+    async def _select_city_attackers(self, ctx: Context, attackers: list[discord.abc.User]) -> list[discord.abc.User] | None:
+        ordered_attackers = self._sort_city_attackers(ctx, attackers)
+        if len(ordered_attackers) > 25:
+            ordered_attackers = ordered_attackers[:25]
+            await ctx.send(
+                _("Only the first **25** eligible joined attackers can be considered for frontline selection.")
+            )
+        if len(ordered_attackers) <= CITY_WAR_ATTACKER_LIMIT:
+            return ordered_attackers
+
+        selected: list[discord.abc.User] = []
+        remaining = ordered_attackers.copy()
+        try:
+            for slot_index in range(CITY_WAR_ATTACKER_LIMIT):
+                selected_index = await Choose(
+                    entries=[
+                        _("{member}").format(member=member.display_name)
+                        for member in remaining
+                    ],
+                    title=_("Choose frontline attacker #{slot}").format(
+                        slot=slot_index + 1
+                    ),
+                    footer=_("Pick the {limit} frontline guild members for this city war.").format(
+                        limit=CITY_WAR_ATTACKER_LIMIT
+                    ),
+                    return_index=True,
+                    timeout=45,
+                ).paginate(ctx)
+                selected.append(remaining.pop(int(selected_index)))
+        except NoChoice:
+            return None
+
+        return selected
+
+    async def _get_available_city_war_pets(self, conn, user_id: int):
+        return await conn.fetch(
+            """
+            SELECT *
+            FROM monster_pets
+            WHERE user_id = $1
+              AND daycare_boarding_id IS NULL
+              AND growth_stage IN ('young', 'adult')
+            ORDER BY equipped DESC, id ASC;
+            """,
+            user_id,
+        )
+
+    async def _select_attack_pet(self, ctx: Context, attackers: list, conn):
+        eligible = []
+        for attacker in attackers:
+            pets = await self._get_available_city_war_pets(conn, attacker.id)
+            if pets:
+                eligible.append((attacker, pets))
+
+        if not eligible:
+            return None
+        eligible = eligible[:24]
+
+        try:
+            if len(eligible) == 1:
+                owner_index = 0
+            else:
+                owner_index = await Choose(
+                    entries=[
+                        _("{member} ({count} eligible pets)").format(
+                            member=member.display_name,
+                            count=len(pets),
+                        )
+                        for member, pets in eligible
+                    ]
+                    + [_("No attack pet")],
+                    title=_("Choose the pet owner"),
+                    footer=_("Only joined attackers can provide a city-war pet."),
+                    return_index=True,
+                    timeout=45,
+                ).paginate(ctx)
+                if owner_index == len(eligible):
+                    return None
+
+            owner, pets = eligible[int(owner_index)]
+            pets = list(pets)[:24]
+            pet_index = await Choose(
+                entries=[
+                    _("{name} (ID {pet_id}) • {element} • {stage}").format(
+                        name=pet["name"],
+                        pet_id=pet["id"],
+                        element=pet["element"],
+                        stage=pet["growth_stage"].capitalize(),
+                    )
+                    for pet in pets
+                ]
+                + [_("No attack pet")],
+                title=_("Choose the attack pet"),
+                footer=_("The pet does not need to be equipped."),
+                return_index=True,
+                timeout=45,
+            ).paginate(ctx)
+            if pet_index == len(pets):
+                return None
+
+            return {"owner": owner, "pet": pets[int(pet_index)]}
+        except NoChoice:
+            await ctx.send(_("No attack pet was selected in time. Proceeding without one."))
+            return None
+
+    async def _build_city_structure_combatants(self, defenses: list[dict]) -> list[Combatant]:
+        structures = []
+        for defense in defenses:
+            defense_meta = self._get_city_war_defense_meta(defense["name"]) or {}
+            structure = Combatant(
+                user=defense["name"],
+                hp=defense["hp"],
+                max_hp=defense["hp"],
+                damage=max(1, int(defense["defense"])),
+                armor=0,
+                element="Earth",
+                luck=100,
+                name=defense["name"].title(),
+                city_role="structure",
+                city_slot=defense_meta.get("slot"),
+                city_structure_name=str(defense["name"]).lower(),
+                structure_id=defense["id"],
+            )
+            structures.append(structure)
+        return structures
+
+    async def _build_city_guard_combatants(self, ctx: Context, city: str, conn) -> list:
+        battles_cog = self.bot.get_cog("Battles")
+        if not battles_cog:
+            return []
+
+        guard_combatants = []
+        for guard in await self.bot.get_city_guards(city, conn=conn):
+            guard_name = await rpgtools.lookup(self.bot, guard["user_id"])
+            guard_user = CityWarUserProxy(int(guard["user_id"]), guard_name)
+            combatant = await battles_cog.battle_factory.create_player_combatant(
+                ctx,
+                guard_user,
+                include_pet=False,
+            )
+            self._apply_city_war_scaling(combatant)
+            combatant.name = guard_name
+            combatant.city_role = "guard"
+            combatant.city_guard_user_id = int(guard["user_id"])
+            combatant.user_id = int(guard["user_id"])
+            guard_combatants.append(combatant)
+
+        return guard_combatants
+
+    async def _build_city_guard_pet_combatant(
+        self,
+        ctx: Context,
+        city: str,
+        conn,
+        owner_combatants: dict[int, Combatant] | None = None,
+    ):
+        battles_cog = self.bot.get_cog("Battles")
+        if not battles_cog:
+            return None
+
+        assigned_pet = await self.bot.get_city_guard_pet(city, conn=conn)
+        if not assigned_pet:
+            return None
+
+        owner_combatants = owner_combatants or {}
+        owner_id = int(assigned_pet["user_id"])
+        if owner_combatants and owner_id not in owner_combatants:
+            await self.bot.clear_city_guard_pet(city=city, conn=conn)
+            return None
+
+        owner = CityWarUserProxy(
+            owner_id,
+            await rpgtools.lookup(self.bot, owner_id),
+        )
+        pet_combatant = await battles_cog.battle_factory.pet_ext.get_pet_combatant(
+            ctx,
+            owner,
+            pet_id=int(assigned_pet["pet_id"]),
+            conn=conn,
+        )
+        if not pet_combatant:
+            await self.bot.clear_city_guard_pet(city=city, conn=conn)
+            return None
+
+        self._apply_city_war_scaling(pet_combatant)
+        self._cap_city_war_pet(pet_combatant, owner_combatants.get(owner_id))
+        pet_combatant.city_role = "guard_pet"
+        pet_combatant.city_guard_pet_id = int(assigned_pet["pet_id"])
+        pet_combatant.city_guard_pet_owner_id = owner_id
+        pet_combatant.user_id = owner_id
+        return pet_combatant
+
+    async def _sync_city_war_battle_state(self, battle, conn) -> None:
+        for combatant in battle.defender_team.combatants:
+            city_role = getattr(combatant, "city_role", "")
+            if city_role == "structure":
+                structure_id = getattr(combatant, "structure_id", None)
+                if not structure_id:
+                    continue
+                if combatant.is_alive():
+                    await conn.execute(
+                        'UPDATE defenses SET "hp"=$1 WHERE "id"=$2;',
+                        int(max(0, round(float(combatant.hp)))),
+                        int(structure_id),
+                    )
+                else:
+                    await conn.execute(
+                        'DELETE FROM defenses WHERE "id"=$1;',
+                        int(structure_id),
+                    )
+            elif city_role == "guard" and not combatant.is_alive():
+                await self.bot.clear_city_guards(
+                    user_id=int(getattr(combatant, "city_guard_user_id")),
+                    conn=conn,
+                )
+            elif city_role == "guard_pet" and not combatant.is_alive():
+                await self.bot.clear_city_guard_pet(city=battle.city, conn=conn)
+
+    async def _apply_conquest_vault_loss(
+        self, defending_guild_id: int, conn
+    ) -> tuple[int, str | None]:
+        if defending_guild_id in (None, 1):
+            return 0, None
+        bank_caps = await self.bot.get_guild_bank_caps(defending_guild_id, conn=conn)
+        if not bank_caps:
+            return 0, None
+        defending_guild = bank_caps["guild"]
+        overflow_gold = max(
+            0,
+            int(defending_guild["money"]) - int(bank_caps["base_limit"]),
+        )
+        lost_gold = (overflow_gold * CITY_CONQUEST_OVERFLOW_LOSS_PERCENT) // 100
+        if lost_gold > 0:
+            await conn.execute(
+                'UPDATE guild SET "money"="money"-$1 WHERE "id"=$2;',
+                lost_gold,
+                defending_guild_id,
+            )
+        return lost_gold, defending_guild["name"]
+
     @commands.command(brief=_("Shows cities and owners."))
     @locale_doc
     async def cities(self, ctx: Context) -> None:
         _(
             """Show all cities, their tiers, owners, available buildings and current defense."""
         )
-        cities = await self.bot.pool.fetch(
-            'SELECT c.*, g."name" AS "gname", COALESCE(SUM(d."defense"), 0) AS'
-            ' "defense" FROM city c JOIN guild g ON c."owner"=g."id" LEFT JOIN defenses'
-            ' d ON c."name"=d."city" GROUP BY c."owner", c."name", g."name";'
-        )
+        async with self.bot.pool.acquire() as conn:
+            cities = await conn.fetch(
+                'SELECT c.*, g."name" AS "gname" FROM city c JOIN guild g ON c."owner"=g."id";'
+            )
+            city_defense_totals = {}
+            for city_row in cities:
+                active_defenses, _ = await self._load_city_defenses(conn, city_row["name"])
+                city_defense_totals[city_row["name"]] = sum(
+                    int(defense["defense"]) for defense in active_defenses
+                )
         em = discord.Embed(
             title=_("Cities"), colour=self.bot.config.game.primary_colour
         ).set_image(url="https://idlerpg.xyz/city.png")
@@ -79,7 +704,7 @@ class Alliance(commands.Cog):
                             if self.cities[city["name"]][i]
                         ]
                     ),
-                    defense=city["defense"],
+                    defense=city_defense_totals.get(city["name"], 0),
                 ),
             )
         await ctx.send(embed=em)
@@ -129,11 +754,53 @@ class Alliance(commands.Cog):
         alliance_embed.set_footer(
             text=_(
                 "{prefix}alliance buildings | {prefix}alliance defenses |"
-                " {prefix}alliance attack | {prefix}alliance occupy"
+                " {prefix}alliance attack | {prefix}alliance occupy |"
+                " {prefix}alliance cityhelp"
             ).format(prefix=ctx.clean_prefix)
         )
 
         await ctx.send(embed=alliance_embed)
+
+    @has_char()
+    @has_guild()
+    @alliance.group(
+        name="cityhelp",
+        aliases=["citywarhelp", "warhelp"],
+        invoke_without_command=True,
+        brief=_("Show city-war help."),
+    )
+    @locale_doc
+    async def cityhelp(self, ctx: Context) -> None:
+        _(
+            """Show city-war help.
+
+            Use `{prefix}alliance cityhelp attack` for attacker help or `{prefix}alliance cityhelp defend` for defender help."""
+        )
+        await ctx.send(embed=self._build_city_help_overview_embed(ctx))
+
+    @has_char()
+    @has_guild()
+    @cityhelp.command(name="attack", aliases=["attacking"], brief=_("Show city attack help."))
+    @locale_doc
+    async def cityhelp_attack(self, ctx: Context) -> None:
+        _(
+            """Show help for attacking a city."""
+        )
+        await ctx.send(embed=self._build_city_help_attack_embed(ctx))
+
+    @has_char()
+    @has_guild()
+    @cityhelp.command(
+        name="defend",
+        aliases=["defense", "defence", "defending"],
+        brief=_("Show city defense help."),
+    )
+    @locale_doc
+    async def cityhelp_defend(self, ctx: Context) -> None:
+        _(
+            """Show help for defending a city."""
+        )
+        await ctx.send(embed=self._build_city_help_defend_embed(ctx))
 
     @alliance_cooldown(300)
     @is_alliance_leader()
@@ -470,40 +1137,31 @@ class Alliance(commands.Cog):
         _(
             """Build some defensive buildings or place troops in your cities. The following are available:
 
-            Cannons: 500HP, 60 defense for $200,000
-            Archers: 1,000HP, 50 defense for $100,000
-            Outer Wall: 40,000HP, 0 defense for $500,000
-            Inner Wall: 20,000HP, 0 defense for $200,000
-            Moat: 10,000HP, 25 defense for $150,000
-            Tower: 2,500HP, 50 defense for $200,000
-            Ballista: 500HP, 30 defense for $100,000
+            Cannons: 1,000HP, 120 defense for $200,000
+            Archers: 2,000HP, 100 defense for $100,000
+            Outer Wall: 80,000HP, 0 defense for $500,000
+            Inner Wall: 40,000HP, 0 defense for $200,000
+            Moat: 20,000HP, 50 defense for $150,000
+            Tower: 5,000HP, 100 defense for $200,000
+            Ballista: 1,000HP, 60 defense for $100,000
 
-            Any city can have a maximum of 10 defenses. When attacked, the buildings with the most HP are targeted first.
+            Cities now use 3 defense slots: 1 wall slot, 1 weapon slot, and 1 utility slot.
             You may not build defenses while your city is under attack. The price of the defense is removed from the leading guild's bank.
 
             This command requires your alliance to own a city.
             Only the alliance leader can use this command.
             (This command has a cooldown of 1 minutes)"""
         )
-        building_list = {
-            "cannons": {"hp": 1000, "def": 120, "cost": 200000},
-            "archers": {"hp": 2000, "def": 100, "cost": 100000},
-            "outer wall": {"hp": 80000, "def": 0, "cost": 500000},
-            "inner wall": {"hp": 40000, "def": 0, "cost": 200000},
-            "moat": {"hp": 20000, "def": 50, "cost": 150000},
-            "tower": {"hp": 5000, "def": 100, "cost": 200000},
-            "ballista": {"hp": 1000, "def": 60, "cost": 100000},
-        }
-        if name not in building_list:
+        if name not in CITY_WAR_DEFENSES:
             await self.bot.reset_alliance_cooldown(ctx)
             return await ctx.send(
                 _("Invalid defense. Please use `{prefix}{cmd} [{buildings}]`.").format(
                     prefix=ctx.clean_prefix,
                     cmd=ctx.command.qualified_name,
-                    buildings="/".join(building_list.keys()),
+                    buildings="/".join(CITY_WAR_DEFENSES.keys()),
                 )
             )
-        building = building_list[name]
+        building = CITY_WAR_DEFENSES[name]
         async with self.bot.pool.acquire() as conn:
             city_name = await conn.fetchval(
                 'SELECT name FROM city WHERE "owner"=$1;', ctx.character_data["guild"]
@@ -515,12 +1173,23 @@ class Alliance(commands.Cog):
                 return await ctx.send(
                     _("Your city is under attack. Defenses cannot be built.")
                 )
-            cur_count = await conn.fetchval(
-                'SELECT COUNT(*) FROM defenses WHERE "city"=$1;', city_name
-            )
-            if cur_count >= 10:
+            active_defenses, _ = await self._load_city_defenses(conn, city_name)
+            occupied_slots = {
+                self._get_city_war_defense_slot(defense["name"]): defense
+                for defense in active_defenses
+            }
+            requested_slot = building["slot"]
+            if requested_slot in occupied_slots:
+                active_defense = occupied_slots[requested_slot]
                 await self.bot.reset_alliance_cooldown(ctx)
-                return await ctx.send(_("You may only build up to 10 defenses."))
+                return await ctx.send(
+                    _(
+                        "Your city's **{slot}** slot is already occupied by **{defense}**. Destroy it before building another defense in that slot."
+                    ).format(
+                        slot=CITY_WAR_DEFENSE_SLOT_LABELS[requested_slot].lower(),
+                        defense=active_defense["name"].title(),
+                    )
+                )
             if not await ctx.confirm(
                     _(
                         "Are you sure you want to build a **{defense}**? This will cost"
@@ -614,9 +1283,23 @@ class Alliance(commands.Cog):
             city_name = await conn.fetchval(
                 'SELECT name FROM city WHERE "owner"=$1;', alliance
             )
-            defenses = (
-                           await conn.fetch('SELECT * FROM defenses WHERE "city"=$1;', city_name)
-                       ) or []
+            defenses, inactive_defenses = (
+                await self._load_city_defenses(conn, city_name)
+            ) if city_name else ([], [])
+            guards = (
+                await self.bot.get_city_guards(city_name, conn=conn)
+                if city_name
+                else []
+            )
+            guard_pet = (
+                await self.bot.get_city_guard_pet(city_name, conn=conn)
+                if city_name
+                else None
+            )
+            guard_user_ids = {int(guard["user_id"]) for guard in guards}
+            if guard_pet and int(guard_pet["user_id"]) not in guard_user_ids:
+                await self.bot.clear_city_guard_pet(city=city_name, conn=conn)
+                guard_pet = None
         if not city_name:
             return await ctx.send(_("Your alliance does not own a city."))
         embed = discord.Embed(
@@ -625,21 +1308,381 @@ class Alliance(commands.Cog):
         ).set_thumbnail(url="https://idlerpg.xyz/fortress.png")
         i = None
         for i in defenses:
+            slot = self._get_city_war_defense_slot(i["name"])
+            slot_label = CITY_WAR_DEFENSE_SLOT_LABELS.get(slot, "Defense")
             embed.add_field(
-                name=i["name"].title(),
+                name=_("{name} ({slot} Slot)").format(
+                    name=i["name"].title(),
+                    slot=slot_label,
+                ),
                 value=_("HP: {hp}, Defense: {defense}").format(
                     hp=i["hp"], defense=i["defense"]
                 ),
                 inline=True,
             )
+        if inactive_defenses:
+            embed.add_field(
+                name=_("Inactive Legacy Fortifications"),
+                value="\n".join(
+                    _("{name} ({slot} slot, {hp} HP)").format(
+                        name=defense["name"].title(),
+                        slot=CITY_WAR_DEFENSE_SLOT_LABELS.get(
+                            self._get_city_war_defense_slot(defense["name"]),
+                            "Unknown",
+                        ).lower(),
+                        hp=defense["hp"],
+                    )
+                    for defense in inactive_defenses
+                ),
+                inline=False,
+            )
+        if guards:
+            guard_names = [
+                await rpgtools.lookup(self.bot, guard["user_id"]) for guard in guards
+            ]
+            embed.add_field(
+                name=_("City Guards"),
+                value=", ".join(guard_names),
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name=_("City Guards"),
+                value=_("No guards assigned."),
+                inline=False,
+            )
+        embed.add_field(
+            name=_("Guard Pet"),
+            value=(
+                _("**{pet}** (Owner: {owner})").format(
+                    pet=guard_pet["pet_name"],
+                    owner=await rpgtools.lookup(self.bot, guard_pet["user_id"]),
+                )
+                if guard_pet
+                else _("No guard pet assigned.")
+            ),
+            inline=False,
+        )
         if i is None:
             embed.add_field(
                 name=_("None built"),
-                value=_("Use {prefix}alliance build defense [name]").format(
-                    prefix=ctx.clean_prefix
-                ),
+                value=_(
+                    "Use {prefix}alliance build defense [name]. Cities can hold 1 wall, 1 weapon, and 1 utility defense."
+                ).format(prefix=ctx.clean_prefix),
             )
         await ctx.send(embed=embed)
+
+    @has_char()
+    @alliance.group(
+        invoke_without_command=True, brief=_("Lists and manages city guards.")
+    )
+    @locale_doc
+    async def guards(self, ctx: Context) -> None:
+        _(
+            """Lists the city guards assigned to your alliance's city.
+
+            Assigned guards are real guild members stationed in the city. While on guard duty, they cannot join guild adventures or city attacks."""
+        )
+        async with self.bot.pool.acquire() as conn:
+            alliance = await conn.fetchval(
+                'SELECT alliance FROM guild WHERE "id"=$1;', ctx.character_data["guild"]
+            )
+            city_row = await conn.fetchrow('SELECT * FROM city WHERE "owner"=$1;', alliance)
+            if not city_row:
+                return await ctx.send(_("Your alliance does not own a city."))
+            owner_guild_name = await conn.fetchval(
+                'SELECT name FROM guild WHERE "id"=$1;',
+                city_row["owner"],
+            )
+            guards = await self.bot.get_city_guards(city_row["name"], conn=conn)
+            guard_pet = await self.bot.get_city_guard_pet(city_row["name"], conn=conn)
+
+        embed = discord.Embed(
+            title=_("{city}'s city guards").format(city=city_row["name"]),
+            colour=self.bot.config.game.primary_colour,
+        ).set_thumbnail(url="https://idlerpg.xyz/fortress.png")
+        embed.description = _(
+            "Owner guild: {guild}\nAssigned guards: {count}/{limit}"
+        ).format(
+            guild=owner_guild_name,
+            count=len(guards),
+            limit=CITY_GUARD_LIMIT,
+        )
+        if guards:
+            for guard in guards:
+                embed.add_field(
+                    name=await rpgtools.lookup(self.bot, guard["user_id"]),
+                    value=_("Stationed in the city"),
+                    inline=False,
+                )
+        else:
+            embed.add_field(
+                name=_("No guards assigned"),
+                value=_("Use `{prefix}alliance guards add <member>` to station someone.").format(
+                    prefix=ctx.clean_prefix
+                ),
+                inline=False,
+            )
+        if guard_pet:
+            embed.add_field(
+                name=_("Assigned Guard Pet"),
+                value=_("**{pet}** (Owner: {owner})").format(
+                    pet=guard_pet["pet_name"],
+                    owner=await rpgtools.lookup(self.bot, guard_pet["user_id"]),
+                ),
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name=_("Assigned Guard Pet"),
+                value=_("Use `{prefix}alliance guards pet set <member> <pet>` to station one.").format(
+                    prefix=ctx.clean_prefix
+                ),
+                inline=False,
+            )
+        await ctx.send(embed=embed)
+
+    @owns_city()
+    @is_alliance_leader()
+    @has_char()
+    @guards.command(name="add", brief=_("Assign a city guard."))
+    @locale_doc
+    async def guards_add(self, ctx: Context, member: MemberWithCharacter) -> None:
+        _(
+            """`<member>` - A member of your guild.
+
+            Assign a guild member as a city guard. Guard duty blocks guild adventures and city attacks while they are stationed."""
+        )
+        async with self.bot.pool.acquire() as conn:
+            city_name = await conn.fetchval(
+                'SELECT name FROM city WHERE "owner"=$1;',
+                ctx.character_data["guild"],
+            )
+            if not city_name:
+                return await ctx.send(_("Your alliance does not own a city."))
+            city_status = await self.bot.redis.execute_command("GET", f"city:{city_name}")
+            if city_status and city_status.decode() == "under attack":
+                return await ctx.send(_("You cannot change guards while the city is under attack."))
+            member_guild = await conn.fetchval(
+                'SELECT "guild" FROM profile WHERE "user"=$1;',
+                member.id,
+            )
+            if member_guild != ctx.character_data["guild"]:
+                return await ctx.send(
+                    _("City guards must be members of the guild that owns the city.")
+                )
+            existing_guard = await self.bot.get_city_guard(member.id, conn=conn)
+            if existing_guard and existing_guard["city"] == city_name:
+                return await ctx.send(_("That member is already stationed as a city guard."))
+            if existing_guard:
+                return await ctx.send(
+                    _("That member is already guarding **{city}**.").format(
+                        city=existing_guard["city"]
+                    )
+                )
+            current_guards = await self.bot.get_city_guards(city_name, conn=conn)
+            if len(current_guards) >= CITY_GUARD_LIMIT:
+                return await ctx.send(
+                    _("Your city already has the maximum of **{limit}** guards.").format(
+                        limit=CITY_GUARD_LIMIT
+                    )
+                )
+            await conn.execute(
+                """
+                INSERT INTO city_guards ("user_id", "guild_id", "city", "assigned_by")
+                VALUES ($1, $2, $3, $4);
+                """,
+                member.id,
+                ctx.character_data["guild"],
+                city_name,
+                ctx.author.id,
+            )
+        await ctx.send(
+            _("**{member}** is now stationed as a city guard in **{city}**.").format(
+                member=member,
+                city=city_name,
+            )
+        )
+
+    @owns_city()
+    @is_alliance_leader()
+    @has_char()
+    @guards.command(name="remove", brief=_("Remove a city guard."))
+    @locale_doc
+    async def guards_remove(self, ctx: Context, member: MemberWithCharacter) -> None:
+        _(
+            """`<member>` - A currently assigned city guard.
+
+            Remove a stationed city guard from duty."""
+        )
+        async with self.bot.pool.acquire() as conn:
+            city_name = await conn.fetchval(
+                'SELECT name FROM city WHERE "owner"=$1;',
+                ctx.character_data["guild"],
+            )
+            if not city_name:
+                return await ctx.send(_("Your alliance does not own a city."))
+            city_status = await self.bot.redis.execute_command("GET", f"city:{city_name}")
+            if city_status and city_status.decode() == "under attack":
+                return await ctx.send(_("You cannot change guards while the city is under attack."))
+            guard = await self.bot.get_city_guard(member.id, conn=conn)
+            if not guard or guard["city"] != city_name:
+                return await ctx.send(_("That member is not guarding your city."))
+            await self.bot.clear_city_guards(user_id=member.id, conn=conn)
+        await ctx.send(
+            _("**{member}** has been relieved from city guard duty.").format(
+                member=member
+            )
+        )
+
+    @owns_city()
+    @is_alliance_leader()
+    @has_char()
+    @guards.group(name="pet", invoke_without_command=True, brief=_("Show or manage the city guard pet."))
+    @locale_doc
+    async def guards_pet(self, ctx: Context) -> None:
+        _(
+            """Shows the pet currently assigned to defend your city alongside the guards."""
+        )
+        async with self.bot.pool.acquire() as conn:
+            city_name = await conn.fetchval(
+                'SELECT name FROM city WHERE "owner"=$1;',
+                ctx.character_data["guild"],
+            )
+            if not city_name:
+                return await ctx.send(_("Your alliance does not own a city."))
+            guard_pet = await self.bot.get_city_guard_pet(city_name, conn=conn)
+
+        if not guard_pet:
+            return await ctx.send(_("No city guard pet is currently assigned."))
+
+        await ctx.send(
+            _("**{pet}** is stationed in **{city}** as the city guard pet. Owner: **{owner}**.").format(
+                pet=guard_pet["pet_name"],
+                city=city_name,
+                owner=await rpgtools.lookup(self.bot, guard_pet["user_id"]),
+            )
+        )
+
+    @owns_city()
+    @is_alliance_leader()
+    @has_char()
+    @guards_pet.command(name="set", aliases=["add"], brief=_("Assign the city guard pet."))
+    @locale_doc
+    async def guards_pet_set(
+        self,
+        ctx: Context,
+        member: MemberWithCharacter,
+        *,
+        pet_ref: str,
+    ) -> None:
+        _(
+            """`<member>` - A stationed city guard from the guild that owns the city.
+            `<pet>` - A pet ID or alias.
+
+            Assign one pet to defend the city alongside the guards. The pet does not need to be equipped, but it must be at least young and not boarded in daycare."""
+        )
+        async with self.bot.pool.acquire() as conn:
+            city_name = await conn.fetchval(
+                'SELECT name FROM city WHERE "owner"=$1;',
+                ctx.character_data["guild"],
+            )
+            if not city_name:
+                return await ctx.send(_("Your alliance does not own a city."))
+
+            city_status = await self.bot.redis.execute_command("GET", f"city:{city_name}")
+            if city_status and city_status.decode() == "under attack":
+                return await ctx.send(_("You cannot change the guard pet while the city is under attack."))
+
+            await self.bot._ensure_city_war_tables()
+
+            member_guild = await conn.fetchval(
+                'SELECT "guild" FROM profile WHERE "user"=$1;',
+                member.id,
+            )
+            if member_guild != ctx.character_data["guild"]:
+                return await ctx.send(
+                    _("The guard pet must belong to a member of the guild that owns the city.")
+                )
+            if not await self.bot.get_city_guard(member.id, conn=conn):
+                return await ctx.send(
+                    _("The city guard pet must belong to a member currently assigned as a city guard.")
+                )
+
+            pets_cog = self.bot.get_cog("Pets")
+            if not pets_cog or not hasattr(pets_cog, "fetch_pet_for_user"):
+                return await ctx.send(_("The pet system is unavailable right now."))
+
+            pet, pet_id = await pets_cog.fetch_pet_for_user(conn, member.id, pet_ref)
+            if not pet:
+                return await ctx.send(_("That member does not have a pet matching `{pet}`.").format(pet=pet_ref))
+            if pet["growth_stage"] not in ["young", "adult"]:
+                return await ctx.send(
+                    _("**{pet}** must be at least in the **young** growth stage.").format(
+                        pet=pet["name"]
+                    )
+                )
+            if pet["daycare_boarding_id"] is not None:
+                return await ctx.send(
+                    _("**{pet}** is currently boarded in daycare and cannot defend the city.").format(
+                        pet=pet["name"]
+                    )
+                )
+
+            await conn.execute(
+                """
+                INSERT INTO city_guard_pet ("city", "guild_id", "user_id", "pet_id", "assigned_by")
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT ("city") DO UPDATE SET
+                    "guild_id" = EXCLUDED."guild_id",
+                    "user_id" = EXCLUDED."user_id",
+                    "pet_id" = EXCLUDED."pet_id",
+                    "assigned_by" = EXCLUDED."assigned_by",
+                    "assigned_at" = NOW();
+                """,
+                city_name,
+                ctx.character_data["guild"],
+                member.id,
+                pet_id,
+                ctx.author.id,
+            )
+
+        await ctx.send(
+            _("**{pet}** now defends **{city}** as its stationed pet. Owner: **{owner}**.").format(
+                pet=pet["name"],
+                city=city_name,
+                owner=member,
+            )
+        )
+
+    @owns_city()
+    @is_alliance_leader()
+    @has_char()
+    @guards_pet.command(name="remove", brief=_("Remove the city guard pet."))
+    @locale_doc
+    async def guards_pet_remove(self, ctx: Context) -> None:
+        _(
+            """Remove the currently assigned city guard pet."""
+        )
+        async with self.bot.pool.acquire() as conn:
+            city_name = await conn.fetchval(
+                'SELECT name FROM city WHERE "owner"=$1;',
+                ctx.character_data["guild"],
+            )
+            if not city_name:
+                return await ctx.send(_("Your alliance does not own a city."))
+
+            city_status = await self.bot.redis.execute_command("GET", f"city:{city_name}")
+            if city_status and city_status.decode() == "under attack":
+                return await ctx.send(_("You cannot change the guard pet while the city is under attack."))
+
+            guard_pet = await self.bot.get_city_guard_pet(city_name, conn=conn)
+            if not guard_pet:
+                return await ctx.send(_("There is no city guard pet assigned right now."))
+
+            await self.bot.clear_city_guard_pet(city=city_name, conn=conn)
+
+        await ctx.send(_("The city guard pet has been removed from **{city}**.").format(city=city_name))
 
     @owns_city()
     @is_alliance_leader()
@@ -661,6 +1704,9 @@ class Alliance(commands.Cog):
             'UPDATE city SET "owner"=1 WHERE "owner"=$1 RETURNING "name";',
             ctx.character_data["guild"],
         )
+        await self.bot.pool.execute('DELETE FROM defenses WHERE "city"=$1;', name)
+        await self.bot.clear_city_guards(city=name)
+        await self.bot.clear_city_guard_pet(city=name)
         await self.bot.redis.execute_command("DEL", f"city:{name}:occ")
         await ctx.send(_("{city} was abandoned.").format(city=name))
         await self.bot.public_log(f"**{ctx.author}** abandoned **{name}**.")
@@ -675,7 +1721,7 @@ class Alliance(commands.Cog):
             """`<city>` - The name of a city. You can check the city names with `{prefix}cities`
 
             Occupy a city. Your alliance will then own that city and will be able to build defenses and level up buildings.
-            You can only occupy a city of it has zero defenses left.
+            You can only occupy a city if it has zero fortifications, no city guards left, and no stationed city pet.
 
             Occupying a city sets it on a cooldown of 10 minutes, during which time it cannot be occupied by another alliance.
             Occupying a city also sets all of its buildings back to level 0.
@@ -686,15 +1732,43 @@ class Alliance(commands.Cog):
         if city not in self.cities:
             return await ctx.send(_("Invalid city name."))
         async with self.bot.pool.acquire() as conn:
-            num_units = await conn.fetchval(
-                'SELECT COUNT(*) FROM defenses WHERE "city"=$1;', city
+            previous_owner = await conn.fetchval(
+                'SELECT "owner" FROM city WHERE "name"=$1;',
+                city,
             )
+            active_defenses, _ = await self._load_city_defenses(conn, city)
+            num_units = len(active_defenses)
+            guards = await self.bot.get_city_guards(city, conn=conn)
+            guard_count = len(guards)
+            guard_pet = await self.bot.get_city_guard_pet(city, conn=conn)
+            if guard_pet and int(guard_pet["user_id"]) not in {
+                int(guard["user_id"]) for guard in guards
+            }:
+                await self.bot.clear_city_guard_pet(city=city, conn=conn)
+                guard_pet = None
             occ_ttl = await self.bot.redis.execute_command("TTL", f"city:{city}:occ")
-            if num_units != 0:
+            if num_units != 0 or guard_count != 0 or guard_pet:
+                remaining_defenders = []
+                if num_units != 0:
+                    remaining_defenders.append(
+                        _("**{amount}** defensive fortifications").format(
+                            amount=num_units
+                        )
+                    )
+                if guard_count != 0:
+                    remaining_defenders.append(
+                        _("**{amount}** stationed city guards").format(
+                            amount=guard_count
+                        )
+                    )
+                if guard_pet:
+                    remaining_defenders.append(
+                        _("**1** stationed city pet")
+                    )
                 return await ctx.send(
                     _(
-                        "The city is occupied by **{amount}** defensive fortifications."
-                    ).format(amount=num_units)
+                        "The city is still defended by {defenders}."
+                    ).format(defenders=rpgtools.nice_join(remaining_defenders))
                 )
             if occ_ttl != -2:
                 return await ctx.send(
@@ -702,18 +1776,33 @@ class Alliance(commands.Cog):
                         city=city
                     )
                 )
+            gold_lost = 0
+            defending_guild_name = None
+            if previous_owner not in (None, 1, ctx.character_data["guild"]):
+                gold_lost, defending_guild_name = await self._apply_conquest_vault_loss(
+                    previous_owner,
+                    conn,
+                )
             await conn.execute(
                 'UPDATE city SET "owner"=$1, "raid_building"=0, "thief_building"=0,'
                 ' "trade_building"=0, "adventure_building"=0 WHERE "name"=$2;',
                 ctx.character_data["guild"],
                 city,
             )
+            await conn.execute('DELETE FROM defenses WHERE "city"=$1;', city)
+            await self.bot.clear_city_guards(city=city, conn=conn)
+            await self.bot.clear_city_guard_pet(city=city, conn=conn)
+        conquest_note = ""
+        if gold_lost and defending_guild_name:
+            conquest_note = _(
+                "\n\n**{guild}** lost **${gold}** from vault reserves above its base cap."
+            ).format(guild=defending_guild_name, gold=gold_lost)
         await ctx.send(
             _(
                 "Your alliance now rules **{city}**. You should immediately buy"
-                " defenses. You have **15 minutes** to build defenses before others can"
-                " occupy the city!"
-            ).format(city=city)
+                " defenses or assign guards. You have **15 minutes** to prepare before"
+                " others can occupy the city!{conquest_note}"
+            ).format(city=city, conquest_note=conquest_note)
         )
         await self.bot.redis.execute_command(
             "SET", f"city:{city}:occ", ctx.character_data["guild"], "EX", 600
@@ -723,7 +1812,7 @@ class Alliance(commands.Cog):
         )
 
     @alliance_cooldown(86400)
-    @is_guild_leader()
+    @is_alliance_leader()
     @alliance.command(brief=_("Attack a city"))
     @locale_doc
     async def attack(self, ctx: Context, *, city: str.title) -> None:
@@ -731,89 +1820,87 @@ class Alliance(commands.Cog):
             """`<city>` - The name of a city. You can check the city names with `{prefix}cities`
 
             Attack a city, reducing its defenses to potentially take it over.
-            Attacking a city will activate a grace period of 12 hours, during which time it cannot be attacked again.
-            Initiating an attack will cost the alliance leader's guild money, depending on the buildings in the defending city.
+            Attacking a city activates a grace period of 12 hours, during which time it cannot be attacked again.
+            Initiating an attack costs the alliance leader's guild money, depending on the buildings in the defending city.
 
-            When using this command, the bot will send a message with a button used to join the attack. Each member of the alliance can join.
-            Ten minutes after the message was sent, the users who joined will be gathered, their attack and defense depending on their equipped items, class and raid bonuses and their raidstats, and start the attack.
+            When using this command, the bot sends a message with a button used to join the attack. At least 3 available members of your guild must join.
+            Ten minutes after the message is sent, the alliance leader chooses the 3 frontline attackers and the battle starts with city-war scaled stats.
 
-            During the attack, the highest HP defenses will be attacked first. All attackers' damage will be summed up.
-            The defenses' damage sum up and damage either the attacker with the lowest HP or the attacker with the highest damage.
+            During the attack, fortifications are destroyed first and city defenders fight after that. Assigned city guards cannot join attacks while they are stationed.
+            The attacking party may bring one selected pet. Defending cities may station one selected pet alongside their defenders.
 
-            If a defense reaches zero HP, it will be removed from the city, it will not regenerate HP after the attack is over.
-            Attackers reaching zero HP will be removed from the attack as well.
+            If a defense, city guard, or stationed city pet reaches zero HP, it is removed from the city.
 
-            If a city's defenses were destroyed, your alliance can take occupy the city right away (`{prefix}alliance occupy`)
+            If a city's fortifications and defenders were destroyed, your alliance can occupy the city right away (`{prefix}alliance occupy`)
 
             Only the alliance leader can use this command.
-            (This command has a cooldown of 2 hours.)"""
+            (This command has a cooldown of 24 hours.)"""
         )
         if city not in self.cities:
             await self.bot.reset_alliance_cooldown(ctx)
             return await ctx.send(_("Invalid city."))
 
+        if lock_until := await self._get_city_attack_lock():
+            await self.bot.reset_alliance_cooldown(ctx)
+            return await ctx.send(self._format_city_attack_lock(lock_until))
+
         if y := await self.bot.redis.execute_command("GET", f"city:{city}"):
             y = y.decode()
             if y == "cooldown":
                 text = _("**{city}** has just been attacked. Have some mercy!").format(
                     city=city
                 )
-            elif y == "under attack":
+            else:
                 text = _("**{city}** is already under attack.").format(city=city)
             await self.bot.reset_alliance_cooldown(ctx)
             return await ctx.send(text)
 
+        battles_cog = self.bot.get_cog("Battles")
+        if not battles_cog:
+            await self.bot.reset_alliance_cooldown(ctx)
+            return await ctx.send(_("The battle system is unavailable right now."))
+
         async with self.bot.pool.acquire() as conn:
-            alliance_id = await conn.fetchval(
-                'SELECT alliance FROM guild WHERE "id"=$1;', ctx.character_data["guild"]
+            attacking_guild_name = await conn.fetchval(
+                'SELECT name FROM guild WHERE "id"=$1;',
+                ctx.character_data["guild"],
             )
-            alliance_name = await conn.fetchval(
-                'SELECT name FROM guild WHERE "id"=$1;', alliance_id
-            )
-
             city_data = await conn.fetchrow('SELECT * FROM city WHERE "name"=$1;', city)
+            if city_data["owner"] == ctx.character_data["guild"]:
+                await self.bot.reset_alliance_cooldown(ctx)
+                return await ctx.send(_("You cannot attack your own city."))
 
-            # Get all defenses
-            defenses = [
-                dict(i)
-                for i in await conn.fetch(
-                    'SELECT * FROM defenses WHERE "city"=$1;', city
-                )
-            ]
-
-            # Attacking a city costs money, depending on the buildings inside
-            # Since the absolute maximum guild bank size is 12.5M, attacking a city
-            # with all buildings on maximum should cost 12.5M
-            building_strength = (
-                    city_data["thief_building"]
-                    + city_data["raid_building"]
-                    + city_data["trade_building"]
-                    + city_data["adventure_building"]
+            defending_guild_name = await conn.fetchval(
+                'SELECT g."name" FROM city c JOIN guild g ON g."id"=c."owner" WHERE c."name"=$1;',
+                city,
             )
-            # 40 is the maximum of all buildings set to 10 in Vopnafjor,
-            # so we calculate the percentage of the maximum
+            defenses, _ = await self._load_city_defenses(conn, city)
+            guards = await self.bot.get_city_guards(city, conn=conn)
+            guard_count = len(guards)
+            guard_pet_assignment = await self.bot.get_city_guard_pet(city, conn=conn)
+            if guard_pet_assignment and int(guard_pet_assignment["user_id"]) not in {
+                int(guard["user_id"]) for guard in guards
+            }:
+                await self.bot.clear_city_guard_pet(city=city, conn=conn)
+                guard_pet_assignment = None
+
+            building_strength = (
+                city_data["thief_building"]
+                + city_data["raid_building"]
+                + city_data["trade_building"]
+                + city_data["adventure_building"]
+            )
             building_percentage = building_strength / 40
             attacking_cost = int(building_percentage * 12500000)
 
-            # Verify that enough money is currently in the alliance leading guild's bank
             leading_guild_money = await conn.fetchval(
-                'SELECT money FROM guild WHERE "id"=$1;', ctx.character_data["guild"]
+                'SELECT money FROM guild WHERE "id"=$1;',
+                ctx.character_data["guild"],
             )
 
-        if not defenses:
+        if not defenses and not guard_count and not guard_pet_assignment:
             await self.bot.reset_alliance_cooldown(ctx)
-            return await ctx.send(_("The city is without defenses already."))
-
-        if y := await self.bot.redis.execute_command("GET", f"city:{city}"):
-            y = y.decode()
-            if y == "cooldown":
-                text = _("**{city}** has just been attacked. Have some mercy!").format(
-                    city=city
-                )
-            elif y == "under attack":
-                text = _("**{city}** is already under attack.").format(city=city)
-            await self.bot.reset_alliance_cooldown(ctx)
-            return await ctx.send(text)
+            return await ctx.send(_("The city has no fortifications, guards, or stationed pet left already."))
 
         if leading_guild_money < attacking_cost:
             await self.bot.reset_alliance_cooldown(ctx)
@@ -826,30 +1913,33 @@ class Alliance(commands.Cog):
                     leading_guild_money=leading_guild_money,
                 )
             )
-        else:
-            if not await ctx.confirm(
-                    _(
-                        "**{city}** has excellent infrastructure and attacking it would cost **${attacking_cost}**, do you want to proceed?"
-                    ).format(city=city, attacking_cost=attacking_cost)
-            ):
-                await self.bot.reset_alliance_cooldown(ctx)
-                return
+        if not await ctx.confirm(
+            _(
+                "**{city}** has excellent infrastructure and attacking it would cost **${attacking_cost}**, do you want to proceed?"
+            ).format(city=city, attacking_cost=attacking_cost)
+        ):
+            await self.bot.reset_alliance_cooldown(ctx)
+            return
 
-        # Gather the fighters
-        attackers = []
         attacking_users = []
+        attack_pet_selection = None
 
         view = JoinView(
             Button(style=ButtonStyle.primary, label=_("Join the attack!")),
             message=_("You joined the attack."),
             timeout=60 * 10,
         )
+        view.joined.add(ctx.author)
 
         await ctx.send(
             _(
-                "**{user}** wants to attack **{city}** with **{alliance_name}**'s"
-                " alliance."
-            ).format(user=ctx.author, city=city, alliance_name=alliance_name),
+                "**{user}** wants to attack **{city}** with **{guild_name}**."
+                " At least **3** available guild members are required, and the leader will pick the **3** frontline attackers."
+            ).format(
+                user=ctx.author,
+                city=city,
+                guild_name=attacking_guild_name,
+            ),
             view=view,
         )
 
@@ -862,40 +1952,71 @@ class Alliance(commands.Cog):
                 profile = await conn.fetchrow(
                     'SELECT * FROM profile WHERE "user"=$1;', u.id
                 )
-                if not profile:
-                    continue  # not a player
-                user_alliance = await conn.fetchval(
-                    'SELECT alliance FROM guild WHERE "id"=$1;', profile["guild"]
-                )
-                if user_alliance != alliance_id:
+                if not profile or profile["guild"] != ctx.character_data["guild"]:
                     continue
-                damage, defense = await self.bot.get_raidstats(
-                    u,
-                    atkmultiply=profile["atkmultiply"],
-                    defmultiply=profile["defmultiply"],
-                    classes=profile["class"],
-                    race=profile["race"],
-                    guild=profile["guild"],
-                    conn=conn,
-                )
+                if await self.bot.get_city_guard(u.id, conn=conn):
+                    continue
                 if u not in attacking_users:
                     attacking_users.append(u)
-                    attackers.append(
-                        {"user": u, "damage": damage, "defense": defense, "hp": 250}
-                    )
 
-            # Verify that enough money is currently in the alliance leading guild's bank
+            defenses, _ = await self._load_city_defenses(conn, city)
+            guards = await self.bot.get_city_guards(city, conn=conn)
+            guard_count = len(guards)
+            guard_pet_assignment = await self.bot.get_city_guard_pet(city, conn=conn)
+            if guard_pet_assignment and int(guard_pet_assignment["user_id"]) not in {
+                int(guard["user_id"]) for guard in guards
+            }:
+                await self.bot.clear_city_guard_pet(city=city, conn=conn)
+                guard_pet_assignment = None
+            if not defenses and not guard_count and not guard_pet_assignment:
+                await self.bot.reset_alliance_cooldown(ctx)
+                return await ctx.send(_("The city lost its final defenders before the attack began."))
+            if len(attacking_users) < 3:
+                await self.bot.reset_alliance_cooldown(ctx)
+                return await ctx.send(
+                    _(
+                        "You need at least **3** available members of your guild to attack a city. Assigned city guards cannot join."
+                    )
+                )
+            if y := await self.bot.redis.execute_command("GET", f"city:{city}"):
+                y = y.decode()
+                if y == "cooldown":
+                    text = _("**{city}** has just been attacked. Have some mercy!").format(
+                        city=city
+                    )
+                else:
+                    text = _("**{city}** is already under attack.").format(city=city)
+                await self.bot.reset_alliance_cooldown(ctx)
+                return await ctx.send(text)
+
+            if lock_until := await self._get_city_attack_lock():
+                await self.bot.reset_alliance_cooldown(ctx)
+                return await ctx.send(self._format_city_attack_lock(lock_until))
+
+            frontline_attackers = await self._select_city_attackers(
+                ctx,
+                attacking_users,
+            )
+            if (
+                not frontline_attackers
+                or len(frontline_attackers) < CITY_WAR_ATTACKER_LIMIT
+            ):
+                await self.bot.reset_alliance_cooldown(ctx)
+                return await ctx.send(
+                    _("No frontline attack party was locked in before selection timed out.")
+                )
+
+            attack_pet_selection = await self._select_attack_pet(
+                ctx,
+                frontline_attackers,
+                conn,
+            )
+
             leading_guild_money = await conn.fetchval(
                 'SELECT money FROM guild WHERE "id"=$1;', ctx.character_data["guild"]
             )
 
-            if leading_guild_money >= attacking_cost:
-                await conn.execute(
-                    'UPDATE guild SET "money"="money"-$1 WHERE "id"=$2;',
-                    attacking_cost,
-                    ctx.character_data["guild"],
-                )
-            else:
+            if leading_guild_money < attacking_cost:
                 await self.bot.reset_alliance_cooldown(ctx)
                 return await ctx.send(
                     _(
@@ -903,148 +2024,151 @@ class Alliance(commands.Cog):
                     )
                 )
 
-        if not attackers:
-            await self.bot.reset_alliance_cooldown(ctx)
-            return await ctx.send(_("Noone joined."))
+            await conn.execute(
+                'UPDATE guild SET "money"="money"-$1 WHERE "id"=$2;',
+                attacking_cost,
+                ctx.character_data["guild"],
+            )
 
-        # Set city as under attack
+        attacker_combatants = []
+        attacker_combatants_by_user_id: dict[int, Combatant] = {}
+        for attacker in frontline_attackers:
+            combatant = await battles_cog.battle_factory.create_player_combatant(
+                ctx,
+                attacker,
+                include_pet=False,
+            )
+            self._apply_city_war_scaling(combatant)
+            combatant.user_id = attacker.id
+            attacker_combatants.append(combatant)
+            attacker_combatants_by_user_id[attacker.id] = combatant
+
+        attack_pet_combatant = None
+        if attack_pet_selection:
+            attack_pet_combatant = await battles_cog.battle_factory.pet_ext.get_pet_combatant(
+                ctx,
+                attack_pet_selection["owner"],
+                pet_id=int(attack_pet_selection["pet"]["id"]),
+            )
+            if attack_pet_combatant:
+                self._apply_city_war_scaling(attack_pet_combatant)
+                self._cap_city_war_pet(
+                    attack_pet_combatant,
+                    attacker_combatants_by_user_id.get(
+                        attack_pet_selection["owner"].id
+                    ),
+                )
+                attacker_combatants.append(attack_pet_combatant)
+
+        async with self.bot.pool.acquire() as conn:
+            structure_combatants = await self._build_city_structure_combatants(defenses)
+            guard_combatants = await self._build_city_guard_combatants(ctx, city, conn)
+            guard_combatants_by_user_id = {
+                int(combatant.city_guard_user_id): combatant
+                for combatant in guard_combatants
+            }
+            guard_pet_combatant = await self._build_city_guard_pet_combatant(
+                ctx,
+                city,
+                conn,
+                owner_combatants=guard_combatants_by_user_id,
+            )
+
+        defender_combatants = structure_combatants + guard_combatants
+        if guard_pet_combatant:
+            defender_combatants.append(guard_pet_combatant)
+
+        if not defender_combatants:
+            async with self.bot.pool.acquire() as conn:
+                await conn.execute(
+                    'UPDATE guild SET "money"="money"+$1 WHERE "id"=$2;',
+                    attacking_cost,
+                    ctx.character_data["guild"],
+                )
+            await self.bot.reset_alliance_cooldown(ctx)
+            return await ctx.send(_("The city lost its final defenders before the battle could start."))
+
         await self.bot.redis.execute_command(
             "SET", f"city:{city}", "under attack", "EX", 7200
         )
 
+        attack_pet_text = ""
+        if attack_pet_selection and attack_pet_combatant:
+            attack_pet_text = _(
+                "\nAttacking pet: **{pet}** (Owner: **{owner}**)"
+            ).format(
+                pet=attack_pet_selection["pet"]["name"],
+                owner=attack_pet_selection["owner"].display_name,
+            )
+        guard_pet_text = ""
+        if guard_pet_combatant:
+            guard_pet_text = _("\nDefending pet: **{pet}**").format(
+                pet=guard_pet_combatant.name
+            )
+
         await ctx.send(
-            _("Attack on **{city}** starting with **{amount}** attackers!").format(
-                city=city, amount=len(attacking_users)
+            _(
+                "Attack on **{city}** starting with **{amount}** attackers against"
+                " **{defense_count}** fortifications, **{guard_count}** guards, and **{guard_pet_count}** stationed pet.{attack_pet_text}{guard_pet_text}"
+            ).format(
+                city=city,
+                amount=len(frontline_attackers),
+                defense_count=len(structure_combatants),
+                guard_count=len(guard_combatants),
+                guard_pet_count=1 if guard_pet_combatant else 0,
+                attack_pet_text=attack_pet_text,
+                guard_pet_text=guard_pet_text,
             )
         )
         await self.bot.public_log(
-            f"**{alliance_name}** is attacking **{city}** with {len(attackers)}"
-            " attackers!"
+            f"**{attacking_guild_name}** is attacking **{city}** with {len(frontline_attackers)}"
+            f" attackers, {len(structure_combatants)} fortifications, {len(guard_combatants)}"
+            f" guards, and {1 if guard_pet_combatant else 0} stationed pet."
         )
 
-        # choose the highest HP defense
-        defense_target = sorted(defenses, key=lambda x: x["hp"])[-1]
-        while len(defenses) > 0 and len(attackers) > 0:
-            damage = sum(i["damage"] for i in attackers)
-            if defense_target["hp"] - damage <= 0:
-                for idx, item in enumerate(defenses):
-                    if item["id"] == defense_target["id"]:
-                        del defenses[idx]
-                await self.bot.pool.execute(
-                    'DELETE FROM defenses WHERE "id"=$1;', defense_target["id"]
-                )
-                await ctx.send(
-                    embed=discord.Embed(
-                        title=_("Alliance Wars"),
-                        description=_(
-                            "**{alliance_name}** destroyed a {defense} in {city}!"
-                        ).format(
-                            alliance_name=alliance_name,
-                            defense=defense_target["name"],
-                            city=city,
-                        ),
-                        colour=self.bot.config.game.primary_colour,
-                    )
-                )
-                if defenses:
-                    # choose the highest HP defense
-                    defense_target = sorted(defenses, key=lambda x: x["hp"])[-1]
+        attacker_team = Team("Attackers", attacker_combatants)
+        defender_team = Team("Defenders", defender_combatants)
+        battle = await battles_cog.battle_factory.create_city_war_battle(
+            ctx,
+            teams=[attacker_team, defender_team],
+            city=city,
+            attacking_guild_name=attacking_guild_name,
+            defending_guild_name=defending_guild_name,
+            allow_pets=True,
+            max_duration=timedelta(minutes=15),
+        )
 
-            else:
-                defense_target["hp"] -= damage
-                await self.bot.pool.execute(
-                    'UPDATE defenses SET "hp"="hp"-$1 WHERE "id"=$2;',
-                    damage,
-                    defense_target["id"],
-                )
-                await ctx.send(
-                    embed=discord.Embed(
-                        title=_("Alliance Wars"),
-                        description=_(
-                            "**{alliance_name}** hit a {defense} in {city} for {damage}"
-                            " damage! (Now {hp} HP)"
-                        ).format(
-                            alliance_name=alliance_name,
-                            defense=defense_target["name"],
-                            city=city,
-                            damage=damage,
-                            hp=defense_target["hp"],
-                        ),
-                        colour=self.bot.config.game.primary_colour,
-                    )
-                )
-            if not defenses:  # gone
-                break
+        await battle.start_battle()
+        while not await battle.is_battle_over():
+            await battle.process_turn()
+        result = await battle.end_battle()
 
-            await asyncio.sleep(5)
-
-            damage = sum(i["defense"] for i in defenses)
-            # These are clever and attack low HP OR best damage
-            if len({i["hp"] for i in attackers}) == 1:
-                # all equal HP
-                attackers_target = sorted(attackers, key=lambda x: x["damage"])[-1]
-            else:
-                # lowest HP
-                attackers_target = sorted(attackers, key=lambda x: x["hp"])[0]
-
-            damage -= attackers_target["defense"]
-            damage = 0 if damage < 0 else damage
-
-            if attackers_target["hp"] - damage <= 0:
-                for idx, item in enumerate(attackers):
-                    if item["user"] == attackers_target["user"]:
-                        del attackers[idx]
-                await ctx.send(
-                    embed=discord.Embed(
-                        title=_("Alliance Wars"),
-                        description=_("**{user}** got killed in {city}!").format(
-                            user=attackers_target["user"], city=city
-                        ),
-                        colour=self.bot.config.game.primary_colour,
-                    )
-                )
-            else:
-                attackers_target["hp"] -= damage
-                await ctx.send(
-                    embed=discord.Embed(
-                        title=_("Alliance Wars"),
-                        description=_(
-                            "**{user}** got hit in {city} for {damage} damage! (Now"
-                            " {hp} HP)"
-                        ).format(
-                            user=attackers_target["user"],
-                            city=city,
-                            damage=damage,
-                            hp=attackers_target["hp"],
-                        ),
-                        colour=self.bot.config.game.primary_colour,
-                    )
-                )
-
-            await asyncio.sleep(5)
+        async with self.bot.pool.acquire() as conn:
+            await self._sync_city_war_battle_state(battle, conn)
 
         await self.bot.redis.execute_command(
             "SET", f"city:{city}", "cooldown", "EX", 3600 * 12
-        )  # 12h attack cooldown
+        )
 
-        # it's over
-        if not defenses:
+        if result["attackers_won"]:
             await ctx.send(
-                _("**{alliance_name}** destroyed defenses in **{city}**!").format(
-                    alliance_name=alliance_name, city=city
+                _("**{guild_name}** destroyed all defenders in **{city}**!").format(
+                    guild_name=attacking_guild_name,
+                    city=city,
                 )
             )
             await self.bot.public_log(
-                f"**{alliance_name}** destroyed defenses in **{city}**!"
+                f"**{attacking_guild_name}** destroyed all defenders in **{city}**!"
             )
         else:
             await ctx.send(
-                _(
-                    "**{alliance_name}** failed to destroy defenses in **{city}**!"
-                ).format(alliance_name=alliance_name, city=city)
+                _("**{guild_name}** failed to break **{city}**'s defenses!").format(
+                    guild_name=attacking_guild_name,
+                    city=city,
+                )
             )
             await self.bot.public_log(
-                f"**{alliance_name}** failed to destroy defenses in **{city}**!"
+                f"**{attacking_guild_name}** failed to break **{city}**'s defenses!"
             )
 
     @has_char()

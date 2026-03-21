@@ -88,6 +88,16 @@ class PatreonStuff(commands.Cog):
                                 'UPDATE profile SET "tier" = $1 WHERE "user" = $2',
                                 user_tier, member.id
                             )
+                            if int(user_tier or 0) < 1:
+                                await connection.execute(
+                                    """
+                                    UPDATE pet_daycares
+                                    SET is_open = FALSE
+                                    WHERE owner_user_id = $1
+                                      AND is_open = TRUE
+                                    """,
+                                    member.id,
+                                )
 
 
                         print(f'PatreonStuff Cog: Updated tier for user {member.id} to {user_tier}')

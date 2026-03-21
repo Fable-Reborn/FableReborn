@@ -14,6 +14,7 @@ from .types.raid import RaidBattle
 from .types.tower import TowerBattle
 from .types.jury_tower import JuryTowerBattle
 from .types.team_battle import TeamBattle
+from .types.city_war import CityWarBattle
 from .types.dragon import DragonBattle
 from .types.couples_tower import CouplesTowerBattle
 from .types.brawl import BrawlBattle
@@ -290,6 +291,8 @@ class BattleFactory:
             return await self.create_jury_tower_battle(ctx, **settings_kwargs)
         elif battle_type == "team":
             return await self.create_team_battle(ctx, **settings_kwargs)
+        elif battle_type == "citywar":
+            return await self.create_city_war_battle(ctx, **settings_kwargs)
         elif battle_type == "dragon":
             return await self.create_dragon_battle(ctx, **settings_kwargs)
         elif battle_type == "couples_tower":
@@ -597,6 +600,16 @@ class BattleFactory:
         battle_kwargs.pop("team_a", None)
         battle_kwargs.pop("team_b", None)
         return TeamBattle(ctx, teams, money=money, **battle_kwargs)
+
+    async def create_city_war_battle(self, ctx, **kwargs):
+        """Create a city-war battle with prebuilt teams."""
+        teams = kwargs.get("teams", [])
+        if not teams or len(teams) != 2:
+            raise ValueError("City war requires exactly two teams")
+
+        battle_kwargs = kwargs.copy()
+        battle_kwargs.pop("teams", None)
+        return CityWarBattle(ctx, teams, **battle_kwargs)
 
     async def create_jury_tower_battle(self, ctx, **kwargs):
         """Create a jury tower battle for a specific floor."""

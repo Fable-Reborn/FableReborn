@@ -755,6 +755,19 @@ class PatreonCore(commands.Cog):
                 changed_user_ids,
                 changed_levels,
             )
+            ineligible_owner_ids = [
+                user_id for user_id, level in changed if int(level or 0) < 1
+            ]
+            if ineligible_owner_ids:
+                await conn.execute(
+                    """
+                    UPDATE pet_daycares
+                    SET is_open = FALSE
+                    WHERE owner_user_id = ANY($1::bigint[])
+                      AND is_open = TRUE;
+                    """,
+                    ineligible_owner_ids,
+                )
             return len(changed)
 
     async def _sync_roles(self, guild: discord.Guild, patrons: dict[int, list[str]]) -> tuple[int, int, int]:

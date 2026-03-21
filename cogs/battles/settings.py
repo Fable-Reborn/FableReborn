@@ -34,7 +34,8 @@ class BattleSettings(commands.Cog):
             "raid": {},
             "tower": {},
             "jurytower": {},
-            "team": {}
+            "team": {},
+            "citywar": {},
         }
         
     async def initialize(self):
