@@ -1606,11 +1606,56 @@ class Bot(commands.AutoShardedBot):
         )
         return (base_limit * numerator) // denominator
 
+    async def get_guild_alliance_id(self, guild_id: int, conn=None) -> int | None:
+        if not guild_id:
+            return None
+
+        local = False
+        if conn is None:
+            conn = await self.pool.acquire()
+            local = True
+        try:
+            alliance_id = await conn.fetchval(
+                'SELECT "alliance" FROM guild WHERE "id"=$1;',
+                int(guild_id),
+            )
+            return int(alliance_id) if alliance_id is not None else None
+        finally:
+            if local:
+                await self.pool.release(conn)
+
+    async def get_alliance_guilds(self, alliance_id: int, conn=None) -> list:
+        if not alliance_id:
+            return []
+
+        local = False
+        if conn is None:
+            conn = await self.pool.acquire()
+            local = True
+        try:
+            return await conn.fetch(
+                'SELECT * FROM guild WHERE "alliance"=$1 ORDER BY "id" ASC;',
+                int(alliance_id),
+            )
+        finally:
+            if local:
+                await self.pool.release(conn)
+
     async def get_owned_city(self, guild_id: int, conn=None):
         if not guild_id:
             return False
-        obj = conn or self.pool
-        return await obj.fetchrow('SELECT * FROM city WHERE "owner"=$1;', guild_id)
+        local = False
+        if conn is None:
+            conn = await self.pool.acquire()
+            local = True
+        try:
+            alliance_id = await self.get_guild_alliance_id(guild_id, conn=conn)
+            if not alliance_id:
+                return False
+            return await conn.fetchrow('SELECT * FROM city WHERE "owner"=$1;', alliance_id)
+        finally:
+            if local:
+                await self.pool.release(conn)
 
     async def get_guild_bank_caps(self, guild_id: int, conn=None) -> dict | None:
         local = False
@@ -1652,8 +1697,9 @@ class Bot(commands.AutoShardedBot):
                 FROM city_guards cg
                 JOIN city c ON c."name"=cg."city"
                 JOIN profile p ON p."user"=cg."user_id"
+                JOIN guild g ON g."id"=p."guild"
                 WHERE cg."user_id"=$1
-                  AND p."guild"=c."owner";
+                  AND g."alliance"=c."owner";
                 """,
                 int(user_id),
             )
@@ -1680,8 +1726,9 @@ class Bot(commands.AutoShardedBot):
                     SELECT 1
                     FROM city c
                     JOIN profile p ON p."user"=cg."user_id"
+                    JOIN guild g ON g."id"=p."guild"
                     WHERE c."name"=cg."city"
-                      AND p."guild"=c."owner"
+                      AND g."alliance"=c."owner"
                   );
                 """,
                 city,
@@ -1692,8 +1739,9 @@ class Bot(commands.AutoShardedBot):
                 FROM city_guards cg
                 JOIN city c ON c."name"=cg."city"
                 JOIN profile p ON p."user"=cg."user_id"
+                JOIN guild g ON g."id"=p."guild"
                 WHERE cg."city"=$1
-                  AND p."guild"=c."owner"
+                  AND g."alliance"=c."owner"
                 ORDER BY cg."assigned_at" ASC;
                 """,
                 city,
@@ -1715,9 +1763,10 @@ class Bot(commands.AutoShardedBot):
                 FROM city_guard_pet cgp
                 JOIN city c ON c."name"=cgp."city"
                 JOIN profile p ON p."user"=cgp."user_id"
+                JOIN guild g ON g."id"=p."guild"
                 JOIN monster_pets mp ON mp."id"=cgp."pet_id" AND mp."user_id"=cgp."user_id"
                 WHERE cgp."city"=$1
-                  AND p."guild"=c."owner"
+                  AND g."alliance"=c."owner"
                   AND mp."daycare_boarding_id" IS NULL;
                 """,
                 city,
@@ -1795,6 +1844,10 @@ class Bot(commands.AutoShardedBot):
             elif user_id is not None:
                 await conn.execute(
                     'DELETE FROM city_guards WHERE "user_id"=$1;',
+                    int(user_id),
+                )
+                await conn.execute(
+                    'DELETE FROM city_guard_pet WHERE "user_id"=$1;',
                     int(user_id),
                 )
         finally:

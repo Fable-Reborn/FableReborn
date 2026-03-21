@@ -16,14 +16,14 @@ City wars are guild-based.
 
 ## Vault Bonuses
 
-Owning a city increases the owning guild's vault cap:
+Owning a city increases the vault cap of every guild in the owning alliance:
 
 - Tier 1: `x1.5`
 - Tier 2: `x2.0`
 - Tier 3: `x3.0`
 - Tier 4: `x4.0`
 
-If a city is conquered, the defending guild loses `25%` of the gold stored above its normal base vault cap.
+If a city is conquered, the defending alliance loses `25%` of the gold stored above its combined normal base caps. That loss is split across alliance guilds as evenly as possible without pushing any guild below its own base cap, and the captured gold is added to the attackers' guild bank.
 
 ## Attacking a City
 
@@ -86,7 +86,8 @@ If the attackers destroy every active defender:
 
 - use `alliance occupy <city>`
 - occupancy resets the city's buildings to level `0`
-- the previous owner loses `25%` of vault gold above base cap
+- the defending alliance loses `25%` of overflow gold above base caps, split as evenly as possible across its guilds
+- that captured gold is deposited into the attackers' guild bank even if it overflows the cap
 - the new owner gets `15 minutes` of occupy protection before others can occupy again
 
 ### Attacking Checklist
@@ -163,7 +164,7 @@ Commands:
 
 Guard rules:
 
-- Guards must belong to the guild that owns the city.
+- Any guild leader in the owning alliance can fill open guard slots with members of their own guild.
 - Assigned guards are real guild members saved as the city's defenders.
 - Guards do not need to be online when the city is attacked.
 - While stationed, guards cannot:
@@ -184,7 +185,7 @@ Commands:
 Guard pet rules:
 
 - The pet owner must be a currently assigned city guard.
-- The pet must belong to the guild that owns the city.
+- Any guild leader in the owning alliance can assign a pet owned by one of their own stationed guards.
 - The pet does not need to be equipped.
 - The pet cannot be boarded in daycare.
 - The pet must be `young` or `adult`.
@@ -205,9 +206,9 @@ The stronger a city's buildings are, the more expensive it is to attack.
 
 - Fill every slot your city tier unlocks.
 - Assign all `3` city guard slots if possible.
-- Assign a guard pet to one of those guards.
+- Assign a guard pet to one of those guards if your guild is providing it.
 - Keep strong defenders stationed if you expect a war.
-- Remember that city ownership increases vault cap, but also increases conquest risk if you store above base cap.
+- Remember that city ownership increases vault cap for every guild in the alliance, but conquest can still strip alliance-wide overflow above base caps.
 
 ## Occupation and Loss
 

@@ -142,7 +142,7 @@ class Alliance(commands.Cog):
         embed.add_field(
             name=_("Vault Stakes"),
             value=_(
-                "Owning a city increases guild vault cap by city tier. Losing the city removes `25%` of vault gold stored above the guild's base cap."
+                "Owning a city increases the vault cap of every guild in the owning alliance by city tier. Losing the city removes `25%` of alliance overflow gold above base caps and transfers it to the attackers' guild bank."
             ),
             inline=False,
         )
@@ -225,6 +225,7 @@ class Alliance(commands.Cog):
             name=_("City Guards"),
             value=_(
                 "Cities can station up to `3` city guards.\n"
+                "Any guild leader in the owning alliance can fill open slots with members of their own guild.\n"
                 "`{prefix}alliance guards`\n"
                 "`{prefix}alliance guards add <member>`\n"
                 "`{prefix}alliance guards remove <member>`"
@@ -246,7 +247,7 @@ class Alliance(commands.Cog):
             value=_(
                 "Each city can station `1` guard pet.\n"
                 "Use `{prefix}alliance guards pet set <member> <pet>`.\n"
-                "The owner must be a currently assigned city guard.\n"
+                "The owner must be a currently assigned city guard from your guild.\n"
                 "The pet does not need to be equipped but must be `young` or `adult` and not in daycare."
             ).format(prefix=ctx.clean_prefix),
             inline=False,
@@ -254,8 +255,8 @@ class Alliance(commands.Cog):
         embed.add_field(
             name=_("Risk and Reward"),
             value=_(
-                "City ownership increases the guild vault cap by tier.\n"
-                "If the city falls, the guild loses `25%` of stored gold above its normal base vault cap."
+                "City ownership increases the vault cap of every guild in the owning alliance.\n"
+                "If the city falls, `25%` of the defending alliance's stored overflow above base caps is split as evenly as possible across its guilds and transferred into the attackers' guild bank."
             ),
             inline=False,
         )
@@ -941,27 +942,90 @@ class Alliance(commands.Cog):
             elif city_role == "guard_pet" and not combatant.is_alive():
                 await self.bot.clear_city_guard_pet(city=battle.city, conn=conn)
 
-    async def _apply_conquest_vault_loss(
-        self, defending_guild_id: int, conn
+    def _split_city_conquest_loss_evenly(
+        self, total_loss: int, overflow_by_guild: dict[int, int]
+    ) -> dict[int, int]:
+        remaining_loss = max(0, int(total_loss))
+        remaining_capacity = {
+            int(guild_id): max(0, int(overflow))
+            for guild_id, overflow in overflow_by_guild.items()
+            if int(overflow) > 0
+        }
+        allocations = {guild_id: 0 for guild_id in remaining_capacity}
+
+        while remaining_loss > 0 and remaining_capacity:
+            guild_ids = sorted(remaining_capacity)
+            share, remainder = divmod(remaining_loss, len(guild_ids))
+            progressed = False
+            next_capacity: dict[int, int] = {}
+
+            for index, guild_id in enumerate(guild_ids):
+                target = share + (1 if index < remainder else 0)
+                take = min(remaining_capacity[guild_id], target)
+                if take > 0:
+                    allocations[guild_id] += take
+                    remaining_loss -= take
+                    progressed = True
+                leftover_capacity = remaining_capacity[guild_id] - take
+                if leftover_capacity > 0:
+                    next_capacity[guild_id] = leftover_capacity
+
+            if not progressed:
+                break
+
+            remaining_capacity = next_capacity
+
+        return {guild_id: amount for guild_id, amount in allocations.items() if amount > 0}
+
+    async def _apply_conquest_vault_transfer(
+        self, defending_alliance_id: int, attacking_guild_id: int, conn
     ) -> tuple[int, str | None]:
-        if defending_guild_id in (None, 1):
+        if defending_alliance_id in (None, 1):
             return 0, None
-        bank_caps = await self.bot.get_guild_bank_caps(defending_guild_id, conn=conn)
-        if not bank_caps:
-            return 0, None
-        defending_guild = bank_caps["guild"]
-        overflow_gold = max(
-            0,
-            int(defending_guild["money"]) - int(bank_caps["base_limit"]),
+
+        defending_guilds = await self.bot.get_alliance_guilds(
+            defending_alliance_id,
+            conn=conn,
         )
-        lost_gold = (overflow_gold * CITY_CONQUEST_OVERFLOW_LOSS_PERCENT) // 100
-        if lost_gold > 0:
+        if not defending_guilds:
+            return 0, None
+
+        defending_name = await conn.fetchval(
+            'SELECT "name" FROM guild WHERE "id"=$1;',
+            defending_alliance_id,
+        )
+        overflow_by_guild = {}
+        total_overflow = 0
+        for guild in defending_guilds:
+            base_limit = self.bot.get_guild_bank_base_limit(guild)
+            overflow = max(0, int(guild["money"]) - int(base_limit))
+            if overflow > 0:
+                overflow_by_guild[int(guild["id"])] = overflow
+                total_overflow += overflow
+
+        lost_gold = (total_overflow * CITY_CONQUEST_OVERFLOW_LOSS_PERCENT) // 100
+        if lost_gold <= 0:
+            return 0, defending_name
+
+        allocations = self._split_city_conquest_loss_evenly(
+            lost_gold,
+            overflow_by_guild,
+        )
+        captured_gold = sum(allocations.values())
+
+        for guild_id, amount in allocations.items():
             await conn.execute(
                 'UPDATE guild SET "money"="money"-$1 WHERE "id"=$2;',
-                lost_gold,
-                defending_guild_id,
+                amount,
+                guild_id,
             )
-        return lost_gold, defending_guild["name"]
+        if captured_gold > 0 and attacking_guild_id not in (None, 1):
+            await conn.execute(
+                'UPDATE guild SET "money"="money"+$1 WHERE "id"=$2;',
+                captured_gold,
+                attacking_guild_id,
+            )
+        return captured_gold, defending_name
 
     @commands.command(name="cities", brief=_("Shows cities and owners."))
     async def show_cities(self, ctx: Context) -> None:
@@ -2036,7 +2100,7 @@ class Alliance(commands.Cog):
         await ctx.send(embed=embed)
 
     @owns_city()
-    @is_alliance_leader()
+    @is_guild_leader()
     @has_char()
     @guards.command(name="add", brief=_("Assign a city guard."))
     @locale_doc
@@ -2044,13 +2108,10 @@ class Alliance(commands.Cog):
         _(
             """`<member>` - A member of your guild.
 
-            Assign a guild member as a city guard. Guard duty blocks guild adventures and city attacks while they are stationed."""
+            Assign one of your guild's members as a city guard in your alliance's city. Guard duty blocks guild adventures and city attacks while they are stationed."""
         )
         async with self.bot.pool.acquire() as conn:
-            city_name = await conn.fetchval(
-                'SELECT name FROM city WHERE "owner"=$1;',
-                ctx.character_data["guild"],
-            )
+            city_name = getattr(ctx, "city", None)
             if not city_name:
                 return await ctx.send(_("Your alliance does not own a city."))
             city_status = await self.bot.redis.execute_command("GET", f"city:{city_name}")
@@ -2062,7 +2123,7 @@ class Alliance(commands.Cog):
             )
             if member_guild != ctx.character_data["guild"]:
                 return await ctx.send(
-                    _("City guards must be members of the guild that owns the city.")
+                    _("You can only assign city guards from your own guild.")
                 )
             existing_guard = await self.bot.get_city_guard(member.id, conn=conn)
             if existing_guard and existing_guard["city"] == city_name:
@@ -2098,7 +2159,7 @@ class Alliance(commands.Cog):
         )
 
     @owns_city()
-    @is_alliance_leader()
+    @is_guild_leader()
     @has_char()
     @guards.command(name="remove", brief=_("Remove a city guard."))
     @locale_doc
@@ -2106,13 +2167,10 @@ class Alliance(commands.Cog):
         _(
             """`<member>` - A currently assigned city guard.
 
-            Remove a stationed city guard from duty."""
+            Remove one of your guild's stationed city guards from duty."""
         )
         async with self.bot.pool.acquire() as conn:
-            city_name = await conn.fetchval(
-                'SELECT name FROM city WHERE "owner"=$1;',
-                ctx.character_data["guild"],
-            )
+            city_name = getattr(ctx, "city", None)
             if not city_name:
                 return await ctx.send(_("Your alliance does not own a city."))
             city_status = await self.bot.redis.execute_command("GET", f"city:{city_name}")
@@ -2121,6 +2179,17 @@ class Alliance(commands.Cog):
             guard = await self.bot.get_city_guard(member.id, conn=conn)
             if not guard or guard["city"] != city_name:
                 return await ctx.send(_("That member is not guarding your city."))
+            alliance_id = await conn.fetchval(
+                'SELECT "alliance" FROM guild WHERE "id"=$1;',
+                ctx.character_data["guild"],
+            )
+            if (
+                int(guard["guild_id"]) != int(ctx.character_data["guild"])
+                and int(ctx.character_data["guild"]) != int(alliance_id)
+            ):
+                return await ctx.send(
+                    _("You can only remove city guards assigned from your own guild.")
+                )
             await self.bot.clear_city_guards(user_id=member.id, conn=conn)
         await ctx.send(
             _("**{member}** has been relieved from city guard duty.").format(
@@ -2129,7 +2198,6 @@ class Alliance(commands.Cog):
         )
 
     @owns_city()
-    @is_alliance_leader()
     @has_char()
     @guards.group(name="pet", invoke_without_command=True, brief=_("Show or manage the city guard pet."))
     @locale_doc
@@ -2138,10 +2206,7 @@ class Alliance(commands.Cog):
             """Shows the pet currently assigned to defend your city alongside the guards."""
         )
         async with self.bot.pool.acquire() as conn:
-            city_name = await conn.fetchval(
-                'SELECT name FROM city WHERE "owner"=$1;',
-                ctx.character_data["guild"],
-            )
+            city_name = getattr(ctx, "city", None)
             if not city_name:
                 return await ctx.send(_("Your alliance does not own a city."))
             guard_pet = await self.bot.get_city_guard_pet(city_name, conn=conn)
@@ -2158,7 +2223,7 @@ class Alliance(commands.Cog):
         )
 
     @owns_city()
-    @is_alliance_leader()
+    @is_guild_leader()
     @has_char()
     @guards_pet.command(name="set", aliases=["add"], brief=_("Assign the city guard pet."))
     @locale_doc
@@ -2170,16 +2235,13 @@ class Alliance(commands.Cog):
         pet_ref: str,
     ) -> None:
         _(
-            """`<member>` - A stationed city guard from the guild that owns the city.
+            """`<member>` - A stationed city guard from your guild.
             `<pet>` - A pet ID or alias.
 
             Assign one pet to defend the city alongside the guards. The pet does not need to be equipped, but it must be at least young and not boarded in daycare."""
         )
         async with self.bot.pool.acquire() as conn:
-            city_name = await conn.fetchval(
-                'SELECT name FROM city WHERE "owner"=$1;',
-                ctx.character_data["guild"],
-            )
+            city_name = getattr(ctx, "city", None)
             if not city_name:
                 return await ctx.send(_("Your alliance does not own a city."))
 
@@ -2195,7 +2257,7 @@ class Alliance(commands.Cog):
             )
             if member_guild != ctx.character_data["guild"]:
                 return await ctx.send(
-                    _("The guard pet must belong to a member of the guild that owns the city.")
+                    _("You can only assign a guard pet owned by a member of your guild.")
                 )
             if not await self.bot.get_city_guard(member.id, conn=conn):
                 return await ctx.send(
@@ -2249,7 +2311,7 @@ class Alliance(commands.Cog):
         )
 
     @owns_city()
-    @is_alliance_leader()
+    @is_guild_leader()
     @has_char()
     @guards_pet.command(name="remove", brief=_("Remove the city guard pet."))
     @locale_doc
@@ -2258,10 +2320,7 @@ class Alliance(commands.Cog):
             """Remove the currently assigned city guard pet."""
         )
         async with self.bot.pool.acquire() as conn:
-            city_name = await conn.fetchval(
-                'SELECT name FROM city WHERE "owner"=$1;',
-                ctx.character_data["guild"],
-            )
+            city_name = getattr(ctx, "city", None)
             if not city_name:
                 return await ctx.send(_("Your alliance does not own a city."))
 
@@ -2272,6 +2331,21 @@ class Alliance(commands.Cog):
             guard_pet = await self.bot.get_city_guard_pet(city_name, conn=conn)
             if not guard_pet:
                 return await ctx.send(_("There is no city guard pet assigned right now."))
+            member_guild = await conn.fetchval(
+                'SELECT "guild" FROM profile WHERE "user"=$1;',
+                int(guard_pet["user_id"]),
+            )
+            alliance_id = await conn.fetchval(
+                'SELECT "alliance" FROM guild WHERE "id"=$1;',
+                ctx.character_data["guild"],
+            )
+            if (
+                int(member_guild) != int(ctx.character_data["guild"])
+                and int(ctx.character_data["guild"]) != int(alliance_id)
+            ):
+                return await ctx.send(
+                    _("You can only remove a city guard pet owned by a member of your guild.")
+                )
 
             await self.bot.clear_city_guard_pet(city=city_name, conn=conn)
 
@@ -2374,8 +2448,9 @@ class Alliance(commands.Cog):
             gold_lost = 0
             defending_guild_name = None
             if previous_owner not in (None, 1, ctx.character_data["guild"]):
-                gold_lost, defending_guild_name = await self._apply_conquest_vault_loss(
+                gold_lost, defending_guild_name = await self._apply_conquest_vault_transfer(
                     previous_owner,
+                    ctx.character_data["guild"],
                     conn,
                 )
             await conn.execute(
@@ -2390,7 +2465,7 @@ class Alliance(commands.Cog):
         conquest_note = ""
         if gold_lost and defending_guild_name:
             conquest_note = _(
-                "\n\n**{guild}** lost **${gold}** from vault reserves above its base cap."
+                "\n\n**{guild}**'s alliance lost **${gold}** from vault reserves above base caps, and the gold was added to your guild bank."
             ).format(guild=defending_guild_name, gold=gold_lost)
         await ctx.send(
             _(
