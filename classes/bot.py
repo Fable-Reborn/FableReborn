@@ -1520,11 +1520,55 @@ class Bot(commands.AutoShardedBot):
     def get_guild_bank_base_limit(self, guild) -> int:
         return int(guild["banklimit"])
 
+    def get_city_config(self, city_name: str | None) -> dict | None:
+        if not city_name:
+            return None
+
+        cities = getattr(self.config, "cities", None)
+        if not cities:
+            return None
+
+        direct_match = cities.get(str(city_name).lower())
+        if direct_match:
+            return direct_match
+
+        normalized_name = str(city_name).strip().lower()
+        for config_city in cities.values():
+            if str(config_city.get("name", "")).strip().lower() == normalized_name:
+                return config_city
+        return None
+
+    def get_city_vault_tier(self, city=None) -> int:
+        if not city:
+            return 0
+
+        tier = None
+        city_name = None
+
+        if hasattr(city, "keys"):
+            city_keys = city.keys()
+            if "tier" in city_keys:
+                tier = city["tier"]
+            if "name" in city_keys:
+                city_name = city["name"]
+        elif isinstance(city, dict):
+            tier = city.get("tier")
+            city_name = city.get("name")
+
+        if tier is None:
+            config_city = self.get_city_config(city_name)
+            if config_city:
+                tier = config_city.get("tier")
+
+        return self.normalize_city_vault_tier(tier)
+
     def get_guild_effective_banklimit(self, guild, city=None) -> int:
         base_limit = self.get_guild_bank_base_limit(guild)
         if not city:
             return base_limit
-        numerator, denominator = self.get_city_vault_multiplier(city["tier"])
+        numerator, denominator = self.get_city_vault_multiplier(
+            self.get_city_vault_tier(city)
+        )
         return (base_limit * numerator) // denominator
 
     async def get_owned_city(self, guild_id: int, conn=None):
@@ -1548,7 +1592,7 @@ class Bot(commands.AutoShardedBot):
                 "city": city,
                 "base_limit": self.get_guild_bank_base_limit(guild),
                 "effective_limit": self.get_guild_effective_banklimit(guild, city=city),
-                "city_tier": self.normalize_city_vault_tier(city["tier"]) if city else 0,
+                "city_tier": self.get_city_vault_tier(city),
             }
         finally:
             if local:
