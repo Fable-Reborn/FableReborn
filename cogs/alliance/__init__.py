@@ -1286,7 +1286,7 @@ class Alliance(commands.Cog):
                         'SELECT COUNT(*) FROM guild WHERE "alliance"=$1;',
                         ctx.character_data["guild"],
                     )
-            ) == 3:
+            ) == 5:
                 await self.bot.reset_alliance_cooldown(ctx)
                 return await ctx.send(_("Your alliance is full."))
             if await conn.fetchrow(
