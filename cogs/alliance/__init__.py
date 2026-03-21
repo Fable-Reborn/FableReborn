@@ -893,9 +893,17 @@ class Alliance(commands.Cog):
 
     @commands.command(name="cities", brief=_("Shows cities and owners."))
     async def show_cities(self, ctx: Context) -> None:
-
         city_rows = {}
-        city_defense_totals = {city_name: 0 for city_name in self.city_configs}
+        city_defense_summaries = {
+            city_name: {
+                "fortifications": 0,
+                "fortification_hp": 0,
+                "fortification_retaliation": 0,
+                "guards": 0,
+                "guard_pet": False,
+            }
+            for city_name in self.city_configs
+        }
         db_warning = None
 
         try:
@@ -910,56 +918,19 @@ class Alliance(commands.Cog):
                     active_defenses, inactive_defenses = await self._load_city_defenses(
                         conn, city_name
                     )
-                    city_defense_totals[city_name] = sum(
-                        int(defense["defense"]) for defense in active_defenses
-                    )
-
-
-            em = discord.Embed(
-                title=_("Cities"),
-                colour=self.bot.config.game.primary_colour,
-                description=db_warning,
-            )
-            for city_name, city_config in sorted(
-                self.city_configs.items(),
-                key=lambda item: -int(item[1]["tier"]),
-            ):
-                city = city_rows.get(city_name)
-                owner_name = city.get("gname") if city else None
-                if db_warning:
-                    owner_text = _("Owner data unavailable")
-                elif city and city.get("owner") not in (None, 1) and owner_name:
-                    owner_text = _("Owned by {alliance}'s alliance").format(
-                        alliance=owner_name
-                    )
-                else:
-                    owner_text = _("Owned by the System Guild Alliance")
-                defense_value = (
-                    _("Unavailable")
-                    if db_warning
-                    else str(city_defense_totals.get(city_name, 0))
-                )
-                em.add_field(
-                    name=_("{name} (Tier {tier})").format(
-                        name=city_name, tier=city_config["tier"]
-                    ),
-                    value=_(
-                        "{owner_text}\nBuildings: {buildings}\nTotal"
-                        " defense: {defense}"
-                    ).format(
-                        owner_text=owner_text,
-                        buildings=", ".join(
-                            [
-                                i.title()
-                                for i in ("thief", "raid", "trade", "adventure")
-                                if city_config[i]
-                            ]
+                    guards = await self.bot.get_city_guards(city_name, conn=conn)
+                    guard_pet = await self.bot.get_city_guard_pet(city_name, conn=conn)
+                    city_defense_summaries[city_name] = {
+                        "fortifications": len(active_defenses),
+                        "fortification_hp": sum(
+                            int(defense["hp"]) for defense in active_defenses
                         ),
-                        defense=defense_value,
-                    ),
-                    inline=False,
-                )
-            await ctx.send(embed=em)
+                        "fortification_retaliation": sum(
+                            int(defense["defense"]) for defense in active_defenses
+                        ),
+                        "guards": len(guards),
+                        "guard_pet": bool(guard_pet),
+                    }
         except asyncpg.PostgresError:
             self.bot.logger.exception("Failed to load cities command data from Postgres.")
             db_warning = _(
@@ -967,6 +938,64 @@ class Alliance(commands.Cog):
             )
         except Exception as e:
             return await ctx.send(f"Error loading cities: {e}")
+
+        em = discord.Embed(
+            title=_("Cities"),
+            colour=self.bot.config.game.primary_colour,
+            description=db_warning,
+        )
+        for city_name, city_config in sorted(
+            self.city_configs.items(),
+            key=lambda item: -int(item[1]["tier"]),
+        ):
+            city = city_rows.get(city_name)
+            owner_name = city.get("gname") if city else None
+            if db_warning:
+                owner_text = _("Owner data unavailable")
+            elif city and city.get("owner") not in (None, 1) and owner_name:
+                owner_text = _("Owned by {alliance}'s alliance").format(
+                    alliance=owner_name
+                )
+            else:
+                owner_text = _("Owned by the System Guild Alliance")
+            if db_warning:
+                defense_text = _("Defense data unavailable")
+            else:
+                defense_summary = city_defense_summaries.get(city_name, {})
+                defense_text = _(
+                    "Fortifications: {fortifications}/{slots} active ({hp} HP, {retaliation} retaliation)\n"
+                    "Guards: {guards}\n"
+                    "Guard Pet: {guard_pet}"
+                ).format(
+                    fortifications=defense_summary.get("fortifications", 0),
+                    slots=len(self._get_city_war_slots_for_city(city_name)),
+                    hp=f"{int(defense_summary.get('fortification_hp', 0)):,}",
+                    retaliation=f"{int(defense_summary.get('fortification_retaliation', 0)):,}",
+                    guards=defense_summary.get("guards", 0),
+                    guard_pet=_("Yes")
+                    if defense_summary.get("guard_pet")
+                    else _("No"),
+                )
+            em.add_field(
+                name=_("{name} (Tier {tier})").format(
+                    name=city_name, tier=city_config["tier"]
+                ),
+                value=_(
+                    "{owner_text}\nBuildings: {buildings}\n{defense_text}"
+                ).format(
+                    owner_text=owner_text,
+                    buildings=", ".join(
+                        [
+                            i.title()
+                            for i in ("thief", "raid", "trade", "adventure")
+                            if city_config[i]
+                        ]
+                    ),
+                    defense_text=defense_text,
+                ),
+                inline=False,
+            )
+        await ctx.send(embed=em)
 
     @has_char()
     @has_guild()
