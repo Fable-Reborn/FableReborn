@@ -1520,11 +1520,24 @@ class Bot(commands.AutoShardedBot):
     def get_guild_bank_base_limit(self, guild) -> int:
         return int(guild["banklimit"])
 
+    def get_city_config_map(self) -> dict:
+        cities = getattr(self.config, "cities", None)
+        if isinstance(cities, dict):
+            return cities
+
+        values = getattr(self.config, "values", None)
+        if isinstance(values, dict):
+            raw_cities = values.get("cities", {})
+            if isinstance(raw_cities, dict):
+                return raw_cities
+
+        return {}
+
     def get_city_config(self, city_name: str | None) -> dict | None:
         if not city_name:
             return None
 
-        cities = getattr(self.config, "cities", None)
+        cities = self.get_city_config_map()
         if not cities:
             return None
 
@@ -1545,15 +1558,18 @@ class Bot(commands.AutoShardedBot):
         tier = None
         city_name = None
 
-        if hasattr(city, "keys"):
-            city_keys = city.keys()
-            if "tier" in city_keys:
-                tier = city["tier"]
-            if "name" in city_keys:
-                city_name = city["name"]
-        elif isinstance(city, dict):
+        if isinstance(city, dict):
             tier = city.get("tier")
             city_name = city.get("name")
+        else:
+            try:
+                tier = city["tier"]
+            except (KeyError, IndexError, TypeError):
+                tier = None
+            try:
+                city_name = city["name"]
+            except (KeyError, IndexError, TypeError):
+                city_name = None
 
         if tier is None:
             config_city = self.get_city_config(city_name)
