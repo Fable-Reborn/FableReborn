@@ -685,7 +685,9 @@ class Alliance(commands.Cog):
                     )
                 }
                 for city_name in self.city_configs:
-                    active_defenses, _ = await self._load_city_defenses(conn, city_name)
+                    active_defenses, inactive_defenses = await self._load_city_defenses(
+                        conn, city_name
+                    )
                     city_defense_totals[city_name] = sum(
                         int(defense["defense"]) for defense in active_defenses
                     )
@@ -1208,7 +1210,9 @@ class Alliance(commands.Cog):
                 return await ctx.send(
                     _("Your city is under attack. Defenses cannot be built.")
                 )
-            active_defenses, _ = await self._load_city_defenses(conn, city_name)
+            active_defenses, inactive_defenses = await self._load_city_defenses(
+                conn, city_name
+            )
             occupied_slots = {
                 self._get_city_war_defense_slot(defense["name"]): defense
                 for defense in active_defenses
@@ -1771,7 +1775,9 @@ class Alliance(commands.Cog):
                 'SELECT "owner" FROM city WHERE "name"=$1;',
                 city,
             )
-            active_defenses, _ = await self._load_city_defenses(conn, city)
+            active_defenses, inactive_defenses = await self._load_city_defenses(
+                conn, city
+            )
             num_units = len(active_defenses)
             guards = await self.bot.get_city_guards(city, conn=conn)
             guard_count = len(guards)
@@ -1909,7 +1915,7 @@ class Alliance(commands.Cog):
                 'SELECT g."name" FROM city c JOIN guild g ON g."id"=c."owner" WHERE c."name"=$1;',
                 city,
             )
-            defenses, _ = await self._load_city_defenses(conn, city)
+            defenses, inactive_defenses = await self._load_city_defenses(conn, city)
             guards = await self.bot.get_city_guards(city, conn=conn)
             guard_count = len(guards)
             guard_pet_assignment = await self.bot.get_city_guard_pet(city, conn=conn)
@@ -1994,7 +2000,7 @@ class Alliance(commands.Cog):
                 if u not in attacking_users:
                     attacking_users.append(u)
 
-            defenses, _ = await self._load_city_defenses(conn, city)
+            defenses, inactive_defenses = await self._load_city_defenses(conn, city)
             guards = await self.bot.get_city_guards(city, conn=conn)
             guard_count = len(guards)
             guard_pet_assignment = await self.bot.get_city_guard_pet(city, conn=conn)
