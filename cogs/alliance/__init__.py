@@ -55,7 +55,13 @@ CITY_CONQUEST_OVERFLOW_LOSS_PERCENT = 25
 CITY_ATTACK_LOCK_KEY = "citywars:lock_until"
 CITY_WAR_ATTACKER_LIMIT = 3
 CITY_WAR_PET_BUDGET_MULTIPLIER = Decimal("1.10")
-CITY_WAR_DEFENSE_SLOTS = ("wall", "weapon", "utility")
+CITY_WAR_DEFENSE_BASE_SLOTS = ("wall", "weapon", "utility")
+CITY_WAR_DEFENSE_SLOT_LAYOUTS = {
+    1: ("wall_1", "weapon_1", "utility_1"),
+    2: ("wall_1", "weapon_1", "utility_1"),
+    3: ("wall_1", "weapon_1", "utility_1", "weapon_2"),
+    4: ("wall_1", "weapon_1", "utility_1", "weapon_2", "utility_2"),
+}
 CITY_WAR_DEFENSES = {
     "cannons": {"hp": 1000, "def": 120, "cost": 200000, "slot": "weapon", "priority": 2},
     "archers": {"hp": 2000, "def": 100, "cost": 100000, "slot": "weapon", "priority": 1},
@@ -69,6 +75,11 @@ CITY_WAR_DEFENSE_SLOT_LABELS = {
     "wall": "Wall",
     "weapon": "Weapon",
     "utility": "Utility",
+}
+CITY_WAR_SLOT_NUMERALS = {
+    1: "I",
+    2: "II",
+    3: "III",
 }
 
 
@@ -107,7 +118,7 @@ class Alliance(commands.Cog):
             name=_("Defense Commands"),
             value=_(
                 "`{prefix}alliance defenses`\n"
-                "`{prefix}alliance build defense <name>`\n"
+                "`{prefix}alliance build defense`\n"
                 "`{prefix}alliance guards`\n"
                 "`{prefix}alliance guards pet`\n"
                 "`{prefix}alliance cityhelp defend`"
@@ -202,11 +213,10 @@ class Alliance(commands.Cog):
         embed.add_field(
             name=_("Defense Slots"),
             value=_(
-                "Cities have `3` active defense slots:\n"
-                "`1` wall slot\n"
-                "`1` weapon slot\n"
-                "`1` utility slot\n"
-                "Use `{prefix}alliance build defense <name>` and view them with `{prefix}alliance defenses`."
+                "Tier `1-2` cities have `3` active defense slots: Wall, Weapon, Utility.\n"
+                "Tier `3` cities gain `1` extra Weapon slot.\n"
+                "Tier `4` cities gain `1` extra Weapon slot and `1` extra Utility slot.\n"
+                "Use `{prefix}alliance build defense` for the guided selector and view them with `{prefix}alliance defenses`."
             ).format(prefix=ctx.clean_prefix),
             inline=False,
         )
@@ -282,6 +292,184 @@ class Alliance(commands.Cog):
         meta = self._get_city_war_defense_meta(defense_name)
         return None if meta is None else meta["slot"]
 
+    def _get_city_tier(self, city_name: str | None) -> int:
+        if not city_name:
+            return 1
+
+        city_config = self.city_configs.get(str(city_name).title())
+        if not city_config:
+            return 1
+
+        try:
+            tier = int(city_config.get("tier", 1))
+        except (TypeError, ValueError):
+            tier = 1
+
+        return max(1, min(tier, max(CITY_WAR_DEFENSE_SLOT_LAYOUTS)))
+
+    def _get_city_war_slots_for_city(self, city_name: str | None) -> tuple[str, ...]:
+        return CITY_WAR_DEFENSE_SLOT_LAYOUTS[self._get_city_tier(city_name)]
+
+    def _get_city_war_slot_category(self, slot_id: str | None) -> str | None:
+        if not slot_id:
+            return None
+        return str(slot_id).split("_", 1)[0]
+
+    def _get_city_war_slot_number(self, slot_id: str | None) -> int:
+        if not slot_id or "_" not in str(slot_id):
+            return 1
+        try:
+            return max(1, int(str(slot_id).rsplit("_", 1)[1]))
+        except (TypeError, ValueError):
+            return 1
+
+    def _get_city_war_slot_label(self, slot_id: str | None) -> str:
+        category = self._get_city_war_slot_category(slot_id)
+        base_label = CITY_WAR_DEFENSE_SLOT_LABELS.get(category, _("Defense"))
+        slot_number = self._get_city_war_slot_number(slot_id)
+        if slot_number <= 1:
+            return base_label
+        numeral = CITY_WAR_SLOT_NUMERALS.get(slot_number, str(slot_number))
+        return f"{base_label} {numeral}"
+
+    def _get_city_war_defense_instance_slot_id(self, defense: dict) -> str | None:
+        return (
+            defense.get("resolved_slot_id")
+            or defense.get("slot_id")
+            or self._get_city_war_defense_slot(defense["name"])
+        )
+
+    def _get_city_war_open_slots(
+        self, city_name: str, active_defenses: list[dict]
+    ) -> list[str]:
+        occupied_slots = {
+            self._get_city_war_defense_instance_slot_id(defense)
+            for defense in active_defenses
+        }
+        return [
+            slot_id
+            for slot_id in self._get_city_war_slots_for_city(city_name)
+            if slot_id not in occupied_slots
+        ]
+
+    def _get_city_war_slot_capacity_text(self, city_name: str) -> str:
+        slot_labels = [
+            self._get_city_war_slot_label(slot_id)
+            for slot_id in self._get_city_war_slots_for_city(city_name)
+        ]
+        return ", ".join(slot_labels)
+
+    def _get_city_war_defense_effect_text(self, defense_name: str) -> str:
+        normalized_name = str(defense_name).lower()
+        if normalized_name == "outer wall":
+            return _("Reduces attacker damage to fortifications by 20% while it stands.")
+        if normalized_name == "inner wall":
+            return _("Reduces attacker damage to fortifications by 10% while it stands.")
+        if normalized_name == "cannons":
+            return _("Highest raw fortification retaliation, but fragile.")
+        if normalized_name == "archers":
+            return _("Cheaper weapon defense with more HP than most weapon options.")
+        if normalized_name == "tower":
+            return _("Balanced weapon defense with solid HP and retaliation.")
+        if normalized_name == "ballista":
+            return _("Cheap weapon defense with lower retaliation.")
+        if normalized_name == "moat":
+            return _("Utility fortification that adds extra siege HP and retaliation.")
+        return _("Provides fortification HP and retaliation during the siege phase.")
+
+    def _describe_city_war_defense(self, defense_name: str) -> str:
+        meta = self._get_city_war_defense_meta(defense_name) or {}
+        return _(
+            "{hp} HP, {defense} retaliation, costs ${cost}. {effect}"
+        ).format(
+            hp=f"{int(meta.get('hp', 0)):,}",
+            defense=int(meta.get("def", 0)),
+            cost=f"{int(meta.get('cost', 0)):,}",
+            effect=self._get_city_war_defense_effect_text(defense_name),
+        )
+
+    def _get_city_war_defenses_for_slot(self, slot_id: str) -> list[str]:
+        category = self._get_city_war_slot_category(slot_id)
+        return [
+            defense_name
+            for defense_name, meta in CITY_WAR_DEFENSES.items()
+            if meta["slot"] == category
+        ]
+
+    def _format_city_war_occupied_slots(
+        self, slot_ids: list[str], occupied_slots: dict[str, dict]
+    ) -> str:
+        return ", ".join(
+            _("{slot}: {defense}").format(
+                slot=self._get_city_war_slot_label(slot_id),
+                defense=occupied_slots[slot_id]["name"].title(),
+            )
+            for slot_id in slot_ids
+            if slot_id in occupied_slots
+        )
+
+    async def _choose_city_war_slot_for_build(
+        self, ctx: Context, city_name: str, open_slots: list[str]
+    ) -> str | None:
+        if not open_slots:
+            return None
+        if len(open_slots) == 1:
+            return open_slots[0]
+
+        slot_entries = [
+            _("{slot}: {choices}").format(
+                slot=self._get_city_war_slot_label(slot_id),
+                choices=", ".join(
+                    defense_name.title()
+                    for defense_name in self._get_city_war_defenses_for_slot(slot_id)
+                ),
+            )
+            for slot_id in open_slots
+        ]
+        try:
+            selected_index = await Choose(
+                slot_entries,
+                title=_("Choose a Defense Slot"),
+                choices=[self._get_city_war_slot_label(slot_id) for slot_id in open_slots],
+                footer=_("City: {city}").format(city=city_name),
+                timeout=60,
+                return_index=True,
+            ).paginate(ctx)
+        except NoChoice:
+            return None
+        return open_slots[selected_index]
+
+    async def _choose_city_war_defense_for_slot(
+        self, ctx: Context, city_name: str, slot_id: str
+    ) -> str | None:
+        defense_names = self._get_city_war_defenses_for_slot(slot_id)
+        if not defense_names:
+            return None
+        if len(defense_names) == 1:
+            return defense_names[0]
+
+        defense_entries = [
+            _("{name}: {details}").format(
+                name=defense_name.title(),
+                details=self._describe_city_war_defense(defense_name),
+            )
+            for defense_name in defense_names
+        ]
+        try:
+            selected_index = await Choose(
+                defense_entries,
+                title=_("Choose a Defense for {slot}").format(
+                    slot=self._get_city_war_slot_label(slot_id)
+                ),
+                choices=[defense_name.title() for defense_name in defense_names],
+                footer=_("City: {city}").format(city=city_name),
+                timeout=60,
+                return_index=True,
+            ).paginate(ctx)
+        except NoChoice:
+            return None
+        return defense_names[selected_index]
+
     def _get_city_war_defense_choice_key(self, defense: dict) -> tuple[int, int, int]:
         meta = self._get_city_war_defense_meta(defense["name"]) or {}
         return (
@@ -290,32 +478,66 @@ class Alliance(commands.Cog):
             -int(defense.get("id", 0)),
         )
 
-    def _partition_city_defenses(self, defenses: list[dict]) -> tuple[list[dict], list[dict]]:
+    def _partition_city_defenses(
+        self, defenses: list[dict], city_name: str
+    ) -> tuple[list[dict], list[dict]]:
+        valid_slots = self._get_city_war_slots_for_city(city_name)
         active_by_slot: dict[str, dict] = {}
         inactive: list[dict] = []
+        legacy_by_category: dict[str, list[dict]] = {
+            category: [] for category in CITY_WAR_DEFENSE_BASE_SLOTS
+        }
 
         for defense in defenses:
-            slot = self._get_city_war_defense_slot(defense["name"])
-            if slot is None:
-                inactive.append(defense)
+            resolved_defense = dict(defense)
+            slot_id = resolved_defense.get("slot_id")
+            if slot_id in valid_slots:
+                resolved_defense["resolved_slot_id"] = slot_id
+                current = active_by_slot.get(slot_id)
+                if current is None or (
+                    self._get_city_war_defense_choice_key(resolved_defense)
+                    > self._get_city_war_defense_choice_key(current)
+                ):
+                    if current is not None:
+                        inactive.append(current)
+                    active_by_slot[slot_id] = resolved_defense
+                else:
+                    inactive.append(resolved_defense)
                 continue
 
-            current = active_by_slot.get(slot)
-            if current is None or self._get_city_war_defense_choice_key(defense) > self._get_city_war_defense_choice_key(current):
-                if current is not None:
-                    inactive.append(current)
-                active_by_slot[slot] = defense
-            else:
-                inactive.append(defense)
+            category = self._get_city_war_defense_slot(resolved_defense["name"])
+            if category is None:
+                inactive.append(resolved_defense)
+                continue
+            legacy_by_category.setdefault(category, []).append(resolved_defense)
+
+        for category, category_defenses in legacy_by_category.items():
+            available_slots = [
+                slot_id
+                for slot_id in valid_slots
+                if self._get_city_war_slot_category(slot_id) == category
+                and slot_id not in active_by_slot
+            ]
+            ordered_defenses = sorted(
+                category_defenses,
+                key=self._get_city_war_defense_choice_key,
+                reverse=True,
+            )
+            for slot_id, defense in zip(available_slots, ordered_defenses):
+                resolved_defense = dict(defense)
+                resolved_defense["resolved_slot_id"] = slot_id
+                active_by_slot[slot_id] = resolved_defense
+            inactive.extend(ordered_defenses[len(available_slots):])
 
         active = [
-            active_by_slot[slot]
-            for slot in CITY_WAR_DEFENSE_SLOTS
-            if slot in active_by_slot
+            active_by_slot[slot_id]
+            for slot_id in valid_slots
+            if slot_id in active_by_slot
         ]
         return active, inactive
 
     async def _load_city_defenses(self, conn, city: str) -> tuple[list[dict], list[dict]]:
+        await self.bot._ensure_city_war_tables()
         defenses = [
             dict(row)
             for row in await conn.fetch(
@@ -323,7 +545,7 @@ class Alliance(commands.Cog):
                 city,
             )
         ]
-        return self._partition_city_defenses(defenses)
+        return self._partition_city_defenses(defenses, city)
 
     def _scale_city_war_stat(self, raw_value, *, base: int, factor: int) -> int:
         value = max(0.0, float(raw_value or 0))
@@ -1017,67 +1239,180 @@ class Alliance(commands.Cog):
         await ctx.send(_("Please use one of these subcommands:\n\n") + subcommands)
 
     @alliance_cooldown(120)
-    @alliance.group(brief=_("Destroy defenses"))
+    @alliance.group(invoke_without_command=True, brief=_("Destroy defenses"))
     @owns_city()
     @is_alliance_leader()
     @locale_doc
-    async def destroy(self, ctx, defense):
+    async def destroy(self, ctx, *, defense: str = None):
         _(
             """Build buildings `{prefix}alliance build building` or defenses `{prefix}alliance build defense`."""
         )
         try:
             guild_id = ctx.character_data["guild"]
 
-            # Query the database to find the city with the matching guild ID
             async with self.bot.pool.acquire() as connection:
                 async with connection.transaction():
-                    city_query = await connection.fetchrow(
+                    city_name = await connection.fetchval(
                         "SELECT name FROM city WHERE owner = $1", guild_id
                     )
-                    if city_query:
-                        city_name = city_query["name"]
-                        # Check if the defense exists in the city
-                        result_found = await connection.fetchrow(
-                            "SELECT * FROM defenses WHERE city = $1",
+                    if not city_name:
+                        await self.bot.reset_alliance_cooldown(ctx)
+                        return await ctx.send(_("City not found."))
+
+                    raw_defenses = [
+                        dict(row)
+                        for row in await connection.fetch(
+                            "SELECT * FROM defenses WHERE city = $1 ORDER BY id ASC",
                             city_name,
                         )
-                        if result_found:
-                            confirmed = await ctx.confirm(
-                                f"Are you sure you want to destroy {defense} in {city_name}?"
-                            )
-                            if confirmed:
-                                # Fetch the id of the first defense that matches the city and name
-                                defense_id_row = await connection.fetchrow(
-                                    "SELECT id FROM defenses WHERE city = $1 AND name = $2 LIMIT 1",
-                                    city_name,
-                                    defense.lower(),
-                                )
+                    ]
 
-                                if defense_id_row:
-                                    defense_id = defense_id_row['id']
+                    if not raw_defenses:
+                        await self.bot.reset_alliance_cooldown(ctx)
+                        return await ctx.send(_("Defense not found"))
 
-                                    # Now use the id to delete the specific row
-                                    result = await connection.execute(
-                                        "DELETE FROM defenses WHERE id = $1 RETURNING *",
-                                        defense_id,
-                                    )
-                                    if result:
-                                        await ctx.send(f"Destroyed {defense} in {city_name}.")
-                                    else:
-                                        await ctx.send(f"{defense} not found in {city_name}.")
-                                        await self.bot.reset_cooldown(ctx)
-                                else:
-                                    await ctx.send(f"{defense} not found in {city_name}.")
-                                    await self.bot.reset_cooldown(ctx)
-                            else:
-                                await ctx.send("Deletion cancelled.")
-                                await self.bot.reset_cooldown(ctx)
+                    active_defenses, inactive_defenses = self._partition_city_defenses(
+                        raw_defenses,
+                        city_name,
+                    )
+                    defense_rows = active_defenses + inactive_defenses
+
+                    if defense is None:
+                        if len(defense_rows) == 1:
+                            selected_defense = defense_rows[0]
                         else:
-                            await ctx.send("Defense not found")
-                            await self.bot.reset_cooldown(ctx)
+                            try:
+                                selected_index = await Choose(
+                                    [
+                                        _("{slot}: {name} ({hp} HP)").format(
+                                            slot=self._get_city_war_slot_label(
+                                                self._get_city_war_defense_instance_slot_id(
+                                                    defense_row
+                                                )
+                                            ),
+                                            name=defense_row["name"].title(),
+                                            hp=f"{int(defense_row['hp']):,}",
+                                        )
+                                        for defense_row in defense_rows
+                                    ],
+                                    title=_("Choose a Defense to Destroy"),
+                                    choices=[
+                                        _("{slot}: {name}").format(
+                                            slot=self._get_city_war_slot_label(
+                                                self._get_city_war_defense_instance_slot_id(
+                                                    defense_row
+                                                )
+                                            ),
+                                            name=defense_row["name"].title(),
+                                        )
+                                        for defense_row in defense_rows
+                                    ],
+                                    footer=_("City: {city}").format(city=city_name),
+                                    timeout=60,
+                                    return_index=True,
+                                ).paginate(ctx)
+                            except NoChoice:
+                                await self.bot.reset_alliance_cooldown(ctx)
+                                return await ctx.send(_("No defense was selected."))
+                            selected_defense = defense_rows[selected_index]
                     else:
-                        await ctx.send("City not found.")
-                        await self.bot.reset_cooldown(ctx)
+                        search = defense.strip().lower()
+                        compact_search = search.replace(" ", "")
+                        matching_defenses = []
+                        for defense_row in defense_rows:
+                            slot_id = self._get_city_war_defense_instance_slot_id(
+                                defense_row
+                            )
+                            slot_label = self._get_city_war_slot_label(slot_id).lower()
+                            if (
+                                defense_row["name"].lower() == search
+                                or slot_label == search
+                                or slot_label.replace(" ", "") == compact_search
+                                or str(slot_id).lower() == compact_search
+                            ):
+                                matching_defenses.append(defense_row)
+
+                        if not matching_defenses:
+                            await self.bot.reset_alliance_cooldown(ctx)
+                            return await ctx.send(
+                                _("{defense} not found in {city}.").format(
+                                    defense=defense,
+                                    city=city_name,
+                                )
+                            )
+
+                        if len(matching_defenses) == 1:
+                            selected_defense = matching_defenses[0]
+                        else:
+                            try:
+                                selected_index = await Choose(
+                                    [
+                                        _("{slot}: {name} ({hp} HP)").format(
+                                            slot=self._get_city_war_slot_label(
+                                                self._get_city_war_defense_instance_slot_id(
+                                                    defense_row
+                                                )
+                                            ),
+                                            name=defense_row["name"].title(),
+                                            hp=f"{int(defense_row['hp']):,}",
+                                        )
+                                        for defense_row in matching_defenses
+                                    ],
+                                    title=_("Choose a Matching Defense"),
+                                    choices=[
+                                        _("{slot}: {name}").format(
+                                            slot=self._get_city_war_slot_label(
+                                                self._get_city_war_defense_instance_slot_id(
+                                                    defense_row
+                                                )
+                                            ),
+                                            name=defense_row["name"].title(),
+                                        )
+                                        for defense_row in matching_defenses
+                                    ],
+                                    footer=_("City: {city}").format(city=city_name),
+                                    timeout=60,
+                                    return_index=True,
+                                ).paginate(ctx)
+                            except NoChoice:
+                                await self.bot.reset_alliance_cooldown(ctx)
+                                return await ctx.send(_("No defense was selected."))
+                            selected_defense = matching_defenses[selected_index]
+
+                    slot_label = self._get_city_war_slot_label(
+                        self._get_city_war_defense_instance_slot_id(selected_defense)
+                    )
+                    confirmed = await ctx.confirm(
+                        _(
+                            "Are you sure you want to destroy **{defense}** in **{slot}** for **{city}**?"
+                        ).format(
+                            defense=selected_defense["name"].title(),
+                            slot=slot_label,
+                            city=city_name,
+                        )
+                    )
+                    if not confirmed:
+                        return await ctx.send(_("Deletion cancelled."))
+
+                    deleted_defense = await connection.fetchrow(
+                        "DELETE FROM defenses WHERE id = $1 RETURNING *",
+                        selected_defense["id"],
+                    )
+                    if not deleted_defense:
+                        await self.bot.reset_alliance_cooldown(ctx)
+                        return await ctx.send(
+                            _("That defense no longer exists in {city}.").format(
+                                city=city_name
+                            )
+                        )
+
+                    await ctx.send(
+                        _("Destroyed **{defense}** in **{slot}** for **{city}**.").format(
+                            defense=selected_defense["name"].title(),
+                            slot=slot_label,
+                            city=city_name,
+                        )
+                    )
         except Exception as e:
             await ctx.send(str(e))
 
@@ -1170,9 +1505,9 @@ class Alliance(commands.Cog):
     @has_char()
     @build.command(brief=_("Build a defense in your city."))
     @locale_doc
-    async def defense(self, ctx: Context, *, name: str.lower) -> None:
+    async def defense(self, ctx: Context, *, name: str.lower = None) -> None:
         _(
-            """Build some defensive buildings or place troops in your cities. The following are available:
+            """Build some defensive fortifications in your city. The following are available:
 
             Cannons: 1,000HP, 120 defense for $200,000
             Archers: 2,000HP, 100 defense for $100,000
@@ -1182,14 +1517,18 @@ class Alliance(commands.Cog):
             Tower: 5,000HP, 100 defense for $200,000
             Ballista: 1,000HP, 60 defense for $100,000
 
-            Cities now use 3 defense slots: 1 wall slot, 1 weapon slot, and 1 utility slot.
+            Tier 1-2 cities have 3 defense slots: 1 wall, 1 weapon, and 1 utility.
+            Tier 3 cities gain 1 extra weapon slot.
+            Tier 4 cities gain 1 extra weapon slot and 1 extra utility slot.
+
+            Running the command without a defense name opens a guided slot picker.
             You may not build defenses while your city is under attack. The price of the defense is removed from the leading guild's bank.
 
             This command requires your alliance to own a city.
             Only the alliance leader can use this command.
             (This command has a cooldown of 1 minutes)"""
         )
-        if name not in CITY_WAR_DEFENSES:
+        if name is not None and name not in CITY_WAR_DEFENSES:
             await self.bot.reset_alliance_cooldown(ctx)
             return await ctx.send(
                 _("Invalid defense. Please use `{prefix}{cmd} [{buildings}]`.").format(
@@ -1198,7 +1537,6 @@ class Alliance(commands.Cog):
                     buildings="/".join(CITY_WAR_DEFENSES.keys()),
                 )
             )
-        building = CITY_WAR_DEFENSES[name]
         async with self.bot.pool.acquire() as conn:
             city_name = await conn.fetchval(
                 'SELECT name FROM city WHERE "owner"=$1;', ctx.character_data["guild"]
@@ -1214,26 +1552,95 @@ class Alliance(commands.Cog):
                 conn, city_name
             )
             occupied_slots = {
-                self._get_city_war_defense_slot(defense["name"]): defense
+                self._get_city_war_defense_instance_slot_id(defense): defense
                 for defense in active_defenses
             }
-            requested_slot = building["slot"]
-            if requested_slot in occupied_slots:
-                active_defense = occupied_slots[requested_slot]
+            open_slots = self._get_city_war_open_slots(city_name, active_defenses)
+
+            if name is None:
+                if not open_slots:
+                    await self.bot.reset_alliance_cooldown(ctx)
+                    return await ctx.send(
+                        _(
+                            "All defense slots are full for **{city}**. Occupied slots: {slots}."
+                        ).format(
+                            city=city_name,
+                            slots=self._format_city_war_occupied_slots(
+                                list(self._get_city_war_slots_for_city(city_name)),
+                                occupied_slots,
+                            ),
+                        )
+                    )
+                selected_slot = await self._choose_city_war_slot_for_build(
+                    ctx,
+                    city_name,
+                    open_slots,
+                )
+                if selected_slot is None:
+                    await self.bot.reset_alliance_cooldown(ctx)
+                    return await ctx.send(_("No defense slot was selected."))
+
+                selected_defense_name = await self._choose_city_war_defense_for_slot(
+                    ctx,
+                    city_name,
+                    selected_slot,
+                )
+                if selected_defense_name is None:
+                    await self.bot.reset_alliance_cooldown(ctx)
+                    return await ctx.send(_("No defense was selected."))
+            else:
+                selected_defense_name = name
+                building = CITY_WAR_DEFENSES[selected_defense_name]
+                requested_category = building["slot"]
+                category_open_slots = [
+                    slot_id
+                    for slot_id in open_slots
+                    if self._get_city_war_slot_category(slot_id) == requested_category
+                ]
+                if not category_open_slots:
+                    category_slots = [
+                        slot_id
+                        for slot_id in self._get_city_war_slots_for_city(city_name)
+                        if self._get_city_war_slot_category(slot_id) == requested_category
+                    ]
+                    await self.bot.reset_alliance_cooldown(ctx)
+                    return await ctx.send(
+                        _(
+                            "Your city's **{slot}** slots are already full. Occupied: {occupied}."
+                        ).format(
+                            slot=CITY_WAR_DEFENSE_SLOT_LABELS[
+                                requested_category
+                            ].lower(),
+                            occupied=self._format_city_war_occupied_slots(
+                                category_slots,
+                                occupied_slots,
+                            ),
+                        ),
+                    )
+                selected_slot = category_open_slots[0]
+
+            building = CITY_WAR_DEFENSES[selected_defense_name]
+            slot_label = self._get_city_war_slot_label(selected_slot)
+            if selected_slot in occupied_slots:
+                active_defense = occupied_slots[selected_slot]
                 await self.bot.reset_alliance_cooldown(ctx)
                 return await ctx.send(
                     _(
                         "Your city's **{slot}** slot is already occupied by **{defense}**. Destroy it before building another defense in that slot."
                     ).format(
-                        slot=CITY_WAR_DEFENSE_SLOT_LABELS[requested_slot].lower(),
+                        slot=slot_label.lower(),
                         defense=active_defense["name"].title(),
                     )
                 )
             if not await ctx.confirm(
                     _(
-                        "Are you sure you want to build a **{defense}**? This will cost"
-                        " **${price}**."
-                    ).format(defense=name, price=building["cost"])
+                        "Build **{defense}** in **{slot}** for **${price}**?\n{details}"
+                    ).format(
+                        defense=selected_defense_name.title(),
+                        slot=slot_label,
+                        price=f"{building['cost']:,}",
+                        details=self._describe_city_war_defense(selected_defense_name),
+                    )
             ):
                 return
             if not await guild_has_money(
@@ -1243,16 +1650,17 @@ class Alliance(commands.Cog):
                 return await ctx.send(
                     _(
                         "Your guild doesn't have enough money to build a {defense}."
-                    ).format(defense=name)
+                    ).format(defense=selected_defense_name)
                 )
 
             await conn.execute(
-                'INSERT INTO defenses ("city", "name", "hp", "defense") VALUES ($1, $2,'
-                " $3, $4);",
+                'INSERT INTO defenses ("city", "name", "hp", "defense", "slot_id") VALUES ($1, $2,'
+                " $3, $4, $5);",
                 city_name,
-                name,
+                selected_defense_name,
                 building["hp"],
                 building["def"],
+                selected_slot,
             )
             await conn.execute(
                 'UPDATE guild SET "money"="money"-$1 WHERE "id"=$2;',
@@ -1264,11 +1672,20 @@ class Alliance(commands.Cog):
                 from_=ctx.author.id,
                 to=2,
                 subject="alliance",
-                data={"Gold": building["cost"], "Defense": name},
+                data={
+                    "Gold": building["cost"],
+                    "Defense": selected_defense_name,
+                    "Defense Slot": slot_label,
+                },
                 conn=conn,
             )
 
-        await ctx.send(_("Successfully built a {defense}.").format(defense=name))
+        await ctx.send(
+            _("Successfully built **{defense}** in **{slot}**.").format(
+                defense=selected_defense_name.title(),
+                slot=slot_label,
+            )
+        )
 
     @has_char()
     @alliance.command(brief=_("Lists your city's buildings."))
@@ -1341,20 +1758,34 @@ class Alliance(commands.Cog):
                 guard_pet = None
         if not city_name:
             return await ctx.send(_("Your alliance does not own a city."))
+        city_tier = self._get_city_tier(city_name)
+        open_slots = self._get_city_war_open_slots(city_name, defenses)
+        occupied_slots = {
+            self._get_city_war_defense_instance_slot_id(defense): defense
+            for defense in defenses
+        }
         embed = discord.Embed(
             title=_("{city}'s defenses").format(city=city_name),
             colour=self.bot.config.game.primary_colour,
         ).set_thumbnail(url="https://idlerpg.xyz/fortress.png")
-        i = None
+        embed.description = _(
+            "Tier {tier} city\nDefense slots: {slots}"
+        ).format(
+            tier=city_tier,
+            slots=self._get_city_war_slot_capacity_text(city_name),
+        )
+        has_active_defenses = False
         for i in defenses:
-            slot = self._get_city_war_defense_slot(i["name"])
-            slot_label = CITY_WAR_DEFENSE_SLOT_LABELS.get(slot, "Defense")
+            has_active_defenses = True
+            slot_label = self._get_city_war_slot_label(
+                self._get_city_war_defense_instance_slot_id(i)
+            )
             embed.add_field(
                 name=_("{name} ({slot} Slot)").format(
                     name=i["name"].title(),
                     slot=slot_label,
                 ),
-                value=_("HP: {hp}, Defense: {defense}").format(
+                value=_("HP: {hp}, Retaliation: {defense}").format(
                     hp=i["hp"], defense=i["defense"]
                 ),
                 inline=True,
@@ -1365,9 +1796,8 @@ class Alliance(commands.Cog):
                 value="\n".join(
                     _("{name} ({slot} slot, {hp} HP)").format(
                         name=defense["name"].title(),
-                        slot=CITY_WAR_DEFENSE_SLOT_LABELS.get(
-                            self._get_city_war_defense_slot(defense["name"]),
-                            "Unknown",
+                        slot=self._get_city_war_slot_label(
+                            self._get_city_war_defense_instance_slot_id(defense)
                         ).lower(),
                         hp=defense["hp"],
                     )
@@ -1375,6 +1805,15 @@ class Alliance(commands.Cog):
                 ),
                 inline=False,
             )
+        embed.add_field(
+            name=_("Open Defense Slots"),
+            value=(
+                ", ".join(self._get_city_war_slot_label(slot_id) for slot_id in open_slots)
+                if open_slots
+                else _("None. All available defense slots are occupied.")
+            ),
+            inline=False,
+        )
         if guards:
             guard_names = [
                 await rpgtools.lookup(self.bot, guard["user_id"]) for guard in guards
@@ -1402,11 +1841,11 @@ class Alliance(commands.Cog):
             ),
             inline=False,
         )
-        if i is None:
+        if not has_active_defenses:
             embed.add_field(
                 name=_("None built"),
                 value=_(
-                    "Use {prefix}alliance build defense [name]. Cities can hold 1 wall, 1 weapon, and 1 utility defense."
+                    "Use `{prefix}alliance build defense` to open the selector or `{prefix}alliance build defense <name>` for a direct buy."
                 ).format(prefix=ctx.clean_prefix),
             )
         await ctx.send(embed=embed)

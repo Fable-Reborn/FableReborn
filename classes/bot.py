@@ -1507,6 +1507,25 @@ class Bot(commands.AutoShardedBot):
                     ON city_guard_pet (user_id);
                     """
                 )
+                await conn.execute(
+                    """
+                    ALTER TABLE defenses
+                    ADD COLUMN IF NOT EXISTS slot_id text;
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS defenses_city_slot_idx
+                    ON defenses (city, slot_id);
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS defenses_city_slot_unique_idx
+                    ON defenses (city, slot_id)
+                    WHERE slot_id IS NOT NULL;
+                    """
+                )
             self._city_war_tables_ready = True
 
     def normalize_city_vault_tier(self, tier: int | None) -> int:

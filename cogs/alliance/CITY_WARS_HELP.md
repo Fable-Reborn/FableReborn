@@ -106,36 +106,46 @@ Defending is mostly preparation done in advance.
 
 ### Defense Slots
 
-Each city has `3` active defense slots:
+Defense slots now scale by city tier:
 
-- `1` wall slot
-- `1` weapon slot
-- `1` utility slot
+- Tier `1-2`: `Wall`, `Weapon`, `Utility`
+- Tier `3`: `Wall`, `Weapon`, `Utility`, `Weapon II`
+- Tier `4`: `Wall`, `Weapon`, `Utility`, `Weapon II`, `Utility II`
 
 Only one active defense can occupy each slot.
 
 Current defenses:
 
 - Wall:
-  - `outer wall` - `80,000 HP`, `$500,000`
-  - `inner wall` - `40,000 HP`, `$200,000`
+  - `outer wall` - `80,000 HP`, `0 retaliation`, `$500,000`
+  - `inner wall` - `40,000 HP`, `0 retaliation`, `$200,000`
 - Weapon:
-  - `cannons` - `1,000 HP`, `120 defense`, `$200,000`
-  - `archers` - `2,000 HP`, `100 defense`, `$100,000`
-  - `tower` - `5,000 HP`, `100 defense`, `$200,000`
-  - `ballista` - `1,000 HP`, `60 defense`, `$100,000`
+  - `cannons` - `1,000 HP`, `120 retaliation`, `$200,000`
+  - `archers` - `2,000 HP`, `100 retaliation`, `$100,000`
+  - `tower` - `5,000 HP`, `100 retaliation`, `$200,000`
+  - `ballista` - `1,000 HP`, `60 retaliation`, `$100,000`
 - Utility:
-  - `moat` - `20,000 HP`, `50 defense`, `$150,000`
+  - `moat` - `20,000 HP`, `50 retaliation`, `$150,000`
+
+Live fortification effects:
+
+- `outer wall` reduces attacker damage to fortifications by `20%` while it stands
+- `inner wall` reduces attacker damage to fortifications by `10%` while it stands
+- other defenses currently provide siege HP plus retaliation damage during the fortification phase
 
 Commands:
 
-- Build a defense: `alliance build defense <name>`
-- View active defenses: `alliance defenses`
-- Remove a defense: `alliance destroy <defense>`
+- Build a defense with the selector: `alliance build defense`
+- Build directly by name: `alliance build defense <name>`
+- View active defenses and open slots: `alliance defenses`
+- Remove a defense: `alliance destroy`
+- Remove a specific defense by name/slot: `alliance destroy <defense>`
 
 Notes:
 
 - Cities cannot build or change defenses while under attack.
+- Running `alliance build defense` lets you pick an open slot first, then pick a valid defense for that slot.
+- `alliance defenses` now shows city tier, slot capacity, occupied defenses, and open defense slots.
 - Legacy stacked defenses from the old system are not part of the new active slot system.
 
 ### City Guards
@@ -190,7 +200,7 @@ The stronger a city's buildings are, the more expensive it is to attack.
 
 ### Defending Checklist
 
-- Fill all `3` defense slots.
+- Fill every slot your city tier unlocks.
 - Assign all `3` city guard slots if possible.
 - Assign a guard pet to one of those guards.
 - Keep strong defenders stationed if you expect a war.
@@ -220,7 +230,9 @@ If your guild already owns a city, you cannot occupy another one.
 ### Defenders
 
 - `alliance defenses`
+- `alliance build defense`
 - `alliance build defense <name>`
+- `alliance destroy`
 - `alliance destroy <defense>`
 - `alliance guards`
 - `alliance guards add <member>`
@@ -244,6 +256,7 @@ If your guild already owns a city, you cannot occupy another one.
 ### If you are defending
 
 - Treat guard duty as a real roster decision.
-- Do not leave defense slots empty.
+- Do not leave unlocked defense slots empty.
+- Tier `3` and `4` cities should use their extra defense slots. They are part of the city's value.
 - Make sure the stationed pet belongs to one of the assigned guards.
 - If your city raises your vault cap far above base, keep in mind that conquest can now hit stored overflow gold.
