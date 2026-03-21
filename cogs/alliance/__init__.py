@@ -1799,7 +1799,7 @@ class Alliance(commands.Cog):
             )
         except Exception as e:
             await self.bot.reset_alliance_cooldown(ctx)
-            return await ctx.send(_("An error occurred while building the defense."))
+            return await ctx.send(_(f"An error occurred while building the defense. {e}"))
         
 
     @has_char()
