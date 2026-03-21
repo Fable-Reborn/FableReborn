@@ -2302,6 +2302,78 @@ class GameMaster(commands.Cog):
                 f"Egg `{egg_id}` hatched successfully for <@{hatch_result['user_id']}>. "
                 f"Created pet ID `{hatch_result['pet_id']}`: **{hatch_result['pet_name']}**."
             )
+
+            with handle_message_parameters(
+                content=(
+                    f"**{ctx.author}** force-hatched egg **{egg_id}** for "
+                    f"**<@{hatch_result['user_id']}>**.\n\n"
+                    f"Created pet: **{hatch_result['pet_name']}** (`{hatch_result['pet_id']}`)\n\n"
+                    f"Reason: *<{ctx.message.jump_url}>*"
+                )
+            ) as params:
+                await self.bot.http.send_message(
+                    self.bot.config.game.gm_log_channel,
+                    params=params,
+                )
+        except Exception as e:
+            await ctx.send(f"An error occurred: {e}")
+
+    @is_gm()
+    @commands.command(name="gmageup", brief=_("Advance a pet to its next growth stage"))
+    async def gmageup(self, ctx, pet_id: int):
+        """Advance a monster pet to its next growth stage by pet ID."""
+        pets_cog = self.bot.get_cog("Pets")
+        if pets_cog is None:
+            await ctx.send("Pets cog is not loaded.")
+            return
+
+        try:
+            async with self.bot.pool.acquire() as conn:
+                growth_result = await pets_cog.advance_pet_growth_stage(conn, pet_id)
+
+            status = growth_result.get("status")
+            if status == "missing":
+                await ctx.send(f"No pet found with ID `{pet_id}`.")
+                return
+
+            if status == "adult":
+                await ctx.send(
+                    f"Pet `{growth_result['pet_id']}` is already at the "
+                    f"**{growth_result['current_stage']}** stage."
+                )
+                return
+
+            try:
+                user = self.bot.get_user(growth_result["user_id"])
+                if user:
+                    growth_message = (
+                        f"Your pet **{growth_result['pet_name']}** has been aged up by a GM "
+                        f"to **{growth_result['new_stage']}**."
+                    )
+                    if growth_result["speed_growth_expired"]:
+                        growth_message += " (Speed Growth Potion effect has expired)"
+                    await user.send(growth_message)
+            except:
+                pass
+
+            await ctx.send(
+                f"Pet `{growth_result['pet_id']}` for <@{growth_result['user_id']}> "
+                f"advanced from **{growth_result['old_stage']}** to "
+                f"**{growth_result['new_stage']}**."
+            )
+
+            with handle_message_parameters(
+                content=(
+                    f"**{ctx.author}** aged up pet **{growth_result['pet_name']}** "
+                    f"(`{growth_result['pet_id']}`) for **<@{growth_result['user_id']}>**.\n\n"
+                    f"Stage: **{growth_result['old_stage']}** -> **{growth_result['new_stage']}**\n\n"
+                    f"Reason: *<{ctx.message.jump_url}>*"
+                )
+            ) as params:
+                await self.bot.http.send_message(
+                    self.bot.config.game.gm_log_channel,
+                    params=params,
+                )
         except Exception as e:
             await ctx.send(f"An error occurred: {e}")
 
@@ -2636,6 +2708,10 @@ class GameMaster(commands.Cog):
                 target.id,
             )
             await conn.execute(
+                "UPDATE pet_daycares SET is_open = FALSE WHERE owner_user_id = $1;",
+                target.id,
+            )
+            await conn.execute(
                 'UPDATE allitems SET "name"=CASE WHEN "original_name" IS NULL THEN'
                 ' "name" ELSE "original_name" END, "type"=CASE WHEN "original_type" IS'
                 ' NULL THEN "type" ELSE "original_type" END WHERE "owner"=$1;',
@@ -2677,10 +2753,15 @@ class GameMaster(commands.Cog):
 
             Only Game Masters can use this command."""
         )
-        await self.bot.pool.execute(
-            """UPDATE profile SET "class"='{"No Class", "No Class"}' WHERE "user"=$1;""",
-            target.id,
-        )
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """UPDATE profile SET "class"='{"No Class", "No Class"}' WHERE "user"=$1;""",
+                target.id,
+            )
+            await conn.execute(
+                "UPDATE pet_daycares SET is_open = FALSE WHERE owner_user_id = $1;",
+                target.id,
+            )
 
         await self._safe_ctx_send(ctx, _("Successfully reset {target}'s class.").format(target=target))
 

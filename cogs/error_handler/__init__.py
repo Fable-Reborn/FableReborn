@@ -255,11 +255,18 @@ class Errorhandler(commands.Cog):
                         idx = classes.index(name)
                         break
                 classes[idx] = "No Class"
-                await self.bot.pool.execute(
-                    'UPDATE profile SET "class"=$1 WHERE "user"=$2;',
-                    classes,
-                    ctx.author.id,
-                )
+                ranger_names = {evolve.class_name() for evolve in get_class_evolves(Ranger)}
+                async with self.bot.pool.acquire() as conn:
+                    await conn.execute(
+                        'UPDATE profile SET "class"=$1 WHERE "user"=$2;',
+                        classes,
+                        ctx.author.id,
+                    )
+                    if not any(class_name in ranger_names for class_name in classes):
+                        await conn.execute(
+                            "UPDATE pet_daycares SET is_open = FALSE WHERE owner_user_id = $1;",
+                            ctx.author.id,
+                        )
             elif isinstance(error, utils.checks.PetDied):
                 await ctx.send(
                     _(

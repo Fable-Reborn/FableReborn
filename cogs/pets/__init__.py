@@ -7002,112 +7002,155 @@ class Pets(commands.Cog):
         except Exception as e:
             print(f"Error in auto_return_daycare_boardings: {e}")
 
-    @tasks.loop(minutes=1)
-    async def check_pet_growth(self):
-        growth_stages = {
-            1: {"stage": "baby", "growth_time": 2, "stat_multiplier": 0.25, "hunger_modifier": 1.0},
-            2: {"stage": "juvenile", "growth_time": 2, "stat_multiplier": 0.50, "hunger_modifier": 0.8},
-            3: {"stage": "young", "growth_time": 1, "stat_multiplier": 0.75, "hunger_modifier": 0.6},
-            4: {"stage": "adult", "growth_time": None, "stat_multiplier": 1.0, "hunger_modifier": 0.0},
-            # Self-sufficient
+    def _resolve_pet_growth_index(self, pet) -> int:
+        growth_index = pet.get("growth_index")
+        if growth_index in self.EGG_GROWTH_STAGES:
+            return growth_index
+
+        growth_stage = str(pet.get("growth_stage") or "").lower()
+        for stage_index, stage_data in self.EGG_GROWTH_STAGES.items():
+            if stage_data["stage"] == growth_stage:
+                return stage_index
+
+        return 1
+
+    async def advance_pet_growth_stage(self, conn, pet_id: int):
+        async with conn.transaction():
+            pet = await conn.fetchrow(
+                "SELECT * FROM monster_pets WHERE id = $1 FOR UPDATE;",
+                pet_id,
+            )
+
+            if pet is None:
+                return {"status": "missing", "pet_id": pet_id}
+
+            current_stage_index = self._resolve_pet_growth_index(pet)
+            current_stage = self.EGG_GROWTH_STAGES.get(
+                current_stage_index, self.EGG_GROWTH_STAGES[1]
+            )
+            next_stage_index = current_stage_index + 1
+            next_stage = self.EGG_GROWTH_STAGES.get(next_stage_index)
+
+            if next_stage is None or str(pet.get("growth_stage") or "").lower() == "adult":
+                return {
+                    "status": "adult",
+                    "pet_id": pet["id"],
+                    "user_id": pet["user_id"],
+                    "pet_name": pet["name"],
+                    "current_stage": current_stage["stage"],
+                }
+
+            if next_stage["growth_time"] is not None:
+                if pet.get("speed_growth_active", False):
+                    growth_time_interval = datetime.timedelta(
+                        days=next_stage["growth_time"] / 2
+                    )
+                else:
+                    growth_time_interval = datetime.timedelta(
+                        days=next_stage["growth_time"]
+                    )
+            else:
+                growth_time_interval = None
+
+            multiplier_ratio = (
+                next_stage["stat_multiplier"] / current_stage["stat_multiplier"]
+            )
+            newhp = pet["hp"] * multiplier_ratio
+            newattack = pet["attack"] * multiplier_ratio
+            newdefense = pet["defense"] * multiplier_ratio
+
+            if growth_time_interval is not None:
+                await conn.execute(
+                    """
+                    UPDATE monster_pets
+                    SET
+                        growth_stage = $1,
+                        growth_time = NOW() + $2,
+                        hp = $3,
+                        attack = $4,
+                        defense = $5,
+                        growth_index = $6
+                    WHERE
+                        id = $7;
+                    """,
+                    next_stage["stage"],
+                    growth_time_interval,
+                    newhp,
+                    newattack,
+                    newdefense,
+                    next_stage_index,
+                    pet["id"],
+                )
+            else:
+                await conn.execute(
+                    """
+                    UPDATE monster_pets
+                    SET
+                        growth_stage = $1,
+                        growth_time = NULL,
+                        hp = $2,
+                        attack = $3,
+                        defense = $4,
+                        growth_index = $5
+                    WHERE
+                        id = $6;
+                    """,
+                    next_stage["stage"],
+                    newhp,
+                    newattack,
+                    newdefense,
+                    next_stage_index,
+                    pet["id"],
+                )
+
+            speed_growth_expired = bool(
+                next_stage["stage"] == "adult" and pet.get("speed_growth_active", False)
+            )
+            if speed_growth_expired:
+                await conn.execute(
+                    "UPDATE monster_pets SET speed_growth_active = FALSE WHERE id = $1;",
+                    pet["id"],
+                )
+
+        return {
+            "status": "advanced",
+            "pet_id": pet["id"],
+            "user_id": pet["user_id"],
+            "pet_name": pet["name"],
+            "old_stage": current_stage["stage"],
+            "new_stage": next_stage["stage"],
+            "speed_growth_active": bool(pet.get("speed_growth_active", False)),
+            "speed_growth_expired": speed_growth_expired,
         }
 
+    @tasks.loop(minutes=1)
+    async def check_pet_growth(self):
         try:
             async with self.bot.pool.acquire() as conn:
-                # Fetch pets that are ready to grow
                 pets = await conn.fetch(
-                    "SELECT * FROM monster_pets WHERE growth_time <= NOW() AND growth_stage != 'adult';"
+                    "SELECT id FROM monster_pets WHERE growth_time <= NOW() AND growth_stage != 'adult';"
                 )
                 for pet in pets:
-                    next_stage_index = pet["growth_index"] + 1
-                    if next_stage_index in growth_stages:
-                        stage_data = growth_stages[next_stage_index]
+                    growth_result = await self.advance_pet_growth_stage(conn, pet["id"])
+                    if growth_result.get("status") != "advanced":
+                        continue
 
-                        # Compute the interval as a timedelta object
-                        if stage_data["growth_time"] is not None:
-                            # Apply speed growth effect if active (2x faster = half the time)
-                            if pet.get("speed_growth_active", False):
-                                growth_time_interval = datetime.timedelta(days=stage_data["growth_time"] / 2)
-                            else:
-                                growth_time_interval = datetime.timedelta(days=stage_data["growth_time"])
-                        else:
-                            growth_time_interval = None
+                    user = self.bot.get_user(growth_result["user_id"])
+                    if user:
+                        growth_message = (
+                            f"Your pet **{growth_result['pet_name']}** has grown into a "
+                            f"{growth_result['new_stage']}!"
+                        )
 
-                        # Calculate the multiplier ratio
-                        old_multiplier = growth_stages[pet["growth_index"]]["stat_multiplier"]
-                        new_multiplier = stage_data["stat_multiplier"]
-                        multiplier_ratio = new_multiplier / old_multiplier
+                        if (
+                            growth_result["speed_growth_active"]
+                            and growth_result["new_stage"] != "adult"
+                        ):
+                            growth_message += " (Speed Growth Potion active - growing 2x faster!)"
+                        elif growth_result["speed_growth_expired"]:
+                            growth_message += " (Speed Growth Potion effect has expired)"
 
-                        newhp = pet["hp"] * multiplier_ratio
-                        newattack = pet["attack"] * multiplier_ratio
-                        newdefense = pet["defense"] * multiplier_ratio
-
-                        # Execute the appropriate query
-                        if growth_time_interval is not None:
-                            result = await conn.fetchrow(
-                                """
-                                UPDATE monster_pets
-                                SET 
-                                    growth_stage = $1,
-                                    growth_time = NOW() + $2,
-                                    hp = $3,
-                                    attack = $4,
-                                    defense = $5,
-                                    growth_index = $6
-                                WHERE 
-                                    "id" = $7
-                                RETURNING hp, attack, defense;
-                                """,
-                                stage_data["stage"],
-                                growth_time_interval,
-                                newhp,
-                                newattack,
-                                newdefense,
-                                next_stage_index,
-                                pet["id"],
-                            )
-                        else:
-                            result = await conn.fetchrow(
-                                """
-                                UPDATE monster_pets
-                                SET 
-                                    growth_stage = $1,
-                                    growth_time = NULL,
-                                    hp = $2,
-                                    attack = $3,
-                                    defense = $4,
-                                    growth_index = $5
-                                WHERE 
-                                    "id" = $6
-                                RETURNING hp, attack, defense;
-                                """,
-                                stage_data["stage"],
-                                newhp,
-                                newattack,
-                                newdefense,
-                                next_stage_index,
-                                pet["id"],
-                            )
-
-                        # Clear speed growth effect if pet reaches adult stage
-                        if stage_data["stage"] == "adult" and pet.get("speed_growth_active", False):
-                            await conn.execute(
-                                "UPDATE monster_pets SET speed_growth_active = FALSE WHERE id = $1;",
-                                pet["id"]
-                            )
-                        
-                        # Notify the user about the growth
-                        user = self.bot.get_user(pet["user_id"])
-                        if user:
-                            growth_message = f"Your pet **{pet['name']}** has grown into a {stage_data['stage']}!"
-                            
-                            # Add speed growth notification if applicable
-                            if pet.get("speed_growth_active", False) and stage_data["stage"] != "adult":
-                                growth_message += " (Speed Growth Potion active - growing 2x faster!)"
-                            elif stage_data["stage"] == "adult" and pet.get("speed_growth_active", False):
-                                growth_message += " (Speed Growth Potion effect has expired)"
-                            
-                            await user.send(growth_message)
+                        await user.send(growth_message)
         except Exception as e:
             print(f"Error in check_pet_growth: {e}")
 

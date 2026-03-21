@@ -63,6 +63,11 @@ class Classes(commands.Cog):
         self._ascension_table_lock = asyncio.Lock()
         self.bot.loop.create_task(self._warm_ascension_tables())
 
+    @staticmethod
+    def _classes_include_ranger(class_names) -> bool:
+        classes = [class_from_string(name) for name in class_names]
+        return any(class_ and class_.in_class_line(Ranger) for class_ in classes)
+
     async def _warm_ascension_tables(self) -> None:
         try:
             await self._ensure_ascension_tables()
@@ -474,6 +479,11 @@ class Classes(commands.Cog):
                     new_classes,
                     ctx.author.id,
                 )
+                if not self._classes_include_ranger(new_classes):
+                    await conn.execute(
+                        "UPDATE pet_daycares SET is_open = FALSE WHERE owner_user_id = $1;",
+                        ctx.author.id,
+                    )
                 if profession == Ranger:
                     await conn.execute(
                         'INSERT INTO pets ("user") VALUES ($1);', ctx.author.id
@@ -498,6 +508,11 @@ class Classes(commands.Cog):
                     5000,
                     ctx.author.id,
                 )
+                if not self._classes_include_ranger(new_classes):
+                    await conn.execute(
+                        "UPDATE pet_daycares SET is_open = FALSE WHERE owner_user_id = $1;",
+                        ctx.author.id,
+                    )
                 await conn.execute('DELETE FROM pets WHERE "user"=$1;', ctx.author.id)
                 if profession == Ranger:
                     await conn.execute(
