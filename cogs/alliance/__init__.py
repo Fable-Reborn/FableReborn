@@ -689,6 +689,53 @@ class Alliance(commands.Cog):
                     city_defense_totals[city_name] = sum(
                         int(defense["defense"]) for defense in active_defenses
                     )
+
+
+            em = discord.Embed(
+                title=_("Cities"),
+                colour=self.bot.config.game.primary_colour,
+                description=db_warning,
+            )
+            for city_name, city_config in sorted(
+                self.city_configs.items(),
+                key=lambda item: -int(item[1]["tier"]),
+            ):
+                city = city_rows.get(city_name)
+                owner_name = city.get("gname") if city else None
+                if db_warning:
+                    owner_text = _("Owner data unavailable")
+                elif city and city.get("owner") not in (None, 1) and owner_name:
+                    owner_text = _("Owned by {alliance}'s alliance").format(
+                        alliance=owner_name
+                    )
+                else:
+                    owner_text = _("Owned by the System Guild Alliance")
+                defense_value = (
+                    _("Unavailable")
+                    if db_warning
+                    else str(city_defense_totals.get(city_name, 0))
+                )
+                em.add_field(
+                    name=_("{name} (Tier {tier})").format(
+                        name=city_name, tier=city_config["tier"]
+                    ),
+                    value=_(
+                        "{owner_text}\nBuildings: {buildings}\nTotal"
+                        " defense: {defense}"
+                    ).format(
+                        owner_text=owner_text,
+                        buildings=", ".join(
+                            [
+                                i.title()
+                                for i in ("thief", "raid", "trade", "adventure")
+                                if city_config[i]
+                            ]
+                        ),
+                        defense=defense_value,
+                    ),
+                    inline=False,
+                )
+            await ctx.send(embed=em)
         except asyncpg.PostgresError:
             self.bot.logger.exception("Failed to load cities command data from Postgres.")
             db_warning = _(
@@ -696,52 +743,6 @@ class Alliance(commands.Cog):
             )
         except Exception as e:
             return await ctx.send(f"Error loading cities: {e}")
-
-        em = discord.Embed(
-            title=_("Cities"),
-            colour=self.bot.config.game.primary_colour,
-            description=db_warning,
-        )
-        for city_name, city_config in sorted(
-            self.city_configs.items(),
-            key=lambda item: -int(item[1]["tier"]),
-        ):
-            city = city_rows.get(city_name)
-            owner_name = city.get("gname") if city else None
-            if db_warning:
-                owner_text = _("Owner data unavailable")
-            elif city and city.get("owner") not in (None, 1) and owner_name:
-                owner_text = _("Owned by {alliance}'s alliance").format(
-                    alliance=owner_name
-                )
-            else:
-                owner_text = _("Owned by the System Guild Alliance")
-            defense_value = (
-                _("Unavailable")
-                if db_warning
-                else str(city_defense_totals.get(city_name, 0))
-            )
-            em.add_field(
-                name=_("{name} (Tier {tier})").format(
-                    name=city_name, tier=city_config["tier"]
-                ),
-                value=_(
-                    "{owner_text}\nBuildings: {buildings}\nTotal"
-                    " defense: {defense}"
-                ).format(
-                    owner_text=owner_text,
-                    buildings=", ".join(
-                        [
-                            i.title()
-                            for i in ("thief", "raid", "trade", "adventure")
-                            if city_config[i]
-                        ]
-                    ),
-                    defense=defense_value,
-                ),
-                inline=False,
-            )
-        await ctx.send(embed=em)
 
     @has_char()
     @has_guild()
