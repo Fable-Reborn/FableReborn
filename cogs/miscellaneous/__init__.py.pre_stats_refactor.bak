@@ -33,6 +33,7 @@ import os
 import platform
 import re
 import statistics
+import sys
 import time
 
 from collections import defaultdict, deque
@@ -45,7 +46,9 @@ from PIL import Image, ImageEnhance, ImageOps, ImageFilter
 from openai import AsyncOpenAI
 
 import discord
+import distro
 import humanize
+import pkg_resources as pkg
 import requests
 
 from discord.ext import commands
@@ -57,6 +60,7 @@ from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils import random
 from utils.checks import ImgurUploadError, has_char, user_is_patron, is_gm
 from utils.i18n import _, locale_doc
+from utils.misc import nice_join
 from utils.shell import get_cpu_name
 
 def load_whitelist():
@@ -1704,25 +1708,14 @@ Even $1 can help us.
     @commands.hybrid_command(brief=_("Shows statistics about the bot"))
     @locale_doc
     async def stats(self, ctx):
-        # Hybrid command: works as prefix (`$stats`) and slash where synced.
-        # See cogs/miscellaneous/CHANGELOG.md for the 2025-03-21 refactor notes and backup path.
         _(
             """Show detailed stats about the bot, including hardware usage, software statistics, and in-game metrics."""
         )
-        # --- Database: aggregate game counts + raw Postgres server version (trimmed for display later) ---
         async with self.bot.pool.acquire() as conn:
             characters = await conn.fetchval("SELECT COUNT(*) FROM profile;")
             items = await conn.fetchval("SELECT COUNT(*) FROM allitems;")
-            pg_ver = conn.get_server_version()
-        try:
-            pg_minor = getattr(pg_ver, "minor", None)
-            if pg_minor is None:
-                pg_minor = getattr(pg_ver, "micro", 0)
-            pg_version_display = f"{pg_ver.major}.{pg_minor}"
-        except Exception:
-            pg_version_display = _("unknown")
-
-        # --- Bot account age (Discord user creation = approximate "bot exists since") → embed "Total Runtime" ---
+            pg_version = conn.get_server_version()
+        pg_version = f"{pg_version.major}.{pg_version.micro} {pg_version.releaselevel}"
         d0 = self.bot.user.created_at
         d1 = datetime.datetime.now(datetime.timezone.utc)
         delta = d1 - d0
@@ -1730,74 +1723,57 @@ Even $1 can help us.
         uptime_days = delta.days
         uptime_hours = delta.seconds // 3600
         uptime_minutes = (delta.seconds % 3600) // 60
-
-        # --- Library versions for embed (no pkg_resources; avoids setuptools / env breakage) ---
+        
+        # System usage stats
         try:
-            from importlib.metadata import version as importlib_version
-
-            dpy_version = importlib_version("discord.py")
-        except Exception:
-            dpy_version = getattr(discord, "__version__", _("unknown"))
-
-        # --- Host metrics: run psutil in a thread so cpu_percent() does not block the event loop ---
-        def _host_metrics():
             import psutil
-
-            cpu_p = psutil.cpu_percent(interval=0.25)
-            logical = psutil.cpu_count(logical=True) or 0
-            mem = psutil.virtual_memory()
-            boot_ts = psutil.boot_time()
-            return cpu_p, logical, mem.percent, mem.used, mem.total, boot_ts
-
-        cpu_percent = 0.0
-        logical_cpus = 0
-        memory_percent = 0.0
-        memory_used_gb = 0.0
-        memory_total_gb = 0.0
-        system_uptime_days = 0
-        system_uptime_hours = 0
-        system_uptime_minutes = 0
-        try:
-            cpu_percent, logical_cpus, memory_percent, mem_used_b, mem_total_b, boot_ts = (
-                await asyncio.to_thread(_host_metrics)
-            )
-            memory_used_gb = mem_used_b / (1024**3)
-            memory_total_gb = mem_total_b / (1024**3)
-            boot_time = datetime.datetime.fromtimestamp(
-                boot_ts, tz=datetime.timezone.utc
-            )
-            now_utc = datetime.datetime.now(datetime.timezone.utc)
-            system_uptime = now_utc - boot_time
+            cpu_percent = psutil.cpu_percent(interval=1)
+            
+            # Get CPU name
+            try:
+                with open('/proc/cpuinfo', 'r') as f:
+                    cpuinfo = f.read()
+                cpu_model = re.search(r'model name\s+:\s+(.*)', cpuinfo).group(1)
+            except:
+                # Fallback if we can't read cpuinfo
+                cpu_model = "Unknown CPU"
+            
+            memory = psutil.virtual_memory()
+            memory_percent = memory.percent
+            memory_used_gb = memory.used / (1024 ** 3)  # Convert to GB
+            memory_total_gb = memory.total / (1024 ** 3)  # Convert to GB
+            
+            
+            boot_time = datetime.datetime.fromtimestamp(psutil.boot_time())
+            system_uptime = datetime.datetime.now() - boot_time
             system_uptime_days = system_uptime.days
             system_uptime_hours = system_uptime.seconds // 3600
             system_uptime_minutes = (system_uptime.seconds % 3600) // 60
-        except Exception:
-            pass
-
-        # --- Guild count: prefer cross-cluster sum via Sharding + Redis; else this process only ---
-        guild_count = len(self.bot.guilds)
-        sharding = self.bot.cogs.get("Sharding")
-        if sharding is not None:
-            try:
-                expected = max(1, int(getattr(self.bot, "cluster_count", 1) or 1))
-                results = await sharding.handler(
-                    "guild_count", expected, _timeout=5
-                )
-                if results:
-                    guild_count = sum(
-                        int(x) for x in results if isinstance(x, (int, float))
-                    )
-            except Exception:
-                guild_count = len(self.bot.guilds)
-
-        # --- Redis: show major.minor only (less host/stack detail in public embed) ---
-        redis_raw = getattr(self.bot, "redis_version", "") or ""
-        redis_bits = str(redis_raw).strip().split(".")
-        redis_display = (
-            ".".join(redis_bits[:2]) if len(redis_bits) >= 2 else redis_raw or _("unknown")
+        except:
+            # Fallback if psutil fails or is not available
+            cpu_percent = 0
+            cpu_model = "Unknown CPU"
+            memory_percent = 0
+            memory_used_gb = 0
+            memory_total_gb = 0
+            system_uptime_days = 0
+            system_uptime_hours = 0
+            system_uptime_minutes = 0
+            
+        sysinfo = distro.linux_distribution()
+        if self.bot.owner_ids:
+            owner = nice_join(
+                [str(await self.bot.get_user_global(u)) for u in self.bot.owner_ids]
+            )
+        else:
+            owner = str(await self.bot.get_user_global(self.bot.owner_id))
+        guild_count = sum(
+            await self.bot.cogs["Sharding"].handler(
+                "guild_count", self.bot.cluster_count
+            )
         )
+        compiler = re.search(r".*\[(.*)\]", sys.version)[1]
 
-        # --- Build embed: System Resources → Hosting → Bot → Game ---
         embed = discord.Embed(
             title=_("FableRPG Statistics"),
             colour=0xB8BBFF,
@@ -1808,21 +1784,21 @@ Even $1 can help us.
         )
         embed.set_thumbnail(url=self.bot.user.display_avatar.url)
         embed.set_footer(
-            text=f"Fable {self.bot.version}",
+            text=f"Fable {self.bot.version} | By {owner}",
             icon_url=self.bot.user.display_avatar.url,
         )
-
-        # Field 1: VM-visible CPU/RAM usage and OS uptime (no CPU model / kernel strings).
+        
+        # System stats with usage percentages
         embed.add_field(
             name=_("System Resources"),
             value=_(
                 """\
-    Logical CPUs: **{logical_cpus}**
-    CPU Usage: **{cpu_percent:.1f}%**
-    Memory: **{memory_used:.2f} GB / {memory_total:.2f} GB ({memory_percent:.1f}%)**
+    CPU: **{cpu_model}**
+    CPU Usage: **{cpu_percent}%**
+    Memory: **{memory_used:.2f} GB / {memory_total:.2f} GB ({memory_percent}%)**
     System Uptime: **{sys_days}d {sys_hours}h {sys_minutes}m**"""
             ).format(
-                logical_cpus=logical_cpus,
+                cpu_model=cpu_model,
                 cpu_percent=cpu_percent,
                 memory_used=memory_used_gb,
                 memory_total=memory_total_gb,
@@ -1833,28 +1809,33 @@ Even $1 can help us.
             ),
             inline=False,
         )
-
-        # Field 2: Runtime stack summary (Python, discord.py, OS family, DB versions).
+        
+        # Hosting stats
         embed.add_field(
             name=_("Hosting Statistics"),
             value=_(
                 """\
-    Python: **{python}**
-    discord.py: **{dpy}**
-    Platform: **{platform}**
-    PostgreSQL: **{pg_version}**
-    Redis: **{redis_version}**"""
+    Python Version: **{python}** 
+    discord.py Version: **{dpy}**
+    Compiler: **{compiler}**
+    Operating System: **{osname} {osversion}**
+    Kernel Version: **{kernel}**
+    PostgreSQL Version: **{pg_version}**
+    Redis Version: **{redis_version}**"""
             ).format(
                 python=platform.python_version(),
-                dpy=dpy_version,
-                platform=platform.system(),
-                pg_version=pg_version_display,
-                redis_version=redis_display,
+                dpy=pkg.get_distribution("discord.py").version,
+                compiler=compiler,
+                osname=sysinfo[0].title(),
+                osversion=sysinfo[1],
+                kernel=os.uname().release if os.name == "posix" else "NT",
+                pg_version=pg_version,
+                redis_version=self.bot.redis_version,
             ),
             inline=False,
         )
-
-        # Field 3: Process/bot footprint (linecount heuristic, shards, guild aggregate, uptimes).
+        
+        # Bot stats without artificially inflated numbers
         embed.add_field(
             name=_("Bot Statistics"),
             value=_(
@@ -1875,8 +1856,8 @@ Even $1 can help us.
             ),
             inline=False,
         )
-
-        # Field 4: Economy DB aggregates from primary pool.
+        
+        # Game stats without artificially inflated numbers
         embed.add_field(
             name=_("Game Statistics"),
             value=_(
