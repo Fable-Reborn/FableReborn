@@ -2272,6 +2272,39 @@ class GameMaster(commands.Cog):
         except Exception as e:
             await ctx.send(f"An error occurred: {e}")
 
+    @is_gm()
+    @commands.command(name="gmhatchegg", aliases=["gmhatch"], brief=_("Force-hatch a monster egg by ID"))
+    async def gmhatchegg(self, ctx, egg_id: int):
+        """Force-hatch a monster egg by its database ID."""
+        pets_cog = self.bot.get_cog("Pets")
+        if pets_cog is None:
+            await ctx.send("Pets cog is not loaded.")
+            return
+
+        try:
+            async with self.bot.pool.acquire() as conn:
+                hatch_result = await pets_cog.hatch_monster_egg(conn, egg_id)
+
+            if hatch_result is None:
+                await ctx.send(f"No unhatched egg found with ID `{egg_id}`.")
+                return
+
+            try:
+                user = self.bot.get_user(hatch_result["user_id"])
+                if user:
+                    await user.send(
+                        f"Your **Egg** has been force-hatched by a GM into **{hatch_result['pet_name']}**."
+                    )
+            except:
+                pass
+
+            await ctx.send(
+                f"Egg `{egg_id}` hatched successfully for <@{hatch_result['user_id']}>. "
+                f"Created pet ID `{hatch_result['pet_id']}`: **{hatch_result['pet_name']}**."
+            )
+        except Exception as e:
+            await ctx.send(f"An error occurred: {e}")
+
 
     @has_char()
     @is_gm()

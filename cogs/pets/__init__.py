@@ -1298,6 +1298,12 @@ class Pets(commands.Cog):
     PET_LEVEL_MIGRATION_XP_FIX_KEY = "double_pet_levels_to_100_v1_x8_to_x2_fix"
     PET_LEVEL_MIGRATION_SP_BACKFILL_KEY = "double_pet_levels_to_100_sp_backfill_v1"
     PET_SKILL_POINT_RECONCILE_KEY = "pet_skill_points_reconcile_v1"
+    EGG_GROWTH_STAGES = {
+        1: {"stage": "baby", "growth_time": 2, "stat_multiplier": 0.25, "hunger_modifier": 1.0},
+        2: {"stage": "juvenile", "growth_time": 2, "stat_multiplier": 0.50, "hunger_modifier": 0.8},
+        3: {"stage": "young", "growth_time": 1, "stat_multiplier": 0.75, "hunger_modifier": 0.6},
+        4: {"stage": "adult", "growth_time": None, "stat_multiplier": 1.0, "hunger_modifier": 0.0},
+    }
     # Daycare pricing should feel like paid convenience, not a better version of manual care.
     DAYCARE_BASE_SLOT_UPKEEP = 10000
     DAYCARE_PLAY_UPKEEP = 6000
@@ -7105,72 +7111,78 @@ class Pets(commands.Cog):
         except Exception as e:
             print(f"Error in check_pet_growth: {e}")
 
-    @tasks.loop(minutes=1)
-    async def check_egg_hatches(self):
-        # Define the growth stages
-        growth_stages = {
-            1: {"stage": "baby", "growth_time": 2, "stat_multiplier": 0.25, "hunger_modifier": 1.0},
-            2: {"stage": "juvenile", "growth_time": 2, "stat_multiplier": 0.50, "hunger_modifier": 0.8},
-            3: {"stage": "young", "growth_time": 1, "stat_multiplier": 0.75, "hunger_modifier": 0.6},
-            4: {"stage": "adult", "growth_time": None, "stat_multiplier": 1.0, "hunger_modifier": 0.0},
+    async def hatch_monster_egg(self, conn, egg_id: int):
+        async with conn.transaction():
+            egg = await conn.fetchrow(
+                """
+                UPDATE monster_eggs
+                SET hatched = TRUE
+                WHERE id = $1 AND hatched = FALSE
+                RETURNING *;
+                """,
+                egg_id,
+            )
+
+            if egg is None:
+                return None
+
+            baby_stage = self.EGG_GROWTH_STAGES[1]
+            growth_time = datetime.datetime.utcnow() + datetime.timedelta(
+                days=baby_stage["growth_time"]
+            )
+
+            iv_value = egg.get("IV") or egg.get("iv")
+            if iv_value is None:
+                iv_value = 0
+
+            pet_id = await conn.fetchval(
+                """
+                INSERT INTO monster_pets (
+                    user_id, name, default_name, hp, attack, defense, element, url,
+                    growth_stage, growth_index, growth_time, "IV"
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                RETURNING id;
+                """,
+                egg["user_id"],
+                egg["egg_type"],
+                egg["egg_type"],
+                round(egg["hp"] * baby_stage["stat_multiplier"]),
+                round(egg["attack"] * baby_stage["stat_multiplier"]),
+                round(egg["defense"] * baby_stage["stat_multiplier"]),
+                egg["element"],
+                egg["url"],
+                baby_stage["stage"],
+                1,
+                growth_time,
+                iv_value,
+            )
+
+        return {
+            "egg": egg,
+            "pet_id": pet_id,
+            "user_id": egg["user_id"],
+            "pet_name": egg["egg_type"],
         }
 
-
+    @tasks.loop(minutes=1)
+    async def check_egg_hatches(self):
         async with self.bot.pool.acquire() as conn:
             # Fetch eggs that are ready to hatch
             eggs = await conn.fetch(
-                "SELECT * FROM monster_eggs WHERE hatched = FALSE AND hatch_time <= NOW();"
+                "SELECT id FROM monster_eggs WHERE hatched = FALSE AND hatch_time <= NOW();"
             )
             for egg in eggs:
-                # Mark the egg as hatched
-                await conn.execute(
-                    "UPDATE monster_eggs SET hatched = TRUE WHERE id = $1;", egg["id"]
-                )
-
-                # Get the baby stage data
-                baby_stage = growth_stages[1]
-                stat_multiplier = baby_stage["stat_multiplier"]
-                growth_time_interval = datetime.timedelta(days=baby_stage["growth_time"])
-                growth_time = datetime.datetime.utcnow() + growth_time_interval
-
-                # Adjust the stats
-                hp = round(egg["hp"] * stat_multiplier)
-                attack = round(egg["attack"] * stat_multiplier)
-                defense = round(egg["defense"] * stat_multiplier)
-
-                iv_value = egg.get("IV") or egg.get("iv")
-                if iv_value is None:
-                    iv_value = 0  # Set a default value or handle as needed
-
-                # Insert the hatched egg into monster_pets
-                await conn.execute(
-                    """
-                    INSERT INTO monster_pets (
-                        user_id, name, default_name, hp, attack, defense, element, url,
-                        growth_stage, growth_index, growth_time, "IV"
-                    )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
-                    """,
-                    egg["user_id"],
-                    egg["egg_type"],  # Set initial pet name to the default name
-                    egg["egg_type"],  # Store the default species name
-                    hp,
-                    attack,
-                    defense,
-                    egg["element"],
-                    egg["url"],
-                    baby_stage["stage"],  # 'baby'
-                    1,  # growth_index
-                    growth_time,
-                    iv_value,
-                )
+                hatch_result = await self.hatch_monster_egg(conn, egg["id"])
+                if hatch_result is None:
+                    continue
 
                 # Notify the user 
                 try:
-                    user = self.bot.get_user(egg["user_id"])
+                    user = self.bot.get_user(hatch_result["user_id"])
                     if user:
                         await user.send(
-                            f"Your **Egg** has hatched into a pet named **{egg['egg_type']}**! Check your pet menu to see it."
+                            f"Your **Egg** has hatched into a pet named **{hatch_result['pet_name']}**! Check your pet menu to see it."
                         )
                 except:
                     pass
