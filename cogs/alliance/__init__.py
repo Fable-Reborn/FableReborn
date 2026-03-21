@@ -670,11 +670,8 @@ class Alliance(commands.Cog):
         return lost_gold, defending_guild["name"]
 
     @commands.command(name="cities", brief=_("Shows cities and owners."))
-    @locale_doc
     async def show_cities(self, ctx: Context) -> None:
-        _(
-            """Show all cities, their tiers, owners, available buildings and current defense."""
-        )
+
         city_rows = {}
         city_defense_totals = {city_name: 0 for city_name in self.city_configs}
         db_warning = None
