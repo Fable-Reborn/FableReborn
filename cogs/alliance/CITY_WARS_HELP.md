@@ -111,6 +111,7 @@ Defense slots now scale by city tier:
 - Tier `1-2`: `Wall`, `Weapon`, `Utility`
 - Tier `3`: `Wall`, `Weapon`, `Utility`, `Weapon II`
 - Tier `4`: `Wall`, `Weapon`, `Utility`, `Weapon II`, `Utility II`
+- If an `outer wall` is active, one open utility slot may instead hold an `inner wall`
 
 Only one active defense can occupy each slot.
 
@@ -126,6 +127,7 @@ Current defenses:
   - `ballista` - `1,000 HP`, `60 retaliation`, `$100,000`
 - Utility:
   - `moat` - `20,000 HP`, `50 retaliation`, `$150,000`
+  - `inner wall` - `40,000 HP`, `0 retaliation`, `$200,000` when used through the outer-wall utility-slot exception
 
 Live fortification effects:
 
@@ -145,6 +147,7 @@ Notes:
 
 - Cities cannot build or change defenses while under attack.
 - Running `alliance build defense` lets you pick an open slot first, then pick a valid defense for that slot.
+- Once an `outer wall` is built, one utility slot can be used to place an `inner wall` instead of a normal utility defense.
 - `alliance defenses` now shows city tier, slot capacity, occupied defenses, and open defense slots.
 - Legacy stacked defenses from the old system are not part of the new active slot system.
 
