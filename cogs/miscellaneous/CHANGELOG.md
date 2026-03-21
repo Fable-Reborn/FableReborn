@@ -1,6 +1,31 @@
 # Miscellaneous cog changelog
 
-## 2025-03-21 — `$stats` / `stats` command refactor
+All **dates and times are UTC** unless stated otherwise. Use `YYYY-MM-DD` and `HH:MM` (24-hour), or the combined ISO form where noted.
+
+---
+
+## `$stats` user-visible diagnostics & embed hardening
+
+| | |
+|---|---|
+| **Date** | 2025-03-21 |
+| **Time (UTC)** | 23:45 |
+| **ISO** | `2025-03-21T23:45:00Z` |
+
+- Adds an embed field **“Why some data may be missing”** when any subsection uses fallbacks (database error, `psutil` failure, cross-cluster guild count unavailable, invalid `base_url`).
+- Omits embed `url` unless `BASE_URL` is a valid `http://` or `https://` string (avoids Discord rejecting the whole message).
+- On embed send failure, sends a **plain-text** fallback explaining Discord may have rejected the embed, plus any collected notes.
+- On unexpected errors before/during build, sends a **short channel message** and logs the full traceback server-side.
+
+---
+
+## `$stats` / `stats` command refactor
+
+| | |
+|---|---|
+| **Date** | 2025-03-21 |
+| **Time (UTC)** | 16:00 |
+| **ISO** | `2025-03-21T16:00:00Z` |
 
 **Backup:** Full pre-change `__init__.py` is saved as `__init__.py.pre_stats_refactor.bak` (snapshot of the last committed version before this refactor).
 
@@ -27,3 +52,18 @@
 - Removed from this cog (only used by old `stats`): `distro`, `pkg_resources`, `sys`, `nice_join` import tied to stats footer.
 
 Restore the old behaviour by replacing `__init__.py` with `__init__.py.pre_stats_refactor.bak` and re-adding any removed top-level imports if something else in the file still needed them (the backup file is self-contained).
+
+---
+
+## Deployment & troubleshooting (`$stats` / cog reload)
+
+| | |
+|---|---|
+| **Date** | 2025-03-21 |
+| **Time (UTC)** | 22:30 |
+| **ISO** | `2025-03-21T22:30:00Z` |
+
+- **`$unload` / `$load` or `$reload` on `miscellaneous`** is enough to pick up **`stats` code changes** as long as the extension reloads without errors and the process is using the **same on-disk files** you edited.
+- A **full bot restart** is not required for cog-only edits, but it is **reasonable** if you run **multiple clusters or processes**: each instance must load the updated cog (or restart so they all do).
+- If **`$stats` still produces no message**, check the console: the global error handler often **does not reply** for some `CommandInvokeError` cases (it may only log). The **pre-refactor** `stats` could also fail on fragile lines (e.g. `re.search(..., sys.version)[1]` when the pattern did not match, or hard `self.bot.cogs["Sharding"]`), which looked like “nothing happened.”
+- **`CommandNotFound`** is handled with **no user-visible message** anywhere in the bot; if the cog failed to load, the command may not exist and Discord will stay silent.

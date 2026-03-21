@@ -1704,194 +1704,271 @@ Even $1 can help us.
     @commands.hybrid_command(brief=_("Shows statistics about the bot"))
     @locale_doc
     async def stats(self, ctx):
-        # Hybrid command: works as prefix (`$stats`) and slash where synced.
-        # See cogs/miscellaneous/CHANGELOG.md for the 2025-03-21 refactor notes and backup path.
+        # Hybrid: prefix (`$stats`) and slash where synced. See cogs/miscellaneous/CHANGELOG.md.
         _(
             """Show detailed stats about the bot, including hardware usage, software statistics, and in-game metrics."""
         )
-        # --- Database: aggregate game counts + raw Postgres server version (trimmed for display later) ---
-        async with self.bot.pool.acquire() as conn:
-            characters = await conn.fetchval("SELECT COUNT(*) FROM profile;")
-            items = await conn.fetchval("SELECT COUNT(*) FROM allitems;")
-            pg_ver = conn.get_server_version()
+        notes: list[str] = []
+
         try:
-            pg_minor = getattr(pg_ver, "minor", None)
-            if pg_minor is None:
-                pg_minor = getattr(pg_ver, "micro", 0)
-            pg_version_display = f"{pg_ver.major}.{pg_minor}"
-        except Exception:
+            # --- DB: character/item counts + Postgres version (trimmed for display) ---
+            characters = 0
+            items = 0
             pg_version_display = _("unknown")
-
-        # --- Bot account age (Discord user creation = approximate "bot exists since") → embed "Total Runtime" ---
-        d0 = self.bot.user.created_at
-        d1 = datetime.datetime.now(datetime.timezone.utc)
-        delta = d1 - d0
-        myhours = delta.days * 24  # Convert days to hours (accurate)
-        uptime_days = delta.days
-        uptime_hours = delta.seconds // 3600
-        uptime_minutes = (delta.seconds % 3600) // 60
-
-        # --- Library versions for embed (no pkg_resources; avoids setuptools / env breakage) ---
-        try:
-            from importlib.metadata import version as importlib_version
-
-            dpy_version = importlib_version("discord.py")
-        except Exception:
-            dpy_version = getattr(discord, "__version__", _("unknown"))
-
-        # --- Host metrics: run psutil in a thread so cpu_percent() does not block the event loop ---
-        def _host_metrics():
-            import psutil
-
-            cpu_p = psutil.cpu_percent(interval=0.25)
-            logical = psutil.cpu_count(logical=True) or 0
-            mem = psutil.virtual_memory()
-            boot_ts = psutil.boot_time()
-            return cpu_p, logical, mem.percent, mem.used, mem.total, boot_ts
-
-        cpu_percent = 0.0
-        logical_cpus = 0
-        memory_percent = 0.0
-        memory_used_gb = 0.0
-        memory_total_gb = 0.0
-        system_uptime_days = 0
-        system_uptime_hours = 0
-        system_uptime_minutes = 0
-        try:
-            cpu_percent, logical_cpus, memory_percent, mem_used_b, mem_total_b, boot_ts = (
-                await asyncio.to_thread(_host_metrics)
-            )
-            memory_used_gb = mem_used_b / (1024**3)
-            memory_total_gb = mem_total_b / (1024**3)
-            boot_time = datetime.datetime.fromtimestamp(
-                boot_ts, tz=datetime.timezone.utc
-            )
-            now_utc = datetime.datetime.now(datetime.timezone.utc)
-            system_uptime = now_utc - boot_time
-            system_uptime_days = system_uptime.days
-            system_uptime_hours = system_uptime.seconds // 3600
-            system_uptime_minutes = (system_uptime.seconds % 3600) // 60
-        except Exception:
-            pass
-
-        # --- Guild count: prefer cross-cluster sum via Sharding + Redis; else this process only ---
-        guild_count = len(self.bot.guilds)
-        sharding = self.bot.cogs.get("Sharding")
-        if sharding is not None:
             try:
-                expected = max(1, int(getattr(self.bot, "cluster_count", 1) or 1))
-                results = await sharding.handler(
-                    "guild_count", expected, _timeout=5
-                )
-                if results:
-                    guild_count = sum(
-                        int(x) for x in results if isinstance(x, (int, float))
-                    )
+                async with self.bot.pool.acquire() as conn:
+                    characters = await conn.fetchval("SELECT COUNT(*) FROM profile;")
+                    items = await conn.fetchval("SELECT COUNT(*) FROM allitems;")
+                    pg_ver = conn.get_server_version()
+                try:
+                    pg_minor = getattr(pg_ver, "minor", None)
+                    if pg_minor is None:
+                        pg_minor = getattr(pg_ver, "micro", 0)
+                    pg_version_display = f"{pg_ver.major}.{pg_minor}"
+                except Exception:
+                    pg_version_display = _("unknown")
             except Exception:
-                guild_count = len(self.bot.guilds)
+                self.bot.logger.exception("stats: database section failed")
+                notes.append(
+                    _(
+                        "Game statistics (characters/items) and live Postgres version could not be loaded—database error or timeout."
+                    )
+                )
 
-        # --- Redis: show major.minor only (less host/stack detail in public embed) ---
-        redis_raw = getattr(self.bot, "redis_version", "") or ""
-        redis_bits = str(redis_raw).strip().split(".")
-        redis_display = (
-            ".".join(redis_bits[:2]) if len(redis_bits) >= 2 else redis_raw or _("unknown")
-        )
+            # --- Bot user creation time → "Total Runtime" / uptime fields ---
+            d0 = self.bot.user.created_at
+            d1 = datetime.datetime.now(datetime.timezone.utc)
+            delta = d1 - d0
+            myhours = delta.days * 24  # Convert days to hours (accurate)
+            uptime_days = delta.days
+            uptime_hours = delta.seconds // 3600
+            uptime_minutes = (delta.seconds % 3600) // 60
 
-        # --- Build embed: System Resources → Hosting → Bot → Game ---
-        embed = discord.Embed(
-            title=_("FableRPG Statistics"),
-            colour=0xB8BBFF,
-            url=self.bot.BASE_URL,
-            description=_(
-                "Official Support Server Invite: https://discord.com/fablerpg"
-            ),
-        )
-        embed.set_thumbnail(url=self.bot.user.display_avatar.url)
-        embed.set_footer(
-            text=f"Fable {self.bot.version}",
-            icon_url=self.bot.user.display_avatar.url,
-        )
+            # --- discord.py version (avoid pkg_resources / setuptools breakage) ---
+            try:
+                from importlib.metadata import version as importlib_version
 
-        # Field 1: VM-visible CPU/RAM usage and OS uptime (no CPU model / kernel strings).
-        embed.add_field(
-            name=_("System Resources"),
-            value=_(
-                """\
+                dpy_version = importlib_version("discord.py")
+            except Exception:
+                dpy_version = getattr(discord, "__version__", _("unknown"))
+
+            # --- Host: psutil in a worker thread so cpu_percent does not block the event loop ---
+            def _host_metrics():
+                import psutil
+
+                cpu_p = psutil.cpu_percent(interval=0.25)
+                logical = psutil.cpu_count(logical=True) or 0
+                mem = psutil.virtual_memory()
+                boot_ts = psutil.boot_time()
+                return cpu_p, logical, mem.percent, mem.used, mem.total, boot_ts
+
+            cpu_percent = 0.0
+            logical_cpus = 0
+            memory_percent = 0.0
+            memory_used_gb = 0.0
+            memory_total_gb = 0.0
+            system_uptime_days = 0
+            system_uptime_hours = 0
+            system_uptime_minutes = 0
+            try:
+                (
+                    cpu_percent,
+                    logical_cpus,
+                    memory_percent,
+                    mem_used_b,
+                    mem_total_b,
+                    boot_ts,
+                ) = await asyncio.to_thread(_host_metrics)
+                memory_used_gb = mem_used_b / (1024**3)
+                memory_total_gb = mem_total_b / (1024**3)
+                boot_time = datetime.datetime.fromtimestamp(
+                    boot_ts, tz=datetime.timezone.utc
+                )
+                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                system_uptime = now_utc - boot_time
+                system_uptime_days = system_uptime.days
+                system_uptime_hours = system_uptime.seconds // 3600
+                system_uptime_minutes = (system_uptime.seconds % 3600) // 60
+            except Exception:
+                self.bot.logger.exception("stats: host metrics (psutil) failed")
+                notes.append(
+                    _(
+                        "Host CPU/memory/uptime are shown as zero—`psutil` failed, was blocked, or this environment hides host stats."
+                    )
+                )
+
+            # --- Guild count: cross-cluster via Sharding + Redis, else this process only ---
+            guild_count = len(self.bot.guilds)
+            guild_cluster_ok = False
+            sharding = self.bot.cogs.get("Sharding")
+            if sharding is not None:
+                try:
+                    expected = max(1, int(getattr(self.bot, "cluster_count", 1) or 1))
+                    results = await sharding.handler(
+                        "guild_count", expected, _timeout=5
+                    )
+                    if results:
+                        guild_count = sum(
+                            int(x) for x in results if isinstance(x, (int, float))
+                        )
+                        guild_cluster_ok = True
+                except Exception:
+                    self.bot.logger.exception("stats: Sharding guild_count failed")
+                    guild_count = len(self.bot.guilds)
+                if not guild_cluster_ok:
+                    notes.append(
+                        _(
+                            "Server count is only for this bot process; cross-cluster total failed, timed out, or returned no data (check Sharding cog and Redis)."
+                        )
+                    )
+
+            # --- Redis: show major.minor only in public embed ---
+            redis_raw = getattr(self.bot, "redis_version", "") or ""
+            redis_bits = str(redis_raw).strip().split(".")
+            redis_display = (
+                ".".join(redis_bits[:2])
+                if len(redis_bits) >= 2
+                else redis_raw or _("unknown")
+            )
+
+            # Invalid embed URLs cause Discord to reject the message with no obvious in-channel reason.
+            base_url = getattr(self.bot, "BASE_URL", None)
+            base_url_s = base_url.strip() if isinstance(base_url, str) else ""
+            embed_url = (
+                base_url_s
+                if base_url_s.startswith(("http://", "https://"))
+                else None
+            )
+            if base_url_s and embed_url is None:
+                notes.append(
+                    _(
+                        "Embed link omitted—`base_url` in config is not a valid http(s) URL (Discord rejects invalid embed URLs)."
+                    )
+                )
+
+            # --- Embed sections: system → hosting → bot → game ---
+            embed = discord.Embed(
+                title=_("FableRPG Statistics"),
+                colour=0xB8BBFF,
+                url=embed_url,
+                description=_(
+                    "Official Support Server Invite: https://discord.com/fablerpg"
+                ),
+            )
+            embed.set_thumbnail(url=self.bot.user.display_avatar.url)
+            embed.set_footer(
+                text=f"Fable {self.bot.version}",
+                icon_url=self.bot.user.display_avatar.url,
+            )
+
+            embed.add_field(
+                name=_("System Resources"),
+                value=_(
+                    """\
     Logical CPUs: **{logical_cpus}**
     CPU Usage: **{cpu_percent:.1f}%**
     Memory: **{memory_used:.2f} GB / {memory_total:.2f} GB ({memory_percent:.1f}%)**
     System Uptime: **{sys_days}d {sys_hours}h {sys_minutes}m**"""
-            ).format(
-                logical_cpus=logical_cpus,
-                cpu_percent=cpu_percent,
-                memory_used=memory_used_gb,
-                memory_total=memory_total_gb,
-                memory_percent=memory_percent,
-                sys_days=system_uptime_days,
-                sys_hours=system_uptime_hours,
-                sys_minutes=system_uptime_minutes,
-            ),
-            inline=False,
-        )
+                ).format(
+                    logical_cpus=logical_cpus,
+                    cpu_percent=cpu_percent,
+                    memory_used=memory_used_gb,
+                    memory_total=memory_total_gb,
+                    memory_percent=memory_percent,
+                    sys_days=system_uptime_days,
+                    sys_hours=system_uptime_hours,
+                    sys_minutes=system_uptime_minutes,
+                ),
+                inline=False,
+            )
 
-        # Field 2: Runtime stack summary (Python, discord.py, OS family, DB versions).
-        embed.add_field(
-            name=_("Hosting Statistics"),
-            value=_(
-                """\
+            embed.add_field(
+                name=_("Hosting Statistics"),
+                value=_(
+                    """\
     Python: **{python}**
     discord.py: **{dpy}**
     Platform: **{platform}**
     PostgreSQL: **{pg_version}**
     Redis: **{redis_version}**"""
-            ).format(
-                python=platform.python_version(),
-                dpy=dpy_version,
-                platform=platform.system(),
-                pg_version=pg_version_display,
-                redis_version=redis_display,
-            ),
-            inline=False,
-        )
+                ).format(
+                    python=platform.python_version(),
+                    dpy=dpy_version,
+                    platform=platform.system(),
+                    pg_version=pg_version_display,
+                    redis_version=redis_display,
+                ),
+                inline=False,
+            )
 
-        # Field 3: Process/bot footprint (linecount heuristic, shards, guild aggregate, uptimes).
-        embed.add_field(
-            name=_("Bot Statistics"),
-            value=_(
-                """\
+            embed.add_field(
+                name=_("Bot Statistics"),
+                value=_(
+                    """\
     Code Lines: **{lines:,}**
     Shards: **{shards}**
     Servers: **{guild_count:,}**
     Bot Uptime: **{bot_days}d {bot_hours}h {bot_minutes}m**
     Total Runtime: **{total_hours:,} hours**"""
-            ).format(
-                lines=self.bot.linecount,
-                shards=self.bot.shard_count,
-                guild_count=guild_count,  # Removed artificial inflation
-                bot_days=uptime_days,
-                bot_hours=uptime_hours,
-                bot_minutes=uptime_minutes,
-                total_hours=int(myhours),
-            ),
-            inline=False,
-        )
+                ).format(
+                    lines=self.bot.linecount,
+                    shards=self.bot.shard_count,
+                    guild_count=guild_count,
+                    bot_days=uptime_days,
+                    bot_hours=uptime_hours,
+                    bot_minutes=uptime_minutes,
+                    total_hours=int(myhours),
+                ),
+                inline=False,
+            )
 
-        # Field 4: Economy DB aggregates from primary pool.
-        embed.add_field(
-            name=_("Game Statistics"),
-            value=_(
-                """\
+            embed.add_field(
+                name=_("Game Statistics"),
+                value=_(
+                    """\
     Characters: **{characters:,}**
     Items: **{items:,}**
     Items per Character: **{items_per_char:.2f}**"""
-            ).format(
-                characters=characters,  # Removed artificial inflation
-                items=items,  # Removed artificial inflation
-                items_per_char=(items / characters) if characters > 0 else 0,
-            ),
-            inline=False,
-        )
-        await ctx.send(embed=embed)
+                ).format(
+                    characters=characters,
+                    items=items,
+                    items_per_char=(items / characters) if characters > 0 else 0,
+                ),
+                inline=False,
+            )
+
+            if notes:
+                body = "\n".join(f"• {line}" for line in notes)
+                if len(body) > 1024:
+                    body = body[:1021] + "…"
+                embed.add_field(
+                    name=_("Why some data may be missing"),
+                    value=body,
+                    inline=False,
+                )
+
+            try:
+                await ctx.send(embed=embed)
+            except discord.HTTPException:
+                self.bot.logger.exception("stats: ctx.send(embed=) failed")
+                fallback = _(
+                    "Could not send the stats **embed** (Discord rejected it—permissions, size, or invalid media in the embed). Summary:\n{summary}"
+                ).format(
+                    summary="\n".join(f"• {line}" for line in notes)
+                    if notes
+                    else _("No extra diagnostics were recorded.")
+                )
+                await ctx.send(fallback[:2000])
+        except discord.HTTPException:
+            raise
+        except Exception:
+            self.bot.logger.exception("stats command failed")
+            await ctx.send(
+                _(
+                    "Stats could not be generated. Check the bot process logs for the full error. "
+                    "Typical causes: database down, cog misconfiguration, or missing channel permissions to send messages/embeds."
+                )
+            )
 
 
     @commands.hybrid_command(brief=_("View the uptime"))
