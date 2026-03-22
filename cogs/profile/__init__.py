@@ -2776,7 +2776,6 @@ class Profile(commands.Cog):
                     value=f"Quantity: {quantity}\n15% chance for [FINAL] result on next splice (`$consume splicefinal`)",
                     inline=False
                 )
-
         result.set_footer(
             text=_("Page {page} of {maxpages}").format(
                 page=current_page + 1, maxpages=max_page + 1

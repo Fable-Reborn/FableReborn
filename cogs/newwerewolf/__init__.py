@@ -37,6 +37,9 @@ from .core import Game
 from .core import Role as ROLES
 from .core import Side as WW_SIDE
 from .core import parse_custom_roles
+from .core import role_from_talisman_consumable_type
+from .core import talisman_base_role
+from .core import talisman_related_roles
 from .core import role_level_from_xp
 from .core import send_traceback
 from .core import unavailable_roles_for_mode
@@ -81,6 +84,7 @@ class WerewolfLobbyJoinView(JoinView):
 
 class NewWerewolf(commands.Cog):
     JUNIOR_WEREWOLF_BADGE_BIT: int = 512
+    MAX_ACTIVE_TALISMANS: int = 3
     TUTORIAL_TRACK_COLUMNS: dict[str, str] = {
         "village": "village_completed",
         "werewolf": "werewolf_completed",
@@ -151,6 +155,65 @@ class NewWerewolf(commands.Cog):
                     WHERE completed_all_at IS NOT NULL;
                     """
                 )
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS newwerewolf_talisman_loadout (
+                        user_id bigint NOT NULL,
+                        role_name text NOT NULL,
+                        updated_at timestamp with time zone NOT NULL DEFAULT now()
+                    );
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS newwerewolf_talisman_loadout_pk
+                    ON newwerewolf_talisman_loadout (user_id, role_name);
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS newwerewolf_talisman_loadout_user_idx
+                    ON newwerewolf_talisman_loadout (user_id);
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS newwerewolf_talisman_inventory (
+                        user_id bigint NOT NULL,
+                        role_name text NOT NULL,
+                        quantity integer NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+                        updated_at timestamp with time zone NOT NULL DEFAULT now(),
+                        CONSTRAINT newwerewolf_talisman_inventory_pk PRIMARY KEY (user_id, role_name)
+                    );
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS newwerewolf_talisman_inventory_user_idx
+                    ON newwerewolf_talisman_inventory (user_id);
+                    """
+                )
+                await conn.execute(
+                    """
+                    DO $$
+                    BEGIN
+                        IF EXISTS (
+                            SELECT 1
+                            FROM information_schema.tables
+                            WHERE table_schema = current_schema()
+                              AND table_name = 'newwerewolf_talisman_preference'
+                        ) THEN
+                            INSERT INTO newwerewolf_talisman_loadout (user_id, role_name, updated_at)
+                            SELECT user_id, role_name, updated_at
+                            FROM newwerewolf_talisman_preference
+                            ON CONFLICT (user_id, role_name) DO NOTHING;
+                        END IF;
+                    END $$;
+                    """
+                )
+                await self._migrate_legacy_talisman_inventory(conn)
+                await self._normalize_talisman_inventory_table(conn)
+                await self._normalize_talisman_loadout_table(conn)
             self._role_xp_tables_ready = True
 
     async def _fetch_tutorial_completion_row(self, user_id: int) -> dict[str, object]:
@@ -648,6 +711,283 @@ class NewWerewolf(commands.Cog):
                 continue
             xp_map[role_name] = xp_value
         return xp_map
+
+    async def _fetch_user_talisman_inventory(self, user_id: int) -> dict[ROLES, int]:
+        if not hasattr(self.bot, "pool"):
+            return {}
+        try:
+            await self._ensure_role_xp_tables()
+        except Exception:
+            pass
+        try:
+            async with self.bot.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT role_name, quantity
+                    FROM newwerewolf_talisman_inventory
+                    WHERE user_id = $1
+                      AND quantity > 0
+                    ORDER BY role_name ASC
+                    """,
+                    user_id,
+                )
+        except Exception:
+            return {}
+
+        inventory: dict[ROLES, int] = {}
+        for row in rows:
+            role = self._parse_stored_talisman_role_name(str(row["role_name"]))
+            if role is None:
+                continue
+            try:
+                quantity = max(0, int(row["quantity"] or 0))
+            except (TypeError, ValueError):
+                continue
+            if quantity > 0:
+                inventory[role] = quantity
+        return inventory
+
+    async def _fetch_user_equipped_talisman_roles(self, user_id: int) -> list[ROLES]:
+        if not hasattr(self.bot, "pool"):
+            return []
+        try:
+            await self._ensure_role_xp_tables()
+        except Exception:
+            pass
+        try:
+            async with self.bot.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT role_name
+                    FROM newwerewolf_talisman_loadout
+                    WHERE user_id = $1
+                    ORDER BY updated_at ASC, role_name ASC
+                    """,
+                    user_id,
+                )
+        except Exception:
+            return []
+
+        equipped_roles: list[ROLES] = []
+        for row in rows:
+            role = self._parse_stored_talisman_role_name(str(row["role_name"]))
+            if role is None:
+                continue
+            if role not in equipped_roles:
+                equipped_roles.append(role)
+        return equipped_roles
+
+    async def _equip_user_talisman_role(self, user_id: int, role: ROLES) -> None:
+        if not hasattr(self.bot, "pool"):
+            return
+        await self._ensure_role_xp_tables()
+        async with self.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    DELETE FROM newwerewolf_talisman_loadout
+                    WHERE user_id = $1
+                      AND role_name = ANY($2::text[])
+                    """,
+                    user_id,
+                    [related_role.name.casefold() for related_role in talisman_related_roles(role)],
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO newwerewolf_talisman_loadout (user_id, role_name, updated_at)
+                    VALUES ($1, $2, now())
+                    ON CONFLICT (user_id, role_name)
+                    DO UPDATE SET
+                        updated_at = now()
+                    """,
+                    user_id,
+                    role.name.casefold(),
+                )
+
+    async def _unequip_user_talisman_role(self, user_id: int, role: ROLES) -> None:
+        if not hasattr(self.bot, "pool"):
+            return
+        await self._ensure_role_xp_tables()
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """
+                DELETE FROM newwerewolf_talisman_loadout
+                WHERE user_id = $1
+                  AND role_name = ANY($2::text[])
+                """,
+                user_id,
+                [related_role.name.casefold() for related_role in talisman_related_roles(role)],
+            )
+
+    async def _clear_user_active_talisman_roles(self, user_id: int) -> None:
+        if not hasattr(self.bot, "pool"):
+            return
+        await self._ensure_role_xp_tables()
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """
+                DELETE FROM newwerewolf_talisman_loadout
+                WHERE user_id = $1
+                """,
+                user_id,
+            )
+
+    @staticmethod
+    def _parse_stored_talisman_role_name(raw_role_name: str) -> ROLES | None:
+        parsed_roles, invalid_tokens = parse_custom_roles(str(raw_role_name))
+        if invalid_tokens or len(parsed_roles) != 1:
+            return None
+        return talisman_base_role(parsed_roles[0])
+
+    async def _migrate_legacy_talisman_inventory(self, conn) -> None:
+        rows = await conn.fetch(
+            """
+            SELECT user_id, consumable_type, quantity
+            FROM user_consumables
+            WHERE consumable_type LIKE 'newwerewolf_talisman_%'
+            """
+        )
+        if not rows:
+            return
+
+        aggregated: dict[tuple[int, str], int] = {}
+        for row in rows:
+            role = talisman_base_role(
+                role_from_talisman_consumable_type(str(row["consumable_type"]))
+            )
+            if role is None:
+                continue
+            try:
+                quantity = max(0, int(row["quantity"] or 0))
+            except (TypeError, ValueError):
+                continue
+            if quantity <= 0:
+                continue
+            key = (int(row["user_id"]), role.name.casefold())
+            aggregated[key] = aggregated.get(key, 0) + quantity
+
+        if aggregated:
+            await conn.executemany(
+                """
+                INSERT INTO newwerewolf_talisman_inventory (user_id, role_name, quantity, updated_at)
+                VALUES ($1, $2, $3, now())
+                ON CONFLICT (user_id, role_name)
+                DO UPDATE SET
+                    quantity = newwerewolf_talisman_inventory.quantity + EXCLUDED.quantity,
+                    updated_at = now()
+                """,
+                [
+                    (user_id, role_name, quantity)
+                    for (user_id, role_name), quantity in aggregated.items()
+                ],
+            )
+
+        await conn.execute(
+            """
+            DELETE FROM user_consumables
+            WHERE consumable_type LIKE 'newwerewolf_talisman_%'
+            """
+        )
+
+    async def _normalize_talisman_inventory_table(self, conn) -> None:
+        rows = await conn.fetch(
+            """
+            SELECT user_id, role_name, quantity, updated_at
+            FROM newwerewolf_talisman_inventory
+            """
+        )
+
+        normalized_rows: dict[tuple[int, str], dict[str, object]] = {}
+        for row in rows:
+            role = self._parse_stored_talisman_role_name(str(row["role_name"]))
+            if role is None:
+                continue
+            try:
+                quantity = max(0, int(row["quantity"] or 0))
+            except (TypeError, ValueError):
+                continue
+            if quantity <= 0:
+                continue
+            key = (int(row["user_id"]), role.name.casefold())
+            normalized_row = normalized_rows.setdefault(
+                key,
+                {
+                    "quantity": 0,
+                    "updated_at": row["updated_at"] or discord.utils.utcnow(),
+                },
+            )
+            normalized_row["quantity"] = int(normalized_row["quantity"]) + quantity
+            if row["updated_at"] and (
+                normalized_row["updated_at"] is None
+                or row["updated_at"] > normalized_row["updated_at"]
+            ):
+                normalized_row["updated_at"] = row["updated_at"]
+
+        await conn.execute("DELETE FROM newwerewolf_talisman_inventory")
+        if normalized_rows:
+            await conn.executemany(
+                """
+                INSERT INTO newwerewolf_talisman_inventory (user_id, role_name, quantity, updated_at)
+                VALUES ($1, $2, $3, $4)
+                """,
+                [
+                    (
+                        user_id,
+                        role_name,
+                        int(values["quantity"]),
+                        values["updated_at"],
+                    )
+                    for (user_id, role_name), values in normalized_rows.items()
+                ],
+            )
+
+    async def _normalize_talisman_loadout_table(self, conn) -> None:
+        inventory_rows = await conn.fetch(
+            """
+            SELECT user_id, role_name
+            FROM newwerewolf_talisman_inventory
+            WHERE quantity > 0
+            """
+        )
+        available_pairs = {
+            (int(row["user_id"]), str(row["role_name"]).strip().casefold())
+            for row in inventory_rows
+        }
+
+        rows = await conn.fetch(
+            """
+            SELECT user_id, role_name, updated_at
+            FROM newwerewolf_talisman_loadout
+            """
+        )
+
+        normalized_rows: dict[tuple[int, str], object] = {}
+        for row in rows:
+            role = self._parse_stored_talisman_role_name(str(row["role_name"]))
+            if role is None:
+                continue
+            key = (int(row["user_id"]), role.name.casefold())
+            if key not in available_pairs:
+                continue
+            existing_updated_at = normalized_rows.get(key)
+            row_updated_at = row["updated_at"] or discord.utils.utcnow()
+            if existing_updated_at is None or (
+                row_updated_at and row_updated_at > existing_updated_at
+            ):
+                normalized_rows[key] = row_updated_at
+
+        await conn.execute("DELETE FROM newwerewolf_talisman_loadout")
+        if normalized_rows:
+            await conn.executemany(
+                """
+                INSERT INTO newwerewolf_talisman_loadout (user_id, role_name, updated_at)
+                VALUES ($1, $2, $3)
+                """,
+                [
+                    (user_id, role_name, updated_at)
+                    for (user_id, role_name), updated_at in normalized_rows.items()
+                ],
+            )
 
     @staticmethod
     def _chunk_lines(lines: list[str], *, max_chars: int = 3800) -> list[str]:
@@ -3911,6 +4251,185 @@ class NewWerewolf(commands.Cog):
         )
 
     @newwerewolf.command(
+        name="talismans",
+        aliases=["tal", "talisman"],
+        brief=_("View or manage your NewWerewolf talisman inventory"),
+    )
+    @locale_doc
+    async def talisman(self, ctx, *, role: str = None):
+        _(
+            """View or manage your NewWerewolf talisman inventory and loadout.
+
+            `{prefix}nww talismans`
+            `{prefix}nww talismans werewolf`
+            `{prefix}nww talismans unequip seer`
+            `{prefix}nww talismans off`
+
+            You can equip up to 3 different talismans at once.
+            Talismans only exist for basic roles. If that base role later gives you
+            an advanced role choice, the talisman still counts and is consumed."""
+        )
+        if not hasattr(self.bot, "pool"):
+            return await ctx.send(
+                _("Talisman preferences are unavailable right now (no database connection).")
+            )
+
+        if role is None:
+            inventory = await self._fetch_user_talisman_inventory(ctx.author.id)
+            equipped_roles = await self._fetch_user_equipped_talisman_roles(ctx.author.id)
+            if not inventory and not equipped_roles:
+                return await ctx.send(
+                    _(
+                        "You do not own any NewWerewolf talismans yet."
+                    )
+                )
+
+            embed = discord.Embed(
+                title=_("NewWerewolf Talismans"),
+                colour=self.bot.config.game.primary_colour,
+            ).set_author(name=str(ctx.author), icon_url=ctx.author.display_avatar.url)
+
+            if equipped_roles:
+                equipped_lines = []
+                for equipped_role in equipped_roles:
+                    line = _("• {role}").format(
+                        role=self._role_display_name(equipped_role)
+                    )
+                    quantity = inventory.get(equipped_role, 0)
+                    if quantity > 0:
+                        line += _(" x{quantity}").format(quantity=quantity)
+                    else:
+                        line += _(" (no copies currently owned)")
+                    equipped_lines.append(line)
+                active_value = "\n".join(equipped_lines)
+            else:
+                active_value = _("None equipped. You can equip up to {count}.").format(
+                    count=self.MAX_ACTIVE_TALISMANS
+                )
+            embed.add_field(name=_("Equipped"), value=active_value, inline=False)
+
+            if inventory:
+                owned_lines = []
+                for owned_role in sorted(
+                    inventory.keys(),
+                    key=lambda role_obj: self._role_display_name(role_obj).lower(),
+                ):
+                    line = _("{role} x{quantity}").format(
+                        role=self._role_display_name(owned_role),
+                        quantity=inventory[owned_role],
+                    )
+                    if owned_role in equipped_roles:
+                        line += _(" [equipped]")
+                    owned_lines.append(f"• {line}")
+                owned_value = "\n".join(owned_lines)
+            else:
+                owned_value = _("No talismans currently owned.")
+            embed.add_field(name=_("Owned"), value=owned_value, inline=False)
+            embed.description = _(
+                "Each equipped talisman gives its basic role 50% more roll weight"
+                " than a player without it. If several players equip the same role,"
+                " they split that boosted chance evenly. Talismans do not exist for"
+                " advanced roles. Up to {count} different talismans can be equipped."
+            ).format(count=self.MAX_ACTIVE_TALISMANS)
+            embed.set_footer(
+                text=_(
+                    "Use `{prefix}nww talismans <role>` to equip, `{prefix}nww"
+                    " talismans unequip <role>` to remove one, or `{prefix}nww"
+                    " talismans off` to clear all."
+                ).format(prefix=ctx.clean_prefix)
+            )
+            return await ctx.send(embed=embed)
+
+        normalized = " ".join(str(role).strip().casefold().split())
+        if normalized in {"off", "none", "clear", "clear all", "disable all"}:
+            await self._clear_user_active_talisman_roles(ctx.author.id)
+            return await ctx.send(_("Your equipped NewWerewolf talismans have been cleared."))
+
+        action = "equip"
+        role_text = role
+        for prefix in ("unequip ", "remove ", "disable ", "off "):
+            if normalized.startswith(prefix):
+                action = "unequip"
+                role_text = role[len(prefix):].strip()
+                break
+
+        parsed_roles, invalid_tokens = parse_custom_roles(role_text)
+        if invalid_tokens or not parsed_roles:
+            return await ctx.send(
+                _(
+                    "I couldn't recognize that role. Use `{prefix}nww roles` to"
+                    " see valid names."
+                ).format(prefix=ctx.clean_prefix)
+            )
+        if len(parsed_roles) != 1:
+            return await ctx.send(_("Please specify exactly one role."))
+
+        chosen_role = talisman_base_role(parsed_roles[0])
+        if chosen_role is None:
+            return await ctx.send(_("I couldn't recognize that role."))
+        inventory = await self._fetch_user_talisman_inventory(ctx.author.id)
+        equipped_roles = await self._fetch_user_equipped_talisman_roles(ctx.author.id)
+        equipped_active_roles = [
+            equipped_role
+            for equipped_role in equipped_roles
+            if inventory.get(equipped_role, 0) > 0
+        ]
+
+        if action == "unequip":
+            if chosen_role not in equipped_roles:
+                return await ctx.send(
+                    _(
+                        "**{role}** is not currently equipped."
+                    ).format(role=self._role_display_name(chosen_role))
+                )
+            await self._unequip_user_talisman_role(ctx.author.id, chosen_role)
+            return await ctx.send(
+                _(
+                    "Unequipped **{role}**. You now have **{count}/{max_count}**"
+                    " talisman slots in use."
+                ).format(
+                    role=self._role_display_name(chosen_role),
+                    count=max(0, len(equipped_active_roles) - (1 if inventory.get(chosen_role, 0) > 0 else 0)),
+                    max_count=self.MAX_ACTIVE_TALISMANS,
+                )
+            )
+
+        quantity = inventory.get(chosen_role, 0)
+        if quantity <= 0:
+            return await ctx.send(
+                _(
+                    "You do not own a **{role}** talisman."
+                ).format(role=self._role_display_name(chosen_role))
+            )
+        if chosen_role in equipped_roles:
+            return await ctx.send(
+                _(
+                    "**{role}** is already equipped."
+                ).format(role=self._role_display_name(chosen_role))
+            )
+        if len(equipped_active_roles) >= self.MAX_ACTIVE_TALISMANS:
+            return await ctx.send(
+                _(
+                    "You can only equip **{max_count}** different talismans at once."
+                    " Unequip one first."
+                ).format(max_count=self.MAX_ACTIVE_TALISMANS)
+            )
+
+        await self._equip_user_talisman_role(ctx.author.id, chosen_role)
+        return await ctx.send(
+            _(
+                "Equipped **{role}**. You now have **{count}/{max_count}**"
+                " talisman slots in use. This talisman gives that base role a"
+                " 50% bonus chance and is consumed if you receive that base role,"
+                " even if you switch into an advanced version afterward."
+            ).format(
+                role=self._role_display_name(chosen_role),
+                count=len(equipped_active_roles) + 1,
+                max_count=self.MAX_ACTIVE_TALISMANS,
+            )
+        )
+
+    @newwerewolf.command(
         name="progress",
         aliases=["xp", "levels"],
         brief=_("View role XP and advanced unlock progress"),
@@ -4230,4 +4749,9 @@ class NewWerewolf(commands.Cog):
 
 
 async def setup(bot):
-    await bot.add_cog(NewWerewolf(bot))
+    cog = NewWerewolf(bot)
+    await bot.add_cog(cog)
+    try:
+        await cog._ensure_role_xp_tables()
+    except Exception:
+        pass

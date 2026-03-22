@@ -42,6 +42,10 @@ import json
 from classes.converters import CrateRarity, IntFromTo, IntGreaterThan, UserWithCharacter
 from classes.items import ItemType
 from cogs.battles.extensions.elements import ElementExtension
+from cogs.newwerewolf.core import all_talisman_roles
+from cogs.newwerewolf.core import parse_custom_roles
+from cogs.newwerewolf.core import Role as NewWerewolfRole
+from cogs.newwerewolf.core import talisman_base_role
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils import random
 from utils.checks import has_char, is_gm
@@ -216,6 +220,211 @@ class GameMaster(commands.Cog):
         if not alias:
             return ""
         return " ".join(alias.lower().replace("_", " ").replace("-", " ").split())
+
+    def _resolve_gm_consumable_item(self, item: str) -> dict[str, object] | None:
+        normalized_item = self._normalize_consumable_alias(item)
+        if not normalized_item:
+            return None
+
+        item_data = self.GM_CONSUMABLE_ALIASES.get(normalized_item)
+        if item_data:
+            return {"grant_type": "consumable", **item_data}
+
+        role_part = None
+        for prefix in (
+            "newwerewolf talisman ",
+            "newwerewolf talismans ",
+            "nww talisman ",
+            "nww talismans ",
+        ):
+            if normalized_item.startswith(prefix):
+                role_part = normalized_item[len(prefix):].strip()
+                break
+        if role_part is None and normalized_item.endswith(" talisman"):
+            role_part = normalized_item[:-len(" talisman")].strip()
+
+        if not role_part:
+            return None
+
+        parsed_roles, invalid_tokens = parse_custom_roles(role_part)
+        if invalid_tokens or len(parsed_roles) != 1:
+            return None
+
+        role = talisman_base_role(parsed_roles[0])
+        if role is None:
+            return None
+        role_name = role.name.title().replace("_", " ")
+        return {
+            "grant_type": "talisman",
+            "role": role,
+            "display_name": f"NewWerewolf {role_name} Talisman",
+        }
+
+    @staticmethod
+    def _newwerewolf_role_display_name(role: NewWerewolfRole) -> str:
+        return role.name.title().replace("_", " ")
+
+    @staticmethod
+    def _all_talisman_roles() -> list[NewWerewolfRole]:
+        return all_talisman_roles()
+
+    async def _parse_user_ids_from_text(self, id_text: str) -> list[int]:
+        user_ids: list[int] = []
+        for item in str(id_text or "").replace(",", " ").split():
+            token = item.strip()
+            if not token:
+                continue
+            if token.startswith("<@") and token.endswith(">"):
+                token = token[2:-1].replace("!", "")
+            if not token.isdigit():
+                raise ValueError(f"Invalid user ID or mention: {item}")
+            user_ids.append(int(token))
+        return list(dict.fromkeys(user_ids))
+
+    def _parse_talisman_roles(self, raw_roles: str) -> list[NewWerewolfRole]:
+        normalized_roles = " ".join(str(raw_roles or "").casefold().split())
+        if normalized_roles in {"all", "every", "everything"}:
+            return self._all_talisman_roles()
+
+        parsed_roles, invalid_tokens = parse_custom_roles(raw_roles)
+        if invalid_tokens or not parsed_roles:
+            invalid_display = ", ".join(invalid_tokens) if invalid_tokens else raw_roles
+            raise ValueError(f"Invalid talisman role list: {invalid_display}")
+
+        unique_roles: list[NewWerewolfRole] = []
+        seen: set[NewWerewolfRole] = set()
+        for role in parsed_roles:
+            normalized_role = talisman_base_role(role)
+            if normalized_role is None or normalized_role in seen:
+                continue
+            seen.add(normalized_role)
+            unique_roles.append(normalized_role)
+        return unique_roles
+
+    async def _ensure_newwerewolf_talisman_tables(self) -> bool:
+        newwerewolf_cog = self.bot.get_cog("NewWerewolf")
+        if newwerewolf_cog is None:
+            return False
+        try:
+            await newwerewolf_cog._ensure_role_xp_tables()
+        except Exception:
+            return False
+        return True
+
+    async def _parse_talisman_batch_arguments(
+        self,
+        raw_args: str,
+    ) -> tuple[list[int], list[NewWerewolfRole]]:
+        parts = re.split(r"\s*(?:\||--)\s*", str(raw_args or ""), maxsplit=1)
+        if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+            raise ValueError(
+                "Use `<roles> | <discord ids>` or `<discord ids> | <roles>`."
+            )
+
+        parse_errors: list[str] = []
+        for roles_text, ids_text in ((parts[0], parts[1]), (parts[1], parts[0])):
+            try:
+                roles = self._parse_talisman_roles(roles_text)
+                user_ids = await self._parse_user_ids_from_text(ids_text)
+            except ValueError as exc:
+                parse_errors.append(str(exc))
+                continue
+
+            if not user_ids:
+                parse_errors.append("No valid user IDs provided.")
+                continue
+            return user_ids, roles
+
+        if parse_errors:
+            raise ValueError(parse_errors[-1])
+        raise ValueError("Could not parse talisman roles and Discord IDs.")
+
+    async def _fetch_character_user_ids(self) -> list[int]:
+        rows = await self.bot.pool.fetch('SELECT "user" FROM profile ORDER BY "user" ASC;')
+        return [int(row["user"]) for row in rows]
+
+    async def _filter_character_user_ids(self, user_ids: list[int]) -> tuple[list[int], list[int]]:
+        if not user_ids:
+            return [], []
+        rows = await self.bot.pool.fetch(
+            'SELECT "user" FROM profile WHERE "user" = ANY($1::bigint[])',
+            user_ids,
+        )
+        valid_ids = {int(row["user"]) for row in rows}
+        found = [user_id for user_id in user_ids if user_id in valid_ids]
+        missing = [user_id for user_id in user_ids if user_id not in valid_ids]
+        return found, missing
+
+    def _roll_random_talisman_counts(
+        self,
+        *,
+        amount: int,
+        roles_pool: list[NewWerewolfRole] | None = None,
+    ) -> dict[NewWerewolfRole, int]:
+        pool = roles_pool or self._all_talisman_roles()
+        if amount <= 0 or not pool:
+            return {}
+        counts: dict[NewWerewolfRole, int] = {}
+        for _ in range(amount):
+            chosen_role = random.choice(pool)
+            counts[chosen_role] = counts.get(chosen_role, 0) + 1
+        return counts
+
+    async def _grant_talisman_quantity(
+        self,
+        conn,
+        *,
+        user_id: int,
+        role: NewWerewolfRole,
+        amount: int,
+    ) -> int:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO newwerewolf_talisman_inventory (user_id, role_name, quantity, updated_at)
+            VALUES ($1, $2, $3, now())
+            ON CONFLICT (user_id, role_name)
+            DO UPDATE SET
+                quantity = newwerewolf_talisman_inventory.quantity + EXCLUDED.quantity,
+                updated_at = now()
+            RETURNING quantity
+            """,
+            user_id,
+            role.name.casefold(),
+            amount,
+        )
+        return int(row["quantity"] or 0) if row else 0
+
+    async def _grant_talisman_counts_to_user(
+        self,
+        conn,
+        *,
+        user_id: int,
+        talisman_counts: dict[NewWerewolfRole, int],
+    ) -> None:
+        for role, count in talisman_counts.items():
+            if count <= 0:
+                continue
+            await self._grant_talisman_quantity(
+                conn,
+                user_id=user_id,
+                role=role,
+                amount=count,
+            )
+
+    def _format_talisman_breakdown(
+        self,
+        talisman_counts: dict[NewWerewolfRole, int],
+    ) -> str:
+        if not talisman_counts:
+            return "None"
+        parts = [
+            f"{count}x {self._newwerewolf_role_display_name(role)} Talisman"
+            for role, count in sorted(
+                talisman_counts.items(),
+                key=lambda item: self._newwerewolf_role_display_name(item[0]).lower(),
+            )
+        ]
+        return ", ".join(parts)
 
     async def _safe_ctx_send(self, ctx, *args, **kwargs):
         try:
@@ -1372,7 +1581,7 @@ class GameMaster(commands.Cog):
     @commands.command(
         hidden=True,
         aliases=["gmconsumable", "gmgivecons"],
-        brief=_("Grant premium consumables"),
+        brief=_("Grant premium consumables or NewWerewolf talismans"),
     )
     @locale_doc
     async def gmgiveconsumable(
@@ -1386,17 +1595,16 @@ class GameMaster(commands.Cog):
     ):
         _(
             """`<target>` - A discord User with character
-            `<item>` - One of: petage, petspeed, petxp, petmindwipe, petelement, weapelement (or long aliases)
+            `<item>` - One of: petage, petspeed, petxp, petmindwipe, petelement, weapelement, or a NewWerewolf talisman such as `werewolf talisman`
             `[amount]` - Optional amount to grant, defaults to 1
             `[reason]` - The reason this action was done, defaults to the command message link
 
-            Grant premium consumables directly to a user's consumable inventory.
+            Grant premium consumables or NewWerewolf talismans directly.
             For multi-word item names, use quotes.
 
             Only Game Masters can use this command."""
         )
-        normalized_item = self._normalize_consumable_alias(item)
-        item_data = self.GM_CONSUMABLE_ALIASES.get(normalized_item)
+        item_data = self._resolve_gm_consumable_item(item)
         if not item_data:
             valid_items = (
                 "petage, pet age potion, pet_age_potion, petspeed, "
@@ -1404,23 +1612,35 @@ class GameMaster(commands.Cog):
                 "petxp, pet xp potion, pet_xp_potion, "
                 "petmindwipe, mindwipe, pet mind wipe, pet_mind_wipe, "
                 "petelement, petelementscroll, pet element scroll, pet element change, pet_element_scroll, "
-                "weapelement, elementscroll, weapon element scroll, weapon_element_scroll"
+                "weapelement, elementscroll, weapon element scroll, weapon_element_scroll, "
+                "or quoted role talismans such as \"werewolf talisman\" / \"aura seer talisman\""
             )
             return await ctx.send(
                 _("Invalid consumable. Valid options: {items}").format(items=valid_items)
             )
 
-        consumable_type = item_data["consumable_type"]
+        grant_type = str(item_data.get("grant_type") or "consumable")
         display_name = item_data["display_name"]
 
+        if grant_type == "talisman" and not await self._ensure_newwerewolf_talisman_tables():
+            return await ctx.send(_("NewWerewolf talisman inventory is unavailable right now."))
+
         async with self.bot.pool.acquire() as conn:
-            grant_result = await self._grant_consumable_quantity(
-                conn,
-                target.id,
-                consumable_type,
-                amount,
-            )
-            new_quantity = grant_result["new_quantity"]
+            if grant_type == "talisman":
+                new_quantity = await self._grant_talisman_quantity(
+                    conn,
+                    user_id=target.id,
+                    role=item_data["role"],
+                    amount=amount,
+                )
+            else:
+                grant_result = await self._grant_consumable_quantity(
+                    conn,
+                    target.id,
+                    item_data["consumable_type"],
+                    amount,
+                )
+                new_quantity = grant_result["new_quantity"]
 
         await self._safe_ctx_send(
             ctx,
@@ -1437,6 +1657,271 @@ class GameMaster(commands.Cog):
                     target=target,
                     reason=reason or f"<{ctx.message.jump_url}>",
                 )
+        ) as params:
+            await self.bot.http.send_message(
+                self.bot.config.game.gm_log_channel,
+                params=params,
+            )
+
+    @is_gm()
+    @commands.command(
+        hidden=True,
+        name="gmtalismanall",
+        aliases=["gmgrantalltalisman", "gmalltalisman"],
+        brief=_("Grant NewWerewolf talismans to every user with a character"),
+    )
+    @locale_doc
+    async def gmtalismanall(
+        self,
+        ctx,
+        amount: IntGreaterThan(0) = 3,
+        *,
+        roles: str = None,
+    ):
+        _(
+            """Grant NewWerewolf talismans to every user with a character.
+
+            `{prefix}gmtalismanall`
+            `{prefix}gmtalismanall 5`
+            `{prefix}gmtalismanall 2 werewolf, avenger`
+            `{prefix}gmtalismanall 3 all`
+            `{prefix}gmtalismanall 3 random`
+
+            If no roles are provided, each user receives `amount` random talismans.
+            If roles are provided, each user receives `amount` of each listed talisman."""
+        )
+        if not hasattr(self.bot, "pool"):
+            return await ctx.send(_("Database connection unavailable."))
+        if not await self._ensure_newwerewolf_talisman_tables():
+            return await ctx.send(_("NewWerewolf talisman inventory is unavailable right now."))
+
+        specific_roles: list[NewWerewolfRole] | None = None
+        if roles and roles.strip().casefold() not in {"random", "rand", "any"}:
+            try:
+                specific_roles = self._parse_talisman_roles(roles)
+            except ValueError as exc:
+                return await ctx.send(_("❌ {error}").format(error=str(exc)))
+
+        user_ids = await self._fetch_character_user_ids()
+        if not user_ids:
+            return await self._safe_ctx_send(
+                ctx,
+                _("No users with characters were found."),
+            )
+
+        aggregate_counts: dict[NewWerewolfRole, int] = {}
+        async with self.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                for user_id in user_ids:
+                    talisman_counts = (
+                        {role: int(amount) for role in specific_roles}
+                        if specific_roles
+                        else self._roll_random_talisman_counts(amount=int(amount))
+                    )
+                    for role, count in talisman_counts.items():
+                        aggregate_counts[role] = aggregate_counts.get(role, 0) + count
+                    await self._grant_talisman_counts_to_user(
+                        conn,
+                        user_id=user_id,
+                        talisman_counts=talisman_counts,
+                    )
+
+        if specific_roles:
+            role_list = ", ".join(
+                self._newwerewolf_role_display_name(role) for role in specific_roles
+            )
+            summary = _(
+                "Granted **{amount}x** each of **{roles}** talisman(s) to"
+                " **{count}** users with characters."
+            ).format(amount=amount, roles=role_list, count=len(user_ids))
+        else:
+            summary = _(
+                "Granted **{amount}** random NewWerewolf talisman(s) each to"
+                " **{count}** users with characters."
+            ).format(amount=amount, count=len(user_ids))
+
+        breakdown = self._format_talisman_breakdown(aggregate_counts)
+        await self._safe_ctx_send(
+            ctx,
+            f"{summary}\nBreakdown: {breakdown}",
+        )
+
+        with handle_message_parameters(
+            content=(
+                f"**{ctx.author}** ran `gmtalismanall`.\n"
+                f"Users affected: **{len(user_ids)}**\n"
+                f"Amount: **{amount}**\n"
+                f"Mode: **{'specific' if specific_roles else 'random'}**\n"
+                f"Breakdown: {breakdown}\n"
+                f"Reason: *<{ctx.message.jump_url}>*"
+            )
+        ) as params:
+            await self.bot.http.send_message(
+                self.bot.config.game.gm_log_channel,
+                params=params,
+            )
+
+    @is_gm()
+    @commands.command(
+        hidden=True,
+        name="gmtalismanbatchrandom",
+        aliases=["gmrandomtalismanbatch", "gmtalbatchrandom"],
+        brief=_("Grant random NewWerewolf talismans to a list of Discord IDs"),
+    )
+    @locale_doc
+    async def gmtalismanbatchrandom(
+        self,
+        ctx,
+        amount: IntGreaterThan(0),
+        *,
+        id_text: str,
+    ):
+        _(
+            """Grant random NewWerewolf talismans to a list of Discord IDs.
+
+            `{prefix}gmtalismanbatchrandom 3 123456789,987654321`
+
+            Each valid target receives `amount` random talismans total."""
+        )
+        if not hasattr(self.bot, "pool"):
+            return await ctx.send(_("Database connection unavailable."))
+        if not await self._ensure_newwerewolf_talisman_tables():
+            return await ctx.send(_("NewWerewolf talisman inventory is unavailable right now."))
+
+        try:
+            user_ids = await self._parse_user_ids_from_text(id_text)
+        except ValueError as exc:
+            return await ctx.send(_("❌ {error}").format(error=str(exc)))
+        if not user_ids:
+            return await ctx.send(_("❌ No valid user IDs provided."))
+
+        valid_ids, missing_ids = await self._filter_character_user_ids(user_ids)
+        if not valid_ids:
+            return await ctx.send(_("❌ None of the provided users have a character."))
+
+        aggregate_counts: dict[NewWerewolfRole, int] = {}
+        async with self.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                for user_id in valid_ids:
+                    talisman_counts = self._roll_random_talisman_counts(amount=int(amount))
+                    for role, count in talisman_counts.items():
+                        aggregate_counts[role] = aggregate_counts.get(role, 0) + count
+                    await self._grant_talisman_counts_to_user(
+                        conn,
+                        user_id=user_id,
+                        talisman_counts=talisman_counts,
+                    )
+
+        breakdown = self._format_talisman_breakdown(aggregate_counts)
+        summary = _(
+            "Granted **{amount}** random NewWerewolf talisman(s) each to"
+            " **{count}** user(s)."
+        ).format(amount=amount, count=len(valid_ids))
+        if missing_ids:
+            summary += _("\nSkipped IDs without characters: {ids}").format(
+                ids=", ".join(str(user_id) for user_id in missing_ids[:25])
+            )
+            if len(missing_ids) > 25:
+                summary += _(" ... and {count} more.").format(
+                    count=len(missing_ids) - 25
+                )
+        await self._safe_ctx_send(
+            ctx,
+            f"{summary}\nBreakdown: {breakdown}",
+        )
+
+        with handle_message_parameters(
+            content=(
+                f"**{ctx.author}** ran `gmtalismanbatchrandom`.\n"
+                f"Targets with characters: **{len(valid_ids)}**\n"
+                f"Skipped IDs: **{len(missing_ids)}**\n"
+                f"Amount per target: **{amount}**\n"
+                f"Breakdown: {breakdown}\n"
+                f"Reason: *<{ctx.message.jump_url}>*"
+            )
+        ) as params:
+            await self.bot.http.send_message(
+                self.bot.config.game.gm_log_channel,
+                params=params,
+            )
+
+    @is_gm()
+    @commands.command(
+        hidden=True,
+        name="gmtalismanbatchroles",
+        aliases=["gmtalismanbatch", "gmspecifictalismanbatch", "gmtalbatchroles"],
+        brief=_("Grant selected NewWerewolf talismans to a list of Discord IDs"),
+    )
+    @locale_doc
+    async def gmtalismanbatchroles(
+        self,
+        ctx,
+        amount: IntGreaterThan(0),
+        *,
+        args: str,
+    ):
+        _(
+            """Grant selected NewWerewolf talismans to a list of Discord IDs.
+
+            `{prefix}gmtalismanbatchroles 2 werewolf, avenger | 123456789,987654321`
+            `{prefix}gmtalismanbatchroles 3 all | 123456789,987654321`
+            `{prefix}gmtalismanbatchroles 2 123456789,987654321 | aura seer, avenger`
+
+            Each valid target receives `amount` of each listed talisman."""
+        )
+        if not hasattr(self.bot, "pool"):
+            return await ctx.send(_("Database connection unavailable."))
+        if not await self._ensure_newwerewolf_talisman_tables():
+            return await ctx.send(_("NewWerewolf talisman inventory is unavailable right now."))
+
+        try:
+            user_ids, selected_roles = await self._parse_talisman_batch_arguments(args)
+        except ValueError as exc:
+            return await ctx.send(_("❌ {error}").format(error=str(exc)))
+
+        valid_ids, missing_ids = await self._filter_character_user_ids(user_ids)
+        if not valid_ids:
+            return await ctx.send(_("❌ None of the provided users have a character."))
+
+        talisman_counts = {role: int(amount) for role in selected_roles}
+        async with self.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                for user_id in valid_ids:
+                    await self._grant_talisman_counts_to_user(
+                        conn,
+                        user_id=user_id,
+                        talisman_counts=talisman_counts,
+                    )
+
+        role_list = ", ".join(
+            self._newwerewolf_role_display_name(role) for role in selected_roles
+        )
+        summary = _(
+            "Granted **{amount}x** each of **{roles}** talisman(s) to"
+            " **{count}** user(s)."
+        ).format(amount=amount, roles=role_list, count=len(valid_ids))
+        if missing_ids:
+            summary += _("\nSkipped IDs without characters: {ids}").format(
+                ids=", ".join(str(user_id) for user_id in missing_ids[:25])
+            )
+            if len(missing_ids) > 25:
+                summary += _(" ... and {count} more.").format(
+                    count=len(missing_ids) - 25
+                )
+        await self._safe_ctx_send(
+            ctx,
+            summary,
+        )
+
+        with handle_message_parameters(
+            content=(
+                f"**{ctx.author}** ran `gmtalismanbatchroles`.\n"
+                f"Targets with characters: **{len(valid_ids)}**\n"
+                f"Skipped IDs: **{len(missing_ids)}**\n"
+                f"Amount per role: **{amount}**\n"
+                f"Roles: **{role_list}**\n"
+                f"Reason: *<{ctx.message.jump_url}>*"
+            )
         ) as params:
             await self.bot.http.send_message(
                 self.bot.config.game.gm_log_channel,

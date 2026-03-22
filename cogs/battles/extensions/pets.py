@@ -1367,7 +1367,11 @@ class PetExtension:
                 messages.append(f"{pet_combatant.name}'s Water Affinity overwhelms {target.element}! (+20% damage)")
                 
         # Tidal Force - turn manipulation
-        if 'tidal_force' in effects and hasattr(target, 'team'):
+        if (
+            'tidal_force' in effects
+            and hasattr(target, 'team')
+            and random.randint(1, 100) <= int(effects['tidal_force'].get('chance', 30))
+        ):
             # Apply turn delay to all enemies
             for enemy in target.team.combatants:
                 if enemy.is_alive():

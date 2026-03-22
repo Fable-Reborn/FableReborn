@@ -1445,6 +1445,49 @@ def _advanced_base_role_by_advanced() -> dict[Role, Role]:
 
 
 ADVANCED_BASE_ROLE_BY_ADVANCED: dict[Role, Role] = _advanced_base_role_by_advanced()
+TALISMAN_CONSUMABLE_PREFIX = "newwerewolf_talisman_"
+TALISMAN_BASE_WEIGHT = 2
+TALISMAN_ACTIVE_WEIGHT = 3
+
+
+def talisman_base_role(role: Role | None) -> Role | None:
+    if role is None:
+        return None
+    return ADVANCED_BASE_ROLE_BY_ADVANCED.get(role, role)
+
+
+TALISMAN_BASE_ROLES: tuple[Role, ...] = tuple(
+    role for role in Role if role not in ADVANCED_BASE_ROLE_BY_ADVANCED
+)
+
+
+def all_talisman_roles() -> list[Role]:
+    return list(TALISMAN_BASE_ROLES)
+
+
+def talisman_related_roles(role: Role) -> tuple[Role, ...]:
+    base_role = talisman_base_role(role)
+    if base_role is None:
+        return tuple()
+    return tuple(
+        candidate_role
+        for candidate_role in Role
+        if talisman_base_role(candidate_role) == base_role
+    )
+
+
+def talisman_consumable_type(role: Role) -> str:
+    return f"{TALISMAN_CONSUMABLE_PREFIX}{role.name.casefold()}"
+
+
+def role_from_talisman_consumable_type(consumable_type: str | None) -> Role | None:
+    if not consumable_type:
+        return None
+    normalized = str(consumable_type).strip().casefold()
+    if not normalized.startswith(TALISMAN_CONSUMABLE_PREFIX):
+        return None
+    role_token = normalized.removeprefix(TALISMAN_CONSUMABLE_PREFIX)
+    return ROLE_TOKEN_TO_ROLE.get(_normalize_role_token(role_token))
 
 
 def _replace_unlock_only_advanced_roles_with_base(roles: list[Role]) -> list[Role]:
@@ -1988,6 +2031,121 @@ class AfkCheckView(discord.ui.View):
         self.stop()
 
 
+class FortuneCardRevealView(discord.ui.View):
+    def __init__(self, game: Game, player: Player) -> None:
+        super().__init__(timeout=None)
+        self.game = game
+        self.player = player
+        self.message: discord.Message | None = None
+        self._closed = False
+
+    def build_message(self, *, closed: bool = False, reason: str | None = None) -> str:
+        if closed:
+            return reason or _("🔮 This Revelation Card prompt is closed.")
+        return _(
+            "🔮 You have {cards} Revelation Card(s). Press **Reveal My Role** at any"
+            " point during this day to reveal your current role to everyone. If you"
+            " ignore this prompt, you keep your card(s).\n{game_link}"
+        ).format(cards=self.player.fortune_cards, game_link=self.game.game_link)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.player.user.id:
+            return True
+        await interaction.response.send_message(
+            _("This Revelation Card prompt is not for you.")
+        )
+        return False
+
+    async def close(self, *, reason: str | None = None) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        for child in self.children:
+            child.disabled = True
+        if self.game.fortune_card_reveal_views.get(self.player.user.id) is self:
+            self.game.fortune_card_reveal_views.pop(self.player.user.id, None)
+        if self.message is None:
+            return
+        try:
+            await self.message.edit(
+                content=self.build_message(closed=True, reason=reason),
+                view=self,
+            )
+        except (discord.NotFound, discord.HTTPException):
+            pass
+
+    @discord.ui.button(
+        label="Reveal My Role",
+        style=discord.ButtonStyle.primary,
+    )
+    async def reveal_role(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if self._closed:
+            await interaction.response.send_message(
+                _("This Revelation Card prompt is already closed.")
+            )
+            return
+        if self.game.winner is not None or self.game.is_night_phase:
+            await self.close(
+                reason=_("🔮 The day ended before you used this Revelation Card prompt.")
+            )
+            await interaction.response.send_message(
+                _("The day phase is over, so this Revelation Card prompt can no longer be used.")
+            )
+            return
+        if self.player.dead:
+            await self.close(
+                reason=_("🔮 You died, so this Revelation Card prompt is now closed.")
+            )
+            await interaction.response.send_message(
+                _("You are dead and can no longer use this Revelation Card prompt.")
+            )
+            return
+        if self.player.fortune_cards <= 0:
+            await self.close(
+                reason=_("🔮 You do not have any Revelation Cards left.")
+            )
+            await interaction.response.send_message(
+                _("You do not have any Revelation Cards left.")
+            )
+            return
+        if self.game.is_current_role_publicly_revealed(self.player):
+            await self.close(
+                reason=_("🔮 Your current role is already publicly revealed.")
+            )
+            await interaction.response.send_message(
+                _("Your current role is already publicly revealed.")
+            )
+            return
+
+        self.player.fortune_cards -= 1
+        for player in self.game.players:
+            player.revealed_roles.update({self.player: self.player.role})
+
+        cards_left = self.player.fortune_cards
+        await self.close(
+            reason=_(
+                "🔮 You revealed your role for everyone. Revelation Cards left: {cards}."
+            ).format(cards=cards_left)
+        )
+        await interaction.response.edit_message(
+            content=self.build_message(
+                closed=True,
+                reason=_(
+                    "🔮 You revealed your role for everyone. Revelation Cards left: {cards}."
+                ).format(cards=cards_left),
+            ),
+            view=self,
+        )
+        await self.game.ctx.send(
+            _(
+                "🔮 {player} used a Revelation Card and is revealed as a"
+                " **{role}**!"
+            ).format(player=self.player.user.mention, role=self.player.role_name)
+        )
+
+
 class Game:
     def __init__(
             self,
@@ -2042,6 +2200,8 @@ class Game:
         self.loudmouth_mark_tasks: dict[int, asyncio.Task] = {}
         self.avenger_mark_tasks: dict[int, asyncio.Task] = {}
         self.mayor_reveal_tasks: dict[int, asyncio.Task] = {}
+        self.fortune_card_reveal_views: dict[int, FortuneCardRevealView] = {}
+        self.active_talisman_loadouts: dict[int, set[Role]] = {}
         self.after_first_night = False
         self.is_night_phase = False
         self.pending_night_resurrections: list[
@@ -2289,6 +2449,14 @@ class Game:
             return False
         return all(player in observer.revealed_roles for observer in self.players)
 
+    def is_current_role_publicly_revealed(self, player: Player) -> bool:
+        if player.dead or not self.players:
+            return False
+        return all(
+            observer.revealed_roles.get(player) == player.role
+            for observer in self.players
+        )
+
     def get_public_role(self, player_or_role: Player | Role) -> Role:
         if isinstance(player_or_role, Role):
             return self._get_public_role(player_or_role)
@@ -2303,6 +2471,11 @@ class Game:
             return self.get_role_name(self.get_public_role(player_or_role))
         if not isinstance(player_or_role, Player):
             raise TypeError("Wrong type: player_or_role. Only Player or Role allowed")
+        if (
+            player_or_role.public_role_name_override is not None
+            and not player_or_role.dead
+        ):
+            return player_or_role.public_role_name_override
 
         public_role = self.get_public_role(player_or_role)
         if player_or_role.cursed and not is_wolf_aligned_role(public_role):
@@ -2842,6 +3015,197 @@ class Game:
         except Exception:
             return 0
         return int(value or 0)
+
+    async def _fetch_active_talisman_loadouts(self) -> dict[int, set[Role]]:
+        pool = getattr(self.ctx.bot, "pool", None)
+        if pool is None or not self.players:
+            return {}
+
+        user_ids = list(dict.fromkeys(player.user.id for player in self.players))
+        try:
+            preference_rows = await pool.fetch(
+                """
+                SELECT user_id, role_name
+                FROM newwerewolf_talisman_loadout
+                WHERE user_id = ANY($1::bigint[])
+                """,
+                user_ids,
+            )
+        except Exception:
+            return {}
+        if not preference_rows:
+            return {}
+
+        equipped_roles: dict[int, set[Role]] = {}
+        for row in preference_rows:
+            role = ROLE_TOKEN_TO_ROLE.get(
+                _normalize_role_token(str(row["role_name"]))
+            )
+            if role is None:
+                continue
+            role = talisman_base_role(role)
+            if role is None:
+                continue
+            user_id = int(row["user_id"])
+            equipped_roles.setdefault(user_id, set()).add(role)
+        if not equipped_roles:
+            return {}
+
+        try:
+            inventory_rows = await pool.fetch(
+                """
+                SELECT user_id, role_name, quantity
+                FROM newwerewolf_talisman_inventory
+                WHERE user_id = ANY($1::bigint[])
+                  AND quantity > 0
+                """,
+                user_ids,
+            )
+        except Exception:
+            return {}
+
+        available_pairs = {
+            (
+                int(row["user_id"]),
+                normalized_role.name.casefold(),
+            )
+            for row in inventory_rows
+            if int(row["quantity"] or 0) > 0
+            if (
+                normalized_role := talisman_base_role(
+                    ROLE_TOKEN_TO_ROLE.get(
+                        _normalize_role_token(str(row["role_name"]))
+                    )
+                )
+            )
+            is not None
+        }
+        active_loadouts: dict[int, set[Role]] = {}
+        for user_id, roles in equipped_roles.items():
+            active_roles = {
+                role
+                for role in roles
+                if (user_id, role.name.casefold()) in available_pairs
+            }
+            if active_roles:
+                active_loadouts[user_id] = active_roles
+        return active_loadouts
+
+    def _pick_weighted_player_for_role(
+        self,
+        candidates: list[Player],
+        role: Role,
+        loadouts: dict[int, set[Role]],
+    ) -> Player:
+        if len(candidates) == 1:
+            return candidates[0]
+
+        weighted_candidates: list[tuple[Player, int]] = []
+        weighted_role = talisman_base_role(role)
+        for candidate in candidates:
+            active_roles = loadouts.get(candidate.user.id, set())
+            weight = (
+                TALISMAN_ACTIVE_WEIGHT
+                if weighted_role in active_roles
+                else TALISMAN_BASE_WEIGHT
+            )
+            weighted_candidates.append((candidate, weight))
+
+        total_weight = sum(weight for _, weight in weighted_candidates)
+        if total_weight <= 0:
+            return random.choice(candidates)
+
+        roll = random.randint(1, total_weight)
+        running = 0
+        for candidate, weight in weighted_candidates:
+            running += weight
+            if roll <= running:
+                return candidate
+        return weighted_candidates[-1][0]
+
+    async def apply_talisman_influence(self) -> None:
+        loadouts = await self._fetch_active_talisman_loadouts()
+        self.active_talisman_loadouts = loadouts
+        if not loadouts or not self.players:
+            return
+
+        roles_pool = random.shuffle([player.role for player in self.players])
+        remaining_players = self.players.copy()
+        assigned_roles: dict[int, Role] = {}
+
+        for role in roles_pool:
+            chosen_player = self._pick_weighted_player_for_role(
+                remaining_players,
+                role,
+                loadouts,
+            )
+            assigned_roles[chosen_player.user.id] = role
+            remaining_players.remove(chosen_player)
+
+        for player in self.players:
+            assigned_role = assigned_roles.get(player.user.id)
+            if assigned_role is None:
+                continue
+            player.role = assigned_role
+            player.initial_roles = [assigned_role]
+
+    async def consume_successful_talismans(self) -> None:
+        pool = getattr(self.ctx.bot, "pool", None)
+        if pool is None or not self.active_talisman_loadouts:
+            return
+
+        matches = [
+            (player, matched_role)
+            for player in self.players
+            if (matched_role := talisman_base_role(player.role))
+            in self.active_talisman_loadouts.get(player.user.id, set())
+        ]
+        if not matches:
+            return
+
+        try:
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    for player, matched_role in matches:
+                        row = await conn.fetchrow(
+                            """
+                            UPDATE newwerewolf_talisman_inventory
+                            SET quantity = quantity - 1
+                            WHERE user_id = $1
+                              AND role_name = $2
+                              AND quantity > 0
+                            RETURNING quantity
+                            """,
+                            player.user.id,
+                            matched_role.name.casefold(),
+                        )
+                        if row is None:
+                            continue
+                        if int(row["quantity"] or 0) <= 0:
+                            await conn.execute(
+                                """
+                                DELETE FROM newwerewolf_talisman_inventory
+                                WHERE user_id = $1
+                                  AND role_name = $2
+                                  AND quantity <= 0
+                                """,
+                                player.user.id,
+                                matched_role.name.casefold(),
+                            )
+                            await conn.execute(
+                                """
+                                DELETE FROM newwerewolf_talisman_loadout
+                                WHERE user_id = $1
+                                  AND role_name = ANY($2::text[])
+                                """,
+                                player.user.id,
+                                [
+                                    role.name.casefold()
+                                    for role in talisman_related_roles(matched_role)
+                                ],
+                            )
+        except Exception:
+            return
 
     async def apply_advanced_role_choices(self) -> None:
         if not ADVANCED_ROLE_TIERS_BY_BASE:
@@ -5211,6 +5575,10 @@ class Game:
                 " the Werewolves."
             ).format(target=conversion_target.user)
         )
+        if conversion_target.public_role_name_override is None:
+            conversion_target.public_role_name_override = self.get_public_role_name(
+                conversion_target
+            )
         if conversion_target.initial_roles[-1] != conversion_target.role:
             conversion_target.initial_roles.append(conversion_target.role)
         conversion_target.role = Role.WEREWOLF
@@ -5233,16 +5601,43 @@ class Game:
         if not card_holders:
             return
 
-        await self.ctx.send(
-            _("🔮 Players with Revelation Cards may choose to reveal their role.")
-        )
         results = await asyncio.gather(
             *(player.offer_fortune_card_reveal() for player in card_holders),
             return_exceptions=True,
         )
+        sent_any_prompt = False
         for result in results:
             if isinstance(result, Exception):
                 await send_traceback(self.ctx, result)
+            elif result:
+                sent_any_prompt = True
+        if sent_any_prompt:
+            await self.ctx.send(
+                _(
+                    "🔮 Players with Revelation Cards can check their DMs to reveal"
+                    " their role during the day."
+                )
+            )
+
+    async def stop_fortune_card_reveals(
+        self, player: Player | None = None, *, reason: str | None = None
+    ) -> None:
+        if player is not None:
+            view = self.fortune_card_reveal_views.pop(player.user.id, None)
+            if view is not None:
+                await view.close(
+                    reason=reason
+                    or _("🔮 This Revelation Card prompt is no longer available.")
+                )
+            return
+
+        views = list(self.fortune_card_reveal_views.values())
+        self.fortune_card_reveal_views.clear()
+        for view in views:
+            await view.close(
+                reason=reason
+                or _("🔮 This Revelation Card prompt is no longer available.")
+            )
 
     async def handle_priest_holy_water(self) -> None:
         priests = [
@@ -6570,8 +6965,10 @@ class Game:
             await self.ctx.send(page)
         await self.announce_new_nomination_system()
 
+        await self.apply_talisman_influence()
         await self.apply_advanced_role_choices()
         await self.resolve_sorcerer_auto_conversion()
+        await self.consume_successful_talismans()
         await self.assign_sorcerer_disguises()
 
         role_counts: dict[Role, int] = {}
@@ -7756,6 +8153,9 @@ class Game:
             await self.clear_grumpy_grandma_day_silence()
             await self.stop_jailer_day_target_selection()
             await self.stop_junior_day_mark_selection()
+            await self.stop_fortune_card_reveals(
+                reason=_("🔮 Night fell, so today's Revelation Card prompts closed.")
+            )
             await self.stop_mayor_reveal_selection()
             await self.resolve_tough_guy_delayed_deaths()
 
@@ -7847,6 +8247,12 @@ class Game:
                 pass
             try:
                 await self.stop_mayor_reveal_selection()
+            except Exception:
+                pass
+            try:
+                await self.stop_fortune_card_reveals(
+                    reason=_("🔮 The game ended, so this Revelation Card prompt closed.")
+                )
             except Exception:
                 pass
             try:
@@ -8036,6 +8442,7 @@ class Player:
         self.fortune_cards_remaining = None
         self.used_once_abilities: set[Role] = set()
         self.cursed = False
+        self.public_role_name_override: str | None = None
         self.revealed_roles = {}
         self.loudmouth_target: Player | None = None
         self.avenger_target: Player | None = None
@@ -8492,50 +8899,26 @@ class Player:
         await target.send(
             _(
                 "🔮 You received a Revelation Card from the **Fortune Teller**. At"
-                " dawn, you may choose to reveal your role.\n{game_link}"
+                " dawn, you will get a day-long button prompt to reveal your role."
+                " If you ignore it, you keep the card.\n{game_link}"
             ).format(game_link=self.game.game_link)
         )
 
     async def offer_fortune_card_reveal(self) -> bool:
         if self.dead or self.fortune_cards <= 0:
             return False
-        timeout = max(10, min(20, int(self.game.timer / 2)))
-        try:
-            choice = await self.game.ctx.bot.paginator.Choose(
-                entries=[
-                    _("Reveal your role now"),
-                    _("Keep card for later"),
-                ],
-                return_index=True,
-                title=_(
-                    "Use a Revelation Card? You currently have {cards}."
-                ).format(cards=self.fortune_cards),
-                timeout=timeout,
-            ).paginate(self.game.ctx, location=self.user)
-        except (
-            self.game.ctx.bot.paginator.NoChoice,
-            discord.Forbidden,
-            discord.HTTPException,
-        ):
+        if self.game.is_current_role_publicly_revealed(self):
             return False
-
-        if choice != 0:
+        await self.game.stop_fortune_card_reveals(
+            self,
+            reason=_("🔮 A new Revelation Card prompt replaced the previous one."),
+        )
+        view = FortuneCardRevealView(self.game, self)
+        message = await self.send(view.build_message(), view=view)
+        if message is None:
             return False
-
-        self.fortune_cards -= 1
-        for player in self.game.players:
-            player.revealed_roles.update({self: self.role})
-        await self.game.ctx.send(
-            _(
-                "🔮 {player} used a Revelation Card and is revealed as a"
-                " **{role}**!"
-            ).format(player=self.user.mention, role=self.role_name)
-        )
-        await self.send(
-            _(
-                "Your role was revealed. Revelation Cards left: {cards}."
-            ).format(cards=self.fortune_cards)
-        )
+        view.message = message
+        self.game.fortune_card_reveal_views[self.user.id] = view
         return True
 
     async def choose_idol(self) -> None:
@@ -11142,6 +11525,10 @@ class Player:
             return
         self.lives -= 1
         if self.dead:
+            await self.game.stop_fortune_card_reveals(
+                self,
+                reason=_("🔮 You died, so this Revelation Card prompt is now closed."),
+            )
             if self.role != self.initial_roles[0] or len(self.initial_roles) > 1:
                 if self.exchanged_with_maid:
                     initial_role_info = _(" Initial roles hidden.")

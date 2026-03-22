@@ -261,6 +261,25 @@ class Transaction(commands.Cog):
             return True
         return False
 
+    @staticmethod
+    def _is_valid_consumable_type(consumable_type: str) -> bool:
+        normalized = str(consumable_type or "").strip().casefold()
+        valid_types = {
+            "pet_age_potion",
+            "pet_speed_growth_potion",
+            "pet_mind_wipe",
+            "pet_element_scroll",
+            "splice_final_potion",
+            "weapon_element_scroll",
+        }
+        return normalized in valid_types
+
+    def _valid_consumable_type_display(self) -> str:
+        return (
+            "pet_age_potion, pet_speed_growth_potion, pet_mind_wipe, "
+            "pet_element_scroll, splice_final_potion, weapon_element_scroll"
+        )
+
     def get_transaction(self, user, return_id=False):
         id_ = str(user.id)
         if not (key := discord.utils.find(lambda x: id_ in x, self.transactions)):
@@ -949,10 +968,11 @@ class Transaction(commands.Cog):
         `<ctype>` - The type of premium consumable (pet_age_potion, pet_speed_growth_potion, pet_mind_wipe, pet_element_scroll, splice_final_potion, weapon_element_scroll)
         `<amount>` - The amount to add
         """
-        valid_types = ["pet_age_potion", "pet_speed_growth_potion", "pet_mind_wipe", "pet_element_scroll", "splice_final_potion", "weapon_element_scroll"]
         ctype = ctype.lower()
-        if ctype not in valid_types:
-            return await ctx.send(f"❌ Invalid consumable type. Valid types: {', '.join(valid_types)}")
+        if not self._is_valid_consumable_type(ctype):
+            return await ctx.send(
+                f"❌ Invalid consumable type. Valid types: {self._valid_consumable_type_display()}"
+            )
         # Check user inventory
         async with self.bot.pool.acquire() as conn:
             row = await conn.fetchrow('SELECT quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;', ctx.author.id, ctype)
@@ -971,13 +991,12 @@ class Transaction(commands.Cog):
         """
         `<ctype> <amount>` pairs, e.g. `pet_age_potion 2 petspeed 1`
         """
-        valid_types = ["pet_age_potion", "pet_speed_growth_potion", "pet_mind_wipe", "pet_element_scroll", "splice_final_potion", "weapon_element_scroll"]
         if len(args) % 2 != 0:
             return await ctx.send("❌ Usage: trade add consumables <type> <amount> ...")
         async with self.bot.pool.acquire() as conn:
             for i in range(0, len(args), 2):
                 ctype = args[i].lower()
-                if ctype not in valid_types:
+                if not self._is_valid_consumable_type(ctype):
                     return await ctx.send(f"❌ Invalid consumable type: {ctype}")
                 try:
                     amount = int(args[i+1])
@@ -1136,10 +1155,11 @@ class Transaction(commands.Cog):
     @set_.command(name="consumable", brief=_("Sets premium consumables in a trade."))
     @locale_doc
     async def set_consumable(self, ctx, ctype: str, amount: IntGreaterThan(0)):
-        valid_types = ["pet_age_potion", "pet_speed_growth_potion", "pet_mind_wipe", "pet_element_scroll", "splice_final_potion", "weapon_element_scroll"]
         ctype = ctype.lower()
-        if ctype not in valid_types:
-            return await ctx.send(f"❌ Invalid consumable type. Valid types: {', '.join(valid_types)}")
+        if not self._is_valid_consumable_type(ctype):
+            return await ctx.send(
+                f"❌ Invalid consumable type. Valid types: {self._valid_consumable_type_display()}"
+            )
         async with self.bot.pool.acquire() as conn:
             row = await conn.fetchrow('SELECT quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;', ctx.author.id, ctype)
             owned = row["quantity"] if row else 0
@@ -1299,10 +1319,11 @@ class Transaction(commands.Cog):
     @remove.command(name="consumable", brief=_("Removes premium consumables from a trade."))
     @locale_doc
     async def remove_consumable(self, ctx, ctype: str, amount: IntGreaterThan(0)):
-        valid_types = ["pet_age_potion", "pet_speed_growth_potion", "pet_mind_wipe", "pet_element_scroll", "splice_final_potion", "weapon_element_scroll"]
         ctype = ctype.lower()
-        if ctype not in valid_types:
-            return await ctx.send(f"❌ Invalid consumable type. Valid types: {', '.join(valid_types)}")
+        if not self._is_valid_consumable_type(ctype):
+            return await ctx.send(
+                f"❌ Invalid consumable type. Valid types: {self._valid_consumable_type_display()}"
+            )
         in_trade = ctx.transaction["consumables"].get(ctype, 0)
         if in_trade < amount:
             return await ctx.send(f"❌ You only have {in_trade} {ctype.replace('_', ' ').title()} in the trade.")
