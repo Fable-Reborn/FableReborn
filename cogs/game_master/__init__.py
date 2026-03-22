@@ -27,7 +27,7 @@ import aiohttp
 import discord
 import discord
 from discord.ext import commands
-from discord.ui import View, Button
+from discord.ui import View, Button, Modal, TextInput
 from utils import misc as rpgtools
 
 from discord import Object, HTTPException
@@ -411,6 +411,35 @@ class GameMaster(commands.Cog):
                 amount=count,
             )
 
+    async def _grant_talismans_to_users(
+        self,
+        user_ids: list[int],
+        *,
+        amount: int,
+        specific_roles: list[NewWerewolfRole] | None = None,
+    ) -> dict[NewWerewolfRole, int]:
+        aggregate_counts: dict[NewWerewolfRole, int] = {}
+        if not user_ids:
+            return aggregate_counts
+
+        async with self.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                for user_id in user_ids:
+                    talisman_counts = (
+                        {role: int(amount) for role in specific_roles}
+                        if specific_roles
+                        else self._roll_random_talisman_counts(amount=int(amount))
+                    )
+                    for role, count in talisman_counts.items():
+                        aggregate_counts[role] = aggregate_counts.get(role, 0) + count
+                    await self._grant_talisman_counts_to_user(
+                        conn,
+                        user_id=user_id,
+                        talisman_counts=talisman_counts,
+                    )
+
+        return aggregate_counts
+
     def _format_talisman_breakdown(
         self,
         talisman_counts: dict[NewWerewolfRole, int],
@@ -425,6 +454,36 @@ class GameMaster(commands.Cog):
             )
         ]
         return ", ".join(parts)
+
+    async def _log_talisman_grant(
+        self,
+        ctx,
+        *,
+        source: str,
+        target_count: int,
+        amount: int,
+        mode: str,
+        breakdown: str,
+        missing_ids: list[int] | None = None,
+    ) -> None:
+        extra_lines = []
+        if missing_ids is not None:
+            extra_lines.append(f"Skipped IDs: **{len(missing_ids)}**")
+        with handle_message_parameters(
+            content=(
+                f"**{ctx.author}** ran `{source}`.\n"
+                f"Targets with characters: **{target_count}**\n"
+                f"{chr(10).join(extra_lines) + chr(10) if extra_lines else ''}"
+                f"Amount: **{amount}**\n"
+                f"Mode: **{mode}**\n"
+                f"Breakdown: {breakdown}\n"
+                f"Reason: *<{ctx.message.jump_url}>*"
+            )
+        ) as params:
+            await self.bot.http.send_message(
+                self.bot.config.game.gm_log_channel,
+                params=params,
+            )
 
     async def _safe_ctx_send(self, ctx, *args, **kwargs):
         try:
@@ -1709,22 +1768,11 @@ class GameMaster(commands.Cog):
                 _("No users with characters were found."),
             )
 
-        aggregate_counts: dict[NewWerewolfRole, int] = {}
-        async with self.bot.pool.acquire() as conn:
-            async with conn.transaction():
-                for user_id in user_ids:
-                    talisman_counts = (
-                        {role: int(amount) for role in specific_roles}
-                        if specific_roles
-                        else self._roll_random_talisman_counts(amount=int(amount))
-                    )
-                    for role, count in talisman_counts.items():
-                        aggregate_counts[role] = aggregate_counts.get(role, 0) + count
-                    await self._grant_talisman_counts_to_user(
-                        conn,
-                        user_id=user_id,
-                        talisman_counts=talisman_counts,
-                    )
+        aggregate_counts = await self._grant_talismans_to_users(
+            user_ids,
+            amount=int(amount),
+            specific_roles=specific_roles,
+        )
 
         if specific_roles:
             role_list = ", ".join(
@@ -1746,20 +1794,14 @@ class GameMaster(commands.Cog):
             f"{summary}\nBreakdown: {breakdown}",
         )
 
-        with handle_message_parameters(
-            content=(
-                f"**{ctx.author}** ran `gmtalismanall`.\n"
-                f"Users affected: **{len(user_ids)}**\n"
-                f"Amount: **{amount}**\n"
-                f"Mode: **{'specific' if specific_roles else 'random'}**\n"
-                f"Breakdown: {breakdown}\n"
-                f"Reason: *<{ctx.message.jump_url}>*"
-            )
-        ) as params:
-            await self.bot.http.send_message(
-                self.bot.config.game.gm_log_channel,
-                params=params,
-            )
+        await self._log_talisman_grant(
+            ctx,
+            source="gmtalismanall",
+            target_count=len(user_ids),
+            amount=int(amount),
+            mode="specific" if specific_roles else "random",
+            breakdown=breakdown,
+        )
 
     @is_gm()
     @commands.command(
@@ -1799,18 +1841,11 @@ class GameMaster(commands.Cog):
         if not valid_ids:
             return await ctx.send(_("❌ None of the provided users have a character."))
 
-        aggregate_counts: dict[NewWerewolfRole, int] = {}
-        async with self.bot.pool.acquire() as conn:
-            async with conn.transaction():
-                for user_id in valid_ids:
-                    talisman_counts = self._roll_random_talisman_counts(amount=int(amount))
-                    for role, count in talisman_counts.items():
-                        aggregate_counts[role] = aggregate_counts.get(role, 0) + count
-                    await self._grant_talisman_counts_to_user(
-                        conn,
-                        user_id=user_id,
-                        talisman_counts=talisman_counts,
-                    )
+        aggregate_counts = await self._grant_talismans_to_users(
+            valid_ids,
+            amount=int(amount),
+            specific_roles=None,
+        )
 
         breakdown = self._format_talisman_breakdown(aggregate_counts)
         summary = _(
@@ -1830,20 +1865,15 @@ class GameMaster(commands.Cog):
             f"{summary}\nBreakdown: {breakdown}",
         )
 
-        with handle_message_parameters(
-            content=(
-                f"**{ctx.author}** ran `gmtalismanbatchrandom`.\n"
-                f"Targets with characters: **{len(valid_ids)}**\n"
-                f"Skipped IDs: **{len(missing_ids)}**\n"
-                f"Amount per target: **{amount}**\n"
-                f"Breakdown: {breakdown}\n"
-                f"Reason: *<{ctx.message.jump_url}>*"
-            )
-        ) as params:
-            await self.bot.http.send_message(
-                self.bot.config.game.gm_log_channel,
-                params=params,
-            )
+        await self._log_talisman_grant(
+            ctx,
+            source="gmtalismanbatchrandom",
+            target_count=len(valid_ids),
+            amount=int(amount),
+            mode="random",
+            breakdown=breakdown,
+            missing_ids=missing_ids,
+        )
 
     @is_gm()
     @commands.command(
@@ -1883,15 +1913,11 @@ class GameMaster(commands.Cog):
         if not valid_ids:
             return await ctx.send(_("❌ None of the provided users have a character."))
 
-        talisman_counts = {role: int(amount) for role in selected_roles}
-        async with self.bot.pool.acquire() as conn:
-            async with conn.transaction():
-                for user_id in valid_ids:
-                    await self._grant_talisman_counts_to_user(
-                        conn,
-                        user_id=user_id,
-                        talisman_counts=talisman_counts,
-                    )
+        aggregate_counts = await self._grant_talismans_to_users(
+            valid_ids,
+            amount=int(amount),
+            specific_roles=selected_roles,
+        )
 
         role_list = ", ".join(
             self._newwerewolf_role_display_name(role) for role in selected_roles
@@ -1910,23 +1936,48 @@ class GameMaster(commands.Cog):
                 )
         await self._safe_ctx_send(
             ctx,
-            summary,
+            f"{summary}\nBreakdown: {self._format_talisman_breakdown(aggregate_counts)}",
         )
 
-        with handle_message_parameters(
-            content=(
-                f"**{ctx.author}** ran `gmtalismanbatchroles`.\n"
-                f"Targets with characters: **{len(valid_ids)}**\n"
-                f"Skipped IDs: **{len(missing_ids)}**\n"
-                f"Amount per role: **{amount}**\n"
-                f"Roles: **{role_list}**\n"
-                f"Reason: *<{ctx.message.jump_url}>*"
-            )
-        ) as params:
-            await self.bot.http.send_message(
-                self.bot.config.game.gm_log_channel,
-                params=params,
-            )
+        await self._log_talisman_grant(
+            ctx,
+            source="gmtalismanbatchroles",
+            target_count=len(valid_ids),
+            amount=int(amount),
+            mode=f"specific ({role_list})",
+            breakdown=self._format_talisman_breakdown(aggregate_counts),
+            missing_ids=missing_ids,
+        )
+
+    @is_gm()
+    @commands.command(
+        hidden=True,
+        name="gmtalismanpanel",
+        aliases=["gmtalismans", "gmtalismanui", "gmtalismanmenu"],
+        brief=_("Open an interactive NewWerewolf talisman grant panel"),
+    )
+    @locale_doc
+    async def gmtalismanpanel(self, ctx):
+        _(
+            """Open an interactive NewWerewolf talisman grant panel.
+
+            `{prefix}gmtalismanpanel`
+
+            Use the panel to choose:
+            - everyone with characters or specific Discord IDs
+            - amount
+            - random, all basic roles, or specific talismans
+
+            Only Game Masters can use this command."""
+        )
+        if not hasattr(self.bot, "pool"):
+            return await ctx.send(_("Database connection unavailable."))
+        if not await self._ensure_newwerewolf_talisman_tables():
+            return await ctx.send(_("NewWerewolf talisman inventory is unavailable right now."))
+
+        view = GMTalismanGrantView(ctx=ctx, gm_cog=self)
+        message = await ctx.send(embed=view.build_embed(), view=view)
+        view.message = message
 
     @is_gm()
     @commands.command(
@@ -6930,6 +6981,509 @@ class GameMaster(commands.Cog):
 
         names = ", ".join(self.EVENT_DISPLAY_NAMES[key] for key in targets)
         await ctx.send(f"Shop quantities reset for: {names}.")
+
+
+class GMTalismanIdsModal(Modal, title="Set Talisman Target IDs"):
+    def __init__(self, panel_view):
+        super().__init__()
+        self.panel_view = panel_view
+        default_value = (
+            ", ".join(str(user_id) for user_id in panel_view.target_user_ids[:50])
+            if panel_view.target_user_ids
+            else ""
+        )
+        self.ids_input = TextInput(
+            label="Discord IDs or mentions",
+            placeholder="123456789, 987654321 or @User",
+            default=default_value,
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=1800,
+        )
+        self.add_item(self.ids_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.panel_view.author.id:
+            return await interaction.response.send_message(
+                "❌ This talisman panel is not for you.",
+                ephemeral=True,
+            )
+
+        try:
+            parsed_ids = await self.panel_view.gm_cog._parse_user_ids_from_text(
+                self.ids_input.value
+            )
+        except ValueError as exc:
+            return await interaction.response.send_message(
+                f"❌ {exc}",
+                ephemeral=True,
+            )
+
+        if not parsed_ids:
+            return await interaction.response.send_message(
+                "❌ No valid user IDs provided.",
+                ephemeral=True,
+            )
+
+        valid_ids, missing_ids = await self.panel_view.gm_cog._filter_character_user_ids(
+            parsed_ids
+        )
+        self.panel_view.target_user_ids = valid_ids
+        self.panel_view.target_missing_ids = missing_ids
+        await interaction.response.defer(ephemeral=True)
+        await self.panel_view.refresh_message()
+
+        response = f"Stored **{len(valid_ids)}** valid target(s)."
+        if missing_ids:
+            preview = ", ".join(str(user_id) for user_id in missing_ids[:15])
+            response += f"\nSkipped IDs without characters: {preview}"
+            if len(missing_ids) > 15:
+                response += f" ... and {len(missing_ids) - 15} more."
+        await interaction.followup.send(response, ephemeral=True)
+
+
+class GMTalismanTargetScopeSelect(discord.ui.Select):
+    def __init__(self, panel_view):
+        self.panel_view = panel_view
+        options = [
+            discord.SelectOption(
+                label="Everyone with Characters",
+                value="everyone",
+                description="Grant to every user who has a character.",
+                emoji="🌍",
+                default=panel_view.target_mode == "everyone",
+            ),
+            discord.SelectOption(
+                label="Specific Discord IDs",
+                value="specific_ids",
+                description="Grant to a pasted list of IDs or mentions.",
+                emoji="🎯",
+                default=panel_view.target_mode == "specific_ids",
+            ),
+        ]
+        super().__init__(
+            placeholder="Choose who receives the talismans",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.panel_view.target_mode = self.values[0]
+        await interaction.response.defer()
+        await self.panel_view.refresh_message()
+
+
+class GMTalismanAmountSelect(discord.ui.Select):
+    AMOUNT_CHOICES = [1, 2, 3, 4, 5, 10, 25, 50, 100]
+
+    def __init__(self, panel_view):
+        self.panel_view = panel_view
+        options = [
+            discord.SelectOption(
+                label=f"{amount}",
+                value=str(amount),
+                description=f"Grant {amount} talisman(s) per selected roll.",
+                default=panel_view.amount == amount,
+            )
+            for amount in self.AMOUNT_CHOICES
+        ]
+        super().__init__(
+            placeholder="Choose the amount to grant",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.panel_view.amount = int(self.values[0])
+        await interaction.response.defer()
+        await self.panel_view.refresh_message()
+
+
+class GMTalismanRoleModeSelect(discord.ui.Select):
+    def __init__(self, panel_view):
+        self.panel_view = panel_view
+        options = [
+            discord.SelectOption(
+                label="Random Talismans",
+                value="random",
+                description="Each target gets random talismans.",
+                emoji="🎲",
+                default=panel_view.role_mode == "random",
+            ),
+            discord.SelectOption(
+                label="All Basic Roles",
+                value="all",
+                description="Each target gets every basic-role talisman.",
+                emoji="🪬",
+                default=panel_view.role_mode == "all",
+            ),
+            discord.SelectOption(
+                label="Pick Specific Roles",
+                value="specific",
+                description="Choose exactly which basic-role talismans to grant.",
+                emoji="📋",
+                default=panel_view.role_mode == "specific",
+            ),
+        ]
+        super().__init__(
+            placeholder="Choose which talismans to grant",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.panel_view.role_mode = self.values[0]
+        self.panel_view.role_page = 0
+        await interaction.response.defer()
+        await self.panel_view.refresh_message()
+
+
+class GMTalismanRoleMultiSelect(discord.ui.Select):
+    def __init__(self, panel_view):
+        self.panel_view = panel_view
+        page_roles = panel_view.current_page_roles()
+        selected_on_page = set(page_roles) & panel_view.selected_roles
+        options = [
+            discord.SelectOption(
+                label=panel_view.gm_cog._newwerewolf_role_display_name(role),
+                value=role.name.casefold(),
+                default=role in selected_on_page,
+            )
+            for role in page_roles
+        ]
+        super().__init__(
+            placeholder=(
+                f"Choose roles on page {panel_view.role_page + 1}/"
+                f"{panel_view.total_role_pages()}"
+            ),
+            min_values=0,
+            max_values=max(1, len(options)),
+            options=options,
+            row=3,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        current_page_roles = set(self.panel_view.current_page_roles())
+        self.panel_view.selected_roles.difference_update(current_page_roles)
+        chosen_values = set(self.values)
+        for role in current_page_roles:
+            if role.name.casefold() in chosen_values:
+                self.panel_view.selected_roles.add(role)
+        await interaction.response.defer()
+        await self.panel_view.refresh_message()
+
+
+class GMTalismanGrantView(discord.ui.View):
+    ROLE_PAGE_SIZE = 25
+
+    def __init__(self, *, ctx, gm_cog):
+        super().__init__(timeout=900)
+        self.ctx = ctx
+        self.gm_cog = gm_cog
+        self.author = ctx.author
+        self.amount = 3
+        self.target_mode = "everyone"
+        self.target_user_ids: list[int] = []
+        self.target_missing_ids: list[int] = []
+        self.role_mode = "random"
+        self.selected_roles: set[NewWerewolfRole] = set()
+        self.role_page = 0
+        self.message: discord.Message | None = None
+        self.last_result: str | None = None
+        self._refresh_items()
+
+    def ordered_all_roles(self) -> list[NewWerewolfRole]:
+        return sorted(
+            self.gm_cog._all_talisman_roles(),
+            key=lambda role: self.gm_cog._newwerewolf_role_display_name(role).lower(),
+        )
+
+    def ordered_selected_roles(self) -> list[NewWerewolfRole]:
+        selected = self.selected_roles
+        return [role for role in self.ordered_all_roles() if role in selected]
+
+    def total_role_pages(self) -> int:
+        return max(
+            1,
+            (len(self.ordered_all_roles()) + self.ROLE_PAGE_SIZE - 1)
+            // self.ROLE_PAGE_SIZE,
+        )
+
+    def current_page_roles(self) -> list[NewWerewolfRole]:
+        all_roles = self.ordered_all_roles()
+        max_page_index = max(0, self.total_role_pages() - 1)
+        self.role_page = max(0, min(self.role_page, max_page_index))
+        start = self.role_page * self.ROLE_PAGE_SIZE
+        end = start + self.ROLE_PAGE_SIZE
+        return all_roles[start:end]
+
+    def _selected_role_preview(self, limit: int = 12) -> str:
+        selected = self.ordered_selected_roles()
+        if not selected:
+            return "None selected yet."
+        names = [
+            self.gm_cog._newwerewolf_role_display_name(role)
+            for role in selected[:limit]
+        ]
+        if len(selected) > limit:
+            names.append(f"... and {len(selected) - limit} more")
+        return ", ".join(names)
+
+    def _target_summary(self) -> str:
+        if self.target_mode == "everyone":
+            return "Everyone with a character"
+        if not self.target_user_ids and not self.target_missing_ids:
+            return "Specific IDs not set yet"
+        summary = f"{len(self.target_user_ids)} valid target(s)"
+        if self.target_missing_ids:
+            summary += f", {len(self.target_missing_ids)} skipped"
+        return summary
+
+    def build_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="NewWerewolf Talisman Grant Panel",
+            colour=self.ctx.bot.config.game.primary_colour,
+            description=(
+                "Use the dropdowns and buttons below to grant talismans without"
+                " typing the full command syntax."
+            ),
+        ).set_author(
+            name=str(self.author),
+            icon_url=self.author.display_avatar.url,
+        )
+        embed.add_field(name="Targets", value=self._target_summary(), inline=False)
+        embed.add_field(name="Amount", value=str(self.amount), inline=True)
+
+        mode_labels = {
+            "random": "Random talismans",
+            "all": "All basic-role talismans",
+            "specific": "Specific basic-role talismans",
+        }
+        embed.add_field(
+            name="Grant Mode",
+            value=mode_labels.get(self.role_mode, self.role_mode),
+            inline=True,
+        )
+
+        if self.role_mode == "specific":
+            embed.add_field(
+                name=f"Selected Roles ({len(self.selected_roles)})",
+                value=self._selected_role_preview(),
+                inline=False,
+            )
+            embed.add_field(
+                name="Role Pages",
+                value=f"Page {self.role_page + 1}/{self.total_role_pages()}",
+                inline=False,
+            )
+
+        if self.target_mode == "specific_ids" and self.target_missing_ids:
+            preview = ", ".join(str(user_id) for user_id in self.target_missing_ids[:12])
+            if len(self.target_missing_ids) > 12:
+                preview += f" ... and {len(self.target_missing_ids) - 12} more."
+            embed.add_field(
+                name="Skipped IDs",
+                value=preview,
+                inline=False,
+            )
+
+        if self.last_result:
+            embed.add_field(name="Last Grant", value=self.last_result, inline=False)
+
+        embed.set_footer(
+            text=(
+                "Only the command invoker can use this panel. Specific-role mode"
+                " pages through the full basic-role talisman list."
+            )
+        )
+        return embed
+
+    def _refresh_items(self) -> None:
+        self.clear_items()
+        self.add_item(GMTalismanTargetScopeSelect(self))
+        self.add_item(GMTalismanAmountSelect(self))
+        self.add_item(GMTalismanRoleModeSelect(self))
+
+        if self.role_mode == "specific":
+            self.add_item(GMTalismanRoleMultiSelect(self))
+
+        if self.target_mode == "specific_ids":
+            ids_label = (
+                f"Set IDs ({len(self.target_user_ids)} valid)"
+                if self.target_user_ids
+                else "Set IDs"
+            )
+            ids_button = discord.ui.Button(
+                label=ids_label,
+                style=discord.ButtonStyle.secondary,
+                emoji="🆔",
+                row=4,
+            )
+            ids_button.callback = self.open_ids_modal
+            self.add_item(ids_button)
+
+        if self.role_mode == "specific":
+            prev_button = discord.ui.Button(
+                label="Prev Roles",
+                style=discord.ButtonStyle.secondary,
+                emoji="⬅️",
+                row=4,
+                disabled=self.role_page <= 0,
+            )
+            prev_button.callback = self.previous_role_page
+            self.add_item(prev_button)
+
+            next_button = discord.ui.Button(
+                label="Next Roles",
+                style=discord.ButtonStyle.secondary,
+                emoji="➡️",
+                row=4,
+                disabled=self.role_page >= self.total_role_pages() - 1,
+            )
+            next_button.callback = self.next_role_page
+            self.add_item(next_button)
+
+        grant_button = discord.ui.Button(
+            label="Grant Talismans",
+            style=discord.ButtonStyle.success,
+            emoji="✅",
+            row=4,
+        )
+        grant_button.callback = self.grant_talismans
+        self.add_item(grant_button)
+
+        close_button = discord.ui.Button(
+            label="Close",
+            style=discord.ButtonStyle.danger,
+            emoji="❌",
+            row=4,
+        )
+        close_button.callback = self.close_panel
+        self.add_item(close_button)
+
+    async def refresh_message(self) -> None:
+        self._refresh_items()
+        if self.message:
+            await self.message.edit(embed=self.build_embed(), view=self)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message(
+                "❌ Only the command user can control this panel.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def open_ids_modal(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(GMTalismanIdsModal(self))
+
+    async def previous_role_page(self, interaction: discord.Interaction):
+        self.role_page = max(0, self.role_page - 1)
+        await interaction.response.defer()
+        await self.refresh_message()
+
+    async def next_role_page(self, interaction: discord.Interaction):
+        self.role_page = min(self.total_role_pages() - 1, self.role_page + 1)
+        await interaction.response.defer()
+        await self.refresh_message()
+
+    async def grant_talismans(self, interaction: discord.Interaction):
+        if not await self.gm_cog._ensure_newwerewolf_talisman_tables():
+            return await interaction.response.send_message(
+                "❌ NewWerewolf talisman inventory is unavailable right now.",
+                ephemeral=True,
+            )
+
+        if self.target_mode == "everyone":
+            target_user_ids = await self.gm_cog._fetch_character_user_ids()
+            missing_ids: list[int] = []
+            source_label = "everyone"
+        else:
+            if not self.target_user_ids:
+                return await interaction.response.send_message(
+                    "❌ Set at least one valid Discord ID first.",
+                    ephemeral=True,
+                )
+            target_user_ids, missing_ids = await self.gm_cog._filter_character_user_ids(
+                self.target_user_ids
+            )
+            self.target_user_ids = target_user_ids
+            self.target_missing_ids = missing_ids
+            source_label = "specific_ids"
+
+        if not target_user_ids:
+            return await interaction.response.send_message(
+                "❌ No valid character users are selected.",
+                ephemeral=True,
+            )
+
+        specific_roles: list[NewWerewolfRole] | None = None
+        if self.role_mode == "all":
+            specific_roles = self.ordered_all_roles()
+            mode_label = "all basic roles"
+        elif self.role_mode == "specific":
+            specific_roles = self.ordered_selected_roles()
+            if not specific_roles:
+                return await interaction.response.send_message(
+                    "❌ Select at least one talisman role first.",
+                    ephemeral=True,
+                )
+            mode_label = f"specific ({len(specific_roles)} roles)"
+        else:
+            mode_label = "random"
+
+        await interaction.response.defer(ephemeral=True)
+        aggregate_counts = await self.gm_cog._grant_talismans_to_users(
+            target_user_ids,
+            amount=self.amount,
+            specific_roles=specific_roles,
+        )
+        breakdown = self.gm_cog._format_talisman_breakdown(aggregate_counts)
+        self.last_result = (
+            f"Targets: {len(target_user_ids)} | Amount: {self.amount} | Scope:"
+            f" {source_label}\n{breakdown}"
+        )
+        await self.refresh_message()
+
+        await self.gm_cog._log_talisman_grant(
+            self.ctx,
+            source="gmtalismanpanel",
+            target_count=len(target_user_ids),
+            amount=self.amount,
+            mode=mode_label,
+            breakdown=breakdown,
+            missing_ids=missing_ids if self.target_mode == "specific_ids" else None,
+        )
+
+        response = (
+            f"Granted talismans to **{len(target_user_ids)}** target(s).\n"
+            f"Breakdown: {breakdown}"
+        )
+        if missing_ids:
+            response += f"\nSkipped IDs without characters: {len(missing_ids)}"
+        await interaction.followup.send(response, ephemeral=True)
+
+    async def close_panel(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        if self.message:
+            await self.message.delete()
+        self.stop()
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
 
 
 class GMInviteView(discord.ui.View):

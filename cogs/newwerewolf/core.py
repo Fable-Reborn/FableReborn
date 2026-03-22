@@ -3846,14 +3846,6 @@ class Game:
         if not applied_targets:
             return
 
-        mentions = ", ".join(target.user.mention for target in applied_targets)
-        await self.ctx.send(
-            _(
-                "😴 Nightmare effects: {targets} fell asleep and cannot use abilities"
-                " tonight."
-            ).format(targets=mentions)
-        )
-
     async def clear_grumpy_grandma_day_silence(self) -> None:
         for player in self.players:
             player.is_grumpy_silenced_today = False
@@ -6114,12 +6106,6 @@ class Game:
                     "😴 You selected **{target}** to sleep next night."
                     "\n{game_link}"
                 ).format(target=target.user, game_link=self.game_link)
-            )
-            await self.ctx.send(
-                _(
-                    "😴 A nightmare has been cast. **{target}** may be unable to use"
-                    " abilities tonight."
-                ).format(target=target.user.mention)
             )
 
     async def handle_pacifist_reveal(self) -> bool:
