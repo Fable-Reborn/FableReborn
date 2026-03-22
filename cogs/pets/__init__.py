@@ -37,9 +37,11 @@ from classes.classes import from_string as class_from_string
 from classes.converters import IntGreaterThan
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils import random
-from utils.checks import has_char, has_money, is_gm
+from utils.checks import has_char, has_money, is_gm, is_patreon
 from utils.i18n import _, locale_doc
 from utils.joins import SingleJoinView
+
+DAYCARE_OWNER_REQUIRED_PATREON_TIER = 1
 
 
 class PetSelect(discord.ui.Select):
@@ -1350,7 +1352,7 @@ class Pets(commands.Cog):
     DAYCARE_SELF_BOARDING_RATE = 1.20
     DAYCARE_TRUST_RATE = 0.35
     DAYCARE_TRUST_CAP_PER_DAY = 6
-    DAYCARE_REQUIRED_PATREON_TIER = 1
+    DAYCARE_REQUIRED_PATREON_TIER = DAYCARE_OWNER_REQUIRED_PATREON_TIER
     DAYCARE_ROOM_UPKEEPS = {
         "standard": 0,
         "nursery": 8000,
@@ -4063,7 +4065,7 @@ class Pets(commands.Cog):
 
     @daycare.command(brief=_("Open your automated daycare business"))
     @has_char()
-    @is_gm()
+    @is_patreon(min_tier=DAYCARE_OWNER_REQUIRED_PATREON_TIER)
     async def open(self, ctx, *, name: str = None):
         if not await self.is_ranger_owner(ctx):
             return await ctx.send("❌ You need to be in the Ranger class line to open a daycare.")
@@ -4128,7 +4130,7 @@ class Pets(commands.Cog):
 
     @daycare.command(brief=_("Close your daycare to new boardings"))
     @has_char()
-    @is_gm()
+    @is_patreon(min_tier=DAYCARE_OWNER_REQUIRED_PATREON_TIER)
     async def close(self, ctx):
         if not await self.is_ranger_owner(ctx):
             return await ctx.send("❌ You need to be in the Ranger class line to manage a daycare.")
@@ -4174,7 +4176,7 @@ class Pets(commands.Cog):
 
     @daycare.command(brief=_("Upgrade your daycare facilities"))
     @has_char()
-    @is_gm()
+    @is_patreon(min_tier=DAYCARE_OWNER_REQUIRED_PATREON_TIER)
     async def upgrade(self, ctx, upgrade_name: str = None):
         if not await self.is_ranger_owner(ctx):
             return await ctx.send("❌ You need to be in the Ranger class line to manage a daycare.")
@@ -4218,7 +4220,7 @@ class Pets(commands.Cog):
 
     @daycare.command(brief=_("List your daycare packages"))
     @has_char()
-    @is_gm()
+    @is_patreon(min_tier=DAYCARE_OWNER_REQUIRED_PATREON_TIER)
     async def packages(self, ctx):
         async with self.bot.pool.acquire() as conn:
             has_access, auto_closed = await self.ensure_daycare_management_access(
@@ -4256,7 +4258,7 @@ class Pets(commands.Cog):
 
     @daycare.command(brief=_("Create a daycare package"))
     @has_char()
-    @is_gm()
+    @is_patreon(min_tier=DAYCARE_OWNER_REQUIRED_PATREON_TIER)
     async def packagecreate(self, ctx, *, spec: str = None):
         if not await self.is_ranger_owner(ctx):
             return await ctx.send("❌ You need to be in the Ranger class line to manage a daycare.")
@@ -4349,7 +4351,7 @@ class Pets(commands.Cog):
 
     @daycare.command(brief=_("Delete a daycare package"))
     @has_char()
-    @is_gm()
+    @is_patreon(min_tier=DAYCARE_OWNER_REQUIRED_PATREON_TIER)
     async def packagedelete(self, ctx, package_id: int):
         if not await self.is_ranger_owner(ctx):
             return await ctx.send("❌ You need to be in the Ranger class line to manage a daycare.")
@@ -4387,7 +4389,7 @@ class Pets(commands.Cog):
 
     @daycare.command(brief=_("Configure your daycare reception greeting"))
     @has_char()
-    @is_gm()
+    @is_patreon(min_tier=DAYCARE_OWNER_REQUIRED_PATREON_TIER)
     async def reception(self, ctx, *, spec: str = None):
         if not await self.is_ranger_owner(ctx):
             return await ctx.send("❌ You need to be in the Ranger class line to manage a daycare.")
@@ -4679,7 +4681,7 @@ class Pets(commands.Cog):
 
     @daycare.command(brief=_("View your daycare ledger"))
     @has_char()
-    @is_gm()
+    @is_patreon(min_tier=DAYCARE_OWNER_REQUIRED_PATREON_TIER)
     async def ledger(self, ctx):
         async with self.bot.pool.acquire() as conn:
             has_access, auto_closed = await self.ensure_daycare_management_access(
