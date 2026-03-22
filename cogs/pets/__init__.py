@@ -1397,7 +1397,7 @@ class Pets(commands.Cog):
         "play_yard": "+20 happiness/day.",
         "training_ring": "+15% XP gain.",
         "luxury_suite": "+1 trust/day and +10 happiness/day.",
-        "nursery": "Baby/Juvenile pets get +15 happiness/day, +10 hunger/day, and +1 trust/day.",
+        "nursery": "Baby/Juvenile pets get +15 happiness/day, +10 hunger/day, +1 trust/day, and 50% faster growth time.",
         "elemental_habitat": "+25% XP for customer boardings that use elemental food.",
     }
     DAYCARE_STAGE_DECAY = {
@@ -1895,6 +1895,18 @@ class Pets(commands.Cog):
     def get_daycare_room_effect_text(self, room_type: str) -> str:
         return self.DAYCARE_ROOM_EFFECTS.get(room_type, "No extra effect.")
 
+    def get_daycare_growth_acceleration(
+        self,
+        room_type: str,
+        growth_stage: str,
+        days_booked: int,
+    ) -> datetime.timedelta | None:
+        room_key = str(room_type or "standard").lower()
+        stage_key = str(growth_stage or "adult").lower()
+        if room_key != "nursery" or stage_key not in {"baby", "juvenile"}:
+            return None
+        return datetime.timedelta(days=max(1, int(days_booked)) * 0.5)
+
     def apply_daycare_room_effects(
         self,
         room_type: str,
@@ -1931,7 +1943,7 @@ class Pets(commands.Cog):
                 adjusted["trust_per_day"] += 1
                 adjusted["hunger_gain_per_day"] += 10
                 adjusted["happiness_gain_per_day"] += 15
-                notes.append("Nursery bonus for baby/juvenile pets: +1 trust/day, +10 hunger/day, +15 happiness/day.")
+                notes.append("Nursery bonus for baby/juvenile pets: +1 trust/day, +10 hunger/day, +15 happiness/day, 50% faster growth.")
         elif room_key == "elemental_habitat":
             if is_customer_boarding and food_type == "elemental_food":
                 adjusted["xp_per_day"] = int(math.ceil(int(adjusted["xp_per_day"]) * 1.25))
@@ -2727,6 +2739,21 @@ class Pets(commands.Cog):
             boarding_id,
             pet_id,
         )
+        growth_acceleration = self.get_daycare_growth_acceleration(
+            package["room_type"],
+            pet["growth_stage"],
+            days_booked,
+        )
+        if growth_acceleration is not None and pet.get("growth_time") is not None:
+            await conn.execute(
+                """
+                UPDATE monster_pets
+                SET growth_time = GREATEST(NOW(), growth_time - $1::interval)
+                WHERE id = $2;
+                """,
+                growth_acceleration,
+                pet_id,
+            )
 
         return {
             "boarding_id": boarding_id,
