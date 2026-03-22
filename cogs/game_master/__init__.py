@@ -2860,6 +2860,19 @@ class GameMaster(commands.Cog):
                 break
 
         if not monster:
+            async with self.bot.pool.acquire() as conn:
+                db_monster = await conn.fetchrow(
+                    """
+                    SELECT result_name AS name, hp, attack, defense, element, url
+                    FROM splice_combinations
+                    WHERE LOWER(result_name) = LOWER($1)
+                    """,
+                    monster_name,
+                )
+                if db_monster:
+                    monster = dict(db_monster)
+
+        if not monster:
             await ctx.send(f"Monster '{monster_name}' not found.")
             return
 
@@ -3148,6 +3161,19 @@ class GameMaster(commands.Cog):
                     break
             if monster:
                 break
+
+        if not monster:
+            async with self.bot.pool.acquire() as conn:
+                db_monster = await conn.fetchrow(
+                    """
+                    SELECT result_name AS name, hp, attack, defense, element, url
+                    FROM splice_combinations
+                    WHERE LOWER(result_name) = LOWER($1)
+                    """,
+                    monster_name,
+                )
+                if db_monster:
+                    monster = dict(db_monster)
 
         if not monster:
             await ctx.send(f"Monster '{monster_name}' not found.")
