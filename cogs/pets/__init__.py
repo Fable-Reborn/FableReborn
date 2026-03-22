@@ -45,7 +45,9 @@ DAYCARE_OWNER_REQUIRED_PATREON_TIER = 1
 
 
 class PetSelect(discord.ui.Select):
-    def __init__(self, pets):
+    def __init__(self, pets, cog_instance, boarding_lookup=None):
+        self.cog = cog_instance
+        self.boarding_lookup = boarding_lookup or {}
         # Create options for each pet
         options = []
         for i, pet in enumerate(pets):
@@ -64,6 +66,11 @@ class PetSelect(discord.ui.Select):
             ]
             if pet.get("alt_name"):
                 description_parts.append(f"Alias: {pet['alt_name']}")
+            boarding = self.boarding_lookup.get(int(pet["id"]))
+            if boarding and boarding.get("status") == "active":
+                description_parts.append(
+                    f"Daycare: {self.cog.format_daycare_time_remaining(boarding['ends_at'])} left"
+                )
 
             options.append(
                 discord.SelectOption(
@@ -87,17 +94,18 @@ class PetSelect(discord.ui.Select):
         await view.send_page(interaction)
 
 class PetPaginator(discord.ui.View):
-    def __init__(self, pets, author, cog_instance):
+    def __init__(self, pets, author, cog_instance, boarding_lookup=None):
         super().__init__(timeout=60)
         self.pets = pets
         self.author = author
         self.cog = cog_instance  # Store reference to the cog instance
+        self.boarding_lookup = boarding_lookup or {}
         self.index = 0
         self.message = None  # To store the message reference
         
         # Add the dropdown menu if there are pets
         if pets:
-            self.add_item(PetSelect(pets))
+            self.add_item(PetSelect(pets, cog_instance, self.boarding_lookup))
             
     async def on_timeout(self):
         """Auto-close the pets box when the view times out"""
@@ -202,6 +210,15 @@ class PetPaginator(discord.ui.View):
         )
         if pet.get("alt_name"):
             details_value += f"\n**Alias:** {pet['alt_name']}"
+        boarding = self.boarding_lookup.get(int(pet["id"]))
+        if boarding and boarding.get("status") == "active":
+            details_value += (
+                f"\n**Daycare:** In daycare"
+                f"\n**Boarding ID:** {boarding['id']}"
+                f"\n**Package:** {boarding['package_name']}"
+                f"\n**Daycare Name:** {boarding['daycare_name']}"
+                f"\n**Time Left:** {self.cog.format_daycare_time_remaining(boarding['ends_at'])}"
+            )
 
         embed.add_field(
             name="🌟 **Details**",
@@ -3833,8 +3850,35 @@ class Pets(commands.Cog):
                 if not pets:
                     await ctx.send("You don't have any pets.")
                     return
+                pet_ids_with_boarding = [
+                    int(pet["id"])
+                    for pet in pets
+                    if pet.get("daycare_boarding_id")
+                ]
+                boarding_lookup = {}
+                if pet_ids_with_boarding:
+                    active_boardings = await conn.fetch(
+                        """
+                        SELECT
+                            b.id,
+                            b.pet_id,
+                            b.ends_at,
+                            b.status,
+                            p.name AS package_name,
+                            d.name AS daycare_name
+                        FROM pet_daycare_boardings b
+                        JOIN pet_daycare_packages p ON p.id = b.package_id
+                        JOIN pet_daycares d ON d.id = b.daycare_id
+                        WHERE b.pet_id = ANY($1::bigint[]);
+                        """,
+                        pet_ids_with_boarding,
+                    )
+                    boarding_lookup = {
+                        int(boarding["pet_id"]): boarding
+                        for boarding in active_boardings
+                    }
 
-            view = PetPaginator(pets, ctx.author, self)
+            view = PetPaginator(pets, ctx.author, self, boarding_lookup)
             embed = view.get_embed()
             view.message = await ctx.send(embed=embed, view=view)
         except Exception as e:
