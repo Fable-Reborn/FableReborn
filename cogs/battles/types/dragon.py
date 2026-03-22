@@ -398,24 +398,24 @@ class DragonBattle(Battle):
         if await self.is_battle_over():
             return False
         
-        # Process per-turn effects for player pets
-        if hasattr(self.ctx.bot.cogs["Battles"], "battle_factory"):
+        # Process per-turn effects only for the acting pet, matching other battle types.
+        if (
+            current_combatant.is_pet
+            and current_combatant.is_alive()
+            and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")
+        ):
             pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-            for player in self.player_team.combatants:
-                if player.is_pet and player.is_alive():
-                    # Set team references for skills that need them
-                    if self._has_effect(player, "possessed"):
-                        setattr(player, 'team', self.dragon_team)
-                        setattr(player, 'enemy_team', self.player_team)
-                    else:
-                        setattr(player, 'team', self.player_team)
-                        setattr(player, 'enemy_team', self.dragon_team)
-                    
-                    # Process per-turn effects
-                    turn_messages = pet_ext.process_skill_effects_per_turn(player)
-                    if turn_messages:
-                        for turn_msg in turn_messages:
-                            await self.add_to_log(turn_msg)
+            if self._has_effect(current_combatant, "possessed"):
+                setattr(current_combatant, 'team', self.dragon_team)
+                setattr(current_combatant, 'enemy_team', self.player_team)
+            else:
+                setattr(current_combatant, 'team', self.player_team)
+                setattr(current_combatant, 'enemy_team', self.dragon_team)
+
+            turn_messages = pet_ext.process_skill_effects_per_turn(current_combatant)
+            if turn_messages:
+                for turn_msg in turn_messages:
+                    await self.add_to_log(turn_msg)
         
         self._decrement_status_effects(current_combatant)
         # Update display after turn is processed
