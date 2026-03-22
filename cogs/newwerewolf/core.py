@@ -4058,28 +4058,32 @@ class Game:
             self.jail_relay_task.cancel()
             self.jail_relay_task = None
 
-    def _get_active_medium(self) -> Player | None:
-        medium = self.get_player_with_role(Role.MEDIUM)
-        if medium is not None and not medium.dead:
-            return medium
+    def _get_active_spirit_speakers(self) -> list[Player]:
+        speakers: list[Player] = []
         ritualist = self.get_player_with_role(Role.RITUALIST)
-        if ritualist is not None and not ritualist.dead and self.is_night_phase:
-            return ritualist
-        return None
+        if ritualist is not None and not ritualist.dead:
+            speakers.append(ritualist)
+        medium = self.get_player_with_role(Role.MEDIUM)
+        if medium is not None and not medium.dead and self.is_night_phase:
+            speakers.append(medium)
+        return speakers
 
-    def _get_medium_relay_participants(self) -> tuple[Player | None, list[Player]]:
-        medium = self._get_active_medium()
-        if medium is None:
-            return None, []
-        dead_players = [player for player in self.dead_players if player != medium]
-        return medium, dead_players
+    def _get_medium_relay_participants(self) -> tuple[list[Player], list[Player]]:
+        speakers = self._get_active_spirit_speakers()
+        if not speakers:
+            return [], []
+        dead_players = [player for player in self.dead_players if player not in speakers]
+        return speakers, dead_players
 
     async def relay_medium_messages(self) -> None:
         def check(message: discord.Message) -> bool:
-            medium, dead_players = self._get_medium_relay_participants()
-            if medium is None:
+            speakers, dead_players = self._get_medium_relay_participants()
+            if not speakers:
                 return False
-            allowed_ids = {medium.user.id, *(player.user.id for player in dead_players)}
+            allowed_ids = {
+                *(speaker.user.id for speaker in speakers),
+                *(player.user.id for player in dead_players),
+            }
             return (
                 message.author.id in allowed_ids
                 and isinstance(message.channel, discord.DMChannel)
@@ -4087,8 +4091,8 @@ class Game:
 
         try:
             while True:
-                medium, dead_players = self._get_medium_relay_participants()
-                if medium is None:
+                speakers, dead_players = self._get_medium_relay_participants()
+                if not speakers:
                     return
                 if not dead_players:
                     await asyncio.sleep(1)
@@ -4104,12 +4108,17 @@ class Game:
                 if not content:
                     continue
 
-                if message.author.id == medium.user.id:
-                    if medium.role == Role.RITUALIST:
+                speaker_by_id = {speaker.user.id: speaker for speaker in speakers}
+                active_speaker = speaker_by_id.get(message.author.id)
+
+                if active_speaker is not None:
+                    if active_speaker.role == Role.RITUALIST:
                         prefix = _("**Anonymous voice**")
                     else:
                         prefix = _("**Medium**")
                     recipients = [player.user for player in dead_players]
+                    for recipient in recipients:
+                        await recipient.send(f"{prefix}: {content}")
                 else:
                     sender = discord.utils.find(
                         lambda player: player.user.id == message.author.id,
@@ -4117,28 +4126,38 @@ class Game:
                     )
                     if sender is None:
                         continue
-                    if medium.role == Role.RITUALIST:
-                        prefix = _("**A dead soul**")
-                    else:
-                        prefix = _("**{player} - {role}**").format(
-                            player=sender.user.display_name,
-                            role=self.get_role_name(sender),
-                        )
-                    recipients = [medium.user]
-                    recipients.extend(
+                    identified_prefix = _("**{player} - {role}**").format(
+                        player=sender.user.display_name,
+                        role=self.get_role_name(sender),
+                    )
+                    anonymous_prefix = _("**A dead soul**")
+
+                    medium_speakers = [
+                        speaker for speaker in speakers if speaker.role == Role.MEDIUM
+                    ]
+                    ritualist_speakers = [
+                        speaker for speaker in speakers if speaker.role == Role.RITUALIST
+                    ]
+                    for speaker in medium_speakers:
+                        await speaker.user.send(f"{identified_prefix}: {content}")
+                    for speaker in ritualist_speakers:
+                        await speaker.user.send(f"{anonymous_prefix}: {content}")
+
+                    dead_prefix = (
+                        identified_prefix if medium_speakers else anonymous_prefix
+                    )
+                    for recipient in [
                         player.user
                         for player in dead_players
                         if player.user.id != sender.user.id
-                    )
-
-                for recipient in recipients:
-                    await recipient.send(f"{prefix}: {content}")
+                    ]:
+                        await recipient.send(f"{dead_prefix}: {content}")
         except asyncio.CancelledError:
             return
 
     async def _ensure_medium_relay(self) -> None:
-        medium = self._get_active_medium()
-        if medium is None:
+        speakers = self._get_active_spirit_speakers()
+        if not speakers:
             await self._stop_medium_relay()
             return
         if self.medium_relay_task and self.medium_relay_task.done():
@@ -7029,15 +7048,15 @@ class Game:
         if medium := self.get_player_with_role(Role.MEDIUM):
             await medium.send(
                 _(
-                    "🔮 You can communicate privately with dead players. Whenever a"
-                    " player dies, a direct relay opens. Send any DM message here to"
-                    " speak with the dead.\n{game_link}"
+                    "🔮 At night, you can communicate privately with dead players."
+                    " Whenever a player dies, a direct relay opens during the night."
+                    " Send any DM message here to speak with the dead.\n{game_link}"
                 ).format(game_link=self.game_link)
             )
         if ritualist := self.get_player_with_role(Role.RITUALIST):
             await ritualist.send(
                 _(
-                    "🔮 At night, you can anonymously communicate with the dead."
+                    "🔮 At any time, you can anonymously communicate with the dead."
                     " During your turn, you may update your mark on any living player."
                     " If that player later dies, your latest mark will attempt to"
                     " return after a full phase, even if you are already dead. If"
@@ -11534,8 +11553,16 @@ class Player:
             self.game.recent_deaths.append(self)
             await self.game.sync_player_ww_role(self)
             await self.game.trigger_ritualist_marked_resurrection(self)
-            whisperer = self.game._get_active_medium()
-            if self.role in (Role.MEDIUM, Role.RITUALIST) and whisperer is None:
+            whisperers = self.game._get_active_spirit_speakers()
+            medium_whisperer = discord.utils.find(
+                lambda player: player.role == Role.MEDIUM,
+                whisperers,
+            )
+            ritualist_whisperer = discord.utils.find(
+                lambda player: player.role == Role.RITUALIST,
+                whisperers,
+            )
+            if self.role in (Role.MEDIUM, Role.RITUALIST) and not whisperers:
                 for dead_player in [
                     player for player in self.game.dead_players if player != self
                 ]:
@@ -11544,35 +11571,48 @@ class Player:
                             "🔮 The dead whisper line is now closed.\n{game_link}"
                         ).format(game_link=self.game.game_link)
                     )
-            elif whisperer and not whisperer.dead:
-                if whisperer.role == Role.MEDIUM:
+            elif whisperers:
+                if medium_whisperer and ritualist_whisperer:
+                    await self.send(
+                        _(
+                            "🔮 The dead whisper line is open. A **Medium** can speak"
+                            " with the dead at night, and an anonymous voice may speak"
+                            " with the dead at any time.\n{game_link}"
+                        ).format(game_link=self.game.game_link)
+                    )
+                elif medium_whisperer:
                     await self.send(
                         _(
                             "🔮 A **Medium** is alive. Send any DM message here and it"
-                            " will be relayed to the Medium while they are alive."
+                            " will be relayed to the Medium during the night while"
+                            " they are alive."
                             "\n{game_link}"
                         ).format(game_link=self.game.game_link)
                     )
-                    await whisperer.send(
-                        _(
-                            "🔮 **{player}** joined the dead whisper line. Send any DM"
-                            " message here to talk.\n{game_link}"
-                        ).format(player=self.user, game_link=self.game.game_link)
-                    )
-                elif whisperer.role == Role.RITUALIST:
+                elif ritualist_whisperer:
                     await self.send(
                         _(
-                            "🔮 An anonymous voice may speak with the dead at night."
-                            " Send any DM message and it may be relayed during night."
+                            "🔮 An anonymous voice may speak with the dead at any"
+                            " time. Send any DM message here and it may be relayed."
                             "\n{game_link}"
                         ).format(game_link=self.game.game_link)
                     )
-                    await whisperer.send(
-                        _(
-                            "🔮 A new dead player joined your night whisper line."
-                            "\n{game_link}"
-                        ).format(game_link=self.game.game_link)
-                    )
+
+                for whisperer in whisperers:
+                    if whisperer.role == Role.MEDIUM:
+                        await whisperer.send(
+                            _(
+                                "🔮 **{player}** joined the dead whisper line. Send any"
+                                " DM message here to talk.\n{game_link}"
+                            ).format(player=self.user, game_link=self.game.game_link)
+                        )
+                    elif whisperer.role == Role.RITUALIST:
+                        await whisperer.send(
+                            _(
+                                "🔮 A new dead player joined your whisper line."
+                                "\n{game_link}"
+                            ).format(game_link=self.game.game_link)
+                        )
             await self.game._ensure_medium_relay()
             await self.game.handle_wolf_trickster_appearance_steal(self)
             death_reveal_role = self.wolf_trickster_death_reveal_role
