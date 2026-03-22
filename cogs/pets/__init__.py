@@ -1587,7 +1587,7 @@ class Pets(commands.Cog):
                 },
                 "Protection": {
                     1: {"name": "Divine Shield", "description": "30% resistance to dark and corrupted damage + 8% resistance to all other damage", "cost": 1},
-                    3: {"name": "Healing Light", "description": "Heals all allies for 7% of the lower max HP between pet and ally each turn", "cost": 3},
+                    3: {"name": "Healing Light", "description": "Heals all allies for 7% of the lower max HP between pet and ally each turn", "cost": 2},
                     5: {"name": "Purification", "description": "Removes all debuffs from entire team at start of each turn", "cost": 3},
                     7: {"name": "Guardian Angel", "description": "Pet can sacrifice itself to prevent owner death, restore 60% HP, and grant a holy shield", "cost": 4},
                     10: {"name": "Divine Protection", "description": "ULTIMATE (15-25% HP): Team invincibility for 2 turns + a huge burst heal", "cost": 5}
