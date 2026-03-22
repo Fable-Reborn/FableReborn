@@ -1847,21 +1847,21 @@ class RegionGMPanelView(discord.ui.View):
         self.drop_select = RegionGMRegionSelect(
             self,
             selection_key="drops",
-            placeholder=_("Pick current-round drop regions"),
+            placeholder=_("Dropdown 1: sponsor drops for this round"),
             max_allowed=max(1, self.game._gm_drop_region_limit()),
             row=0,
         )
         self.toxic_select = RegionGMRegionSelect(
             self,
             selection_key="toxic",
-            placeholder=_("Pick next-round toxic regions"),
+            placeholder=_("Dropdown 2: toxic regions for next round"),
             max_allowed=2,
             row=1,
         )
         self.mutt_select = RegionGMRegionSelect(
             self,
             selection_key="mutts",
-            placeholder=_("Pick next-round mutt warning"),
+            placeholder=_("Dropdown 3: mutt warning for next round"),
             max_allowed=1,
             row=2,
         )
@@ -1995,6 +1995,15 @@ class RegionGMPanelView(discord.ui.View):
             inline=False,
         )
         embed.add_field(
+            name=_("Dropdown Guide"),
+            value=_(
+                "1. Sponsor Drops: chooses loot drops that appear this round.\n"
+                "2. Toxic Next Round: marks regions that become toxic next round.\n"
+                "3. Mutt Warning Next Round: queues one region for mutt pressure next round."
+            ),
+            inline=False,
+        )
+        embed.add_field(
             name=_("GM Powers"),
             value="\n".join(self.game._gm_power_status_lines()),
             inline=False,
@@ -2103,14 +2112,14 @@ class RegionGMPowerView(discord.ui.View):
         self.seal_select = RegionGMRegionSelect(
             self,
             selection_key="seal",
-            placeholder=_("Prepare Arena Seal"),
+            placeholder=_("Dropdown 1: queue Arena Seal"),
             max_allowed=1,
             row=0,
         )
         self.beacon_select = RegionGMRegionSelect(
             self,
             selection_key="beacon",
-            placeholder=_("Prepare Blood Beacon"),
+            placeholder=_("Dropdown 2: queue Blood Beacon"),
             max_allowed=1,
             row=1,
         )
@@ -2169,6 +2178,14 @@ class RegionGMPowerView(discord.ui.View):
         embed.add_field(
             name=_("Blood Beacon"),
             value=self.game._gm_blood_beacon_description(),
+            inline=False,
+        )
+        embed.add_field(
+            name=_("Dropdown Guide"),
+            value=_(
+                "1. Arena Seal: prepares a lockdown target.\n"
+                "2. Blood Beacon: prepares a hotspot target."
+            ),
             inline=False,
         )
         embed.set_footer(
@@ -2324,13 +2341,13 @@ class RegionGMShowdownView(discord.ui.View):
         self.first_select = RegionGMShowdownFighterSelect(
             self,
             slot_key="first",
-            placeholder=_("Pick the first duelist"),
+            placeholder=_("Dropdown 1: first duelist"),
             row=0,
         )
         self.second_select = RegionGMShowdownFighterSelect(
             self,
             slot_key="second",
-            placeholder=_("Pick the second duelist"),
+            placeholder=_("Dropdown 2: second duelist"),
             row=1,
         )
         self.add_item(self.first_select)
@@ -2382,6 +2399,14 @@ class RegionGMShowdownView(discord.ui.View):
             ).format(
                 first=self._selected_name(self.first_id),
                 second=self._selected_name(self.second_id),
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name=_("Dropdown Guide"),
+            value=_(
+                "1. First Duelist: choose the first tribute in Sudden Death.\n"
+                "2. Second Duelist: choose the opposing tribute."
             ),
             inline=False,
         )
@@ -3019,7 +3044,7 @@ class RegionGMGame(RegionGame):
         default_pair = random.choice(pairs)
         try:
             contenders_by_id: dict[int, discord.Member] = {}
-            for _, left, right in pairs:
+            for region_name, left, right in pairs:
                 contenders_by_id[left.id] = left
                 contenders_by_id[right.id] = right
             contenders = list(contenders_by_id.values())
