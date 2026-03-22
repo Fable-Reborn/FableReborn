@@ -2816,6 +2816,23 @@ class Pets(commands.Cog):
             message += "\nYour daycare booking finished and the pet was returned automatically."
         return message
 
+    def format_daycare_time_remaining(self, ends_at, now=None) -> str:
+        now = now or datetime.datetime.now(datetime.timezone.utc)
+        remaining = ends_at - now
+        total_seconds = max(0, int(remaining.total_seconds()))
+        days, remainder = divmod(total_seconds, 86400)
+        hours, minutes = divmod(remainder, 3600)
+        minutes //= 60
+
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        if hours:
+            parts.append(f"{hours}h")
+        if minutes or not parts:
+            parts.append(f"{minutes}m")
+        return " ".join(parts)
+
     async def send_daycare_auto_return_dm(self, settlement: dict):
         try:
             user = self.bot.get_user(settlement["customer_user_id"])
@@ -3993,6 +4010,25 @@ class Pets(commands.Cog):
                 """,
                 daycare["id"],
             )
+            active_boarding_rows = await conn.fetch(
+                """
+                SELECT
+                    b.id,
+                    b.customer_user_id,
+                    b.prepaid_amount,
+                    b.projected_operating_cost,
+                    b.ends_at,
+                    p.name AS package_name,
+                    mp.name AS pet_name
+                FROM pet_daycare_boardings b
+                JOIN pet_daycare_packages p ON p.id = b.package_id
+                JOIN monster_pets mp ON mp.id = b.pet_id
+                WHERE b.daycare_id = $1 AND b.status = 'active'
+                ORDER BY b.ends_at ASC, b.id ASC
+                LIMIT 10;
+                """,
+                daycare["id"],
+            )
 
         caps = self.get_daycare_caps(daycare)
         embed = discord.Embed(
@@ -4025,6 +4061,7 @@ class Pets(commands.Cog):
             value=(
                 (
                     f"`{ctx.clean_prefix}pets daycare open [name]`\n"
+                    f"`{ctx.clean_prefix}pets daycare rename <name>`\n"
                     f"`{ctx.clean_prefix}pets daycare close`\n"
                     f"`{ctx.clean_prefix}pets daycare upgrade`\n"
                     f"`{ctx.clean_prefix}pets daycare reception [template]`\n"
@@ -4048,6 +4085,26 @@ class Pets(commands.Cog):
             ),
             inline=True,
         )
+        if active_boarding_rows:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            lines = []
+            for boarding in active_boarding_rows:
+                projected_profit = int(boarding["prepaid_amount"]) - int(boarding["projected_operating_cost"])
+                customer_label = (
+                    "You"
+                    if int(boarding["customer_user_id"]) == int(ctx.author.id)
+                    else f"<@{int(boarding['customer_user_id'])}>"
+                )
+                lines.append(
+                    f"**#{boarding['id']} {boarding['pet_name']}** | {boarding['package_name']}\n"
+                    f"Owner: {customer_label} | Left: `{self.format_daycare_time_remaining(boarding['ends_at'], now=now)}`\n"
+                    f"Paid: `${int(boarding['prepaid_amount']):,}` | Projected Profit: `{projected_profit:+,}`"
+                )
+            embed.add_field(
+                name="Active Boarding Pets",
+                value="\n\n".join(lines[:5]),
+                inline=False,
+            )
         embed.set_footer(text="No active boardings means your daycare costs $0/day.")
         await ctx.send(embed=embed)
 
@@ -4127,6 +4184,48 @@ class Pets(commands.Cog):
             await ctx.send(
                 f"✅ Opened **{daycare_name}**. Use `{ctx.clean_prefix}pets daycare packagecreate` to add packages."
             )
+
+    @daycare.command(brief=_("Rename your daycare"))
+    @has_char()
+    @is_patreon(min_tier=DAYCARE_OWNER_REQUIRED_PATREON_TIER)
+    async def rename(self, ctx, *, name: str):
+        if not await self.is_ranger_owner(ctx):
+            return await ctx.send("❌ You need to be in the Ranger class line to manage a daycare.")
+
+        requested_name = str(name).strip()
+        if not requested_name:
+            return await ctx.send("❌ Daycare name cannot be empty.")
+        if len(requested_name) > 60:
+            return await ctx.send("❌ Daycare name cannot exceed 60 characters.")
+
+        async with self.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                has_access, auto_closed = await self.ensure_daycare_management_access(
+                    conn,
+                    ctx.author.id,
+                )
+                if not has_access:
+                    return await ctx.send(
+                        self.get_daycare_management_locked_message(
+                            auto_closed=auto_closed
+                        )
+                    )
+                daycare = await self.get_daycare_for_owner(conn, ctx.author.id, for_update=True)
+                if not daycare:
+                    return await ctx.send("❌ You do not own a daycare yet.")
+
+                previous_name = str(daycare["name"])
+                await conn.execute(
+                    """
+                    UPDATE pet_daycares
+                    SET name = $1
+                    WHERE id = $2;
+                    """,
+                    requested_name,
+                    daycare["id"],
+                )
+
+        await ctx.send(f"✅ Renamed daycare from **{previous_name}** to **{requested_name}**.")
 
     @daycare.command(brief=_("Close your daycare to new boardings"))
     @has_char()
@@ -4695,6 +4794,25 @@ class Pets(commands.Cog):
             daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
             if not daycare:
                 return await ctx.send("❌ You do not own a daycare yet.")
+            active_boardings = await conn.fetch(
+                """
+                SELECT
+                    b.id,
+                    b.customer_user_id,
+                    b.prepaid_amount,
+                    b.projected_operating_cost,
+                    b.ends_at,
+                    p.name AS package_name,
+                    mp.name AS pet_name
+                FROM pet_daycare_boardings b
+                JOIN pet_daycare_packages p ON p.id = b.package_id
+                JOIN monster_pets mp ON mp.id = b.pet_id
+                WHERE b.daycare_id = $1 AND b.status = 'active'
+                ORDER BY b.ends_at ASC, b.id ASC
+                LIMIT 10;
+                """,
+                daycare["id"],
+            )
             entries = await conn.fetch(
                 """
                 SELECT entry_type, amount, note, created_at
@@ -4705,10 +4823,28 @@ class Pets(commands.Cog):
                 """,
                 daycare["id"],
             )
-        if not entries:
+        if not entries and not active_boardings:
             return await ctx.send("Your daycare ledger is empty.")
 
         lines = []
+        if active_boardings:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            lines.append("**Active Boarding Pets**")
+            for boarding in active_boardings:
+                projected_profit = int(boarding["prepaid_amount"]) - int(boarding["projected_operating_cost"])
+                customer_label = (
+                    "You"
+                    if int(boarding["customer_user_id"]) == int(ctx.author.id)
+                    else f"<@{int(boarding['customer_user_id'])}>"
+                )
+                lines.append(
+                    f"#{boarding['id']} **{boarding['pet_name']}** | {boarding['package_name']} | "
+                    f"Owner: {customer_label} | Left: `{self.format_daycare_time_remaining(boarding['ends_at'], now=now)}` | "
+                    f"Paid: `${int(boarding['prepaid_amount']):,}` | Projected Profit: `{projected_profit:+,}`"
+                )
+            if entries:
+                lines.append("")
+                lines.append("**Recent Ledger Entries**")
         for entry in entries:
             stamp = entry["created_at"].strftime("%Y-%m-%d")
             lines.append(f"`{stamp}` **{entry['entry_type']}** `{entry['amount']:+,}` - {entry['note'] or 'No note'}")
