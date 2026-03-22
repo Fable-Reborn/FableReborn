@@ -4261,7 +4261,7 @@ class NewWerewolf(commands.Cog):
             """View or manage your NewWerewolf talisman inventory and loadout.
 
             `{prefix}nww talismans`
-            `{prefix}nww talismans werewolf`
+            `{prefix}nww talismans equip werewolf`
             `{prefix}nww talismans unequip seer`
             `{prefix}nww talismans off`
 
@@ -4333,25 +4333,42 @@ class NewWerewolf(commands.Cog):
             ).format(count=self.MAX_ACTIVE_TALISMANS)
             embed.set_footer(
                 text=_(
-                    "Use `{prefix}nww talismans <role>` to equip, `{prefix}nww"
+                    "Use `{prefix}nww talismans equip <role>` (or `{prefix}nww"
+                    " talismans <role>`) to equip, `{prefix}nww"
                     " talismans unequip <role>` to remove one, or `{prefix}nww"
                     " talismans off` to clear all."
                 ).format(prefix=ctx.clean_prefix)
             )
             return await ctx.send(embed=embed)
 
-        normalized = " ".join(str(role).strip().casefold().split())
+        raw_role_text = str(role).strip()
+        normalized = " ".join(raw_role_text.casefold().split())
         if normalized in {"off", "none", "clear", "clear all", "disable all"}:
             await self._clear_user_active_talisman_roles(ctx.author.id)
             return await ctx.send(_("Your equipped NewWerewolf talismans have been cleared."))
 
         action = "equip"
-        role_text = role
-        for prefix in ("unequip ", "remove ", "disable ", "off "):
-            if normalized.startswith(prefix):
-                action = "unequip"
-                role_text = role[len(prefix):].strip()
+        role_text = raw_role_text
+        for prefix, parsed_action in (
+            ("equip", "equip"),
+            ("enable", "equip"),
+            ("unequip", "unequip"),
+            ("remove", "unequip"),
+            ("disable", "unequip"),
+            ("off", "unequip"),
+        ):
+            if normalized == prefix:
+                role_text = ""
+                action = parsed_action
                 break
+            if normalized.startswith(f"{prefix} "):
+                split_parts = raw_role_text.split(maxsplit=1)
+                role_text = split_parts[1].strip() if len(split_parts) > 1 else ""
+                action = parsed_action
+                break
+
+        if not role_text:
+            return await ctx.send(_("Please specify exactly one role."))
 
         parsed_roles, invalid_tokens = parse_custom_roles(role_text)
         if invalid_tokens or not parsed_roles:
