@@ -487,6 +487,7 @@ class DaycarePackageBuilderView(discord.ui.View):
                 f"**Name:** {self.state['name']}\n"
                 f"**Food:** {food_label}\n"
                 f"**Room:** {room_label}\n"
+                f"**Room Effect:** {self.cog.get_daycare_room_effect_text(self.state['room_type'])}\n"
                 f"**Feeds/Plays/Trains:** {self.state['feeds_per_day']}/{self.state['plays_per_day']}/{self.state['trains_per_day']}\n"
                 f"**Price/Day:** ${int(self.state['price_per_day']):,}"
             ),
@@ -517,6 +518,7 @@ class DaycarePackageBuilderView(discord.ui.View):
                 self.state["food_type"],
                 self.state["feeds_per_day"],
                 self.state["plays_per_day"],
+                self.state["room_type"],
             )
             profit_per_day = int(self.state["price_per_day"]) - int(metrics["operating_cost_per_day"])
             profit_label = "Profit/Day" if profit_per_day >= 0 else "Loss/Day"
@@ -1057,7 +1059,8 @@ class DaycareBoardingView(discord.ui.View):
                 f"Food: `{package['food_type']}` | Room: `{room_label}`\n"
                 f"F/P/T: `{int(package['feeds_per_day'])}/{int(package['plays_per_day'])}/{int(package['trains_per_day'])}` | "
                 f"Min Stage: `{str(package['min_growth_stage']).title()}`\n"
-                f"Charge/Day: `${int(package['list_price_per_day']):,}`"
+                f"Charge/Day: `${int(package['list_price_per_day']):,}`\n"
+                f"Room Effect: {self.cog.get_daycare_room_effect_text(package['room_type'])}"
             )
 
         embed.add_field(name="Pet", value=pet_value, inline=False)
@@ -1097,6 +1100,9 @@ class DaycareBoardingView(discord.ui.View):
                     f"\n**Owner Subsidy:** `${int(preview['owner_subsidy_total']):,}` "
                     f"(the daycare owner has to cover this loss up front)"
                 )
+            room_notes = preview["projection"].get("room_effect_notes") or []
+            if room_notes:
+                preview_value += "\n**Room Bonus:** " + " ".join(room_notes)
 
         embed.add_field(name="Projection", value=preview_value, inline=False)
         footer = "Only you can use this panel."
@@ -1385,6 +1391,14 @@ class Pets(commands.Cog):
         "training_ring": "Training Ring",
         "elemental_habitat": "Elemental Habitat",
         "luxury_suite": "Luxury Suite",
+    }
+    DAYCARE_ROOM_EFFECTS = {
+        "standard": "No extra effect.",
+        "play_yard": "+20 happiness/day.",
+        "training_ring": "+15% XP gain.",
+        "luxury_suite": "+1 trust/day and +10 happiness/day.",
+        "nursery": "Baby/Juvenile pets get +15 happiness/day, +10 hunger/day, and +1 trust/day.",
+        "elemental_habitat": "+25% XP for customer boardings that use elemental food.",
     }
     DAYCARE_STAGE_DECAY = {
         "baby": {"hunger": 20, "happiness": 10},
@@ -1878,6 +1892,57 @@ class Pets(commands.Cog):
     def get_room_upkeep(self, room_type: str) -> int:
         return int(self.DAYCARE_ROOM_UPKEEPS.get(room_type, 0))
 
+    def get_daycare_room_effect_text(self, room_type: str) -> str:
+        return self.DAYCARE_ROOM_EFFECTS.get(room_type, "No extra effect.")
+
+    def apply_daycare_room_effects(
+        self,
+        room_type: str,
+        pet,
+        metrics: dict[str, int],
+        *,
+        owner_user_id: int | None = None,
+        customer_user_id: int | None = None,
+        package_food_type: str | None = None,
+    ) -> tuple[dict[str, int], list[str]]:
+        adjusted = dict(metrics)
+        notes = []
+        room_key = str(room_type or "standard").lower()
+        growth_stage = str(pet.get("growth_stage", "adult") or "adult").lower()
+        food_type = str(package_food_type or "").lower()
+        is_customer_boarding = (
+            owner_user_id is not None
+            and customer_user_id is not None
+            and int(owner_user_id) != int(customer_user_id)
+        )
+
+        if room_key == "play_yard":
+            adjusted["happiness_gain_per_day"] += 20
+            notes.append("+20 happiness/day from Play Yard.")
+        elif room_key == "training_ring":
+            adjusted["xp_per_day"] = int(math.ceil(int(adjusted["xp_per_day"]) * 1.15))
+            notes.append("+15% XP from Training Ring.")
+        elif room_key == "luxury_suite":
+            adjusted["trust_per_day"] += 1
+            adjusted["happiness_gain_per_day"] += 10
+            notes.append("+1 trust/day and +10 happiness/day from Luxury Suite.")
+        elif room_key == "nursery":
+            if growth_stage in {"baby", "juvenile"}:
+                adjusted["trust_per_day"] += 1
+                adjusted["hunger_gain_per_day"] += 10
+                adjusted["happiness_gain_per_day"] += 15
+                notes.append("Nursery bonus for baby/juvenile pets: +1 trust/day, +10 hunger/day, +15 happiness/day.")
+        elif room_key == "elemental_habitat":
+            if is_customer_boarding and food_type == "elemental_food":
+                adjusted["xp_per_day"] = int(math.ceil(int(adjusted["xp_per_day"]) * 1.25))
+                notes.append("+25% XP from Elemental Habitat for customer boarding with elemental food.")
+
+        adjusted["trust_per_day"] = min(
+            self.DAYCARE_TRUST_CAP_PER_DAY + 2,
+            max(0, int(adjusted["trust_per_day"])),
+        )
+        return adjusted, notes
+
     def get_stage_decay(self, growth_stage: str) -> dict[str, int]:
         return self.DAYCARE_STAGE_DECAY.get(str(growth_stage or "adult").lower(), self.DAYCARE_STAGE_DECAY["adult"])
 
@@ -1955,12 +2020,25 @@ class Pets(commands.Cog):
         food_type: str,
         feeds_per_day: int,
         plays_per_day: int,
+        room_type: str = "standard",
     ) -> list[str]:
         food = self.FOOD_TYPES[food_type]
         labels = []
         for stage_name, decay in self.DAYCARE_STAGE_DECAY.items():
-            hunger_delta = (feeds_per_day * int(food["hunger"])) - decay["hunger"]
-            happiness_delta = (feeds_per_day * int(food["happiness"])) + (plays_per_day * 25) - decay["happiness"]
+            stage_metrics = {
+                "xp_per_day": 0,
+                "trust_per_day": 0,
+                "hunger_gain_per_day": feeds_per_day * int(food["hunger"]),
+                "happiness_gain_per_day": (feeds_per_day * int(food["happiness"])) + (plays_per_day * 25),
+            }
+            stage_metrics, _ = self.apply_daycare_room_effects(
+                room_type,
+                {"growth_stage": stage_name},
+                stage_metrics,
+                package_food_type=food_type,
+            )
+            hunger_delta = int(stage_metrics["hunger_gain_per_day"]) - decay["hunger"]
+            happiness_delta = int(stage_metrics["happiness_gain_per_day"]) - decay["happiness"]
             if hunger_delta >= 0 and happiness_delta >= 0:
                 labels.append(stage_name.capitalize())
         return labels
@@ -1970,8 +2048,9 @@ class Pets(commands.Cog):
         food_type: str,
         feeds_per_day: int,
         plays_per_day: int,
+        room_type: str = "standard",
     ) -> str | None:
-        compatible = self.describe_stage_safety(food_type, feeds_per_day, plays_per_day)
+        compatible = self.describe_stage_safety(food_type, feeds_per_day, plays_per_day, room_type)
         order = ["Baby", "Juvenile", "Young", "Adult"]
         for stage in order:
             if stage in compatible:
@@ -2353,7 +2432,12 @@ class Pets(commands.Cog):
             int(daycare["efficiency_level"]),
         )
 
-        min_growth_stage = self.get_minimum_safe_growth_stage(food_type, feeds_per_day, plays_per_day)
+        min_growth_stage = self.get_minimum_safe_growth_stage(
+            food_type,
+            feeds_per_day,
+            plays_per_day,
+            room_type,
+        )
         if min_growth_stage is None:
             raise ValueError("This package is unsafe for all growth stages.")
         adults_only = min_growth_stage == "adult"
@@ -2384,7 +2468,15 @@ class Pets(commands.Cog):
         profit_per_day = int(price_per_day) - int(metrics["operating_cost_per_day"])
         return package_id, metrics, min_growth_stage, profit_per_day
 
-    def calculate_daycare_boarding_projection(self, package, pet, days_booked: int) -> dict[str, int]:
+    def calculate_daycare_boarding_projection(
+        self,
+        package,
+        pet,
+        days_booked: int,
+        *,
+        owner_user_id: int | None = None,
+        customer_user_id: int | None = None,
+    ) -> dict[str, int]:
         days_booked = max(1, int(days_booked))
         food = self.FOOD_TYPES[package["food_type"]]
         metrics = self.calculate_daycare_package_metrics(
@@ -2395,6 +2487,14 @@ class Pets(commands.Cog):
             package["room_type"],
             0,
             days_booked,
+        )
+        metrics, room_notes = self.apply_daycare_room_effects(
+            package["room_type"],
+            pet,
+            metrics,
+            owner_user_id=owner_user_id,
+            customer_user_id=customer_user_id,
+            package_food_type=package["food_type"],
         )
         decay = self.get_stage_decay(pet["growth_stage"])
         hunger_delta_per_day = metrics["hunger_gain_per_day"] - decay["hunger"]
@@ -2417,6 +2517,7 @@ class Pets(commands.Cog):
             "total_price": total_price,
             "total_profit": total_price - total_operating_cost,
             "food_cost_total": int(food["cost"]) * int(package["feeds_per_day"]) * days_booked,
+            "room_effect_notes": room_notes,
         }
 
     def get_daycare_boarding_preview_data(
@@ -2440,7 +2541,13 @@ class Pets(commands.Cog):
         if stage_order[growth_stage] < stage_order[required_stage]:
             return {"error": f"This package requires at least the {required_stage.title()} stage."}
 
-        projection = self.calculate_daycare_boarding_projection(package, pet, days_booked)
+        projection = self.calculate_daycare_boarding_projection(
+            package,
+            pet,
+            days_booked,
+            owner_user_id=owner_user_id,
+            customer_user_id=customer_user_id,
+        )
         if growth_stage != "adult" and (
             projection["final_hunger"] <= 0 or projection["final_happiness"] <= 0
         ):
@@ -2684,6 +2791,8 @@ class Pets(commands.Cog):
             },
             pet_projection,
             int(boarding["days_booked"]),
+            owner_user_id=boarding["owner_user_id"],
+            customer_user_id=boarding["customer_user_id"],
         )
         starting_level = int(pet.get("level", 1) or 1)
         level_result = await self.gain_experience(
@@ -4395,6 +4504,7 @@ class Pets(commands.Cog):
             lines.append(
                 f"**#{package['id']} {package['name']}**\n"
                 f"Food: `{package['food_type']}` | F/P/T: `{package['feeds_per_day']}/{package['plays_per_day']}/{package['trains_per_day']}` | Room: `{room_label}`\n"
+                f"Room Effect: {self.get_daycare_room_effect_text(package['room_type'])}\n"
                 f"Min Stage: `{package['min_growth_stage']}` | Cost/active pet/day: `${int(package['operating_cost_per_day']):,}` | Price/day: `${int(package['list_price_per_day']):,}`"
             )
         await ctx.send("\n\n".join(lines[:8]))
@@ -4689,7 +4799,9 @@ class Pets(commands.Cog):
             lines.append(
                 f"**#{package['id']} {package['name']}**\n"
                 f"Food `{package['food_type']}` | F/P/T `{package['feeds_per_day']}/{package['plays_per_day']}/{package['trains_per_day']}` | "
-                f"Min Stage `{package['min_growth_stage']}` | Price/day `${int(package['list_price_per_day']):,}`"
+                f"Room `{self.DAYCARE_ROOM_LABELS.get(package['room_type'], str(package['room_type']).replace('_', ' ').title())}` | "
+                f"Min Stage `{package['min_growth_stage']}` | Price/day `${int(package['list_price_per_day']):,}`\n"
+                f"Room Effect: {self.get_daycare_room_effect_text(package['room_type'])}"
             )
         lines.append(f"Use `{ctx.clean_prefix}pets daycare board {owner.mention}` to open the private boarding panel.")
         lines.append(f"Need the full walkthrough? Use `{ctx.clean_prefix}pets daycare help`.")
