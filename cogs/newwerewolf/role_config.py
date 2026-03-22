@@ -49,7 +49,6 @@ CLASSIC_EXCLUDED_ROLES: set[str] = {
     "big_bad_wolf",
     "cursed_wolf_father",
     "wolf_necromancer",
-    "alpha_werewolf",
     "pure_soul",
     "amor",
     "hunter",
@@ -63,7 +62,6 @@ CLASSIC_EXCLUDED_ROLES: set[str] = {
     "maid",
     "thief",
     "paragon",
-    "ritualist",
     "troublemaker",
     "lawyer",
     "war_veteran",
@@ -72,9 +70,6 @@ CLASSIC_EXCLUDED_ROLES: set[str] = {
     "raider",
     "flutist",
     "superspreader",
-    "nightmare_werewolf",
-    "voodoo_werewolf",
-    "wolf_summoner",
 }
 
 ROLE_MODE_ALLOWLIST: dict[str, set[str]] = {
