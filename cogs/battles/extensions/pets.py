@@ -696,7 +696,7 @@ class PetExtension:
                 }
             elif "tidal force" in skill_lower:
                 pet_combatant.skill_effects['tidal_force'] = {
-                    'turn_delay': 1, 'type': 'delay_enemy'
+                    'chance': 30, 'turn_delay': 1, 'type': 'delay_enemy'
                 }
             elif "ocean's embrace" in skill_lower:
                 pet_combatant.skill_effects['oceans_embrace'] = {
