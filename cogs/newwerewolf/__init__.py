@@ -4251,6 +4251,91 @@ class NewWerewolf(commands.Cog):
         )
 
     @newwerewolf.command(
+        name="removeplayer",
+        aliases=["remove", "kickplayer"],
+        brief=_("GM-only: eliminate a player from an active NWW game"),
+        hidden=True,
+    )
+    @locale_doc
+    async def removeplayer(
+        self,
+        ctx,
+        user_id: int,
+        channel: discord.TextChannel = None,
+    ):
+        _(
+            """GM-only: remove a player from an active NewWerewolf game.
+
+            `[user_id]` - The Discord user ID to remove from the game
+            `[channel]` - Optional channel to inspect, defaults to the current channel
+
+            This uses the existing elimination flow for active games. It does not
+            modify forming lobbies.
+            """
+        )
+        if not await self._is_gm_user(ctx.author.id):
+            return await ctx.send(_("This command is for GMs only."))
+
+        target_channel = channel or ctx.channel
+        game = self.games.get(target_channel.id)
+        if game is None:
+            return await ctx.send(
+                _("No active NWW game in {channel} on this process.").format(
+                    channel=target_channel.mention
+                )
+            )
+        if game == "forming":
+            return await ctx.send(
+                _(
+                    "The NWW lobby in {channel} is still forming. Force-removing"
+                    " players is only supported after the game starts."
+                ).format(channel=target_channel.mention)
+            )
+        if any(player.user.id == ctx.author.id for player in game.players):
+            return await ctx.send(
+                _(
+                    "You can't use this command while you're in the target NWW game."
+                )
+            )
+
+        player = discord.utils.get(game.players, user__id=user_id)
+        if player is None:
+            return await ctx.send(
+                _("User ID `{user_id}` is not in the active NWW game roster.").format(
+                    user_id=user_id
+                )
+            )
+        if player.dead:
+            return await ctx.send(
+                _("{user} is already dead in this NWW game.").format(
+                    user=player.user.mention
+                )
+            )
+
+        await player.kill()
+
+        winner = game.winner
+        winner_text = ""
+        if winner is not None:
+            if hasattr(winner, "user") and getattr(winner, "user", None) is not None:
+                winner_text = _(" Current winner: {winner}.").format(
+                    winner=winner.user.mention
+                )
+            else:
+                winner_text = _(" Current winner: {winner}.").format(winner=winner)
+
+        return await ctx.send(
+            _(
+                "Removed {user} from the active NWW game in {channel} via"
+                " elimination.{winner_text}"
+            ).format(
+                user=player.user.mention,
+                channel=target_channel.mention,
+                winner_text=winner_text,
+            )
+        )
+
+    @newwerewolf.command(
         name="talismans",
         aliases=["tal", "talisman"],
         brief=_("View or manage your NewWerewolf talisman inventory"),

@@ -438,23 +438,36 @@ class DaycareRoomSelect(discord.ui.Select):
 
 
 class DaycarePackageBuilderView(discord.ui.View):
-    def __init__(self, cog, author, daycare):
+    def __init__(self, cog, author, daycare, package=None):
         super().__init__(timeout=300)
         self.cog = cog
         self.author = author
         self.daycare = daycare
+        self.package_id = int(package["id"]) if package else None
         self.message = None
-        self.state = {
-            "name": "New Package",
-            "food_type": self.get_allowed_food_types()[0],
-            "feeds_per_day": 1,
-            "plays_per_day": 0,
-            "trains_per_day": 0,
-            "room_type": self.get_allowed_room_types()[0],
-            "price_per_day": 0,
-        }
+        if package:
+            self.state = {
+                "name": str(package["name"]),
+                "food_type": str(package["food_type"]),
+                "feeds_per_day": int(package["feeds_per_day"]),
+                "plays_per_day": int(package["plays_per_day"]),
+                "trains_per_day": int(package["trains_per_day"]),
+                "room_type": str(package["room_type"]),
+                "price_per_day": int(package["list_price_per_day"]),
+            }
+        else:
+            self.state = {
+                "name": "New Package",
+                "food_type": self.get_allowed_food_types()[0],
+                "feeds_per_day": 1,
+                "plays_per_day": 0,
+                "trains_per_day": 0,
+                "room_type": self.get_allowed_room_types()[0],
+                "price_per_day": 0,
+            }
         self.add_item(DaycareFoodSelect(self))
         self.add_item(DaycareRoomSelect(self))
+        self.save_button.label = "Save Changes" if self.package_id else "Save Package"
 
     def get_allowed_food_types(self):
         foods = ["basic_food", "premium_food", "deluxe_food"]
@@ -477,9 +490,13 @@ class DaycarePackageBuilderView(discord.ui.View):
             self.state["room_type"], self.state["room_type"].replace("_", " ").title()
         )
         embed = discord.Embed(
-            title="Daycare Package Builder",
+            title="Daycare Package Editor" if self.package_id else "Daycare Package Builder",
             color=discord.Color.teal(),
-            description="Private builder for daycare packages. Choose settings, then save when the preview looks right.",
+            description=(
+                "Private editor for daycare packages. Adjust the settings, then save when the preview looks right."
+                if self.package_id
+                else "Private builder for daycare packages. Choose settings, then save when the preview looks right."
+            ),
         )
         embed.add_field(
             name="Current Setup",
@@ -595,17 +612,32 @@ class DaycarePackageBuilderView(discord.ui.View):
 
         async with self.cog.bot.pool.acquire() as conn:
             try:
-                package_id, metrics, min_growth_stage, profit_per_day = await self.cog.create_daycare_package_record(
-                    conn,
-                    self.author.id,
-                    self.state["name"],
-                    self.state["food_type"],
-                    self.state["feeds_per_day"],
-                    self.state["plays_per_day"],
-                    self.state["trains_per_day"],
-                    self.state["room_type"],
-                    self.state["price_per_day"],
-                )
+                if self.package_id:
+                    package_id = self.package_id
+                    metrics, min_growth_stage, profit_per_day = await self.cog.update_daycare_package_record(
+                        conn,
+                        self.author.id,
+                        package_id,
+                        self.state["name"],
+                        self.state["food_type"],
+                        self.state["feeds_per_day"],
+                        self.state["plays_per_day"],
+                        self.state["trains_per_day"],
+                        self.state["room_type"],
+                        self.state["price_per_day"],
+                    )
+                else:
+                    package_id, metrics, min_growth_stage, profit_per_day = await self.cog.create_daycare_package_record(
+                        conn,
+                        self.author.id,
+                        self.state["name"],
+                        self.state["food_type"],
+                        self.state["feeds_per_day"],
+                        self.state["plays_per_day"],
+                        self.state["trains_per_day"],
+                        self.state["room_type"],
+                        self.state["price_per_day"],
+                    )
             except ValueError as exc:
                 return await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
 
@@ -615,7 +647,7 @@ class DaycarePackageBuilderView(discord.ui.View):
         result_label = "Profit/Day" if profit_per_day >= 0 else "Loss/Day"
         await interaction.followup.send(
             (
-                f"✅ Created package **#{package_id} {self.state['name']}**.\n"
+                f"✅ {'Updated' if self.package_id else 'Created'} package **#{package_id} {self.state['name']}**.\n"
                 f"Cost per active boarding/day: `${int(metrics['operating_cost_per_day']):,}`\n"
                 f"Break-even charge/day: `${int(metrics['operating_cost_per_day']):,}`\n"
                 f"Suggested charge/day: `${int(metrics['suggested_list_price_per_day']):,}`\n"
@@ -669,6 +701,92 @@ class DaycarePackageBuilderLauncherView(discord.ui.View):
         builder = DaycarePackageBuilderView(self.cog, self.author, self.daycare)
         await interaction.response.send_message(embed=builder.build_embed(), view=builder, ephemeral=True)
         builder.message = await interaction.original_response()
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+
+class DaycarePackageEditSelect(discord.ui.Select):
+    def __init__(self, launcher_view):
+        self.launcher_view = launcher_view
+        options = []
+        for package in launcher_view.packages:
+            room_label = launcher_view.cog.DAYCARE_ROOM_LABELS.get(
+                package["room_type"],
+                str(package["room_type"]).replace("_", " ").title(),
+            )
+            options.append(
+                discord.SelectOption(
+                    label=f"#{int(package['id'])} {package['name']}"[:100],
+                    value=str(int(package["id"])),
+                    description=(
+                        f"{room_label} | ${int(package['list_price_per_day']):,}/day | "
+                        f"{int(package['feeds_per_day'])}/{int(package['plays_per_day'])}/{int(package['trains_per_day'])} F/P/T"
+                    )[:100],
+                )
+            )
+        super().__init__(
+            placeholder="Choose a package to edit",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.launcher_view.author.id:
+            return await interaction.response.send_message("❌ This package editor is not for you.", ephemeral=True)
+
+        package_id = int(self.values[0])
+        async with self.launcher_view.cog.bot.pool.acquire() as conn:
+            has_access, auto_closed = await self.launcher_view.cog.ensure_daycare_management_access(
+                conn,
+                self.launcher_view.author.id,
+            )
+            if not has_access:
+                return await interaction.response.send_message(
+                    self.launcher_view.cog.get_daycare_management_locked_message(auto_closed=auto_closed),
+                    ephemeral=True,
+                )
+            daycare = await self.launcher_view.cog.get_daycare_for_owner(conn, self.launcher_view.author.id)
+            if not daycare:
+                return await interaction.response.send_message(
+                    "❌ You do not own a daycare yet.",
+                    ephemeral=True,
+                )
+            package = await conn.fetchrow(
+                """
+                SELECT *
+                FROM pet_daycare_packages
+                WHERE daycare_id = $1 AND id = $2 AND is_active = TRUE;
+                """,
+                daycare["id"],
+                package_id,
+            )
+            if not package:
+                return await interaction.response.send_message(
+                    "❌ That package no longer exists.",
+                    ephemeral=True,
+                )
+
+        builder = DaycarePackageBuilderView(
+            self.launcher_view.cog,
+            self.launcher_view.author,
+            daycare,
+            package=package,
+        )
+        await interaction.response.send_message(embed=builder.build_embed(), view=builder, ephemeral=True)
+        builder.message = await interaction.original_response()
+
+
+class DaycarePackageEditorLauncherView(discord.ui.View):
+    def __init__(self, cog, author, daycare, packages):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.author = author
+        self.daycare = daycare
+        self.packages = packages
+        self.add_item(DaycarePackageEditSelect(self))
 
     async def on_timeout(self):
         for item in self.children:
@@ -2480,6 +2598,123 @@ class Pets(commands.Cog):
         profit_per_day = int(price_per_day) - int(metrics["operating_cost_per_day"])
         return package_id, metrics, min_growth_stage, profit_per_day
 
+    async def update_daycare_package_record(
+        self,
+        conn,
+        owner_user_id: int,
+        package_id: int,
+        name: str,
+        food_type: str,
+        feeds_per_day: int,
+        plays_per_day: int,
+        trains_per_day: int,
+        room_type: str,
+        price_per_day: int,
+    ):
+        name = str(name).strip()
+        if len(name) < 2 or len(name) > 50:
+            raise ValueError("Package name must be between 2 and 50 characters.")
+
+        try:
+            package_id = int(package_id)
+            feeds_per_day = int(feeds_per_day)
+            plays_per_day = int(plays_per_day)
+            trains_per_day = int(trains_per_day)
+            price_per_day = int(price_per_day)
+        except (TypeError, ValueError):
+            raise ValueError("Package id, feeds, plays, trains, and price must all be numbers.")
+
+        if price_per_day < 0:
+            raise ValueError("Price/day cannot be negative.")
+
+        has_access, auto_closed = await self.ensure_daycare_management_access(
+            conn,
+            owner_user_id,
+        )
+        if not has_access:
+            raise ValueError(
+                self.get_daycare_management_locked_message(auto_closed=auto_closed)
+            )
+
+        daycare = await self.get_daycare_for_owner(conn, owner_user_id, for_update=True)
+        if not daycare:
+            raise ValueError("You do not own a daycare yet.")
+
+        package = await conn.fetchrow(
+            """
+            SELECT *
+            FROM pet_daycare_packages
+            WHERE daycare_id = $1 AND id = $2 AND is_active = TRUE
+            FOR UPDATE;
+            """,
+            daycare["id"],
+            package_id,
+        )
+        if not package:
+            raise ValueError("Package not found.")
+
+        validation_error = self.validate_daycare_package_inputs(
+            daycare,
+            food_type,
+            feeds_per_day,
+            plays_per_day,
+            trains_per_day,
+            room_type,
+        )
+        if validation_error:
+            raise ValueError(validation_error)
+
+        metrics = self.calculate_daycare_package_metrics(
+            food_type,
+            feeds_per_day,
+            plays_per_day,
+            trains_per_day,
+            room_type,
+            int(daycare["efficiency_level"]),
+        )
+
+        min_growth_stage = self.get_minimum_safe_growth_stage(
+            food_type,
+            feeds_per_day,
+            plays_per_day,
+            room_type,
+        )
+        if min_growth_stage is None:
+            raise ValueError("This package is unsafe for all growth stages.")
+        adults_only = min_growth_stage == "adult"
+
+        await conn.execute(
+            """
+            UPDATE pet_daycare_packages
+            SET name = $1,
+                food_type = $2,
+                feeds_per_day = $3,
+                plays_per_day = $4,
+                trains_per_day = $5,
+                room_type = $6,
+                adults_only = $7,
+                min_growth_stage = $8,
+                operating_cost_per_day = $9,
+                min_list_price_per_day = $10,
+                list_price_per_day = $11
+            WHERE id = $12;
+            """,
+            name,
+            food_type,
+            feeds_per_day,
+            plays_per_day,
+            trains_per_day,
+            room_type,
+            adults_only,
+            min_growth_stage,
+            metrics["operating_cost_per_day"],
+            metrics["min_list_price_per_day"],
+            price_per_day,
+            package_id,
+        )
+        profit_per_day = int(price_per_day) - int(metrics["operating_cost_per_day"])
+        return metrics, min_growth_stage, profit_per_day
+
     def calculate_daycare_boarding_projection(
         self,
         package,
@@ -3439,6 +3674,7 @@ class Pets(commands.Cog):
             f"`{prefix}pets daycare close`\n"
             f"`{prefix}pets daycare upgrade`\n"
             f"`{prefix}pets daycare packagecreate`\n"
+            f"`{prefix}pets daycare packageedit`\n"
             f"`{prefix}pets daycare packages`\n"
             f"`{prefix}pets daycare reception [default|closed|full|booked|collection] ...`"
             if can_open_daycare
@@ -4247,6 +4483,7 @@ class Pets(commands.Cog):
                     f"`{ctx.clean_prefix}pets daycare reception [template]`\n"
                     f"`{ctx.clean_prefix}pets daycare packages`\n"
                     f"`{ctx.clean_prefix}pets daycare packagecreate`\n"
+                    f"`{ctx.clean_prefix}pets daycare packageedit`\n"
                     f"`{ctx.clean_prefix}pets daycare packagedelete <package_id>`\n"
                     f"`{ctx.clean_prefix}pets daycare ledger`"
                 )
@@ -4627,6 +4864,53 @@ class Pets(commands.Cog):
             f"Suggested charge/day: `${metrics['suggested_list_price_per_day']:,}`\n"
             f"{result_label}: `${abs(int(profit_per_day)):,}`\n"
             f"XP/day: `{metrics['xp_per_day']:,}` | Trust/day: `{metrics['trust_per_day']}` | Min Stage: `{min_growth_stage}`"
+        )
+
+    @daycare.command(brief=_("Edit a daycare package"))
+    @has_char()
+    @is_patreon(min_tier=DAYCARE_OWNER_REQUIRED_PATREON_TIER)
+    async def packageedit(self, ctx, package_id: int = None):
+        if not await self.is_ranger_owner(ctx):
+            return await ctx.send("❌ You need to be in the Ranger class line to manage a daycare.")
+
+        async with self.bot.pool.acquire() as conn:
+            has_access, auto_closed = await self.ensure_daycare_management_access(
+                conn,
+                ctx.author.id,
+            )
+            if not has_access:
+                return await ctx.send(
+                    self.get_daycare_management_locked_message(auto_closed=auto_closed)
+                )
+            daycare = await self.get_daycare_for_owner(conn, ctx.author.id)
+            if not daycare:
+                return await ctx.send("❌ You do not own a daycare yet.")
+            packages = await conn.fetch(
+                """
+                SELECT *
+                FROM pet_daycare_packages
+                WHERE daycare_id = $1 AND is_active = TRUE
+                ORDER BY id ASC;
+                """,
+                daycare["id"],
+            )
+
+        if not packages:
+            return await ctx.send("❌ You do not have any daycare packages yet.")
+
+        if package_id is not None:
+            package = next((pkg for pkg in packages if int(pkg["id"]) == int(package_id)), None)
+            if not package:
+                return await ctx.send("❌ Package not found.")
+            builder = DaycarePackageBuilderView(self, ctx.author, daycare, package=package)
+            message = await ctx.send(embed=builder.build_embed(), view=builder)
+            builder.message = message
+            return
+
+        launcher = DaycarePackageEditorLauncherView(self, ctx.author, daycare, packages)
+        await ctx.send(
+            "Choose a daycare package from the dropdown below to edit it in the private builder.",
+            view=launcher,
         )
 
     @daycare.command(brief=_("Delete a daycare package"))
