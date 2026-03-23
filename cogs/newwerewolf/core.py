@@ -641,9 +641,9 @@ DESCRIPTIONS = {
     ),
     Role.BUTCHER: _(
         "You are the Butcher, an advanced Doctor role. You have 6 pieces of meat."
-        " Each night, you may give meat to multiple other players to protect them"
-        " from attacks that night. Each piece is consumed when given, even if the"
-        " target is not attacked."
+        " Each night, you may give meat to multiple players, including yourself,"
+        " to protect them from attacks that night. Each piece is consumed when"
+        " given, even if the target is not attacked."
     ),
     Role.BODYGUARD: _(
         "You are the Bodyguard. Every night, you may guard one player from attacks."
@@ -8610,6 +8610,7 @@ class Player:
             required: bool = True,
             timeout: int | None = None,
             traceback_on_http_error: bool = False,
+            prefer_multi_select: bool = False,
     ) -> list[Player]:
         if self.is_jailed:
             await self.send(
@@ -8640,6 +8641,44 @@ class Player:
         def build_choices(players: list[Player]) -> list[str]:
             # Discord select labels are max 100 chars.
             return [str(player.user)[:100] for player in players]
+
+        if prefer_multi_select and amount > 1 and len(list_of_users) <= 25:
+            try:
+                selected_indices = await self.game.ctx.bot.paginator.MultiChoose(
+                    entries=build_entries(list_of_users),
+                    choices=build_choices(list_of_users),
+                    return_index=True,
+                    title=title[:250],
+                    placeholder=_("Choose up to {amount} player(s)").format(
+                        amount=min(amount, len(list_of_users))
+                    ),
+                    timeout=timeout if timeout is not None else self.game.timer,
+                    max_values=min(amount, len(list_of_users)),
+                    allow_empty=not required,
+                    empty_label=_("Skip"),
+                ).paginate(self.game.ctx, location=self.user)
+            except self.game.ctx.bot.paginator.NoChoice:
+                await self.send(_("Selection timed out."))
+                return []
+            except discord.Forbidden:
+                await self.send(
+                    _(
+                        "I couldn't DM you the selection menu. Please enable direct"
+                        " messages from server members."
+                    )
+                )
+                return []
+            except discord.HTTPException as error:
+                await self.send(
+                    _(
+                        "The selection menu failed due to a Discord API error. Please"
+                        " try again."
+                    )
+                )
+                if traceback_on_http_error:
+                    await send_traceback(self.game.ctx, error)
+                return []
+            return [list_of_users[index] for index in selected_indices]
 
         async def select_from_dropdown(
             candidates: list[Player], *, can_dismiss: bool, header: str
@@ -9169,7 +9208,7 @@ class Player:
             )
             return
 
-        available = [player for player in self.game.alive_players if player != self]
+        available = list(self.game.alive_players)
         if not available:
             await self.send(
                 _(
@@ -9183,8 +9222,8 @@ class Player:
             targets = await self.choose_users(
                 _(
                     "Choose player(s) to protect with meat tonight (up to"
-                    " {max_targets}). Each chosen player consumes 1 meat even if they"
-                    " are not attacked. Meat left: {meat_left}."
+                    " {max_targets}, including yourself). Each chosen player consumes"
+                    " 1 meat even if they are not attacked. Meat left: {meat_left}."
                 ).format(
                     max_targets=max_targets,
                     meat_left=self.butcher_meat_left,
@@ -9192,6 +9231,7 @@ class Player:
                 list_of_users=available,
                 amount=max_targets,
                 required=False,
+                prefer_multi_select=True,
             )
         except asyncio.TimeoutError:
             await self.send(

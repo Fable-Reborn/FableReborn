@@ -647,9 +647,7 @@ class ChooseView(discord.ui.View):
     async def on_timeout(self) -> None:
         self.future.set_exception(NoChoice("You didn't choose anything."))
 
-    async def handle(
-        self, interaction: discord.Interaction, selected: str | int
-    ) -> None:
+    async def handle(self, interaction: discord.Interaction, selected: Any) -> None:
         self.future.set_result(selected)
         self.stop()
         await interaction.message.edit(view=discord.ui.View())
@@ -665,6 +663,31 @@ class ChooseSelect(discord.ui.Select):
             await self._view.handle(interaction, int(self.values[0]))
         else:
             await self._view.handle(interaction, self.values[0])
+
+
+class ChooseMultiSelect(discord.ui.Select):
+    def __init__(self, return_index: bool = False, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.return_index = return_index
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if self.return_index:
+            await self._view.handle(
+                interaction, [int(value) for value in self.values]
+            )
+        else:
+            await self._view.handle(interaction, list(self.values))
+
+
+class ChooseEmptyButton(discord.ui.Button):
+    def __init__(self, label: str | None = None) -> None:
+        super().__init__(
+            label=label or _("Skip"),
+            style=discord.ButtonStyle.secondary,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await self.view.handle(interaction, [])
 
 
 class Choose:
@@ -714,6 +737,80 @@ class Choose:
             em.set_footer(text=self.footer)
 
         view.add_item(select)
+        for item in self.extra_items:
+            view.add_item(item)
+
+        await view.start(em, location or ctx, user=user)
+
+        return await future
+
+
+class MultiChoose:
+    def __init__(
+        self,
+        entries: list[str],
+        title: str = "Untitled",
+        placeholder: str | None = None,
+        choices: list[str] | None = None,
+        footer: str | None = None,
+        colour: int | None = None,
+        timeout: int = 30,
+        min_values: int = 1,
+        max_values: int | None = None,
+        return_index: bool = False,
+        allow_empty: bool = False,
+        empty_label: str | None = None,
+        extra_items: list[discord.ui.Item] | None = None,
+    ) -> None:
+        self.entries = entries
+        self.placeholder = _safe_select_placeholder(placeholder or title)
+        self.choices = choices if choices is not None else entries
+        self.title = title
+        self.footer = footer
+        self.colour = colour
+        self.timeout = timeout
+        self.min_values = min_values
+        self.max_values = max_values
+        self.return_index = return_index
+        self.allow_empty = allow_empty
+        self.empty_label = empty_label
+        self.extra_items = extra_items or []
+
+        assert len(self.entries) == len(self.choices)
+        assert 1 <= len(self.entries) <= 25
+
+    async def paginate(self, ctx, location=None, user=None) -> list[str] | list[int]:
+        if self.colour is None:
+            self.colour = ctx.bot.config.game.primary_colour
+
+        future = asyncio.Future()
+        view = ChooseView(ctx, future, timeout=self.timeout)
+        max_values = min(
+            len(self.entries),
+            self.max_values if self.max_values is not None else len(self.entries),
+        )
+        min_values = 1 if self.allow_empty else max(1, min(self.min_values, max_values))
+
+        select = ChooseMultiSelect(
+            placeholder=self.placeholder,
+            return_index=self.return_index,
+            min_values=min_values,
+            max_values=max_values,
+        )
+        em = discord.Embed(title=self.title, description="", colour=self.colour)
+        for index, chunk in enumerate(self.entries):
+            em.description = f"{em.description}\U0001f539 {chunk}\n"
+            if not self.return_index:
+                select.add_option(label=self.choices[index])
+            else:
+                select.add_option(label=self.choices[index], value=f"{index}")
+
+        if self.footer:
+            em.set_footer(text=self.footer)
+
+        view.add_item(select)
+        if self.allow_empty:
+            view.add_item(ChooseEmptyButton(label=self.empty_label))
         for item in self.extra_items:
             view.add_item(item)
 

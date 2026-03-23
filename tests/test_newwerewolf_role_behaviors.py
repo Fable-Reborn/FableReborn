@@ -1,7 +1,7 @@
 import unittest
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from cogs.newwerewolf.core import Game, Player, Role, Side, side_from_role
 
@@ -39,7 +39,104 @@ class ChooseResult:
         return self.result
 
 
+class MultiChooseResult:
+    def __init__(self, result):
+        self.result = result
+
+    async def paginate(self, ctx, location):
+        return self.result
+
+
 class TestNewWerewolfRoleBehaviors(unittest.IsolatedAsyncioTestCase):
+    async def test_choose_users_prefers_multi_select_for_multi_target_prompts(self):
+        first = DummyPlayer(2, "First", Role.VILLAGER)
+        second = DummyPlayer(3, "Second", Role.VILLAGER)
+        third = DummyPlayer(4, "Third", Role.VILLAGER)
+        multi_choose = Mock(return_value=MultiChooseResult([0, 2]))
+        paginator = SimpleNamespace(
+            MultiChoose=multi_choose,
+            NoChoice=RuntimeError,
+        )
+        game = SimpleNamespace(
+            ctx=SimpleNamespace(
+                bot=SimpleNamespace(paginator=paginator),
+            ),
+            timer=60,
+            game_link="https://example.invalid/game",
+            get_role_name=lambda role: role.name.title(),
+        )
+        chooser = SimpleNamespace(
+            is_jailed=False,
+            is_sleeping_tonight=False,
+            revealed_roles={},
+            game=game,
+            user=DummyUser(id=1, name="Chooser", mention="<@1>"),
+            send=AsyncMock(),
+        )
+
+        chosen = await Player.choose_users(
+            chooser,
+            "Pick targets",
+            [first, second, third],
+            amount=2,
+            required=False,
+            prefer_multi_select=True,
+        )
+
+        self.assertEqual([first, third], chosen)
+        multi_choose.assert_called_once()
+        kwargs = multi_choose.call_args.kwargs
+        self.assertEqual(2, kwargs["max_values"])
+        self.assertTrue(kwargs["allow_empty"])
+
+    async def test_butcher_can_target_self(self):
+        ally = SimpleNamespace(
+            user=DummyUser(id=2, name="Ally", mention="<@2>"),
+            is_protected=False,
+            protected_by_doctor=None,
+        )
+        other = SimpleNamespace(
+            user=DummyUser(id=3, name="Other", mention="<@3>"),
+            is_protected=False,
+            protected_by_doctor=None,
+        )
+        game = SimpleNamespace(
+            alive_players=[],
+            game_link="https://example.invalid/game",
+        )
+        captured = {}
+        butcher = SimpleNamespace(
+            user=DummyUser(id=1, name="Butcher", mention="<@1>"),
+            butcher_meat_left=6,
+            game=game,
+            send=AsyncMock(),
+            announce_awake=AsyncMock(),
+        )
+
+        async def choose_users(*args, **kwargs):
+            captured.update(kwargs)
+            return [butcher, ally]
+
+        butcher.choose_users = AsyncMock(side_effect=choose_users)
+        butcher.is_protected = False
+        butcher.protected_by_doctor = None
+        game.alive_players = [butcher, ally, other]
+
+        await Player.set_butcher_targets(butcher)
+
+        butcher.announce_awake.assert_awaited_once()
+        butcher.choose_users.assert_awaited_once()
+        self.assertEqual(game.alive_players, captured["list_of_users"])
+        self.assertTrue(captured["prefer_multi_select"])
+        self.assertTrue(butcher.is_protected)
+        self.assertTrue(ally.is_protected)
+        self.assertIs(butcher, butcher.protected_by_doctor)
+        self.assertIs(butcher, ally.protected_by_doctor)
+        self.assertEqual(4, butcher.butcher_meat_left)
+        butcher.send.assert_awaited_once()
+        self.assertIn("<@1>", butcher.send.await_args.args[0])
+        self.assertIn("<@2>", butcher.send.await_args.args[0])
+
     async def test_marksman_cannot_mark_without_arrows(self):
         target = DummyPlayer(2, "Target", Role.VILLAGER)
         game = SimpleNamespace(
