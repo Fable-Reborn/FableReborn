@@ -1134,12 +1134,20 @@ def _pick_weighted_role(weighted_candidates: list[tuple[Role, int]]) -> Role | N
 
 
 def _pick_villager_filler_role(
-    mode: str | None, *, existing_roles: list[Role] | None = None
+    mode: str | None,
+    *,
+    existing_roles: list[Role] | None = None,
+    excluded_roles: set[Role] | None = None,
 ) -> Role:
+    excluded_roles = excluded_roles or set()
     weighted_candidates = [
         (role, weight)
         for role, weight in VILLAGER_FILLER_WEIGHTS
-        if weight > 0 and _is_role_available_in_mode(role, mode)
+        if (
+            weight > 0
+            and role not in excluded_roles
+            and _is_role_available_in_mode(role, mode)
+        )
     ]
     if not weighted_candidates:
         return Role.VILLAGER
@@ -1219,29 +1227,46 @@ def _preferred_replacement_role(
     mode: str | None,
     *,
     existing_roles: list[Role] | None = None,
+    excluded_roles: set[Role] | None = None,
 ) -> Role:
+    excluded_roles = excluded_roles or set()
     if is_wolf_aligned_role(forbidden_role):
         wolf_candidates = [Role.WEREWOLF] + [
             role
             for role in Role
-            if role != Role.WEREWOLF and is_wolf_aligned_role(role)
+            if (
+                role != Role.WEREWOLF
+                and role not in excluded_roles
+                and is_wolf_aligned_role(role)
+            )
         ]
         for candidate in wolf_candidates:
-            if _is_role_available_in_mode(candidate, mode):
+            if (
+                candidate not in excluded_roles
+                and _is_role_available_in_mode(candidate, mode)
+            ):
                 return candidate
         return Role.WEREWOLF
 
     preferred_filler = _pick_villager_filler_role(
         mode,
         existing_roles=existing_roles,
+        excluded_roles=excluded_roles,
     )
     villager_candidates = [preferred_filler] + [
         role
         for role in Role
-        if role not in (Role.VILLAGER, preferred_filler) and is_villager_team_role(role)
+        if (
+            role not in excluded_roles
+            and role not in (Role.VILLAGER, preferred_filler)
+            and is_villager_team_role(role)
+        )
     ] + [Role.VILLAGER]
     for candidate in villager_candidates:
-        if _is_role_available_in_mode(candidate, mode):
+        if (
+            candidate not in excluded_roles
+            and _is_role_available_in_mode(candidate, mode)
+        ):
             return candidate
     return Role.VILLAGER
 
@@ -1358,6 +1383,35 @@ def _apply_role_availability(roles: list[Role], mode: str | None) -> list[Role]:
     return adjusted_roles
 
 
+ROLE_MIN_PLAYER_REQUIREMENTS: dict[Role, int] = {
+    Role.CURSED: 7,
+}
+
+
+def enforce_role_min_player_requirements(
+    roles: list[Role], *, requested_players: int, mode: str | None = None
+) -> list[Role]:
+    restricted_roles = {
+        role
+        for role, min_players in ROLE_MIN_PLAYER_REQUIREMENTS.items()
+        if requested_players < min_players
+    }
+    if not restricted_roles:
+        return roles
+
+    adjusted_roles = roles.copy()
+    for idx, role in enumerate(adjusted_roles):
+        if role not in restricted_roles:
+            continue
+        adjusted_roles[idx] = _preferred_replacement_role(
+            role,
+            mode,
+            existing_roles=adjusted_roles,
+            excluded_roles=restricted_roles,
+        )
+    return adjusted_roles
+
+
 def enforce_single_mayor(roles: list[Role], mode: str | None = None) -> list[Role]:
     mayor_indices = [idx for idx, role in enumerate(roles) if role == Role.SHERIFF]
     if len(mayor_indices) <= 1:
@@ -1446,8 +1500,6 @@ def _advanced_base_role_by_advanced() -> dict[Role, Role]:
 
 ADVANCED_BASE_ROLE_BY_ADVANCED: dict[Role, Role] = _advanced_base_role_by_advanced()
 TALISMAN_CONSUMABLE_PREFIX = "newwerewolf_talisman_"
-TALISMAN_BASE_WEIGHT = 2
-TALISMAN_ACTIVE_WEIGHT = 3
 
 
 def talisman_base_role(role: Role | None) -> Role | None:
@@ -3091,7 +3143,7 @@ class Game:
                 active_loadouts[user_id] = active_roles
         return active_loadouts
 
-    def _pick_weighted_player_for_role(
+    def _pick_talisman_player_for_role(
         self,
         candidates: list[Player],
         role: Role,
@@ -3100,28 +3152,17 @@ class Game:
         if len(candidates) == 1:
             return candidates[0]
 
-        weighted_candidates: list[tuple[Player, int]] = []
-        weighted_role = talisman_base_role(role)
-        for candidate in candidates:
-            active_roles = loadouts.get(candidate.user.id, set())
-            weight = (
-                TALISMAN_ACTIVE_WEIGHT
-                if weighted_role in active_roles
-                else TALISMAN_BASE_WEIGHT
-            )
-            weighted_candidates.append((candidate, weight))
+        targeted_role = talisman_base_role(role)
+        if targeted_role is not None:
+            matching_candidates = [
+                candidate
+                for candidate in candidates
+                if targeted_role in loadouts.get(candidate.user.id, set())
+            ]
+            if matching_candidates:
+                return random.choice(matching_candidates)
 
-        total_weight = sum(weight for _, weight in weighted_candidates)
-        if total_weight <= 0:
-            return random.choice(candidates)
-
-        roll = random.randint(1, total_weight)
-        running = 0
-        for candidate, weight in weighted_candidates:
-            running += weight
-            if roll <= running:
-                return candidate
-        return weighted_candidates[-1][0]
+        return random.choice(candidates)
 
     async def apply_talisman_influence(self) -> None:
         loadouts = await self._fetch_active_talisman_loadouts()
@@ -3134,7 +3175,7 @@ class Game:
         assigned_roles: dict[int, Role] = {}
 
         for role in roles_pool:
-            chosen_player = self._pick_weighted_player_for_role(
+            chosen_player = self._pick_talisman_player_for_role(
                 remaining_players,
                 role,
                 loadouts,
@@ -12247,6 +12288,11 @@ def get_roles(number_of_players: int, mode: str = None) -> list[Role]:
         mode=mode,
     )
     roles = enforce_single_mayor(roles, mode=mode)
+    roles = enforce_role_min_player_requirements(
+        roles,
+        requested_players=requested_players,
+        mode=mode,
+    )
     return roles
 
 
@@ -12405,6 +12451,11 @@ def get_custom_roles(number_of_players: int, custom_roles: list[Role]) -> list[R
     roles = _apply_role_availability(roles, mode="Custom")
     roles = _ensure_team_requirements_in_available(roles, mode="Custom")
     roles = enforce_single_mayor(roles, mode="Custom")
+    roles = enforce_role_min_player_requirements(
+        roles,
+        requested_players=number_of_players,
+        mode="Custom",
+    )
     return roles
 
 

@@ -3,7 +3,14 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from cogs.newwerewolf.core import Game, Player, Role, Side, side_from_role
+from cogs.newwerewolf.core import (
+    Game,
+    Player,
+    Role,
+    Side,
+    enforce_role_min_player_requirements,
+    side_from_role,
+)
 
 
 class DummyUser(SimpleNamespace):
@@ -48,6 +55,76 @@ class MultiChooseResult:
 
 
 class TestNewWerewolfRoleBehaviors(unittest.IsolatedAsyncioTestCase):
+    def test_cursed_is_removed_from_small_lobbies(self):
+        roles = [
+            Role.WEREWOLF,
+            Role.CURSED,
+            Role.SEER,
+            Role.VILLAGER,
+            Role.DOCTOR,
+            Role.VILLAGER,
+            Role.VILLAGER,
+            Role.VILLAGER,
+        ]
+
+        adjusted = enforce_role_min_player_requirements(
+            roles,
+            requested_players=6,
+            mode="Classic",
+        )
+
+        self.assertNotIn(Role.CURSED, adjusted)
+        self.assertEqual(len(roles), len(adjusted))
+        self.assertIn(
+            Role.CURSED,
+            enforce_role_min_player_requirements(
+                roles,
+                requested_players=7,
+                mode="Classic",
+            ),
+        )
+
+    def test_talisman_guarantees_role_for_single_claimant(self):
+        claimant = DummyPlayer(1, "Claimant", Role.VILLAGER)
+        outsider = DummyPlayer(2, "Outsider", Role.VILLAGER)
+        game = SimpleNamespace()
+        game._pick_talisman_player_for_role = (
+            Game._pick_talisman_player_for_role.__get__(game, Game)
+        )
+
+        chosen = game._pick_talisman_player_for_role(
+            [outsider, claimant],
+            Role.SEER,
+            {claimant.user.id: {Role.SEER}},
+        )
+
+        self.assertIs(claimant, chosen)
+
+    def test_talisman_contest_only_rolls_among_matching_claimants(self):
+        claimant_one = DummyPlayer(1, "Claimant One", Role.VILLAGER)
+        claimant_two = DummyPlayer(2, "Claimant Two", Role.VILLAGER)
+        outsider = DummyPlayer(3, "Outsider", Role.VILLAGER)
+        game = SimpleNamespace()
+        game._pick_talisman_player_for_role = (
+            Game._pick_talisman_player_for_role.__get__(game, Game)
+        )
+
+        with patch(
+            "cogs.newwerewolf.core.random.choice",
+            return_value=claimant_two,
+        ) as random_choice:
+            chosen = game._pick_talisman_player_for_role(
+                [outsider, claimant_one, claimant_two],
+                Role.SEER,
+                {
+                    claimant_one.user.id: {Role.SEER},
+                    claimant_two.user.id: {Role.SEER},
+                },
+            )
+
+        self.assertIs(claimant_two, chosen)
+        random_choice.assert_called_once_with([claimant_one, claimant_two])
+
     async def test_choose_users_prefers_multi_select_for_multi_target_prompts(self):
         first = DummyPlayer(2, "First", Role.VILLAGER)
         second = DummyPlayer(3, "Second", Role.VILLAGER)

@@ -4351,8 +4351,10 @@ class NewWerewolf(commands.Cog):
             `{prefix}nww talismans off`
 
             You can equip up to 3 different talismans at once.
-            Talismans only exist for basic roles. If that base role later gives you
-            an advanced role choice, the talisman still counts and is consumed."""
+            Talismans only exist for basic roles. An equipped talisman guarantees
+            that base role unless other players equip the same role, in which case
+            they split the chance evenly. If that base role later gives you an
+            advanced role choice, the talisman still counts and is consumed."""
         )
         if not hasattr(self.bot, "pool"):
             return await ctx.send(
@@ -4411,9 +4413,9 @@ class NewWerewolf(commands.Cog):
                 owned_value = _("No talismans currently owned.")
             embed.add_field(name=_("Owned"), value=owned_value, inline=False)
             embed.description = _(
-                "Each equipped talisman gives its basic role 50% more roll weight"
-                " than a player without it. If several players equip the same role,"
-                " they split that boosted chance evenly. Talismans do not exist for"
+                "Each equipped talisman guarantees its basic role if no other player"
+                " equips that same role. If several players equip the same role, they"
+                " split that role evenly among themselves. Talismans do not exist for"
                 " advanced roles. Up to {count} different talismans can be equipped."
             ).format(count=self.MAX_ACTIVE_TALISMANS)
             embed.set_footer(
@@ -4521,9 +4523,10 @@ class NewWerewolf(commands.Cog):
         return await ctx.send(
             _(
                 "Equipped **{role}**. You now have **{count}/{max_count}**"
-                " talisman slots in use. This talisman gives that base role a"
-                " 50% bonus chance and is consumed if you receive that base role,"
-                " even if you switch into an advanced version afterward."
+                " talisman slots in use. This talisman guarantees that base role"
+                " unless other players equip the same one, and it is consumed if"
+                " you receive that base role, even if you switch into an advanced"
+                " version afterward."
             ).format(
                 role=self._role_display_name(chosen_role),
                 count=len(equipped_active_roles) + 1,
