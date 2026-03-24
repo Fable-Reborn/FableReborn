@@ -3561,6 +3561,7 @@ class NewWerewolf(commands.Cog):
             "Huntergame": "🔫",
             "Avengergame": "🗡️",
             "Valentines": "💕",
+            "Teams": "🤝",
             "Custom": "🧩",
         }
         mode_emoji = mode_emojis.get(mode, "")
@@ -3667,7 +3668,7 @@ class NewWerewolf(commands.Cog):
             Starts a game of NewWerewolf. Find the werewolves, before they find you!
             Your goal to win is indicated on the role you have.
             The command starter is not auto-joined. Click the lobby's **Join** button if you want to play, or **Leave** before the game begins if you want to spectate.
-            **Game modes:** `Classic` (default), `Comedy`, `Imbalanced`, `Huntergame`, `Villagergame`, `Avengergame`, `Valentines`, `IdleRPG`. Use `{prefix}nww modes` for detailed info.
+            **Game modes:** `Classic` (default), `Comedy`, `Imbalanced`, `Huntergame`, `Villagergame`, `Avengergame`, `Valentines`, `IdleRPG`, `Teams`. Use `{prefix}nww modes` for detailed info.
             **Game speeds** (in seconds): `Normal`: 60 (default), `Extended`: 90, `Fast`: 45, `Blitz`: 30. Use `{prefix}nww speeds` for detailed info.
             **Aliases:**
             `nww`
@@ -3678,6 +3679,7 @@ class NewWerewolf(commands.Cog):
             `{prefix}nww Valentines Extended` for Valentines mode on Extended speed
             `{prefix}nww Huntergame Fast` for Huntergame mode on Fast speed
             `{prefix}nww Avengergame` for Avengergame mode on Normal speed
+            `{prefix}nww Teams` for mixed-team mode on Normal speed
             """
         )
         # TODO:
@@ -3694,6 +3696,7 @@ class NewWerewolf(commands.Cog):
             "Avengergame",
             "Valentines",
             "IdleRPG",
+            "Teams",
         ]
         game_speeds = ["Normal", "Extended", "Fast", "Blitz"]
         minimum_players = {
@@ -3705,6 +3708,7 @@ class NewWerewolf(commands.Cog):
             "Avengergame": 5,
             "Valentines": 8,
             "IdleRPG": 5,
+            "Teams": 6,
         }
 
         mode_token = str(mode or "Classic").strip().title()
@@ -3829,7 +3833,7 @@ class NewWerewolf(commands.Cog):
                 title=_("Werewolf Game Modes"),
                 description=_(
                     """\
-**Game modes:** `Classic` (default), `Comedy`, `Imbalanced`, `Huntergame`, `Villagergame`, `Avengergame`, `Valentines`, `IdleRPG`, `Custom`.
+**Game modes:** `Classic` (default), `Comedy`, `Imbalanced`, `Huntergame`, `Villagergame`, `Avengergame`, `Valentines`, `IdleRPG`, `Teams`, `Custom`.
 `Classic`: Play the classic werewolf game. (default)
 `Comedy`: Uses the same role roster and rules as `Classic`, but the public narration is chaotic and funny.
 `Imbalanced`: Some roles that are only available in larger games have chances to join even in smaller games. (The size of the game being referred here is about the number of players, i.e. 5-player game is small)
@@ -3838,6 +3842,7 @@ class NewWerewolf(commands.Cog):
 `Avengergame`: Every village-side role is replaced with Avenger.
 `Valentines`: There are multiple lovers or couples randomly chosen at the start of the game. A chain of lovers might exist upon the Amor's arrows. If the remaining players are in a single chain of lovers, they all win.
 `IdleRPG`: (based on Imbalanced mode) New roles are available: Paragon, Raider, Lawyer, Troublemaker, War Veteran, Wolf Shaman, Wolf Necromancer, Alpha Werewolf, Guardian Wolf, Superspreader, Red Lady, Priest, Pacifist, Grumpy Grandma, Nightmare Werewolf. (`Ritualist`, `Ghost Lady`, `Marksman`, `Forger`, `Serial Killer`, `Cannibal`, `Wolf Summoner`, `Sorcerer`, `Voodoo Werewolf`, and `Ravager Wolf` are advanced unlocks.)
+`Teams`: Uses the Classic roster, but players are split into two mixed teams that ignore villager/werewolf victory alignment. Each night there is a 50% chance the living teams reshuffle, and each team gets an all-night DM relay plus a DM list of current allies and non-allies.
 `Custom`: Use `{prefix}nww custom <role1, role2, ...>` as a priority role list (duplicates allowed). Earlier roles are kept first, missing slots are filled normally, and overflow is trimmed from the end."""
                 ).format(prefix=ctx.clean_prefix),
                 colour=self.bot.config.game.primary_colour,

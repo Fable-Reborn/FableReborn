@@ -2247,6 +2247,7 @@ class Game:
         self.jail_relay_task: asyncio.Task | None = None
         self.medium_relay_task: asyncio.Task | None = None
         self.alpha_day_wolf_relay_task: asyncio.Task | None = None
+        self.team_night_relay_task: asyncio.Task | None = None
         self.jailer_day_pick_task: asyncio.Task | None = None
         self.junior_day_mark_tasks: dict[int, asyncio.Task] = {}
         self.loudmouth_mark_tasks: dict[int, asyncio.Task] = {}
@@ -2254,14 +2255,16 @@ class Game:
         self.mayor_reveal_tasks: dict[int, asyncio.Task] = {}
         self.fortune_card_reveal_views: dict[int, FortuneCardRevealView] = {}
         self.active_talisman_loadouts: dict[int, set[Role]] = {}
+        self.team_assignments: dict[int, int] = {}
         self.after_first_night = False
         self.is_night_phase = False
         self.pending_night_resurrections: list[
             tuple[Player, Player, Role, int]
         ] = []
         self.custom_roles = custom_roles.copy() if custom_roles is not None else None
+        role_generation_mode = "Classic" if _normalize_mode_token(self.mode) == "teams" else self.mode
         if self.custom_roles is None:
-            self.available_roles = get_roles(len(players), self.mode)
+            self.available_roles = get_roles(len(players), role_generation_mode)
         else:
             self.available_roles = get_custom_roles(len(players), self.custom_roles)
         self.available_roles, self.extra_roles = (
@@ -2325,6 +2328,177 @@ class Game:
     @property
     def dead_players(self) -> list[Player]:
         return [player for player in self.players if player.dead]
+
+    @property
+    def is_teams_mode(self) -> bool:
+        return _normalize_mode_token(self.mode) == "teams"
+
+    def get_team_id(self, player: Player) -> int | None:
+        return self.team_assignments.get(player.user.id)
+
+    @staticmethod
+    def get_team_label(team_id: int | None) -> str:
+        if team_id == 1:
+            return "Team 1"
+        if team_id == 2:
+            return "Team 2"
+        return "Unassigned"
+
+    def get_team_winner_id(self) -> int | None:
+        if not self.is_teams_mode or not self.alive_players:
+            return None
+        alive_team_ids = {
+            team_id
+            for player in self.alive_players
+            if (team_id := self.get_team_id(player)) is not None
+        }
+        if len(alive_team_ids) == 1:
+            return next(iter(alive_team_ids))
+        return None
+
+    def assign_teams(self) -> bool:
+        if not self.is_teams_mode:
+            return False
+        living_players = random.shuffle(self.alive_players.copy())
+        if len(living_players) < 2:
+            return False
+
+        split_index = (len(living_players) + 1) // 2
+        new_assignments: dict[int, int] = {}
+        for idx, player in enumerate(living_players):
+            new_assignments[player.user.id] = 1 if idx < split_index else 2
+
+        changed = any(
+            self.team_assignments.get(user_id) != team_id
+            for user_id, team_id in new_assignments.items()
+        )
+        self.team_assignments.update(new_assignments)
+        return changed
+
+    async def stop_team_night_relay(self) -> None:
+        if self.team_night_relay_task:
+            self.team_night_relay_task.cancel()
+            self.team_night_relay_task = None
+
+    async def relay_team_messages(self) -> None:
+        def check(message: discord.Message) -> bool:
+            if not self.is_night_phase or not isinstance(message.channel, discord.DMChannel):
+                return False
+            sender = discord.utils.get(self.alive_players, user=message.author)
+            return sender is not None and self.get_team_id(sender) is not None
+
+        try:
+            while self.is_night_phase and self.winner is None:
+                message = await self.ctx.bot.wait_for("message", check=check)
+                content = message.content.strip()
+                if not content:
+                    if message.attachments:
+                        content = _("[attachment]")
+                    else:
+                        continue
+
+                sender = discord.utils.get(self.alive_players, user=message.author)
+                if sender is None:
+                    continue
+                sender_team = self.get_team_id(sender)
+                if sender_team is None:
+                    continue
+
+                recipients = [
+                    player
+                    for player in self.alive_players
+                    if player.user != message.author and self.get_team_id(player) == sender_team
+                ]
+                if not recipients:
+                    continue
+
+                relayed = _("🤝 [Team relay] {sender}: {content}").format(
+                    sender=sender.user,
+                    content=content,
+                )
+                for recipient in recipients:
+                    await recipient.send(relayed)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            schedule_traceback(self.ctx, e)
+
+    async def start_team_night_relay(self) -> None:
+        await self.stop_team_night_relay()
+        if not self.is_teams_mode or not self.is_night_phase:
+            return
+        if len(self.alive_players) < 2:
+            return
+        self.team_night_relay_task = asyncio.create_task(self.relay_team_messages())
+
+    async def send_team_status_messages(
+        self,
+        *,
+        initial: bool = False,
+        reshuffled: bool = False,
+    ) -> None:
+        if not self.is_teams_mode:
+            return
+
+        for player in self.alive_players:
+            team_id = self.get_team_id(player)
+            allies = [
+                teammate.user.mention
+                for teammate in self.alive_players
+                if teammate != player and self.get_team_id(teammate) == team_id
+            ]
+            opponents = [
+                opponent.user.mention
+                for opponent in self.alive_players
+                if self.get_team_id(opponent) != team_id
+            ]
+
+            if initial:
+                intro = _(
+                    "🤝 Mixed teams are active this match. Role alignment no longer decides victory here."
+                )
+            elif reshuffled:
+                intro = _("🔀 The mixed teams reshuffled tonight.")
+            else:
+                intro = _("🤝 The mixed teams stayed the same tonight.")
+
+            await player.send(
+                _(
+                    "{intro}\n"
+                    "**Your current team:** {team}\n"
+                    "**Allies:** {allies}\n"
+                    "**Not allies:** {opponents}\n"
+                    "Send any DM message here tonight and I will relay it to your current allies.\n"
+                    "{game_link}"
+                ).format(
+                    intro=intro,
+                    team=self.get_team_label(team_id),
+                    allies=", ".join(allies) if allies else _("None"),
+                    opponents=", ".join(opponents) if opponents else _("None"),
+                    game_link=self.game_link,
+                )
+            )
+
+    async def prepare_teams_for_night(self, *, initial: bool = False) -> None:
+        if not self.is_teams_mode:
+            return
+
+        reshuffled = False
+        if initial or not self.team_assignments:
+            self.assign_teams()
+            await self.ctx.send(
+                _("🤝 Mixed teams have been assigned. Check your DMs for your current allies.")
+            )
+        else:
+            if random.randint(0, 1) == 1:
+                reshuffled = self.assign_teams()
+            if reshuffled:
+                await self.ctx.send(
+                    _("🔀 The mixed teams reshuffled tonight. Check your DMs for your current allies.")
+                )
+
+        await self.send_team_status_messages(initial=initial, reshuffled=reshuffled)
+        await self.start_team_night_relay()
 
     def get_role_name(self, player_or_role: Player | Role) -> str:
         role_name = ""
@@ -6981,7 +7155,7 @@ class Game:
         await self._set_everyone_chat_lock(True)
         await self.ensure_ww_dead_channel_lock()
         await self.setup_ww_player_roles()
-        mode_emojis = {"Huntergame": "🔫", "Avengergame": "🗡️", "Valentines": "💕"}
+        mode_emojis = {"Huntergame": "🔫", "Avengergame": "🗡️", "Valentines": "💕", "Teams": "🤝"}
         mode_emoji = mode_emojis.get(self.mode, "")
         paginator = commands.Paginator(prefix="", suffix="")
         paginator.add_line(
@@ -7081,6 +7255,7 @@ class Game:
             await player.send_information()
         await self.ensure_grave_robber_targets()
         self.is_night_phase = True
+        await self.prepare_teams_for_night(initial=True)
         for player in self.players:
             player.wolf_shaman_mask_active = False
             player.is_sleeping_tonight = False
@@ -7242,6 +7417,7 @@ class Game:
         await self.stop_alpha_day_wolf_relay()
         moon = "🌕" if white_wolf_ability else "🌘"
         self.is_night_phase = True
+        await self.prepare_teams_for_night()
         for player in self.players:
             player.wolf_shaman_mask_active = False
             player.is_sleeping_tonight = False
@@ -8090,6 +8266,7 @@ class Game:
     async def day(self, deaths: list[Player]) -> None:
         self.is_night_phase = False
         await self.stop_alpha_day_wolf_relay()
+        await self.stop_team_night_relay()
         for player in self.players:
             player.wolf_shaman_mask_active = False
             player.is_sleeping_tonight = False
@@ -8245,6 +8422,7 @@ class Game:
             winner = self.winner
             if self.task:
                 self.task.cancel()
+            await self.stop_team_night_relay()
             results_pretext = _("Werewolf {mode} results:").format(mode=self.mode)
 
             try:
@@ -8275,6 +8453,10 @@ class Game:
                 if self.task:
                     self.task.cancel()
         finally:
+            try:
+                await self.stop_team_night_relay()
+            except Exception:
+                pass
             try:
                 await self.stop_jailer_day_target_selection()
             except Exception:
@@ -8380,6 +8562,15 @@ class Game:
             await self.ctx.send(page)
 
     def _winning_team_bucket(self, winner: Player | str | None) -> str | None:
+        if self.is_teams_mode:
+            if isinstance(winner, Player):
+                return self.get_team_label(self.get_team_id(winner))
+            normalized = str(winner).strip().lower() if winner is not None else ""
+            if "team 1" in normalized:
+                return self.get_team_label(1)
+            if "team 2" in normalized:
+                return self.get_team_label(2)
+            return None
         if isinstance(winner, Player):
             if winner.side == Side.VILLAGERS:
                 return "Villagers"
@@ -8414,6 +8605,51 @@ class Game:
         return None
 
     async def send_endgame_team_embed(self, winner: Player | str | None) -> None:
+        if self.is_teams_mode:
+            teams: dict[str, list[str]] = {
+                self.get_team_label(1): [],
+                self.get_team_label(2): [],
+            }
+
+            for player in self.players:
+                bucket = self.get_team_label(self.get_team_id(player))
+                if bucket not in teams:
+                    teams[bucket] = []
+                player_name = getattr(player.user, "display_name", str(player.user))
+                teams[bucket].append(f"{player_name} - {self.get_role_name(player)}")
+
+            for team in teams:
+                teams[team].sort(key=str.casefold)
+
+            winning_bucket = self._winning_team_bucket(winner)
+            title = _("Final Teams")
+            colour = getattr(
+                self.ctx.bot.config.game,
+                "primary_colour",
+                discord.Colour.blurple(),
+            )
+            embed = discord.Embed(title=title, colour=colour)
+
+            for team_name in (self.get_team_label(1), self.get_team_label(2)):
+                heading = team_name
+                if winning_bucket == team_name:
+                    heading = f"{team_name} (WIN)"
+                entries = teams.get(team_name, [])
+                value = "\n".join(entries) if entries else _("None")
+                embed.add_field(name=heading, value=value[:1024], inline=False)
+
+            winner_ids = [player.user.id for player in self.players if player.has_won]
+            if not winner_ids and isinstance(winner, Player):
+                winner_ids = [winner.user.id]
+            winner_ids = list(dict.fromkeys(winner_ids))
+            all_ids = list(dict.fromkeys(player.user.id for player in self.players))
+
+            self.endgame_summary_message = await self.ctx.send(
+                embed=embed,
+                view=EndgameIdsView(winner_ids=winner_ids, all_ids=all_ids),
+            )
+            return
+
         teams: dict[str, list[str]] = {
             "Villagers": [],
             "Werewolves": [],
@@ -9810,11 +10046,14 @@ class Player:
             return
 
         first, second = inspected[0], inspected[1]
-        same_team = self.game.get_observed_side(
-            first, observer=self
-        ) == self.game.get_observed_side(
-            second, observer=self
-        )
+        if self.game.is_teams_mode:
+            same_team = self.game.get_team_id(first) == self.game.get_team_id(second)
+        else:
+            same_team = self.game.get_observed_side(
+                first, observer=self
+            ) == self.game.get_observed_side(
+                second, observer=self
+            )
         verdict = _("the same team") if same_team else _("different teams")
         await self.send(
             _(
@@ -12038,6 +12277,16 @@ class Player:
     @property
     def has_won(self) -> bool:
         # Returns whether the player has reached their goal or not
+        if self.game.is_teams_mode:
+            winning_team_id = self.game.get_team_winner_id()
+            if (
+                winning_team_id is not None
+                and not self.dead
+                and self.game.get_team_id(self) == winning_team_id
+            ):
+                self.game.winning_side = self.game.get_team_label(winning_team_id)
+                return True
+            return False
         if self.in_love:
             # Special objective for Lovers: The pair must eliminate all other players
             # if one of the lovers is in the Villagers side and the other is in the

@@ -56,6 +56,75 @@ class MultiChooseResult:
 
 
 class TestNewWerewolfRoleBehaviors(unittest.IsolatedAsyncioTestCase):
+    def test_teams_mode_assigns_two_mixed_teams(self):
+        first = DummyPlayer(1, "First", Role.WEREWOLF)
+        second = DummyPlayer(2, "Second", Role.BODYGUARD)
+        third = DummyPlayer(3, "Third", Role.SEER)
+        fourth = DummyPlayer(4, "Fourth", Role.JESTER)
+        game = SimpleNamespace(
+            is_teams_mode=True,
+            team_assignments={},
+            alive_players=[first, second, third, fourth],
+        )
+
+        with patch(
+            "cogs.newwerewolf.core.random.shuffle",
+            side_effect=lambda population: list(population),
+        ):
+            changed = Game.assign_teams(game)
+
+        self.assertTrue(changed)
+        self.assertEqual(
+            {1: 1, 2: 1, 3: 2, 4: 2},
+            game.team_assignments,
+        )
+
+    def test_teams_mode_win_ignores_role_alignment(self):
+        game = SimpleNamespace(
+            is_teams_mode=True,
+            winning_side=None,
+            team_assignments={1: 1, 2: 1, 3: 2},
+        )
+        game.get_team_id = lambda player: game.team_assignments.get(player.user.id)
+        game.get_team_label = lambda team_id: f"Team {team_id}"
+        game.get_team_winner_id = lambda: 1
+
+        wolf = SimpleNamespace(
+            user=DummyUser(id=1, name="Wolf", mention="<@1>"),
+            dead=False,
+            game=game,
+            in_love=False,
+            own_lovers=[],
+            enchanted=False,
+            infected_with_virus=False,
+            side=Side.WOLVES,
+        )
+        villager = SimpleNamespace(
+            user=DummyUser(id=2, name="Villager", mention="<@2>"),
+            dead=False,
+            game=game,
+            in_love=False,
+            own_lovers=[],
+            enchanted=False,
+            infected_with_virus=False,
+            side=Side.VILLAGERS,
+        )
+        loser = SimpleNamespace(
+            user=DummyUser(id=3, name="Loser", mention="<@3>"),
+            dead=False,
+            game=game,
+            in_love=False,
+            own_lovers=[],
+            enchanted=False,
+            infected_with_virus=False,
+            side=Side.WOLVES,
+        )
+
+        self.assertTrue(Player.has_won.fget(wolf))
+        self.assertTrue(Player.has_won.fget(villager))
+        self.assertFalse(Player.has_won.fget(loser))
+        self.assertEqual("Team 1", game.winning_side)
+
     def test_custom_roles_trims_overflow_from_end(self):
         custom_roles = [
             Role.WEREWOLF,
