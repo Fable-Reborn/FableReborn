@@ -12415,14 +12415,13 @@ def _ensure_team_requirements_in_available(
 
 def get_custom_roles(number_of_players: int, custom_roles: list[Role]) -> list[Role]:
     total_slots = number_of_players + 2
-    if len(custom_roles) > total_slots:
-        raise ValueError(
-            f"Too many custom roles: {len(custom_roles)} provided for {total_slots} slots."
-        )
+    # Treat custom input as a front-loaded priority list: keep the earliest roles
+    # that fit this match, then backfill the rest with normal generation.
+    prioritized_roles = custom_roles[:total_slots]
 
     generated_roles = get_roles(number_of_players)
-    available_roles = custom_roles[:number_of_players].copy()
-    extra_roles = custom_roles[number_of_players : number_of_players + 2].copy()
+    available_roles = prioritized_roles[:number_of_players].copy()
+    extra_roles = prioritized_roles[number_of_players:total_slots].copy()
 
     for role in random.shuffle(generated_roles):
         if len(available_roles) < number_of_players:

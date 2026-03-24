@@ -9,6 +9,7 @@ from cogs.newwerewolf.core import (
     Role,
     Side,
     enforce_role_min_player_requirements,
+    get_custom_roles,
     side_from_role,
 )
 
@@ -55,6 +56,85 @@ class MultiChooseResult:
 
 
 class TestNewWerewolfRoleBehaviors(unittest.IsolatedAsyncioTestCase):
+    def test_custom_roles_trims_overflow_from_end(self):
+        custom_roles = [
+            Role.WEREWOLF,
+            Role.BODYGUARD,
+            Role.JESTER,
+            Role.DOCTOR,
+            Role.SEER,
+            Role.VILLAGER,
+        ]
+
+        with patch("cogs.newwerewolf.core.get_roles", return_value=[]), patch(
+            "cogs.newwerewolf.core.random.shuffle",
+            side_effect=lambda population: list(population),
+        ), patch(
+            "cogs.newwerewolf.core._replace_unlock_only_advanced_roles_with_base",
+            side_effect=lambda roles: roles,
+        ), patch(
+            "cogs.newwerewolf.core._apply_role_availability",
+            side_effect=lambda roles, mode=None: roles,
+        ), patch(
+            "cogs.newwerewolf.core._ensure_team_requirements_in_available",
+            side_effect=lambda roles, mode=None: roles,
+        ), patch(
+            "cogs.newwerewolf.core.enforce_single_mayor",
+            side_effect=lambda roles, mode=None: roles,
+        ), patch(
+            "cogs.newwerewolf.core.enforce_role_min_player_requirements",
+            side_effect=lambda roles, requested_players, mode=None: roles,
+        ):
+            roles = get_custom_roles(3, custom_roles)
+
+        self.assertEqual(
+            [Role.WEREWOLF, Role.BODYGUARD, Role.JESTER, Role.DOCTOR, Role.SEER],
+            roles,
+        )
+
+    def test_custom_roles_backfills_after_priority_list_is_exhausted(self):
+        custom_roles = [
+            Role.WEREWOLF,
+            Role.BODYGUARD,
+            Role.JESTER,
+        ]
+        generated_roles = [
+            Role.SEER,
+            Role.DOCTOR,
+            Role.VILLAGER,
+            Role.CURSED,
+            Role.MEDIUM,
+        ]
+
+        with patch(
+            "cogs.newwerewolf.core.get_roles",
+            return_value=generated_roles,
+        ), patch(
+            "cogs.newwerewolf.core.random.shuffle",
+            side_effect=lambda population: list(population),
+        ), patch(
+            "cogs.newwerewolf.core._replace_unlock_only_advanced_roles_with_base",
+            side_effect=lambda roles: roles,
+        ), patch(
+            "cogs.newwerewolf.core._apply_role_availability",
+            side_effect=lambda roles, mode=None: roles,
+        ), patch(
+            "cogs.newwerewolf.core._ensure_team_requirements_in_available",
+            side_effect=lambda roles, mode=None: roles,
+        ), patch(
+            "cogs.newwerewolf.core.enforce_single_mayor",
+            side_effect=lambda roles, mode=None: roles,
+        ), patch(
+            "cogs.newwerewolf.core.enforce_role_min_player_requirements",
+            side_effect=lambda roles, requested_players, mode=None: roles,
+        ):
+            roles = get_custom_roles(3, custom_roles)
+
+        self.assertEqual(
+            [Role.WEREWOLF, Role.BODYGUARD, Role.JESTER, Role.SEER, Role.DOCTOR],
+            roles,
+        )
+
     def test_cursed_is_removed_from_small_lobbies(self):
         roles = [
             Role.WEREWOLF,

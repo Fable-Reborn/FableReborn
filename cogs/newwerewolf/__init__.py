@@ -3627,23 +3627,6 @@ class NewWerewolf(commands.Cog):
             )
             return
 
-        if custom_roles is not None:
-            max_roles = len(players) + 2
-            if len(custom_roles) > max_roles:
-                del self.games[ctx.channel.id]
-                await self.bot.reset_cooldown(ctx)
-                await ctx.send(
-                    _(
-                        "You specified **{specified}** roles, but this game can only use"
-                        " up to **{max_roles}** roles with **{players}** players."
-                    ).format(
-                        specified=len(custom_roles),
-                        max_roles=max_roles,
-                        players=len(players),
-                    )
-                )
-                return
-
         role_xp_eligible = await self._is_role_xp_eligible_match(ctx)
         players = random.shuffle(players)
         try:
@@ -3785,7 +3768,9 @@ class NewWerewolf(commands.Cog):
             Notes:
             - Separate roles with commas.
             - Repeating a role means it can spawn multiple times.
-            - Any unfilled slots are generated with the normal balanced role system.
+            - Roles are read left-to-right as priority. Earlier roles are kept first.
+            - If the final game needs more roles than you listed, the rest are generated with the normal balanced role system.
+            - If you listed more roles than the final game can use, the extras are cut from the end of your list.
             - The game always guarantees at least one Werewolf-team role and one Villager-team role.
             - The command starter is not auto-joined; use the lobby buttons to join or leave before the game starts."""
         )
@@ -3853,7 +3838,7 @@ class NewWerewolf(commands.Cog):
 `Avengergame`: Every village-side role is replaced with Avenger.
 `Valentines`: There are multiple lovers or couples randomly chosen at the start of the game. A chain of lovers might exist upon the Amor's arrows. If the remaining players are in a single chain of lovers, they all win.
 `IdleRPG`: (based on Imbalanced mode) New roles are available: Paragon, Raider, Lawyer, Troublemaker, War Veteran, Wolf Shaman, Wolf Necromancer, Alpha Werewolf, Guardian Wolf, Superspreader, Red Lady, Priest, Pacifist, Grumpy Grandma, Nightmare Werewolf. (`Ritualist`, `Ghost Lady`, `Marksman`, `Forger`, `Serial Killer`, `Cannibal`, `Wolf Summoner`, `Sorcerer`, `Voodoo Werewolf`, and `Ravager Wolf` are advanced unlocks.)
-`Custom`: Use `{prefix}nww custom <role1, role2, ...>` to seed exact roles (duplicates allowed). Remaining slots are filled with normal balance."""
+`Custom`: Use `{prefix}nww custom <role1, role2, ...>` as a priority role list (duplicates allowed). Earlier roles are kept first, missing slots are filled normally, and overflow is trimmed from the end."""
                 ).format(prefix=ctx.clean_prefix),
                 colour=self.bot.config.game.primary_colour,
             ).set_author(name=str(ctx.author), icon_url=ctx.author.display_avatar.url)
