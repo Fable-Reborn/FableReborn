@@ -2490,7 +2490,7 @@ class Game:
                 _("🤝 Mixed teams have been assigned. Check your DMs for your current allies.")
             )
         else:
-            if random.randint(0, 1) == 1:
+            if random.randint(1, 4) == 1:
                 reshuffled = self.assign_teams()
             if reshuffled:
                 await self.ctx.send(

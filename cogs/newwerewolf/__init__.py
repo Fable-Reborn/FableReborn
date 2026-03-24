@@ -3842,7 +3842,7 @@ class NewWerewolf(commands.Cog):
 `Avengergame`: Every village-side role is replaced with Avenger.
 `Valentines`: There are multiple lovers or couples randomly chosen at the start of the game. A chain of lovers might exist upon the Amor's arrows. If the remaining players are in a single chain of lovers, they all win.
 `IdleRPG`: (based on Imbalanced mode) New roles are available: Paragon, Raider, Lawyer, Troublemaker, War Veteran, Wolf Shaman, Wolf Necromancer, Alpha Werewolf, Guardian Wolf, Superspreader, Red Lady, Priest, Pacifist, Grumpy Grandma, Nightmare Werewolf. (`Ritualist`, `Ghost Lady`, `Marksman`, `Forger`, `Serial Killer`, `Cannibal`, `Wolf Summoner`, `Sorcerer`, `Voodoo Werewolf`, and `Ravager Wolf` are advanced unlocks.)
-`Teams`: Uses the Classic roster, but players are split into two mixed teams that ignore villager/werewolf victory alignment. Each night there is a 50% chance the living teams reshuffle, and each team gets an all-night DM relay plus a DM list of current allies and non-allies.
+`Teams`: Uses the Classic roster, but players are split into two mixed teams that ignore villager/werewolf victory alignment. Each night there is a 25% chance the living teams reshuffle, and each team gets an all-night DM relay plus a DM list of current allies and non-allies.
 `Custom`: Use `{prefix}nww custom <role1, role2, ...>` as a priority role list (duplicates allowed). Earlier roles are kept first, missing slots are filled normally, and overflow is trimmed from the end."""
                 ).format(prefix=ctx.clean_prefix),
                 colour=self.bot.config.game.primary_colour,
