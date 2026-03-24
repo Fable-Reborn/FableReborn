@@ -3562,6 +3562,7 @@ class NewWerewolf(commands.Cog):
             "Avengergame": "🗡️",
             "Valentines": "💕",
             "Teams": "🤝",
+            "MixedRoles": "🔀",
             "Custom": "🧩",
         }
         mode_emoji = mode_emojis.get(mode, "")
@@ -3663,12 +3664,12 @@ class NewWerewolf(commands.Cog):
             """
             `[mode]` - The mode to play, see below for available options. (optional and defaults to Classic)
             `[speed]` - The game speed to play, see below available options. (optional and defaults to Normal)
-            `[min_players]` - The minimum players needed to play. (optional and defaults depending on the game mode: Classic: 5, Comedy: 5, Imbalanced: 5, Huntergame: 8, Villagergame: 5, Avengergame: 5, Valentines: 8, IdleRPG: 5)
+            `[min_players]` - The minimum players needed to play. (optional and defaults depending on the game mode: Classic: 5, Comedy: 5, Imbalanced: 5, Huntergame: 8, Villagergame: 5, Avengergame: 5, Valentines: 8, IdleRPG: 5, MixedRoles: 5)
 
             Starts a game of NewWerewolf. Find the werewolves, before they find you!
             Your goal to win is indicated on the role you have.
             The command starter is not auto-joined. Click the lobby's **Join** button if you want to play, or **Leave** before the game begins if you want to spectate.
-            **Game modes:** `Classic` (default), `Comedy`, `Imbalanced`, `Huntergame`, `Villagergame`, `Avengergame`, `Valentines`, `IdleRPG`, `Teams`. Use `{prefix}nww modes` for detailed info.
+            **Game modes:** `Classic` (default), `Comedy`, `Imbalanced`, `Huntergame`, `Villagergame`, `Avengergame`, `Valentines`, `IdleRPG`, `Teams`, `MixedRoles`. Use `{prefix}nww modes` for detailed info.
             **Game speeds** (in seconds): `Normal`: 60 (default), `Extended`: 90, `Fast`: 45, `Blitz`: 30. Use `{prefix}nww speeds` for detailed info.
             **Aliases:**
             `nww`
@@ -3680,6 +3681,7 @@ class NewWerewolf(commands.Cog):
             `{prefix}nww Huntergame Fast` for Huntergame mode on Fast speed
             `{prefix}nww Avengergame` for Avengergame mode on Normal speed
             `{prefix}nww Teams` for mixed-team mode on Normal speed
+            `{prefix}nww MixedRoles` for Classic roles with periodic role shuffles
             """
         )
         # TODO:
@@ -3697,6 +3699,7 @@ class NewWerewolf(commands.Cog):
             "Valentines",
             "IdleRPG",
             "Teams",
+            "MixedRoles",
         ]
         game_speeds = ["Normal", "Extended", "Fast", "Blitz"]
         minimum_players = {
@@ -3709,6 +3712,7 @@ class NewWerewolf(commands.Cog):
             "Valentines": 8,
             "IdleRPG": 5,
             "Teams": 6,
+            "MixedRoles": 5,
         }
 
         mode_token = str(mode or "Classic").strip().title()
@@ -3718,6 +3722,8 @@ class NewWerewolf(commands.Cog):
             "Shitpost": "Comedy",
             "Shitshow": "Comedy",
             "Idlerpg": "IdleRPG",
+            "Mixedroles": "MixedRoles",
+            "Mixed": "MixedRoles",
         }
         mode_token = mode_aliases.get(mode_token, mode_token)
         speed_token = mode_aliases.get(speed_token, speed_token)
@@ -3833,7 +3839,7 @@ class NewWerewolf(commands.Cog):
                 title=_("Werewolf Game Modes"),
                 description=_(
                     """\
-**Game modes:** `Classic` (default), `Comedy`, `Imbalanced`, `Huntergame`, `Villagergame`, `Avengergame`, `Valentines`, `IdleRPG`, `Teams`, `Custom`.
+**Game modes:** `Classic` (default), `Comedy`, `Imbalanced`, `Huntergame`, `Villagergame`, `Avengergame`, `Valentines`, `IdleRPG`, `Teams`, `MixedRoles`, `Custom`.
 `Classic`: Play the classic werewolf game. (default)
 `Comedy`: Uses the same role roster and rules as `Classic`, but the public narration is chaotic and funny.
 `Imbalanced`: Some roles that are only available in larger games have chances to join even in smaller games. (The size of the game being referred here is about the number of players, i.e. 5-player game is small)
@@ -3843,6 +3849,7 @@ class NewWerewolf(commands.Cog):
 `Valentines`: There are multiple lovers or couples randomly chosen at the start of the game. A chain of lovers might exist upon the Amor's arrows. If the remaining players are in a single chain of lovers, they all win.
 `IdleRPG`: (based on Imbalanced mode) New roles are available: Paragon, Raider, Lawyer, Troublemaker, War Veteran, Wolf Shaman, Wolf Necromancer, Alpha Werewolf, Guardian Wolf, Superspreader, Red Lady, Priest, Pacifist, Grumpy Grandma, Nightmare Werewolf. (`Ritualist`, `Ghost Lady`, `Marksman`, `Forger`, `Serial Killer`, `Cannibal`, `Wolf Summoner`, `Sorcerer`, `Voodoo Werewolf`, and `Ravager Wolf` are advanced unlocks.)
 `Teams`: Uses the Classic roster, but players are split into two mixed teams that ignore villager/werewolf victory alignment. Each night there is a 25% chance the living teams reshuffle, and each team gets an all-night DM relay plus a DM list of current allies and non-allies.
+`MixedRoles`: Uses the Classic roster, but at the start of each night there is a 1 in 3 chance the living players randomly trade their current roles with each other. Your current role after the shuffle is the one that acts and wins.
 `Custom`: Use `{prefix}nww custom <role1, role2, ...>` as a priority role list (duplicates allowed). Earlier roles are kept first, missing slots are filled normally, and overflow is trimmed from the end."""
                 ).format(prefix=ctx.clean_prefix),
                 colour=self.bot.config.game.primary_colour,

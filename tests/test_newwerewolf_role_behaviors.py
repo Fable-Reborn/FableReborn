@@ -56,6 +56,105 @@ class MultiChooseResult:
 
 
 class TestNewWerewolfRoleBehaviors(unittest.IsolatedAsyncioTestCase):
+    def test_mixed_roles_mode_uses_classic_roster(self):
+        ctx = SimpleNamespace(
+            channel=SimpleNamespace(mention="#nww"),
+            guild=None,
+        )
+        players = [
+            DummyUser(id=1, name="One", mention="<@1>"),
+            DummyUser(id=2, name="Two", mention="<@2>"),
+            DummyUser(id=3, name="Three", mention="<@3>"),
+        ]
+
+        with patch(
+            "cogs.newwerewolf.core.get_roles",
+            return_value=[
+                Role.WEREWOLF,
+                Role.SEER,
+                Role.VILLAGER,
+                Role.DOCTOR,
+                Role.JESTER,
+            ],
+        ) as get_roles:
+            Game(ctx, players, "MixedRoles", "Normal")
+
+        get_roles.assert_called_once_with(3, "Classic")
+
+    async def test_mixed_roles_shuffles_living_roles_when_roll_hits(self):
+        game = SimpleNamespace(
+            is_mixed_roles_mode=True,
+            night_no=3,
+            players=[],
+            ctx=SimpleNamespace(send=AsyncMock()),
+            game_link="https://example.invalid/game",
+            assign_sorcerer_disguises=AsyncMock(),
+            ensure_grave_robber_targets=AsyncMock(),
+            start_loudmouth_target_selection=AsyncMock(),
+            start_avenger_target_selection=AsyncMock(),
+        )
+        game.get_role_name = Game.get_role_name.__get__(game, Game)
+        game.refresh_pure_soul_reveals_after_role_shuffle = (
+            Game.refresh_pure_soul_reveals_after_role_shuffle.__get__(game, Game)
+        )
+        game.prepare_mixed_roles_for_night = (
+            Game.prepare_mixed_roles_for_night.__get__(game, Game)
+        )
+
+        first = Player(
+            Role.WEREWOLF,
+            DummyUser(id=1, name="First", mention="<@1>", send=AsyncMock()),
+            game,
+        )
+        second = Player(
+            Role.SEER,
+            DummyUser(id=2, name="Second", mention="<@2>", send=AsyncMock()),
+            game,
+        )
+        game.players = [first, second]
+        game.alive_players = [first, second]
+
+        with patch("cogs.newwerewolf.core.random.randint", return_value=1), patch(
+            "cogs.newwerewolf.core.random.shuffle",
+            return_value=[Role.SEER, Role.WEREWOLF],
+        ):
+            await game.prepare_mixed_roles_for_night()
+
+        self.assertEqual(Role.SEER, first.role)
+        self.assertEqual(Role.WEREWOLF, second.role)
+        self.assertEqual([Role.WEREWOLF], first.initial_roles)
+        self.assertEqual([Role.SEER], second.initial_roles)
+        game.ctx.send.assert_awaited_once()
+        game.assign_sorcerer_disguises.assert_awaited_once()
+        game.ensure_grave_robber_targets.assert_awaited_once()
+        game.start_loudmouth_target_selection.assert_awaited_once()
+        game.start_avenger_target_selection.assert_awaited_once()
+        first.user.send.assert_awaited()
+        second.user.send.assert_awaited()
+
+    async def test_mixed_roles_skips_when_roll_misses(self):
+        game = SimpleNamespace(
+            is_mixed_roles_mode=True,
+            night_no=2,
+            players=[],
+            ctx=SimpleNamespace(send=AsyncMock()),
+        )
+        game.prepare_mixed_roles_for_night = (
+            Game.prepare_mixed_roles_for_night.__get__(game, Game)
+        )
+        first = DummyPlayer(1, "First", Role.WEREWOLF)
+        second = DummyPlayer(2, "Second", Role.SEER)
+        game.players = [first, second]
+        game.alive_players = [first, second]
+
+        with patch("cogs.newwerewolf.core.random.randint", return_value=2), patch(
+            "cogs.newwerewolf.core.random.shuffle"
+        ) as random_shuffle:
+            await game.prepare_mixed_roles_for_night()
+
+        game.ctx.send.assert_not_awaited()
+        random_shuffle.assert_not_called()
+
     def test_teams_mode_assigns_two_mixed_teams(self):
         first = DummyPlayer(1, "First", Role.WEREWOLF)
         second = DummyPlayer(2, "Second", Role.BODYGUARD)

@@ -2262,7 +2262,10 @@ class Game:
             tuple[Player, Player, Role, int]
         ] = []
         self.custom_roles = custom_roles.copy() if custom_roles is not None else None
-        role_generation_mode = "Classic" if _normalize_mode_token(self.mode) == "teams" else self.mode
+        normalized_mode = _normalize_mode_token(self.mode)
+        role_generation_mode = (
+            "Classic" if normalized_mode in {"teams", "mixedroles"} else self.mode
+        )
         if self.custom_roles is None:
             self.available_roles = get_roles(len(players), role_generation_mode)
         else:
@@ -2332,6 +2335,10 @@ class Game:
     @property
     def is_teams_mode(self) -> bool:
         return _normalize_mode_token(self.mode) == "teams"
+
+    @property
+    def is_mixed_roles_mode(self) -> bool:
+        return _normalize_mode_token(self.mode) == "mixedroles"
 
     def get_team_id(self, player: Player) -> int | None:
         return self.team_assignments.get(player.user.id)
@@ -2499,6 +2506,72 @@ class Game:
 
         await self.send_team_status_messages(initial=initial, reshuffled=reshuffled)
         await self.start_team_night_relay()
+
+    async def refresh_pure_soul_reveals_after_role_shuffle(
+        self,
+        previous_pure_souls: list[Player],
+    ) -> None:
+        previous_ids = {player.user.id for player in previous_pure_souls}
+        current_pure_souls = [
+            player for player in self.alive_players if player.role == Role.PURE_SOUL
+        ]
+        current_ids = {player.user.id for player in current_pure_souls}
+
+        for player in self.players:
+            for former_pure_soul in previous_pure_souls:
+                if former_pure_soul.user.id not in current_ids:
+                    player.revealed_roles.pop(former_pure_soul, None)
+
+        for pure_soul in current_pure_souls:
+            for player in self.players:
+                player.revealed_roles[pure_soul] = pure_soul.role
+
+            if pure_soul.user.id not in previous_ids:
+                await self.ctx.send(
+                    _("{pure_soul} is a **{role}** and an innocent villager.").format(
+                        pure_soul=pure_soul.user.mention,
+                        role=pure_soul.role_name,
+                    )
+                )
+
+    async def prepare_mixed_roles_for_night(self) -> None:
+        if not self.is_mixed_roles_mode:
+            return
+
+        living_players = self.alive_players.copy()
+        if len(living_players) < 2 or random.randint(1, 3) != 1:
+            return
+
+        previous_pure_souls = [
+            player for player in living_players if player.role == Role.PURE_SOUL
+        ]
+        shuffled_roles = random.shuffle([player.role for player in living_players])
+
+        for player, new_role in zip(living_players, shuffled_roles):
+            previous_role = player.role
+            if player.initial_roles[-1] != previous_role:
+                player.initial_roles.append(previous_role)
+            player.role = new_role
+            player.public_role_name_override = None
+            if previous_role == Role.THE_OLD and new_role != Role.THE_OLD:
+                player.lives = min(player.lives, 1)
+            elif previous_role != Role.THE_OLD and new_role == Role.THE_OLD:
+                player.lives = max(player.lives, 2)
+
+        await self.ctx.send(
+            _(
+                "🔀 MixedRoles shuffled the living roles tonight. Check your DMs for your new role."
+            )
+        )
+        await self.refresh_pure_soul_reveals_after_role_shuffle(previous_pure_souls)
+        await self.assign_sorcerer_disguises()
+        await self.ensure_grave_robber_targets()
+        await self.start_loudmouth_target_selection()
+        await self.start_avenger_target_selection()
+
+        for player in living_players:
+            await player.send(_("🔀 MixedRoles shuffled the living roles."))
+            await player.send_information()
 
     def get_role_name(self, player_or_role: Player | Role) -> str:
         role_name = ""
@@ -7155,7 +7228,13 @@ class Game:
         await self._set_everyone_chat_lock(True)
         await self.ensure_ww_dead_channel_lock()
         await self.setup_ww_player_roles()
-        mode_emojis = {"Huntergame": "🔫", "Avengergame": "🗡️", "Valentines": "💕", "Teams": "🤝"}
+        mode_emojis = {
+            "Huntergame": "🔫",
+            "Avengergame": "🗡️",
+            "Valentines": "💕",
+            "Teams": "🤝",
+            "MixedRoles": "🔀",
+        }
         mode_emoji = mode_emojis.get(self.mode, "")
         paginator = commands.Paginator(prefix="", suffix="")
         paginator.add_line(
@@ -7417,6 +7496,7 @@ class Game:
         await self.stop_alpha_day_wolf_relay()
         moon = "🌕" if white_wolf_ability else "🌘"
         self.is_night_phase = True
+        await self.prepare_mixed_roles_for_night()
         await self.prepare_teams_for_night()
         for player in self.players:
             player.wolf_shaman_mask_active = False
