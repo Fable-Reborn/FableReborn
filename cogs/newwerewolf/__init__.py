@@ -3415,10 +3415,48 @@ class NewWerewolf(commands.Cog):
             return _("{players}, and {extra} more").format(players=preview, extra=extra)
         return preview
 
+    def _get_mode_lobby_summary(self, mode: str, *, prefix: str) -> str:
+        summaries = {
+            "Classic": _("Standard Werewolf rules and Classic role roster."),
+            "Comedy": _(
+                "Classic role roster and rules, but with chaotic comedic narration."
+            ),
+            "Imbalanced": _(
+                "Classic-style play, but larger or rarer roles can appear earlier than usual."
+            ),
+            "Huntergame": _("Everyone is a Hunter or a Werewolf."),
+            "Villagergame": _("Only Villagers and Werewolves appear."),
+            "Avengergame": _(
+                "Village-side roles are replaced by Avenger."
+            ),
+            "Valentines": _(
+                "Multiple lovers are created, and a full surviving love chain can win together."
+            ),
+            "IdleRPG": _(
+                "Expanded role roster with additional advanced and special roles."
+            ),
+            "Teams": _(
+                "Classic roles, but mixed Team 1 vs Team 2 decides victory. Teams can reshuffle at night."
+            ),
+            "MixedRoles": _(
+                "Classic roles, but each night there is a 1 in 3 chance the living players swap current roles."
+            ),
+            "Custom": _(
+                "Priority role list mode. Earlier listed roles are kept first, with missing slots filled normally."
+            ),
+        }
+        summary = summaries.get(mode, summaries["Classic"])
+        return _("{summary}\nUse `{prefix}nww modes` for full mode details.").format(
+            summary=summary,
+            prefix=prefix,
+        )
+
     def _build_multiplayer_lobby_embed(
         self,
         *,
         author: discord.Member,
+        mode: str,
+        clean_prefix: str,
         mode_label: str,
         speed: str,
         min_players: int,
@@ -3475,6 +3513,11 @@ class NewWerewolf(commands.Cog):
                 colour=self.bot.config.game.primary_colour,
             )
             .set_author(name=str(author), icon_url=author.display_avatar.url)
+            .add_field(
+                name=_("Mode rules"),
+                value=self._get_mode_lobby_summary(mode, prefix=clean_prefix),
+                inline=False,
+            )
             .add_field(name=_("New to Werewolf?"), value=additional_text)
         )
 
@@ -3484,6 +3527,8 @@ class NewWerewolf(commands.Cog):
         message: discord.Message,
         view: WerewolfLobbyJoinView,
         author: discord.Member,
+        mode: str,
+        clean_prefix: str,
         mode_label: str,
         speed: str,
         min_players: int,
@@ -3501,6 +3546,8 @@ class NewWerewolf(commands.Cog):
                 await message.edit(
                     embed=self._build_multiplayer_lobby_embed(
                         author=author,
+                        mode=mode,
+                        clean_prefix=clean_prefix,
                         mode_label=mode_label,
                         speed=speed,
                         min_players=min_players,
@@ -3584,6 +3631,8 @@ class NewWerewolf(commands.Cog):
             lobby_message = await ctx.send(
                 embed=self._build_multiplayer_lobby_embed(
                     author=ctx.author,
+                    mode=mode,
+                    clean_prefix=ctx.clean_prefix,
                     mode_label=mode_label,
                     speed=speed,
                     min_players=min_players,
@@ -3609,6 +3658,8 @@ class NewWerewolf(commands.Cog):
             message=lobby_message,
             view=view,
             author=ctx.author,
+            mode=mode,
+            clean_prefix=ctx.clean_prefix,
             mode_label=mode_label,
             speed=speed,
             min_players=min_players,
