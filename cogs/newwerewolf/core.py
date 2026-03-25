@@ -6650,9 +6650,34 @@ class Game:
                 
             # Check if there's only one player left
             if len(self.alive_players) == 1:
-                return self.alive_players[0]
+                sole_survivor = self.alive_players[0]
+                if sole_survivor.side in (Side.JESTER, Side.HEAD_HUNTER):
+                    return _("No one")
+                return sole_survivor
             elif len(self.alive_players) == 0:
                 return _("No one")
+
+            if _normalize_mode_token(self.mode) == "custom":
+                active_threat_sides = {
+                    Side.WOLVES,
+                    Side.WHITE_WOLF,
+                    Side.FLUTIST,
+                    Side.SUPERSPREADER,
+                    Side.SERIAL_KILLER,
+                    Side.CANNIBAL,
+                }
+                if not any(
+                    player.side in active_threat_sides
+                    for player in self.alive_players
+                ):
+                    if any(
+                        player.side == Side.VILLAGERS
+                        for player in self.alive_players
+                    ):
+                        self.winning_side = "Villagers"
+                        return _("Villagers")
+                    self.winning_side = _("Loners")
+                    return _("Loners")
             
             return None
         except Exception as e:
@@ -8770,6 +8795,25 @@ class Game:
         winner_ids = [player.user.id for player in self.players if player.has_won]
         if not winner_ids and isinstance(winner, Player):
             winner_ids = [winner.user.id]
+        if not winner_ids and not isinstance(winner, Player):
+            if winning_bucket == "Villagers":
+                winner_ids = [
+                    player.user.id
+                    for player in self.players
+                    if player.side == Side.VILLAGERS
+                ]
+            elif winning_bucket == "Werewolves":
+                winner_ids = [
+                    player.user.id
+                    for player in self.players
+                    if player.side == Side.WOLVES
+                ]
+            elif winning_bucket == "Loners":
+                winner_ids = [
+                    player.user.id
+                    for player in self.players
+                    if player.side not in (Side.VILLAGERS, Side.WOLVES)
+                ]
         winner_ids = list(dict.fromkeys(winner_ids))
         all_ids = list(dict.fromkeys(player.user.id for player in self.players))
 
