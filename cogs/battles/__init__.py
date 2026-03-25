@@ -4789,13 +4789,22 @@ class Battles(commands.Cog):
         async with self.bot.pool.acquire() as connection:
             await connection.execute(
                 """
-                UPDATE jurytower
-                SET scale_attack_base = $1,
-                    scale_hp_base = $2,
-                    scale_defense_base = $3,
-                    scale_power_score = $4,
-                    scale_bracket = $5
-                WHERE id = $6
+                INSERT INTO jurytower (
+                    id,
+                    scale_attack_base,
+                    scale_hp_base,
+                    scale_defense_base,
+                    scale_power_score,
+                    scale_bracket
+                )
+                VALUES ($6, $1, $2, $3, $4, $5)
+                ON CONFLICT (id)
+                DO UPDATE SET
+                    scale_attack_base = EXCLUDED.scale_attack_base,
+                    scale_hp_base = EXCLUDED.scale_hp_base,
+                    scale_defense_base = EXCLUDED.scale_defense_base,
+                    scale_power_score = EXCLUDED.scale_power_score,
+                    scale_bracket = EXCLUDED.scale_bracket
                 """,
                 snapshot["attack_base"],
                 snapshot["hp_base"],
@@ -5836,27 +5845,26 @@ class Battles(commands.Cog):
             await ctx.send(embed=embed)
 
 
-    @jurytower.command(name="forcesnapshot", aliases=["snapshotrefresh", "refreshsnapshot"])
+    @jurytower.command(
+        name="forcesnapshot",
+        aliases=["snapshotrefresh", "refreshsnapshot", "forceallsnapshot", "snapshotall"],
+    )
     async def jurytower_force_snapshot(self, ctx):
-        """[GM only] Rebuild and persist snapshots for every user that currently has one."""
+        """[GM only] Rebuild and persist snapshots for every user that has a character."""
         if not await self._ensure_jury_tower_dev_access(ctx):
             return
 
         async with self.bot.pool.acquire() as connection:
             rows = await connection.fetch(
                 """
-                SELECT id
-                FROM jurytower
-                WHERE
-                    scale_power_score > 0
-                    OR scale_attack_base > 0
-                    OR scale_hp_base > 0
-                    OR scale_defense_base > 0
+                SELECT "user" AS id
+                FROM profile
+                ORDER BY "user"
                 """
             )
 
         if not rows:
-            return await ctx.send("No players currently have a Jury Tower snapshot to refresh.")
+            return await ctx.send("No users with characters were found to snapshot.")
 
         allow_pets = self.battle_factory.settings.get_setting(
             "jurytower",
