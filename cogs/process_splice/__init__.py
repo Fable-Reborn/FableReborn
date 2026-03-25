@@ -739,6 +739,339 @@ class ProcessSplice(commands.Cog):
             "ALTER TABLE splice_requests ADD COLUMN IF NOT EXISTS background_theme TEXT NOT NULL DEFAULT 'auto';"
         )
 
+    async def _ensure_splice_tree_tracking_table(self, conn) -> None:
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS splice_tree_tracks (
+                user_id BIGINT NOT NULL,
+                target_key TEXT NOT NULL,
+                target_name TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (user_id, target_key)
+            );
+            """
+        )
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS splice_tree_tracks_user_created_idx
+            ON splice_tree_tracks(user_id, created_at ASC, target_name ASC);
+            """
+        )
+
+    @staticmethod
+    def _normalize_splice_tree_name(value: Optional[str]) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        return cleaned.casefold()
+
+    async def _load_splice_tree_catalog(self, conn) -> dict:
+        monsters_data = await asyncio.to_thread(self._load_monsters_json_data)
+
+        base_url_by_key = {}
+        canonical_by_key = {}
+
+        def register_name(value):
+            key = self._normalize_splice_tree_name(value)
+            if key is None:
+                return None
+            if key not in canonical_by_key:
+                canonical_by_key[key] = value.strip()
+            return key
+
+        base_monster_names = set()
+        if isinstance(monsters_data, dict):
+            for monster_list in monsters_data.values():
+                if not isinstance(monster_list, list):
+                    continue
+                for monster in monster_list:
+                    if not isinstance(monster, dict):
+                        continue
+                    m_name = monster.get("name")
+                    m_url = monster.get("url")
+                    key = register_name(m_name)
+                    if key is None:
+                        continue
+                    base_monster_names.add(canonical_by_key[key])
+                    if isinstance(m_url, str) and m_url.strip() and key not in base_url_by_key:
+                        base_url_by_key[key] = m_url.strip()
+
+        completed_rows = await conn.fetch(
+            """
+            SELECT id, pet1_default, pet2_default, result_name, url, created_at
+            FROM splice_combinations
+            ORDER BY created_at ASC, id ASC
+            """
+        )
+
+        combinations_by_child = defaultdict(list)
+        node_url_by_key = dict(base_url_by_key)
+        generation_edges = []
+
+        for row in completed_rows:
+            p1_key = register_name(row["pet1_default"])
+            p2_key = register_name(row["pet2_default"])
+            child_key = register_name(row["result_name"])
+            if p1_key and p2_key and child_key:
+                combinations_by_child[child_key].append((p1_key, p2_key, row["id"]))
+                generation_edges.append((p1_key, p2_key, child_key))
+
+            row_url = row["url"]
+            if child_key and isinstance(row_url, str) and row_url.strip():
+                node_url_by_key[child_key] = row_url.strip()
+
+        generation_by_key = {
+            self._normalize_splice_tree_name(name): -1
+            for name in base_monster_names
+            if self._normalize_splice_tree_name(name)
+        }
+        max_passes = max(1, len(generation_edges) + 1)
+        for _ in range(max_passes):
+            changed = False
+            for p1_key, p2_key, child_key in generation_edges:
+                parent1_gen = generation_by_key.get(p1_key)
+                parent2_gen = generation_by_key.get(p2_key)
+                if parent1_gen is None or parent2_gen is None:
+                    continue
+
+                child_gen = max(parent1_gen, parent2_gen) + 1
+                existing = generation_by_key.get(child_key)
+                if existing == -1:
+                    continue
+                if existing is None or child_gen < existing:
+                    generation_by_key[child_key] = child_gen
+                    changed = True
+            if not changed:
+                break
+
+        parent_pair_by_child = {}
+        duplicate_combo_children = 0
+        for child_key, pairs in combinations_by_child.items():
+            if not pairs:
+                continue
+            if len(pairs) > 1:
+                duplicate_combo_children += 1
+            parent_pair_by_child[child_key] = pairs[0]
+
+        return {
+            "base_monster_names": base_monster_names,
+            "canonical_by_key": canonical_by_key,
+            "node_url_by_key": node_url_by_key,
+            "generation_by_key": generation_by_key,
+            "parent_pair_by_child": parent_pair_by_child,
+            "duplicate_combo_children": duplicate_combo_children,
+            "completed_row_count": len(completed_rows),
+        }
+
+    def _resolve_splice_tree_target_key(self, requested_name: str, canonical_by_key: dict) -> Optional[str]:
+        requested_key = self._normalize_splice_tree_name(requested_name)
+        if requested_key is None:
+            return None
+        if requested_key in canonical_by_key:
+            return requested_key
+        for key in canonical_by_key:
+            if requested_key in key:
+                return key
+        return None
+
+    def _build_splice_genealogy_tree(
+        self,
+        root_key: Optional[str],
+        parent_pair_by_child: dict,
+        *,
+        max_tree_depth: int = 80,
+    ) -> dict:
+        def build_gene_node(node_key, depth=0, lineage=None):
+            if lineage is None:
+                lineage = set()
+
+            node = {
+                "key": node_key,
+                "depth": depth,
+                "left": None,
+                "right": None,
+                "order": None,
+                "x": 0,
+                "y": 0,
+                "completed": False,
+                "directly_owned": False,
+                "propagates_completion": False,
+                "completion_locked": False,
+            }
+
+            if node_key is None:
+                return node
+            if depth >= max_tree_depth:
+                return node
+            if node_key in lineage:
+                return node
+
+            parent_pair = parent_pair_by_child.get(node_key)
+            if not parent_pair:
+                return node
+
+            p1_key, p2_key, _ = parent_pair
+            next_lineage = set(lineage)
+            next_lineage.add(node_key)
+
+            if p1_key:
+                node["left"] = build_gene_node(p1_key, depth + 1, next_lineage)
+            if p2_key:
+                node["right"] = build_gene_node(p2_key, depth + 1, next_lineage)
+            return node
+
+        return build_gene_node(root_key)
+
+    @staticmethod
+    def _collect_splice_tree_nodes(root_node: dict) -> list:
+        tree_nodes = []
+
+        def collect(node):
+            if node is None:
+                return
+            tree_nodes.append(node)
+            collect(node["left"])
+            collect(node["right"])
+
+        collect(root_node)
+        return tree_nodes
+
+    @staticmethod
+    def _assign_splice_tree_inorder(root_node: dict) -> int:
+        leaf_counter = 0
+
+        def assign_inorder(node):
+            nonlocal leaf_counter
+            if node is None:
+                return None
+
+            left_order = assign_inorder(node["left"])
+            right_order = assign_inorder(node["right"])
+
+            if node["left"] is None and node["right"] is None:
+                node["order"] = float(leaf_counter)
+                leaf_counter += 1
+            else:
+                valid = [value for value in (left_order, right_order) if value is not None]
+                if valid:
+                    node["order"] = sum(valid) / len(valid)
+                else:
+                    node["order"] = float(leaf_counter)
+                    leaf_counter += 1
+            return node["order"]
+
+        assign_inorder(root_node)
+        return max(1, leaf_counter)
+
+    def _annotate_splice_tree_completion(
+        self,
+        root_node: dict,
+        owned_keys: set[str],
+        tracked_root_keys: set[str],
+    ) -> list[str]:
+        missing_keys = []
+
+        def walk(node, inherited_completion=False):
+            if node is None:
+                return
+
+            node_key = node.get("key")
+            directly_owned = node_key in owned_keys if node_key else False
+            completion_locked = directly_owned and node_key in tracked_root_keys
+            completed = inherited_completion or directly_owned
+            propagates_completion = completed and not completion_locked
+
+            node["directly_owned"] = directly_owned
+            node["completion_locked"] = completion_locked
+            node["completed"] = completed
+            node["propagates_completion"] = propagates_completion
+
+            if node_key and not completed:
+                missing_keys.append(node_key)
+
+            walk(node.get("left"), propagates_completion)
+            walk(node.get("right"), propagates_completion)
+
+        walk(root_node)
+        return missing_keys
+
+    async def _get_user_owned_splice_keys(self, conn, user_id: int) -> set[str]:
+        rows = await conn.fetch(
+            """
+            SELECT COALESCE(NULLIF(BTRIM(default_name), ''), NULLIF(BTRIM(name), '')) AS raw_name
+            FROM monster_pets
+            WHERE user_id = $1
+            """,
+            user_id,
+        )
+        owned_keys = set()
+        for row in rows:
+            key = self._normalize_splice_tree_name(row["raw_name"])
+            if key:
+                owned_keys.add(key)
+        return owned_keys
+
+    async def _get_user_tracked_splice_targets(self, conn, user_id: int) -> list[dict]:
+        await self._ensure_splice_tree_tracking_table(conn)
+        rows = await conn.fetch(
+            """
+            SELECT target_key, target_name, created_at
+            FROM splice_tree_tracks
+            WHERE user_id = $1
+            ORDER BY created_at ASC, target_name ASC
+            LIMIT 10
+            """,
+            user_id,
+        )
+        return [dict(row) for row in rows]
+
+    def _build_tracked_splice_target_summaries(
+        self,
+        tracked_targets: list[dict],
+        *,
+        parent_pair_by_child: dict,
+        canonical_by_key: dict,
+        generation_by_key: dict,
+        owned_keys: set[str],
+        tracked_root_keys: set[str],
+    ) -> list[dict]:
+        summaries = []
+        for tracked_target in tracked_targets[:10]:
+            target_key = tracked_target.get("target_key")
+            if not target_key:
+                continue
+
+            root_node = self._build_splice_genealogy_tree(target_key, parent_pair_by_child)
+            missing_keys = self._annotate_splice_tree_completion(root_node, owned_keys, tracked_root_keys)
+
+            missing_preview = []
+            seen_preview = set()
+            for key in missing_keys:
+                if key in seen_preview:
+                    continue
+                seen_preview.add(key)
+                missing_preview.append(canonical_by_key.get(key, key))
+                if len(missing_preview) >= 3:
+                    break
+
+            summaries.append(
+                {
+                    "target_key": target_key,
+                    "target_name": canonical_by_key.get(
+                        target_key,
+                        tracked_target.get("target_name") or target_key,
+                    ),
+                    "generation": generation_by_key.get(target_key),
+                    "owned": target_key in owned_keys,
+                    "remaining_count": len(missing_keys),
+                    "missing_preview": missing_preview,
+                }
+            )
+
+        return summaries
+
     def _calculate_level_adjusted_splice_stats(
         self,
         hp: int | float | None,
@@ -1484,8 +1817,10 @@ class ProcessSplice(commands.Cog):
         generation_by_key: dict,
         canonical_by_key: dict,
         thumbnails: dict,
+        tracked_target_summaries: Optional[list] = None,
         fast_mode: bool = False,
     ):
+        tracked_target_summaries = tracked_target_summaries or []
         canvas = self._get_splice_tree_background(width, height)
 
         if canvas is None:
@@ -1511,16 +1846,24 @@ class ProcessSplice(commands.Cog):
         label_font = load_font(min(62, max(15, node_diameter // 4)), bold=True)
         meta_font = load_font(min(42, max(12, node_diameter // 6)), bold=False)
 
-        edge_color = (90, 165, 245)
+        dark_edge_color = (24, 24, 28)
+        complete_edge_color = (74, 214, 118)
         edge_width = max(2, node_diameter // 14)
 
-        def draw_connectors(draw_ctx, line_color, line_width):
+        def draw_connectors(draw_ctx, line_width, *, glow=False):
             for node in tree_nodes:
                 child_x = node["x"]
                 child_y = node["y"]
                 parents = [p for p in (node.get("left"), node.get("right")) if p is not None]
                 if not parents:
                     continue
+                if glow and not node.get("propagates_completion"):
+                    continue
+                line_color = (
+                    (110, 255, 160, 155)
+                    if glow
+                    else (complete_edge_color if node.get("propagates_completion") else dark_edge_color)
+                )
 
                 if len(parents) == 2:
                     p1 = parents[0]
@@ -1566,23 +1909,13 @@ class ProcessSplice(commands.Cog):
         if not fast_mode:
             glow_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
             glow_draw = ImageDraw.Draw(glow_layer)
-            glow_color = (120, 205, 255, 145)
             glow_width = max(edge_width + 4, edge_width * 4)
-            draw_connectors(glow_draw, glow_color, glow_width)
+            draw_connectors(glow_draw, glow_width, glow=True)
             glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(radius=max(2, edge_width * 2)))
             canvas.alpha_composite(glow_layer)
 
         # Draw crisp connector lines on top of the glow.
-        draw_connectors(draw, edge_color, edge_width)
-
-        palette = [
-            (126, 180, 255),
-            (144, 221, 168),
-            (255, 205, 120),
-            (255, 151, 120),
-            (214, 167, 255),
-            (120, 220, 220),
-        ]
+        draw_connectors(draw, edge_width)
 
         def text_width(text, font):
             text_bbox = draw.textbbox((0, 0), text, font=font)
@@ -1657,18 +1990,23 @@ class ProcessSplice(commands.Cog):
             cy = node["y"]
             node_gen = generation_by_key.get(node_key)
             if node_gen == -1:
-                border = (124, 178, 255)
-                fill = (34, 52, 84)
                 gen_text = "BASE"
             elif isinstance(node_gen, int):
-                border_rgb = palette[node_gen % len(palette)]
-                border = border_rgb
-                fill = (26, 35, 50)
                 gen_text = f"G{node_gen}"
             else:
-                border = (150, 150, 150)
-                fill = (45, 45, 45)
                 gen_text = "UNK"
+            if node.get("completed"):
+                border = (74, 214, 118)
+                fill = (18, 60, 38)
+            elif node_gen == -1:
+                border = (72, 72, 82)
+                fill = (10, 10, 12)
+            elif isinstance(node_gen, int):
+                border = (58, 58, 66)
+                fill = (12, 12, 16)
+            else:
+                border = (88, 88, 96)
+                fill = (18, 18, 22)
 
             radius = node_diameter // 2
             left = cx - radius
@@ -1798,6 +2136,148 @@ class ProcessSplice(commands.Cog):
         draw.text((title_x, title_y), title_text, font=title_font, fill=(248, 250, 255))
         draw.text((subtitle_x, subtitle_y), subtitle_text, font=header_font, fill=(190, 205, 230))
 
+        final_canvas = canvas
+        if tracked_target_summaries:
+            panel_gap = max(26, int(width * 0.02))
+            panel_width = max(380, min(680, int(width * 0.30)))
+            final_canvas = Image.new(
+                "RGBA",
+                (width + panel_gap + panel_width, height),
+                (4, 4, 6, 255),
+            )
+            final_canvas.paste(canvas, (0, 0))
+
+            panel_draw = ImageDraw.Draw(final_canvas)
+            panel_left = width + panel_gap
+            panel_right = panel_left + panel_width
+            panel_pad = max(18, panel_width // 18)
+            panel_top = max(24, int(title_band * 0.10))
+            panel_bottom = height - max(24, int(title_band * 0.12))
+
+            panel_draw.rounded_rectangle(
+                [panel_left, panel_top, panel_right, panel_bottom],
+                radius=max(18, panel_width // 20),
+                fill=(0, 0, 0, 235),
+                outline=(44, 44, 52),
+                width=3,
+            )
+
+            panel_header_font = load_font(min(44, max(24, panel_width // 12)), bold=True)
+            panel_meta_font = load_font(min(26, max(13, panel_width // 22)), bold=False)
+            panel_name_font = load_font(min(30, max(16, panel_width // 17)), bold=True)
+            panel_detail_font = load_font(min(22, max(12, panel_width // 24)), bold=False)
+
+            header_text = "Tracked Splices"
+            header_bbox = panel_draw.textbbox((0, 0), header_text, font=panel_header_font)
+            header_width = header_bbox[2] - header_bbox[0]
+            header_x = panel_left + ((panel_width - header_width) // 2)
+            header_y = panel_top + panel_pad
+            panel_draw.text(
+                (header_x, header_y),
+                header_text,
+                font=panel_header_font,
+                fill=(242, 246, 255),
+            )
+
+            sub_text = f"{len(tracked_target_summaries)}/10 active targets"
+            sub_bbox = panel_draw.textbbox((0, 0), sub_text, font=panel_meta_font)
+            sub_width = sub_bbox[2] - sub_bbox[0]
+            sub_x = panel_left + ((panel_width - sub_width) // 2)
+            sub_y = header_y + (header_bbox[3] - header_bbox[1]) + 8
+            panel_draw.text((sub_x, sub_y), sub_text, font=panel_meta_font, fill=(156, 166, 182))
+
+            entries_top = sub_y + (sub_bbox[3] - sub_bbox[1]) + max(18, panel_width // 18)
+            entries_bottom = panel_bottom - panel_pad
+            available_height = max(1, entries_bottom - entries_top)
+            entry_gap = max(8, panel_width // 40)
+            entry_height = max(
+                62,
+                int((available_height - (entry_gap * max(0, len(tracked_target_summaries) - 1))) / max(1, len(tracked_target_summaries))),
+            )
+
+            current_y = entries_top
+            entry_inner_pad = max(10, panel_width // 35)
+            text_max_width = panel_width - (entry_inner_pad * 2) - 20
+
+            for entry in tracked_target_summaries[:10]:
+                if current_y + entry_height > entries_bottom + 2:
+                    break
+
+                is_owned = bool(entry.get("owned"))
+                remaining_count = int(entry.get("remaining_count", 0))
+                entry_fill = (16, 68, 40, 235) if is_owned else (12, 12, 15, 230)
+                entry_outline = (74, 214, 118) if is_owned else (56, 56, 64)
+                entry_rect = [
+                    panel_left + panel_pad,
+                    current_y,
+                    panel_right - panel_pad,
+                    current_y + entry_height,
+                ]
+                panel_draw.rounded_rectangle(
+                    entry_rect,
+                    radius=max(12, panel_width // 28),
+                    fill=entry_fill,
+                    outline=entry_outline,
+                    width=2,
+                )
+
+                entry_name = str(entry.get("target_name") or "Unknown")
+                entry_name_lines = wrap_text_to_width(entry_name, panel_name_font, text_max_width)
+                entry_name_lines = entry_name_lines[:2]
+
+                generation = entry.get("generation")
+                gen_text = (
+                    f"Gen {generation}" if isinstance(generation, int) and generation >= 0 else "Gen ?"
+                )
+                status_text = "Done" if remaining_count == 0 else f"{remaining_count} left"
+                meta_text = f"{gen_text} | {status_text}"
+
+                if remaining_count <= 0:
+                    detail_text = "All requirements covered."
+                else:
+                    preview = entry.get("missing_preview") or []
+                    preview_text = ", ".join(preview[:3])
+                    if remaining_count > len(preview):
+                        preview_text = f"{preview_text} +{remaining_count - len(preview)}" if preview_text else f"{remaining_count} left"
+                    if is_owned:
+                        detail_text = f"Owned target. Copy path still needs: {preview_text}" if preview_text else "Owned target. Copy path still open."
+                    else:
+                        detail_text = f"Need: {preview_text}" if preview_text else f"Need: {remaining_count} more"
+
+                name_y = current_y + entry_inner_pad
+                for line in entry_name_lines:
+                    line_bbox = panel_draw.textbbox((0, 0), line, font=panel_name_font)
+                    line_height = line_bbox[3] - line_bbox[1]
+                    panel_draw.text(
+                        (entry_rect[0] + entry_inner_pad, name_y),
+                        line,
+                        font=panel_name_font,
+                        fill=(244, 248, 255),
+                    )
+                    name_y += line_height + 2
+
+                meta_y = name_y + 2
+                panel_draw.text(
+                    (entry_rect[0] + entry_inner_pad, meta_y),
+                    meta_text,
+                    font=panel_meta_font,
+                    fill=(188, 220, 195) if is_owned else (162, 168, 180),
+                )
+
+                detail_lines = wrap_text_to_width(detail_text, panel_detail_font, text_max_width)
+                detail_lines = detail_lines[:2]
+                detail_y = meta_y + (panel_draw.textbbox((0, 0), meta_text, font=panel_meta_font)[3] - panel_draw.textbbox((0, 0), meta_text, font=panel_meta_font)[1]) + 6
+                for line in detail_lines:
+                    panel_draw.text(
+                        (entry_rect[0] + entry_inner_pad, detail_y),
+                        line,
+                        font=panel_detail_font,
+                        fill=(214, 220, 228),
+                    )
+                    detail_y += (panel_draw.textbbox((0, 0), line, font=panel_detail_font)[3] - panel_draw.textbbox((0, 0), line, font=panel_detail_font)[1]) + 2
+
+                current_y += entry_height + entry_gap
+
         filename_safe_target = "".join(ch for ch in target_name if ch.isalnum() or ch in ("-", "_", " ")).strip()
         if not filename_safe_target:
             filename_safe_target = "splice_tree"
@@ -1805,7 +2285,7 @@ class ProcessSplice(commands.Cog):
 
         output = BytesIO()
         if fast_mode:
-            jpeg_canvas = canvas.convert("RGB")
+            jpeg_canvas = final_canvas.convert("RGB")
             jpeg_canvas.save(
                 output,
                 format="JPEG",
@@ -1816,7 +2296,7 @@ class ProcessSplice(commands.Cog):
             )
             output_ext = "jpg"
         else:
-            canvas.save(output, format="PNG", optimize=True, compress_level=6)
+            final_canvas.save(output, format="PNG", optimize=True, compress_level=6)
             output_ext = "png"
         output_bytes = output.getvalue()
 
@@ -2003,104 +2483,44 @@ class ProcessSplice(commands.Cog):
         )
 
         try:
-            monsters_data = await asyncio.to_thread(self._load_monsters_json_data)
+            async with self.bot.pool.acquire() as conn:
+                await self._ensure_splice_tree_tracking_table(conn)
+                catalog = await self._load_splice_tree_catalog(conn)
+                tracked_targets = await self._get_user_tracked_splice_targets(conn, ctx.author.id)
+                owned_keys = await self._get_user_owned_splice_keys(conn, ctx.author.id)
         except FileNotFoundError:
             return await status.edit(content="Could not read `monsters.json`.")
         except Exception as e:
-            return await status.edit(content=f"Failed to load `monsters.json`: {e}")
+            return await status.edit(content=f"Failed to build splice tree data: {e}")
 
-        base_url_by_key = {}
-        canonical_by_key = {}
-
-        def norm_name(value):
-            if not isinstance(value, str):
-                return None
-            cleaned = value.strip()
-            if not cleaned:
-                return None
-            return cleaned.casefold()
-
-        def register_name(value):
-            key = norm_name(value)
-            if key is None:
-                return None
-            if key not in canonical_by_key:
-                canonical_by_key[key] = value.strip()
-            return key
-
-        base_monster_names = set()
-        if isinstance(monsters_data, dict):
-            for monster_list in monsters_data.values():
-                if not isinstance(monster_list, list):
-                    continue
-                for monster in monster_list:
-                    if not isinstance(monster, dict):
-                        continue
-                    m_name = monster.get("name")
-                    m_url = monster.get("url")
-                    key = register_name(m_name)
-                    if key is None:
-                        continue
-                    base_monster_names.add(canonical_by_key[key])
-                    if isinstance(m_url, str) and m_url.strip() and key not in base_url_by_key:
-                        base_url_by_key[key] = m_url.strip()
+        base_monster_names = catalog["base_monster_names"]
+        canonical_by_key = catalog["canonical_by_key"]
+        node_url_by_key = catalog["node_url_by_key"]
+        generation_by_key = catalog["generation_by_key"]
+        parent_pair_by_child = catalog["parent_pair_by_child"]
+        duplicate_combo_children = catalog["duplicate_combo_children"]
+        tracked_root_keys = {
+            row["target_key"]
+            for row in tracked_targets
+            if row.get("target_key")
+        }
 
         if not base_monster_names:
             return await status.edit(content="No base monsters were found in `monsters.json`.")
 
-        try:
-            async with self.bot.pool.acquire() as conn:
-                completed_rows = await conn.fetch(
-                    """
-                    SELECT id, pet1_default, pet2_default, result_name, url, created_at
-                    FROM splice_combinations
-                    ORDER BY created_at ASC, id ASC
-                    """
-                )
-        except Exception as e:
-            return await status.edit(content=f"Failed to query `splice_combinations`: {e}")
-
-        if not completed_rows:
+        if not catalog["completed_row_count"]:
             return await status.edit(content="No rows in `splice_combinations` to build a tree from.")
 
-        combinations_by_child = defaultdict(list)
-        node_url_by_key = dict(base_url_by_key)
-        generation_edges = []
+        tracked_target_summaries = self._build_tracked_splice_target_summaries(
+            tracked_targets,
+            parent_pair_by_child=parent_pair_by_child,
+            canonical_by_key=canonical_by_key,
+            generation_by_key=generation_by_key,
+            owned_keys=owned_keys,
+            tracked_root_keys=tracked_root_keys,
+        )
 
-        for row in completed_rows:
-            p1_key = register_name(row["pet1_default"])
-            p2_key = register_name(row["pet2_default"])
-            child_key = register_name(row["result_name"])
-            if p1_key and p2_key and child_key:
-                combinations_by_child[child_key].append((p1_key, p2_key, row["id"]))
-                generation_edges.append((p1_key, p2_key, child_key))
-
-            row_url = row["url"]
-            if child_key and isinstance(row_url, str) and row_url.strip():
-                node_url_by_key[child_key] = row_url.strip()
-
-        # Generation map using normalized keys:
-        generation_by_key = {norm_name(name): -1 for name in base_monster_names if norm_name(name)}
-        max_passes = max(1, len(generation_edges) + 1)
-        for _ in range(max_passes):
-            changed = False
-            for p1_key, p2_key, child_key in generation_edges:
-                parent1_gen = generation_by_key.get(p1_key)
-                parent2_gen = generation_by_key.get(p2_key)
-                if parent1_gen is None or parent2_gen is None:
-                    continue
-
-                child_gen = max(parent1_gen, parent2_gen) + 1
-                existing = generation_by_key.get(child_key)
-                if existing == -1:
-                    continue
-                if existing is None or child_gen < existing:
-                    generation_by_key[child_key] = child_gen
-                    changed = True
-            if not changed:
-                break
-
-        requested_key = norm_name(target_name)
+        requested_key = self._normalize_splice_tree_name(target_name)
         if requested_key in (None, "", "furthest", "highest", "latest", "max"):
             spliced_nodes = [(k, v) for k, v in generation_by_key.items() if isinstance(v, int) and v >= 0]
             if not spliced_nodes:
@@ -2110,107 +2530,21 @@ class ProcessSplice(commands.Cog):
             target_name = canonical_by_key.get(root_key, root_key)
             target_generation = furthest_gen
         else:
-            # Exact or partial lookup.
-            if requested_key in canonical_by_key:
-                root_key = requested_key
-            else:
-                matches = [k for k, v in canonical_by_key.items() if requested_key in k]
-                if not matches:
-                    return await status.edit(
-                        content=f"Target `{target_name}` not found in monsters or splice combinations."
-                    )
-                root_key = matches[0]
+            root_key = self._resolve_splice_tree_target_key(target_name, canonical_by_key)
+            if root_key is None:
+                return await status.edit(
+                    content=f"Target `{target_name}` not found in monsters or splice combinations."
+                )
             target_generation = generation_by_key.get(root_key)
             target_name = canonical_by_key.get(root_key, target_name)
 
-        # Build a strict genealogy tree (binary ancestry) for cleaner layout.
-        parent_pair_by_child = {}
-        duplicate_combo_children = 0
-        for child_key, pairs in combinations_by_child.items():
-            if not pairs:
-                continue
-            if len(pairs) > 1:
-                duplicate_combo_children += 1
-            # Use earliest known splice pair for deterministic genealogy view.
-            parent_pair_by_child[child_key] = pairs[0]
-
-        max_tree_depth = 80
-
-        def build_gene_node(node_key, depth=0, lineage=None):
-            if lineage is None:
-                lineage = set()
-
-            node = {
-                "key": node_key,
-                "depth": depth,
-                "left": None,
-                "right": None,
-                "order": None,
-                "x": 0,
-                "y": 0,
-            }
-
-            if node_key is None:
-                return node
-            if depth >= max_tree_depth:
-                return node
-            if node_key in lineage:
-                return node
-
-            parent_pair = parent_pair_by_child.get(node_key)
-            if not parent_pair:
-                return node
-
-            p1_key, p2_key, _ = parent_pair
-            next_lineage = set(lineage)
-            next_lineage.add(node_key)
-
-            if p1_key:
-                node["left"] = build_gene_node(p1_key, depth + 1, next_lineage)
-            if p2_key:
-                node["right"] = build_gene_node(p2_key, depth + 1, next_lineage)
-            return node
-
-        root_node = build_gene_node(root_key)
-
-        tree_nodes = []
-
-        def collect_nodes(node):
-            if node is None:
-                return
-            tree_nodes.append(node)
-            collect_nodes(node["left"])
-            collect_nodes(node["right"])
-
-        collect_nodes(root_node)
+        root_node = self._build_splice_genealogy_tree(root_key, parent_pair_by_child)
+        tree_nodes = self._collect_splice_tree_nodes(root_node)
         if not tree_nodes:
             return await status.edit(content="Could not build genealogy tree nodes for this target.")
 
-        leaf_counter = 0
-
-        def assign_inorder(node):
-            nonlocal leaf_counter
-            if node is None:
-                return None
-
-            left_order = assign_inorder(node["left"])
-            right_order = assign_inorder(node["right"])
-
-            if node["left"] is None and node["right"] is None:
-                node["order"] = float(leaf_counter)
-                leaf_counter += 1
-            else:
-                valid = [value for value in (left_order, right_order) if value is not None]
-                if valid:
-                    node["order"] = sum(valid) / len(valid)
-                else:
-                    node["order"] = float(leaf_counter)
-                    leaf_counter += 1
-            return node["order"]
-
-        assign_inorder(root_node)
-
-        leaf_count = max(1, leaf_counter)
+        self._annotate_splice_tree_completion(root_node, owned_keys, tracked_root_keys)
+        leaf_count = self._assign_splice_tree_inorder(root_node)
         max_depth = max(node["depth"] for node in tree_nodes)
         node_count = len(tree_nodes)
 
@@ -2391,6 +2725,7 @@ class ProcessSplice(commands.Cog):
                 generation_by_key=generation_by_key,
                 canonical_by_key=canonical_by_key,
                 thumbnails=thumbnails,
+                tracked_target_summaries=tracked_target_summaries,
                 fast_mode=fast_mode,
             )
         except Exception as e:
@@ -2422,6 +2757,192 @@ class ProcessSplice(commands.Cog):
             await status.edit(content=f"Splice tree generated (fallback size, {output_ext.upper()}).")
         except Exception as e:
             await status.edit(content=f"Failed to render splice tree: {e}")
+
+    @commands.group(
+        name="splicetrack",
+        aliases=["splicetracks", "splicegoal", "splicegoals"],
+        invoke_without_command=True,
+        hidden=True,
+    )
+    async def splice_track(self, ctx: commands.Context):
+        """List the splice targets you're tracking."""
+        try:
+            async with self.bot.pool.acquire() as conn:
+                await self._ensure_splice_tree_tracking_table(conn)
+                tracked_targets = await self._get_user_tracked_splice_targets(conn, ctx.author.id)
+                if not tracked_targets:
+                    return await ctx.send(
+                        "You are not tracking any splice targets yet. Use `$splicetrack add <monster name>`."
+                    )
+
+                owned_keys = await self._get_user_owned_splice_keys(conn, ctx.author.id)
+                try:
+                    catalog = await self._load_splice_tree_catalog(conn)
+                except FileNotFoundError:
+                    return await ctx.send("Could not read `monsters.json`.")
+
+            tracked_root_keys = {
+                row["target_key"]
+                for row in tracked_targets
+                if row.get("target_key")
+            }
+            summaries = self._build_tracked_splice_target_summaries(
+                tracked_targets,
+                parent_pair_by_child=catalog["parent_pair_by_child"],
+                canonical_by_key=catalog["canonical_by_key"],
+                generation_by_key=catalog["generation_by_key"],
+                owned_keys=owned_keys,
+                tracked_root_keys=tracked_root_keys,
+            )
+        except Exception as e:
+            return await ctx.send(f"Failed to load tracked splice targets: {e}")
+
+        embed = discord.Embed(
+            title="Tracked Splice Targets",
+            color=discord.Color.green(),
+            description="Up to 10 tracked targets. Owned targets stay green, but tracked roots keep their copy path open.",
+        )
+
+        for entry in summaries[:10]:
+            generation = entry.get("generation")
+            gen_text = f"Gen {generation}" if isinstance(generation, int) and generation >= 0 else "Gen ?"
+            remaining_count = int(entry.get("remaining_count", 0))
+            if remaining_count <= 0:
+                detail_text = "All requirements covered."
+            else:
+                preview = entry.get("missing_preview") or []
+                preview_text = ", ".join(preview[:3])
+                if remaining_count > len(preview):
+                    preview_text = f"{preview_text} +{remaining_count - len(preview)}" if preview_text else f"{remaining_count} left"
+                if entry.get("owned"):
+                    detail_text = (
+                        f"Owned target. Copy path still needs: {preview_text}"
+                        if preview_text
+                        else "Owned target. Copy path still open."
+                    )
+                else:
+                    detail_text = f"Need: {preview_text}" if preview_text else f"Need: {remaining_count} more"
+
+            embed.add_field(
+                name=(
+                    f"{'🟩' if entry.get('owned') else '⬛'} "
+                    f"{entry.get('target_name', 'Unknown')} • {gen_text}"
+                ),
+                value=detail_text,
+                inline=False,
+            )
+
+        embed.set_footer(text="Use `$splicetrack add <name>`, `$splicetrack remove <name>`, or `$splicetrack clear`.")
+        await ctx.send(embed=embed)
+
+    @splice_track.command(name="add", aliases=["track"])
+    async def splice_track_add(self, ctx: commands.Context, *, target: str):
+        """Track a splice target for tree progress."""
+        requested_target = (target or "").strip()
+        if not requested_target:
+            return await ctx.send("Usage: `$splicetrack add <monster name>`")
+
+        try:
+            async with self.bot.pool.acquire() as conn:
+                await self._ensure_splice_tree_tracking_table(conn)
+                catalog = await self._load_splice_tree_catalog(conn)
+                canonical_by_key = catalog["canonical_by_key"]
+                target_key = self._resolve_splice_tree_target_key(requested_target, canonical_by_key)
+                if target_key is None:
+                    return await ctx.send(
+                        f"Could not find a splice target matching `{requested_target}`."
+                    )
+
+                existing = await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM splice_tree_tracks
+                    WHERE user_id = $1 AND target_key = $2
+                    """,
+                    ctx.author.id,
+                    target_key,
+                )
+                if existing:
+                    return await ctx.send(
+                        f"Already tracking **{canonical_by_key.get(target_key, requested_target)}**."
+                    )
+
+                current_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM splice_tree_tracks WHERE user_id = $1;",
+                    ctx.author.id,
+                )
+                if int(current_count or 0) >= 10:
+                    return await ctx.send("You can only track up to 10 splice targets at once.")
+
+                resolved_name = canonical_by_key.get(target_key, requested_target.strip())
+                await conn.execute(
+                    """
+                    INSERT INTO splice_tree_tracks (user_id, target_key, target_name)
+                    VALUES ($1, $2, $3)
+                    """,
+                    ctx.author.id,
+                    target_key,
+                    resolved_name,
+                )
+        except FileNotFoundError:
+            return await ctx.send("Could not read `monsters.json`.")
+        except Exception as e:
+            return await ctx.send(f"Failed to add tracked splice target: {e}")
+
+        await ctx.send(
+            f"Now tracking **{resolved_name}**. Use `$splicetree {resolved_name}` to see ownership progress."
+        )
+
+    @splice_track.command(name="remove", aliases=["delete", "del", "rm", "untrack"])
+    async def splice_track_remove(self, ctx: commands.Context, *, target: str):
+        """Stop tracking a splice target."""
+        requested_target = self._normalize_splice_tree_name(target)
+        if requested_target is None:
+            return await ctx.send("Usage: `$splicetrack remove <monster name>`")
+
+        try:
+            async with self.bot.pool.acquire() as conn:
+                tracked_targets = await self._get_user_tracked_splice_targets(conn, ctx.author.id)
+                match = None
+                for tracked_target in tracked_targets:
+                    target_key = tracked_target.get("target_key")
+                    if target_key == requested_target or requested_target in str(target_key):
+                        match = tracked_target
+                        break
+
+                if match is None:
+                    return await ctx.send(f"`{target.strip()}` is not in your tracked splice targets.")
+
+                await conn.execute(
+                    """
+                    DELETE FROM splice_tree_tracks
+                    WHERE user_id = $1 AND target_key = $2
+                    """,
+                    ctx.author.id,
+                    match["target_key"],
+                )
+        except Exception as e:
+            return await ctx.send(f"Failed to remove tracked splice target: {e}")
+
+        await ctx.send(f"Stopped tracking **{match.get('target_name', target.strip())}**.")
+
+    @splice_track.command(name="clear", aliases=["reset"])
+    async def splice_track_clear(self, ctx: commands.Context):
+        """Clear all tracked splice targets."""
+        try:
+            async with self.bot.pool.acquire() as conn:
+                await self._ensure_splice_tree_tracking_table(conn)
+                deleted = await conn.execute(
+                    "DELETE FROM splice_tree_tracks WHERE user_id = $1",
+                    ctx.author.id,
+                )
+        except Exception as e:
+            return await ctx.send(f"Failed to clear tracked splice targets: {e}")
+
+        deleted_count = int(str(deleted).split()[-1]) if deleted else 0
+        if deleted_count <= 0:
+            return await ctx.send("You do not have any tracked splice targets to clear.")
+        await ctx.send(f"Cleared **{deleted_count}** tracked splice target(s).")
 
     @is_gm()
     @commands.command(
