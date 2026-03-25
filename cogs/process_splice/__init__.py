@@ -1057,18 +1057,18 @@ class ProcessSplice(commands.Cog):
                     break
 
             missing_display_lines = []
-            seen_display = set()
+            counted_missing = OrderedDict()
             for key in missing_keys:
-                if key in seen_display:
-                    continue
-                seen_display.add(key)
+                counted_missing[key] = counted_missing.get(key, 0) + 1
+
+            for key, required_count in counted_missing.items():
                 generation = generation_by_key.get(key)
                 source_label = "T9" if generation == -1 else "Splice"
+                name_text = canonical_by_key.get(key, key)
+                count_text = f" x{required_count}" if required_count > 1 else ""
                 missing_display_lines.append(
-                    f"{canonical_by_key.get(key, key)} -- {source_label}"
+                    f"{name_text}{count_text} -- {source_label}"
                 )
-                if len(missing_display_lines) >= 4:
-                    break
 
             summaries.append(
                 {
@@ -2155,69 +2155,42 @@ class ProcessSplice(commands.Cog):
         if tracked_target_summaries:
             panel_gap = max(26, int(width * 0.02))
             panel_width = max(520, min(980, int(width * 0.42)))
-            final_canvas = Image.new(
-                "RGBA",
-                (width + panel_gap + panel_width, height),
-                (4, 4, 6, 255),
-            )
-            final_canvas.paste(canvas, (0, 0))
-
-            panel_draw = ImageDraw.Draw(final_canvas)
-            panel_left = width + panel_gap
-            panel_right = panel_left + panel_width
-            panel_pad = max(24, panel_width // 16)
-            panel_top = max(24, int(title_band * 0.10))
-            panel_bottom = height - max(24, int(title_band * 0.12))
-
-            panel_draw.rounded_rectangle(
-                [panel_left, panel_top, panel_right, panel_bottom],
-                radius=max(18, panel_width // 20),
-                fill=(0, 0, 0, 235),
-                outline=(56, 96, 148),
-                width=3,
-            )
-
             panel_header_font = load_font(min(64, max(34, panel_width // 9)), bold=True)
             panel_meta_font = load_font(min(38, max(20, panel_width // 16)), bold=False)
             panel_name_font = load_font(min(46, max(25, panel_width // 12)), bold=True)
             panel_section_font = load_font(min(34, max(18, panel_width // 18)), bold=True)
             panel_detail_font = load_font(min(30, max(17, panel_width // 19)), bold=False)
 
-            header_text = "Tracked Splices"
-            header_bbox = panel_draw.textbbox((0, 0), header_text, font=panel_header_font)
-            header_width = header_bbox[2] - header_bbox[0]
-            header_x = panel_left + ((panel_width - header_width) // 2)
-            header_y = panel_top + panel_pad
-            panel_draw.text(
-                (header_x, header_y),
-                header_text,
-                font=panel_header_font,
-                fill=(242, 246, 255),
-            )
+            panel_left = width + panel_gap
+            panel_right = panel_left + panel_width
+            panel_pad = max(24, panel_width // 16)
+            panel_top = max(24, int(title_band * 0.10))
 
+            measurement_image = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+            measurement_draw = ImageDraw.Draw(measurement_image)
             sub_text = f"{len(tracked_target_summaries)}/10 active targets"
-            sub_bbox = panel_draw.textbbox((0, 0), sub_text, font=panel_meta_font)
-            sub_width = sub_bbox[2] - sub_bbox[0]
-            sub_x = panel_left + ((panel_width - sub_width) // 2)
-            sub_y = header_y + (header_bbox[3] - header_bbox[1]) + 8
-            panel_draw.text((sub_x, sub_y), sub_text, font=panel_meta_font, fill=(156, 166, 182))
-
-            entries_top = sub_y + (sub_bbox[3] - sub_bbox[1]) + max(18, panel_width // 18)
-            entries_bottom = panel_bottom - panel_pad
             entry_gap = max(16, panel_width // 30)
-
-            current_y = entries_top
             entry_inner_pad = max(18, panel_width // 28)
             text_max_width = panel_width - (entry_inner_pad * 2) - 20
 
             def line_height_for(font):
-                bbox = panel_draw.textbbox((0, 0), "Ag", font=font)
+                bbox = measurement_draw.textbbox((0, 0), "Ag", font=font)
                 return bbox[3] - bbox[1]
 
             name_line_height = line_height_for(panel_name_font)
             meta_line_height = line_height_for(panel_meta_font)
             section_line_height = line_height_for(panel_section_font)
             detail_line_height = line_height_for(panel_detail_font)
+            header_line_height = line_height_for(panel_header_font)
+
+            header_text = "Tracked Splices"
+            header_bbox = measurement_draw.textbbox((0, 0), header_text, font=panel_header_font)
+            header_width = header_bbox[2] - header_bbox[0]
+            sub_bbox = measurement_draw.textbbox((0, 0), sub_text, font=panel_meta_font)
+            sub_width = sub_bbox[2] - sub_bbox[0]
+
+            measured_entries = []
+            total_entries_height = 0
 
             for entry in tracked_target_summaries[:10]:
                 is_owned = bool(entry.get("owned"))
@@ -2234,11 +2207,8 @@ class ProcessSplice(commands.Cog):
                 meta_text = f"{gen_text} | {status_text}"
 
                 missing_lines = list(entry.get("missing_display_lines") or [])
-                if remaining_count > len(missing_lines):
-                    missing_lines.append(f"+{remaining_count - len(missing_lines)} more -- Remaining")
                 if not missing_lines:
                     missing_lines = ["None -- Complete"]
-                missing_lines = missing_lines[:5]
 
                 entry_height = (
                     (entry_inner_pad * 2)
@@ -2252,17 +2222,73 @@ class ProcessSplice(commands.Cog):
                     + (max(4, detail_line_height // 4) * max(0, len(missing_lines) - 1))
                 )
                 entry_height = max(entry_height, 180)
+                total_entries_height += entry_height
+                measured_entries.append(
+                    {
+                        "is_owned": is_owned,
+                        "entry_name_lines": entry_name_lines,
+                        "meta_text": meta_text,
+                        "missing_lines": missing_lines,
+                        "entry_height": entry_height,
+                    }
+                )
 
-                if current_y + entry_height > entries_bottom + 2:
-                    break
+            visible_entry_count = len(measured_entries)
+            header_block_height = (
+                panel_pad
+                + header_line_height
+                + 8
+                + meta_line_height
+                + max(18, panel_width // 18)
+            )
+            gaps_height = entry_gap * max(0, visible_entry_count - 1)
+            panel_content_height = header_block_height + total_entries_height + gaps_height + panel_pad
+            panel_bottom = max(
+                height - max(24, int(title_band * 0.12)),
+                panel_top + panel_content_height,
+            )
+            final_height = max(height, panel_bottom + max(24, int(title_band * 0.12)))
 
+            final_canvas = Image.new(
+                "RGBA",
+                (width + panel_gap + panel_width, final_height),
+                (4, 4, 6, 255),
+            )
+            final_canvas.paste(canvas, (0, 0))
+
+            panel_draw = ImageDraw.Draw(final_canvas)
+            panel_draw.rounded_rectangle(
+                [panel_left, panel_top, panel_right, panel_bottom],
+                radius=max(18, panel_width // 20),
+                fill=(0, 0, 0, 235),
+                outline=(56, 96, 148),
+                width=3,
+            )
+
+            header_x = panel_left + ((panel_width - header_width) // 2)
+            header_y = panel_top + panel_pad
+            panel_draw.text(
+                (header_x, header_y),
+                header_text,
+                font=panel_header_font,
+                fill=(242, 246, 255),
+            )
+
+            sub_x = panel_left + ((panel_width - sub_width) // 2)
+            sub_y = header_y + header_line_height + 8
+            panel_draw.text((sub_x, sub_y), sub_text, font=panel_meta_font, fill=(156, 166, 182))
+
+            current_y = sub_y + meta_line_height + max(18, panel_width // 18)
+
+            for measured_entry in measured_entries:
+                is_owned = measured_entry["is_owned"]
                 entry_fill = (16, 68, 40, 235) if is_owned else (12, 12, 15, 230)
                 entry_outline = (74, 214, 118) if is_owned else (76, 150, 235)
                 entry_rect = [
                     panel_left + panel_pad,
                     current_y,
                     panel_right - panel_pad,
-                    current_y + entry_height,
+                    current_y + measured_entry["entry_height"],
                 ]
                 panel_draw.rounded_rectangle(
                     entry_rect,
@@ -2273,7 +2299,7 @@ class ProcessSplice(commands.Cog):
                 )
 
                 name_y = current_y + entry_inner_pad
-                for line in entry_name_lines:
+                for line in measured_entry["entry_name_lines"]:
                     panel_draw.text(
                         (entry_rect[0] + entry_inner_pad, name_y),
                         line,
@@ -2285,7 +2311,7 @@ class ProcessSplice(commands.Cog):
                 meta_y = name_y + max(8, entry_inner_pad // 3)
                 panel_draw.text(
                     (entry_rect[0] + entry_inner_pad, meta_y),
-                    meta_text,
+                    measured_entry["meta_text"],
                     font=panel_meta_font,
                     fill=(188, 220, 195) if is_owned else (168, 205, 245),
                 )
@@ -2300,7 +2326,7 @@ class ProcessSplice(commands.Cog):
 
                 detail_y = section_y + section_line_height + max(10, entry_inner_pad // 3)
                 detail_gap = max(4, detail_line_height // 4)
-                for line in missing_lines:
+                for line in measured_entry["missing_lines"]:
                     panel_draw.text(
                         (entry_rect[0] + entry_inner_pad, detail_y),
                         line,
@@ -2309,7 +2335,7 @@ class ProcessSplice(commands.Cog):
                     )
                     detail_y += detail_line_height + detail_gap
 
-                current_y += entry_height + entry_gap
+                current_y += measured_entry["entry_height"] + entry_gap
 
         filename_safe_target = "".join(ch for ch in target_name if ch.isalnum() or ch in ("-", "_", " ")).strip()
         if not filename_safe_target:
