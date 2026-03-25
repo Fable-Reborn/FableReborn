@@ -131,6 +131,12 @@ class PetExtension:
         if not hasattr(pet_combatant, 'owner'):
             return None
 
+        battle = getattr(pet_combatant, 'battle', None)
+        if battle and hasattr(battle, 'resolve_pet_owner_combatant'):
+            owner_override = battle.resolve_pet_owner_combatant(pet_combatant)
+            if owner_override is not None:
+                return owner_override
+
         owner_id = self._extract_user_id(getattr(pet_combatant, 'owner', None))
         if owner_id is None:
             # Fallback to pet user id in case owner was serialized oddly.
@@ -3034,7 +3040,12 @@ class PetExtension:
                 share_percent = Decimal(str(effects['symbiotic_bond']['share_percent']))
                 shared_heal = heal_amount * share_percent
                 owner_combatant.heal(shared_heal)
-                messages.append(f"Symbiotic Bond shares **{shared_heal:.2f} healing** with {owner_combatant.user.display_name}!")
+                owner_name = getattr(
+                    getattr(owner_combatant, 'user', None),
+                    'display_name',
+                    getattr(owner_combatant, 'name', 'their owner')
+                )
+                messages.append(f"Symbiotic Bond shares **{shared_heal:.2f} healing** with {owner_name}!")
             
         # Growth Spurt - stacking stats
         if 'growth_spurt' in effects:
@@ -3116,7 +3127,12 @@ class PetExtension:
                 share_percent = Decimal(str(pet_combatant.skill_effects['symbiotic_bond']['share_percent']))
                 shared_heal = heal_amount * share_percent
                 owner_combatant.heal(shared_heal)
-                messages.append(f"Symbiotic Bond shares **{shared_heal:.2f} Gaia healing** with {owner_combatant.user.display_name}!")
+                owner_name = getattr(
+                    getattr(owner_combatant, 'user', None),
+                    'display_name',
+                    getattr(owner_combatant, 'name', 'their owner')
+                )
+                messages.append(f"Symbiotic Bond shares **{shared_heal:.2f} Gaia healing** with {owner_name}!")
             
             if gaias_wrath_duration <= 1:
                 delattr(pet_combatant, 'gaias_wrath_duration')

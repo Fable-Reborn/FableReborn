@@ -106,6 +106,76 @@ class DragonBattle(Battle):
         for combatant in self.player_team.combatants:
             self._register_tracked_combatant(combatant)
 
+    def _build_effective_team(self, name, combatants):
+        return Team(name, list(combatants))
+
+    def _effective_dragon_side_combatants(self):
+        combatants = []
+        seen = set()
+        for combatant in self.dragon_team.combatants:
+            marker = id(combatant)
+            if marker not in seen:
+                seen.add(marker)
+                combatants.append(combatant)
+        for combatant in self.player_team.combatants:
+            if not self._is_possessed(combatant):
+                continue
+            marker = id(combatant)
+            if marker not in seen:
+                seen.add(marker)
+                combatants.append(combatant)
+        return combatants
+
+    def _effective_party_side_combatants(self):
+        return [
+            combatant
+            for combatant in self.player_team.combatants
+            if not self._is_possessed(combatant)
+        ]
+
+    def get_team_for_combatant(self, combatant):
+        if combatant in self.player_team.combatants:
+            if self._is_possessed(combatant):
+                return self._build_effective_team(
+                    "Dragon Side",
+                    self._effective_dragon_side_combatants(),
+                )
+            return self._build_effective_team(
+                "Party",
+                self._effective_party_side_combatants(),
+            )
+        if combatant in self.dragon_team.combatants:
+            return self._build_effective_team(
+                "Dragon Side",
+                self._effective_dragon_side_combatants(),
+            )
+        return super().get_team_for_combatant(combatant)
+
+    def get_enemy_team_for_combatant(self, combatant):
+        if combatant in self.player_team.combatants:
+            if self._is_possessed(combatant):
+                return self._build_effective_team(
+                    "Party",
+                    self._effective_party_side_combatants(),
+                )
+            return self._build_effective_team(
+                "Dragon Side",
+                self._effective_dragon_side_combatants(),
+            )
+        if combatant in self.dragon_team.combatants:
+            return self._build_effective_team(
+                "Party",
+                self._effective_party_side_combatants(),
+            )
+        return super().get_enemy_team_for_combatant(combatant)
+
+    def resolve_pet_owner_combatant(self, pet_combatant):
+        if pet_combatant is None or not getattr(pet_combatant, "is_pet", False):
+            return None
+        if self._is_possessed(pet_combatant):
+            return self.dragon
+        return None
+
     def is_friendly_combatant(self, combatant):
         """Treat possessed party members as hostile for team-color HP bars."""
         if combatant is not None and self._has_effect(combatant, "possessed"):
