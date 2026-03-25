@@ -3853,7 +3853,11 @@ class NewWerewolf(commands.Cog):
                     " custom witch, werewolf, jester`"
                 ).format(prefix=ctx.clean_prefix)
             )
-        unavailable = unavailable_roles_for_mode(parsed_roles, "Custom")
+        unavailable = unavailable_roles_for_mode(
+            parsed_roles,
+            "Custom",
+            include_unlock_only_advanced_roles=True,
+        )
         if unavailable:
             unique_unavailable: list[ROLES] = []
             seen: set[ROLES] = set()

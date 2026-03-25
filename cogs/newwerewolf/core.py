@@ -1073,8 +1073,21 @@ def _is_role_available_in_mode(
     return _normalize_mode_token(mode) in allowlist
 
 
-def unavailable_roles_for_mode(roles: list[Role], mode: str | None) -> list[Role]:
-    return [role for role in roles if not _is_role_available_in_mode(role, mode)]
+def unavailable_roles_for_mode(
+    roles: list[Role],
+    mode: str | None,
+    *,
+    include_unlock_only_advanced_roles: bool = False,
+) -> list[Role]:
+    return [
+        role
+        for role in roles
+        if not _is_role_available_in_mode(
+            role,
+            mode,
+            include_unlock_only_advanced_roles=include_unlock_only_advanced_roles,
+        )
+    ]
 
 
 VILLAGER_FILLER_WEIGHTS: tuple[tuple[Role, int], ...] = (
@@ -1367,10 +1380,19 @@ def _rebalance_classic_role_variety(
     return available_roles + extra_roles
 
 
-def _apply_role_availability(roles: list[Role], mode: str | None) -> list[Role]:
+def _apply_role_availability(
+    roles: list[Role],
+    mode: str | None,
+    *,
+    include_unlock_only_advanced_roles: bool = False,
+) -> list[Role]:
     adjusted_roles: list[Role] = []
     for role in roles:
-        if _is_role_available_in_mode(role, mode):
+        if _is_role_available_in_mode(
+            role,
+            mode,
+            include_unlock_only_advanced_roles=include_unlock_only_advanced_roles,
+        ):
             adjusted_roles.append(role)
         else:
             adjusted_roles.append(
@@ -12819,8 +12841,11 @@ def get_custom_roles(number_of_players: int, custom_roles: list[Role]) -> list[R
         )
 
     roles = random.shuffle(available_roles) + random.shuffle(extra_roles)
-    roles = _replace_unlock_only_advanced_roles_with_base(roles)
-    roles = _apply_role_availability(roles, mode="Custom")
+    roles = _apply_role_availability(
+        roles,
+        mode="Custom",
+        include_unlock_only_advanced_roles=True,
+    )
     available_roles = roles[:-2]
     extra_roles = roles[-2:]
 
