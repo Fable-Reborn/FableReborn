@@ -1846,7 +1846,7 @@ class ProcessSplice(commands.Cog):
         label_font = load_font(min(62, max(15, node_diameter // 4)), bold=True)
         meta_font = load_font(min(42, max(12, node_diameter // 6)), bold=False)
 
-        dark_edge_color = (24, 24, 28)
+        dark_edge_color = (76, 150, 235)
         complete_edge_color = (74, 214, 118)
         edge_width = max(2, node_diameter // 14)
 
@@ -2158,14 +2158,14 @@ class ProcessSplice(commands.Cog):
                 [panel_left, panel_top, panel_right, panel_bottom],
                 radius=max(18, panel_width // 20),
                 fill=(0, 0, 0, 235),
-                outline=(44, 44, 52),
+                outline=(56, 96, 148),
                 width=3,
             )
 
-            panel_header_font = load_font(min(44, max(24, panel_width // 12)), bold=True)
-            panel_meta_font = load_font(min(26, max(13, panel_width // 22)), bold=False)
-            panel_name_font = load_font(min(30, max(16, panel_width // 17)), bold=True)
-            panel_detail_font = load_font(min(22, max(12, panel_width // 24)), bold=False)
+            panel_header_font = load_font(min(52, max(28, panel_width // 10)), bold=True)
+            panel_meta_font = load_font(min(32, max(16, panel_width // 18)), bold=False)
+            panel_name_font = load_font(min(38, max(20, panel_width // 14)), bold=True)
+            panel_detail_font = load_font(min(28, max(15, panel_width // 20)), bold=False)
 
             header_text = "Tracked Splices"
             header_bbox = panel_draw.textbbox((0, 0), header_text, font=panel_header_font)
@@ -2206,7 +2206,7 @@ class ProcessSplice(commands.Cog):
                 is_owned = bool(entry.get("owned"))
                 remaining_count = int(entry.get("remaining_count", 0))
                 entry_fill = (16, 68, 40, 235) if is_owned else (12, 12, 15, 230)
-                entry_outline = (74, 214, 118) if is_owned else (56, 56, 64)
+                entry_outline = (74, 214, 118) if is_owned else (76, 150, 235)
                 entry_rect = [
                     panel_left + panel_pad,
                     current_y,
@@ -2261,7 +2261,7 @@ class ProcessSplice(commands.Cog):
                     (entry_rect[0] + entry_inner_pad, meta_y),
                     meta_text,
                     font=panel_meta_font,
-                    fill=(188, 220, 195) if is_owned else (162, 168, 180),
+                    fill=(188, 220, 195) if is_owned else (168, 205, 245),
                 )
 
                 detail_lines = wrap_text_to_width(detail_text, panel_detail_font, text_max_width)
@@ -2272,7 +2272,7 @@ class ProcessSplice(commands.Cog):
                         (entry_rect[0] + entry_inner_pad, detail_y),
                         line,
                         font=panel_detail_font,
-                        fill=(214, 220, 228),
+                        fill=(226, 234, 245),
                     )
                     detail_y += (panel_draw.textbbox((0, 0), line, font=panel_detail_font)[3] - panel_draw.textbbox((0, 0), line, font=panel_detail_font)[1]) + 2
 
