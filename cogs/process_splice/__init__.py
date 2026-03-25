@@ -1056,6 +1056,20 @@ class ProcessSplice(commands.Cog):
                 if len(missing_preview) >= 3:
                     break
 
+            missing_display_lines = []
+            seen_display = set()
+            for key in missing_keys:
+                if key in seen_display:
+                    continue
+                seen_display.add(key)
+                generation = generation_by_key.get(key)
+                source_label = "T9" if generation == -1 else "Splice"
+                missing_display_lines.append(
+                    f"{canonical_by_key.get(key, key)} -- {source_label}"
+                )
+                if len(missing_display_lines) >= 4:
+                    break
+
             summaries.append(
                 {
                     "target_key": target_key,
@@ -1067,6 +1081,7 @@ class ProcessSplice(commands.Cog):
                     "owned": target_key in owned_keys,
                     "remaining_count": len(missing_keys),
                     "missing_preview": missing_preview,
+                    "missing_display_lines": missing_display_lines,
                 }
             )
 
@@ -2139,7 +2154,7 @@ class ProcessSplice(commands.Cog):
         final_canvas = canvas
         if tracked_target_summaries:
             panel_gap = max(26, int(width * 0.02))
-            panel_width = max(380, min(680, int(width * 0.30)))
+            panel_width = max(520, min(980, int(width * 0.42)))
             final_canvas = Image.new(
                 "RGBA",
                 (width + panel_gap + panel_width, height),
@@ -2150,7 +2165,7 @@ class ProcessSplice(commands.Cog):
             panel_draw = ImageDraw.Draw(final_canvas)
             panel_left = width + panel_gap
             panel_right = panel_left + panel_width
-            panel_pad = max(18, panel_width // 18)
+            panel_pad = max(24, panel_width // 16)
             panel_top = max(24, int(title_band * 0.10))
             panel_bottom = height - max(24, int(title_band * 0.12))
 
@@ -2162,10 +2177,11 @@ class ProcessSplice(commands.Cog):
                 width=3,
             )
 
-            panel_header_font = load_font(min(52, max(28, panel_width // 10)), bold=True)
-            panel_meta_font = load_font(min(32, max(16, panel_width // 18)), bold=False)
-            panel_name_font = load_font(min(38, max(20, panel_width // 14)), bold=True)
-            panel_detail_font = load_font(min(28, max(15, panel_width // 20)), bold=False)
+            panel_header_font = load_font(min(64, max(34, panel_width // 9)), bold=True)
+            panel_meta_font = load_font(min(38, max(20, panel_width // 16)), bold=False)
+            panel_name_font = load_font(min(46, max(25, panel_width // 12)), bold=True)
+            panel_section_font = load_font(min(34, max(18, panel_width // 18)), bold=True)
+            panel_detail_font = load_font(min(30, max(17, panel_width // 19)), bold=False)
 
             header_text = "Tracked Splices"
             header_bbox = panel_draw.textbbox((0, 0), header_text, font=panel_header_font)
@@ -2188,23 +2204,58 @@ class ProcessSplice(commands.Cog):
 
             entries_top = sub_y + (sub_bbox[3] - sub_bbox[1]) + max(18, panel_width // 18)
             entries_bottom = panel_bottom - panel_pad
-            available_height = max(1, entries_bottom - entries_top)
-            entry_gap = max(8, panel_width // 40)
-            entry_height = max(
-                62,
-                int((available_height - (entry_gap * max(0, len(tracked_target_summaries) - 1))) / max(1, len(tracked_target_summaries))),
-            )
+            entry_gap = max(16, panel_width // 30)
 
             current_y = entries_top
-            entry_inner_pad = max(10, panel_width // 35)
+            entry_inner_pad = max(18, panel_width // 28)
             text_max_width = panel_width - (entry_inner_pad * 2) - 20
 
+            def line_height_for(font):
+                bbox = panel_draw.textbbox((0, 0), "Ag", font=font)
+                return bbox[3] - bbox[1]
+
+            name_line_height = line_height_for(panel_name_font)
+            meta_line_height = line_height_for(panel_meta_font)
+            section_line_height = line_height_for(panel_section_font)
+            detail_line_height = line_height_for(panel_detail_font)
+
             for entry in tracked_target_summaries[:10]:
+                is_owned = bool(entry.get("owned"))
+                remaining_count = int(entry.get("remaining_count", 0))
+                entry_name = str(entry.get("target_name") or "Unknown")
+                entry_name_lines = wrap_text_to_width(entry_name, panel_name_font, text_max_width)
+                entry_name_lines = entry_name_lines[:2]
+
+                generation = entry.get("generation")
+                gen_text = (
+                    f"Gen {generation}" if isinstance(generation, int) and generation >= 0 else "Gen ?"
+                )
+                status_text = "Done" if remaining_count == 0 else f"{remaining_count} left"
+                meta_text = f"{gen_text} | {status_text}"
+
+                missing_lines = list(entry.get("missing_display_lines") or [])
+                if remaining_count > len(missing_lines):
+                    missing_lines.append(f"+{remaining_count - len(missing_lines)} more -- Remaining")
+                if not missing_lines:
+                    missing_lines = ["None -- Complete"]
+                missing_lines = missing_lines[:5]
+
+                entry_height = (
+                    (entry_inner_pad * 2)
+                    + (len(entry_name_lines) * name_line_height)
+                    + max(8, entry_inner_pad // 3)
+                    + meta_line_height
+                    + max(14, entry_inner_pad // 2)
+                    + section_line_height
+                    + max(10, entry_inner_pad // 3)
+                    + (len(missing_lines) * detail_line_height)
+                    + (max(4, detail_line_height // 4) * max(0, len(missing_lines) - 1))
+                )
+                entry_height = max(entry_height, 180)
+
                 if current_y + entry_height > entries_bottom + 2:
                     break
 
-                is_owned = bool(entry.get("owned"))
-                remaining_count = int(entry.get("remaining_count", 0))
                 entry_fill = (16, 68, 40, 235) if is_owned else (12, 12, 15, 230)
                 entry_outline = (74, 214, 118) if is_owned else (76, 150, 235)
                 entry_rect = [
@@ -2221,42 +2272,17 @@ class ProcessSplice(commands.Cog):
                     width=2,
                 )
 
-                entry_name = str(entry.get("target_name") or "Unknown")
-                entry_name_lines = wrap_text_to_width(entry_name, panel_name_font, text_max_width)
-                entry_name_lines = entry_name_lines[:2]
-
-                generation = entry.get("generation")
-                gen_text = (
-                    f"Gen {generation}" if isinstance(generation, int) and generation >= 0 else "Gen ?"
-                )
-                status_text = "Done" if remaining_count == 0 else f"{remaining_count} left"
-                meta_text = f"{gen_text} | {status_text}"
-
-                if remaining_count <= 0:
-                    detail_text = "All requirements covered."
-                else:
-                    preview = entry.get("missing_preview") or []
-                    preview_text = ", ".join(preview[:3])
-                    if remaining_count > len(preview):
-                        preview_text = f"{preview_text} +{remaining_count - len(preview)}" if preview_text else f"{remaining_count} left"
-                    if is_owned:
-                        detail_text = f"Owned target. Copy path still needs: {preview_text}" if preview_text else "Owned target. Copy path still open."
-                    else:
-                        detail_text = f"Need: {preview_text}" if preview_text else f"Need: {remaining_count} more"
-
                 name_y = current_y + entry_inner_pad
                 for line in entry_name_lines:
-                    line_bbox = panel_draw.textbbox((0, 0), line, font=panel_name_font)
-                    line_height = line_bbox[3] - line_bbox[1]
                     panel_draw.text(
                         (entry_rect[0] + entry_inner_pad, name_y),
                         line,
                         font=panel_name_font,
                         fill=(244, 248, 255),
                     )
-                    name_y += line_height + 2
+                    name_y += name_line_height
 
-                meta_y = name_y + 2
+                meta_y = name_y + max(8, entry_inner_pad // 3)
                 panel_draw.text(
                     (entry_rect[0] + entry_inner_pad, meta_y),
                     meta_text,
@@ -2264,17 +2290,24 @@ class ProcessSplice(commands.Cog):
                     fill=(188, 220, 195) if is_owned else (168, 205, 245),
                 )
 
-                detail_lines = wrap_text_to_width(detail_text, panel_detail_font, text_max_width)
-                detail_lines = detail_lines[:2]
-                detail_y = meta_y + (panel_draw.textbbox((0, 0), meta_text, font=panel_meta_font)[3] - panel_draw.textbbox((0, 0), meta_text, font=panel_meta_font)[1]) + 6
-                for line in detail_lines:
+                section_y = meta_y + meta_line_height + max(14, entry_inner_pad // 2)
+                panel_draw.text(
+                    (entry_rect[0] + entry_inner_pad, section_y),
+                    "Missing Monsters",
+                    font=panel_section_font,
+                    fill=(242, 246, 255),
+                )
+
+                detail_y = section_y + section_line_height + max(10, entry_inner_pad // 3)
+                detail_gap = max(4, detail_line_height // 4)
+                for line in missing_lines:
                     panel_draw.text(
                         (entry_rect[0] + entry_inner_pad, detail_y),
                         line,
                         font=panel_detail_font,
                         fill=(226, 234, 245),
                     )
-                    detail_y += (panel_draw.textbbox((0, 0), line, font=panel_detail_font)[3] - panel_draw.textbbox((0, 0), line, font=panel_detail_font)[1]) + 2
+                    detail_y += detail_line_height + detail_gap
 
                 current_y += entry_height + entry_gap
 
