@@ -645,10 +645,12 @@ class BattleFactory:
         choice_key = kwargs.get("choice_key")
         scale_snapshot = kwargs.get("jury_scale_snapshot")
         prestige_level = kwargs.get("jury_prestige_level", 0)
+        player_combatant = kwargs.get("jury_player_combatant")
+        pet_combatant = kwargs.get("jury_pet_combatant")
 
-        player_combatant = await self.create_player_combatant(ctx, player, include_pet=allow_pets)
-        pet_combatant = None
-        if allow_pets:
+        if player_combatant is None:
+            player_combatant = await self.create_player_combatant(ctx, player, include_pet=allow_pets)
+        if pet_combatant is None and allow_pets:
             pet_combatant = await self.pet_ext.get_pet_combatant(ctx, player)
 
         if not scale_snapshot:
@@ -676,6 +678,8 @@ class BattleFactory:
         battle_kwargs.pop("floor_number", None)
         battle_kwargs.pop("floor_data", None)
         battle_kwargs.pop("choice_key", None)
+        battle_kwargs.pop("jury_player_combatant", None)
+        battle_kwargs.pop("jury_pet_combatant", None)
 
         return JuryTowerBattle(
             ctx,

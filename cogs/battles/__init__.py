@@ -6663,6 +6663,22 @@ class Battles(commands.Cog):
                 return await ctx.send(f"No Jury Tower data exists for floor {level}.")
 
             scale_snapshot, _snapshot_source = await self._resolve_jury_scale_snapshot(ctx, row)
+            allow_pets = self.battle_factory.settings.get_setting(
+                "jurytower",
+                "allow_pets",
+                default=True,
+            )
+            frozen_player_combatant = await self.battle_factory.create_player_combatant(
+                ctx,
+                ctx.author,
+                include_pet=allow_pets,
+            )
+            frozen_pet_combatant = None
+            if allow_pets:
+                frozen_pet_combatant = await self.battle_factory.pet_ext.get_pet_combatant(
+                    ctx,
+                    ctx.author,
+                )
             await self._display_jury_floor_intro(ctx, row, floor_data, scale_snapshot)
             choice_key = await self._prompt_jury_choice(ctx, floor_data)
 
@@ -6681,6 +6697,8 @@ class Battles(commands.Cog):
                 choice_key=choice_key,
                 jury_scale_snapshot=scale_snapshot,
                 jury_prestige_level=int(row["prestige"] or 0),
+                jury_player_combatant=frozen_player_combatant,
+                jury_pet_combatant=frozen_pet_combatant,
             )
 
             await battle.start_battle()

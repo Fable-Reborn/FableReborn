@@ -32,6 +32,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import asyncio
+import platform
 import re
 import time
 
@@ -97,19 +98,43 @@ async def get_out(cmd):
 
 
 async def get_cpu_name():
-    stdout, stderr = await get_out("cat /proc/cpuinfo")
-    lines = {
-        (j := i.split(":"))[0].strip(): j[1].strip() for i in stdout.split("\n") if i
-    }
-    if model_name := lines.get("model name", None):
-        # any normal x86_64 CPU
-        return model_name
-    elif cpu_part := lines.get("CPU part", None):
-        # it's ARM
-        # https://github.com/karelzak/util-linux/blob/master/sys-utils/lscpu-arm.c#L33
-        return ARM_CPUS.get(cpu_part, "NaN")
-    else:
-        return "NaN"
+    system = platform.system().lower()
+
+    try:
+        if system == "linux":
+            stdout, _stderr = await get_out("cat /proc/cpuinfo")
+            lines = {
+                (j := i.split(":", 1))[0].strip(): j[1].strip()
+                for i in stdout.split("\n")
+                if ":" in i
+            }
+            if model_name := lines.get("model name", None):
+                return model_name
+            if cpu_part := lines.get("CPU part", None):
+                return ARM_CPUS.get(cpu_part, cpu_part)
+
+        elif system == "darwin":
+            stdout, _stderr = await get_out("sysctl -n machdep.cpu.brand_string")
+            if stdout:
+                return stdout.strip()
+
+        elif system == "windows":
+            stdout, _stderr = await get_out(
+                'powershell -NoProfile -Command "(Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)"'
+            )
+            if stdout:
+                return " ".join(stdout.split())
+
+            stdout, _stderr = await get_out("wmic cpu get name")
+            lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+            if len(lines) >= 2:
+                return " ".join(lines[1].split())
+    except Exception:
+        pass
+
+    fallback = platform.processor() or platform.machine()
+    fallback = " ".join(str(fallback).split()).strip()
+    return fallback or "Unknown CPU"
 
 
 async def run(cmd, ctx):

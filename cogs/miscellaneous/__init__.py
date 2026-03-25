@@ -1735,14 +1735,24 @@ Even $1 can help us.
                     )
                 )
 
-            # --- Bot user creation time → "Total Runtime" / uptime fields ---
-            d0 = self.bot.user.created_at
-            d1 = datetime.datetime.now(datetime.timezone.utc)
-            delta = d1 - d0
-            myhours = delta.days * 24  # Convert days to hours (accurate)
-            uptime_days = delta.days
-            uptime_hours = delta.seconds // 3600
-            uptime_minutes = (delta.seconds % 3600) // 60
+            # --- Bot process uptime and bot account age ---
+            bot_uptime_delta = self.bot.uptime
+            uptime_days = bot_uptime_delta.days
+            uptime_hours = bot_uptime_delta.seconds // 3600
+            uptime_minutes = (bot_uptime_delta.seconds % 3600) // 60
+            bot_uptime_total_hours = (
+                bot_uptime_delta.days * 24
+                + (bot_uptime_delta.seconds // 3600)
+            )
+
+            bot_account_age_delta = (
+                datetime.datetime.now(datetime.timezone.utc) - self.bot.user.created_at
+            )
+            bot_account_age_days = bot_account_age_delta.days
+            bot_account_age_hours = bot_account_age_delta.seconds // 3600
+            bot_account_age_minutes = (
+                bot_account_age_delta.seconds % 3600
+            ) // 60
 
             # --- discord.py version (avoid pkg_resources / setuptools breakage) ---
             try:
@@ -1756,31 +1766,66 @@ Even $1 can help us.
             def _host_metrics():
                 import psutil
 
-                cpu_p = psutil.cpu_percent(interval=0.25)
+                psutil.cpu_percent(interval=None)
+                process = psutil.Process()
+                process.cpu_percent(interval=None)
+                time.sleep(0.25)
+                cpu_p = psutil.cpu_percent(interval=None)
+                process_cpu_p = process.cpu_percent(interval=None)
                 logical = psutil.cpu_count(logical=True) or 0
+                physical = psutil.cpu_count(logical=False) or 0
                 mem = psutil.virtual_memory()
+                process_mem = process.memory_info().rss
                 boot_ts = psutil.boot_time()
-                return cpu_p, logical, mem.percent, mem.used, mem.total, boot_ts
+                return (
+                    cpu_p,
+                    process_cpu_p,
+                    physical,
+                    logical,
+                    mem.percent,
+                    mem.used,
+                    mem.total,
+                    process_mem,
+                    boot_ts,
+                )
 
+            cpu_name = _("unknown")
             cpu_percent = 0.0
+            bot_process_cpu_percent = 0.0
+            physical_cpus = 0
             logical_cpus = 0
             memory_percent = 0.0
             memory_used_gb = 0.0
             memory_total_gb = 0.0
+            bot_process_memory_gb = 0.0
             system_uptime_days = 0
             system_uptime_hours = 0
             system_uptime_minutes = 0
             try:
+                cpu_name = await asyncio.wait_for(get_cpu_name(), timeout=2.0)
+            except Exception:
+                self.bot.logger.exception("stats: cpu name lookup failed")
+                notes.append(
+                    _(
+                        "CPU model name could not be resolved cleanly; the host may block hardware detail access."
+                    )
+                )
+
+            try:
                 (
                     cpu_percent,
+                    bot_process_cpu_percent,
+                    physical_cpus,
                     logical_cpus,
                     memory_percent,
                     mem_used_b,
                     mem_total_b,
+                    process_mem_b,
                     boot_ts,
                 ) = await asyncio.to_thread(_host_metrics)
                 memory_used_gb = mem_used_b / (1024**3)
                 memory_total_gb = mem_total_b / (1024**3)
+                bot_process_memory_gb = process_mem_b / (1024**3)
                 boot_time = datetime.datetime.fromtimestamp(
                     boot_ts, tz=datetime.timezone.utc
                 )
@@ -1865,16 +1910,23 @@ Even $1 can help us.
                 name=_("System Resources"),
                 value=_(
                     """\
-    Logical CPUs: **{logical_cpus}**
-    CPU Usage: **{cpu_percent:.1f}%**
-    Memory: **{memory_used:.2f} GB / {memory_total:.2f} GB ({memory_percent:.1f}%)**
+    CPU: **{cpu_name}**
+    Physical / Logical CPUs: **{physical_cpus} / {logical_cpus}**
+    Host CPU Usage: **{cpu_percent:.1f}%**
+    Bot Process CPU: **{bot_process_cpu_percent:.1f}%**
+    Host Memory: **{memory_used:.2f} GB / {memory_total:.2f} GB ({memory_percent:.1f}%)**
+    Bot Process Memory: **{bot_process_memory:.2f} GB**
     System Uptime: **{sys_days}d {sys_hours}h {sys_minutes}m**"""
                 ).format(
+                    cpu_name=cpu_name,
+                    physical_cpus=physical_cpus,
                     logical_cpus=logical_cpus,
                     cpu_percent=cpu_percent,
+                    bot_process_cpu_percent=bot_process_cpu_percent,
                     memory_used=memory_used_gb,
                     memory_total=memory_total_gb,
                     memory_percent=memory_percent,
+                    bot_process_memory=bot_process_memory_gb,
                     sys_days=system_uptime_days,
                     sys_hours=system_uptime_hours,
                     sys_minutes=system_uptime_minutes,
@@ -1894,7 +1946,7 @@ Even $1 can help us.
                 ).format(
                     python=platform.python_version(),
                     dpy=dpy_version,
-                    platform=platform.system(),
+                    platform=f"{platform.system()} {platform.machine()}".strip(),
                     pg_version=pg_version_display,
                     redis_version=redis_display,
                 ),
@@ -1909,6 +1961,7 @@ Even $1 can help us.
     Shards: **{shards}**
     Servers: **{guild_count:,}**
     Bot Uptime: **{bot_days}d {bot_hours}h {bot_minutes}m**
+    Bot Account Age: **{account_days}d {account_hours}h {account_minutes}m**
     Total Runtime: **{total_hours:,} hours**"""
                 ).format(
                     lines=self.bot.linecount,
@@ -1917,7 +1970,10 @@ Even $1 can help us.
                     bot_days=uptime_days,
                     bot_hours=uptime_hours,
                     bot_minutes=uptime_minutes,
-                    total_hours=int(myhours),
+                    account_days=bot_account_age_days,
+                    account_hours=bot_account_age_hours,
+                    account_minutes=bot_account_age_minutes,
+                    total_hours=int(bot_uptime_total_hours),
                 ),
                 inline=False,
             )
