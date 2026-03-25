@@ -5894,7 +5894,7 @@ class Battles(commands.Cog):
             message += f"\n❌ Failed for **{len(failed)}** user(s): `{failed_text}`"
         await ctx.send(message)
 
-
+    @is_gm()
     @jurytower.command(name="score", aliases=["scoresnapshot", "scoredetail"])
     async def jurytower_score(self, ctx, target: discord.Member):
         """[GM only] Calculate a target user's current Jury Tower score and show a breakdown."""
@@ -5992,6 +5992,7 @@ class Battles(commands.Cog):
         )
         await ctx.send(embed=embed)
 
+    @is_gm()
     @jurytower.command(name="setscore", hidden=True, aliases=["editjuryscore", "forcescore"])
     async def jurytower_set_score(self, ctx, target: discord.Member, attack_base: int, hp_base: int, defense_base: int):
         """[Owner only] Set a player's Jury Tower raw score components and persist bracket state."""
