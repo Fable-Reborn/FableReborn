@@ -33,9 +33,15 @@ class DragonBattle(Battle):
         self.dragon_level = kwargs.get("dragon_level", 1)
         self.weekly_defeats = kwargs.get("weekly_defeats", 0)
         # Don't override action_number - let base class handle it
+        self.friendly_team_indices = {1}
         
         # Load all battle settings
         settings_cog = self.ctx.bot.get_cog("BattleSettings")
+        hp_bar_style = kwargs.get(
+            "hp_bar_style",
+            "colorful" if kwargs.get("emoji_hp_bars", False) else "normal",
+        )
+        normalized_hp_bar_style = self.normalize_hp_bar_style(hp_bar_style)
         if settings_cog:
             # Ensure all settings are loaded, with defaults if not found
             self.config = {
@@ -44,7 +50,8 @@ class DragonBattle(Battle):
                 "element_effects": settings_cog.get_setting("dragon", "element_effects", default=True),
                 "luck_effects": settings_cog.get_setting("dragon", "luck_effects", default=True),
                 "reflection_damage": settings_cog.get_setting("dragon", "reflection_damage", default=True),
-                "emoji_hp_bars": kwargs.get("emoji_hp_bars", False),
+                "hp_bar_style": normalized_hp_bar_style,
+                "emoji_hp_bars": normalized_hp_bar_style != self.HP_BAR_STYLE_NORMAL,
                 "fireball_chance": settings_cog.get_setting("dragon", "fireball_chance", default=0.3),
                 "cheat_death": settings_cog.get_setting("dragon", "cheat_death", default=True),
                 "tripping": settings_cog.get_setting("dragon", "tripping", default=True),
@@ -59,7 +66,8 @@ class DragonBattle(Battle):
                 "element_effects": True,
                 "luck_effects": True,
                 "reflection_damage": True,
-                "emoji_hp_bars": kwargs.get("emoji_hp_bars", False),
+                "hp_bar_style": normalized_hp_bar_style,
+                "emoji_hp_bars": normalized_hp_bar_style != self.HP_BAR_STYLE_NORMAL,
                 "fireball_chance": 0.3,
                 "cheat_death": True,
                 "tripping": True,
@@ -1409,8 +1417,13 @@ class DragonBattle(Battle):
         dragon_hp = max(0, float(self.dragon.hp))
         dragon_max_hp = float(self.dragon.max_hp)
         dragon_hp_percent = (dragon_hp / dragon_max_hp) * 100 if dragon_max_hp > 0 else 0
-        hp_bar_length = 10 if self.config.get("emoji_hp_bars", False) else 20
-        dragon_hp_bar = self.create_hp_bar(dragon_hp, dragon_max_hp, length=hp_bar_length)
+        hp_bar_length = 10 if self.config.get("emoji_hp_bars", True) else 20
+        dragon_hp_bar = self.create_hp_bar(
+            dragon_hp,
+            dragon_max_hp,
+            length=hp_bar_length,
+            combatant=self.dragon,
+        )
         
         # Get dragon element emoji from current stage element
         dragon_element_key = self.dragon_element or "Water"
@@ -1427,7 +1440,12 @@ class DragonBattle(Battle):
             player_hp = max(0, float(player.hp))
             player_max_hp = float(player.max_hp)
             player_hp_percent = (player_hp / player_max_hp) * 100 if player_max_hp > 0 else 0
-            player_hp_bar = self.create_hp_bar(player_hp, player_max_hp, length=hp_bar_length)
+            player_hp_bar = self.create_hp_bar(
+                player_hp,
+                player_max_hp,
+                length=hp_bar_length,
+                combatant=player,
+            )
 
             # Get player element emoji
             player_element_emoji = "❓"

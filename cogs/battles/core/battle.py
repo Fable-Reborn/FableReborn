@@ -36,13 +36,51 @@ from .status_effect import StatusEffectRegistry
 
 class Battle(ABC):
     """Base class for all battle types"""
+    HP_BAR_STYLE_NORMAL = "normal"
+    HP_BAR_STYLE_COLORFUL = "colorful"
+    HP_BAR_STYLE_TEAM = "team"
     HP_BAR_EMPTY_LEFT = "<:EmptyLeftEdge:1486325193713516666>"
     HP_BAR_EMPTY_MIDDLE = "<:EmptyMiddle:1486325196351864862>"
     HP_BAR_EMPTY_RIGHT = "<:TopEmpty:1486325200441311242>"
     HP_BAR_FULL_LEFT = "<:FullLeftEdge:1486325181512286371>"
     HP_BAR_FULL_MIDDLE = "<:MiddleFullRed:1486325202186141889>"
     HP_BAR_FULL_RIGHT = "<:FullTop:1486325203939102840>"
+    HP_BAR_HALF_LEFT = "<:leftedgehalf:1486331826636197979>"
     HP_BAR_HALF_MIDDLE = "<:Halfwayred:1486325198620852335>"
+    HP_BAR_HALF_RIGHT = "<:halfhopedge:1486331829047787631>"
+    HP_BAR_BLUE_FULL_LEFT = "<:blueleftfull:1486332749831864330>"
+    HP_BAR_BLUE_FULL_MIDDLE = "<:middlefullblue:1486332751698333808>"
+    HP_BAR_BLUE_FULL_RIGHT = "<:bluetopfull:1486333706569388073>"
+    HP_BAR_BLUE_HALF_LEFT = "<:bluehalfleftedge:1486332747722133666>"
+    HP_BAR_BLUE_HALF_MIDDLE = "<:middlehalf:1486333395339575487>"
+    HP_BAR_BLUE_HALF_RIGHT = "<:bluetophalffull:1486332753841750036>"
+
+    @classmethod
+    def normalize_hp_bar_style(cls, style):
+        normalized = str(style or "").strip().lower()
+        aliases = {
+            "normal": cls.HP_BAR_STYLE_NORMAL,
+            "classic": cls.HP_BAR_STYLE_NORMAL,
+            "default": cls.HP_BAR_STYLE_NORMAL,
+            "old": cls.HP_BAR_STYLE_NORMAL,
+            "text": cls.HP_BAR_STYLE_NORMAL,
+            "color": cls.HP_BAR_STYLE_COLORFUL,
+            "colour": cls.HP_BAR_STYLE_COLORFUL,
+            "colorful": cls.HP_BAR_STYLE_COLORFUL,
+            "colourful": cls.HP_BAR_STYLE_COLORFUL,
+            "emoji": cls.HP_BAR_STYLE_COLORFUL,
+            "red": cls.HP_BAR_STYLE_COLORFUL,
+            "allred": cls.HP_BAR_STYLE_COLORFUL,
+            "team": cls.HP_BAR_STYLE_TEAM,
+            "vs": cls.HP_BAR_STYLE_TEAM,
+            "split": cls.HP_BAR_STYLE_TEAM,
+            "faction": cls.HP_BAR_STYLE_TEAM,
+            "friendly": cls.HP_BAR_STYLE_TEAM,
+            "friendlyfoe": cls.HP_BAR_STYLE_TEAM,
+            "redblue": cls.HP_BAR_STYLE_TEAM,
+            "blue": cls.HP_BAR_STYLE_TEAM,
+        }
+        return aliases.get(normalized, cls.HP_BAR_STYLE_NORMAL)
     
     def __init__(self, ctx, teams=None, **kwargs):
         self.ctx = ctx
@@ -65,6 +103,16 @@ class Battle(ABC):
         self.turn_states = []  # List of detailed battle states per turn
         self.initial_state = None  # Store initial battle state
         
+        hp_bar_style = self.normalize_hp_bar_style(
+            kwargs.get(
+                "hp_bar_style",
+                self.HP_BAR_STYLE_COLORFUL
+                if kwargs.get("emoji_hp_bars", False)
+                else self.HP_BAR_STYLE_NORMAL,
+            )
+        )
+        self.friendly_team_indices = {0}
+
         # Configuration options
         self.config = {
             "allow_pets": kwargs.get("allow_pets", True),
@@ -72,7 +120,8 @@ class Battle(ABC):
             "element_effects": kwargs.get("element_effects", True),
             "luck_effects": kwargs.get("luck_effects", True),
             "reflection_damage": kwargs.get("reflection_damage", True),
-            "emoji_hp_bars": kwargs.get("emoji_hp_bars", False),
+            "hp_bar_style": hp_bar_style,
+            "emoji_hp_bars": hp_bar_style != self.HP_BAR_STYLE_NORMAL,
             "fireball_chance": kwargs.get("fireball_chance", 0.3),
             "cheat_death": kwargs.get("cheat_death", True),
             "tripping": kwargs.get("tripping", True),
@@ -80,9 +129,10 @@ class Battle(ABC):
             "status_effects": kwargs.get("status_effects", False),  # Enable status effects system
         }
 
-        for team in self.teams:
+        for team_index, team in enumerate(self.teams):
             for combatant in getattr(team, "combatants", []):
                 setattr(combatant, "battle", self)
+                setattr(combatant, "_battle_team_index", team_index)
     
     @abstractmethod
     async def start_battle(self):
@@ -125,17 +175,52 @@ class Battle(ABC):
         # Capture detailed state for live replay
         await self.capture_turn_state(message)
     
-    def create_hp_bar(self, current_hp, max_hp, length=None):
+    def is_friendly_combatant(self, combatant):
+        """Return whether a combatant belongs to the viewer-friendly side."""
+        return getattr(combatant, "_battle_team_index", None) in self.friendly_team_indices
+
+    def _get_hp_bar_palette(self, style, friendly):
+        if style == self.HP_BAR_STYLE_TEAM and friendly:
+            return {
+                "full_left": self.HP_BAR_BLUE_FULL_LEFT,
+                "half_left": self.HP_BAR_BLUE_HALF_LEFT,
+                "full_middle": self.HP_BAR_BLUE_FULL_MIDDLE,
+                "half_middle": self.HP_BAR_BLUE_HALF_MIDDLE,
+                "full_right": self.HP_BAR_BLUE_FULL_RIGHT,
+                "half_right": self.HP_BAR_BLUE_HALF_RIGHT,
+            }
+
+        return {
+            "full_left": self.HP_BAR_FULL_LEFT,
+            "half_left": self.HP_BAR_HALF_LEFT,
+            "full_middle": self.HP_BAR_FULL_MIDDLE,
+            "half_middle": self.HP_BAR_HALF_MIDDLE,
+            "full_right": self.HP_BAR_FULL_RIGHT,
+            "half_right": self.HP_BAR_HALF_RIGHT,
+        }
+
+    def create_hp_bar(self, current_hp, max_hp, length=None, combatant=None, friendly=None):
         """Create either the classic text HP bar or the emoji HP bar."""
         ratio = float(current_hp) / float(max_hp) if float(max_hp or 0) > 0 else 0.0
         ratio = max(0.0, min(1.0, ratio))
+        style = self.normalize_hp_bar_style(
+            self.config.get(
+                "hp_bar_style",
+                self.HP_BAR_STYLE_COLORFUL
+                if self.config.get("emoji_hp_bars", False)
+                else self.HP_BAR_STYLE_NORMAL,
+            )
+        )
 
-        if not self.config.get("emoji_hp_bars", False):
+        if style == self.HP_BAR_STYLE_NORMAL:
             safe_length = max(1, int(length or 20))
             filled_length = int(safe_length * ratio)
             return ("█" * filled_length) + ("░" * (safe_length - filled_length))
 
         safe_length = max(3, int(length or 10))
+        if friendly is None and combatant is not None:
+            friendly = self.is_friendly_combatant(combatant)
+        palette = self._get_hp_bar_palette(style, bool(friendly))
         total_half_steps = safe_length * 2
         filled_half_steps = int(round(ratio * total_half_steps))
         filled_half_steps = max(0, min(total_half_steps, filled_half_steps))
@@ -146,20 +231,28 @@ class Battle(ABC):
 
             if tile_index == 0:
                 tiles.append(
-                    self.HP_BAR_FULL_LEFT if tile_units >= 2 else self.HP_BAR_EMPTY_LEFT
+                    palette["full_left"]
+                    if tile_units >= 2
+                    else palette["half_left"]
+                    if tile_units == 1
+                    else self.HP_BAR_EMPTY_LEFT
                 )
                 continue
 
             if tile_index == safe_length - 1:
                 tiles.append(
-                    self.HP_BAR_FULL_RIGHT if tile_units >= 2 else self.HP_BAR_EMPTY_RIGHT
+                    palette["full_right"]
+                    if tile_units >= 2
+                    else palette["half_right"]
+                    if tile_units == 1
+                    else self.HP_BAR_EMPTY_RIGHT
                 )
                 continue
 
             if tile_units >= 2:
-                tiles.append(self.HP_BAR_FULL_MIDDLE)
+                tiles.append(palette["full_middle"])
             elif tile_units == 1:
-                tiles.append(self.HP_BAR_HALF_MIDDLE)
+                tiles.append(palette["half_middle"])
             else:
                 tiles.append(self.HP_BAR_EMPTY_MIDDLE)
 

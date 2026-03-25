@@ -251,8 +251,13 @@ class CityWarBattle(Battle):
             for combatant in team.combatants:
                 current_hp = max(0, float(combatant.hp))
                 max_hp = max(1.0, float(combatant.max_hp))
-                hp_bar_length = 10 if self.config.get("emoji_hp_bars", False) else 20
-                hp_bar = self.create_hp_bar(current_hp, max_hp, length=hp_bar_length)
+                hp_bar_length = 10 if self.config.get("emoji_hp_bars", True) else 20
+                hp_bar = self.create_hp_bar(
+                    current_hp,
+                    max_hp,
+                    length=hp_bar_length,
+                    combatant=combatant,
+                )
                 role = getattr(combatant, "city_role", "")
                 if combatant.is_pet:
                     role_text = "pet"

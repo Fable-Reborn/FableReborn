@@ -390,7 +390,7 @@ class TeamBattle(Battle):
             for combatant in team.combatants:
                 current_hp = max(0, float(combatant.hp))
                 max_hp = float(combatant.max_hp)
-                hp_bar = self.create_hp_bar(current_hp, max_hp)
+                hp_bar = self.create_hp_bar(current_hp, max_hp, combatant=combatant)
                 
                 # Get element emoji
                 element_emoji = "❌"

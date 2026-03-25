@@ -28,6 +28,7 @@ from .jury_tower_data import (
 from .settings import BattleSettings
 from .utils import create_hp_bar
 from classes.badges import Badge
+from .core.battle import Battle
 from .core.team import Team
 from .core.combatant import Combatant
 from .types.tower import TowerBattle
@@ -1765,9 +1766,29 @@ class Battles(commands.Cog):
                 CREATE TABLE IF NOT EXISTS battle_preferences (
                     user_id BIGINT PRIMARY KEY,
                     emoji_hp_bars BOOLEAN NOT NULL DEFAULT FALSE,
+                    hp_bar_style TEXT DEFAULT 'normal',
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
                 """
+            )
+            await conn.execute(
+                "ALTER TABLE battle_preferences ALTER COLUMN emoji_hp_bars SET DEFAULT FALSE;"
+            )
+            await conn.execute(
+                "ALTER TABLE battle_preferences ADD COLUMN IF NOT EXISTS hp_bar_style TEXT;"
+            )
+            await conn.execute(
+                """
+                UPDATE battle_preferences
+                SET hp_bar_style = CASE
+                    WHEN COALESCE(emoji_hp_bars, TRUE) THEN 'colorful'
+                    ELSE 'normal'
+                END
+                WHERE hp_bar_style IS NULL OR TRIM(hp_bar_style) = '';
+                """
+            )
+            await conn.execute(
+                "ALTER TABLE battle_preferences ALTER COLUMN hp_bar_style SET DEFAULT 'normal';"
             )
             monster_pets_exists = await conn.fetchval(
                 "SELECT to_regclass('public.monster_pets') IS NOT NULL;"
@@ -2946,30 +2967,55 @@ class Battles(commands.Cog):
                 normalized,
             )
 
-    async def _get_user_emoji_hp_bars_enabled(self, user_id: int) -> bool:
-        """Return whether a user prefers emoji HP bars in battles they start."""
+    async def _get_user_hp_bar_style(self, user_id: int) -> str:
+        """Return a user's preferred HP bar style for battles they start."""
         async with self.bot.pool.acquire() as conn:
-            enabled = await conn.fetchval(
-                "SELECT emoji_hp_bars FROM battle_preferences WHERE user_id = $1;",
+            row = await conn.fetchrow(
+                """
+                SELECT hp_bar_style, emoji_hp_bars
+                FROM battle_preferences
+                WHERE user_id = $1;
+                """,
                 user_id,
             )
-        return bool(enabled)
+        if not row:
+            return "normal"
 
-    async def _set_user_emoji_hp_bars_enabled(self, user_id: int, enabled: bool):
+        stored_style = row["hp_bar_style"]
+        if stored_style:
+            return Battle.normalize_hp_bar_style(stored_style)
+
+        return "colorful" if bool(row["emoji_hp_bars"]) else "normal"
+
+    async def _set_user_hp_bar_style(self, user_id: int, style: str):
         """Persist a user's preferred HP bar style for battles they start."""
+        normalized_style = Battle.normalize_hp_bar_style(style)
         async with self.bot.pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO battle_preferences (user_id, emoji_hp_bars, updated_at)
-                VALUES ($1, $2, NOW())
+                INSERT INTO battle_preferences (user_id, emoji_hp_bars, hp_bar_style, updated_at)
+                VALUES ($1, $2, $3, NOW())
                 ON CONFLICT (user_id)
                 DO UPDATE
                 SET emoji_hp_bars = EXCLUDED.emoji_hp_bars,
+                    hp_bar_style = EXCLUDED.hp_bar_style,
                     updated_at = NOW();
                 """,
                 user_id,
-                bool(enabled),
+                normalized_style != Battle.HP_BAR_STYLE_NORMAL,
+                normalized_style,
             )
+
+    async def _get_user_emoji_hp_bars_enabled(self, user_id: int) -> bool:
+        """Backwards-compatible boolean wrapper for HP bar preference."""
+        return await self._get_user_hp_bar_style(user_id) != Battle.HP_BAR_STYLE_NORMAL
+
+    async def _set_user_emoji_hp_bars_enabled(self, user_id: int, enabled: bool):
+        """Backwards-compatible boolean wrapper for HP bar preference."""
+        await self._set_user_hp_bar_style(
+            user_id,
+            Battle.HP_BAR_STYLE_COLORFUL if enabled else Battle.HP_BAR_STYLE_NORMAL,
+        )
 
     async def _get_pve_monster_pool_for_user(
         self,
@@ -7487,40 +7533,54 @@ class Battles(commands.Cog):
         - `$battlebars status`
         - `$battlebars normal`
         - `$battlebars colorful`
+        - `$battlebars team`
         - `$battlebars toggle`
 
         Note: shared battle embeds can only use one style, so your preference
         applies to battles started by you.
         """
         normalized = str(mode or "status").strip().lower()
-        current = await self._get_user_emoji_hp_bars_enabled(ctx.author.id)
+        current = await self._get_user_hp_bar_style(ctx.author.id)
 
         if normalized in {"status", "state", "show"}:
             new_state = current
             changed = False
         elif normalized in {"normal", "classic", "default", "old", "text"}:
-            new_state = False
+            new_state = Battle.HP_BAR_STYLE_NORMAL
             changed = new_state != current
-        elif normalized in {"color", "colour", "colorful", "colourful", "emoji", "new"}:
-            new_state = True
+        elif normalized in {"color", "colour", "colorful", "colourful", "emoji", "new", "red", "allred"}:
+            new_state = Battle.HP_BAR_STYLE_COLORFUL
+            changed = new_state != current
+        elif normalized in {"team", "vs", "split", "faction", "friendlyfoe", "redblue", "blue"}:
+            new_state = Battle.HP_BAR_STYLE_TEAM
             changed = new_state != current
         elif normalized in {"toggle", "flip", "switch"}:
-            new_state = not current
+            cycle = [
+                Battle.HP_BAR_STYLE_NORMAL,
+                Battle.HP_BAR_STYLE_COLORFUL,
+                Battle.HP_BAR_STYLE_TEAM,
+            ]
+            current_index = cycle.index(current) if current in cycle else 0
+            new_state = cycle[(current_index + 1) % len(cycle)]
             changed = True
         else:
-            await ctx.send("Usage: `$battlebars [normal|colorful|toggle|status]`")
+            await ctx.send("Usage: `$battlebars [normal|colorful|team|toggle|status]`")
             return
 
         if changed:
-            await self._set_user_emoji_hp_bars_enabled(ctx.author.id, new_state)
+            await self._set_user_hp_bar_style(ctx.author.id, new_state)
 
-        if new_state:
+        if new_state == Battle.HP_BAR_STYLE_NORMAL:
             await ctx.send(
-                "✅ Battle HP bars are **COLORFUL** for battles you start."
+                "✅ Battle HP bars are **NORMAL** for battles you start."
+            )
+        elif new_state == Battle.HP_BAR_STYLE_TEAM:
+            await ctx.send(
+                "✅ Battle HP bars are **TEAM COLORS** for battles you start. Friendly bars are blue, enemy bars are red."
             )
         else:
             await ctx.send(
-                "✅ Battle HP bars are **NORMAL** for battles you start."
+                "✅ Battle HP bars are **COLORFUL** for battles you start."
             )
 
     @has_char()

@@ -18,6 +18,11 @@ class RaidBattle(Battle):
         
         # Load all battle settings
         settings_cog = self.ctx.bot.get_cog("BattleSettings")
+        hp_bar_style = kwargs.get(
+            "hp_bar_style",
+            "colorful" if kwargs.get("emoji_hp_bars", False) else "normal",
+        )
+        normalized_hp_bar_style = self.normalize_hp_bar_style(hp_bar_style)
         if settings_cog:
             # Ensure all settings are loaded, with defaults if not found
             self.config = {
@@ -26,7 +31,8 @@ class RaidBattle(Battle):
                 "element_effects": settings_cog.get_setting("raid", "element_effects", default=True),
                 "luck_effects": settings_cog.get_setting("raid", "luck_effects", default=True),
                 "reflection_damage": settings_cog.get_setting("raid", "reflection_damage", default=True),
-                "emoji_hp_bars": kwargs.get("emoji_hp_bars", False),
+                "hp_bar_style": normalized_hp_bar_style,
+                "emoji_hp_bars": normalized_hp_bar_style != self.HP_BAR_STYLE_NORMAL,
                 "fireball_chance": settings_cog.get_setting("raid", "fireball_chance", default=0.3),
                 "cheat_death": settings_cog.get_setting("raid", "cheat_death", default=True),
                 "tripping": settings_cog.get_setting("raid", "tripping", default=True),
@@ -41,7 +47,8 @@ class RaidBattle(Battle):
                 "element_effects": True,
                 "luck_effects": True,
                 "reflection_damage": True,
-                "emoji_hp_bars": kwargs.get("emoji_hp_bars", False),
+                "hp_bar_style": normalized_hp_bar_style,
+                "emoji_hp_bars": normalized_hp_bar_style != self.HP_BAR_STYLE_NORMAL,
                 "fireball_chance": 0.3,
                 "cheat_death": True,
                 "tripping": True,
@@ -424,7 +431,7 @@ class RaidBattle(Battle):
         for combatant in self.team_a.combatants:
             current_hp = max(0, float(combatant.hp))
             max_hp = float(combatant.max_hp)
-            hp_bar = self.create_hp_bar(current_hp, max_hp)
+            hp_bar = self.create_hp_bar(current_hp, max_hp, combatant=combatant)
             
             # Get element emoji
             element_emoji = "❌"
@@ -453,7 +460,7 @@ class RaidBattle(Battle):
         for combatant in self.team_b.combatants:
             current_hp = max(0, float(combatant.hp))
             max_hp = float(combatant.max_hp)
-            hp_bar = self.create_hp_bar(current_hp, max_hp)
+            hp_bar = self.create_hp_bar(current_hp, max_hp, combatant=combatant)
             
             # Get element emoji
             element_emoji = "❌"

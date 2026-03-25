@@ -5970,7 +5970,7 @@ class CouplesTowerBattle(TowerBattle):
                 hp_bar = "▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓"  # Hidden HP bar
             else:
                 hp_display = f"{current_hp:.1f}/{max_hp:.1f}"
-                hp_bar = self.create_hp_bar(current_hp, max_hp)
+                hp_bar = self.create_hp_bar(current_hp, max_hp, combatant=combatant)
             
             # Get element emoji
             element_emoji = "❌"
@@ -6100,7 +6100,7 @@ class CouplesTowerBattle(TowerBattle):
             enemy_hp_bar = "▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓"
         else:
             enemy_hp_display = f"{current_hp:.1f}/{max_hp:.1f}"
-            enemy_hp_bar = self.create_hp_bar(current_hp, max_hp)
+            enemy_hp_bar = self.create_hp_bar(current_hp, max_hp, combatant=enemy)
         
         # Get element emoji for enemy
         element_emoji = "❌"
@@ -6205,7 +6205,7 @@ class CouplesTowerBattle(TowerBattle):
         # Show defender (the one trying to survive)
         defender_hp = max(0, float(self.defender_partner.hp))
         defender_max_hp = float(self.defender_partner.max_hp)
-        defender_hp_bar = self.create_hp_bar(defender_hp, defender_max_hp)
+        defender_hp_bar = self.create_hp_bar(defender_hp, defender_max_hp, combatant=self.defender_partner)
         
         defender_emoji = "❌"
         for emoji, element in element_emoji_map.items():
@@ -6222,7 +6222,7 @@ class CouplesTowerBattle(TowerBattle):
         # Show possessed partner (the attacker)
         possessed_hp = max(0, float(self.possessed_partner.hp))
         possessed_max_hp = float(self.possessed_partner.max_hp)
-        possessed_hp_bar = self.create_hp_bar(possessed_hp, possessed_max_hp)
+        possessed_hp_bar = self.create_hp_bar(possessed_hp, possessed_max_hp, combatant=self.possessed_partner)
         
         possessed_emoji = "❌"
         for emoji, element in element_emoji_map.items():
@@ -6242,7 +6242,7 @@ class CouplesTowerBattle(TowerBattle):
         # Show Truth Demon HP properly (0/1 when dead)
         demon_hp = float(self.truth_demon.hp) if self.truth_demon else 0
         demon_max_hp = float(self.truth_demon.max_hp) if self.truth_demon else 1
-        demon_hp_bar = self.create_hp_bar(demon_hp, demon_max_hp)
+        demon_hp_bar = self.create_hp_bar(demon_hp, demon_max_hp, combatant=self.truth_demon)
         
         embed.add_field(
             name="🪞 **TRUTH DEMON** 🪞\n👹 Truth Demon 👹",
@@ -6433,12 +6433,12 @@ class CouplesTowerBattle(TowerBattle):
                 # Partner info
                 current_hp = max(0, float(partner.hp))
                 max_hp = float(partner.max_hp)
-                hp_bar = self.create_hp_bar(current_hp, max_hp)
+                hp_bar = self.create_hp_bar(current_hp, max_hp, combatant=partner)
                 
                 # Enemy info
                 enemy_hp = max(0, float(enemy.hp))
                 enemy_max_hp = float(enemy.max_hp)
-                enemy_hp_bar = self.create_hp_bar(enemy_hp, enemy_max_hp)
+                enemy_hp_bar = self.create_hp_bar(enemy_hp, enemy_max_hp, combatant=enemy)
                 
                 # Get element emojis
                 partner_emoji = "❌"
@@ -6465,7 +6465,7 @@ class CouplesTowerBattle(TowerBattle):
             for pet in pets:
                 current_hp = max(0, float(pet.hp))
                 max_hp = float(pet.max_hp)
-                hp_bar = self.create_hp_bar(current_hp, max_hp)
+                hp_bar = self.create_hp_bar(current_hp, max_hp, combatant=pet)
                 pet_info.append(f"🐾 {pet.name}\nHP: {current_hp:.1f}/{max_hp:.1f}\n{hp_bar}")
             embed.add_field(name="🐾 **COMPANIONS** 🐾", value="\n\n".join(pet_info), inline=False)
         
@@ -6528,10 +6528,16 @@ class CouplesTowerBattle(TowerBattle):
     # NOTE: calculate_damage() and apply_damage() methods removed - they were never called by the tower battle system
     # All level-specific mechanics are now properly implemented in the process_turn_with_* methods
 
-    def create_hp_bar(self, current_hp, max_hp):
+    def create_hp_bar(self, current_hp, max_hp, combatant=None, friendly=None):
         """Create a formatted HP bar"""
-        hp_bar_length = 10 if self.config.get("emoji_hp_bars", False) else 20
-        return super().create_hp_bar(current_hp, max_hp, length=hp_bar_length)
+        hp_bar_length = 10 if self.config.get("emoji_hp_bars", True) else 20
+        return super().create_hp_bar(
+            current_hp,
+            max_hp,
+            length=hp_bar_length,
+            combatant=combatant,
+            friendly=friendly,
+        )
     
     def update_turn_order(self):
         """Override to include dead partners for Level 29 spirit healing"""
@@ -6729,7 +6735,7 @@ class CouplesTowerBattle(TowerBattle):
         for combatant in self.player_team.combatants:
             current_hp = max(0, float(combatant.hp))
             max_hp = float(combatant.max_hp)
-            hp_bar = self.create_hp_bar(current_hp, max_hp)
+            hp_bar = self.create_hp_bar(current_hp, max_hp, combatant=combatant)
             
             # Get element emoji
             element_emoji = "❌"
@@ -6758,7 +6764,7 @@ class CouplesTowerBattle(TowerBattle):
         for i, enemy in enumerate(self.enemy_team.combatants):
             current_hp = max(0, float(enemy.hp))
             max_hp = float(enemy.max_hp)
-            hp_bar = self.create_hp_bar(current_hp, max_hp)
+            hp_bar = self.create_hp_bar(current_hp, max_hp, combatant=enemy)
             
             # Get element emoji for enemy
             element_emoji = "❌"

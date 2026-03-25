@@ -279,7 +279,7 @@ class BattleFactory:
         # Apply battle settings to kwargs
         settings_kwargs = await self.settings.apply_settings_to_battle(battle_type, kwargs)
 
-        if "emoji_hp_bars" not in settings_kwargs:
+        if "hp_bar_style" not in settings_kwargs:
             battles_cog = self.bot.get_cog("Battles")
             user_id = None
             player = settings_kwargs.get("player")
@@ -288,8 +288,21 @@ class BattleFactory:
             elif hasattr(ctx, "author") and hasattr(ctx.author, "id"):
                 user_id = ctx.author.id
 
-            if battles_cog and user_id is not None:
-                settings_kwargs["emoji_hp_bars"] = await battles_cog._get_user_emoji_hp_bars_enabled(user_id)
+            if "emoji_hp_bars" in settings_kwargs:
+                settings_kwargs["hp_bar_style"] = (
+                    Battle.HP_BAR_STYLE_COLORFUL
+                    if settings_kwargs["emoji_hp_bars"]
+                    else Battle.HP_BAR_STYLE_NORMAL
+                )
+            elif battles_cog and user_id is not None:
+                settings_kwargs["hp_bar_style"] = await battles_cog._get_user_hp_bar_style(user_id)
+
+        settings_kwargs["hp_bar_style"] = Battle.normalize_hp_bar_style(
+            settings_kwargs.get("hp_bar_style")
+        )
+        settings_kwargs["emoji_hp_bars"] = (
+            settings_kwargs["hp_bar_style"] != Battle.HP_BAR_STYLE_NORMAL
+        )
 
         if battle_type == "pvp":
             return await self.create_pvp_battle(ctx, **settings_kwargs)

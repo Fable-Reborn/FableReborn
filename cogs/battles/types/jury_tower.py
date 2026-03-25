@@ -522,7 +522,7 @@ class JuryTowerBattle(TowerBattle):
         for combatant in self.player_team.combatants:
             current_hp = max(0, float(combatant.hp))
             max_hp = max(1.0, float(combatant.max_hp))
-            hp_bar = self.create_hp_bar(current_hp, max_hp)
+            hp_bar = self.create_hp_bar(current_hp, max_hp, combatant=combatant)
             field_value = f"HP: {current_hp:.1f}/{max_hp:.1f}\n{hp_bar}"
             element_emoji = "❌"
             for emoji, element in element_emoji_map.items():
@@ -543,7 +543,7 @@ class JuryTowerBattle(TowerBattle):
 
         enemy_hp = max(0, float(current_enemy.hp))
         enemy_max_hp = max(1.0, float(current_enemy.max_hp))
-        enemy_bar = self.create_hp_bar(enemy_hp, enemy_max_hp)
+        enemy_bar = self.create_hp_bar(enemy_hp, enemy_max_hp, combatant=current_enemy)
         enemy_value = f"HP: {enemy_hp:.1f}/{enemy_max_hp:.1f}\n{enemy_bar}"
         enemy_emoji = "❌"
         for emoji, element in element_emoji_map.items():
