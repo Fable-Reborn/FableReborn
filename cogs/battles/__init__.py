@@ -46,7 +46,7 @@ JURY_RANK_LABEL = "Iron Rank"
 JURY_CURRENCY_LABEL = "Black Sigils"
 JURY_CURRENCY_LABEL_LOWER = "black sigils"
 JURY_SHOP_LABEL = "Black Vault"
-JURY_TOWER_MIN_LEVEL = 40
+JURY_TOWER_MIN_LEVEL = 50
 JURY_TOWER_REQUIRED_BATTLE_TOWER_PRESTIGE = 5
 JURY_BONUS_CACHE_THRESHOLD = 2
 JURY_MAJOR_BONUS_CACHE_THRESHOLD = 6
@@ -5575,7 +5575,7 @@ class Battles(commands.Cog):
 
         await ctx.send(outcome_text)
 
-    @is_gm()
+
     @commands.group(aliases=["jt"])
     async def jurytower(self, ctx):
         """Commands for the Jury Tower."""
@@ -5669,7 +5669,7 @@ class Battles(commands.Cog):
             )
             await ctx.send(embed=embed)
 
-    @is_gm()
+
     @jurytower.command(name="help", aliases=["info"])
     async def jurytower_help(self, ctx):
         if not await self._ensure_jury_tower_dev_access(ctx):
@@ -5835,7 +5835,7 @@ class Battles(commands.Cog):
         for embed in (overview, rewards):
             await ctx.send(embed=embed)
 
-    @is_gm()
+
     @jurytower.command(name="forcesnapshot", aliases=["snapshotrefresh", "refreshsnapshot"])
     async def jurytower_force_snapshot(self, ctx):
         """[GM only] Rebuild and persist snapshots for every user that currently has one."""
@@ -5886,7 +5886,7 @@ class Battles(commands.Cog):
             message += f"\n❌ Failed for **{len(failed)}** user(s): `{failed_text}`"
         await ctx.send(message)
 
-    @is_gm()
+
     @jurytower.command(name="score", aliases=["scoresnapshot", "scoredetail"])
     async def jurytower_score(self, ctx, target: discord.Member):
         """[GM only] Calculate a target user's current Jury Tower score and show a breakdown."""
@@ -6044,7 +6044,7 @@ class Battles(commands.Cog):
             f"Rank: **{bracket_payload['bracket_label']}**"
         )
 
-    @is_gm()
+
     @has_char()
     @jurytower.command(name="start")
     async def jurytower_start(self, ctx):
@@ -6086,7 +6086,7 @@ class Battles(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    @is_gm()
+
     @has_char()
     @jurytower.command(name="progress")
     async def jurytower_progress(self, ctx):
@@ -6204,7 +6204,7 @@ class Battles(commands.Cog):
         embed.set_footer(text=f"Use $jt shop to view the {JURY_SHOP_LABEL.lower()}.")
         await ctx.send(embed=embed)
 
-    @is_gm()
+
     @has_char()
     @jurytower.command(name="shop")
     async def jurytower_shop(self, ctx):
@@ -6292,7 +6292,7 @@ class Battles(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    @is_gm()
+
     @has_char()
     @jurytower.command(name="buy")
     async def jurytower_buy(self, ctx, *, item: str):
@@ -6575,7 +6575,7 @@ class Battles(commands.Cog):
 
         await ctx.send(summary_line)
 
-    @is_gm()
+
     @has_char()
     @jurytower.command(name="fight", aliases=["begin"])
     @user_cooldown(1800)
