@@ -44,6 +44,7 @@ class DragonBattle(Battle):
                 "element_effects": settings_cog.get_setting("dragon", "element_effects", default=True),
                 "luck_effects": settings_cog.get_setting("dragon", "luck_effects", default=True),
                 "reflection_damage": settings_cog.get_setting("dragon", "reflection_damage", default=True),
+                "emoji_hp_bars": kwargs.get("emoji_hp_bars", False),
                 "fireball_chance": settings_cog.get_setting("dragon", "fireball_chance", default=0.3),
                 "cheat_death": settings_cog.get_setting("dragon", "cheat_death", default=True),
                 "tripping": settings_cog.get_setting("dragon", "tripping", default=True),
@@ -58,6 +59,7 @@ class DragonBattle(Battle):
                 "element_effects": True,
                 "luck_effects": True,
                 "reflection_damage": True,
+                "emoji_hp_bars": kwargs.get("emoji_hp_bars", False),
                 "fireball_chance": 0.3,
                 "cheat_death": True,
                 "tripping": True,
@@ -1407,7 +1409,8 @@ class DragonBattle(Battle):
         dragon_hp = max(0, float(self.dragon.hp))
         dragon_max_hp = float(self.dragon.max_hp)
         dragon_hp_percent = (dragon_hp / dragon_max_hp) * 100 if dragon_max_hp > 0 else 0
-        dragon_hp_bar = self.create_hp_bar(dragon_hp, dragon_max_hp, length=20)
+        hp_bar_length = 10 if self.config.get("emoji_hp_bars", False) else 20
+        dragon_hp_bar = self.create_hp_bar(dragon_hp, dragon_max_hp, length=hp_bar_length)
         
         # Get dragon element emoji from current stage element
         dragon_element_key = self.dragon_element or "Water"
@@ -1424,7 +1427,7 @@ class DragonBattle(Battle):
             player_hp = max(0, float(player.hp))
             player_max_hp = float(player.max_hp)
             player_hp_percent = (player_hp / player_max_hp) * 100 if player_max_hp > 0 else 0
-            player_hp_bar = self.create_hp_bar(player_hp, player_max_hp, length=15)
+            player_hp_bar = self.create_hp_bar(player_hp, player_max_hp, length=hp_bar_length)
 
             # Get player element emoji
             player_element_emoji = "❓"

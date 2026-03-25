@@ -1760,6 +1760,15 @@ class Battles(commands.Cog):
             await conn.execute(
                 "ALTER TABLE pve_preferences ADD COLUMN IF NOT EXISTS default_location_id TEXT;"
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS battle_preferences (
+                    user_id BIGINT PRIMARY KEY,
+                    emoji_hp_bars BOOLEAN NOT NULL DEFAULT FALSE,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
             monster_pets_exists = await conn.fetchval(
                 "SELECT to_regclass('public.monster_pets') IS NOT NULL;"
             )
@@ -2935,6 +2944,31 @@ class Battles(commands.Cog):
                 """,
                 user_id,
                 normalized,
+            )
+
+    async def _get_user_emoji_hp_bars_enabled(self, user_id: int) -> bool:
+        """Return whether a user prefers emoji HP bars in battles they start."""
+        async with self.bot.pool.acquire() as conn:
+            enabled = await conn.fetchval(
+                "SELECT emoji_hp_bars FROM battle_preferences WHERE user_id = $1;",
+                user_id,
+            )
+        return bool(enabled)
+
+    async def _set_user_emoji_hp_bars_enabled(self, user_id: int, enabled: bool):
+        """Persist a user's preferred HP bar style for battles they start."""
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO battle_preferences (user_id, emoji_hp_bars, updated_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (user_id)
+                DO UPDATE
+                SET emoji_hp_bars = EXCLUDED.emoji_hp_bars,
+                    updated_at = NOW();
+                """,
+                user_id,
+                bool(enabled),
             )
 
     async def _get_pve_monster_pool_for_user(
@@ -7441,6 +7475,56 @@ class Battles(commands.Cog):
 
     @has_char()
     @commands.command(
+        brief=_("Set your preferred battle HP bar style"),
+        aliases=["battlebar", "battlehpbar", "hpbars"],
+    )
+    @locale_doc
+    async def battlebars(self, ctx, mode: str = "status"):
+        """
+        Set the HP bar style used in battles you start.
+
+        Usage:
+        - `$battlebars status`
+        - `$battlebars normal`
+        - `$battlebars colorful`
+        - `$battlebars toggle`
+
+        Note: shared battle embeds can only use one style, so your preference
+        applies to battles started by you.
+        """
+        normalized = str(mode or "status").strip().lower()
+        current = await self._get_user_emoji_hp_bars_enabled(ctx.author.id)
+
+        if normalized in {"status", "state", "show"}:
+            new_state = current
+            changed = False
+        elif normalized in {"normal", "classic", "default", "old", "text"}:
+            new_state = False
+            changed = new_state != current
+        elif normalized in {"color", "colour", "colorful", "colourful", "emoji", "new"}:
+            new_state = True
+            changed = new_state != current
+        elif normalized in {"toggle", "flip", "switch"}:
+            new_state = not current
+            changed = True
+        else:
+            await ctx.send("Usage: `$battlebars [normal|colorful|toggle|status]`")
+            return
+
+        if changed:
+            await self._set_user_emoji_hp_bars_enabled(ctx.author.id, new_state)
+
+        if new_state:
+            await ctx.send(
+                "✅ Battle HP bars are **COLORFUL** for battles you start."
+            )
+        else:
+            await ctx.send(
+                "✅ Battle HP bars are **NORMAL** for battles you start."
+            )
+
+    @has_char()
+    @commands.command(
         brief=_("Set a default PvE location for $pve and $scout"),
         aliases=["pvedefaultloc", "pvelocationdefault", "scoutdefault"],
     )
@@ -8838,7 +8922,7 @@ class Battles(commands.Cog):
                 return await ctx.send("Level must be a number.")
         
         # Convert boolean options
-        for bool_option in ["allow_pets", "class_buffs", "element_effects", "luck_effects", "reflection_damage"]:
+        for bool_option in ["allow_pets", "class_buffs", "element_effects", "luck_effects", "reflection_damage", "emoji_hp_bars"]:
             if bool_option in options_dict:
                 options_dict[bool_option] = options_dict[bool_option].lower() == "true"
         

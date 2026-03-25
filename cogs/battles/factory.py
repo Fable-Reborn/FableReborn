@@ -278,7 +278,19 @@ class BattleFactory:
         """Create a battle of specified type with given parameters"""
         # Apply battle settings to kwargs
         settings_kwargs = await self.settings.apply_settings_to_battle(battle_type, kwargs)
-        
+
+        if "emoji_hp_bars" not in settings_kwargs:
+            battles_cog = self.bot.get_cog("Battles")
+            user_id = None
+            player = settings_kwargs.get("player")
+            if player is not None and hasattr(player, "id"):
+                user_id = player.id
+            elif hasattr(ctx, "author") and hasattr(ctx.author, "id"):
+                user_id = ctx.author.id
+
+            if battles_cog and user_id is not None:
+                settings_kwargs["emoji_hp_bars"] = await battles_cog._get_user_emoji_hp_bars_enabled(user_id)
+
         if battle_type == "pvp":
             return await self.create_pvp_battle(ctx, **settings_kwargs)
         elif battle_type == "pve":

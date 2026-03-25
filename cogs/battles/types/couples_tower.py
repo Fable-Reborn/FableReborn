@@ -6530,11 +6530,8 @@ class CouplesTowerBattle(TowerBattle):
 
     def create_hp_bar(self, current_hp, max_hp):
         """Create a formatted HP bar"""
-        bar_length = 20
-        filled_length = int(bar_length * (current_hp / max_hp))
-        empty_length = bar_length - filled_length
-        hp_bar = "█" * filled_length + "░" * empty_length
-        return hp_bar 
+        hp_bar_length = 10 if self.config.get("emoji_hp_bars", False) else 20
+        return super().create_hp_bar(current_hp, max_hp, length=hp_bar_length)
     
     def update_turn_order(self):
         """Override to include dead partners for Level 29 spirit healing"""

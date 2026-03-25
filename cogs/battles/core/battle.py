@@ -36,6 +36,13 @@ from .status_effect import StatusEffectRegistry
 
 class Battle(ABC):
     """Base class for all battle types"""
+    HP_BAR_EMPTY_LEFT = "<:EmptyLeftEdge:1486325193713516666>"
+    HP_BAR_EMPTY_MIDDLE = "<:EmptyMiddle:1486325196351864862>"
+    HP_BAR_EMPTY_RIGHT = "<:TopEmpty:1486325200441311242>"
+    HP_BAR_FULL_LEFT = "<:FullLeftEdge:1486325181512286371>"
+    HP_BAR_FULL_MIDDLE = "<:MiddleFullRed:1486325202186141889>"
+    HP_BAR_FULL_RIGHT = "<:FullTop:1486325203939102840>"
+    HP_BAR_HALF_MIDDLE = "<:Halfwayred:1486325198620852335>"
     
     def __init__(self, ctx, teams=None, **kwargs):
         self.ctx = ctx
@@ -65,6 +72,7 @@ class Battle(ABC):
             "element_effects": kwargs.get("element_effects", True),
             "luck_effects": kwargs.get("luck_effects", True),
             "reflection_damage": kwargs.get("reflection_damage", True),
+            "emoji_hp_bars": kwargs.get("emoji_hp_bars", False),
             "fireball_chance": kwargs.get("fireball_chance", 0.3),
             "cheat_death": kwargs.get("cheat_death", True),
             "tripping": kwargs.get("tripping", True),
@@ -117,13 +125,45 @@ class Battle(ABC):
         # Capture detailed state for live replay
         await self.capture_turn_state(message)
     
-    def create_hp_bar(self, current_hp, max_hp, length=20):
-        """Create a visual HP bar"""
-        ratio = float(current_hp) / float(max_hp) if max_hp > 0 else 0
-        ratio = max(0, min(1, ratio))  # Ensure ratio is between 0 and 1
-        filled_length = int(length * ratio)
-        bar = '█' * filled_length + '░' * (length - filled_length)
-        return bar
+    def create_hp_bar(self, current_hp, max_hp, length=None):
+        """Create either the classic text HP bar or the emoji HP bar."""
+        ratio = float(current_hp) / float(max_hp) if float(max_hp or 0) > 0 else 0.0
+        ratio = max(0.0, min(1.0, ratio))
+
+        if not self.config.get("emoji_hp_bars", False):
+            safe_length = max(1, int(length or 20))
+            filled_length = int(safe_length * ratio)
+            return ("█" * filled_length) + ("░" * (safe_length - filled_length))
+
+        safe_length = max(3, int(length or 10))
+        total_half_steps = safe_length * 2
+        filled_half_steps = int(round(ratio * total_half_steps))
+        filled_half_steps = max(0, min(total_half_steps, filled_half_steps))
+
+        tiles: list[str] = []
+        for tile_index in range(safe_length):
+            tile_units = max(0, min(2, filled_half_steps - (tile_index * 2)))
+
+            if tile_index == 0:
+                tiles.append(
+                    self.HP_BAR_FULL_LEFT if tile_units >= 2 else self.HP_BAR_EMPTY_LEFT
+                )
+                continue
+
+            if tile_index == safe_length - 1:
+                tiles.append(
+                    self.HP_BAR_FULL_RIGHT if tile_units >= 2 else self.HP_BAR_EMPTY_RIGHT
+                )
+                continue
+
+            if tile_units >= 2:
+                tiles.append(self.HP_BAR_FULL_MIDDLE)
+            elif tile_units == 1:
+                tiles.append(self.HP_BAR_HALF_MIDDLE)
+            else:
+                tiles.append(self.HP_BAR_EMPTY_MIDDLE)
+
+        return "".join(tiles)
         
     def format_number(self, number):
         """Format a number to 2 decimal places for display in battle messages"""
