@@ -103,15 +103,14 @@ class DragonBattle(Battle):
         self._tracked_party_combatants = []
         self.dragon_damage_totals = {}
         self._dragon_damage_persisted = False
+        for combatant in self.player_team.combatants:
+            self._register_tracked_combatant(combatant)
 
     def is_friendly_combatant(self, combatant):
         """Treat possessed party members as hostile for team-color HP bars."""
         if combatant is not None and self._has_effect(combatant, "possessed"):
             return False
         return super().is_friendly_combatant(combatant)
-
-        for combatant in self.player_team.combatants:
-            self._register_tracked_combatant(combatant)
 
     def _register_tracked_combatant(self, combatant):
         if combatant is None or combatant is self.dragon or getattr(combatant, "is_summoned", False):
