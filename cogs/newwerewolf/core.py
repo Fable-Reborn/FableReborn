@@ -12777,13 +12777,37 @@ def get_custom_roles(number_of_players: int, custom_roles: list[Role]) -> list[R
     roles = random.shuffle(available_roles) + random.shuffle(extra_roles)
     roles = _replace_unlock_only_advanced_roles_with_base(roles)
     roles = _apply_role_availability(roles, mode="Custom")
-    roles = _ensure_team_requirements_in_available(roles, mode="Custom")
-    roles = enforce_single_mayor(roles, mode="Custom")
-    roles = enforce_role_min_player_requirements(
-        roles,
-        requested_players=number_of_players,
-        mode="Custom",
-    )
+    available_roles = roles[:-2]
+    extra_roles = roles[-2:]
+
+    werewolf_indices = [
+        idx for idx, role in enumerate(available_roles) if role == Role.WEREWOLF
+    ]
+    if not werewolf_indices:
+        werewolf_extra_idx = next(
+            (idx for idx, role in enumerate(extra_roles) if role == Role.WEREWOLF),
+            None,
+        )
+        if werewolf_extra_idx is not None and available_roles:
+            available_roles[0], extra_roles[werewolf_extra_idx] = (
+                extra_roles[werewolf_extra_idx],
+                available_roles[0],
+            )
+        elif available_roles:
+            available_roles[0] = Role.WEREWOLF
+        werewolf_indices = [0] if available_roles else []
+
+    keep_idx = werewolf_indices[0] if werewolf_indices else None
+    for idx in werewolf_indices[1:]:
+        replacement = _pick_villager_filler_role(
+            "Custom",
+            existing_roles=available_roles + extra_roles,
+        )
+        if replacement == Role.WEREWOLF:
+            replacement = Role.VILLAGER
+        available_roles[idx] = replacement
+
+    roles = available_roles + extra_roles
     return roles
 
 
