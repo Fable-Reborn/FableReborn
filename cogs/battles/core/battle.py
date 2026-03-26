@@ -180,16 +180,7 @@ class Battle(ABC):
         # Capture detailed state for live replay
         await self.capture_turn_state(message)
 
-    def _is_retryable_discord_exception(self, exc):
-        if isinstance(exc, discord.DiscordServerError):
-            return True
-        if isinstance(exc, discord.HTTPException):
-            status = getattr(exc, "status", None)
-            return status is not None and status >= 500
-        return isinstance(exc, (asyncio.TimeoutError, OSError))
-
     async def _run_discord_request_with_retry(self, request, *, action_name, allow_not_found=False):
-        last_exc = None
         for attempt in range(1, self.DISCORD_RETRY_ATTEMPTS + 1):
             try:
                 return await request()
@@ -211,9 +202,8 @@ class Battle(ABC):
                     exc,
                 )
                 return False
-            except Exception as exc:
-                last_exc = exc
-                if self._is_retryable_discord_exception(exc) and attempt < self.DISCORD_RETRY_ATTEMPTS:
+            except (discord.DiscordServerError, asyncio.TimeoutError, OSError) as exc:
+                if attempt < self.DISCORD_RETRY_ATTEMPTS:
                     await asyncio.sleep(self.DISCORD_RETRY_BASE_DELAY * attempt)
                     continue
                 logger.warning(
@@ -225,15 +215,36 @@ class Battle(ABC):
                     exc,
                 )
                 return False
+            except discord.HTTPException as exc:
+                status = getattr(exc, "status", None)
+                if status is not None and status >= 500:
+                    if attempt < self.DISCORD_RETRY_ATTEMPTS:
+                        await asyncio.sleep(self.DISCORD_RETRY_BASE_DELAY * attempt)
+                        continue
+                    logger.warning(
+                        "Battle %s Discord %s failed on attempt %s/%s: %s",
+                        self.battle_id,
+                        action_name,
+                        attempt,
+                        self.DISCORD_RETRY_ATTEMPTS,
+                        exc,
+                    )
+                    return False
 
-        if last_exc is not None:
-            logger.warning(
-                "Battle %s Discord %s exhausted retries: %s",
-                self.battle_id,
-                action_name,
-                last_exc,
-            )
-        return False
+                logger.warning(
+                    "Battle %s Discord %s hit non-retryable HTTP error: %s",
+                    self.battle_id,
+                    action_name,
+                    exc,
+                )
+                raise
+            except Exception:
+                logger.exception(
+                    "Battle %s Discord %s hit an unexpected error",
+                    self.battle_id,
+                    action_name,
+                )
+                raise
 
     async def send_with_retry(self, **kwargs):
         return await self._run_discord_request_with_retry(

@@ -778,7 +778,14 @@ class CouplesTowerView(discord.ui.View):
         self.children[1].disabled = True
         await interaction.response.edit_message(view=self)
         self.stop()
-        await self.on_join()
+        try:
+            await self.on_join()
+        except Exception as exc:
+            if interaction.channel:
+                await interaction.channel.send(
+                    f"Couples Battle Tower failed to start: {exc}"
+                )
+            raise
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, emoji="❌")
     async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
