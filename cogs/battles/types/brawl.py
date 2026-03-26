@@ -62,7 +62,7 @@ class BrawlBattle(Battle):
         )
 
         embed = await self.create_battle_embed()
-        self.battle_message = await self.ctx.send(embed=embed)
+        self.battle_message = await self.publish_battle_message(embed=embed)
         await asyncio.sleep(1)
         return True
 
@@ -143,10 +143,7 @@ class BrawlBattle(Battle):
 
     async def update_display(self):
         embed = await self.create_battle_embed()
-        if self.battle_message:
-            await self.battle_message.edit(embed=embed)
-        else:
-            self.battle_message = await self.ctx.send(embed=embed)
+        await self.publish_battle_message(embed=embed)
 
     async def end_battle(self):
         self.finished = True

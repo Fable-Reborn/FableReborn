@@ -86,7 +86,7 @@ class RaidBattle(Battle):
 
         # Create and send initial embed
         embed = await self.create_battle_embed()
-        self.battle_message = await self.ctx.send(embed=embed)
+        self.battle_message = await self.publish_battle_message(embed=embed)
         
         # Add a pause after battle start before first attack
         await asyncio.sleep(1)
@@ -498,10 +498,7 @@ class RaidBattle(Battle):
         """Update the battle display"""
         # Update after every action for better visibility
         embed = await self.create_battle_embed()
-        if self.battle_message:
-            await self.battle_message.edit(embed=embed)
-        else:
-            self.battle_message = await self.ctx.send(embed=embed)
+        await self.publish_battle_message(embed=embed)
     
     async def end_battle(self):
         """End the battle and determine rewards"""

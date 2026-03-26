@@ -6,6 +6,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from decimal import Decimal
+import logging
 import random
 from typing import List, Dict, Optional, Union, Any
 import json
@@ -34,6 +35,8 @@ from classes.ascension import get_ascension_mantle
 # Import the status effect registry
 from .status_effect import StatusEffectRegistry
 
+logger = logging.getLogger(__name__)
+
 class Battle(ABC):
     """Base class for all battle types"""
     HP_BAR_STYLE_NORMAL = "normal"
@@ -54,6 +57,8 @@ class Battle(ABC):
     HP_BAR_BLUE_HALF_LEFT = "<:bluehalfleftedge:1486332747722133666>"
     HP_BAR_BLUE_HALF_MIDDLE = "<:middlehalf:1486333395339575487>"
     HP_BAR_BLUE_HALF_RIGHT = "<:bluetophalffull:1486332753841750036>"
+    DISCORD_RETRY_ATTEMPTS = 3
+    DISCORD_RETRY_BASE_DELAY = 1.0
 
     @classmethod
     def normalize_hp_bar_style(cls, style):
@@ -174,6 +179,89 @@ class Battle(ABC):
         
         # Capture detailed state for live replay
         await self.capture_turn_state(message)
+
+    def _is_retryable_discord_exception(self, exc):
+        if isinstance(exc, discord.DiscordServerError):
+            return True
+        if isinstance(exc, discord.HTTPException):
+            status = getattr(exc, "status", None)
+            return status is not None and status >= 500
+        return isinstance(exc, (asyncio.TimeoutError, OSError))
+
+    async def _run_discord_request_with_retry(self, request, *, action_name, allow_not_found=False):
+        last_exc = None
+        for attempt in range(1, self.DISCORD_RETRY_ATTEMPTS + 1):
+            try:
+                return await request()
+            except discord.NotFound as exc:
+                if allow_not_found:
+                    return None
+                logger.warning(
+                    "Battle %s Discord %s failed: message not found (%s)",
+                    self.battle_id,
+                    action_name,
+                    exc,
+                )
+                return False
+            except discord.Forbidden as exc:
+                logger.warning(
+                    "Battle %s Discord %s forbidden: %s",
+                    self.battle_id,
+                    action_name,
+                    exc,
+                )
+                return False
+            except Exception as exc:
+                last_exc = exc
+                if self._is_retryable_discord_exception(exc) and attempt < self.DISCORD_RETRY_ATTEMPTS:
+                    await asyncio.sleep(self.DISCORD_RETRY_BASE_DELAY * attempt)
+                    continue
+                logger.warning(
+                    "Battle %s Discord %s failed on attempt %s/%s: %s",
+                    self.battle_id,
+                    action_name,
+                    attempt,
+                    self.DISCORD_RETRY_ATTEMPTS,
+                    exc,
+                )
+                return False
+
+        if last_exc is not None:
+            logger.warning(
+                "Battle %s Discord %s exhausted retries: %s",
+                self.battle_id,
+                action_name,
+                last_exc,
+            )
+        return False
+
+    async def send_with_retry(self, **kwargs):
+        return await self._run_discord_request_with_retry(
+            lambda: self.ctx.send(**kwargs),
+            action_name="send",
+        )
+
+    async def edit_with_retry(self, message, **kwargs):
+        return await self._run_discord_request_with_retry(
+            lambda: message.edit(**kwargs),
+            action_name="edit",
+            allow_not_found=True,
+        )
+
+    async def publish_battle_message(self, **kwargs):
+        if self.battle_message:
+            edit_result = await self.edit_with_retry(self.battle_message, **kwargs)
+            if edit_result not in (None, False):
+                self.battle_message = edit_result
+                return self.battle_message
+            if edit_result is False:
+                return self.battle_message
+            self.battle_message = None
+
+        send_result = await self.send_with_retry(**kwargs)
+        if send_result not in (None, False):
+            self.battle_message = send_result
+        return self.battle_message
     
     def is_friendly_combatant(self, combatant):
         """Return whether a combatant belongs to the viewer-friendly side."""

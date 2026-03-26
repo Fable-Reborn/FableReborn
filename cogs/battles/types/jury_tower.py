@@ -89,7 +89,9 @@ class JuryTowerBattle(TowerBattle):
         if enemy_opening:
             intro_lines.append(enemy_opening)
         await self.add_to_log("\n".join(intro_lines), force_new_action=True)
-        self.battle_message = await self.ctx.send(embed=await self.create_battle_embed())
+        self.battle_message = await self.publish_battle_message(
+            embed=await self.create_battle_embed()
+        )
         await asyncio.sleep(2)
         await self.add_to_log(f"Battle against {current_enemy.name} has begun!", force_new_action=True)
         await self.update_display()

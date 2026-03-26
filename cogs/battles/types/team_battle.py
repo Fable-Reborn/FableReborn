@@ -47,7 +47,7 @@ class TeamBattle(Battle):
         
         # Create and send initial embed
         embed = await self.create_battle_embed()
-        self.battle_message = await self.ctx.send(embed=embed)
+        self.battle_message = await self.publish_battle_message(embed=embed)
         
         return True
     
@@ -421,10 +421,7 @@ class TeamBattle(Battle):
     async def update_display(self):
         """Update the battle display"""
         embed = await self.create_battle_embed()
-        if self.battle_message:
-            await self.battle_message.edit(embed=embed)
-        else:
-            self.battle_message = await self.ctx.send(embed=embed)
+        await self.publish_battle_message(embed=embed)
     
     async def end_battle(self):
         """End the battle and determine rewards"""
