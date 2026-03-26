@@ -3152,6 +3152,12 @@ class Game:
             ]
         return []
 
+    def _pick_attacker_for_killer_group(self, killer_group: str | None) -> Player | None:
+        attackers = self._attackers_for_killer_group(killer_group)
+        if not attackers:
+            return None
+        return random.choice(attackers)
+
     async def _mark_tough_guy_injury(
         self,
         tough_guy: Player,
@@ -3183,33 +3189,30 @@ class Game:
             target_text = _(" while protecting **{target}**").format(
                 target=protected_player.user
             )
-        attackers = self._attackers_for_killer_group(attack_source)
-        if attackers:
-            attacker_roles = ", ".join(
-                sorted({self.get_role_name(attacker) for attacker in attackers})
-            )
+        attacker = self._pick_attacker_for_killer_group(attack_source)
+        if attacker:
             await tough_guy.send(
                 _(
                     "💥 You were attacked{target_text} and survived, but the injuries"
                     " are fatal. You will die at the end of today. You identified"
-                    " attacker role(s): **{roles}**.\n{game_link}"
+                    " your attacker as **{attacker}**, the **{role}**.\n{game_link}"
                 ).format(
                     target_text=target_text,
-                    roles=attacker_roles,
+                    attacker=attacker.user,
+                    role=self.get_role_name(attacker),
                     game_link=self.game_link,
                 )
             )
-            for attacker in attackers:
-                await attacker.send(
-                    _(
-                        "💥 Your attack struck **{tough_guy}**. Their role is"
-                        " **{role}**.\n{game_link}"
-                    ).format(
-                        tough_guy=tough_guy.user,
-                        role=self.get_role_name(tough_guy),
-                        game_link=self.game_link,
-                    )
+            await attacker.send(
+                _(
+                    "💥 Your attack struck **{tough_guy}**. Their role is"
+                    " **{role}**.\n{game_link}"
+                ).format(
+                    tough_guy=tough_guy.user,
+                    role=self.get_role_name(tough_guy),
+                    game_link=self.game_link,
                 )
+            )
         else:
             await tough_guy.send(
                 _(
