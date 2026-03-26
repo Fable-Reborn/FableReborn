@@ -6100,7 +6100,7 @@ class CouplesTowerBattle(TowerBattle):
             enemy_hp_bar = "▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓"
         else:
             enemy_hp_display = f"{current_hp:.1f}/{max_hp:.1f}"
-            enemy_hp_bar = self.create_hp_bar(current_hp, max_hp, combatant=enemy)
+            enemy_hp_bar = self.create_hp_bar(current_hp, max_hp, combatant=current_enemy)
         
         # Get element emoji for enemy
         element_emoji = "❌"
