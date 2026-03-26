@@ -16,6 +16,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import datetime
+import re
 
 from enum import Flag
 
@@ -44,6 +45,24 @@ class InvalidCoinSide(commands.BadArgument):
 
 class UserHasNoChar(commands.BadArgument):
     pass
+
+
+PROFILE_ID_PATTERN = re.compile(r"^(?:<@!?)?(?P<user_id>\d{15,21})>?$")
+
+
+class ProfileBackedUser:
+    def __init__(self, user_id: int, display_name: str | None = None) -> None:
+        self.id = int(user_id)
+        self.display_name = display_name or f"User {self.id}"
+        self.name = self.display_name
+        self.bot = False
+
+    @property
+    def mention(self) -> str:
+        return f"<@{self.id}>"
+
+    def __str__(self) -> str:
+        return self.display_name
 
 
 class DateOutOfRange(commands.BadArgument):
@@ -78,7 +97,36 @@ class UserWithCharacter(commands.UserConverter):
 
 class MemberWithCharacter(commands.MemberConverter):
     async def convert(self, ctx, argument):
-        member = await super().convert(ctx, argument)  # error is ok here
+        try:
+            member = await super().convert(ctx, argument)  # error is ok here
+        except commands.BadArgument as original_error:
+            id_match = PROFILE_ID_PATTERN.fullmatch(str(argument).strip())
+            if not id_match:
+                raise
+
+            user_id = int(id_match.group("user_id"))
+            ctx.user_data = await ctx.bot.pool.fetchrow(
+                'SELECT * FROM profile WHERE "user"=$1;', user_id
+            )
+            if not ctx.user_data:
+                raise original_error
+
+            user = ctx.bot.get_user(user_id)
+            if user is None:
+                try:
+                    user = await ctx.bot.fetch_user(user_id)
+                except Exception:
+                    user = None
+
+            if user is not None:
+                return user
+
+            profile_name = None
+            try:
+                profile_name = ctx.user_data["name"]
+            except (KeyError, TypeError):
+                profile_name = None
+            return ProfileBackedUser(user_id, profile_name)
 
         ctx.user_data = await ctx.bot.pool.fetchrow(
             'SELECT * FROM profile WHERE "user"=$1;', member.id
