@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import logging
 import re
 import traceback
 
@@ -56,6 +57,8 @@ from .role_config import (
     ROLE_XP_PER_LEVEL,
     SECOND_ADVANCED_UNLOCK_LEVEL,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Role(Enum):
@@ -948,12 +951,46 @@ def _format_traceback(exc: BaseException) -> str:
     return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).strip()
 
 
+async def send_discord_message_with_retry(target, *args, **kwargs) -> discord.Message | None:
+    for attempt in range(1, 4):
+        try:
+            return await target.send(*args, **kwargs)
+        except discord.Forbidden:
+            return None
+        except (discord.DiscordServerError, asyncio.TimeoutError, OSError):
+            if attempt < 3:
+                await asyncio.sleep(attempt)
+                continue
+            return None
+        except discord.HTTPException as exc:
+            status = getattr(exc, "status", None)
+            if status is not None and status >= 500 and attempt < 3:
+                await asyncio.sleep(attempt)
+                continue
+            return None
+
+
 async def send_traceback(ctx: Context, exc: BaseException) -> None:
     tb_text = _format_traceback(exc) or repr(exc)
+    send_callable = getattr(ctx, "_newwerewolf_original_send", ctx.send)
     for i in range(0, len(tb_text), TRACEBACK_CHUNK_SIZE):
         chunk = tb_text[i : i + TRACEBACK_CHUNK_SIZE]
         try:
-            await ctx.send(f"```py\n{chunk}\n```")
+            for attempt in range(1, 4):
+                try:
+                    await send_callable(f"```py\n{chunk}\n```")
+                    break
+                except (discord.DiscordServerError, asyncio.TimeoutError, OSError):
+                    if attempt < 3:
+                        await asyncio.sleep(attempt)
+                        continue
+                    raise
+                except discord.HTTPException as send_error:
+                    status = getattr(send_error, "status", None)
+                    if status is not None and status >= 500 and attempt < 3:
+                        await asyncio.sleep(attempt)
+                        continue
+                    raise
         except Exception:
             print(tb_text)
             break
@@ -2212,7 +2249,7 @@ class FortuneCardRevealView(discord.ui.View):
             ),
             view=self,
         )
-        await self.game.ctx.send(
+        await self.game.send_to_channel(
             _(
                 "🔮 {player} used a Revelation Card and is revealed as a"
                 " **{role}**!"
@@ -2345,6 +2382,75 @@ class Game:
             for couple in lovers:
                 if len(couple) == 2:
                     self.lovers.append(set(couple))
+
+    async def _run_discord_request_with_retry(
+            self, request, *, action_name: str, attempts: int = 3
+    ) -> discord.Message | None:
+        for attempt in range(1, attempts + 1):
+            try:
+                return await request()
+            except discord.NotFound:
+                raise
+            except discord.Forbidden:
+                raise
+            except (discord.DiscordServerError, asyncio.TimeoutError, OSError) as exc:
+                if attempt < attempts:
+                    await asyncio.sleep(attempt)
+                    continue
+                logger.warning(
+                    "NewWerewolf %s failed after retries in channel %s: %s",
+                    action_name,
+                    getattr(self.ctx.channel, "id", "unknown"),
+                    exc,
+                )
+                return None
+            except discord.HTTPException as exc:
+                status = getattr(exc, "status", None)
+                if status is not None and status >= 500:
+                    if attempt < attempts:
+                        await asyncio.sleep(attempt)
+                        continue
+                    logger.warning(
+                        "NewWerewolf %s failed after retries in channel %s: %s",
+                        action_name,
+                        getattr(self.ctx.channel, "id", "unknown"),
+                        exc,
+                    )
+                    return None
+                raise
+
+    async def send_to_channel(self, *args, **kwargs) -> discord.Message | None:
+        send_callable = getattr(self.ctx, "_newwerewolf_original_send", self.ctx.send)
+        return await self._run_discord_request_with_retry(
+            lambda: send_callable(*args, **kwargs),
+            action_name="ctx.send",
+        )
+
+    async def edit_message(self, message: discord.Message, **kwargs) -> discord.Message | None:
+        return await self._run_discord_request_with_retry(
+            lambda: message.edit(**kwargs),
+            action_name="message.edit",
+        )
+
+    async def add_reaction_to_message(self, message: discord.Message, emoji) -> bool:
+        result = await self._run_discord_request_with_retry(
+            lambda: message.add_reaction(emoji),
+            action_name="message.add_reaction",
+        )
+        return result is not None
+
+    async def remove_reaction_from_message(self, message: discord.Message, emoji, user) -> bool:
+        result = await self._run_discord_request_with_retry(
+            lambda: message.remove_reaction(emoji, user),
+            action_name="message.remove_reaction",
+        )
+        return result is not None
+
+    async def fetch_channel_message(self, channel: discord.abc.Messageable, message_id: int):
+        return await self._run_discord_request_with_retry(
+            lambda: channel.fetch_message(message_id),
+            action_name="channel.fetch_message",
+        )
 
     @property
     def alive_players(self) -> list[Player]:
@@ -2515,14 +2621,14 @@ class Game:
         reshuffled = False
         if initial or not self.team_assignments:
             self.assign_teams()
-            await self.ctx.send(
+            await self.send_to_channel(
                 _("🤝 Mixed teams have been assigned. Check your DMs for your current allies.")
             )
         else:
             if random.randint(1, 4) == 1:
                 reshuffled = self.assign_teams()
             if reshuffled:
-                await self.ctx.send(
+                await self.send_to_channel(
                     _("🔀 The mixed teams reshuffled tonight. Check your DMs for your current allies.")
                 )
 
@@ -2549,7 +2655,7 @@ class Game:
                 player.revealed_roles[pure_soul] = pure_soul.role
 
             if pure_soul.user.id not in previous_ids:
-                await self.ctx.send(
+                await self.send_to_channel(
                     _("{pure_soul} is a **{role}** and an innocent villager.").format(
                         pure_soul=pure_soul.user.mention,
                         role=pure_soul.role_name,
@@ -2580,7 +2686,7 @@ class Game:
             elif previous_role != Role.THE_OLD and new_role == Role.THE_OLD:
                 player.lives = max(player.lives, 2)
 
-        await self.ctx.send(
+        await self.send_to_channel(
             _(
                 "🔀 MixedRoles shuffled the living roles tonight. Check your DMs for your new role."
             )
@@ -3314,7 +3420,7 @@ class Game:
             tough_guy.tough_guy_pending_death_day = None
             if tough_guy.dead:
                 continue
-            await self.ctx.send(
+            await self.send_to_channel(
                 _(
                     "💥 **{tough_guy}** succumbed to their injuries at the end of the"
                     " day."
@@ -3604,7 +3710,7 @@ class Game:
             colour=self.ctx.bot.config.game.primary_colour,
         )
         embed.set_image(url=WW_NIGHT_ANNOUNCEMENT_IMAGE_URL)
-        await self.ctx.send(embed=embed)
+        await self.send_to_channel(embed=embed)
 
     async def send_day_announcement(self) -> None:
         embed = discord.Embed(
@@ -3612,12 +3718,12 @@ class Game:
             colour=self.ctx.bot.config.game.primary_colour,
         )
         embed.set_image(url=WW_DAY_ANNOUNCEMENT_IMAGE_URL)
-        await self.ctx.send(embed=embed)
+        await self.send_to_channel(embed=embed)
 
     async def announce_new_nomination_system(self) -> None:
         alive_role = self._get_ww_alive_role()
         role_ping = alive_role.mention if alive_role else _("Players")
-        await self.ctx.send(
+        await self.send_to_channel(
             _(
                 "{role_ping} ⚠️ **New nomination system is active:** use `nom @player`"
                 " or `nominate @player` (not case-sensitive), or reply to a player's"
@@ -3650,7 +3756,7 @@ class Game:
             )
 
         for page in paginator.pages:
-            await self.ctx.send(page)
+            await self.send_to_channel(page)
 
     def _get_ww_alive_role(self) -> discord.Role | None:
         guild = getattr(self.ctx, "guild", None)
@@ -3676,7 +3782,7 @@ class Game:
         if self._role_perm_warning_sent:
             return
         self._role_perm_warning_sent = True
-        await self.ctx.send(
+        await self.send_to_channel(
             _(
                 "I couldn't manage WW alive/dead role assignments. Please check that"
                 " role IDs are correct and grant me **Manage Roles**."
@@ -3801,7 +3907,7 @@ class Game:
         except discord.Forbidden:
             if not self._chat_perm_warning_sent:
                 self._chat_perm_warning_sent = True
-                await self.ctx.send(
+                await self.send_to_channel(
                     _(
                         "I couldn't toggle @everyone chat permissions in this channel."
                         " Please grant me **Manage Channels**."
@@ -3810,7 +3916,7 @@ class Game:
         except discord.HTTPException:
             if not self._chat_perm_warning_sent:
                 self._chat_perm_warning_sent = True
-                await self.ctx.send(
+                await self.send_to_channel(
                     _(
                         "I couldn't toggle @everyone chat permissions due to a"
                         " Discord API error."
@@ -3856,18 +3962,18 @@ class Game:
                 datetime.timezone.utc
             ) + datetime.timedelta(seconds=duration_seconds)
             end_ts = int(end_at.timestamp())
-            await self.ctx.send(
+            await self.send_to_channel(
                 _(
                     "🗣️ Post-game chat is open to **@everyone** for"
                     " **{seconds} seconds** (until <t:{end_ts}:T>, <t:{end_ts}:R>)."
                 ).format(seconds=duration_seconds, end_ts=end_ts)
             )
             await asyncio.sleep(duration_seconds)
-            await self.ctx.send(_("🔒 Post-game chat window ended."))
+            await self.send_to_channel(_("🔒 Post-game chat window ended."))
         except discord.Forbidden:
             if not self._chat_perm_warning_sent:
                 self._chat_perm_warning_sent = True
-                await self.ctx.send(
+                await self.send_to_channel(
                     _(
                         "I couldn't open the post-game chat window. Please grant me"
                         " **Manage Channels**."
@@ -3876,7 +3982,7 @@ class Game:
         except discord.HTTPException:
             if not self._chat_perm_warning_sent:
                 self._chat_perm_warning_sent = True
-                await self.ctx.send(
+                await self.send_to_channel(
                     _(
                         "I couldn't open the post-game chat window due to a Discord"
                         " API error."
@@ -3929,7 +4035,7 @@ class Game:
         except discord.Forbidden:
             if not self._chat_perm_warning_sent:
                 self._chat_perm_warning_sent = True
-                await self.ctx.send(
+                await self.send_to_channel(
                     _(
                         "I couldn't enforce **WW Dead** channel permissions. Please"
                         " grant me **Manage Channels**."
@@ -3938,7 +4044,7 @@ class Game:
         except discord.HTTPException:
             if not self._chat_perm_warning_sent:
                 self._chat_perm_warning_sent = True
-                await self.ctx.send(
+                await self.send_to_channel(
                     _(
                         "I couldn't enforce **WW Dead** channel permissions due to a"
                         " Discord API error."
@@ -3988,7 +4094,7 @@ class Game:
         except discord.Forbidden:
             if not self._chat_perm_warning_sent:
                 self._chat_perm_warning_sent = True
-                await self.ctx.send(
+                await self.send_to_channel(
                     _(
                         "I couldn't toggle **WW Alive** chat permissions for night/day in"
                         " this channel. Please grant me **Manage Channels**."
@@ -3997,7 +4103,7 @@ class Game:
         except discord.HTTPException:
             if not self._chat_perm_warning_sent:
                 self._chat_perm_warning_sent = True
-                await self.ctx.send(
+                await self.send_to_channel(
                     _(
                         "I couldn't toggle **WW Alive** chat permissions for night/day due"
                         " to a Discord API error."
@@ -4015,7 +4121,7 @@ class Game:
         if self._grumpy_perm_warning_sent:
             return
         self._grumpy_perm_warning_sent = True
-        await self.ctx.send(
+        await self.send_to_channel(
             _(
                 "I couldn't enforce Grumpy Grandma chat silence permissions. Please"
                 " grant me **Manage Channels**."
@@ -4087,7 +4193,7 @@ class Game:
             return
 
         mentions = ", ".join(target.user.mention for target in applied_targets)
-        await self.ctx.send(
+        await self.send_to_channel(
             _(
                 "👵 **Grumpy Grandma** silenced {targets} for today. They cannot talk or"
                 " vote."
@@ -4122,7 +4228,7 @@ class Game:
             return
 
         mentions = ", ".join(target.user.mention for target in applied_targets)
-        await self.ctx.send(
+        await self.send_to_channel(
             _(
                 "🪬 **Voodoo Werewolf** muted {targets} for today. They cannot talk or"
                 " vote."
@@ -4452,9 +4558,15 @@ class Game:
                         speaker for speaker in speakers if speaker.role == Role.RITUALIST
                     ]
                     for speaker in medium_speakers:
-                        await speaker.user.send(f"{identified_prefix}: {content}")
+                        await send_discord_message_with_retry(
+                            speaker.user,
+                            f"{identified_prefix}: {content}",
+                        )
                     for speaker in ritualist_speakers:
-                        await speaker.user.send(f"{anonymous_prefix}: {content}")
+                        await send_discord_message_with_retry(
+                            speaker.user,
+                            f"{anonymous_prefix}: {content}",
+                        )
 
                     dead_prefix = (
                         identified_prefix if medium_speakers else anonymous_prefix
@@ -4498,7 +4610,7 @@ class Game:
         except self.ctx.bot.paginator.NoChoice:
             return
         except (discord.Forbidden, discord.HTTPException):
-            await self.ctx.send(
+            await self.send_to_channel(
                 _("I couldn't send a DM to someone. Too bad they missed to use their power.")
             )
             return
@@ -4506,7 +4618,7 @@ class Game:
             return
 
         jailer.has_jailer_execution_ability = False
-        await self.ctx.send(
+        await self.send_to_channel(
             _(
                 "⚖️ The **Jailer** executed **{target}** in prison. Their role will now"
                 " be revealed."
@@ -4549,7 +4661,7 @@ class Game:
         if breakout_votes < 1:
             return False
 
-        await self.ctx.send(
+        await self.send_to_channel(
             _(
                 "🧨 The jailed werewolves broke out of prison and killed the"
                 " **Warden**!"
@@ -4625,7 +4737,7 @@ class Game:
         if use_weapon != 0 or holder.dead or other.dead:
             return
 
-        await self.ctx.send(
+        await self.send_to_channel(
             _(
                 "🗡️ In jail, **{holder}** used the Warden's weapon and killed"
                 " **{other}**!"
@@ -4634,7 +4746,7 @@ class Game:
         await other.kill()
 
         if holder.side == Side.VILLAGERS and other.side == Side.VILLAGERS and not holder.dead:
-            await self.ctx.send(
+            await self.send_to_channel(
                 _(
                     "🩸 The weapon backfired because both prisoners were villagers."
                     " **{holder}** died too."
@@ -5331,7 +5443,7 @@ class Game:
                         " double.\n{game_link}"
                     ).format(game_link=self.game_link)
                 )
-                await self.ctx.send(
+                await self.send_to_channel(
                     _(
                         "📣 **{mayor}** has revealed as **Mayor**. Their vote now"
                         " counts as double."
@@ -5386,7 +5498,7 @@ class Game:
                 if self.forced_winner is None:
                     self.winning_side = "Head Hunter"
                     self.forced_winner = head_hunter
-                    await self.ctx.send(
+                    await self.send_to_channel(
                         _(
                             "🎯 **{hunter}** fulfilled the Head Hunter objective by"
                             " getting **{target}** lynched. The game ends immediately!"
@@ -5656,7 +5768,7 @@ class Game:
 
         for bodyguard in bodyguards_to_kill:
             if not bodyguard.dead:
-                await self.ctx.send(
+                await self.send_to_channel(
                     _(
                         "🛡️ **{bodyguard}** fell after intercepting a second attack."
                     ).format(bodyguard=bodyguard.user.mention)
@@ -5936,7 +6048,7 @@ class Game:
             elif result:
                 sent_any_prompt = True
         if sent_any_prompt:
-            await self.ctx.send(
+            await self.send_to_channel(
                 _(
                     "🔮 Players with Revelation Cards can check their DMs to reveal"
                     " their role during the day."
@@ -5982,7 +6094,7 @@ class Game:
             if not possible_targets:
                 continue
 
-            await self.ctx.send(
+            await self.send_to_channel(
                 _("**The {role} may throw Holy Water.**").format(role=priest.role_name)
             )
             chosen_target = await priest.choose_users(
@@ -6004,21 +6116,21 @@ class Game:
 
             target = chosen_target[0]
             priest.has_priest_holy_water_ability = False
-            await self.ctx.send(
+            await self.send_to_channel(
                 _("⛪ **{priest}** threw Holy Water at **{target}**!").format(
                     priest=priest.user.mention,
                     target=target.user.mention,
                 )
             )
             if target.role == Role.SORCERER and not target.sorcerer_has_resigned:
-                await self.ctx.send(
+                await self.send_to_channel(
                     _(
                         "✨ The holy water failed to affect **{target}**."
                     ).format(target=target.user.mention)
                 )
                 continue
             if target.side in (Side.WOLVES, Side.WHITE_WOLF):
-                await self.ctx.send(
+                await self.send_to_channel(
                     _(
                         "✨ The Holy Water burned through evil. **{target}** was a"
                         " Werewolf and died!"
@@ -6026,7 +6138,7 @@ class Game:
                 )
                 await target.kill()
             else:
-                await self.ctx.send(
+                await self.send_to_channel(
                     _(
                         "⚠️ **{target}** was not a Werewolf. The holy rite backfired and"
                         " **{priest}** died!"
@@ -6066,7 +6178,7 @@ class Game:
                 continue
 
             marked_target = marksman.marksman_target
-            await self.ctx.send(
+            await self.send_to_channel(
                 _("**The {role} may act.**").format(role=marksman.role_name)
             )
             try:
@@ -6094,14 +6206,14 @@ class Game:
             if action_index == 0:
                 marksman.marksman_arrows = max(0, marksman.marksman_arrows - 1)
                 marksman.marksman_target = None
-                await self.ctx.send(
+                await self.send_to_channel(
                     _("🏹 **{marksman}** fired an arrow at **{target}**!").format(
                         marksman=marksman.user.mention,
                         target=marked_target.user.mention,
                     )
                 )
                 if marked_target.side == Side.VILLAGERS:
-                    await self.ctx.send(
+                    await self.send_to_channel(
                         _(
                             "⚠️ **{target}** is a villager-team player. The shot"
                             " backfired and **{marksman}** died!"
@@ -6359,7 +6471,7 @@ class Game:
 
             target = chosen_target[0]
             holder.forger_swords = max(0, holder.forger_swords - 1)
-            await self.ctx.send(
+            await self.send_to_channel(
                 _(
                     "⚔️ **{holder}** used a forged sword on **{target}**!"
                 ).format(
@@ -6486,7 +6598,7 @@ class Game:
                     game_link=self.game_link,
                 )
             )
-            await self.ctx.send(
+            await self.send_to_channel(
                 _(
                     "☮️ Peace has been declared by a **Pacifist**. The village cannot"
                     " vote today."
@@ -6558,7 +6670,7 @@ class Game:
                     )
                 )
 
-            await self.ctx.send(
+            await self.send_to_channel(
                 _(
                     "🐺 The wolves invoked a secret reveal. The village cannot vote"
                     " today."
@@ -6656,7 +6768,7 @@ class Game:
                     " Current day vote weight: **{weight}**.\n{game_link}"
                 ).format(weight=total_weight, game_link=self.game_link)
             )
-            await self.ctx.send(
+            await self.send_to_channel(
                 _(
                     "📣 **{preacher}** revealed as **Preacher**. Their stored extra"
                     " votes are now active."
@@ -6802,7 +6914,10 @@ class Game:
                         continue
                 for wolf in recipients:
                     if wolf.user != message.author:
-                        await wolf.user.send(f"{message.author}: {content}")
+                        await send_discord_message_with_retry(
+                            wolf.user,
+                            f"{message.author}: {content}",
+                        )
         except asyncio.CancelledError:
             return
         except Exception as e:
@@ -6899,7 +7014,7 @@ class Game:
 
         if len(wolves) == 0:
             if jailed_wolves or sleeping_wolves:
-                await self.ctx.send(
+                await self.send_to_channel(
                     _(
                         "All werewolves who could attack tonight were jailed or asleep."
                         " No one was killed by the werewolves."
@@ -6913,7 +7028,7 @@ class Game:
                     ).format(game_link=self.game_link)
                 )
             return
-        await self.ctx.send(_("**The Werewolves awake...**"))
+        await self.send_to_channel(_("**The Werewolves awake...**"))
         # Get target of wolves
         target_list = [p for p in self.alive_players if p not in all_wolves]
         possible_targets = {idx: p for idx, p in enumerate(target_list, 1)}
@@ -7246,7 +7361,7 @@ class Game:
                 except KeyError:
                     pass
             p.revealed_roles.update({pure_soul: pure_soul.role})
-        await self.ctx.send(
+        await self.send_to_channel(
             _("{pure_soul} is a **{role}** and an innocent villager.").format(
                 pure_soul=pure_soul.user.mention, role=pure_soul.role_name
             )
@@ -7311,7 +7426,7 @@ class Game:
             )
         )
         for page in paginator.pages:
-            await self.ctx.send(page)
+            await self.send_to_channel(page)
         await self.announce_new_nomination_system()
 
         await self.apply_talisman_influence()
@@ -7360,14 +7475,14 @@ class Game:
             )
 
         for page in roles_paginator.pages:
-            await self.ctx.send(page)
+            await self.send_to_channel(page)
 
         house_rules = _(
             "📜⚠️ Talking to other users privately is"
             " prohibited! Posting any screenshots of my messages"
             " containing your role is also forbidden."
         )
-        await self.ctx.send(
+        await self.send_to_channel(
             _(
                 "**Sending game roles... You may use `{prefix}nww myrole` to check"
                 " your role later.\n{house_rules}**"
@@ -7456,11 +7571,11 @@ class Game:
         if judge := self.get_player_with_role(Role.JUDGE):
             await judge.get_judge_symbol()
         if sisters := self.get_players_with_role(Role.SISTER):
-            await self.ctx.send(_("**The Sisters awake...**"))
+            await self.send_to_channel(_("**The Sisters awake...**"))
             for player in sisters:
                 await player.send_family_msg("sister", sisters)
         if brothers := self.get_players_with_role(Role.BROTHER):
-            await self.ctx.send(_("**The Brothers awake...**"))
+            await self.send_to_channel(_("**The Brothers awake...**"))
             for player in brothers:
                 await player.send_family_msg("brother", brothers)
         if troublemaker := self.get_player_with_role(Role.TROUBLEMAKER):
@@ -7795,7 +7910,7 @@ class Game:
             ).format(timer=self.timer)
         )
         for page in paginator.pages:
-            await self.ctx.send(page)
+            await self.send_to_channel(page)
         nominated_by_paragon = []
         nominated = []
         second_election = False
@@ -7822,7 +7937,7 @@ class Game:
                     ):
                         lawyer = self.get_player_with_role(Role.LAWYER)
                         lawyer.has_objected = True
-                        await self.ctx.send(
+                        await self.send_to_channel(
                             _(
                                 "**OBJECTION!!!** the **{role}** {user} protested."
                                 " Nomination ends."
@@ -7883,21 +7998,21 @@ class Game:
                                 # Seems sneaky, extend talk time when there's only 10 seconds left
                                 time_to_add = int(self.timer / 2)
                                 finaltime = self.timer + time_to_add
-                                await self.ctx.send(
+                                await self.send_to_channel(
                                     _(
                                         "{finaltime}"
                                     ).format(finaltime=finaltime)
                                 )
                                 sneaky = True
 
-                                await self.ctx.send(
+                                await self.send_to_channel(
                                     _(
                                         _(
                                             "Seems sneaky, I added {time_to_add}"
                                             " seconds talk time."
                                         ).format(time_to_add=time_to_add)
                                     ))
-                        await self.ctx.send(announce)
+                        await self.send_to_channel(announce)
         except asyncio.TimeoutError:
 
             pass
@@ -7920,7 +8035,7 @@ class Game:
                         ):
                             lawyer = self.get_player_with_role(Role.LAWYER)
                             lawyer.has_objected = True
-                            await self.ctx.send(
+                            await self.send_to_channel(
                                 _(
                                     "**OBJECTION!!!** the **{role}** {user} protested."
                                     " Nomination ends."
@@ -7974,7 +8089,7 @@ class Game:
                                     "**{player}** nominated **{nominee}**."
                                 ).format(player=msg.author, nominee=nominee)
 
-                            await self.ctx.send(announce)
+                            await self.send_to_channel(announce)
             except asyncio.TimeoutError:
 
                 pass
@@ -8001,12 +8116,17 @@ class Game:
             ).format(timer=self.timer, texts=texts)
         )
         for page in paginator.pages:
-            msg = await self.ctx.send(page)
+            msg = await self.send_to_channel(page)
+        if msg is None:
+            return None, second_election
         for emoji in emojis:
-            await msg.add_reaction(emoji)
+            await self.add_reaction_to_message(msg, emoji)
         # Check for nuisance voters twice, first at half of action timer, and lastly just before counting votes
         await self.check_nuisances(msg, eligible_players, emojis, repeat=2)
-        msg = await self.ctx.channel.fetch_message(msg.id)
+        refreshed_msg = await self.fetch_channel_message(self.ctx.channel, msg.id)
+        if refreshed_msg is None:
+            return None, second_election
+        msg = refreshed_msg
         nominated = {u: 0 for u in nominated}
         mapping = {emoji: user for emoji, user in zip(emojis, nominated)}
         voters = []
@@ -8042,7 +8162,10 @@ class Game:
     async def check_nuisances(self, msg, eligible_players, emojis, repeat: int) -> None:
         for i in range(repeat):
             await asyncio.sleep(int(self.timer / repeat))
-            msg = await self.ctx.channel.fetch_message(msg.id)
+            refreshed_msg = await self.fetch_channel_message(self.ctx.channel, msg.id)
+            if refreshed_msg is None:
+                return
+            msg = refreshed_msg
             nuisance_voters = set()
             is_lacking_permission = None
             for reaction in msg.reactions:
@@ -8055,7 +8178,11 @@ class Game:
                     nuisance_voters.update(nuisance_users)
                     for to_remove in nuisance_users:
                         try:
-                            await msg.remove_reaction(reaction.emoji, to_remove)
+                            await self.remove_reaction_from_message(
+                                msg,
+                                reaction.emoji,
+                                to_remove,
+                            )
                         except discord.Forbidden:
                             is_lacking_permission = True
                             continue
@@ -8081,7 +8208,7 @@ class Game:
                         ).format(author=self.ctx.author.mention)
                     )
                 for page in paginator.pages:
-                    await self.ctx.send(page)
+                    await self.send_to_channel(page)
 
     async def handle_afk(self) -> None:
         if self.winner is not None:
@@ -8103,7 +8230,7 @@ class Game:
             target_player_ids={player.user.id for player in afk_players},
             timeout=self.timer,
         )
-        view.message = await self.ctx.send(
+        view.message = await self.send_to_channel(
             view.build_message(),
             view=view,
             allowed_mentions=discord.AllowedMentions(
@@ -8129,7 +8256,7 @@ class Game:
                 afk_players_to_kill.append(player)
                 continue
 
-            await self.ctx.send(
+            await self.send_to_channel(
                 _(
                     "⚠️ **Strike {strikes}/{limit}** {player} was marked AFK. Miss"
                     " one more AFK check and you'll be removed from the game."
@@ -8141,7 +8268,7 @@ class Game:
             )
 
         for afk_player in afk_players_to_kill:
-            await self.ctx.send(
+            await self.send_to_channel(
                 _(
                     "**{afk_player}** has been killed by the game due to having"
                     " {limit} AFK strikes."
@@ -8153,7 +8280,7 @@ class Game:
             await afk_player.kill()
 
     async def handle_lynching(self, to_kill: discord.Member) -> None:
-        await self.ctx.send(
+        await self.send_to_channel(
             _("The community has decided to kill {to_kill}.").format(
                 to_kill=to_kill.mention
             )
@@ -8172,7 +8299,7 @@ class Game:
             if used_save:
                 flower_child.used_once_abilities.add(Role.FLOWER_CHILD)
                 to_kill.killed_by_lynch = False
-                await self.ctx.send(
+                await self.send_to_channel(
                     _(
                         "🌸 A mystical bloom saved {target} from being lynched."
                     ).format(target=to_kill.user.mention)
@@ -8190,7 +8317,7 @@ class Game:
                 continue
             guardian.has_guardian_wolf_save_ability = False
             to_kill.killed_by_lynch = False
-            await self.ctx.send(
+            await self.send_to_channel(
                 _(
                     "🐺 A **Guardian Wolf** protected {target} from being lynched."
                 ).format(target=to_kill.user.mention)
@@ -8213,7 +8340,7 @@ class Game:
             p for p in self.alive_players if p.side in (Side.WOLVES, Side.WHITE_WOLF)
         ]
         to_die = random.choice(possible_werewolves)
-        await self.ctx.send(
+        await self.send_to_channel(
             _(
                 "{to_die} died from the disease caused by the Knight's rusty sword."
             ).format(to_die=to_die.user.mention)
@@ -8333,7 +8460,7 @@ class Game:
                 source_role == Role.RITUALIST
                 and not self._is_valid_ritualist_resurrection_target(to_resurrect)
             ):
-                await self.ctx.send(
+                await self.send_to_channel(
                     _(
                         "🔮 A **Ritualist** attempted to resurrect **{target}**, but"
                         " the ritual failed."
@@ -8349,7 +8476,7 @@ class Game:
 
             await self.handle_resurrection(to_resurrect)
             if source_role == Role.RITUALIST:
-                await self.ctx.send(
+                await self.send_to_channel(
                     _("{player} has been resurrected!").format(
                         player=to_resurrect.user.mention
                     )
@@ -8360,7 +8487,7 @@ class Game:
                     )
                 )
             elif source_role == Role.WOLF_NECROMANCER:
-                await self.ctx.send(
+                await self.send_to_channel(
                     _("**{player}** came back to life!").format(
                         player=to_resurrect.user.mention
                     )
@@ -8372,7 +8499,7 @@ class Game:
                     )
                 )
             elif source_role == Role.MEDIUM:
-                await self.ctx.send(
+                await self.send_to_channel(
                     _("🔮 **{player}** was resurrected by the **Medium**!").format(
                         player=to_resurrect.user.mention
                     )
@@ -8387,7 +8514,7 @@ class Game:
                     )
                 )
             else:
-                await self.ctx.send(
+                await self.send_to_channel(
                     _("{player} has been resurrected!").format(
                         player=to_resurrect.user.mention
                     )
@@ -8412,7 +8539,7 @@ class Game:
                 continue
             seen_night_death_ids.add(death.user.id)
             unique_night_deaths.append(death)
-        await self.ctx.send(self.get_night_recap_text(unique_night_deaths))
+        await self.send_to_channel(self.get_night_recap_text(unique_night_deaths))
         await self.resolve_preacher_predictions(unique_night_deaths)
         if self.task:
             self.task.cancel()
@@ -8480,12 +8607,12 @@ class Game:
                     if self.winner is not None:
                         return
                 else:
-                    await self.ctx.send(self.get_no_lynch_text())
+                    await self.send_to_channel(self.get_no_lynch_text())
                 await self.handle_afk()
             else:
                 second_election = False
             if second_election:
-                await self.ctx.send(
+                await self.send_to_channel(
                     _(
                         "📢 **The Judge used the secret phrase to hold another election to"
                         " lynch someone. The Judge's decision cannot be debated.**"
@@ -8497,7 +8624,7 @@ class Game:
                     if self.winner is not None:
                         return
                 else:
-                    await self.ctx.send(
+                    await self.send_to_channel(
                         self.get_no_lynch_text(second_election=True)
                     )
                 await self.handle_afk()
@@ -8528,13 +8655,13 @@ class Game:
                         day_count = _("**Day {day_count:.0f}**").format(
                             day_count=self.night_no
                         )
-                    await self.ctx.send(day_count)
+                    await self.send_to_channel(day_count)
                     await self.day(deaths)
                     if self.winner is not None:
                         break
                     if self.speed in ("Fast", "Blitz"):
                         if self.night_no == len(self.players) + 3:
-                            await self.ctx.send(
+                            await self.send_to_channel(
                                 _(
                                     "{day_count:.0f} days have already passed. Stopping"
                                     " game..."
@@ -8568,11 +8695,11 @@ class Game:
                         )
                     )
                     for page in paginator.pages:
-                        await self.ctx.send(page)
+                        await self.send_to_channel(page)
                     await self.send_endgame_team_embed(winner)
                 else:
                     # Display winner information
-                    await self.ctx.send(
+                    await self.send_to_channel(
                         _("{results_pretext} **{winner} won!**").format(
                             results_pretext=results_pretext, winner=winner
                         )
@@ -8689,7 +8816,7 @@ class Game:
         for non_winner in non_winners:
             paginator.add_line(non_winner)
         for page in paginator.pages:
-            await self.ctx.send(page)
+            await self.send_to_channel(page)
 
     def _winning_team_bucket(self, winner: Player | str | None) -> str | None:
         if self.is_teams_mode:
@@ -8774,7 +8901,7 @@ class Game:
             winner_ids = list(dict.fromkeys(winner_ids))
             all_ids = list(dict.fromkeys(player.user.id for player in self.players))
 
-            self.endgame_summary_message = await self.ctx.send(
+            self.endgame_summary_message = await self.send_to_channel(
                 embed=embed,
                 view=EndgameIdsView(winner_ids=winner_ids, all_ids=all_ids),
             )
@@ -8842,7 +8969,7 @@ class Game:
         winner_ids = list(dict.fromkeys(winner_ids))
         all_ids = list(dict.fromkeys(player.user.id for player in self.players))
 
-        self.endgame_summary_message = await self.ctx.send(
+        self.endgame_summary_message = await self.send_to_channel(
             embed=embed,
             view=EndgameIdsView(winner_ids=winner_ids, all_ids=all_ids),
         )
@@ -9010,10 +9137,7 @@ class Player:
         )
 
     async def send(self, *args, **kwargs) -> discord.Message | None:
-        try:
-            return await self.user.send(*args, **kwargs)
-        except (discord.Forbidden, discord.HTTPException):
-            pass
+        return await send_discord_message_with_retry(self.user, *args, **kwargs)
 
     @property
     def can_use_flower_child(self) -> bool:
@@ -9495,7 +9619,7 @@ class Player:
             await self.send(_("You didn't choose anything."))
             return
         except (discord.Forbidden, discord.HTTPException):
-            await self.game.ctx.send(
+            await self.game.send_to_channel(
                 _(
                     "I couldn't send a DM to someone. Too bad they missed to use their"
                     " power."
@@ -9532,7 +9656,7 @@ class Player:
                     flutist=self.game.get_role_name(Role.FLUTIST)
                 )
             )
-        await self.game.ctx.send(
+        await self.game.send_to_channel(
             _(
                 "**{maid}** reveals themselves as the **{role}** and exchanged"
                 " roles with {dying_one}."
@@ -9748,7 +9872,7 @@ class Player:
     async def choose_villager_to_kill(self, targets: list[Player]) -> Player | None:
         await self.announce_awake()
         if not targets:
-            await self.game.ctx.send(
+            await self.game.send_to_channel(
                 embed=discord.Embed(
                     title=_("Skipped Wolves Night"),
                     description=_("No one was killed during the night."),
@@ -11185,7 +11309,7 @@ class Player:
             )
         except (discord.Forbidden, discord.HTTPException):
             if not (entries[0] == entries[1] == "Werewolf"):
-                await self.game.ctx.send(
+                await self.game.send_to_channel(
                     _(
                         "I couldn't send a DM to this player. They will stay as"
                         " {role}."
@@ -11234,7 +11358,7 @@ class Player:
         except (discord.Forbidden, discord.HTTPException):
             can_dm = False
             role = random.choice(roles)
-            await self.game.ctx.send(
+            await self.game.send_to_channel(
                 _("I couldn't send a DM. A random role was chosen for them.")
             )
         if self.initial_roles[-1] != self.role:
@@ -11686,7 +11810,7 @@ class Player:
         to_summon.wolf_shaman_mask_active = False
         await self.game.handle_resurrection(to_summon)
         self.has_wolf_summoner_ability = False
-        await self.game.ctx.send(
+        await self.game.send_to_channel(
             _(
                 "🌑 **{summoned}** was summoned back and returned as a regular"
                 " **Werewolf**."
@@ -11846,7 +11970,7 @@ class Player:
         ):
             return target
         # This one's commented out as we want Cursed Wolf Father infects someone secretly
-        # await self.game.ctx.send(_("**The {role} awakes...**").format(role=self.role_name))
+        # await self.game.send_to_channel(_("**The {role} awakes...**").format(role=self.role_name))
         try:
             action = await self.game.ctx.bot.paginator.Choose(
                 entries=["Yes", "No"],
@@ -11861,7 +11985,7 @@ class Player:
             await self.send(_("You didn't choose anything."))
             return target
         except (discord.Forbidden, discord.HTTPException):
-            await self.game.ctx.send(
+            await self.game.send_to_channel(
                 _(
                     "I couldn't send a DM to someone. Too bad they missed to use their"
                     " power."
@@ -11986,7 +12110,7 @@ class Player:
         return self.lives < 1
 
     async def announce_awake(self, *, variant: str = "default") -> None:
-        await self.game.ctx.send(
+        await self.game.send_to_channel(
             self.game.get_role_awake_text(
                 role=self.role,
                 role_name=self.role_name,
@@ -12096,7 +12220,7 @@ class Player:
             # Reveal role in death list
             for p in self.game.players:
                 p.revealed_roles.update({self: death_reveal_role})
-            await self.game.ctx.send(
+            await self.game.send_to_channel(
                 self.game.get_death_reveal_text(
                     player=self,
                     death_reveal_role=death_reveal_role,
@@ -12114,7 +12238,7 @@ class Player:
                         player.revealed_roles.update(
                             {self.loudmouth_target: loudmouth_reveal_role}
                         )
-                    await self.game.ctx.send(
+                    await self.game.send_to_channel(
                         _(
                             "📣 The **Loudmouth** died and revealed **{target}** as a"
                             " **{role}**."
@@ -12124,7 +12248,7 @@ class Player:
                         )
                     )
                 else:
-                    await self.game.ctx.send(
+                    await self.game.send_to_channel(
                         _("📣 The **Loudmouth** died without marking anyone.")
                     )
             if self.role in (Role.AVENGER, Role.OATHKEEPER):
@@ -12136,7 +12260,7 @@ class Player:
             ):
                 self.game.winning_side = "Jester"
                 self.game.forced_winner = self
-                await self.game.ctx.send(
+                await self.game.send_to_channel(
                     _(
                         "🎭 The **Jester** was lynched and achieved their goal. The game"
                         " ends immediately!"
@@ -12145,7 +12269,7 @@ class Player:
             await self.game.handle_head_hunter_target_death(self)
             if self.infected_with_virus:
                 self.infected_with_virus = False
-                await self.game.ctx.send(
+                await self.game.send_to_channel(
                     _("**{user}** lost the disease from viral infection.").format(
                         user=self.user,
                     )
@@ -12153,7 +12277,7 @@ class Player:
             additional_deaths = []
             if self.role == Role.HUNTER:
                 try:
-                    await self.game.ctx.send(_("The Hunter grabs their gun."))
+                    await self.game.send_to_channel(_("The Hunter grabs their gun."))
                     target = await self.choose_users(
                         _("Choose someone who shall die with you. 🔫"),
                         list_of_users=[
@@ -12165,12 +12289,12 @@ class Player:
                         required=False,
                     )
                 except asyncio.TimeoutError:
-                    await self.game.ctx.send(
+                    await self.game.send_to_channel(
                         _("The Hunter couldn't find the trigger 😆.")
                     )
                 else:
                     if not target:
-                        await self.game.ctx.send(
+                        await self.game.send_to_channel(
                             _("The Hunter refused to shoot anyone.")
                         )
                     else:
@@ -12180,7 +12304,7 @@ class Player:
                                 target=target.user
                             )
                         )
-                        await self.game.ctx.send(
+                        await self.game.send_to_channel(
                             _("The Hunter is firing. **{target}** got hit!").format(
                                 target=target.user
                             )
@@ -12193,7 +12317,7 @@ class Player:
                 if self.game.after_first_night:
                     target = self.avenger_target
                     if target and not target.dead and target != self:
-                        await self.game.ctx.send(
+                        await self.game.send_to_channel(
                             _(
                                 "🗡️ The **Avenger** died and dragged **{target}** down."
                             ).format(target=target.user.mention)
@@ -12203,7 +12327,7 @@ class Player:
                             target.lives = 1
                         additional_deaths.append(target)
                     else:
-                        await self.game.ctx.send(
+                        await self.game.send_to_channel(
                             _(
                                 "🗡️ The **Avenger** died but had no valid marked target."
                             )
@@ -12219,7 +12343,7 @@ class Player:
                     mentions = ", ".join(
                         target.user.mention for target in marked_targets
                     )
-                    await self.game.ctx.send(
+                    await self.game.send_to_channel(
                         _(
                             "🗡️ The **Oathkeeper** died and their vengeance marks"
                             " claimed **{targets}**."
@@ -12231,7 +12355,7 @@ class Player:
                             target.lives = 1
                         additional_deaths.append(target)
                 else:
-                    await self.game.ctx.send(
+                    await self.game.send_to_channel(
                         _(
                             "🗡️ The **Oathkeeper** died but had no living marked"
                             " targets."
@@ -12240,7 +12364,7 @@ class Player:
             elif self.role == Role.KNIGHT:
                 if self.attacked_by_the_pact:
                     self.game.rusty_sword_disease_night = 0
-                    await self.game.ctx.send(
+                    await self.game.send_to_channel(
                         _(
                             "The **{role}** wounded one of the werewolves with their"
                             " Rusty Sword before dying."
@@ -12258,7 +12382,7 @@ class Player:
                         if self.junior_mark_target in possible_targets
                         else random.choice(possible_targets)
                     )
-                    await self.game.ctx.send(
+                    await self.game.send_to_channel(
                         _(
                             "The **Junior Werewolf** died and dragged"
                             " **{target}** down in revenge."
@@ -12270,7 +12394,7 @@ class Player:
                     additional_deaths.append(target)
             elif self.role == Role.KITTEN_WOLF:
                 self.game.queue_kitten_wolf_conversion()
-                await self.game.ctx.send(
+                await self.game.send_to_channel(
                     _(
                         "🐺 The **Kitten Wolf** died. On the next night, the"
                         " werewolves may attempt one conversion instead of their normal"
@@ -12282,7 +12406,7 @@ class Player:
                     target = random.choice(
                         [p for p in self.game.alive_players if p not in self.own_lovers]
                     )
-                    await self.game.ctx.send(
+                    await self.game.send_to_channel(
                         _(
                             "The **{role}** was lynched by the Village, a random"
                             " villager **{target}** was shot."
@@ -12305,7 +12429,7 @@ class Player:
                             p.role = Role.VILLAGER
                 if cursed_one:
                     cursed_one.cursed = True  # set it back
-                await self.game.ctx.send(
+                await self.game.send_to_channel(
                     _(
                         "The villagers killed **{role}**. The villagers lost all"
                         " their special powers and became normal villagers."
@@ -12327,7 +12451,7 @@ class Player:
                 and player != self
             ]
             for ghost_lady in bound_ghost_ladies:
-                await self.game.ctx.send(
+                await self.game.send_to_channel(
                     _(
                         "👻 **{ghost}** was bound to **{bound}** and died with them."
                     ).format(
@@ -12342,7 +12466,7 @@ class Player:
                     if {self, lover} in self.game.lovers:
                         self.game.lovers.remove({self, lover})
                     if not lover.dead:
-                        await self.game.ctx.send(
+                        await self.game.send_to_channel(
                             _(
                                 "{dead_player}'s lover, {lover}, will die of sorrow."
                             ).format(

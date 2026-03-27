@@ -17,6 +17,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import asyncio
+import logging
 
 import discord
 
@@ -41,6 +42,7 @@ from .core import role_from_talisman_consumable_type
 from .core import talisman_base_role
 from .core import talisman_related_roles
 from .core import role_level_from_xp
+from .core import send_discord_message_with_retry
 from .core import send_traceback
 from .core import unavailable_roles_for_mode
 from .tutorial_live import TutorialGame
@@ -57,6 +59,8 @@ from .role_config import (
     ROLE_XP_WIN,
     ROLE_XP_WIN_ALIVE,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class WerewolfLobbyJoinView(JoinView):
@@ -104,6 +108,73 @@ class NewWerewolf(commands.Cog):
         self._role_xp_tables_ready = False
         self._role_xp_table_lock = asyncio.Lock()
         self.bot.loop.create_task(self._warm_role_xp_tables())
+
+    async def _discord_request_with_retry(
+        self,
+        request,
+        *,
+        action_name: str,
+        attempts: int = 3,
+        suppress_failure: bool = False,
+    ):
+        for attempt in range(1, attempts + 1):
+            try:
+                return await request()
+            except discord.NotFound:
+                raise
+            except discord.Forbidden:
+                raise
+            except (discord.DiscordServerError, asyncio.TimeoutError, OSError) as exc:
+                if attempt < attempts:
+                    await asyncio.sleep(attempt)
+                    continue
+                logger.warning("NewWerewolf %s failed after retries: %s", action_name, exc)
+                if suppress_failure:
+                    return None
+                raise
+            except discord.HTTPException as exc:
+                status = getattr(exc, "status", None)
+                if status is not None and status >= 500:
+                    if attempt < attempts:
+                        await asyncio.sleep(attempt)
+                        continue
+                    logger.warning("NewWerewolf %s failed after retries: %s", action_name, exc)
+                    if suppress_failure:
+                        return None
+                raise
+
+    async def _send_with_retry(self, ctx, *, suppress_failure: bool = False, **kwargs):
+        send_callable = getattr(ctx, "_newwerewolf_original_send", ctx.send)
+        return await self._discord_request_with_retry(
+            lambda: send_callable(**kwargs),
+            action_name="ctx.send",
+            suppress_failure=suppress_failure,
+        )
+
+    async def _edit_message_with_retry(self, message, *, suppress_failure: bool = False, **kwargs):
+        return await self._discord_request_with_retry(
+            lambda: message.edit(**kwargs),
+            action_name="message.edit",
+            suppress_failure=suppress_failure,
+        )
+
+    def _guard_game_context(self, ctx):
+        if getattr(ctx, "_newwerewolf_send_guarded", False):
+            return ctx
+
+        original_send = ctx.send
+
+        async def guarded_send(*args, **kwargs):
+            return await self._discord_request_with_retry(
+                lambda: original_send(*args, **kwargs),
+                action_name="ctx.send",
+                suppress_failure=True,
+            )
+
+        ctx._newwerewolf_original_send = original_send
+        ctx.send = guarded_send
+        ctx._newwerewolf_send_guarded = True
+        return ctx
 
     async def _warm_role_xp_tables(self) -> None:
         try:
@@ -1620,7 +1691,7 @@ class NewWerewolf(commands.Cog):
             colour=self.bot.config.game.primary_colour,
         ).set_author(name=str(ctx.author), icon_url=ctx.author.display_avatar.url)
         embed.set_footer(text=_("Reply with a number or `stop`."))
-        await dm_channel.send(embed=embed)
+        await send_discord_message_with_retry(dm_channel, embed=embed)
         await ctx.send(_("📩 Check your DMs for your night action."))
 
         while True:
@@ -1644,16 +1715,20 @@ class NewWerewolf(commands.Cog):
             try:
                 selected = int(token)
             except ValueError:
-                await dm_channel.send(
+                await send_discord_message_with_retry(
+                    dm_channel,
                     _("Send a number from 1 to {limit}, or `stop`.").format(
                         limit=len(options)
-                    )
+                    ),
                 )
                 continue
             if 1 <= selected <= len(options):
                 return selected - 1
-            await dm_channel.send(
-                _("Option out of range. Choose 1 to {limit}.").format(limit=len(options))
+            await send_discord_message_with_retry(
+                dm_channel,
+                _("Option out of range. Choose 1 to {limit}.").format(
+                    limit=len(options)
+                ),
             )
 
     async def _tutorial_dm_info(self, ctx, *, title: str, text: str) -> None:
@@ -1666,7 +1741,7 @@ class NewWerewolf(commands.Cog):
             description=text,
             colour=self.bot.config.game.primary_colour,
         )
-        await dm_channel.send(embed=embed)
+        await send_discord_message_with_retry(dm_channel, embed=embed)
 
     async def _tutorial_play_chat(
         self, ctx, *, lines: list[tuple[str, str]], delay: float = 1.1
@@ -3310,6 +3385,7 @@ class NewWerewolf(commands.Cog):
         return True
 
     async def _run_tutorial_sim(self, ctx, *, track: str) -> None:
+        ctx = self._guard_game_context(ctx)
         if self.games.get(ctx.channel.id):
             await ctx.send(
                 _(
@@ -3543,7 +3619,8 @@ class NewWerewolf(commands.Cog):
             await asyncio.sleep(wait_for)
             remaining -= wait_for
             try:
-                await message.edit(
+                await self._edit_message_with_retry(
+                    message,
                     embed=self._build_multiplayer_lobby_embed(
                         author=author,
                         mode=mode,
@@ -3557,11 +3634,10 @@ class NewWerewolf(commands.Cog):
                         is_mass_game=is_mass_game,
                     ),
                     view=view,
+                    suppress_failure=True,
                 )
             except discord.NotFound:
                 break
-            except discord.HTTPException:
-                pass
         view.stop()
 
     async def _start_multiplayer_game(
@@ -3573,6 +3649,7 @@ class NewWerewolf(commands.Cog):
         min_players: int,
         custom_roles: list[ROLES] | None = None,
     ) -> None:
+        ctx = self._guard_game_context(ctx)
         if self.games.get(ctx.channel.id):
             await ctx.send(_("There is already a game in here!"))
             return
@@ -3628,7 +3705,8 @@ class NewWerewolf(commands.Cog):
         )
 
         try:
-            lobby_message = await ctx.send(
+            lobby_message = await self._send_with_retry(
+                ctx,
                 embed=self._build_multiplayer_lobby_embed(
                     author=ctx.author,
                     mode=mode,
@@ -3642,6 +3720,7 @@ class NewWerewolf(commands.Cog):
                     is_mass_game=is_mass_game,
                 ),
                 view=view,
+                suppress_failure=True,
             )
         except discord.errors.Forbidden:
             del self.games[ctx.channel.id]
@@ -3652,6 +3731,10 @@ class NewWerewolf(commands.Cog):
                     " Permissions** and **Server Settings > Roles** then try again!"
                 )
             )
+            return
+        if lobby_message is None:
+            del self.games[ctx.channel.id]
+            await self.bot.reset_cooldown(ctx)
             return
 
         await self._run_multiplayer_lobby_countdown(

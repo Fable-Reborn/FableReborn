@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import json
+import logging
 import math
 import os
 import random
@@ -52,6 +53,8 @@ JURY_BONUS_CACHE_THRESHOLD = 2
 JURY_MAJOR_BONUS_CACHE_THRESHOLD = 6
 JURY_BONUS_CACHE_MULTIPLIER = Decimal("0.50")
 JURY_MAJOR_BONUS_CACHE_MULTIPLIER = Decimal("1.00")
+
+logger = logging.getLogger(__name__)
 
 class PetEggSelect(Select):
     def __init__(self, items, page=0):
@@ -3133,13 +3136,13 @@ class Battles(commands.Cog):
         """Display dialogue for battle tower levels"""
         # Skip dialogue if toggle is on
         if dialoguetoggle:
-            await ctx.send("The battle begins!")
+            await self._send_with_retry(ctx, content="The battle begins!", suppress_failure=True)
             return
         
         # Get the dialogue for this level
         level_str = str(level)
         if level_str not in self.dialogue_data["dialogues"]:
-            await ctx.send("The battle begins!")
+            await self._send_with_retry(ctx, content="The battle begins!", suppress_failure=True)
             return
         
         dialogue_info = self.dialogue_data["dialogues"][level_str]
@@ -3156,7 +3159,7 @@ class Battles(commands.Cog):
                     if fetched_user:
                         random_user_objects.append(fetched_user)
                 if len(random_user_objects) < 2:
-                    await ctx.send("The battle begins!")
+                    await self._send_with_retry(ctx, content="The battle begins!", suppress_failure=True)
                     return
         
         # Process dialogue lines
@@ -3231,10 +3234,16 @@ class Battles(commands.Cog):
             ctx.author,
             allowed_user_ids=allowed_dialogue_users,
         )
-        await ctx.send(embed=pages[0], view=view)
-        await view.wait()
+        dialogue_message = await self._send_with_retry(
+            ctx,
+            embed=pages[0],
+            view=view,
+            suppress_failure=True,
+        )
+        if dialogue_message is not None:
+            await view.wait()
         
-        await ctx.send("The battle begins!")
+        await self._send_with_retry(ctx, content="The battle begins!", suppress_failure=True)
 
     @has_char()
     @user_cooldown(90)
@@ -3255,6 +3264,7 @@ class Battles(commands.Cog):
             The battle's winner will receive a PvP win, which shows on their profile.
             (This command has a cooldown of 90 seconds.)"""
         )
+        ctx = self._guard_battle_context(ctx)
         if enemy == ctx.author:
             return await ctx.send(_("You can't battle yourself."))
         if ctx.character_data["money"] < money:
@@ -3293,7 +3303,15 @@ class Battles(commands.Cog):
             check_fail_message=_("You don't have enough money to join the battle."),
         )
 
-        await ctx.send(text, view=view)
+        join_message = await ctx.send(text, view=view)
+        if join_message is None:
+            await self.bot.reset_cooldown(ctx)
+            await self.bot.pool.execute(
+                'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                money,
+                ctx.author.id,
+            )
+            return
 
         try:
             enemy_ = await future
@@ -4352,6 +4370,7 @@ class Battles(commands.Cog):
     @user_cooldown(600)
     async def fight(self, ctx):
         """Fight the current level in the battle tower."""
+        ctx = self._guard_battle_context(ctx)
         try:
             # Check if user has started the battle tower
             async with self.bot.pool.acquire() as connection:
@@ -4479,7 +4498,11 @@ class Battles(commands.Cog):
                             "element": "unknown"
                         }
                     else:
-                        await ctx.send("Warning: Could not find enough players for special level 16 battle. Using default enemies.")
+                        await self._send_with_retry(
+                            ctx,
+                            content="Warning: Could not find enough players for special level 16 battle. Using default enemies.",
+                            suppress_failure=True,
+                        )
 
             # Create and start the battle
             battle = await self.battle_factory.create_battle(
@@ -4540,15 +4563,27 @@ class Battles(commands.Cog):
                         player_god=god_value,
                     )
                 else:
-                    await ctx.send(f"**{ctx.author.mention}**, you have been defeated. Better luck next time!")
+                    await self._send_with_retry(
+                        ctx,
+                        content=f"**{ctx.author.mention}**, you have been defeated. Better luck next time!",
+                        suppress_failure=True,
+                    )
             else:
                 # Check if it was a timeout or defeat
                 if battle_timed_out:
                     # It was a timeout
-                    await ctx.send("The battle timed out. Try again later.")
+                    await self._send_with_retry(
+                        ctx,
+                        content="The battle timed out. Try again later.",
+                        suppress_failure=True,
+                    )
                 else:
                     # It was a defeat
-                    await ctx.send(f"**{ctx.author.mention}**, you have been defeated. Better luck next time!")
+                    await self._send_with_retry(
+                        ctx,
+                        content=f"**{ctx.author.mention}**, you have been defeated. Better luck next time!",
+                        suppress_failure=True,
+                    )
 
             # Remove player from fight tracking
             await self.remove_player_from_fight(ctx.author.id)
@@ -4556,7 +4591,7 @@ class Battles(commands.Cog):
         except Exception as e:
             import traceback
             error_message = f"An error occurred during the battletower battle: {e}\n{traceback.format_exc()}"
-            await ctx.send(error_message)
+            await self._send_with_retry(ctx, content=error_message[:1900], suppress_failure=True)
             print(error_message)
             await self.remove_player_from_fight(ctx.author.id)
             await self.bot.reset_cooldown(ctx)
@@ -6596,6 +6631,7 @@ class Battles(commands.Cog):
     @jurytower.command(name="fight", aliases=["begin"])
     @user_cooldown(1800)
     async def jurytower_fight(self, ctx):
+        ctx = self._guard_battle_context(ctx)
         if not await self._ensure_jury_tower_dev_access(ctx):
             await self.bot.reset_cooldown(ctx)
             return
@@ -6723,7 +6759,11 @@ class Battles(commands.Cog):
                 else:
                     await self._handle_jury_defeat(ctx, level, floor_data)
             elif battle_timed_out:
-                await ctx.send("The fight timed out. The floor remains open.")
+                await self._send_with_retry(
+                    ctx,
+                    content="The fight timed out. The floor remains open.",
+                    suppress_failure=True,
+                )
             else:
                 await self._handle_jury_defeat(ctx, level, floor_data)
 
@@ -6732,7 +6772,11 @@ class Battles(commands.Cog):
         except Exception as e:
             import traceback
             error_message = f"An error occurred during the Jury Tower battle: {e}\n{traceback.format_exc()}"
-            await ctx.send(error_message[:1900] + "..." if len(error_message) > 1900 else error_message)
+            await self._send_with_retry(
+                ctx,
+                content=error_message[:1900] + "..." if len(error_message) > 1900 else error_message,
+                suppress_failure=True,
+            )
             print(error_message)
             await self.remove_player_from_fight(ctx.author.id)
             await self.bot.reset_cooldown(ctx)
@@ -6760,6 +6804,7 @@ class Battles(commands.Cog):
             The battle's winner will receive a PvP win, which shows on their profile.
             (This command has a cooldown of 5 minutes)"""
         )
+        ctx = self._guard_battle_context(ctx)
         try:
             if enemy == ctx.author:
                 await self.bot.reset_cooldown(ctx)
@@ -6818,7 +6863,20 @@ class Battles(commands.Cog):
                 check_fail_message=_("You don't have enough money to join the raidbattle."),
             )
 
-            await ctx.send(text, view=view)
+            join_message = await self._send_with_retry(
+                ctx,
+                content=text,
+                view=view,
+                suppress_failure=True,
+            )
+            if join_message is None:
+                await self.bot.reset_cooldown(ctx)
+                await self.bot.pool.execute(
+                    'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                    money,
+                    ctx.author.id,
+                )
+                return
 
             try:
                 enemy_ = await future
@@ -6830,10 +6888,13 @@ class Battles(commands.Cog):
                     money,
                     ctx.author.id,
                 )
-                return await ctx.send(
+                return await self._send_with_retry(
+                    ctx,
+                    content=
                     _("No one wanted to join your raidbattle, {author}!").format(
                         author=ctx.author.mention
-                    )
+                    ),
+                    suppress_failure=True,
                 )
 
             # Deduct money from the enemy
@@ -6865,17 +6926,23 @@ class Battles(commands.Cog):
             
             if result:
                 winner, loser = result
-                await ctx.send(
+                await self._send_with_retry(
+                    ctx,
+                    content=
                     _("{winner} won the raidbattle vs {loser}! Congratulations!").format(
                         winner=winner.mention, loser=loser.mention
-                    )
+                    ),
+                    suppress_failure=True,
                 )
             else:
                 # Battle ended in a tie
-                await ctx.send(
+                await self._send_with_retry(
+                    ctx,
+                    content=
                     _("The raidbattle between {p1} and {p2} ended in a tie! Money has been refunded.").format(
                         p1=ctx.author.mention, p2=enemy_.mention
-                    )
+                    ),
+                    suppress_failure=True,
                 )
                 # Refund money to both players
                 async with self.bot.pool.acquire() as conn:
@@ -6889,7 +6956,7 @@ class Battles(commands.Cog):
             import traceback
             error_message = f"Error occurred: {e}\n"
             error_message += traceback.format_exc()
-            await ctx.send(error_message)
+            await self._send_with_retry(ctx, content=error_message[:1900], suppress_failure=True)
             print(error_message)
 
     @has_char()
@@ -6916,6 +6983,7 @@ class Battles(commands.Cog):
             Each member of the winning side will receive a PvP win.
             (This command has a cooldown of 5 minutes)"""
         )
+        ctx = self._guard_battle_context(ctx)
         deducted_ids = []
         battle_resolved = False
 
@@ -6997,7 +7065,7 @@ class Battles(commands.Cog):
                 check_fail_message=_("You don't have a character or enough money to join the raidbattle."),
             )
 
-            await ctx.send(
+            teammate_message = await ctx.send(
                 _("{teammate}, {author} has invited you to join them in a 2v1 raidbattle! The price is **${money}** per player.").format(
                     teammate=teammate.mention,
                     author=ctx.author.mention,
@@ -7005,6 +7073,10 @@ class Battles(commands.Cog):
                 ),
                 view=teammate_view,
             )
+            if teammate_message is None:
+                await refund_players(deducted_ids)
+                await safe_reset_cooldown()
+                return
 
             try:
                 teammate_ = await asyncio.wait_for(teammate_future, timeout=60)
@@ -7054,7 +7126,11 @@ class Battles(commands.Cog):
                     money=money,
                 )
 
-            await ctx.send(enemy_text, view=enemy_view)
+            enemy_message = await ctx.send(enemy_text, view=enemy_view)
+            if enemy_message is None:
+                await refund_players(deducted_ids)
+                await safe_reset_cooldown()
+                return
 
             try:
                 enemy_ = await asyncio.wait_for(enemy_future, timeout=60)
@@ -7077,11 +7153,14 @@ class Battles(commands.Cog):
             team_a = [ctx.author, teammate_]
             team_b = [enemy_]
 
-            await ctx.send(
+            await self._send_with_retry(
+                ctx,
+                content=
                 _("**Team A**: {team_a_members}\n**Team B**: {team_b_members}\n\nLet the battle begin!").format(
                     team_a_members=", ".join(member.mention for member in team_a),
                     team_b_members=", ".join(member.mention for member in team_b),
-                )
+                ),
+                suppress_failure=True,
             )
 
             battle = await self.battle_factory.create_battle(
@@ -7111,18 +7190,24 @@ class Battles(commands.Cog):
                     winning_team = team_b
                     losing_team = team_a
 
-                await ctx.send(
+                await self._send_with_retry(
+                    ctx,
+                    content=
                     _("Team {winning_team} won the 2v1 raidbattle against Team {losing_team}! Congratulations!").format(
                         winning_team=", ".join(member.mention for member in winning_team),
                         losing_team=", ".join(member.mention for member in losing_team),
-                    )
+                    ),
+                    suppress_failure=True,
                 )
             else:
-                await ctx.send(
+                await self._send_with_retry(
+                    ctx,
+                    content=
                     _("The 2v1 raidbattle between {team_a_members} and {team_b_members} ended in a tie! Money has been refunded.").format(
                         team_a_members=", ".join(member.mention for member in team_a),
                         team_b_members=", ".join(member.mention for member in team_b),
-                    )
+                    ),
+                    suppress_failure=True,
                 )
         except Exception as e:
             if deducted_ids and not battle_resolved:
@@ -7130,7 +7215,7 @@ class Battles(commands.Cog):
                 await safe_reset_cooldown()
             error_message = f"Error occurred: {e}\n"
             error_message += traceback.format_exc()
-            await ctx.send(error_message)
+            await self._send_with_retry(ctx, content=error_message[:1900], suppress_failure=True)
             print(error_message)
 
     @raidbattle2v1.error
@@ -7180,6 +7265,7 @@ class Battles(commands.Cog):
             Each member of the winning team will receive a PvP win, which shows on their profile.
             (This command has a cooldown of 5 minutes)"""
         )
+        ctx = self._guard_battle_context(ctx)
         try:
             # Check if the initiator has enough money
             if ctx.character_data["money"] < money:
@@ -7226,6 +7312,7 @@ class Battles(commands.Cog):
                 participants = [ctx.author]
                 participant_ids = {ctx.author.id}
                 join_lock = asyncio.Lock()
+                battle_cog = self
                 
                 battle_msg = None
                 
@@ -7281,24 +7368,32 @@ class Battles(commands.Cog):
                             joined_text = "\n".join([f"• {p.mention}" for p in participants])
                             needed = 4 - len(participants)
 
-                            await battle_msg.edit(content=_(
-                                "{author} has started a 2v2 raidbattle! The price is **${money}** per player.\n"
-                                "**Participants ({count}/4):**\n{participants}\n\n"
-                                "{needed_text}"
-                            ).format(
-                                author=ctx.author.mention,
-                                money=money,
-                                count=len(participants),
-                                participants=joined_text,
-                                needed_text=_("Need {more} more players to start!").format(more=needed) if needed > 0 else _("Battle ready to begin!")
-                            ))
+                            await battle_cog._edit_message_with_retry(
+                                battle_msg,
+                                content=_(
+                                    "{author} has started a 2v2 raidbattle! The price is **${money}** per player.\n"
+                                    "**Participants ({count}/4):**\n{participants}\n\n"
+                                    "{needed_text}"
+                                ).format(
+                                    author=ctx.author.mention,
+                                    money=money,
+                                    count=len(participants),
+                                    participants=joined_text,
+                                    needed_text=_("Need {more} more players to start!").format(more=needed) if needed > 0 else _("Battle ready to begin!")
+                                ),
+                                suppress_failure=True,
+                            )
 
                             # If we have 4 players, start the battle
                             if len(participants) >= 4:
                                 self.is_complete = True
                                 for item in self.children:
                                     item.disabled = True
-                                await battle_msg.edit(view=self)
+                                await battle_cog._edit_message_with_retry(
+                                    battle_msg,
+                                    view=self,
+                                    suppress_failure=True,
+                                )
                                 self.stop()
                 
                 # Create the view and send the initial message
@@ -7312,6 +7407,14 @@ class Battles(commands.Cog):
                     ),
                     view=view
                 )
+                if battle_msg is None:
+                    await self.bot.reset_cooldown(ctx)
+                    await self.bot.pool.execute(
+                        'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                        money,
+                        ctx.author.id,
+                    )
+                    return
                 
                 # Wait for the view to complete or timeout
                 await view.wait()
@@ -7457,11 +7560,14 @@ class Battles(commands.Cog):
                 team_b = opponents_
 
             # Announce teams
-            await ctx.send(
+            await self._send_with_retry(
+                ctx,
+                content=
                 _("**Team A**: {team_a_members}\n**Team B**: {team_b_members}\n\nLet the battle begin!").format(
                     team_a_members=", ".join(member.mention for member in team_a),
                     team_b_members=", ".join(member.mention for member in team_b)
-                )
+                ),
+                suppress_failure=True,
             )
 
             # Create and start the battle
@@ -7487,15 +7593,22 @@ class Battles(commands.Cog):
             if result:
                 # Battle has a winner
                 winning_team, losing_team = result
-                await ctx.send(
+                await self._send_with_retry(
+                    ctx,
+                    content=
                     _("Team {winning_team} won the battle against Team {losing_team}! Congratulations!").format(
                         winning_team=winning_team,
                         losing_team=losing_team
-                    )
+                    ),
+                    suppress_failure=True,
                 )
             else:
                 # Battle ended in a tie
-                await ctx.send(_("The battle ended in a tie! All money has been refunded."))
+                await self._send_with_retry(
+                    ctx,
+                    content=_("The battle ended in a tie! All money has been refunded."),
+                    suppress_failure=True,
+                )
                 # Refund money to all players
                 for player in team_a + team_b:
                     await self.bot.pool.execute(
@@ -7504,7 +7617,7 @@ class Battles(commands.Cog):
                         player.id,
                     )
         except Exception as e:
-            await ctx.send(str(e))
+            await self._send_with_retry(ctx, content=str(e), suppress_failure=True)
 
     @has_char()
     @commands.command(
@@ -7850,6 +7963,7 @@ class Battles(commands.Cog):
         - `$pve splice` to force splice injection for this run
         - `$pve normal` to force default-only pool for this run
         """
+        ctx = self._guard_battle_context(ctx)
         pool_override = getattr(ctx, "pve_pool_override", None)
         requested_pool = str(pool_override or pool_option or "").strip().lower()
         if requested_pool in {"", "default"}:
@@ -8057,6 +8171,9 @@ class Battles(commands.Cog):
                     allowed_user_ids=allowed_location_users,
                 )
                 location_message = await ctx.send(embed=location_embed, view=location_view)
+                if location_message is None:
+                    await self.bot.reset_cooldown(ctx)
+                    return
                 location_view.message = location_message
 
                 await location_view.wait()
@@ -8094,6 +8211,9 @@ class Battles(commands.Cog):
             color=self.bot.config.game.primary_colour,
         )
         searching_message = await ctx.send(embed=searching_embed)
+        if searching_message is None:
+            await self.bot.reset_cooldown(ctx)
+            return
         selected_location_id = (
             str(selected_location.get("id", "")).lower() if selected_location else ""
         )
@@ -8149,7 +8269,11 @@ class Battles(commands.Cog):
                         value=selected_location["name"],
                         inline=False,
                     )
-                await searching_message.edit(embed=legendary_embed)
+                await self._edit_message_with_retry(
+                    searching_message,
+                    embed=legendary_embed,
+                    suppress_failure=True,
+                )
                 await asyncio.sleep(4)
         else:
             # Use override from scout command
@@ -8233,7 +8357,11 @@ class Battles(commands.Cog):
             description=found_description,
             color=self.bot.config.game.primary_colour,
         )
-        await searching_message.edit(embed=found_embed)
+        await self._edit_message_with_retry(
+            searching_message,
+            embed=found_embed,
+            suppress_failure=True,
+        )
         if is_omnithrone_encounter:
             confirm = await ctx.confirm(
                 _(
@@ -8250,7 +8378,11 @@ class Battles(commands.Cog):
                     ),
                     color=discord.Color.orange(),
                 )
-                await searching_message.edit(embed=retreat_embed)
+                await self._edit_message_with_retry(
+                    searching_message,
+                    embed=retreat_embed,
+                    suppress_failure=True,
+                )
                 return
         if is_omnithrone_encounter:
             await asyncio.sleep(self.OMNITHRONE_FOUND_DELAY_SECONDS)
@@ -8267,7 +8399,7 @@ class Battles(commands.Cog):
 
             error_message = f"Error occurred: {exc}\n"
             error_message += traceback.format_exc()
-            await ctx.send(error_message)
+            await self._send_with_retry(ctx, content=error_message[:1900], suppress_failure=True)
             print(error_message)
 
         battle_started = False
@@ -8593,6 +8725,7 @@ class Battles(commands.Cog):
     @user_cooldown(1800)  # 30 minute cooldown
     async def scout(self, ctx):
         """Scout ahead to see what monster you'll face in PVE."""
+        ctx = self._guard_battle_context(ctx)
         # Element emoji mapping
         element_to_emoji = {
             "Light": "🌟",
@@ -8729,6 +8862,9 @@ class Battles(commands.Cog):
                         embed=location_choice_embed,
                         view=location_choice_view,
                     )
+                    if location_choice_message is None:
+                        await self.bot.reset_cooldown(ctx)
+                        return
                     location_choice_view.message = location_choice_message
 
                     await location_choice_view.wait()
@@ -8928,6 +9064,9 @@ class Battles(commands.Cog):
                         allowed_scout_user_ids,
                     )
                     message = await ctx.send(embed=embed, view=view)
+                    if message is None:
+                        await ctx.bot.reset_cooldown(ctx)
+                        return
                     
                     await view.wait()
                     
@@ -8986,6 +9125,7 @@ class Battles(commands.Cog):
         Options format: key1=value1 key2=value2
         Example: $custom_battle pve pets=true elements=true
         """
+        ctx = self._guard_battle_context(ctx)
         # Parse options from string (format: key1=value1 key2=value2)
         options_dict = {}
         if options:
@@ -9242,6 +9382,7 @@ class Battles(commands.Cog):
         
         **Aliases**: `p`
         """
+        ctx = self._guard_battle_context(ctx)
         try:
             # Check if the user is already in a party
             if any(view.is_complete is False and ctx.author in view.party_members 
@@ -9391,7 +9532,15 @@ class Battles(commands.Cog):
             
             # Create and send the party view
             view = DragonPartyView(self.bot)
-            message = await ctx.send(embed=await view.update_embed(), view=view)
+            message = await self._send_with_retry(
+                ctx,
+                embed=await view.update_embed(),
+                view=view,
+                suppress_failure=True,
+            )
+            if message is None:
+                await self.bot.reset_cooldown(ctx)
+                return
             view.message = message  # Store message reference
             # Start the warning timer
             view._warning_task = asyncio.create_task(view.start_warning_timer())
@@ -9401,7 +9550,13 @@ class Battles(commands.Cog):
             
             # Check if party formation was successful
             if view.is_complete:
-                await message.edit(content="Party formed! Starting the challenge...", embed=None, view=None)
+                await self._edit_message_with_retry(
+                    message,
+                    content="Party formed! Starting the challenge...",
+                    embed=None,
+                    view=None,
+                    suppress_failure=True,
+                )
                 
                 # Add all party members to the fighting players
                 for member in view.party_members:
@@ -9422,11 +9577,19 @@ class Battles(commands.Cog):
                             # Remove players from fighting
                             for member in view.party_members:
                                 await self.remove_player_from_fight(member.id)
-                            return await ctx.send("Failed to start the dragon challenge!")
+                            return await self._send_with_retry(
+                                ctx,
+                                content="Failed to start the dragon challenge!",
+                                suppress_failure=True,
+                            )
                         
                         # Process battle turns
                         turn_count = 0
-                        battle_msg = await ctx.send("⚔️ Battle started! Dragons and adventurers clash...")
+                        battle_msg = await self._send_with_retry(
+                            ctx,
+                            content="⚔️ Battle started! Dragons and adventurers clash...",
+                            suppress_failure=True,
+                        )
                         
                         while not await battle.is_battle_over():
                             try:
@@ -9435,29 +9598,36 @@ class Battles(commands.Cog):
                                 
                                 # Only update message every 5 turns to reduce spam
                                 if turn_count % 5 == 0:
-                                    try:
-                                        await battle_msg.edit(content=f"⚔️ Battle in progress - Turn {turn_count} - The dragon and party continue to battle...")
-                                    except discord.DiscordServerError:
-                                        # Transient Discord upstream failure; continue battle loop.
-                                        pass
-                                    except discord.HTTPException as edit_error:
-                                        # Retry behavior for this message is handled on next cycle.
-                                        if getattr(edit_error, "status", None) is None or edit_error.status >= 500:
-                                            pass
-                                        else:
-                                            raise
+                                    if battle_msg is not None:
+                                        await self._edit_message_with_retry(
+                                            battle_msg,
+                                            content=f"⚔️ Battle in progress - Turn {turn_count} - The dragon and party continue to battle...",
+                                            suppress_failure=True,
+                                        )
                                 
                                 await asyncio.sleep(1)  # 1 second delay between turns for faster battles
                             except Exception as e:
-                                await ctx.send(f"⚠️ Error in turn {turn_count}: {str(e)}\n```{traceback.format_exc()}```")
+                                await self._send_with_retry(
+                                    ctx,
+                                    content=f"⚠️ Error in turn {turn_count}: {str(e)}\n```{traceback.format_exc()}```"[:1900],
+                                    suppress_failure=True,
+                                )
                                 break
                         
                         # Get the battle result
-                        await ctx.send("Battle completed. Processing result...")
+                        await self._send_with_retry(
+                            ctx,
+                            content="Battle completed. Processing result...",
+                            suppress_failure=True,
+                        )
                         victory = await battle.end_battle()
                         
                     except Exception as e:
-                        await ctx.send(f"⚠️ Error in dragon battle: {str(e)}\n```{traceback.format_exc()}```")
+                        await self._send_with_retry(
+                            ctx,
+                            content=f"⚠️ Error in dragon battle: {str(e)}\n```{traceback.format_exc()}```"[:1900],
+                            suppress_failure=True,
+                        )
                         return
                     
                     # Handle rewards
@@ -9471,10 +9641,10 @@ class Battles(commands.Cog):
                     elif victory is False:  # Players lost
                         await self._handle_dragon_defeat(ctx, view.party_members)
                     else:  # Draw
-                        await ctx.send("The battle ended in a draw!")
+                        await self._send_with_retry(ctx, content="The battle ended in a draw!", suppress_failure=True)
 
                     if combat_summary_embed is not None:
-                        await ctx.send(embed=combat_summary_embed)
+                        await self._send_with_retry(ctx, embed=combat_summary_embed, suppress_failure=True)
                         
                 finally:
                     # Always remove players from fighting status
@@ -9482,10 +9652,16 @@ class Battles(commands.Cog):
                         await self.remove_player_from_fight(member.id)
                         
             else:
-                await message.edit(content="Party formation timed out!", embed=None, view=None)
+                await self._edit_message_with_retry(
+                    message,
+                    content="Party formation timed out!",
+                    embed=None,
+                    view=None,
+                    suppress_failure=True,
+                )
                 await self.bot.reset_cooldown(ctx)
         except Exception as e:
-            await ctx.send(e)
+            await self._send_with_retry(ctx, content=str(e), suppress_failure=True)
     
     async def _get_ice_dragon_drops(self):
         async with self.bot.pool.acquire() as conn:
@@ -10016,6 +10192,66 @@ class Battles(commands.Cog):
         except Exception:
             pass  # Ignore redis errors
 
+    async def _discord_request_with_retry(self, request, *, action_name: str, attempts: int = 3, suppress_failure: bool = False):
+        for attempt in range(1, attempts + 1):
+            try:
+                return await request()
+            except discord.NotFound:
+                raise
+            except discord.Forbidden:
+                raise
+            except (discord.DiscordServerError, asyncio.TimeoutError, OSError) as exc:
+                if attempt < attempts:
+                    await asyncio.sleep(attempt)
+                    continue
+                logger.warning("Battles %s failed after retries: %s", action_name, exc)
+                if suppress_failure:
+                    return None
+                raise
+            except discord.HTTPException as exc:
+                status = getattr(exc, "status", None)
+                if status is not None and status >= 500 and attempt < attempts:
+                    await asyncio.sleep(attempt)
+                    continue
+                if status is not None and status >= 500:
+                    logger.warning("Battles %s failed after retries: %s", action_name, exc)
+                    if suppress_failure:
+                        return None
+                raise
+
+    async def _send_with_retry(self, ctx, *, suppress_failure: bool = False, **kwargs):
+        send_callable = getattr(ctx, "_battle_original_send", ctx.send)
+        return await self._discord_request_with_retry(
+            lambda: send_callable(**kwargs),
+            action_name="ctx.send",
+            suppress_failure=suppress_failure,
+        )
+
+    async def _edit_message_with_retry(self, message, *, suppress_failure: bool = False, **kwargs):
+        return await self._discord_request_with_retry(
+            lambda: message.edit(**kwargs),
+            action_name="message.edit",
+            suppress_failure=suppress_failure,
+        )
+
+    def _guard_battle_context(self, ctx):
+        if getattr(ctx, "_battle_send_guarded", False):
+            return ctx
+
+        original_send = ctx.send
+
+        async def guarded_send(*args, **kwargs):
+            return await self._discord_request_with_retry(
+                lambda: original_send(*args, **kwargs),
+                action_name="ctx.send",
+                suppress_failure=True,
+            )
+
+        ctx._battle_original_send = original_send
+        ctx.send = guarded_send
+        ctx._battle_send_guarded = True
+        return ctx
+
     async def get_couple_progress(self, user_id, partner_id):
         """Fetch couple's battle tower progress from the database."""
         id1, id2 = sorted((user_id, partner_id))
@@ -10047,6 +10283,7 @@ class Battles(commands.Cog):
     @user_cooldown(3600)
     async def cbt_start(self, ctx):
         """Starts a Couples Battle Tower fight."""
+        ctx = self._guard_battle_context(ctx)
         try:
             author = ctx.author
             query = "SELECT marriage FROM profile WHERE profile.user = $1"
@@ -10096,14 +10333,19 @@ class Battles(commands.Cog):
             embed.add_field(name="💑 Your Partner", value=f"{partner.display_name}, please join the battle!", inline=False)
             embed.set_footer(text=f"Your love will be tested on this floor...")
             try:
-                await ctx.send(partner.mention)
+                await self._send_with_retry(ctx, content=partner.mention)
             except:
                 pass
 
-            original_message = await ctx.send(embed=embed)
+            original_message = await self._send_with_retry(ctx, embed=embed)
 
             async def on_join():
-                await original_message.edit(content=_("💕 Your partner has joined! Preparing for battle..."), embed=None, view=None)
+                await self._edit_message_with_retry(
+                    original_message,
+                    content=_("💕 Your partner has joined! Preparing for battle..."),
+                    embed=None,
+                    view=None,
+                )
                 
                 # Show couples dialogue
                 await self.display_couples_dialogue(ctx, level, author, partner)
@@ -10136,7 +10378,7 @@ class Battles(commands.Cog):
                         vic_embed = discord.Embed(title=f"🏆 Floor {level} Conquered! - {victory_data.get('title', 'Victory!')} 🏆",
                                                   description=victory_data.get('description', 'You are victorious!'),
                                                   color=discord.Color.gold())
-                        await ctx.send(embed=vic_embed)
+                        await self._send_with_retry(ctx, embed=vic_embed, suppress_failure=True)
                         
                         # Check if this level has chest rewards (every 5 levels)
                         if victory_data.get('has_chest', False):
@@ -10159,7 +10401,11 @@ class Battles(commands.Cog):
                             # Regular level completion - just update progress
                             await self.update_couple_progress(author.id, partner.id, level + 1)
                     else:
-                        await ctx.send("💔 You have been defeated. Train harder and try again!")
+                        await self._send_with_retry(
+                            ctx,
+                            content="💔 You have been defeated. Train harder and try again!",
+                            suppress_failure=True,
+                        )
 
                 finally:
                     await self.remove_player_from_fight(author.id)
@@ -10167,14 +10413,19 @@ class Battles(commands.Cog):
 
 
             async def on_cancel():
-                await original_message.edit(content=_("💔 The battle was cancelled or your partner did not respond in time."), embed=None, view=None)
+                await self._edit_message_with_retry(
+                    original_message,
+                    content=_("💔 The battle was cancelled or your partner did not respond in time."),
+                    embed=None,
+                    view=None,
+                )
                 # Reset cooldown for both partners since battle didn't start
                 await self.reset_couples_cooldown(author.id, partner.id)
 
             view = CouplesTowerView(author, partner, on_join, on_cancel)
-            await original_message.edit(embed=embed, view=view)
+            await self._edit_message_with_retry(original_message, embed=embed, view=view)
         except Exception as e:
-            await ctx.send(e)
+            await self._send_with_retry(ctx, content=str(e), suppress_failure=True)
 
     @couples_battletower.command(name="progress")
     @has_char()
@@ -10348,6 +10599,7 @@ class Battles(commands.Cog):
     @user_cooldown(300)
     async def cbt_begin(self, ctx):
         """Starts a Couples Battle Tower fight."""
+        ctx = self._guard_battle_context(ctx)
         try:
             author = ctx.author
             query = "SELECT marriage FROM profile WHERE profile.user = $1"
@@ -10408,14 +10660,19 @@ class Battles(commands.Cog):
             embed.add_field(name="💑 Your Partner", value=f"{partner.display_name}, please join the battle!", inline=False)
             embed.set_footer(text=f"Your love will be tested on this floor...")
             try: 
-                await ctx.send(partner.mention)
+                await self._send_with_retry(ctx, content=partner.mention)
             except:
                 pass
 
-            original_message = await ctx.send(embed=embed)
+            original_message = await self._send_with_retry(ctx, embed=embed)
 
             async def on_join():
-                await original_message.edit(content=_("💕 Your partner has joined! Preparing for battle..."), embed=None, view=None)
+                await self._edit_message_with_retry(
+                    original_message,
+                    content=_("💕 Your partner has joined! Preparing for battle..."),
+                    embed=None,
+                    view=None,
+                )
                 
                 # Show couples dialogue
                 await self.display_couples_dialogue(ctx, level, author, partner)
@@ -10448,7 +10705,7 @@ class Battles(commands.Cog):
                         vic_embed = discord.Embed(title=f"🏆 Floor {level} Conquered! - {victory_data.get('title', 'Victory!')} 🏆",
                                                   description=victory_data.get('description', 'You are victorious!'),
                                                   color=discord.Color.gold())
-                        await ctx.send(embed=vic_embed)
+                        await self._send_with_retry(ctx, embed=vic_embed, suppress_failure=True)
                         
                         # Check if this level has chest rewards (every 5 levels)
                         if victory_data.get('has_chest', False):
@@ -10471,7 +10728,11 @@ class Battles(commands.Cog):
                             # Regular level completion - just update progress
                             await self.update_couple_progress(author.id, partner.id, level + 1)
                     else:
-                        await ctx.send("💔 You have been defeated. Train harder and try again!")
+                        await self._send_with_retry(
+                            ctx,
+                            content="💔 You have been defeated. Train harder and try again!",
+                            suppress_failure=True,
+                        )
 
                 finally:
                     await self.remove_player_from_fight(author.id)
@@ -10479,14 +10740,19 @@ class Battles(commands.Cog):
 
 
             async def on_cancel():
-                await original_message.edit(content=_("💔 The battle was cancelled or your partner did not respond in time."), embed=None, view=None)
+                await self._edit_message_with_retry(
+                    original_message,
+                    content=_("💔 The battle was cancelled or your partner did not respond in time."),
+                    embed=None,
+                    view=None,
+                )
                 # Reset cooldown for both partners since battle didn't start
                 await self.reset_couples_cooldown(author.id, partner.id)
 
             view = CouplesTowerView(author, partner, on_join, on_cancel)
-            await original_message.edit(embed=embed, view=view)
+            await self._edit_message_with_retry(original_message, embed=embed, view=view)
         except Exception as e:
-            await ctx.send(e)
+            await self._send_with_retry(ctx, content=str(e), suppress_failure=True)
 
     async def display_couples_dialogue(self, ctx, level, author, partner, dialogue_only=False):
         """Display dialogue for couples battle tower levels"""
@@ -10577,7 +10843,11 @@ class Battles(commands.Cog):
             pages.append(final_embed)
             
             # Show dialogue with enhanced presentation
-            await ctx.send("💕 **The Tower of Eternal Bonds welcomes you both...** 💕")
+            await self._send_with_retry(
+                ctx,
+                content="💕 **The Tower of Eternal Bonds welcomes you both...** 💕",
+                suppress_failure=True,
+            )
             
             # Choose the appropriate view based on the dialogue_only parameter
             if dialogue_only:
@@ -10585,13 +10855,23 @@ class Battles(commands.Cog):
             else:
                 view = CouplesDialogueView(pages, author, partner)
                 
-            await ctx.send(embed=pages[0], view=view)
-            await view.wait()
+            dialogue_message = await self._send_with_retry(
+                ctx,
+                embed=pages[0],
+                view=view,
+                suppress_failure=True,
+            )
+            if dialogue_message is not None:
+                await view.wait()
             
             return True
             
         except Exception as e:
-            await ctx.send(f"Error displaying dialogue: {e}")
+            await self._send_with_retry(
+                ctx,
+                content=f"Error displaying dialogue: {e}",
+                suppress_failure=True,
+            )
             return False
     
     def get_level_mechanics_description(self, level):

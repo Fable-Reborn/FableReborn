@@ -581,7 +581,7 @@ class PvEBattle(Battle):
         
         # Check if it's a timeout/tie
         if await self.is_timed_out():
-            await self.ctx.send("The battle ended in a draw due to timeout.")
+            await self.send_with_retry(content="The battle ended in a draw due to timeout.")
             # Save final battle state to database for replay
             await self.save_battle_to_database()
             return None
@@ -589,8 +589,8 @@ class PvEBattle(Battle):
         # Determine winner
         if all(not c.is_alive() for c in self.player_team.combatants):
             # Player lost
-            await self.ctx.send(
-                f"You were defeated by the **{self.monster_team.combatants[0].name}**. Better luck next time!"
+            await self.send_with_retry(
+                content=f"You were defeated by the **{self.monster_team.combatants[0].name}**. Better luck next time!"
             )
             # Save final battle state to database for replay
             await self.save_battle_to_database()
@@ -699,7 +699,7 @@ class PvEBattle(Battle):
                 elif pet_battle_result.get("reason") == "daily_cap_reached":
                     victory_message += "\n🐾 **Pet XP:** Daily battle XP cap already reached today."
             
-            await self.ctx.send(victory_message)
+            await self.send_with_retry(content=victory_message)
             
             # Check for level up
             from utils import misc as rpgtools

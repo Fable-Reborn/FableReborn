@@ -125,9 +125,9 @@ class CouplesTowerBattle(TowerBattle):
             try:
                 await self.initialize_mirror_of_truth()
             except Exception as e:
-                await self.ctx.send(f"Level 23 Initialization Error: {e}")
+                await self.send_with_retry(content=f"Level 23 Initialization Error: {e}")
                 import traceback
-                await self.ctx.send(f"```{traceback.format_exc()}```")
+                await self.send_with_retry(content=f"```{traceback.format_exc()}```")
         
         # Level 24: Storm of Chaos - Initialize chaos system
         if self.level == 24:
@@ -284,7 +284,7 @@ class CouplesTowerBattle(TowerBattle):
                 )
                 partner2_prestige = partner1_prestige  # Same record, same prestige
         except Exception as e:
-            await self.ctx.send(f"🚨 **Error applying rewards**: {e}")
+            await self.send_with_retry(content=f"🚨 **Error applying rewards**: {e}")
             partner1_prestige = 1
             partner2_prestige = 1
         
@@ -328,14 +328,14 @@ class CouplesTowerBattle(TowerBattle):
         
         # Send the combined embed
         try:
-            await self.ctx.send(embed=embed)
+            await self.send_with_retry(embed=embed)
             
             # Final celebration message
             await asyncio.sleep(2)
-            await self.ctx.send("🌟✨💕 *The tower fades into starlight, but your love remains eternal* 💕✨🌟")
+            await self.send_with_retry(content="🌟✨💕 *The tower fades into starlight, but your love remains eternal* 💕✨🌟")
                 
         except Exception as e:
-            await self.ctx.send(f"🌟 **Congratulations!** You have completed the Couples Battle Tower! 🌟\n*Error in ceremony: {e}*")
+            await self.send_with_retry(content=f"🌟 **Congratulations!** You have completed the Couples Battle Tower! 🌟\n*Error in ceremony: {e}*")
     
 
     
@@ -692,9 +692,9 @@ class CouplesTowerBattle(TowerBattle):
             try:
                 return await self.process_turn_with_possession_mechanics()
             except Exception as e:
-                await self.ctx.send(f"Level 23 Error: {e}")
+                await self.send_with_retry(content=f"Level 23 Error: {e}")
                 import traceback
-                await self.ctx.send(f"```{traceback.format_exc()}```")
+                await self.send_with_retry(content=f"```{traceback.format_exc()}```")
                 return False
         
         # Level 24: Storm of Chaos - override turn processing for chaos mechanics
@@ -702,9 +702,9 @@ class CouplesTowerBattle(TowerBattle):
             try:
                 return await self.process_turn_with_chaos_mechanics()
             except Exception as e:
-                await self.ctx.send(f"Level 24 Error: {e}")
+                await self.send_with_retry(content=f"Level 24 Error: {e}")
                 import traceback
-                await self.ctx.send(f"```{traceback.format_exc()}```")
+                await self.send_with_retry(content=f"```{traceback.format_exc()}```")
                 return False
         
         # Level 21: Forge Heat - apply heat damage once per complete round
@@ -717,18 +717,18 @@ class CouplesTowerBattle(TowerBattle):
                     if heat_result is False:
                         return False  # Partner died from heat or only one partner remains, end battle
             except Exception as e:
-                await self.ctx.send(f"Level 21 Forge Heat Error: {e}")
+                await self.send_with_retry(content=f"Level 21 Forge Heat Error: {e}")
                 import traceback
-                await self.ctx.send(f"```{traceback.format_exc()}```")
+                await self.send_with_retry(content=f"```{traceback.format_exc()}```")
         
         # Level 27: Aging Effect - reduce stats each turn
         if self.level == 27:
             try:
                 await self.apply_aging_effect()
             except Exception as e:
-                await self.ctx.send(f"Level 27 Error: {e}")
+                await self.send_with_retry(content=f"Level 27 Error: {e}")
                 import traceback
-                await self.ctx.send(f"```{traceback.format_exc()}```")
+                await self.send_with_retry(content=f"```{traceback.format_exc()}```")
         
         # Level 6: Intercept damage application for health sharing
         if self.level == 6:
@@ -739,9 +739,9 @@ class CouplesTowerBattle(TowerBattle):
             try:
                 return await self.process_turn_with_memory_fragments()
             except Exception as e:
-                await self.ctx.send(f"Level 7 Memory Error: {e}")
+                await self.send_with_retry(content=f"Level 7 Memory Error: {e}")
                 import traceback
-                await self.ctx.send(f"```{traceback.format_exc()}```")
+                await self.send_with_retry(content=f"```{traceback.format_exc()}```")
                 return False
         
         # Level 8: Friendly fire - override turn processing entirely
@@ -757,9 +757,9 @@ class CouplesTowerBattle(TowerBattle):
             try:
                 return await super().process_turn()
             except Exception as e:
-                await self.ctx.send(f"Level 11 Error: {e}")
+                await self.send_with_retry(content=f"Level 11 Error: {e}")
                 import traceback
-                await self.ctx.send(f"```{traceback.format_exc()}```")
+                await self.send_with_retry(content=f"```{traceback.format_exc()}```")
                 return False
         
         # Level 12: Frozen Wastes - override turn processing for freeze mechanics
@@ -783,9 +783,9 @@ class CouplesTowerBattle(TowerBattle):
             try:
                 return await self.process_turn_with_grudge_mechanics()
             except Exception as e:
-                await self.ctx.send(f"Level 16 Error: {e}")
+                await self.send_with_retry(content=f"Level 16 Error: {e}")
                 import traceback
-                await self.ctx.send(f"```{traceback.format_exc()}```")
+                await self.send_with_retry(content=f"```{traceback.format_exc()}```")
                 return False
         
         # Level 18: Garden of Temptation - override turn processing for temptation mechanics
@@ -801,9 +801,9 @@ class CouplesTowerBattle(TowerBattle):
             try:
                 return await self.process_turn_with_despair_mechanics()
             except Exception as e:
-                await self.ctx.send(f"Level 22 Error: {e}")
+                await self.send_with_retry(content=f"Level 22 Error: {e}")
                 import traceback
-                await self.ctx.send(f"```{traceback.format_exc()}```")
+                await self.send_with_retry(content=f"```{traceback.format_exc()}```")
                 return False
         
         # Level 25: Abyss of Fear - override turn processing for fear paralysis mechanics
@@ -811,9 +811,9 @@ class CouplesTowerBattle(TowerBattle):
             try:
                 return await self.process_turn_with_fear_mechanics()
             except Exception as e:
-                await self.ctx.send(f"Level 25 Error: {e}")
+                await self.send_with_retry(content=f"Level 25 Error: {e}")
                 import traceback
-                await self.ctx.send(f"```{traceback.format_exc()}```")
+                await self.send_with_retry(content=f"```{traceback.format_exc()}```")
                 return False
         
         # Level 26: Tower of Pain - override turn processing for pain fury mechanics
@@ -821,9 +821,9 @@ class CouplesTowerBattle(TowerBattle):
             try:
                 return await self.process_turn_with_pain_mechanics()
             except Exception as e:
-                await self.ctx.send(f"Level 26 Error: {e}")
+                await self.send_with_retry(content=f"Level 26 Error: {e}")
                 import traceback
-                await self.ctx.send(f"```{traceback.format_exc()}```")
+                await self.send_with_retry(content=f"```{traceback.format_exc()}```")
                 return False
         
         # Level 28: Chamber of Growth - override turn processing for growth requirement mechanics  
@@ -831,9 +831,9 @@ class CouplesTowerBattle(TowerBattle):
             try:
                 return await self.process_turn_with_growth_mechanics()
             except Exception as e:
-                await self.ctx.send(f"Level 28 Error: {e}")
+                await self.send_with_retry(content=f"Level 28 Error: {e}")
                 import traceback
-                await self.ctx.send(f"```{traceback.format_exc()}```")
+                await self.send_with_retry(content=f"```{traceback.format_exc()}```")
                 return False
         
         # Level 29: Threshold of Eternity - override turn processing for spirit healing mechanics
@@ -841,9 +841,9 @@ class CouplesTowerBattle(TowerBattle):
             try:
                 return await self.process_turn_with_spirit_healing()
             except Exception as e:
-                await self.ctx.send(f"Level 29 Error: {e}")
+                await self.send_with_retry(content=f"Level 29 Error: {e}")
                 import traceback
-                await self.ctx.send(f"```{traceback.format_exc()}```")
+                await self.send_with_retry(content=f"```{traceback.format_exc()}```")
                 return False
         
         # Continue with normal turn processing
@@ -2041,7 +2041,7 @@ class CouplesTowerBattle(TowerBattle):
             description="The Guardian halts the battle!\n\n**Both partners must type 'together' within 10 seconds to continue!**",
             color=discord.Color.orange()
         )
-        await self.ctx.send(embed=embed)
+        await self.send_with_retry(embed=embed)
         
         responses = set()
         start_time = asyncio.get_event_loop().time()
@@ -2068,13 +2068,13 @@ class CouplesTowerBattle(TowerBattle):
             else:
                 await self.add_to_log("💔 **COORDINATION FAILURE!** The Guardian declares your love unworthy!")
                 await self.execute_guardian_punishment()
-                await self.ctx.send("💔 **BATTLE FAILED!** Level 20's Guardian's Test requires both partners to type 'together' within 10 seconds. Your love has been found lacking...")
+                await self.send_with_retry(content="💔 **BATTLE FAILED!** Level 20's Guardian's Test requires both partners to type 'together' within 10 seconds. Your love has been found lacking...")
                 return False
                 
         except asyncio.TimeoutError:
             await self.add_to_log("💔 **TIMEOUT FAILURE!** The Guardian declares your love unworthy!")
             await self.execute_guardian_punishment()
-            await self.ctx.send("💔 **BATTLE FAILED!** Level 20's Guardian's Test requires both partners to type 'together' within 10 seconds. Your love has been found lacking...")
+            await self.send_with_retry(content="💔 **BATTLE FAILED!** Level 20's Guardian's Test requires both partners to type 'together' within 10 seconds. Your love has been found lacking...")
             return False
     
     async def execute_guardian_punishment(self):
@@ -2148,9 +2148,9 @@ class CouplesTowerBattle(TowerBattle):
                 await self.add_to_log(f"🌅 Though your bodies grow frail, your spirits remain intertwined...")
                 
         except Exception as e:
-            await self.ctx.send(f"Level 27 Aging Error: {e}")
+            await self.send_with_retry(content=f"Level 27 Aging Error: {e}")
             import traceback
-            await self.ctx.send(f"```{traceback.format_exc()}```")
+            await self.send_with_retry(content=f"```{traceback.format_exc()}```")
     
     async def process_turn_with_damage_sharing(self):
         """Process turn with Level 6 damage sharing mechanics - full copy of tower.py logic with sharing added"""
@@ -5941,9 +5941,9 @@ class CouplesTowerBattle(TowerBattle):
             try:
                 return await self.create_possession_embed()
             except Exception as e:
-                await self.ctx.send(f"Level 23 Embed Error: {e}")
+                await self.send_with_retry(content=f"Level 23 Embed Error: {e}")
                 import traceback
-                await self.ctx.send(f"```{traceback.format_exc()}```")
+                await self.send_with_retry(content=f"```{traceback.format_exc()}```")
                 # Return a fallback embed
                 return discord.Embed(title="Level 23 - Error", description=f"Error creating embed: {e}", color=discord.Color.red())
             
@@ -6632,9 +6632,9 @@ class CouplesTowerBattle(TowerBattle):
                     
                 return False
             except Exception as e:
-                await self.ctx.send(f"Level 23 Battle Over Check Error: {e}")
+                await self.send_with_retry(content=f"Level 23 Battle Over Check Error: {e}")
                 import traceback
-                await self.ctx.send(f"```{traceback.format_exc()}```")
+                await self.send_with_retry(content=f"```{traceback.format_exc()}```")
                 self.finished = True
                 return True
         
