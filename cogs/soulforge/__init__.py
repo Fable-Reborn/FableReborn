@@ -3045,6 +3045,24 @@ class Soulforge(commands.Cog):
             stat_multiplier = baby_stage["stat_multiplier"]
             growth_time_interval = datetime.timedelta(days=baby_stage["growth_time"])
             growth_time = datetime.datetime.utcnow() + growth_time_interval
+
+            pets_cog = self.bot.get_cog("Pets")
+            max_level = int(getattr(pets_cog, "PET_MAX_LEVEL", 100))
+            level_bonus_per_level = float(getattr(pets_cog, "PET_LEVEL_STAT_BONUS", 0.01))
+
+            def get_splice_level_bonus_pct(level):
+                effective_level = max(1, min(int(level or 1), max_level))
+                return round(effective_level * level_bonus_per_level * 0.5 * 100, 1)
+
+            splice_creation_bonus_pct = round(
+                (
+                    get_splice_level_bonus_pct(pet1_data.get("level"))
+                    + get_splice_level_bonus_pct(pet2_data.get("level"))
+                )
+                / 2,
+                1,
+            )
+            splice_creation_multiplier = 1 + (splice_creation_bonus_pct / 100.0)
             
             # Create sequence of splicing ritual
             pages = []
@@ -3210,9 +3228,9 @@ class Soulforge(commands.Cog):
                     base_hp = existing_splice["hp"]
                     base_attack = existing_splice["attack"]
                     base_defense = existing_splice["defense"]
-                    baby_hp = base_hp * stat_multiplier
-                    baby_attack = base_attack * stat_multiplier
-                    baby_defense = base_defense * stat_multiplier
+                    baby_hp = int(round(round(base_hp * stat_multiplier) * splice_creation_multiplier))
+                    baby_attack = int(round(round(base_attack * stat_multiplier) * splice_creation_multiplier))
+                    baby_defense = int(round(round(base_defense * stat_multiplier) * splice_creation_multiplier))
 
                     baby_hp = baby_hp + hp_iv
                     baby_attack = baby_attack + attack_iv

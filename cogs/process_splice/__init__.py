@@ -1087,26 +1087,65 @@ class ProcessSplice(commands.Cog):
 
         return summaries
 
-    def _calculate_level_adjusted_splice_stats(
-        self,
-        hp: int | float | None,
-        attack: int | float | None,
-        defense: int | float | None,
-        level: int | None,
-    ) -> tuple[int, int, int, float]:
+    def _get_splice_level_bonus_pct(self, level: int | None) -> float:
+        if not level:
+            return 0.0
         pets_cog = self.bot.get_cog("Pets")
         max_level = int(getattr(pets_cog, "PET_MAX_LEVEL", 100))
         level_bonus_per_level = float(getattr(pets_cog, "PET_LEVEL_STAT_BONUS", 0.01))
         effective_level = max(1, min(int(level or 1), max_level))
         splice_level_bonus_multiplier = 0.5
         level_bonus = effective_level * level_bonus_per_level * splice_level_bonus_multiplier
-        level_multiplier = 1 + level_bonus
+        return round(level_bonus * 100, 1)
 
-        adjusted_hp = int(round(float(hp or 0) * level_multiplier))
-        adjusted_attack = int(round(float(attack or 0) * level_multiplier))
-        adjusted_defense = int(round(float(defense or 0) * level_multiplier))
-        level_bonus_pct = round(level_bonus * 100, 1)
-        return adjusted_hp, adjusted_attack, adjusted_defense, level_bonus_pct
+    def _get_splice_creation_bonus_pct(
+        self,
+        pet1_level: int | None,
+        pet2_level: int | None,
+    ) -> float:
+        pet1_bonus_pct = self._get_splice_level_bonus_pct(pet1_level)
+        pet2_bonus_pct = self._get_splice_level_bonus_pct(pet2_level)
+        return round((pet1_bonus_pct + pet2_bonus_pct) / 2, 1)
+
+    def _apply_splice_creation_bonus_pct(
+        self,
+        hp: int | float | None,
+        attack: int | float | None,
+        defense: int | float | None,
+        bonus_pct: float | None,
+    ) -> tuple[int, int, int]:
+        multiplier = 1 + (float(bonus_pct or 0) / 100.0)
+        adjusted_hp = int(round(float(hp or 0) * multiplier))
+        adjusted_attack = int(round(float(attack or 0) * multiplier))
+        adjusted_defense = int(round(float(defense or 0) * multiplier))
+        return adjusted_hp, adjusted_attack, adjusted_defense
+
+    async def _get_splice_creation_bonus_pct_for_ids(
+        self,
+        conn,
+        pet1_id: int | None,
+        pet2_id: int | None,
+    ) -> float:
+        parent_ids = [int(parent_id) for parent_id in (pet1_id, pet2_id) if parent_id]
+        if not parent_ids:
+            return 0.0
+
+        parent_rows = await conn.fetch(
+            """
+            SELECT id, COALESCE(level, 1) AS level
+            FROM monster_pets
+            WHERE id = ANY($1::bigint[])
+            """,
+            parent_ids,
+        )
+        levels_by_id = {
+            int(row["id"]): max(1, int(row["level"] or 1))
+            for row in parent_rows
+        }
+        return self._get_splice_creation_bonus_pct(
+            levels_by_id.get(int(pet1_id), 0) if pet1_id else 0,
+            levels_by_id.get(int(pet2_id), 0) if pet2_id else 0,
+        )
 
     async def _hydrate_splice_parent_stats(self, conn, rows):
         if not rows:
@@ -1127,7 +1166,7 @@ class ProcessSplice(commands.Cog):
 
         parent_rows = await conn.fetch(
             """
-            SELECT id, hp, attack, defense, level
+            SELECT id, COALESCE(level, 1) AS level
             FROM monster_pets
             WHERE id = ANY($1::bigint[])
             """,
@@ -1136,29 +1175,33 @@ class ProcessSplice(commands.Cog):
         parents_by_id = {int(row["id"]): dict(row) for row in parent_rows}
 
         for row in hydrated_rows:
+            pet1_level = 0
+            pet2_level = 0
             for prefix in ("pet1", "pet2"):
                 parent_id = row.get(f"{prefix}_id")
                 if not parent_id:
+                    row[f"{prefix}_level"] = 0
+                    row[f"{prefix}_level_bonus_pct"] = 0.0
                     continue
 
                 parent = parents_by_id.get(int(parent_id))
                 if not parent:
+                    row[f"{prefix}_level"] = 0
+                    row[f"{prefix}_level_bonus_pct"] = 0.0
                     continue
 
-                adjusted_hp, adjusted_attack, adjusted_defense, level_bonus_pct = (
-                    self._calculate_level_adjusted_splice_stats(
-                        parent.get("hp"),
-                        parent.get("attack"),
-                        parent.get("defense"),
-                        parent.get("level"),
-                    )
-                )
+                level = max(1, int(parent.get("level") or 1))
+                row[f"{prefix}_level"] = level
+                row[f"{prefix}_level_bonus_pct"] = self._get_splice_level_bonus_pct(level)
+                if prefix == "pet1":
+                    pet1_level = level
+                else:
+                    pet2_level = level
 
-                row[f"{prefix}_hp"] = adjusted_hp
-                row[f"{prefix}_attack"] = adjusted_attack
-                row[f"{prefix}_defense"] = adjusted_defense
-                row[f"{prefix}_level"] = max(1, int(parent.get("level") or 1))
-                row[f"{prefix}_level_bonus_pct"] = level_bonus_pct
+            row["splice_creation_bonus_pct"] = self._get_splice_creation_bonus_pct(
+                pet1_level,
+                pet2_level,
+            )
 
         return hydrated_rows
 
@@ -3703,13 +3746,24 @@ class ProcessSplice(commands.Cog):
                 iv_pct = random.uniform(30, 70)
                 iv_pts = (iv_pct / 100) * 100
                 hp_iv, atk_iv, def_iv = await self.allocate_iv_points(iv_pts)
-
-                baby_hp = round(pet["hp"] * 0.25) + hp_iv
-                baby_atk = round(pet["attack"] * 0.25) + atk_iv
-                baby_def = round(pet["defense"] * 0.25) + def_iv
                 growth_t = datetime.datetime.utcnow() + datetime.timedelta(days=2)
 
                 async with self.bot.pool.acquire() as conn:
+                    creation_bonus_pct = await self._get_splice_creation_bonus_pct_for_ids(
+                        conn,
+                        pet.get("pet1_id"),
+                        pet.get("pet2_id"),
+                    )
+                    baby_hp, baby_atk, baby_def = self._apply_splice_creation_bonus_pct(
+                        round(pet["hp"] * 0.25),
+                        round(pet["attack"] * 0.25),
+                        round(pet["defense"] * 0.25),
+                        creation_bonus_pct,
+                    )
+                    baby_hp += hp_iv
+                    baby_atk += atk_iv
+                    baby_def += def_iv
+
                     new_id = await conn.fetchval(
                         """
                         INSERT INTO monster_pets
@@ -3893,13 +3947,24 @@ class ProcessSplice(commands.Cog):
                 iv_pct = random.uniform(30, 70)
                 iv_pts = (iv_pct / 100) * 100
                 hp_iv, atk_iv, def_iv = await self.allocate_iv_points(iv_pts)
-                
-                baby_hp = round(pet["hp"] * 0.25) + hp_iv
-                baby_atk = round(pet["attack"] * 0.25) + atk_iv
-                baby_def = round(pet["defense"] * 0.25) + def_iv
                 growth_t = datetime.datetime.utcnow() + datetime.timedelta(days=2)
-                
+
                 async with self.bot.pool.acquire() as conn:
+                    creation_bonus_pct = await self._get_splice_creation_bonus_pct_for_ids(
+                        conn,
+                        pet.get("pet1_id"),
+                        pet.get("pet2_id"),
+                    )
+                    baby_hp, baby_atk, baby_def = self._apply_splice_creation_bonus_pct(
+                        round(pet["hp"] * 0.25),
+                        round(pet["attack"] * 0.25),
+                        round(pet["defense"] * 0.25),
+                        creation_bonus_pct,
+                    )
+                    baby_hp += hp_iv
+                    baby_atk += atk_iv
+                    baby_def += def_iv
+
                     new_id = await conn.fetchval(
                         """
                         INSERT INTO monster_pets
@@ -4564,13 +4629,24 @@ class ProcessSplice(commands.Cog):
                 iv_pct = random.uniform(30, 70)
                 iv_pts = (iv_pct / 100) * 100
                 hp_iv, atk_iv, def_iv = await self.allocate_iv_points(iv_pts)
-
-                baby_hp = round(pet["hp"] * 0.25) + hp_iv
-                baby_atk = round(pet["attack"] * 0.25) + atk_iv
-                baby_def = round(pet["defense"] * 0.25) + def_iv
                 growth_t = datetime.datetime.utcnow() + datetime.timedelta(days=2)
 
                 async with self.bot.pool.acquire() as conn:
+                    creation_bonus_pct = await self._get_splice_creation_bonus_pct_for_ids(
+                        conn,
+                        pet.get("pet1_id"),
+                        pet.get("pet2_id"),
+                    )
+                    baby_hp, baby_atk, baby_def = self._apply_splice_creation_bonus_pct(
+                        round(pet["hp"] * 0.25),
+                        round(pet["attack"] * 0.25),
+                        round(pet["defense"] * 0.25),
+                        creation_bonus_pct,
+                    )
+                    baby_hp += hp_iv
+                    baby_atk += atk_iv
+                    baby_def += def_iv
+
                     new_id = await conn.fetchval(
                         """
                         INSERT INTO monster_pets
@@ -4714,7 +4790,8 @@ class ProcessSplice(commands.Cog):
                         value=(
                             f"HP: {splice['pet1_hp']}, ATK: {splice['pet1_attack']}, DEF: {splice['pet1_defense']}, "
                             f"Element: {splice['pet1_element']}\n"
-                            f"Splice Level Bonus: +{splice.get('pet1_level_bonus_pct', 0):g}%\n"
+                            f"Level: {splice.get('pet1_level', 1)}\n"
+                            f"Post-Creation Bonus Contribution: +{splice.get('pet1_level_bonus_pct', 0):g}%\n"
                             f"URL: {splice['pet1_url']}"
                         ),
                         inline=True)
@@ -4722,7 +4799,8 @@ class ProcessSplice(commands.Cog):
                         value=(
                             f"HP: {splice['pet2_hp']}, ATK: {splice['pet2_attack']}, DEF: {splice['pet2_defense']}, "
                             f"Element: {splice['pet2_element']}\n"
-                            f"Splice Level Bonus: +{splice.get('pet2_level_bonus_pct', 0):g}%\n"
+                            f"Level: {splice.get('pet2_level', 1)}\n"
+                            f"Post-Creation Bonus Contribution: +{splice.get('pet2_level_bonus_pct', 0):g}%\n"
                             f"URL: {splice['pet2_url']}"
                         ),
                         inline=True)
@@ -4733,7 +4811,15 @@ class ProcessSplice(commands.Cog):
             ),
             inline=False,
         )
-        embed.set_footer(text="Parent stats include 50% of each sacrificed pet's combat level bonus.")
+        embed.add_field(
+            name="Post-Creation Level Bonus",
+            value=(
+                f"Combined bonus if created now: +{splice.get('splice_creation_bonus_pct', 0):g}%\n"
+                "This is applied after the baby-stage 25% stat cut and does not alter stored splice stats."
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Splice requests stay level-neutral. Parent levels only affect the pet when it is created.")
 
         await ctx.send(embed=embed)
 
@@ -5193,11 +5279,15 @@ class ProcessSplice(commands.Cog):
             stat_multiplier = baby_stage["stat_multiplier"]
             growth_time_interval = datetime.timedelta(days=baby_stage["growth_time"])
             growth_time = datetime.datetime.utcnow() + growth_time_interval
+            splice_creation_bonus_pct = float(splice.get("splice_creation_bonus_pct", 0) or 0)
             
             # Calculate baby stats
-            baby_hp = round(hp * stat_multiplier)
-            baby_attack = round(attack * stat_multiplier)
-            baby_defense = round(defense * stat_multiplier)
+            baby_hp, baby_attack, baby_defense = self._apply_splice_creation_bonus_pct(
+                round(hp * stat_multiplier),
+                round(attack * stat_multiplier),
+                round(defense * stat_multiplier),
+                splice_creation_bonus_pct,
+            )
             
             # Apply IVs to baby stats
             baby_hp = baby_hp + hp_iv
@@ -5210,6 +5300,7 @@ class ProcessSplice(commands.Cog):
                            f"Adult HP: {hp} (Baby HP: {baby_hp})\n"
                            f"Adult Attack: {attack} (Baby Attack: {baby_attack})\n"
                            f"Adult Defense: {defense} (Baby Defense: {baby_defense})\n"
+                           f"Post-Creation Level Bonus: +{splice_creation_bonus_pct:g}%\n"
                            f"Element: {element}\n"
                            f"URL: {url}")
 
@@ -5322,10 +5413,20 @@ class ProcessSplice(commands.Cog):
 
                     total_iv_points = (iv_percentage / 100) * 100
                     pending_hp_iv, pending_attack_iv, pending_defense_iv = await self.allocate_iv_points(total_iv_points)
-
-                    this_baby_hp = round(hp * stat_multiplier) + pending_hp_iv
-                    this_baby_attack = round(attack * stat_multiplier) + pending_attack_iv
-                    this_baby_defense = round(defense * stat_multiplier) + pending_defense_iv
+                    pending_creation_bonus_pct = await self._get_splice_creation_bonus_pct_for_ids(
+                        conn,
+                        pending["pet1_id"],
+                        pending["pet2_id"],
+                    )
+                    this_baby_hp, this_baby_attack, this_baby_defense = self._apply_splice_creation_bonus_pct(
+                        round(hp * stat_multiplier),
+                        round(attack * stat_multiplier),
+                        round(defense * stat_multiplier),
+                        pending_creation_bonus_pct,
+                    )
+                    this_baby_hp += pending_hp_iv
+                    this_baby_attack += pending_attack_iv
+                    this_baby_defense += pending_defense_iv
 
                     # Create pet for this user
                     await conn.execute(

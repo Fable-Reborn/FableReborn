@@ -4258,8 +4258,8 @@ class Pets(commands.Cog):
             await ctx.send(e)
 
     @user_cooldown(120)
-    @pets.command(brief=_("Rename your pet or reset its name to the default"))
-    async def rename(self, ctx, pet_ref: str, *, nickname: str = None):
+    @pets.command(name="rename", brief=_("Rename your pet or reset its name to the default"))
+    async def rename_pet(self, ctx, pet_ref: str, *, nickname: str = None):
         """
         Rename a pet or reset its name to the default.
         - If `nickname` is provided, sets the pet's name to the given nickname.
@@ -4602,10 +4602,10 @@ class Pets(commands.Cog):
                 f"✅ Opened **{daycare_name}**. Use `{ctx.clean_prefix}pets daycare packagecreate` to add packages."
             )
 
-    @daycare.command(brief=_("Rename your daycare"))
+    @daycare.command(name="rename", brief=_("Rename your daycare"))
     @has_char()
     @is_patreon(min_tier=DAYCARE_OWNER_REQUIRED_PATREON_TIER)
-    async def rename(self, ctx, *, name: str):
+    async def rename_daycare(self, ctx, *, name: str):
         if not await self.is_ranger_owner(ctx):
             return await ctx.send("❌ You need to be in the Ranger class line to manage a daycare.")
 
