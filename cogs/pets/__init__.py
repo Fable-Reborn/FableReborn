@@ -37,7 +37,7 @@ from classes.classes import from_string as class_from_string
 from classes.converters import IntGreaterThan
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils import random
-from utils.checks import has_char, has_money, is_gm, is_patreon
+from utils.checks import has_char, has_money, is_gm, is_patreon, user_is_patron
 from utils.i18n import _, locale_doc
 from utils.joins import SingleJoinView
 
@@ -2219,15 +2219,30 @@ class Pets(commands.Cog):
         classes = [class_from_string(name) for name in ctx.character_data["class"]]
         return any(class_ and class_.in_class_line(Ranger) for class_ in classes)
 
-    async def get_patreon_tier_for_user(self, conn, user_id: int) -> int:
+    async def get_patreon_tier_for_user(
+        self,
+        conn,
+        user_id: int,
+        *,
+        allow_support_booster: bool = False,
+    ) -> int:
         tier = await conn.fetchval(
             'SELECT tier FROM profile WHERE "user" = $1;',
             user_id,
         )
         try:
-            return int(tier or 0)
+            resolved_tier = int(tier or 0)
         except (TypeError, ValueError):
-            return 0
+            resolved_tier = 0
+
+        if (
+            allow_support_booster
+            and resolved_tier < 1
+            and await user_is_patron(self.bot, user_id, "basic")
+        ):
+            return 1
+
+        return resolved_tier
 
     async def user_has_daycare_management_access(self, conn, user_id: int) -> bool:
         return (
@@ -6446,11 +6461,12 @@ class Pets(commands.Cog):
         # Resolve all prerequisite state in a single DB pass:
         # Patreon tier gate, target pet selection, and feed food validation.
         async with self.bot.pool.acquire() as conn:
-            tier = await conn.fetchval(
-                'SELECT tier FROM profile WHERE "user" = $1;',
-                ctx.author.id
+            tier = await self.get_patreon_tier_for_user(
+                conn,
+                ctx.author.id,
+                allow_support_booster=True,
             )
-            if tier is None or tier < 1:
+            if tier < 1:
                 await ctx.send("❌ `pets all` is reserved for Patreon users with tier 1 or higher.")
                 return
 
