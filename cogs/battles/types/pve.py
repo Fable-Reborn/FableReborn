@@ -382,7 +382,11 @@ class PvEBattle(Battle):
                             name=f"Skeleton Warrior #{skeleton_serial}"
                         )
                         skeleton.is_summoned = True
-                        skeleton.summoner = self.attacker
+                        self.register_summoned_combatant(
+                            skeleton,
+                            team=self.player_team,
+                            summoner=self.attacker,
+                        )
 
                         self.player_team.combatants.append(skeleton)
                         self.turn_order.append(skeleton)

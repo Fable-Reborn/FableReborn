@@ -9,7 +9,7 @@ class TestBattleLogFormatting(unittest.TestCase):
     def setUpClass(cls):
         cls.Battle = load_battle_runtime_type()
 
-    def _new_battle(self):
+    def _new_battle(self, teams=None):
         battle_cls = self.Battle
 
         class DummyBattle(battle_cls):
@@ -26,7 +26,7 @@ class TestBattleLogFormatting(unittest.TestCase):
                 return None
 
         ctx = SimpleNamespace(bot=SimpleNamespace(), send=None)
-        return DummyBattle(ctx, teams=[])
+        return DummyBattle(ctx, teams=teams or [])
 
     def test_format_battle_log_fields_preserves_all_entries(self):
         battle = self._new_battle()
@@ -71,6 +71,33 @@ class TestBattleLogFormatting(unittest.TestCase):
             chunk.replace("**Action #9**\n", "", 1) for chunk in chunks
         )
         self.assertEqual("X" * 2200, reconstructed)
+
+    def test_register_summoned_combatant_inherits_team_color(self):
+        summoner = SimpleNamespace(name="Summoner")
+        enemy = SimpleNamespace(name="Enemy")
+        team_a = SimpleNamespace(combatants=[summoner])
+        team_b = SimpleNamespace(combatants=[enemy])
+
+        battle = self._new_battle(teams=[team_a, team_b])
+
+        friendly_summon = SimpleNamespace(name="Friendly Skeleton")
+        enemy_summon = SimpleNamespace(name="Enemy Skeleton")
+
+        battle.register_summoned_combatant(
+            friendly_summon,
+            team=team_a,
+            summoner=summoner,
+        )
+        battle.register_summoned_combatant(
+            enemy_summon,
+            team=team_b,
+            summoner=enemy,
+        )
+
+        self.assertEqual(0, friendly_summon._battle_team_index)
+        self.assertEqual(1, enemy_summon._battle_team_index)
+        self.assertTrue(battle.is_friendly_combatant(friendly_summon))
+        self.assertFalse(battle.is_friendly_combatant(enemy_summon))
 
 
 if __name__ == "__main__":

@@ -361,13 +361,22 @@ class TowerBattle(Battle):
                             name=f"Skeleton Warrior #{skeleton_serial}"
                         )
                         skeleton.is_summoned = True
-                        skeleton.summoner = current_combatant
 
                         if current_combatant in self.player_team.combatants:
+                            self.register_summoned_combatant(
+                                skeleton,
+                                team=self.player_team,
+                                summoner=current_combatant,
+                            )
                             self.player_team.combatants.append(skeleton)
                             self.turn_order.append(skeleton)
                             message += f"\n💀 Skeleton Warrior #{skeleton_serial} joins your side!"
                         else:
+                            self.register_summoned_combatant(
+                                skeleton,
+                                team=self.enemy_team,
+                                summoner=current_combatant,
+                            )
                             self.enemy_team.combatants.append(skeleton)
                             self.turn_order.append(skeleton)
                             message += f"\n💀 Skeleton Warrior #{skeleton_serial} joins the enemy side!"

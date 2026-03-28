@@ -1246,16 +1246,23 @@ class DragonBattle(Battle):
                     name=f"Skeleton Warrior #{skeleton_serial}"
                 )
                 skeleton.is_summoned = True
-                skeleton.summoner = player
 
                 if player in self.player_team.combatants:
+                    self.register_summoned_combatant(
+                        skeleton,
+                        team=self.player_team,
+                        summoner=player,
+                    )
                     self.player_team.combatants.append(skeleton)
                     self._player_turn_queue.append(skeleton)
-                    setattr(skeleton, "battle", self)
                     message += f"\n💀 Skeleton Warrior #{skeleton_serial} joins your side!"
                 else:
+                    self.register_summoned_combatant(
+                        skeleton,
+                        team=self.dragon_team,
+                        summoner=player,
+                    )
                     self.dragon_team.combatants.append(skeleton)
-                    setattr(skeleton, "battle", self)
                     message += f"\n💀 Skeleton Warrior #{skeleton_serial} joins the dragon side!"
 
             if hasattr(player, 'summon_skeleton_queue'):

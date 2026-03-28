@@ -390,6 +390,30 @@ class Battle(ABC):
         if send_result not in (None, False):
             self.battle_message = send_result
         return self.battle_message
+
+    def register_summoned_combatant(self, combatant, *, team=None, summoner=None):
+        """Bind a newly summoned combatant to this battle and its team color context."""
+        if combatant is None:
+            return None
+
+        setattr(combatant, "battle", self)
+        if summoner is not None:
+            setattr(combatant, "summoner", summoner)
+
+        team_index = None
+        if team is not None:
+            for index, team_ref in enumerate(self.teams):
+                if team_ref is team:
+                    team_index = index
+                    break
+
+        if team_index is None and summoner is not None:
+            team_index = getattr(summoner, "_battle_team_index", None)
+
+        if team_index is not None:
+            setattr(combatant, "_battle_team_index", team_index)
+
+        return combatant
     
     def is_friendly_combatant(self, combatant):
         """Return whether a combatant belongs to the viewer-friendly side."""
@@ -898,8 +922,11 @@ class Battle(ABC):
             is_pet=False,
         )
         echo.is_summoned = True
-        echo.summoner = summoner or source
-        setattr(echo, "battle", self)
+        self.register_summoned_combatant(
+            echo,
+            team=team,
+            summoner=summoner or source,
+        )
         team.combatants.append(echo)
         if hasattr(self, "turn_order"):
             self.turn_order.append(echo)

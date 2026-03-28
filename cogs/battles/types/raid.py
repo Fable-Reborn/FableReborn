@@ -283,14 +283,23 @@ class RaidBattle(Battle):
                             name=f"Skeleton Warrior #{skeleton_serial}"
                         )
                         skeleton.is_summoned = True
-                        skeleton.summoner = current_combatant
 
                         if current_combatant in self.team_a.combatants:
+                            self.register_summoned_combatant(
+                                skeleton,
+                                team=self.team_a,
+                                summoner=current_combatant,
+                            )
                             self.team_a.combatants.append(skeleton)
                             self.turn_order.append(skeleton)
                             self.turn_order = self.prioritize_turn_order(self.turn_order)
                             message += f"\n💀 Skeleton Warrior #{skeleton_serial} joins Team A!"
                         else:
+                            self.register_summoned_combatant(
+                                skeleton,
+                                team=self.team_b,
+                                summoner=current_combatant,
+                            )
                             self.team_b.combatants.append(skeleton)
                             self.turn_order.append(skeleton)
                             self.turn_order = self.prioritize_turn_order(self.turn_order)
