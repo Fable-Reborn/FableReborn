@@ -531,13 +531,29 @@ async def has_money(bot: "Bot", userid: int, money: int, conn=None) -> bool:
 
 def is_patreon(min_tier: int = 1) -> "_CheckDecorator":
     async def predicate(ctx: Context) -> bool:
-        # Fetch the Patreon tier from the database
         tier = await ctx.bot.pool.fetchval(
             'SELECT tier FROM profile WHERE "user" = $1;', ctx.author.id
         )
-        # Check if the tier is greater than or equal to the required minimum tier
-        return tier is not None and tier >= min_tier
+        try:
+            resolved_tier = int(tier or 0)
+        except (TypeError, ValueError):
+            resolved_tier = 0
 
+        if resolved_tier >= min_tier:
+            return True
+
+        if min_tier <= DonatorRank.basic.value and await user_is_patron(
+            ctx.bot, ctx.author, "basic"
+        ):
+            return True
+
+        try:
+            required_rank = DonatorRank(min_tier)
+        except ValueError:
+            required_rank = DonatorRank.basic
+        raise NoPatron(required_rank)
+
+    setattr(predicate, "__fable_required_patreon_tier__", int(min_tier))
     return commands.check(predicate)
 
 
@@ -569,6 +585,7 @@ def is_patron(role: str = "basic") -> "_CheckDecorator":
             return True
         raise NoPatron(getattr(DonatorRank, role))
 
+    setattr(predicate, "__fable_required_patron_role__", role)
     return commands.check(predicate)
 
 

@@ -22,7 +22,8 @@ import discord
 from discord.ext import commands
 
 from classes.converters import MemberWithCharacter
-from utils.checks import has_char
+from classes.enums import DonatorRank
+from utils.checks import has_char, user_is_patron
 from utils.i18n import _
 
 
@@ -116,6 +117,41 @@ class Alt(commands.Cog):
             return result is not None
         except Exception:
             return False
+
+    async def _get_effective_donator_tier(self, user_id: int) -> int:
+        tier = await self.bot.pool.fetchval(
+            'SELECT tier FROM profile WHERE "user" = $1;',
+            user_id,
+        )
+        try:
+            effective_tier = int(tier or 0)
+        except (TypeError, ValueError):
+            effective_tier = 0
+
+        if effective_tier < 1 and await user_is_patron(self.bot, user_id, "basic"):
+            return 1
+
+        return effective_tier
+
+    def _get_required_donator_tier_for_command(self, command) -> int:
+        required_tier = 0
+        current = command
+
+        while current is not None:
+            for check in getattr(current, "checks", []):
+                check_tier = getattr(check, "__fable_required_patreon_tier__", None)
+                if isinstance(check_tier, int):
+                    required_tier = max(required_tier, check_tier)
+
+                role_name = getattr(check, "__fable_required_patron_role__", None)
+                if role_name:
+                    role_rank = getattr(DonatorRank, role_name, None)
+                    if role_rank:
+                        required_tier = max(required_tier, role_rank.value)
+
+            current = getattr(current, "parent", None)
+
+        return required_tier
 
     async def assign_alt_role(self, member: discord.Member) -> None:
         if member is None:
@@ -237,6 +273,16 @@ class Alt(commands.Cog):
         fake_msg.author = command_author
 
         new_ctx = await ctx.bot.get_context(fake_msg, cls=commands.Context)
+        if new_ctx.command is not None:
+            required_tier = self._get_required_donator_tier_for_command(new_ctx.command)
+            if required_tier > 0:
+                alt_tier = await self._get_effective_donator_tier(int(alt_id))
+                if alt_tier < required_tier:
+                    return await ctx.send(
+                        _(
+                            "Your linked alt must have Patreon / booster access equivalent to tier {tier} or higher to use this command."
+                        ).format(tier=required_tier)
+                    )
         new_ctx.alt_invoker_id = ctx.author.id
         await ctx.bot.invoke(new_ctx)
 
