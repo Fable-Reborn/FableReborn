@@ -180,6 +180,123 @@ class Battle(ABC):
         # Capture detailed state for live replay
         await self.capture_turn_state(message)
 
+    def format_battle_log_field(
+        self,
+        entries=None,
+        *,
+        empty_text="Battle starting...",
+        max_length=1020,
+    ):
+        """Format battle log text safely for a Discord embed field."""
+        log_entries = list(self.log if entries is None else entries)
+        if not log_entries:
+            return empty_text
+
+        formatted_entries = [
+            f"**Action #{action_num}**\n{message}"
+            for action_num, message in log_entries
+        ]
+        log_text = "\n\n".join(formatted_entries)
+        if len(log_text) <= max_length:
+            return log_text
+
+        truncation_notice = "*...earlier actions truncated...*"
+        kept_entries = list(formatted_entries)
+
+        while kept_entries:
+            candidate = "\n\n".join(kept_entries)
+            if len(candidate) + len(truncation_notice) + 2 <= max_length:
+                return f"{truncation_notice}\n\n{candidate}"
+            kept_entries.pop(0)
+
+        available = max(max_length - len(truncation_notice) - 2, 0)
+        if available <= 0:
+            return truncation_notice[:max_length]
+
+        latest_entry = formatted_entries[-1]
+        if len(latest_entry) > available:
+            if available > 1:
+                latest_entry = latest_entry[: available - 1] + "..."
+            else:
+                latest_entry = latest_entry[:available]
+
+        return f"{truncation_notice}\n\n{latest_entry}"
+
+    def _split_embed_text(self, text, *, max_length=1024):
+        """Split a long text payload into Discord embed-sized chunks."""
+        if len(text) <= max_length:
+            return [text]
+
+        chunks = []
+        current_lines = []
+        current_length = 0
+
+        for line in text.split("\n"):
+            line_length = len(line)
+
+            if current_lines:
+                candidate_length = current_length + 1 + line_length
+            else:
+                candidate_length = line_length
+
+            if candidate_length <= max_length:
+                current_lines.append(line)
+                current_length = candidate_length
+                continue
+
+            if current_lines:
+                chunks.append("\n".join(current_lines))
+                current_lines = []
+                current_length = 0
+
+            while len(line) > max_length:
+                chunks.append(line[:max_length])
+                line = line[max_length:]
+
+            current_lines = [line]
+            current_length = len(line)
+
+        if current_lines:
+            chunks.append("\n".join(current_lines))
+
+        return chunks or [text[:max_length]]
+
+    def format_battle_log_fields(
+        self,
+        entries=None,
+        *,
+        empty_text="Battle starting...",
+        max_length=1020,
+    ):
+        """Return one or more embed-safe chunks for the full battle log."""
+        log_entries = list(self.log if entries is None else entries)
+        if not log_entries:
+            return [empty_text]
+
+        chunks = []
+        current_chunk = ""
+
+        for action_num, message in log_entries:
+            entry = f"**Action #{action_num}**\n{message}"
+            entry_chunks = self._split_embed_text(entry, max_length=max_length)
+
+            for entry_chunk in entry_chunks:
+                if not current_chunk:
+                    current_chunk = entry_chunk
+                    continue
+
+                candidate = f"{current_chunk}\n\n{entry_chunk}"
+                if len(candidate) <= max_length:
+                    current_chunk = candidate
+                else:
+                    chunks.append(current_chunk)
+                    current_chunk = entry_chunk
+
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        return chunks or [empty_text]
+
     async def _run_discord_request_with_retry(self, request, *, action_name, allow_not_found=False):
         for attempt in range(1, self.DISCORD_RETRY_ATTEMPTS + 1):
             try:

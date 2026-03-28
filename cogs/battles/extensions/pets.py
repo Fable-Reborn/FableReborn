@@ -288,6 +288,7 @@ class PetExtension:
             summon_queue = []
 
         serial = int(getattr(pet_combatant, 'skeleton_count', 0) or 0)
+        owner_combatant = self.find_owner_combatant(pet_combatant)
         skeleton_hp = pet_combatant.max_hp * Decimal(
             str(effect_data.get('skeleton_hp', 0.75))
         )
@@ -297,6 +298,10 @@ class PetExtension:
         skeleton_armor = pet_combatant.armor * Decimal(
             str(effect_data.get('skeleton_armor', 0.40))
         )
+        skeleton_luck = self._to_decimal(
+            getattr(owner_combatant, 'luck', getattr(pet_combatant, 'luck', 50)),
+            '50',
+        )
 
         for _ in range(int(summon_count)):
             serial += 1
@@ -305,6 +310,7 @@ class PetExtension:
                     'hp': skeleton_hp,
                     'damage': skeleton_damage,
                     'armor': skeleton_armor,
+                    'luck': skeleton_luck,
                     'element': 'Dark',
                     'serial': serial,
                 }

@@ -84,9 +84,9 @@ class RaidBattle(Battle):
             await self.add_to_log(opening_message)
         
 
-        # Create and send initial embed
-        embed = await self.create_battle_embed()
-        self.battle_message = await self.publish_battle_message(embed=embed)
+        # Create and send initial embeds
+        embeds = await self.create_battle_embeds()
+        self.battle_message = await self.publish_battle_message(embeds=embeds)
         
         # Add a pause after battle start before first attack
         await asyncio.sleep(1)
@@ -278,7 +278,7 @@ class RaidBattle(Battle):
                             damage=skeleton_data['damage'],
                             armor=skeleton_data['armor'],
                             element=skeleton_data['element'],
-                            luck=50,
+                            luck=skeleton_data.get('luck', 50),
                             is_pet=True,
                             name=f"Skeleton Warrior #{skeleton_serial}"
                         )
@@ -420,12 +420,16 @@ class RaidBattle(Battle):
         
         return True
     
-    async def create_battle_embed(self):
-        """Create the battle status embed"""
-        embed = discord.Embed(
-            title=f"Raid Battle",
-            color=self.ctx.bot.config.game.primary_colour
+    def _new_battle_embed(self, title="Raid Battle"):
+        return discord.Embed(
+            title=title,
+            color=self.ctx.bot.config.game.primary_colour,
         )
+
+    async def create_battle_embeds(self):
+        """Create one or more embeds for the current raid state."""
+        embed = self._new_battle_embed()
+        embeds = [embed]
         
         # Get element emoji mapping
         element_emoji_map = {}
@@ -490,20 +494,34 @@ class RaidBattle(Battle):
                 
             embed.add_field(name=field_name, value=field_value, inline=False)
         
-        # Add battle log
-        log_text = "\n\n".join([f"**Action #{i}**\n{msg}" for i, msg in self.log])
-        embed.add_field(name="Battle Log", value=log_text or "Battle starting...", inline=False)
-        
-        # Add battle ID to footer for GM replay functionality
-        embed.set_footer(text=f"Battle ID: {self.battle_id}")
-        
-        return embed
+        # Add battle log across as many embed fields as needed.
+        log_chunks = self.format_battle_log_fields()
+        current_embed = embed
+
+        for index, log_chunk in enumerate(log_chunks, start=1):
+            if len(current_embed.fields) >= 25:
+                current_embed = self._new_battle_embed(title="Raid Battle Log")
+                embeds.append(current_embed)
+
+            field_name = "Battle Log" if index == 1 else f"Battle Log (cont. {index})"
+            current_embed.add_field(name=field_name, value=log_chunk, inline=False)
+
+        total_embeds = len(embeds)
+        for index, battle_embed in enumerate(embeds, start=1):
+            footer_suffix = f" [{index}/{total_embeds}]" if total_embeds > 1 else ""
+            battle_embed.set_footer(text=f"Battle ID: {self.battle_id}{footer_suffix}")
+
+        return embeds
+
+    async def create_battle_embed(self):
+        """Create the primary raid embed for compatibility."""
+        return (await self.create_battle_embeds())[0]
     
     async def update_display(self):
         """Update the battle display"""
         # Update after every action for better visibility
-        embed = await self.create_battle_embed()
-        await self.publish_battle_message(embed=embed)
+        embeds = await self.create_battle_embeds()
+        await self.publish_battle_message(embeds=embeds)
     
     async def end_battle(self):
         """End the battle and determine rewards"""

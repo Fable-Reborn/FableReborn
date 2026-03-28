@@ -136,6 +136,132 @@ class TestPetSkillContracts(unittest.TestCase):
         self.assertEqual(Decimal("150"), damage_low_owner)
         self.assertTrue(any("desperation" in msg.lower() for msg in msgs_low_owner))
 
+    def test_lord_of_shadows_uses_owner_luck_and_refreshes_without_stacking(self):
+        owner_user = self._new_user(20, "Owner")
+        owner = self.Combatant(
+            user=owner_user,
+            hp=2400,
+            max_hp=2400,
+            damage=350,
+            armor=120,
+            element="Dark",
+            is_pet=False,
+            name="Owner",
+            luck=77,
+        )
+        pet = self.Combatant(
+            user=self._new_user(21, "Shadow Lord"),
+            hp=2000,
+            max_hp=2000,
+            damage=300,
+            armor=100,
+            element="Dark",
+            is_pet=True,
+            owner=owner_user,
+            name="Shadow Lord",
+        )
+        ally = self.Combatant(
+            user=self._new_user(22, "Ally"),
+            hp=1800,
+            max_hp=1800,
+            damage=250,
+            armor=80,
+            element="Dark",
+            is_pet=False,
+            name="Ally",
+            luck=50,
+        )
+        enemy = self.Combatant(
+            user=self._new_user(23, "Enemy"),
+            hp=2200,
+            max_hp=2200,
+            damage=240,
+            armor=90,
+            element="Light",
+            is_pet=False,
+            name="Enemy",
+            luck=50,
+        )
+        enemy_ally = self.Combatant(
+            user=self._new_user(24, "Enemy Ally"),
+            hp=2100,
+            max_hp=2100,
+            damage=230,
+            armor=85,
+            element="Light",
+            is_pet=False,
+            name="Enemy Ally",
+            luck=50,
+        )
+
+        friendly_team = SimpleNamespace(combatants=[owner, pet, ally])
+        enemy_team = SimpleNamespace(combatants=[enemy, enemy_ally])
+        owner.team = friendly_team
+        pet.team = friendly_team
+        ally.team = friendly_team
+        enemy.team = enemy_team
+        enemy_ally.team = enemy_team
+
+        self.pet_ext.apply_skill_effects(pet, ["Lord of Shadows"])
+        pet.hp = Decimal("1600")
+
+        with patch("cogs.battles.extensions.pets.random.random", return_value=0.0):
+            damage_1, messages_1 = self.pet_ext.process_skill_effects_on_attack(
+                pet, enemy, Decimal("250")
+            )
+
+        self.assertEqual(Decimal("250"), damage_1)
+        self.assertTrue(any("Two skeleton warriors" in msg for msg in messages_1))
+        first_queue = getattr(pet, "summon_skeleton_queue", [])
+        self.assertEqual(2, len(first_queue))
+        self.assertEqual(Decimal("77"), Decimal(str(first_queue[0]["luck"])))
+        self.assertEqual(Decimal("1500.00"), Decimal(str(first_queue[0]["hp"])))
+        self.assertEqual(Decimal("270.00"), Decimal(str(first_queue[0]["damage"])))
+        self.assertEqual(Decimal("40.00"), Decimal(str(first_queue[0]["armor"])))
+
+        self.assertEqual(Decimal("287.50"), ally.damage)
+        self.assertEqual(Decimal("88.00"), ally.armor)
+        self.assertEqual(Decimal("55.00"), ally.luck)
+        self.assertEqual(3, getattr(ally, "lord_of_shadows_duration", 0))
+        self.assertEqual(Decimal("204.00"), enemy.damage)
+        self.assertEqual(Decimal("45.00"), enemy.luck)
+        self.assertEqual(3, getattr(enemy, "lord_of_shadows_fear_duration", 0))
+
+        for skeleton_data in list(first_queue):
+            skeleton = self.Combatant(
+                user=f"Skeleton Warrior #{skeleton_data['serial']}",
+                hp=skeleton_data["hp"],
+                max_hp=skeleton_data["hp"],
+                damage=skeleton_data["damage"],
+                armor=skeleton_data["armor"],
+                element=skeleton_data["element"],
+                luck=skeleton_data["luck"],
+                is_pet=True,
+                name=f"Skeleton Warrior #{skeleton_data['serial']}",
+            )
+            skeleton.is_summoned = True
+            skeleton.summoner = pet
+            friendly_team.combatants.append(skeleton)
+        delattr(pet, "summon_skeleton_queue")
+
+        with patch("cogs.battles.extensions.pets.random.random", return_value=0.0):
+            damage_2, messages_2 = self.pet_ext.process_skill_effects_on_attack(
+                pet, enemy, Decimal("250")
+            )
+
+        self.assertEqual(Decimal("250"), damage_2)
+        self.assertTrue(any("A skeleton warrior rises" in msg for msg in messages_2))
+        second_queue = getattr(pet, "summon_skeleton_queue", [])
+        self.assertEqual(1, len(second_queue))
+        self.assertEqual(owner.luck, second_queue[0]["luck"])
+        self.assertEqual(Decimal("287.50"), ally.damage)
+        self.assertEqual(Decimal("88.00"), ally.armor)
+        self.assertEqual(Decimal("55.00"), ally.luck)
+        self.assertEqual(3, getattr(ally, "lord_of_shadows_duration", 0))
+        self.assertEqual(Decimal("204.00"), enemy.damage)
+        self.assertEqual(Decimal("45.00"), enemy.luck)
+        self.assertEqual(3, getattr(enemy, "lord_of_shadows_fear_duration", 0))
+
     def test_corrupted_balance_chances(self):
         pet = self.Combatant(
             user=self._new_user(30, "Corruptor"),

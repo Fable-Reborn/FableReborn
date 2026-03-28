@@ -377,7 +377,7 @@ class PvEBattle(Battle):
                             damage=skeleton_data['damage'],
                             armor=skeleton_data['armor'],
                             element=skeleton_data['element'],
-                            luck=50,
+                            luck=skeleton_data.get('luck', 50),
                             is_pet=True,
                             name=f"Skeleton Warrior #{skeleton_serial}"
                         )
@@ -568,8 +568,8 @@ class PvEBattle(Battle):
             embed.add_field(name=field_name, value=field_value, inline=False)
         
         # Add battle log
-        log_text = "\n\n".join([f"**Action #{i}**\n{msg}" for i, msg in self.log])
-        embed.add_field(name="Battle Log", value=log_text or "Battle starting...", inline=False)
+        log_text = self.format_battle_log_field()
+        embed.add_field(name="Battle Log", value=log_text, inline=False)
         
         # Add battle ID to footer for GM replay functionality
         embed.set_footer(text=f"Battle ID: {self.battle_id}")

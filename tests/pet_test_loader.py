@@ -51,3 +51,16 @@ def load_pet_runtime_types() -> Tuple[Type[object], Type[object]]:
         ROOT / "cogs" / "battles" / "extensions" / "pets.py",
     )
     return combatant_mod.Combatant, pets_mod.PetExtension
+
+
+def load_battle_runtime_type() -> Type[object]:
+    """Return `Battle` from the core battle runtime module."""
+    _ensure_namespace("cogs", ROOT / "cogs")
+    _ensure_namespace("cogs.battles", ROOT / "cogs" / "battles")
+    _ensure_namespace("cogs.battles.core", ROOT / "cogs" / "battles" / "core")
+
+    battle_mod = _load_module(
+        "cogs.battles.core.battle",
+        ROOT / "cogs" / "battles" / "core" / "battle.py",
+    )
+    return battle_mod.Battle

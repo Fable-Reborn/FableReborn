@@ -1241,7 +1241,7 @@ class DragonBattle(Battle):
                     damage=skeleton_data['damage'],
                     armor=skeleton_data['armor'],
                     element=skeleton_data['element'],
-                    luck=50,
+                    luck=skeleton_data.get('luck', 50),
                     is_pet=True,
                     name=f"Skeleton Warrior #{skeleton_serial}"
                 )
