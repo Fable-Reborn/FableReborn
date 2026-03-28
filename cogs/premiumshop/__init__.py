@@ -22,7 +22,7 @@ import discord
 
 from discord.ext import commands
 
-from utils.checks import has_char, is_gm
+from utils.checks import has_char, is_gm, user_is_patron
 from utils.i18n import _, locale_doc
 from classes.converters import IntGreaterThan
 from cogs.shard_communication import user_on_cooldown as user_cooldown
@@ -1414,8 +1414,14 @@ class PremiumShop(commands.Cog):
                 await self.bot.reset_cooldown(ctx)
                 return await ctx.send(_("You don't have a character profile."))
             
-            tier = profile['tier'] or 0
+            try:
+                tier = int(profile["tier"] or 0)
+            except (TypeError, ValueError):
+                tier = 0
             current_dragoncoins = profile['dragoncoins'] or 0
+
+        if tier < 1 and await user_is_patron(self.bot, ctx.author, "basic"):
+            tier = 1
         
         # Define tier rewards
         tier_rewards = {
@@ -1482,8 +1488,14 @@ class PremiumShop(commands.Cog):
                 'SELECT tier FROM profile WHERE "user" = $1;',
                 ctx.author.id
             )
-        
-        tier = tier or 0
+
+        try:
+            tier = int(tier or 0)
+        except (TypeError, ValueError):
+            tier = 0
+
+        if tier < 1 and await user_is_patron(self.bot, ctx.author, "basic"):
+            tier = 1
         
         embed = discord.Embed(
             title=_("🏆 Tier Rewards Information"),

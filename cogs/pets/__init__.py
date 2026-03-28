@@ -2246,7 +2246,11 @@ class Pets(commands.Cog):
 
     async def user_has_daycare_management_access(self, conn, user_id: int) -> bool:
         return (
-            await self.get_patreon_tier_for_user(conn, user_id)
+            await self.get_patreon_tier_for_user(
+                conn,
+                user_id,
+                allow_support_booster=self.DAYCARE_REQUIRED_PATREON_TIER <= 1,
+            )
             >= self.DAYCARE_REQUIRED_PATREON_TIER
         )
 

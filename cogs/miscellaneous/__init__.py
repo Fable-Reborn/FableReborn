@@ -177,7 +177,18 @@ class Miscellaneous(commands.Cog):
         character_data = await ctx.bot.pool.fetchrow(
             'SELECT tier, class FROM profile WHERE "user"=$1;', ctx.author.id
         )
-        if not character_data or character_data["tier"] < 1:
+        if not character_data:
+            return await ctx.send(_("You do not have access to this command."))
+
+        try:
+            tier = int(character_data["tier"] or 0)
+        except (TypeError, ValueError):
+            tier = 0
+
+        if tier < 1 and await user_is_patron(self.bot, ctx.author, "basic"):
+            tier = 1
+
+        if tier < 1:
             return await ctx.send(_("You do not have access to this command."))
 
         # Define commands and their cooldowns
