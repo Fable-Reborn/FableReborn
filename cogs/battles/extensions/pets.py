@@ -260,6 +260,60 @@ class PetExtension:
 
         return max(Decimal('0'), min(heal_amount, heal_cap))
 
+    def _get_active_shadow_skeleton_count(self, pet_combatant):
+        team = getattr(pet_combatant, 'team', None)
+        if not hasattr(team, 'combatants'):
+            return 0
+
+        active_skeletons = 0
+        for combatant in team.combatants:
+            if combatant is pet_combatant:
+                continue
+            if not getattr(combatant, 'is_summoned', False):
+                continue
+            if getattr(combatant, 'summoner', None) is not pet_combatant:
+                continue
+            if hasattr(combatant, 'is_alive') and not combatant.is_alive():
+                continue
+            active_skeletons += 1
+
+        return active_skeletons
+
+    def _queue_shadow_skeleton_summons(self, pet_combatant, summon_count, effect_data):
+        if summon_count <= 0:
+            return 0
+
+        summon_queue = getattr(pet_combatant, 'summon_skeleton_queue', None)
+        if not isinstance(summon_queue, list):
+            summon_queue = []
+
+        serial = int(getattr(pet_combatant, 'skeleton_count', 0) or 0)
+        skeleton_hp = pet_combatant.max_hp * Decimal(
+            str(effect_data.get('skeleton_hp', 0.75))
+        )
+        skeleton_damage = pet_combatant.damage * Decimal(
+            str(effect_data.get('skeleton_damage', 0.90))
+        )
+        skeleton_armor = pet_combatant.armor * Decimal(
+            str(effect_data.get('skeleton_armor', 0.40))
+        )
+
+        for _ in range(int(summon_count)):
+            serial += 1
+            summon_queue.append(
+                {
+                    'hp': skeleton_hp,
+                    'damage': skeleton_damage,
+                    'armor': skeleton_armor,
+                    'element': 'Dark',
+                    'serial': serial,
+                }
+            )
+
+        setattr(pet_combatant, 'summon_skeleton_queue', summon_queue)
+        setattr(pet_combatant, 'skeleton_count', serial)
+        return int(summon_count)
+
     def _apply_timed_multiplier(
         self,
         target,
@@ -1071,15 +1125,18 @@ class PetExtension:
                 }
             elif "lord of shadows" in skill_lower:
                 pet_combatant.skill_effects['lord_of_shadows'] = {
-                    'enemy_control': True,
-                    'shadow_army': True,
+                    'proc_hp_threshold': 0.80,
+                    'proc_chance': 0.25,
+                    'initial_summons': 2,
+                    'repeat_summons': 1,
+                    'max_active_skeletons': 3,
                     'skeleton_hp': 0.75,
-                    'skeleton_damage': 0.65,
+                    'skeleton_damage': 0.90,
                     'skeleton_armor': 0.40,
                     'team_buff': 0.15,
                     'enemy_debuff': 0.15,
                     'duration': 3,
-                    'type': 'ultimate',
+                    'type': 'shadow_host',
                 }
                 
             # 🌀 CORRUPTED SKILLS
@@ -2035,54 +2092,85 @@ class PetExtension:
             messages.append(f"{pet_combatant.name} brings Eternal Night! Darkness empowers the team!")
             pet_combatant.ultimate_ready = False
             
-        # Lord of Shadows - ULTIMATE
-        if ('lord_of_shadows' in effects and 
-            getattr(pet_combatant, 'ultimate_ready', False)):
-            current_skeletons = getattr(pet_combatant, 'skeleton_count', 0)
-            max_skeletons = 2
+        # Lord of Shadows - repeatable shadow-host proc
+        if 'lord_of_shadows' in effects:
+            hp_ratio = pet_combatant.hp / pet_combatant.max_hp
+            proc_threshold = Decimal(str(effects['lord_of_shadows'].get('proc_hp_threshold', 0.80)))
+            proc_chance = float(effects['lord_of_shadows'].get('proc_chance', 0.25))
 
-            if current_skeletons < max_skeletons:
-                skeleton_hp = pet_combatant.max_hp * Decimal(str(effects['lord_of_shadows'].get('skeleton_hp', 0.75)))
-                skeleton_damage = pet_combatant.damage * Decimal(str(effects['lord_of_shadows'].get('skeleton_damage', 0.65)))
-                skeleton_armor = pet_combatant.armor * Decimal(str(effects['lord_of_shadows'].get('skeleton_armor', 0.40)))
-                setattr(pet_combatant, 'summon_skeleton', {
-                    'hp': skeleton_hp,
-                    'damage': skeleton_damage,
-                    'armor': skeleton_armor,
-                    'element': 'Dark'
-                })
-                setattr(pet_combatant, 'skeleton_count', current_skeletons + 1)
-            else:
-                messages.append(
-                    f"{pet_combatant.name} tries to summon more skeletons, but the shadow army is at full strength! (2/2)"
+            if hp_ratio <= proc_threshold and random.random() < proc_chance:
+                initial_proc = not getattr(
+                    pet_combatant,
+                    'lord_of_shadows_initial_proc_used',
+                    False,
+                )
+                desired_summons = int(
+                    effects['lord_of_shadows'].get(
+                        'initial_summons' if initial_proc else 'repeat_summons',
+                        1,
+                    )
+                )
+                active_skeletons = self._get_active_shadow_skeleton_count(pet_combatant)
+                max_active_skeletons = int(
+                    effects['lord_of_shadows'].get('max_active_skeletons', 3)
+                )
+                summons_to_queue = max(
+                    0,
+                    min(desired_summons, max_active_skeletons - active_skeletons),
+                )
+                if initial_proc:
+                    setattr(pet_combatant, 'lord_of_shadows_initial_proc_used', True)
+
+                queued_summons = self._queue_shadow_skeleton_summons(
+                    pet_combatant,
+                    summons_to_queue,
+                    effects['lord_of_shadows'],
                 )
 
-            duration = int(effects['lord_of_shadows'].get('duration', 3))
-            if hasattr(pet_combatant, 'team'):
-                for ally in pet_combatant.team.combatants:
-                    if ally.is_alive():
-                        self._apply_timed_multiplier(
-                            ally,
-                            'lord_of_shadows',
-                            duration,
-                            damage_mult=Decimal('1') + Decimal(str(effects['lord_of_shadows'].get('team_buff', 0.15))),
-                            armor_mult=Decimal('1.10'),
-                            luck_mult=Decimal('1.10'),
-                        )
-            if hasattr(target, 'team'):
-                for enemy in target.team.combatants:
-                    if enemy.is_alive():
-                        self._apply_timed_multiplier(
-                            enemy,
-                            'lord_of_shadows_fear',
-                            duration,
-                            damage_mult=Decimal('1') - Decimal(str(effects['lord_of_shadows'].get('enemy_debuff', 0.15))),
-                            luck_mult=Decimal('0.90'),
-                        )
-            messages.append(
-                f"{pet_combatant.name} becomes Lord of Shadows! The shadow host rises and terror grips the battlefield!"
-            )
-            pet_combatant.ultimate_ready = False
+                duration = int(effects['lord_of_shadows'].get('duration', 3))
+                if hasattr(pet_combatant, 'team'):
+                    for ally in pet_combatant.team.combatants:
+                        if ally.is_alive():
+                            self._apply_timed_multiplier(
+                                ally,
+                                'lord_of_shadows',
+                                duration,
+                                damage_mult=Decimal('1')
+                                + Decimal(
+                                    str(effects['lord_of_shadows'].get('team_buff', 0.15))
+                                ),
+                                armor_mult=Decimal('1.10'),
+                                luck_mult=Decimal('1.10'),
+                            )
+                if hasattr(target, 'team'):
+                    for enemy in target.team.combatants:
+                        if enemy.is_alive():
+                            self._apply_timed_multiplier(
+                                enemy,
+                                'lord_of_shadows_fear',
+                                duration,
+                                damage_mult=Decimal('1')
+                                - Decimal(
+                                    str(
+                                        effects['lord_of_shadows'].get(
+                                            'enemy_debuff',
+                                            0.15,
+                                        )
+                                    )
+                                ),
+                                luck_mult=Decimal('0.90'),
+                            )
+
+                if queued_summons >= 2:
+                    summon_text = "Two skeleton warriors claw free from the dark at once!"
+                elif queued_summons == 1:
+                    summon_text = "A skeleton warrior rises from the shadow host!"
+                else:
+                    summon_text = "The shadow host answers, but no more skeletons can be raised right now."
+
+                messages.append(
+                    f"{pet_combatant.name} invokes Lord of Shadows! {summon_text}"
+                )
             
         # 🌀 CORRUPTED SKILLS
         # Chaos Strike - random damage and element
@@ -3832,7 +3920,7 @@ class PetExtension:
                 'gaias_wrath', 'immortal_growth', 'world_trees_gift',
                 'storm_lord_wind', 'skys_blessing', 'zephyrs_dance',
                 'solar_flare', 'divine_protection', 'celestial_blessing',
-                'void_mastery', 'eternal_night', 'lord_of_shadows',
+                'void_mastery', 'eternal_night',
                 'apocalypse', 'corruption_mastery', 'void_lord', 'end_of_days'
             ]
 

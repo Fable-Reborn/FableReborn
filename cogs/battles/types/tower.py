@@ -338,35 +338,46 @@ class TowerBattle(Battle):
                     message += "\n" + "\n".join(defender_messages)
                 
                 # Check for skeleton summoning after skill processing
-                if hasattr(current_combatant, 'summon_skeleton'):
-                    skeleton_data = current_combatant.summon_skeleton
-                    
-                    # Create skeleton combatant
+                queued_summons = getattr(current_combatant, 'summon_skeleton_queue', None)
+                if not queued_summons and hasattr(current_combatant, 'summon_skeleton'):
+                    queued_summons = [current_combatant.summon_skeleton]
+                if queued_summons:
                     from cogs.battles.core.combatant import Combatant
-                    skeleton = Combatant(
-                        user=f"Skeleton Warrior #{current_combatant.skeleton_count}",  # User/name
-                        hp=skeleton_data['hp'],
-                        max_hp=skeleton_data['hp'],  # Same as current HP
-                        damage=skeleton_data['damage'],
-                        armor=skeleton_data['armor'],
-                        element=skeleton_data['element'],
-                        luck=50,  # Base luck
-                        is_pet=True,
-                        name=f"Skeleton Warrior #{current_combatant.skeleton_count}"
-                    )
-                    skeleton.is_summoned = True
-                    skeleton.summoner = current_combatant
-                    
-                    # Add skeleton to player team (tower battles use player_team and enemy_team)
-                    if current_combatant in self.player_team.combatants:
-                        self.player_team.combatants.append(skeleton)
-                        message += f"\n💀 A skeleton warrior joins your side!"
-                    else:
-                        self.enemy_team.combatants.append(skeleton)
-                        message += f"\n💀 A skeleton warrior joins the enemy side!"
-                    
-                    # Clear the summon flag
-                    delattr(current_combatant, 'summon_skeleton')
+
+                    for skeleton_data in list(queued_summons):
+                        skeleton_serial = skeleton_data.get(
+                            'serial',
+                            getattr(current_combatant, 'skeleton_count', 1),
+                        )
+                        skeleton = Combatant(
+                            user=f"Skeleton Warrior #{skeleton_serial}",
+                            hp=skeleton_data['hp'],
+                            max_hp=skeleton_data['hp'],
+                            damage=skeleton_data['damage'],
+                            armor=skeleton_data['armor'],
+                            element=skeleton_data['element'],
+                            luck=50,
+                            is_pet=True,
+                            name=f"Skeleton Warrior #{skeleton_serial}"
+                        )
+                        skeleton.is_summoned = True
+                        skeleton.summoner = current_combatant
+
+                        if current_combatant in self.player_team.combatants:
+                            self.player_team.combatants.append(skeleton)
+                            self.turn_order.append(skeleton)
+                            message += f"\n💀 Skeleton Warrior #{skeleton_serial} joins your side!"
+                        else:
+                            self.enemy_team.combatants.append(skeleton)
+                            self.turn_order.append(skeleton)
+                            message += f"\n💀 Skeleton Warrior #{skeleton_serial} joins the enemy side!"
+
+                    self.turn_order = self.prioritize_turn_order(self.turn_order)
+
+                    if hasattr(current_combatant, 'summon_skeleton_queue'):
+                        delattr(current_combatant, 'summon_skeleton_queue')
+                    if hasattr(current_combatant, 'summon_skeleton'):
+                        delattr(current_combatant, 'summon_skeleton')
 
             grave_message = await self.maybe_trigger_grave_sovereign(
                 current_combatant,

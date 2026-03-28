@@ -1223,38 +1223,45 @@ class DragonBattle(Battle):
                     message += f"\n🛡️ **SHIELD REFLECTION!** {player.name}'s shield reflects **{self.format_number(reflection_damage)} HP** damage!"
         
         # Check for skeleton summoning after skill processing
-        if hasattr(player, 'summon_skeleton'):
-            skeleton_data = player.summon_skeleton
-            
-            # Create skeleton combatant
+        queued_summons = getattr(player, 'summon_skeleton_queue', None)
+        if not queued_summons and hasattr(player, 'summon_skeleton'):
+            queued_summons = [player.summon_skeleton]
+        if queued_summons:
             from cogs.battles.core.combatant import Combatant
-            skeleton = Combatant(
-                user=f"Skeleton Warrior #{player.skeleton_count}",  # User/name
-                hp=skeleton_data['hp'],
-                max_hp=skeleton_data['hp'],  # Same as current HP
-                damage=skeleton_data['damage'],
-                armor=skeleton_data['armor'],
-                element=skeleton_data['element'],
-                luck=50,  # Base luck
-                is_pet=True,
-                name=f"Skeleton Warrior #{player.skeleton_count}"
-            )
-            skeleton.is_summoned = True
-            skeleton.summoner = player
-            
-            # Add skeleton to player team (dragon battles use player_team and dragon_team)
-            if player in self.player_team.combatants:
-                self.player_team.combatants.append(skeleton)
-                self._player_turn_queue.append(skeleton)
-                setattr(skeleton, "battle", self)
-                message += f"\n💀 A skeleton warrior joins your side!"
-            else:
-                self.dragon_team.combatants.append(skeleton)
-                setattr(skeleton, "battle", self)
-                message += f"\n💀 A skeleton warrior joins the dragon side!"
-            
-            # Clear the summon flag
-            delattr(player, 'summon_skeleton')
+
+            for skeleton_data in list(queued_summons):
+                skeleton_serial = skeleton_data.get(
+                    'serial',
+                    getattr(player, 'skeleton_count', 1),
+                )
+                skeleton = Combatant(
+                    user=f"Skeleton Warrior #{skeleton_serial}",
+                    hp=skeleton_data['hp'],
+                    max_hp=skeleton_data['hp'],
+                    damage=skeleton_data['damage'],
+                    armor=skeleton_data['armor'],
+                    element=skeleton_data['element'],
+                    luck=50,
+                    is_pet=True,
+                    name=f"Skeleton Warrior #{skeleton_serial}"
+                )
+                skeleton.is_summoned = True
+                skeleton.summoner = player
+
+                if player in self.player_team.combatants:
+                    self.player_team.combatants.append(skeleton)
+                    self._player_turn_queue.append(skeleton)
+                    setattr(skeleton, "battle", self)
+                    message += f"\n💀 Skeleton Warrior #{skeleton_serial} joins your side!"
+                else:
+                    self.dragon_team.combatants.append(skeleton)
+                    setattr(skeleton, "battle", self)
+                    message += f"\n💀 Skeleton Warrior #{skeleton_serial} joins the dragon side!"
+
+            if hasattr(player, 'summon_skeleton_queue'):
+                delattr(player, 'summon_skeleton_queue')
+            if hasattr(player, 'summon_skeleton'):
+                delattr(player, 'summon_skeleton')
 
         grave_message = await self.maybe_trigger_grave_sovereign(player, target)
         if grave_message:

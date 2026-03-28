@@ -1769,7 +1769,7 @@ class Pets(commands.Cog):
                     3: {"name": "Night Vision", "description": "Can see through stealth/invisibility + 20% accuracy in darkness", "cost": 2},
                     5: {"name": "Shadow Step", "description": "Can teleport behind enemy for guaranteed critical hit", "cost": 3},
                     7: {"name": "Dark Ritual", "description": "Once per battle below 75% owner HP, sacrifice 20% owner HP to send the pet into a blood-fueled rampage", "cost": 4},
-                    10: {"name": "Lord of Shadows", "description": "ULTIMATE (15-25% HP): Summon an elite skeleton, empower allies, and shroud enemies in fear for 3 turns", "cost": 5}
+                    10: {"name": "Lord of Shadows", "description": "When at 80% HP or below, attacks have a 25% chance to raise the shadow host: summon 2 skeletons on first trigger, then 1 on later triggers while empowering allies and shrouding enemies in fear for 3 turns", "cost": 5}
                 }
             },
             "Corrupted": {
