@@ -1050,23 +1050,78 @@ class Bot(commands.AutoShardedBot):
     async def reload_bans(self):
         await self.cogs["Sharding"].handler("reload_bans", 0)
 
+    def _get_patreon_booster_membership_config(self):
+        ids_section = getattr(self.config, "ids", None)
+        raid_ids = getattr(ids_section, "raid", {}) if ids_section else {}
+        if not isinstance(raid_ids, dict):
+            raid_ids = {}
+
+        booster_guild_id = raid_ids.get("booster_guild_id", self.support_server_id)
+        booster_role_id = raid_ids.get("booster_role_id")
+
+        try:
+            booster_guild_id = int(booster_guild_id) if booster_guild_id else None
+        except (TypeError, ValueError):
+            booster_guild_id = self.support_server_id
+
+        try:
+            booster_role_id = int(booster_role_id) if booster_role_id else None
+        except (TypeError, ValueError):
+            booster_role_id = None
+
+        return booster_guild_id, booster_role_id
+
+    def _resolve_donator_rank_from_role_ids(self, member_roles):
+        top_donator_rank = None
+
+        for role in self.config.external.donator_roles:
+            try:
+                role_id = int(role.id)
+            except (TypeError, ValueError):
+                continue
+
+            if role_id not in member_roles:
+                continue
+            rank = getattr(DonatorRank, role.tier, None)
+            if rank and (top_donator_rank is None or rank > top_donator_rank):
+                top_donator_rank = rank
+
+        if top_donator_rank:
+            return top_donator_rank
+
+        _booster_guild_id, booster_role_id = self._get_patreon_booster_membership_config()
+        if booster_role_id and booster_role_id in member_roles:
+            return DonatorRank.basic
+
+        return None
+
     @cache(maxsize=8096)
     async def get_donator_rank(self, user_id):
         if self.config.bot.is_beta or self.config.bot.is_custom:
             return DonatorRank.diamond
 
-        if self.support_server_id is None:
+        booster_guild_id, _booster_role_id = self._get_patreon_booster_membership_config()
+        guild_ids = []
+        for guild_id in (self.support_server_id, booster_guild_id):
+            if guild_id and guild_id not in guild_ids:
+                guild_ids.append(guild_id)
+
+        if not guild_ids:
             return False
-        try:
-            member = await self.http.get_member(self.support_server_id, user_id)
-        except discord.NotFound:
-            return False
-        top_donator_role = None
-        member_roles = [int(i) for i in member.get("roles", [])]
-        for role in self.config.external.donator_roles:
-            if role.id in member_roles:
-                top_donator_role = role.tier
-        return getattr(DonatorRank, top_donator_role) if top_donator_role else None
+
+        found_member = False
+        for guild_id in guild_ids:
+            try:
+                member = await self.http.get_member(guild_id, user_id)
+            except discord.NotFound:
+                continue
+
+            found_member = True
+            member_roles = [int(i) for i in member.get("roles", [])]
+            if rank := self._resolve_donator_rank_from_role_ids(member_roles):
+                return rank
+
+        return None if found_member else False
 
     async def get_damage_armor_for(
         self, user, items=None, classes=None, race=None, conn=None

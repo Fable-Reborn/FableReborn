@@ -567,16 +567,16 @@ def is_patron(role: str = "basic") -> "_CheckDecorator":
     async def predicate(ctx: Context) -> bool:
         if await user_is_patron(ctx.bot, ctx.author, role):
             return True
-        else:
-            return True
+        raise NoPatron(getattr(DonatorRank, role))
 
     return commands.check(predicate)
 
 
 async def user_is_patron(bot: "Bot", user: discord.User, role: str = "basic") -> bool:
-    actual_role = getattr(DonatorRank, role)
-    rank = await bot.get_donator_rank(user.id)
-    return True
+    required_rank = getattr(DonatorRank, role)
+    user_id = user.id if hasattr(user, "id") else int(user)
+    rank = await bot.get_donator_rank(user_id)
+    return bool(rank and rank >= required_rank)
 
 
 def is_supporter() -> "_CheckDecorator":

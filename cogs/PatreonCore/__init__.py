@@ -14,7 +14,7 @@ import discord
 from discord.ext import commands, tasks
 
 from cogs.shard_communication import user_on_cooldown as user_cooldown
-from utils.checks import is_gm
+from utils.checks import is_gm, user_is_patron
 
 
 class SetupCancelled(Exception):
@@ -1387,8 +1387,11 @@ class PatreonCore(commands.Cog):
                 'SELECT "tier" FROM profile WHERE "user"=$1',
                 ctx.author.id,
             )
+            effective_tier = int(patron_tier or 0)
+            if effective_tier < 1 and await user_is_patron(self.bot, ctx.author, "basic"):
+                effective_tier = 1
 
-            if patron_tier is None or patron_tier < 1:
+            if effective_tier < 1:
                 await self.bot.reset_cooldown(ctx)
                 return await ctx.send(
                     "You need to be a patron (tier 1 or higher) to redeem weapon tokens."
@@ -1410,7 +1413,7 @@ class PatreonCore(commands.Cog):
                     if log_channel:
                         await log_channel.send(
                             "Weapon Token Redemption: "
-                            f"{ctx.author.mention} ({ctx.author.id}) redeemed 5 weapon tokens as tier {patron_tier}."
+                            f"{ctx.author.mention} ({ctx.author.id}) redeemed 5 weapon tokens as tier {effective_tier}."
                         )
 
                 embed = discord.Embed(
@@ -1420,7 +1423,7 @@ class PatreonCore(commands.Cog):
                 )
                 embed.add_field(name="Tokens Added", value="5", inline=True)
                 embed.add_field(name="New Balance", value=f"{new_balance:,}", inline=True)
-                embed.add_field(name="Patron Tier", value=f"Tier {patron_tier}", inline=True)
+                embed.add_field(name="Patron Tier", value=f"Tier {effective_tier}", inline=True)
                 embed.set_footer(text="You can redeem this once every 32 days.")
                 await ctx.send(embed=embed)
             except Exception as e:
