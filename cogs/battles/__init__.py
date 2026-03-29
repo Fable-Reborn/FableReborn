@@ -1309,6 +1309,7 @@ class Battles(commands.Cog):
     PVE_LEGENDARY_SPAWN_CHANCE = 0.01
     PVE_SPLICE_SAMPLE_PER_GENERATION = 75
     PVE_SPLICE_GENERATIONS = (0,)
+    PVE_SPLICE_EXCLUDED_NAME_MARKERS = ("[FINAL]",)
     JURY_RESET_FRAGMENT_REQUIREMENT = 3
     JURY_MAX_APPEALS = 4
     JURY_SHOP_RESET_POTION_COST = 3200
@@ -2796,6 +2797,51 @@ class Battles(commands.Cog):
 
         return int(max(parent1_gen, parent2_gen) + 1)
 
+    def _build_pending_splice_parent_keys(self, rows) -> set[str]:
+        parent_keys: set[str] = set()
+        for row in rows or ():
+            try:
+                parent_name = row["parent_name"]
+            except (KeyError, TypeError, IndexError):
+                continue
+
+            if not isinstance(parent_name, str):
+                continue
+
+            cleaned_name = parent_name.strip()
+            if cleaned_name:
+                parent_keys.add(cleaned_name.casefold())
+
+        return parent_keys
+
+    def _normalize_splice_pve_result_name(
+        self,
+        result_name,
+        pending_splice_parent_keys: set[str] | None = None,
+    ) -> str | None:
+        if not isinstance(result_name, str):
+            return None
+
+        cleaned_name = result_name.strip()
+        if not cleaned_name:
+            return None
+
+        normalized_upper = cleaned_name.upper()
+        if any(
+            marker in normalized_upper
+            for marker in self.PVE_SPLICE_EXCLUDED_NAME_MARKERS
+        ):
+            return None
+
+        # Keep splice-chain parents that are still in flight out of sampled PvE.
+        if (
+            pending_splice_parent_keys
+            and cleaned_name.casefold() in pending_splice_parent_keys
+        ):
+            return None
+
+        return cleaned_name
+
     async def _get_splice_pve_monsters_by_level(
         self,
         sample_per_generation: int | None = None,
@@ -2821,6 +2867,28 @@ class Battles(commands.Cog):
                     ORDER BY created_at ASC, id ASC
                     """
                 )
+                pending_splice_parent_keys: set[str] = set()
+                splice_requests_exists = await conn.fetchval(
+                    "SELECT to_regclass('public.splice_requests') IS NOT NULL;"
+                )
+                if splice_requests_exists:
+                    pending_parent_rows = await conn.fetch(
+                        """
+                        SELECT DISTINCT parent_name
+                        FROM (
+                            SELECT pet1_default AS parent_name
+                            FROM splice_requests
+                            WHERE status = 'pending'
+                            UNION
+                            SELECT pet2_default AS parent_name
+                            FROM splice_requests
+                            WHERE status = 'pending'
+                        ) pending_parent_names
+                        """
+                    )
+                    pending_splice_parent_keys = (
+                        self._build_pending_splice_parent_keys(pending_parent_rows)
+                    )
         except Exception:
             return {}
 
@@ -2847,11 +2915,11 @@ class Battles(commands.Cog):
             if row_generation not in generation_buckets:
                 continue
 
-            result_name = row["result_name"]
-            if not isinstance(result_name, str):
-                continue
-            result_name = result_name.strip()
-            if not result_name:
+            result_name = self._normalize_splice_pve_result_name(
+                row["result_name"],
+                pending_splice_parent_keys,
+            )
+            if result_name is None:
                 continue
 
             dedupe_key = result_name.casefold()
