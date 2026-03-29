@@ -6,6 +6,7 @@ import discord
 import datetime
 
 from ..core.battle import Battle
+from utils.april_fools import get_pet_display_name
 
 class PvEBattle(Battle):
     """Player vs Environment (monster) battle implementation"""
@@ -698,7 +699,10 @@ class PvEBattle(Battle):
 
             if pet_battle_result:
                 awarded_pet_xp = int(pet_battle_result.get("awarded_xp", 0) or 0)
-                pet_name = pet_battle_result.get("pet_name", "your pet")
+                pet_name = get_pet_display_name(
+                    self.ctx.bot,
+                    pet_battle_result.get("pet_name", "your pet"),
+                )
                 if awarded_pet_xp > 0:
                     pet_line = f"\n🐾 **Pet XP:** **+{awarded_pet_xp}** to **{pet_name}**"
                     if pet_battle_result.get("leveled_up"):

@@ -44,6 +44,7 @@ from cogs.shard_communication import user_on_cooldown as user_cooldown
 from cogs.profilecustomization import ProfileCustomization
 from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps
 from utils import checks, colors, random
+from utils.april_fools import get_pet_display_name, mask_pet_record_for_display
 from utils import misc as rpgtools
 from utils.checks import is_gm
 from utils.i18n import _, locale_doc
@@ -2234,6 +2235,8 @@ class Profile(commands.Cog):
                 'SELECT default_name FROM monster_pets WHERE "user_id"=$1 AND equipped = true;',
                 target_user.id,
             ) or "None"
+        if pet != "None":
+            pet = get_pet_display_name(self.bot, pet)
         ascension = get_ascension_mantle(None if ascension_record is None else ascension_record["mantle"])
         ascension_enabled = True if ascension_record is None else bool(ascension_record["enabled"])
         if ascension:
@@ -2404,8 +2407,13 @@ class Profile(commands.Cog):
                 'SELECT * FROM monster_pets WHERE "user_id" = $1 AND equipped = true;',
                 user.id,
             )
+            pet_data = dict(pet_data) if pet_data else None
+            pet_data = mask_pet_record_for_display(self.bot, pet_data)
             pet_name = (
-                str(pet_data.get("name") or pet_data.get("default_name") or "None")
+                get_pet_display_name(
+                    self.bot,
+                    pet_data.get("name") or pet_data.get("default_name") or "None",
+                )
                 if pet_data
                 else "None"
             )

@@ -37,6 +37,11 @@ from classes.classes import from_string as class_from_string
 from classes.converters import IntGreaterThan
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils import random
+from utils.april_fools import (
+    get_pet_display_name,
+    get_pet_display_url,
+    mask_pet_record_for_display,
+)
 from utils.checks import has_char, has_money, is_gm, is_patreon, user_is_patron
 from utils.i18n import _, locale_doc
 from utils.joins import SingleJoinView
@@ -74,7 +79,7 @@ class PetSelect(discord.ui.Select):
 
             options.append(
                 discord.SelectOption(
-                    label=f"{pet['name']} (ID: {pet['id']})",
+                    label=f"{get_pet_display_name(self.cog.bot, pet['name'])} (ID: {pet['id']})",
                     description=" | ".join(description_parts),
                     value=str(i),  # Store the index in the pets list as value
                     emoji=stage_emoji
@@ -117,7 +122,7 @@ class PetPaginator(discord.ui.View):
                 pass
 
     def get_embed(self):
-        pet = self.pets[self.index]
+        pet = mask_pet_record_for_display(self.cog.bot, self.pets[self.index])
 
         growth_stages = {
             1: {"stage": "baby", "growth_time": 2, "stat_multiplier": 0.25, "hunger_modifier": 1.0},
@@ -241,7 +246,7 @@ class PetPaginator(discord.ui.View):
         embed.set_footer(
             text=f"Viewing pet {self.index + 1} of {len(self.pets)} | Use the dropdown to navigate"
         )
-        embed.set_image(url=pet["url"])
+        embed.set_image(url=get_pet_display_url(self.cog.bot, pet["url"]))
 
         return embed
 

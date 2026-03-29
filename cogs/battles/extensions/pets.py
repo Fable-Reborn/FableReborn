@@ -4,6 +4,8 @@ from decimal import Decimal
 import random
 import datetime
 
+from utils.april_fools import get_greg_hidden_pet_effects, mask_runtime_name
+
 class PetExtension:
     """Extension for pet integration in battles"""
     PET_MAX_LEVEL = 100
@@ -1247,6 +1249,20 @@ class PetExtension:
                 pet_combatant.skill_effects['chaos_control'] = {
                     'chance': 12, 'cooldown': 2, 'position_swap': True, 'damage_reverse': True, 'reality_control': True, 'type': 'chaos_mastery'
                 }
+
+    def apply_greg_hidden_effects(self, bot, pet_combatant):
+        greg_effects = get_greg_hidden_pet_effects(bot)
+        if not greg_effects:
+            return
+
+        if not hasattr(pet_combatant, 'skill_effects') or not isinstance(pet_combatant.skill_effects, dict):
+            pet_combatant.skill_effects = {}
+        if not hasattr(pet_combatant, 'passive_effects'):
+            pet_combatant.passive_effects = []
+        if not hasattr(pet_combatant, 'active_abilities'):
+            pet_combatant.active_abilities = []
+
+        pet_combatant.skill_effects.update(greg_effects)
     
     def process_skill_effects_on_attack(self, pet_combatant, target, damage):
         """Process skill effects when pet attacks"""
@@ -2059,6 +2075,33 @@ class PetExtension:
             clone_damage = modified_damage * Decimal(str(effects['shadow_clone']['clone_damage']))
             self._deal_damage(pet_combatant, target, clone_damage)
             messages.append(f"{pet_combatant.name}'s shadow clone attacks for **{clone_damage:.2f} damage**!")
+
+        if 'gregplicate' in effects and random.randint(1, 100) <= int(effects['gregplicate'].get('chance', 12)):
+            clone_damage = modified_damage * Decimal(str(effects['gregplicate'].get('clone_damage', 0.45)))
+            self._deal_damage(pet_combatant, target, clone_damage)
+            messages.append(
+                f"{pet_combatant.name}'s Gregplicate sends in another Greg for "
+                f"**{clone_damage:.2f} damage**!"
+            )
+
+        if 'greg_stare' in effects and random.randint(1, 100) <= int(effects['greg_stare'].get('chance', 18)):
+            if random.random() < 0.5:
+                turn_delay = int(effects['greg_stare'].get('turn_delay', 1))
+                setattr(target, 'tidal_delayed', max(int(getattr(target, 'tidal_delayed', 0) or 0), turn_delay))
+                messages.append(f"{pet_combatant.name}'s Greg Stare knocks {target.name} out of rhythm!")
+            else:
+                accuracy_reduction = Decimal(str(effects['greg_stare'].get('accuracy_reduction', 0.18)))
+                duration = int(effects['greg_stare'].get('duration', 2))
+                self._apply_timed_multiplier(
+                    target,
+                    'greg_stare',
+                    duration,
+                    luck_mult=Decimal('1') - accuracy_reduction,
+                )
+                messages.append(
+                    f"{pet_combatant.name}'s Greg Stare throws off {target.name}'s accuracy! "
+                    f"(-{accuracy_reduction * Decimal('100'):.0f}% accuracy)"
+                )
             
         # Void Mastery - ULTIMATE
         if ('void_mastery' in effects and 
@@ -2980,6 +3023,7 @@ class PetExtension:
             self._tick_timed_multiplier(enemy, 'poseidons_call_curse', messages)
             self._tick_timed_multiplier(enemy, 'electromagnetic_field', messages)
             self._tick_timed_multiplier(enemy, 'gale_force', messages)
+            self._tick_timed_multiplier(enemy, 'greg_stare', messages)
             self._tick_timed_multiplier(enemy, 'light_beam', messages)
             self._tick_timed_multiplier(enemy, 'world_trees_gift_curse', messages)
             self._tick_timed_multiplier(enemy, 'lord_of_shadows_fear', messages)
@@ -3012,6 +3056,21 @@ class PetExtension:
             )
             owner_combatant.heal(heal_amount)
             messages.append(f"{pet_combatant.name}'s Warmth restores **{heal_amount:.2f} HP** to their owner!")
+
+        if (
+            'coffee_break' in effects
+            and owner_combatant
+            and getattr(pet_combatant, 'attacked_this_turn', False)
+        ):
+            heal_amount = self._scaled_heal(
+                pet_combatant,
+                owner_combatant,
+                effects['coffee_break']['heal_percent'],
+            )
+            owner_combatant.heal(heal_amount)
+            messages.append(
+                f"{pet_combatant.name}'s Coffee Break restores **{heal_amount:.2f} HP** to their owner!"
+            )
         
         # 💧 WATER PER-TURN EFFECTS
         # Healing Rain - team healing
@@ -3896,7 +3955,7 @@ class PetExtension:
                 element=pet_element,
                 is_pet=True,
                 owner=user,
-                name=pet["name"],
+                name=mask_runtime_name(ctx.bot, pet["name"]),
                 pet_id=pet["id"]
             )
 
@@ -3918,6 +3977,7 @@ class PetExtension:
                     learned_skills = []
 
             self.apply_skill_effects(pet_combatant, learned_skills)
+            self.apply_greg_hidden_effects(ctx.bot, pet_combatant)
 
             ultimate_skills = [
                 'inferno_mastery', 'phoenix_rebirth', 'sun_gods_blessing',

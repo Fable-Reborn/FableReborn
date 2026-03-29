@@ -69,6 +69,7 @@ from classes.bot import Bot
 from classes.context import Context
 from classes.converters import UserWithCharacter
 from utils import shell
+from utils.april_fools import APRIL_FOOLS_GREG_FLAG
 from utils.misc import random_token
 from typing import Union
 
@@ -152,6 +153,18 @@ class GameMaster(commands.Cog):
             "lnybag": 10,
         },
     }
+    APRIL_FOOLS_DISPLAY_NAMES = {
+        APRIL_FOOLS_GREG_FLAG: "Greg Mask",
+    }
+    APRIL_FOOLS_DEFAULTS = {
+        APRIL_FOOLS_GREG_FLAG: False,
+    }
+    APRIL_FOOLS_ALIASES = {
+        "greg": APRIL_FOOLS_GREG_FLAG,
+        "gregmask": APRIL_FOOLS_GREG_FLAG,
+        "greg_mode": APRIL_FOOLS_GREG_FLAG,
+        "gregmode": APRIL_FOOLS_GREG_FLAG,
+    }
     GM_CONSUMABLE_ALIASES = {
         "petage": {"consumable_type": "pet_age_potion", "display_name": "Pet Age Potion"},
         "pet age potion": {"consumable_type": "pet_age_potion", "display_name": "Pet Age Potion"},
@@ -214,6 +227,7 @@ class GameMaster(commands.Cog):
         self.auction_entry = None
         self.isbid = False
         self.event_flags = {}
+        self.april_fools_flags = {}
 
     @staticmethod
     def _normalize_consumable_alias(alias: str) -> str:
@@ -6882,6 +6896,7 @@ class GameMaster(commands.Cog):
 
     async def cog_load(self):
         await self._init_event_settings()
+        await self._init_april_fools_settings()
 
     async def _init_event_settings(self):
         async with self.bot.pool.acquire() as conn:
@@ -6911,6 +6926,36 @@ class GameMaster(commands.Cog):
             self.event_flags.setdefault(key, default)
         self.bot.event_flags = self.event_flags
 
+    async def _init_april_fools_settings(self):
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS april_fools_settings (
+                    flag_key TEXT PRIMARY KEY,
+                    enabled BOOLEAN NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            for key, default in self.APRIL_FOOLS_DEFAULTS.items():
+                await conn.execute(
+                    """
+                    INSERT INTO april_fools_settings (flag_key, enabled)
+                    VALUES ($1, $2)
+                    ON CONFLICT (flag_key) DO NOTHING
+                    """,
+                    key,
+                    default,
+                )
+            rows = await conn.fetch("SELECT flag_key, enabled FROM april_fools_settings")
+
+        self.april_fools_flags = {
+            row["flag_key"]: bool(row["enabled"]) for row in rows
+        }
+        for key, default in self.APRIL_FOOLS_DEFAULTS.items():
+            self.april_fools_flags.setdefault(key, default)
+        self.bot.april_fools_flags = self.april_fools_flags
+
     def _normalize_event_key(self, raw: str | None) -> str | None:
         if not raw:
             return None
@@ -6930,6 +6975,21 @@ class GameMaster(commands.Cog):
         if not self.event_flags:
             return self.EVENT_DEFAULTS.get(event_key, False)
         return bool(self.event_flags.get(event_key, self.EVENT_DEFAULTS.get(event_key, False)))
+
+    def _normalize_april_fools_flag_key(self, raw: str | None) -> str | None:
+        if not raw:
+            return None
+        return self.APRIL_FOOLS_ALIASES.get(raw.strip().lower())
+
+    def get_april_fools_flag_enabled(self, flag_key: str) -> bool:
+        if not self.april_fools_flags:
+            return self.APRIL_FOOLS_DEFAULTS.get(flag_key, False)
+        return bool(
+            self.april_fools_flags.get(
+                flag_key,
+                self.APRIL_FOOLS_DEFAULTS.get(flag_key, False),
+            )
+        )
 
     async def set_event_enabled(self, event_key: str, enabled: bool) -> None:
         async with self.bot.pool.acquire() as conn:
@@ -6951,10 +7011,33 @@ class GameMaster(commands.Cog):
         if lny_cog and hasattr(lny_cog, "enabled"):
             lny_cog.enabled = enabled if event_key == "lunar_new_year" else lny_cog.enabled
 
+    async def set_april_fools_flag_enabled(self, flag_key: str, enabled: bool) -> None:
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO april_fools_settings (flag_key, enabled)
+                VALUES ($1, $2)
+                ON CONFLICT (flag_key)
+                DO UPDATE SET enabled = $2, updated_at = NOW()
+                """,
+                flag_key,
+                enabled,
+            )
+
+        self.april_fools_flags[flag_key] = enabled
+        self.bot.april_fools_flags = self.april_fools_flags
+
     def _event_status_lines(self) -> list[str]:
         lines = []
         for key, name in self.EVENT_DISPLAY_NAMES.items():
             status = "enabled" if self.get_event_enabled(key) else "disabled"
+            lines.append(f"{name}: {status}")
+        return lines
+
+    def _april_fools_status_lines(self) -> list[str]:
+        lines = []
+        for key, name in self.APRIL_FOOLS_DISPLAY_NAMES.items():
+            status = "enabled" if self.get_april_fools_flag_enabled(key) else "disabled"
             lines.append(f"{name}: {status}")
         return lines
 
@@ -6982,6 +7065,35 @@ class GameMaster(commands.Cog):
     async def gmevent_list(self, ctx):
         lines = self._event_status_lines()
         await ctx.send("Event status:\n" + "\n".join(lines))
+
+    @is_gm()
+    @commands.group(
+        name="gmapril",
+        aliases=["gmfools", "gmaprilfools"],
+        invoke_without_command=True,
+    )
+    async def gmapril(self, ctx, flag: str | None = None, enabled: str | None = None):
+        if flag is None:
+            lines = self._april_fools_status_lines()
+            return await ctx.send("April Fools status:\n" + "\n".join(lines))
+
+        flag_key = self._normalize_april_fools_flag_key(flag)
+        if not flag_key:
+            available = ", ".join(sorted(self.APRIL_FOOLS_DISPLAY_NAMES.values()))
+            return await ctx.send(f"Unknown April Fools flag. Available: {available}")
+
+        parsed = self._parse_bool(enabled)
+        if parsed is None:
+            parsed = not self.get_april_fools_flag_enabled(flag_key)
+
+        await self.set_april_fools_flag_enabled(flag_key, parsed)
+        status = "enabled" if parsed else "disabled"
+        await ctx.send(f"{self.APRIL_FOOLS_DISPLAY_NAMES[flag_key]} is now **{status}**.")
+
+    @gmapril.command(name="status", aliases=["list"])
+    async def gmapril_status(self, ctx):
+        lines = self._april_fools_status_lines()
+        await ctx.send("April Fools status:\n" + "\n".join(lines))
 
     @gmevent.command(name="resetshops", aliases=["resetshop"])
     async def gmevent_resetshops(self, ctx, event: str | None = "all"):

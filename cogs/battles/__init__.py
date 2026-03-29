@@ -37,6 +37,7 @@ from classes.classes import from_string as class_from_string
 from classes.converters import IntGreaterThan
 from classes.items import ItemType, Hand
 from cogs.shard_communication import user_on_cooldown as user_cooldown
+from utils.april_fools import get_pet_display_name, get_pet_display_url
 from utils.checks import has_char, has_money, is_gm
 from utils.i18n import _, locale_doc
 from utils.joins import JoinView, SingleJoinView
@@ -138,7 +139,10 @@ class PetEggSelect(Select):
     
     def create_pet_embed(self, pet):
         # Safely get pet name with fallback
-        pet_name = pet.get('name') or pet.get('display_name', 'Unnamed Pet')
+        pet_name = get_pet_display_name(
+            getattr(self, "cog", None).bot if getattr(self, "cog", None) else None,
+            pet.get('name') or pet.get('display_name', 'Unnamed Pet'),
+        )
         
         # Safely get growth stage with fallback
         growth_stage = pet.get('growth_stage', 'baby').lower()
@@ -197,7 +201,12 @@ class PetEggSelect(Select):
             
         # Set thumbnail if URL is available
         if 'url' in pet and pet['url']:
-            embed.set_thumbnail(url=pet['url'])
+            embed.set_thumbnail(
+                url=get_pet_display_url(
+                    getattr(self, "cog", None).bot if getattr(self, "cog", None) else None,
+                    pet['url'],
+                )
+            )
             
         return embed
     

@@ -23,6 +23,7 @@ from .extensions.classes import ClassBuffExtension
 from .extensions.pets import PetExtension
 from .extensions.dragon import DragonExtension
 from .settings import BattleSettings
+from utils.april_fools import mask_runtime_name
 
 class BattleFactory:
     """Factory for creating various battle types"""
@@ -559,7 +560,8 @@ class BattleFactory:
                 "attack": int(round(float(boss_data.get("damage", 20)) * prestige_multiplier)),
                 "defense": int(round(float(boss_data.get("armor", 10)) * prestige_multiplier)),
                 "element": boss_data.get("element", "Unknown")
-            }
+            },
+            mask_name=True,
         )
         
         # For level 16, don't apply prestige multipliers to minions since they use real player stats
@@ -573,7 +575,8 @@ class BattleFactory:
                 "attack": int(round(float(minion1_data.get("damage", 20)) * minion_prestige_multiplier)),
                 "defense": int(round(float(minion1_data.get("armor", 10)) * minion_prestige_multiplier)),
                 "element": minion1_data.get("element", "Unknown")
-            }
+            },
+            mask_name=True,
         )
         
         minion2 = await self.create_monster_combatant(
@@ -583,7 +586,8 @@ class BattleFactory:
                 "attack": int(round(float(minion2_data.get("damage", 20)) * minion_prestige_multiplier)),
                 "defense": int(round(float(minion2_data.get("armor", 10)) * minion_prestige_multiplier)),
                 "element": minion2_data.get("element", "Unknown")
-            }
+            },
+            mask_name=True,
         )
         
         # Create teams
@@ -669,6 +673,7 @@ class BattleFactory:
             enemy_combatant = await self.create_monster_combatant(
                 scaled_enemy_info,
                 name=scaled_enemy_info.get("name"),
+                mask_name=True,
             )
             setattr(enemy_combatant, "jury_key", scaled_enemy_info.get("key", "boss"))
             enemy_team.add_combatant(enemy_combatant)
@@ -774,7 +779,8 @@ class BattleFactory:
                     enemy_combatant = await self.create_monster_combatant(
                         scaled_enemy_info,
                         level=level,
-                        name=enemy_info.get("name")
+                        name=enemy_info.get("name"),
+                        mask_name=True,
                     )
                     enemy_team.add_combatant(enemy_combatant)
             
@@ -936,7 +942,7 @@ class BattleFactory:
                 ascension_survival_used=False,
             )
 
-    async def create_monster_combatant(self, monster_data, level=1, name=None):
+    async def create_monster_combatant(self, monster_data, level=1, name=None, mask_name=False):
         """Create a combatant object for a monster or boss"""
         # Get monster stats directly from json without scaling
         hp = monster_data.get("hp", 100)
@@ -946,16 +952,20 @@ class BattleFactory:
         
         # No level scaling - use exact values from monsters.json
         
+        combatant_name = name or monster_data.get("name", "Monster")
+        if mask_name:
+            combatant_name = mask_runtime_name(self.bot, combatant_name)
+
         # Create the monster combatant
         return Combatant(
-            user=name or monster_data.get("name", "Monster"),
+            user=combatant_name,
             hp=hp,
             max_hp=hp,
             damage=damage,
             armor=armor,
             element=element,
             luck=70,  # Monsters have high base luck
-            name=name or monster_data.get("name", "Monster")
+            name=combatant_name
         )
 
     async def find_random_opponent(self, ctx, player):
