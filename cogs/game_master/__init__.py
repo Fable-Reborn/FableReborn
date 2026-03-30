@@ -6904,6 +6904,7 @@ class GameMaster(commands.Cog):
     async def cog_load(self):
         await self._init_event_settings()
         await self._init_april_fools_settings()
+        await self._init_pve_census()
         greg_cog = self.bot.get_cog("Greg")
         if greg_cog and hasattr(greg_cog, "_sync_finale_event_flag"):
             await greg_cog._sync_finale_event_flag()
@@ -6965,6 +6966,186 @@ class GameMaster(commands.Cog):
         for key, default in self.APRIL_FOOLS_DEFAULTS.items():
             self.april_fools_flags.setdefault(key, default)
         self.bot.april_fools_flags = self.april_fools_flags
+
+    async def _init_pve_census(self):
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS gm_pve_census (
+                    id SMALLINT PRIMARY KEY,
+                    started_at TIMESTAMPTZ NULL,
+                    ends_at TIMESTAMPTZ NULL,
+                    successful_runs BIGINT NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await conn.execute(
+                """
+                INSERT INTO gm_pve_census (id, started_at, ends_at, successful_runs)
+                VALUES (1, NULL, NULL, 0)
+                ON CONFLICT (id) DO NOTHING
+                """
+            )
+
+    def _format_duration(self, total_seconds: float) -> str:
+        total_seconds = max(0, int(total_seconds or 0))
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        parts = []
+        if hours:
+            parts.append(f"{hours}h")
+        if minutes or hours:
+            parts.append(f"{minutes}m")
+        parts.append(f"{seconds}s")
+        return " ".join(parts)
+
+    def _ensure_utc(self, value: datetime.datetime | None) -> datetime.datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=datetime.timezone.utc)
+        return value.astimezone(datetime.timezone.utc)
+
+    def _pve_census_status(self, row) -> str:
+        data = dict(row or {})
+        started_at = self._ensure_utc(data.get("started_at"))
+        ends_at = self._ensure_utc(data.get("ends_at"))
+        now = datetime.datetime.now(datetime.timezone.utc)
+
+        if not started_at or not ends_at:
+            return "inactive"
+        if now < started_at:
+            return "pending"
+        if now < ends_at:
+            return "active"
+        return "expired"
+
+    async def _get_pve_census(self):
+        async with self.bot.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT started_at, ends_at, successful_runs
+                FROM gm_pve_census
+                WHERE id = 1
+                """
+            )
+
+        return row or {"started_at": None, "ends_at": None, "successful_runs": 0}
+
+    async def _start_pve_census(self):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        ends_at = now + datetime.timedelta(hours=24)
+        async with self.bot.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE gm_pve_census
+                SET started_at = $1,
+                    ends_at = $2,
+                    successful_runs = 0,
+                    updated_at = NOW()
+                WHERE id = 1
+                RETURNING started_at, ends_at, successful_runs
+                """,
+                now,
+                ends_at,
+            )
+
+        return row
+
+    async def _clear_pve_census(self):
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE gm_pve_census
+                SET started_at = NULL,
+                    ends_at = NULL,
+                    successful_runs = 0,
+                    updated_at = NOW()
+                WHERE id = 1
+                """
+            )
+
+    async def _increment_pve_census(self):
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE gm_pve_census
+                SET successful_runs = successful_runs + 1,
+                    updated_at = NOW()
+                WHERE id = 1
+                  AND started_at IS NOT NULL
+                  AND ends_at IS NOT NULL
+                  AND started_at <= NOW()
+                  AND ends_at > NOW()
+                """
+            )
+
+    def _build_pve_census_embed(self, row) -> discord.Embed:
+        data = dict(row or {})
+        started_at = self._ensure_utc(data.get("started_at"))
+        ends_at = self._ensure_utc(data.get("ends_at"))
+        successful_runs = int(data.get("successful_runs") or 0)
+        status = self._pve_census_status(data)
+        now = datetime.datetime.now(datetime.timezone.utc)
+
+        elapsed_seconds = 0
+        if started_at and ends_at:
+            if status == "active":
+                elapsed_seconds = int((now - started_at).total_seconds())
+            elif status == "expired":
+                elapsed_seconds = int((ends_at - started_at).total_seconds())
+
+        avg_per_hour = 0.0
+        if elapsed_seconds > 0:
+            avg_per_hour = successful_runs / max(elapsed_seconds / 3600, 1 / 3600)
+
+        embed = discord.Embed(title="PvE Census", color=0x8A2E12)
+        embed.add_field(name="Status", value=status, inline=True)
+        embed.add_field(name="Successful PvEs", value=f"{successful_runs:,}", inline=True)
+        embed.add_field(name="Average Pace", value=f"{avg_per_hour:.1f}/hour", inline=True)
+
+        if started_at and ends_at:
+            embed.add_field(
+                name="Started",
+                value=(
+                    f"{discord.utils.format_dt(started_at, style='F')}\n"
+                    f"{discord.utils.format_dt(started_at, style='R')}"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="Ends",
+                value=(
+                    f"{discord.utils.format_dt(ends_at, style='F')}\n"
+                    f"{discord.utils.format_dt(ends_at, style='R')}"
+                ),
+                inline=False,
+            )
+            if status == "active":
+                embed.add_field(
+                    name="Time Remaining",
+                    value=self._format_duration((ends_at - now).total_seconds()),
+                    inline=True,
+                )
+            else:
+                embed.add_field(
+                    name="Window Length",
+                    value=self._format_duration((ends_at - started_at).total_seconds()),
+                    inline=True,
+                )
+            embed.add_field(
+                name="Elapsed",
+                value=self._format_duration(elapsed_seconds),
+                inline=True,
+            )
+        else:
+            embed.description = (
+                "No PvE census is active. Use `$gmpve start` to begin a fresh 24-hour tracking window."
+            )
+
+        embed.set_footer(text="$gmpve start | $gmpve status | $gmpve clear")
+        return embed
 
     def _normalize_event_key(self, raw: str | None) -> str | None:
         if not raw:
@@ -7109,6 +7290,53 @@ class GameMaster(commands.Cog):
     async def gmapril_status(self, ctx):
         lines = self._april_fools_status_lines()
         await ctx.send("April Fools status:\n" + "\n".join(lines))
+
+    @commands.Cog.listener()
+    async def on_PVE_completion(
+        self,
+        ctx,
+        success,
+        monster_name=None,
+        element=None,
+        levelchoice=None,
+        battle_id=None,
+    ):
+        if not success or levelchoice is None:
+            return
+        await self._increment_pve_census()
+
+    @is_gm()
+    @commands.group(
+        name="gmpve",
+        aliases=["pvecensus", "pvewatch", "pvestats"],
+        invoke_without_command=True,
+        hidden=True,
+    )
+    async def gmpve(self, ctx):
+        row = await self._get_pve_census()
+        await ctx.send(embed=self._build_pve_census_embed(row))
+
+    @is_gm()
+    @gmpve.command(name="status", aliases=["check", "view"], hidden=True)
+    async def gmpve_status(self, ctx):
+        row = await self._get_pve_census()
+        await ctx.send(embed=self._build_pve_census_embed(row))
+
+    @is_gm()
+    @gmpve.command(name="start", aliases=["begin", "reset"], hidden=True)
+    async def gmpve_start(self, ctx):
+        row = await self._start_pve_census()
+        embed = self._build_pve_census_embed(row)
+        embed.description = (
+            "The 24-hour PvE census has started. Every successful full PvE clear will be counted from now on."
+        )
+        await ctx.send(embed=embed)
+
+    @is_gm()
+    @gmpve.command(name="clear", aliases=["stop", "end"], hidden=True)
+    async def gmpve_clear(self, ctx):
+        await self._clear_pve_census()
+        await ctx.send("The PvE census has been cleared.")
 
     @gmevent.command(name="resetshops", aliases=["resetshop"])
     async def gmevent_resetshops(self, ctx, event: str | None = "all"):

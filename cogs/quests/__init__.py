@@ -80,7 +80,10 @@ GREG_QUEST = QuestDef(
                         "Every surviving line bears the same name.\n\n"
                         "`Greg.`"
                     ),
-                    "image": "",
+                    "image": (
+                        "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/"
+                        "295173706496475136_ChatGPT_Image_Mar_30_2026_02_49_28_PM.png"
+                    ),
                 },
                 {
                     "title": "Gregapocalypse",
@@ -91,7 +94,10 @@ GREG_QUEST = QuestDef(
                         "rot has reached the living and the beasts alike.\n\n"
                         "\"Find where the Gregbound gather next,\" he tells you. \"The bells are counting for something.\""
                     ),
-                    "image": "",
+                    "image": (
+                        "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/"
+                        "295173706496475136_ChatGPT_Image_Mar_30_2026_02_49_28_PM.png"
+                    ),
                 },
             ),
         ),
@@ -115,7 +121,10 @@ GREG_QUEST = QuestDef(
                         "then all turn toward the abbey hill at once.\n\n"
                         "\"Do you see it now?\" Halric asks. \"They are not wandering. They are being counted.\""
                     ),
-                    "image": "",
+                    "image": (
+                        "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/"
+                        "295173706496475136_ChatGPT_Image_Mar_30_2026_02_54_37_PM.png"
+                    ),
                 },
                 {
                     "title": "Gregapocalypse",
@@ -126,7 +135,10 @@ GREG_QUEST = QuestDef(
                         "He turns toward the oldest graves in the valley.\n\n"
                         "\"Hunt stronger Gregbound. We will need the ash of the marked dead to read the hidden road.\""
                     ),
-                    "image": "",
+                    "image": (
+                        "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/"
+                        "295173706496475136_ChatGPT_Image_Mar_30_2026_02_54_37_PM.png"
+                    ),
                 },
             ),
         ),
@@ -153,7 +165,10 @@ GREG_QUEST = QuestDef(
                         "in the valley.\n\n"
                         "\"There,\" Halric whispers. \"The Black Crypt.\""
                     ),
-                    "image": "",
+                    "image": (
+                        "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/"
+                        "295173706496475136_ChatGPT_Image_Mar_30_2026_02_58_56_PM.png"
+                    ),
                 },
                 {
                     "title": "Gregapocalypse",
@@ -165,7 +180,10 @@ GREG_QUEST = QuestDef(
                         "the right one.\"\n\n"
                         "You are ready. When the community opens the way, descend with `$greg boss`."
                     ),
-                    "image": "",
+                    "image": (
+                        "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/"
+                        "295173706496475136_ChatGPT_Image_Mar_30_2026_03_13_18_PM.png"
+                    ),
                 },
             ),
         ),
@@ -173,7 +191,7 @@ GREG_QUEST = QuestDef(
 )
 
 
-QUEST_DEFINITIONS = {GREG_QUEST.key: GREG_QUEST}
+QUEST_DEFINITIONS = {}
 KEY_ITEM_DEFINITIONS = {
     step.key_item_key: {
         "name": step.key_item_name,
@@ -334,7 +352,10 @@ GREG_BOSS_LIBRARY_PAGES = (
             "Then it lifts its head.\n\n"
             "“Another one,” it says."
         ),
-        "image": "",
+        "image": (
+            "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/"
+            "295173706496475136_ChatGPT_Image_Mar_30_2026_03_16_03_PM.png"
+        ),
     },
     {
         "title": "The Greg of All Gregs",
@@ -347,7 +368,10 @@ GREG_BOSS_LIBRARY_PAGES = (
             "From the dark around you comes a whisper, low and endless.\n\n"
             "`Greg. Greg. Greg.`"
         ),
-        "image": "",
+        "image": (
+            "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/"
+            "295173706496475136_ChatGPT_Image_Mar_30_2026_03_16_03_PM.png"
+        ),
     },
     {
         "title": "The Greg of All Gregs",
@@ -360,7 +384,10 @@ GREG_BOSS_LIBRARY_PAGES = (
             "It takes one step down from the throne.\n\n"
             "“My correction.”"
         ),
-        "image": "",
+        "image": (
+            "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/"
+            "295173706496475136_ChatGPT_Image_Mar_30_2026_03_21_10_PM.png"
+        ),
     },
     {
         "title": "The Greg of All Gregs",
@@ -373,7 +400,10 @@ GREG_BOSS_LIBRARY_PAGES = (
             "The figure spreads its arms.\n\n"
             "“I am the last name they will ever need.”"
         ),
-        "image": "",
+        "image": (
+            "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/"
+            "295173706496475136_ChatGPT_Image_Mar_30_2026_03_21_10_PM.png"
+        ),
     },
     {
         "title": "The Greg of All Gregs",
@@ -384,7 +414,10 @@ GREG_BOSS_LIBRARY_PAGES = (
             "Then it smiles.\n\n"
             "“Come, hero. Let us see if your name survives mine.”"
         ),
-        "image": "",
+        "image": (
+            "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/"
+            "295173706496475136_ChatGPT_Image_Mar_30_2026_03_21_10_PM.png"
+        ),
     },
 )
 
@@ -400,7 +433,10 @@ GREG_EPILOGUE_CUTSCENE_PAGES = (
             "Black Crypt seems to die there between his fingers.\n\n"
             "\"Then it is done,\" he says at last. \"The last door has broken, and what lay below it will not rise again.\""
         ),
-        "image": "",
+        "image": (
+            "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/"
+            "295173706496475136_ChatGPT_Image_Mar_30_2026_03_23_56_PM.png"
+        ),
     },
     {
         "title": "Gregapocalypse",
@@ -412,7 +448,10 @@ GREG_EPILOGUE_CUTSCENE_PAGES = (
             "Halric closes his eyes.\n\n"
             "\"The dead were not asking for Greg,\" he murmurs. \"They were asking not to be forgotten.\""
         ),
-        "image": "",
+        "image": (
+            "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/"
+            "295173706496475136_ChatGPT_Image_Mar_30_2026_03_26_24_PM.png"
+        ),
     },
     {
         "title": "Gregapocalypse",
@@ -425,7 +464,10 @@ GREG_EPILOGUE_CUTSCENE_PAGES = (
             "But tonight, the names of the lost belong to themselves again.\n\n"
             "And yours remains your own."
         ),
-        "image": "",
+        "image": (
+            "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/"
+            "295173706496475136_ChatGPT_Image_Mar_30_2026_03_26_24_PM.png"
+        ),
     },
 )
 
@@ -1213,7 +1255,7 @@ class GMQuestBuilderView(View):
                     "default": ", ".join(str(key) for key in (selected.get("prerequisites") or [])),
                     "required": False,
                     "style": discord.TextStyle.paragraph,
-                    "placeholder": "gregapocalypse, abbey_intro or none",
+                    "placeholder": "greg_ledger, greg_bells or none",
                 },
             ]
 
@@ -1844,6 +1886,7 @@ class Quests(commands.Cog):
             )
             await self._seed_default_cutscenes(conn)
             await self._attach_default_greg_finale_cutscene(conn)
+            await self._remove_legacy_greg_quest_data(conn)
 
     async def _seed_default_cutscenes(self, conn):
         for cutscene_key, definition in DEFAULT_CUTSCENE_DEFINITIONS.items():
@@ -1869,6 +1912,20 @@ class Quests(commands.Cog):
             """
         )
 
+    async def _remove_legacy_greg_quest_data(self, conn):
+        await conn.execute(
+            """
+            DELETE FROM player_key_items
+            WHERE source_quest = 'gregapocalypse'
+            """
+        )
+        await conn.execute(
+            """
+            DELETE FROM player_quests
+            WHERE quest_key = 'gregapocalypse'
+            """
+        )
+
     def _greg_mode_enabled(self) -> bool:
         flags = getattr(self.bot, "april_fools_flags", {}) or {}
         return bool(flags.get(APRIL_FOOLS_GREG_FLAG, False))
@@ -1881,8 +1938,6 @@ class Quests(commands.Cog):
         return 1
 
     def _quest_available(self, quest_key: str) -> bool:
-        if quest_key == GREG_QUEST.key:
-            return self._greg_mode_enabled()
         return True
 
     def _load_progress(self, raw_value) -> dict:
@@ -3195,90 +3250,6 @@ class Quests(commands.Cog):
                 candidate_names=(monster_name,),
             )
 
-        if levelchoice is None or not self._greg_mode_enabled():
-            return
-
-        quest_def = QUEST_DEFINITIONS[GREG_QUEST.key]
-        found_item = False
-        step = None
-        async with self.bot.pool.acquire() as conn:
-            async with conn.transaction():
-                quest_row = await conn.fetchrow(
-                    """
-                    SELECT user_id, quest_key, category, status, step_index, completion_count, progress_json
-                    FROM player_quests
-                    WHERE user_id = $1 AND quest_key = $2
-                    FOR UPDATE
-                    """,
-                    ctx.author.id,
-                    quest_def.key,
-                )
-                if not quest_row or quest_row["status"] != "active":
-                    return
-
-                step_index = int(quest_row["step_index"] or 0)
-                if step_index >= len(quest_def.steps):
-                    return
-
-                step = quest_def.steps[step_index]
-                progress = self._load_progress(quest_row["progress_json"])
-                progress["total_pve_wins"] = int(progress.get("total_pve_wins", 0)) + 1
-                progress["step_pve_wins"] = int(progress.get("step_pve_wins", 0)) + 1
-
-                level_value = int(levelchoice or 1)
-                if level_value >= int(step.high_tier_min or 8):
-                    progress["total_high_tier_wins"] = int(progress.get("total_high_tier_wins", 0)) + 1
-                    progress["step_high_tier_wins"] = int(progress.get("step_high_tier_wins", 0)) + 1
-
-                current_skulls = await self._get_greg_skulls(ctx.author.id, conn=conn)
-                projected_skulls = current_skulls + self._skulls_for_pve(level_value)
-                existing_qty = await self._get_key_item_quantity(
-                    ctx.author.id,
-                    step.key_item_key,
-                    conn=conn,
-                )
-
-                found_item = existing_qty <= 0 and self._step_requirements_met(
-                    step,
-                    progress=progress,
-                    greg_skulls=projected_skulls,
-                )
-
-                await conn.execute(
-                    """
-                    UPDATE player_quests
-                    SET progress_json = $3
-                    WHERE user_id = $1 AND quest_key = $2
-                    """,
-                    ctx.author.id,
-                    quest_def.key,
-                    self._dump_progress(progress),
-                )
-
-                if found_item:
-                    await self._grant_key_item(
-                        ctx.author.id,
-                        step.key_item_key,
-                        quest_def.key,
-                        conn=conn,
-                    )
-
-        if found_item and step is not None:
-            embed = discord.Embed(
-                title=f"Key Item Found: {step.key_item_name}",
-                description=step.key_item_description,
-                color=0x6B1717,
-            )
-            embed.add_field(
-                name="Quest Update",
-                value=(
-                    f"{step.completion_blurb}\n\n"
-                    f"Check `$inv`, then use `$quests turnin {quest_def.key}`."
-                ),
-                inline=False,
-            )
-            await ctx.send(embed=embed)
-
     @commands.Cog.listener()
     async def on_adventure_completion(self, ctx, success):
         if not success:
@@ -3502,6 +3473,8 @@ class Quests(commands.Cog):
         quest_key = raw_quest_key.lower()
         if quest_key not in QUEST_DEFINITIONS:
             quest_key = self._normalize_custom_quest_key(raw_quest_key)
+        greg_badge_granted = False
+        greg_badge_already = False
         async with self.bot.pool.acquire() as conn:
             quest_def, custom_def = await self._resolve_quest_definition(quest_key, conn=conn)
             if not quest_def and not custom_def:
@@ -3600,6 +3573,13 @@ class Quests(commands.Cog):
                             custom_def,
                             conn=conn,
                         )
+                        if quest_key == "greg_finale":
+                            greg_cog = self.bot.get_cog("Greg")
+                            if greg_cog is not None and hasattr(greg_cog, "award_finale_badge"):
+                                greg_badge_granted, greg_badge_already = await greg_cog.award_finale_badge(
+                                    ctx.author.id,
+                                    conn=conn,
+                                )
                         completed = not custom_def["repeatable"]
                         await conn.execute(
                             """
@@ -3652,6 +3632,11 @@ class Quests(commands.Cog):
             await ctx.send(embed=embed)
             if custom_def.get("turnin_cutscene_key"):
                 await self.play_cutscene(ctx, custom_def["turnin_cutscene_key"])
+            if quest_key == "greg_finale":
+                if greg_badge_granted:
+                    await ctx.send("**Gregapocalypse Survivor** has been added to your profile.")
+                elif greg_badge_already:
+                    await ctx.send("Your Gregapocalypse badge was already on your profile.")
 
     @is_gm()
     @commands.group(name="gmquest", aliases=["gmquests"], invoke_without_command=True)
@@ -3812,7 +3797,7 @@ class Quests(commands.Cog):
         try:
             quest_key_raw, prereq_raw = self._split_pipe_args(data, 2, 2)
         except ValueError as exc:
-            return await ctx.send(f"{exc} Example: `$gmquest prereq fisher_job | gregapocalypse, abbey_intro`")
+            return await ctx.send(f"{exc} Example: `$gmquest prereq fisher_job | greg_ledger, greg_bells`")
         quest_key = self._normalize_custom_quest_key(quest_key_raw)
         if prereq_raw.strip().lower() == "none":
             prerequisites = []
