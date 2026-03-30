@@ -3431,10 +3431,9 @@ class Quests(commands.Cog):
                 quest_key,
             )
             if existing:
-                completion_count = int(existing["completion_count"] or 0)
                 if existing["status"] == "active":
                     return await ctx.send("You already accepted that quest.")
-                if quest_def or (custom_def and not custom_def["repeatable"]) or completion_count > 0:
+                if quest_def or (custom_def and not custom_def["repeatable"]):
                     return await ctx.send("You have already completed that quest.")
 
             if quest_def:
