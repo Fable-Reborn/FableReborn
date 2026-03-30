@@ -1002,8 +1002,8 @@ class GMQuestBuilderView(View):
                 {
                     "key": "required_count",
                     "label": "Progress Before Drops",
-                    "default": str(objective.get("required_count") or 1),
-                    "placeholder": "5",
+                    "default": str(objective.get("required_count") or 0),
+                    "placeholder": "0 for item only, or 5",
                 },
                 {
                     "key": "key_item_name",
@@ -1293,7 +1293,7 @@ class GMQuestBuilderView(View):
                 source = self.cog._normalize_source(values.get("source"))
                 if source is None or source == "none":
                     raise ValueError("Key item objectives need a real source: pve, adventure, battletower, or scripted.")
-                required_count = self._parse_int(values.get("required_count") or "1", "Required count", minimum=1)
+                required_count = self._parse_int(values.get("required_count") or "0", "Required count", minimum=0)
                 key_item_name = str(values.get("key_item_name") or "").strip()
                 key_item_description = str(values.get("key_item_description") or "").strip()
                 if not key_item_name:
@@ -3890,9 +3890,9 @@ class Quests(commands.Cog):
         if source is None or source == "none":
             return await ctx.send("Key item objectives need a real source: pve, adventure, battletower, or scripted.")
         try:
-            required_count = max(1, int(parts[2]))
+            required_count = max(0, int(parts[2]))
         except ValueError:
-            return await ctx.send("Required count must be a number.")
+            return await ctx.send("Required count must be a number zero or greater.")
         key_item_name = parts[3]
         key_item_description = parts[4]
         target_name = parts[5] if len(parts) > 5 and parts[5].lower() != "any" else ""
