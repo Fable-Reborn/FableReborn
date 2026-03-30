@@ -562,6 +562,164 @@ class Battle(ABC):
             return None
         return getattr(battles_cog, "element_ext", None)
 
+    def _get_class_extension(self):
+        battles_cog = self._get_battles_cog()
+        if not battles_cog:
+            return None
+
+        class_ext = getattr(battles_cog, "class_ext", None)
+        if class_ext is not None:
+            return class_ext
+
+        battle_factory = getattr(battles_cog, "battle_factory", None)
+        return getattr(battle_factory, "class_ext", None)
+
+    def can_use_mage_fireball(self, combatant):
+        return bool(
+            self.config.get("class_buffs", True)
+            and self.config.get("fireball_chance", 0) > 0
+            and combatant is not None
+            and not getattr(combatant, "is_pet", False)
+            and getattr(combatant, "mage_evolution", None)
+        )
+
+    def get_mage_fireball_damage_multiplier(self, combatant):
+        level = int(getattr(combatant, "mage_evolution", 0) or 0)
+        if level <= 0:
+            return Decimal("1")
+
+        class_ext = self._get_class_extension()
+        multiplier_map = (
+            getattr(class_ext, "evolution_damage_multiplier", None)
+            if class_ext is not None
+            else None
+        ) or {
+            1: 1.10,
+            2: 1.20,
+            3: 1.30,
+            4: 1.50,
+            5: 1.75,
+            6: 2.00,
+            7: 2.10,
+        }
+        return Decimal(str(multiplier_map.get(level, 1.0)))
+
+    def get_mage_arcane_shield_gain(self, combatant):
+        level = int(getattr(combatant, "mage_evolution", 0) or 0)
+        if level <= 0:
+            return Decimal("0")
+
+        class_ext = self._get_class_extension()
+        shield_map = (
+            getattr(class_ext, "mage_arcane_shield_gain", None)
+            if class_ext is not None
+            else None
+        ) or {
+            1: 0.015,
+            2: 0.020,
+            3: 0.025,
+            4: 0.030,
+            5: 0.035,
+            6: 0.040,
+            7: 0.045,
+        }
+        return Decimal(str(shield_map.get(level, 0)))
+
+    def get_mage_arcane_shield_cap(self, combatant):
+        level = int(getattr(combatant, "mage_evolution", 0) or 0)
+        if level <= 0:
+            return Decimal("0")
+
+        class_ext = self._get_class_extension()
+        shield_cap_map = (
+            getattr(class_ext, "mage_arcane_shield_cap", None)
+            if class_ext is not None
+            else None
+        ) or {
+            1: 0.06,
+            2: 0.08,
+            3: 0.10,
+            4: 0.12,
+            5: 0.14,
+            6: 0.16,
+            7: 0.18,
+        }
+        return Decimal(str(shield_cap_map.get(level, 0)))
+
+    def advance_mage_fireball_charge(self, combatant):
+        if not self.can_use_mage_fireball(combatant):
+            return None
+
+        charge_gain = Decimal(str(self.config.get("fireball_chance", 0) or 0))
+        charge_gain = max(Decimal("0"), min(Decimal("1"), charge_gain))
+        current_charge = Decimal(str(getattr(combatant, "fireball_charge", 0) or 0))
+        new_charge = current_charge + charge_gain
+
+        if new_charge >= Decimal("1"):
+            setattr(combatant, "fireball_charge", new_charge - Decimal("1"))
+            return {
+                "fireball_ready": True,
+                "charge": Decimal(str(getattr(combatant, "fireball_charge", 0) or 0)),
+                "shield_gained": Decimal("0"),
+            }
+
+        current_shield = Decimal(str(getattr(combatant, "shield", 0) or 0))
+        max_hp = Decimal(str(getattr(combatant, "max_hp", 0) or 0))
+        shield_cap = max_hp * self.get_mage_arcane_shield_cap(combatant)
+        shield_gain = max_hp * self.get_mage_arcane_shield_gain(combatant)
+        actual_shield_gain = Decimal("0")
+        if shield_cap > current_shield and shield_gain > 0:
+            actual_shield_gain = min(shield_gain, shield_cap - current_shield)
+            if actual_shield_gain > 0:
+                setattr(combatant, "shield", current_shield + actual_shield_gain)
+
+        setattr(combatant, "fireball_charge", new_charge)
+        return {
+            "fireball_ready": False,
+            "charge": new_charge,
+            "shield_gained": actual_shield_gain,
+        }
+
+    def format_mage_charge_message(self, charge_state):
+        if not charge_state or charge_state.get("fireball_ready"):
+            return None
+
+        charge_percent = max(
+            0,
+            min(99, int(round(float(charge_state.get("charge", 0)) * 100))),
+        )
+        shield_gained = Decimal(str(charge_state.get("shield_gained", 0) or 0))
+        if shield_gained > 0:
+            return (
+                f"✨ Arcane charge rises to **{charge_percent}%** and "
+                f"Arcane Shield absorbs **{self.format_number(shield_gained)} HP**."
+            )
+        return f"✨ Arcane charge rises to **{charge_percent}%**."
+
+    def calculate_mage_fireball_damage(
+        self,
+        attacker,
+        target,
+        *,
+        damage_variance=100,
+        minimum_damage=Decimal("10"),
+    ):
+        damage_variance = Decimal(str(damage_variance))
+        minimum_damage = Decimal(str(minimum_damage))
+        raw_damage = Decimal(str(getattr(attacker, "damage", 0) or 0))
+        raw_damage += Decimal(str(random.randint(0, int(damage_variance))))
+        raw_damage -= Decimal(str(getattr(target, "armor", 0) or 0))
+        return max(
+            raw_damage * self.get_mage_fireball_damage_multiplier(attacker),
+            minimum_damage,
+        )
+
+    def get_cheat_death_recovery_hp(self, combatant):
+        max_hp = Decimal(str(getattr(combatant, "max_hp", 0) or 0))
+        if max_hp <= 0:
+            return Decimal("75")
+        return min(max_hp, max(Decimal("75"), max_hp * Decimal("0.50")))
+
     def get_turn_priority(self, combatant):
         """Calculate turn priority score for ordering combatants."""
         if not combatant:
@@ -1378,6 +1536,7 @@ class Battle(ABC):
                         'pet_name': pet_name,  # Include pet_name for compatibility
                         'current_hp': float(combatant.hp),
                         'max_hp': float(combatant.max_hp),
+                        'shield': float(Decimal(str(getattr(combatant, "shield", 0) or 0))),
                         'hp_percentage': float(combatant.hp) / float(combatant.max_hp) if combatant.max_hp > 0 else 0,
                         'element': getattr(combatant, 'element', 'none'),  # Store element as-is (capitalized)
                         'element_emoji': element_emoji,  # Store the actual emoji

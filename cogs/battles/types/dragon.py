@@ -854,13 +854,15 @@ class DragonBattle(Battle):
                 if fatal_damage:
                     cheat_death_roll = random.randint(1, 100)
                     if cheat_death_roll <= target.death_cheat_chance:
-                        # Reduce damage and restore player to 75 HP
+                        revive_hp = self.get_cheat_death_recovery_hp(target)
+                        # Reduce damage and restore player to the revived HP threshold
                         if isinstance(target.hp, Decimal):
-                            damage = max(Decimal('0'), target.hp - Decimal('75'))
-                            target.hp = Decimal('75')  # Set to 75 HP
+                            damage = max(Decimal('0'), target.hp - revive_hp)
+                            target.hp = revive_hp
                         else:
-                            damage = max(0, target.hp - 75)
-                            target.hp = 75  # Set to 75 HP
+                            revive_hp_value = float(revive_hp)
+                            damage = max(0, target.hp - revive_hp_value)
+                            target.hp = revive_hp_value
                         cheat_death_triggered = True
                         self.cheat_death_used.add(target)
             
@@ -912,7 +914,10 @@ class DragonBattle(Battle):
             
             # Add cheat death message if triggered
             if cheat_death_triggered:
-                message += f"\n⚡ **CHEAT DEATH!** {target.name} refuses to fall and is restored to 75 HP!"
+                message += (
+                    f"\n⚡ **CHEAT DEATH!** {target.name} refuses to fall and is restored to "
+                    f"{self.format_number(target.hp)} HP!"
+                )
                 
             # Add Soul Devourer message if triggered
             if "Soul Devourer" in dragon.passives and not death_embrace_triggered:
@@ -1161,27 +1166,23 @@ class DragonBattle(Battle):
             await self._apply_heal(player, lifesteal_amount, source="lifesteal")
             message += f" Lifesteals: **{self.format_number(lifesteal_amount)} HP**"
             
-        # Handle mage fireball chance if class_buffs and fireball_chance are enabled
-        if (self.config.get("class_buffs", True) and 
-            self.config.get("fireball_chance", 0.3) > 0 and
-            not player.is_pet and
-            hasattr(player, 'mage_evolution') and 
-            player.mage_evolution is not None):
-            
-            fireball_chance = self.config.get("fireball_chance", 0.3)
-            if random.random() < fireball_chance:
-                # Calculate fireball damage based on mage evolution level
-                damage_multiplier = 1.0
-                if hasattr(self.ctx.bot.cogs["Battles"], "class_ext"):
-                    level = player.mage_evolution
-                    damage_multiplier = self.ctx.bot.cogs["Battles"].class_ext.evolution_damage_multiplier.get(level, 1.0)
-                
-                if isinstance(final_damage, Decimal):
-                    fireball_damage = round(final_damage * Decimal(str(damage_multiplier)), 2)
-                else:
-                    fireball_damage = round(float(final_damage) * float(damage_multiplier), 2)
-                self.apply_damage(player, target, fireball_damage)
-                message += f"\n🔥 **FIREBALL!** {player.name} casts a fireball for **{self.format_number(fireball_damage)} HP** additional damage!"
+        mage_charge_state = self.advance_mage_fireball_charge(player)
+        if mage_charge_state and mage_charge_state["fireball_ready"]:
+            fireball_damage = self.calculate_mage_fireball_damage(
+                player,
+                target,
+                damage_variance=100,
+                minimum_damage=Decimal("10"),
+            )
+            self.apply_damage(player, target, fireball_damage)
+            message += (
+                f"\n🔥 **FIREBALL!** {player.name} casts a fireball for "
+                f"**{self.format_number(fireball_damage)} HP** additional damage!"
+            )
+        else:
+            charge_message = self.format_mage_charge_message(mage_charge_state)
+            if charge_message:
+                message += "\n" + charge_message
             
         # Handle dragon's reflection damage if reflection_damage is enabled
         if is_dragon_target and self.config.get("reflection_damage", True) and "Reflective Scales" in target.passives:
@@ -1520,7 +1521,15 @@ class DragonBattle(Battle):
         
         embed.add_field(
             name=f"🐉 {self.dragon.name} {dragon_element_emoji}",
-            value=f"HP: {dragon_hp:.1f}/{dragon_max_hp:.1f} ({dragon_hp_percent:.1f}%)\n{dragon_hp_bar}",
+            value=(
+                f"HP: {dragon_hp:.1f}/{dragon_max_hp:.1f} ({dragon_hp_percent:.1f}%)\n"
+                f"{dragon_hp_bar}"
+                + (
+                    f"\nShield: {self.format_number(self.dragon.shield)}"
+                    if hasattr(self.dragon, "shield") and Decimal(str(self.dragon.shield)) > 0
+                    else ""
+                )
+            ),
             inline=False
         )
         
@@ -1550,7 +1559,15 @@ class DragonBattle(Battle):
                 
             embed.add_field(
                 name=field_name,
-                value=f"HP: {player_hp:.1f}/{player_max_hp:.1f} ({player_hp_percent:.1f}%)\n{player_hp_bar}",
+                value=(
+                    f"HP: {player_hp:.1f}/{player_max_hp:.1f} ({player_hp_percent:.1f}%)\n"
+                    f"{player_hp_bar}"
+                    + (
+                        f"\nShield: {self.format_number(player.shield)}"
+                        if hasattr(player, "shield") and Decimal(str(player.shield)) > 0
+                        else ""
+                    )
+                ),
                 inline=False  # Set to False so each combatant appears on a new line
             )
             

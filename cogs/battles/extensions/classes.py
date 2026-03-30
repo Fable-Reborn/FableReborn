@@ -57,6 +57,28 @@ class ClassBuffExtension:
         6: 2.00,  # 200%
         7: 2.10,  # 210%
     }
+
+    # Mage arcane shield gain per successful non-fireball hit
+    mage_arcane_shield_gain = {
+        1: 0.015,  # 1.5%
+        2: 0.020,  # 2.0%
+        3: 0.025,  # 2.5%
+        4: 0.030,  # 3.0%
+        5: 0.035,  # 3.5%
+        6: 0.040,  # 4.0%
+        7: 0.045,  # 4.5%
+    }
+
+    # Soft cap for passive arcane shielding
+    mage_arcane_shield_cap = {
+        1: 0.06,  # 6%
+        2: 0.08,  # 8%
+        3: 0.10,  # 10%
+        4: 0.12,  # 12%
+        5: 0.14,  # 14%
+        6: 0.16,  # 16%
+        7: 0.18,  # 18%
+    }
     
     # Tank health multipliers
     evolution_health_multiplier = {

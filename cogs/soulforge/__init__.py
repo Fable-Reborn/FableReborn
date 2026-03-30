@@ -886,6 +886,144 @@ class LoreView(View):
         await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
 
 
+class SoulforgeCommandSectionSelect(discord.ui.Select):
+    def __init__(self, help_view: "SoulforgeCommandHelpView"):
+        self.help_view = help_view
+        current_section = self.help_view.get_current_section_index()
+        options = [
+            discord.SelectOption(
+                label=section["label"],
+                value=str(index),
+                description=section["description"],
+                default=index == current_section,
+            )
+            for index, section in enumerate(self.help_view.sections)
+        ]
+        super().__init__(
+            placeholder=f"Jump to section... ({self.help_view.sections[current_section]['label']})",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.help_view.current_page = self.help_view.sections[int(self.values[0])]["page_index"]
+        self.help_view.rebuild_items()
+        await interaction.response.edit_message(
+            embed=self.help_view.pages[self.help_view.current_page],
+            view=self.help_view,
+        )
+
+
+class SoulforgeCommandHelpView(View):
+    def __init__(self, ctx, pages, sections):
+        super().__init__(timeout=300)
+        self.ctx = ctx
+        self.pages = pages
+        self.sections = sections
+        self.current_page = 0
+        self.message = None
+        self.rebuild_items()
+
+    def get_current_section_index(self) -> int:
+        current_index = 0
+        for index, section in enumerate(self.sections):
+            if self.current_page >= section["page_index"]:
+                current_index = index
+        return current_index
+
+    def rebuild_items(self):
+        self.clear_items()
+        self.add_item(SoulforgeCommandSectionSelect(self))
+
+        prev_button = Button(
+            style=discord.ButtonStyle.secondary,
+            emoji="◀️",
+            disabled=self.current_page == 0,
+            row=1,
+        )
+        prev_button.callback = self.prev_callback
+        self.add_item(prev_button)
+
+        self.add_item(
+            Button(
+                style=discord.ButtonStyle.gray,
+                label=f"{self.current_page + 1}/{len(self.pages)}",
+                disabled=True,
+                row=1,
+            )
+        )
+
+        next_button = Button(
+            style=discord.ButtonStyle.secondary,
+            emoji="▶️",
+            disabled=self.current_page >= len(self.pages) - 1,
+            row=1,
+        )
+        next_button.callback = self.next_callback
+        self.add_item(next_button)
+
+        close_button = Button(
+            style=discord.ButtonStyle.danger,
+            label="Close",
+            row=1,
+        )
+        close_button.callback = self.close_callback
+        self.add_item(close_button)
+
+    async def start(self):
+        self.message = await self.ctx.send(embed=self.pages[0], view=self)
+        return self.message
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "This Soulforge help menu belongs to someone else.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_timeout(self):
+        if self.message:
+            for child in self.children:
+                child.disabled = True
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+    async def prev_callback(self, interaction):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.rebuild_items()
+        await interaction.response.edit_message(
+            embed=self.pages[self.current_page],
+            view=self,
+        )
+
+    async def next_callback(self, interaction):
+        if self.current_page < len(self.pages) - 1:
+            self.current_page += 1
+            self.rebuild_items()
+        await interaction.response.edit_message(
+            embed=self.pages[self.current_page],
+            view=self,
+        )
+
+    async def close_callback(self, interaction):
+        await interaction.response.defer()
+        try:
+            await interaction.message.delete()
+        except discord.HTTPException:
+            for child in self.children:
+                child.disabled = True
+            if self.message:
+                await self.message.edit(view=self)
+        self.stop()
+
+
 class SpliceBackgroundPreferenceView(View):
     def __init__(self, ctx, pet1_name: str, pet2_name: str):
         super().__init__(timeout=120)
@@ -1708,6 +1846,301 @@ class Soulforge(commands.Cog):
         view = LoreView(pages, ctx.author.id)
         await ctx.send(embed=pages[0], view=view)
 
+    @commands.command(
+        name="soulforgecommands",
+        aliases=["soulforgehelp", "sfhelp", "sfcommands"],
+        brief="Browse all player Soulforge commands",
+    )
+    @user_cooldown(15)
+    async def soulforgecommands(self, ctx):
+        """Interactive command reference for the full Soulforge system."""
+        pages, sections = self.create_soulforge_command_pages(ctx.clean_prefix)
+        view = SoulforgeCommandHelpView(ctx, pages, sections)
+        await view.start()
+
+    def create_soulforge_command_pages(self, prefix: str):
+        pages = []
+        p = prefix or "$"
+
+        def add_page(
+            title: str,
+            description: str,
+            color: int,
+            fields: List[Tuple[str, str]],
+            section_name: str,
+        ) -> None:
+            embed = discord.Embed(
+                title=title,
+                description=description,
+                color=color,
+            )
+            for field_name, field_value in fields:
+                embed.add_field(name=field_name, value=field_value, inline=False)
+            embed.set_footer(
+                text=f"Soulforge Commands • {section_name} • Player commands only"
+            )
+            pages.append(embed)
+
+        add_page(
+            title="🧪 Soulforge Command Hub",
+            description=(
+                "A player-facing reference for the full Soulforge system. "
+                "Use the dropdown to jump between sections and the arrows to move page by page."
+            ),
+            color=0x6e4799,
+            fields=[
+                (
+                    "What This Covers",
+                    (
+                        "Quest setup, lore, building the forge, splicing, upkeep, "
+                        "defense, and god-pet endgame."
+                    ),
+                ),
+                (
+                    "Quick Openers",
+                    (
+                        f"`{p}soulforgecommands` Open this command hub\n"
+                        f"`{p}soulforgeguide` Full start-to-finish walkthrough\n"
+                        f"`{p}soulforge` Start the quest or view your active forge"
+                    ),
+                ),
+                (
+                    "Excluded On Purpose",
+                    "GM, owner, and testing commands are intentionally not listed here.",
+                ),
+            ],
+            section_name="Overview",
+        )
+
+        add_page(
+            title="1) Start the Soulforge Path",
+            description="Use these before the forge is built.",
+            color=0x7d2aad,
+            fields=[
+                (
+                    "Core Setup Commands",
+                    (
+                        f"`{p}soulforge` Start the Wyrdweaver quest or check Soulforge progress\n"
+                        f"`{p}eshards` Check how many Eidolith Shards you have\n"
+                        f"`{p}soulforgeguide` Open the full guided walkthrough"
+                    ),
+                ),
+                (
+                    "Useful Aliases",
+                    (
+                        f"`{p}eshards` also works as `{p}myshards` or `{p}eidolith`\n"
+                        f"`{p}soulforgeguide` also works as `{p}sfguide` or `{p}forgeguide`"
+                    ),
+                ),
+                (
+                    "Build Checklist",
+                    "You need 10 Eidolith Shards, the Alchemist's Primer, and 2,500,000 gold.",
+                ),
+            ],
+            section_name="Setup",
+        )
+
+        add_page(
+            title="2) Lore and Forge Unlock",
+            description="Use these when you want story context or you are ready to activate the forge.",
+            color=0x4cc9f0,
+            fields=[
+                (
+                    "Lore and Unlock Commands",
+                    (
+                        f"`{p}speaktomorrigan` Ask Morrigan about the Wyrdweavers, gods, and Soulforge lore\n"
+                        f"`{p}soullorebook` Read deeper Primer lore after you have found it\n"
+                        f"`{p}forgesoulforge` Build the forge once your checklist is complete"
+                    ),
+                ),
+                (
+                    "When To Use Them",
+                    (
+                        "`speaktomorrigan` when you want explanations and story context\n"
+                        "`soullorebook` after the Primer is unlocked\n"
+                        "`forgesoulforge` only after shards, Primer, and gold are ready"
+                    ),
+                ),
+            ],
+            section_name="Setup",
+        )
+
+        add_page(
+            title="3) Splicing: Create and Track",
+            description="These are the core commands once your forge is active.",
+            color=0x9d4edd,
+            fields=[
+                (
+                    "Core Splicing Commands",
+                    (
+                        f"`{p}splice <pet1_id> <pet2_id>` Start a splice using two pet IDs\n"
+                        f"`{p}splicestatus` List your splice requests\n"
+                        f"`{p}splicestatus <id>` Check one specific splice request"
+                    ),
+                ),
+                (
+                    "Important Rules",
+                    (
+                        "Your forge must be built and usable.\n"
+                        "If forge condition drops too low, splicing is blocked until repaired.\n"
+                        "Some mythical or final-form pets cannot be spliced."
+                    ),
+                ),
+            ],
+            section_name="Splicing",
+        )
+
+        add_page(
+            title="4) Splicing: Research and Planning",
+            description="Use the discovered splice index to plan better combinations.",
+            color=0xc77dff,
+            fields=[
+                (
+                    "Discovery Command",
+                    (
+                        f"`{p}splices [query]` Browse discovered combinations with sorting, "
+                        "filters, and favorites"
+                    ),
+                ),
+                (
+                    "Useful Aliases",
+                    f"`{p}splices` also works as `{p}splicedex` or `{p}spliceindex`",
+                ),
+                (
+                    "Simple Player Flow",
+                    (
+                        f"`{p}pets` to find pet IDs\n"
+                        f"`{p}splice <pet1_id> <pet2_id>` to submit the splice\n"
+                        f"`{p}splicestatus` to track it\n"
+                        f"`{p}splices` to browse known results"
+                    ),
+                ),
+            ],
+            section_name="Splicing",
+        )
+
+        add_page(
+            title="5) Maintenance and Divine Stealth",
+            description="Keep the forge operational and keep divine attention under control.",
+            color=0xff9f1c,
+            fields=[
+                (
+                    "Maintenance Commands",
+                    (
+                        f"`{p}forgestatus` Check forge condition and divine attention\n"
+                        f"`{p}repairforge` Repair forge condition with gold\n"
+                        f"`{p}eidolithmask [shards]` Spend Eidolith Shards to reduce divine attention"
+                    ),
+                ),
+                (
+                    "Read The Two Main Stats",
+                    (
+                        "Forge Condition = how damaged the forge is.\n"
+                        "Divine Attention = how likely divine forces are to notice and pressure you."
+                    ),
+                ),
+                (
+                    "Easy Rule",
+                    "Low condition stops progress. High attention creates danger.",
+                ),
+            ],
+            section_name="Maintenance",
+        )
+
+        add_page(
+            title="6) Defense and Hired Defenders",
+            description="Use these when divine pressure starts turning into real attacks.",
+            color=0xf72585,
+            fields=[
+                (
+                    "Defense Commands",
+                    (
+                        f"`{p}defendforge` Defend the forge when divine intervention is pending\n"
+                        f"`{p}recruitdefender` Hire temporary defenders for the forge\n"
+                        f"`{p}mydefenders` View active defenders and remaining contract time"
+                    ),
+                ),
+                (
+                    "What Matters Most",
+                    (
+                        "`defendforge` is for the actual attack event.\n"
+                        "`recruitdefender` is your prep tool.\n"
+                        "You can keep up to 3 active defenders at once."
+                    ),
+                ),
+                (
+                    "Best Practice",
+                    f"If scrutiny climbs hard, use `{p}eidolithmask` early and keep defenders ready.",
+                ),
+            ],
+            section_name="Defense",
+        )
+
+        add_page(
+            title="7) Endgame: God Shards and God Pets",
+            description="These commands handle the last Soulforge progression layer.",
+            color=0x2ec4b6,
+            fields=[
+                (
+                    "Endgame Commands",
+                    (
+                        f"`{p}godlocks` Check your god shard collection progress\n"
+                        f"`{p}forgegodpet <Elysia|Sepulchure|Drakath>` Consume one full shard set to forge that god pet"
+                    ),
+                ),
+                (
+                    "Useful Aliases",
+                    (
+                        f"`{p}godlocks` also works as `{p}godlock`\n"
+                        f"`{p}forgegodpet` also works as `{p}forgegod`, `{p}godforge`, or `{p}godpetforge`"
+                    ),
+                ),
+                (
+                    "Before You Forge",
+                    (
+                        "You need all 6 unique shard numbers for the same god, "
+                        "an active Soulforge, and enough free pet capacity."
+                    ),
+                ),
+            ],
+            section_name="Endgame",
+        )
+
+        sections = [
+            {
+                "label": "Overview",
+                "description": "Hub and quick navigation",
+                "page_index": 0,
+            },
+            {
+                "label": "Setup",
+                "description": "Quest start, lore, and forge unlock",
+                "page_index": 1,
+            },
+            {
+                "label": "Splicing",
+                "description": "Create, track, and browse splices",
+                "page_index": 3,
+            },
+            {
+                "label": "Maintenance",
+                "description": "Status, repairs, and masking fog",
+                "page_index": 5,
+            },
+            {
+                "label": "Defense",
+                "description": "Divine attacks and hired defenders",
+                "page_index": 6,
+            },
+            {
+                "label": "Endgame",
+                "description": "God shards and god pets",
+                "page_index": 7,
+            },
+        ]
+
+        return pages, sections
+
     def create_soulforge_guide_pages(self, prefix: str):
         """Create beginner-friendly Soulforge guide pages from start to finish."""
         pages = []
@@ -2314,15 +2747,17 @@ class Soulforge(commands.Cog):
         )
         embed.add_field(
             name="Basic Commands",
-            value="• `$splice [pet1] [pet2]` - Combine two creatures into a new form\n"
-                "• `$forgestatus` - Check your forge's condition and divine scrutiny level\n"
-                "• `$forgegodpet <god>` - Consume 6 god shards to forge that god pet",
+            value="• `$soulforgecommands` - Open the interactive Soulforge command hub\n"
+                "• `$splice [pet1] [pet2]` - Combine two creatures into a new form\n"
+                "• `$splicestatus [id]` - Check one splice or list all of yours\n"
+                "• `$splices [query]` - Browse discovered splice combinations",
             inline=False
         )
         embed.add_field(
             name="Maintenance",
             value="• `$repairforge` - Restore your forge's condition (costs gold)\n"
-                "• `$diversion` - Perform a ritual to reduce divine attention (costs gold)",
+                "• `$forgestatus` - Check forge condition and divine scrutiny level\n"
+                "• `$eidolithmask [shards]` - Reduce divine attention with Eidolith Shards",
             inline=False
         )
         embed.add_field(

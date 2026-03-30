@@ -311,28 +311,17 @@ class PvEBattle(Battle):
             # Attack hits
             blocked_damage = Decimal("0")
             ignore_reflection_this_hit = False
+            mage_charge_state = self.advance_mage_fireball_charge(self.attacker)
             
-            # Special case for mage fireball
             used_fireball = False
-            if (self.attacker.mage_evolution and 
-                not self.attacker.is_pet and 
-                self.config["class_buffs"] and
-                random.random() < self.config["fireball_chance"]):
-                
-                # Calculate fireball damage
-                evolution_level = self.attacker.mage_evolution
-                damage_multiplier = {
-                    1: 1.10,  # 110%
-                    2: 1.20,  # 120%
-                    3: 1.30,  # 130%
-                    4: 1.50,  # 150%
-                    5: 1.75,  # 175%
-                    6: 2.00,  # 200%
-                    7: 2.10,  # 210%
-                }.get(evolution_level, 1.0)
-                
-                damage = (self.attacker.damage + Decimal(random.randint(0, 100)) - self.defender.armor) * Decimal(str(damage_multiplier))
-                damage = max(damage, Decimal('10'))
+            if mage_charge_state and mage_charge_state["fireball_ready"]:
+                damage = self.calculate_mage_fireball_damage(
+                    self.attacker,
+                    self.defender,
+                    damage_variance=100,
+                    minimum_damage=Decimal("10"),
+                )
+                ignore_reflection_this_hit = True
 
                 damage, guard_messages, guard_source = self.apply_pet_owner_guard(
                     self.attacker,
@@ -373,6 +362,10 @@ class PvEBattle(Battle):
                 message = f"{self.attacker.name} attacks! {self.defender.name} takes **{self.format_number(damage)} HP** damage."
                 if guard_messages:
                     message += "\n" + "\n".join(guard_messages)
+
+                charge_message = self.format_mage_charge_message(mage_charge_state)
+                if charge_message:
+                    message += "\n" + charge_message
                 
                 # Add skill effect messages
                 if skill_messages:
@@ -487,9 +480,12 @@ class PvEBattle(Battle):
                     
                     cheat_roll = random.randint(1, 100)
                     if cheat_roll <= self.defender.death_cheat_chance:
-                        self.defender.hp = Decimal('75')
+                        self.defender.hp = self.get_cheat_death_recovery_hp(self.defender)
                         self.defender.has_cheated_death = True
-                        message += f"\n{self.defender.name} cheats death and survives with **75 HP**!"
+                        message += (
+                            f"\n{self.defender.name} cheats death and survives with "
+                            f"**{self.format_number(self.defender.hp)} HP**!"
+                        )
                     else:
                         message += f" {self.defender.name} has been defeated!"
                 else:

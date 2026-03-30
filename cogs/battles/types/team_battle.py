@@ -122,28 +122,17 @@ class TeamBattle(Battle):
             # Attack hits
             blocked_damage = Decimal("0")
             ignore_reflection_this_hit = False
+            mage_charge_state = self.advance_mage_fireball_charge(current_combatant)
             
-            # Special case for mage fireball
             used_fireball = False
-            if (current_combatant.mage_evolution and 
-                not current_combatant.is_pet and 
-                self.config["class_buffs"] and
-                random.random() < self.config["fireball_chance"]):
-                
-                # Calculate fireball damage
-                evolution_level = current_combatant.mage_evolution
-                damage_multiplier = {
-                    1: 1.10,  # 110%
-                    2: 1.20,  # 120%
-                    3: 1.30,  # 130%
-                    4: 1.50,  # 150%
-                    5: 1.75,  # 175%
-                    6: 2.00,  # 200%
-                    7: 2.10,  # 210%
-                }.get(evolution_level, 1.0)
-                
-                damage = (current_combatant.damage + Decimal(random.randint(0, 100)) - target.armor) * Decimal(str(damage_multiplier))
-                damage = max(damage, Decimal('10'))
+            if mage_charge_state and mage_charge_state["fireball_ready"]:
+                damage = self.calculate_mage_fireball_damage(
+                    current_combatant,
+                    target,
+                    damage_variance=100,
+                    minimum_damage=Decimal("10"),
+                )
+                ignore_reflection_this_hit = True
 
                 damage, guard_messages, guard_source = self.apply_pet_owner_guard(
                     current_combatant,
@@ -186,6 +175,10 @@ class TeamBattle(Battle):
                 message = f"{current_combatant.name} attacks! {target.name} takes **{self.format_number(damage)} HP** damage."
                 if guard_messages:
                     message += "\n" + "\n".join(guard_messages)
+
+                charge_message = self.format_mage_charge_message(mage_charge_state)
+                if charge_message:
+                    message += "\n" + charge_message
 
                 # Add skill effect messages
                 if skill_messages:
@@ -323,9 +316,12 @@ class TeamBattle(Battle):
                     
                     cheat_roll = random.randint(1, 100)
                     if cheat_roll <= target.death_cheat_chance:
-                        target.hp = Decimal('75')
+                        target.hp = self.get_cheat_death_recovery_hp(target)
                         target.has_cheated_death = True
-                        message += f"\n{target.name} cheats death and survives with **75 HP**!"
+                        message += (
+                            f"\n{target.name} cheats death and survives with "
+                            f"**{self.format_number(target.hp)} HP**!"
+                        )
                     else:
                         message += f" {target.name} has been defeated!"
                 else:
@@ -415,6 +411,8 @@ class TeamBattle(Battle):
                 
                 field_name = f"{combatant.display_name} [Team {team_letter}] {element_emoji}"
                 field_value = f"HP: {current_hp:.1f}/{max_hp:.1f}\n{hp_bar}"
+                if hasattr(combatant, "shield") and Decimal(str(combatant.shield)) > 0:
+                    field_value += f"\nShield: {self.format_number(combatant.shield)}"
                 
                 # Add reflection info if applicable
                 if combatant.damage_reflection > 0:
