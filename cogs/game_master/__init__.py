@@ -2513,7 +2513,9 @@ class GameMaster(commands.Cog):
             Only Game Masters can use this command."""
         )
         await self.bot.pool.execute(
-            'UPDATE profile SET "xp"="xp"+$1 WHERE "user"=$2;', amount, target.id
+            'UPDATE profile SET "xp"="xp"+$1::BIGINT WHERE "user"=$2;',
+            amount,
+            target.id,
         )
         await self.bot.log_xp_watch_event(
             ctx=ctx,

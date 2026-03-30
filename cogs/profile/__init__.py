@@ -632,6 +632,19 @@ class Profile(commands.Cog):
         self._profile_font_cache = {}
         self._veteran_badge_ids = self._load_veteran_badge_ids()
 
+    async def cog_load(self):
+        await self._ensure_profile_xp_bigint()
+
+    async def _ensure_profile_xp_bigint(self) -> None:
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """
+                ALTER TABLE IF EXISTS profile
+                ALTER COLUMN "xp" TYPE BIGINT
+                USING "xp"::BIGINT
+                """
+            )
+
     @staticmethod
     def _safe_int(value, default: int = 0) -> int:
         try:
