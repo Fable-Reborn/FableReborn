@@ -98,6 +98,7 @@ class GameMaster(commands.Cog):
         "lunar_new_year": "Lunar New Year",
         "valentine": "Valentine",
         "snowballfight": "Snowball Fight",
+        "greg_finale_open": "Greg Finale Open",
     }
     EVENT_DEFAULTS = {
         "halloween": False,
@@ -105,6 +106,7 @@ class GameMaster(commands.Cog):
         "lunar_new_year": False,
         "valentine": False,
         "snowballfight": False,
+        "greg_finale_open": False,
     }
     EVENT_ALIASES = {
         "halloween": "halloween",
@@ -128,6 +130,11 @@ class GameMaster(commands.Cog):
         "snowball_fight": "snowballfight",
         "snowball fight": "snowballfight",
         "snowball-fight": "snowballfight",
+        "greg_finale_open": "greg_finale_open",
+        "gregfinaleopen": "greg_finale_open",
+        "greg finale open": "greg_finale_open",
+        "gregfinale": "greg_finale_open",
+        "greg finale": "greg_finale_open",
     }
     EVENT_SHOP_DEFAULTS = {
         "halloween": {
@@ -6897,6 +6904,9 @@ class GameMaster(commands.Cog):
     async def cog_load(self):
         await self._init_event_settings()
         await self._init_april_fools_settings()
+        greg_cog = self.bot.get_cog("Greg")
+        if greg_cog and hasattr(greg_cog, "_sync_finale_event_flag"):
+            await greg_cog._sync_finale_event_flag()
 
     async def _init_event_settings(self):
         async with self.bot.pool.acquire() as conn:
@@ -7026,6 +7036,11 @@ class GameMaster(commands.Cog):
 
         self.april_fools_flags[flag_key] = enabled
         self.bot.april_fools_flags = self.april_fools_flags
+
+        if flag_key == APRIL_FOOLS_GREG_FLAG:
+            greg_cog = self.bot.get_cog("Greg")
+            if greg_cog and hasattr(greg_cog, "_sync_finale_event_flag"):
+                await greg_cog._sync_finale_event_flag()
 
     def _event_status_lines(self) -> list[str]:
         lines = []

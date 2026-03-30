@@ -1,3 +1,4 @@
+import asyncio
 import math
 
 import discord
@@ -178,6 +179,24 @@ GREG_BOSS_CUTSCENE_PAGES = [
     },
 ]
 
+GREG_BOSS_MONSTER_DATA = {
+    "name": "The Greg of All Gregs",
+    "hp": 17500,
+    "attack": 3650,
+    "defense": 2800,
+    "element": "Corrupted",
+    "url": "",
+    "encounter_level": 100,
+    "pve_tier": 11,
+    "ispublic": False,
+}
+
+GREG_BOSS_OPENING_LINES = (
+    "The Greg of All Gregs rises from the throne of blackened ledgers.",
+    "A thousand hollow throats answer in chorus: Greg. Greg. Greg.",
+    "Your own name feels suddenly fragile in your chest.",
+)
+
 
 class GregLoreView(View):
     def __init__(self, pages, user_id):
@@ -240,17 +259,51 @@ class GregLoreView(View):
         )
 
 
+class GregBossStartView(View):
+    def __init__(self, cog, ctx):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.ctx = ctx
+        self.user_id = ctx.author.id
+        self.started = False
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "This confrontation is not yours.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Begin Battle", style=discord.ButtonStyle.danger)
+    async def begin_battle(self, interaction: discord.Interaction, button: Button):
+        if self.started:
+            return await interaction.response.send_message(
+                "The battle has already been called forth.",
+                ephemeral=True,
+            )
+
+        self.started = True
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+        await self.cog._run_greg_boss_battle(self.ctx)
+        self.stop()
+
+
 class Greg(commands.Cog):
-    GREG_SKULL_GOAL = 5000
+    GREG_SKULL_GOAL = 25000
     BADGE_SKULL_REQUIREMENT = 25
+    GREG_BOSS_TIER = 11
+    GREG_FINALE_EVENT_KEY = "greg_finale_open"
     GREG_BADGE = Badge.GREGAPOCALYPSE_SURVIVOR
     GREG_BADGE_NAME = "Gregapocalypse Survivor"
     COMMUNITY_STAGES = (
         (0, "The Empty Graves"),
-        (1250, "The Black Ledger"),
-        (2500, "The Bells Toll"),
-        (3750, "The Black Crypt"),
-        (5000, "The Final Seal"),
+        (6250, "The Black Ledger"),
+        (12500, "The Bells Toll"),
+        (18750, "The Black Crypt"),
+        (25000, "The Final Seal"),
     )
     OUTBREAK_TIERS = (
         (0, "Tier I - The Graves Stir"),
@@ -267,6 +320,7 @@ class Greg(commands.Cog):
         await self._init_tables()
         if not self.death_toll_loop.is_running():
             self.death_toll_loop.start()
+        await self._sync_finale_event_flag()
 
     def cog_unload(self):
         if self.death_toll_loop.is_running():
@@ -292,8 +346,15 @@ class Greg(commands.Cog):
                     user_id BIGINT PRIMARY KEY,
                     skulls BIGINT NOT NULL DEFAULT 0,
                     badge_claimed BOOLEAN NOT NULL DEFAULT FALSE,
+                    boss_cleared BOOLEAN NOT NULL DEFAULT FALSE,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
+                """
+            )
+            await conn.execute(
+                """
+                ALTER TABLE greg_event_players
+                ADD COLUMN IF NOT EXISTS boss_cleared BOOLEAN NOT NULL DEFAULT FALSE
                 """
             )
             await conn.execute(
@@ -303,6 +364,32 @@ class Greg(commands.Cog):
                 ON CONFLICT (id) DO NOTHING
                 """
             )
+
+    async def _sync_finale_event_flag(self, *, boss_unlocked: bool | None = None):
+        if boss_unlocked is None:
+            async with self.bot.pool.acquire() as conn:
+                boss_unlocked = bool(
+                    await conn.fetchval(
+                        """
+                        SELECT boss_unlocked
+                        FROM greg_event_global
+                        WHERE id = 1
+                        """
+                    )
+                    or False
+                )
+
+        enabled = self._greg_event_enabled() and bool(boss_unlocked)
+        gm_cog = self.bot.get_cog("GameMaster")
+        if gm_cog and hasattr(gm_cog, "set_event_enabled"):
+            current = bool((getattr(self.bot, "event_flags", {}) or {}).get(self.GREG_FINALE_EVENT_KEY, False))
+            if current != enabled:
+                await gm_cog.set_event_enabled(self.GREG_FINALE_EVENT_KEY, enabled)
+            return
+
+        event_flags = dict(getattr(self.bot, "event_flags", {}) or {})
+        event_flags[self.GREG_FINALE_EVENT_KEY] = enabled
+        self.bot.event_flags = event_flags
 
     def _greg_event_enabled(self) -> bool:
         flags = getattr(self.bot, "april_fools_flags", {}) or {}
@@ -374,7 +461,7 @@ class Greg(commands.Cog):
             )
             player_row = await conn.fetchrow(
                 """
-                SELECT skulls, badge_claimed
+                SELECT skulls, badge_claimed, boss_cleared
                 FROM greg_event_players
                 WHERE user_id = $1
                 """,
@@ -391,6 +478,7 @@ class Greg(commands.Cog):
             player_row or {
                 "skulls": 0,
                 "badge_claimed": False,
+                "boss_cleared": False,
             },
         )
 
@@ -407,7 +495,7 @@ class Greg(commands.Cog):
                 )
                 player_row = await conn.fetchrow(
                     """
-                    SELECT skulls, badge_claimed
+                    SELECT skulls, badge_claimed, boss_cleared
                     FROM greg_event_players
                     WHERE user_id = $1
                     FOR UPDATE
@@ -451,6 +539,8 @@ class Greg(commands.Cog):
                     outbreak_tier,
                     boss_unlocked,
                 )
+
+        await self._sync_finale_event_flag(boss_unlocked=boss_unlocked)
 
         previous_stage = self._community_stage(previous_total)
         current_stage = self._community_stage(new_total)
@@ -512,6 +602,8 @@ class Greg(commands.Cog):
                     next_boss,
                 )
 
+        await self._sync_finale_event_flag(boss_unlocked=next_boss)
+
         return {
             "total_skulls": next_total,
             "death_toll": next_death,
@@ -541,6 +633,40 @@ class Greg(commands.Cog):
             user_id,
         )
         return True
+
+    async def _record_boss_clear(self, user_id: int, *, conn) -> tuple[bool, bool]:
+        row = await conn.fetchrow(
+            """
+            SELECT skulls, badge_claimed, boss_cleared
+            FROM greg_event_players
+            WHERE user_id = $1
+            FOR UPDATE
+            """,
+            user_id,
+        )
+
+        player_skulls = int(row["skulls"] if row else 0)
+        badge_claimed = bool(row["badge_claimed"] if row else False)
+        already_cleared = bool(row["boss_cleared"] if row else False)
+
+        granted_badge = False
+        if not badge_claimed and player_skulls >= self.BADGE_SKULL_REQUIREMENT:
+            granted_badge = await self._grant_greg_badge(user_id, conn=conn)
+            badge_claimed = True
+
+        await conn.execute(
+            """
+            INSERT INTO greg_event_players (user_id, skulls, badge_claimed, boss_cleared, updated_at)
+            VALUES ($1, $2, $3, TRUE, NOW())
+            ON CONFLICT (user_id)
+            DO UPDATE SET badge_claimed = $3, boss_cleared = TRUE, updated_at = NOW()
+            """,
+            user_id,
+            player_skulls,
+            badge_claimed,
+        )
+
+        return already_cleared, granted_badge
 
     async def _remove_greg_badge(self, user_id: int, *, conn) -> bool:
         raw_badges = await conn.fetchval(
@@ -573,7 +699,13 @@ class Greg(commands.Cog):
             claimed_count = await conn.fetchval(
                 "SELECT COUNT(*) FROM greg_event_players WHERE badge_claimed = TRUE"
             )
-        return int(player_count or 0), int(claimed_count or 0)
+            cleared_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM greg_event_players WHERE boss_cleared = TRUE"
+            )
+        return int(player_count or 0), int(claimed_count or 0), int(cleared_count or 0)
+
+    def _build_greg_boss_monster(self) -> dict:
+        return dict(GREG_BOSS_MONSTER_DATA)
 
     def _create_story_pages(self, story_pages, footer_prefix: str):
         pages = []
@@ -622,6 +754,161 @@ class Greg(commands.Cog):
         view = GregLoreView(cutscene_pages, ctx.author.id)
         await ctx.send(embed=cutscene_pages[0], view=view)
 
+    async def _get_greg_boss_gate_error(self, ctx, *, require_uncleared: bool) -> str | None:
+        if not self._greg_event_enabled():
+            return "Greg mode is not enabled. Turn on `$gmapril greg` before entering the Black Crypt."
+
+        global_state, player_state = await self._get_event_state(ctx.author.id)
+        if not bool(global_state["boss_unlocked"]):
+            return "The final seal is still intact. The realm must gather more Greg Skulls first."
+
+        player_skulls = int(player_state["skulls"] or 0)
+        if player_skulls < self.BADGE_SKULL_REQUIREMENT:
+            remaining = self.BADGE_SKULL_REQUIREMENT - player_skulls
+            return (
+                f"You need **{remaining}** more Greg Skulls before you can challenge "
+                "**The Greg of All Gregs**."
+            )
+
+        quests_cog = self.bot.get_cog("Quests")
+        has_scripted_finale = False
+        if quests_cog is not None and hasattr(quests_cog, "has_active_custom_source_objective"):
+            has_scripted_finale = await quests_cog.has_active_custom_source_objective(
+                ctx.author.id,
+                "scripted",
+                candidate_names=("The Greg of All Gregs",),
+            )
+
+        if require_uncleared and bool(player_state.get("boss_cleared")) and not has_scripted_finale:
+            return "You have already defeated **The Greg of All Gregs**."
+
+        if (
+            quests_cog is not None
+            and not has_scripted_finale
+            and not await quests_cog.is_quest_completed(
+                ctx.author.id,
+                "gregapocalypse",
+            )
+        ):
+            return (
+                "You are not ready to enter the Black Crypt yet. Either finish the built-in "
+                "Greg investigation with `$quests turnin gregapocalypse`, or accept your custom "
+                "finale quest in `$quests` first."
+            )
+
+        return None
+
+    async def _run_greg_boss_battle(self, ctx):
+        gate_error = await self._get_greg_boss_gate_error(ctx, require_uncleared=True)
+        if gate_error:
+            await ctx.send(gate_error)
+            return False
+
+        battles_cog = self.bot.get_cog("Battles")
+        if battles_cog is None:
+            await ctx.send("The battle system is unavailable right now.")
+            return False
+
+        if await battles_cog.is_player_in_fight(ctx.author.id):
+            await ctx.send("You are already in a fight.")
+            return False
+
+        ctx = battles_cog._guard_battle_context(ctx)
+        monster_data = self._build_greg_boss_monster()
+
+        intro_embed = discord.Embed(
+            title="The Greg of All Gregs",
+            description=(
+                "The Black Crypt groans open. Beneath the abbey, the last stolen name rises to meet you."
+            ),
+            color=0x5C0F0F,
+        )
+        if monster_data.get("url"):
+            intro_embed.set_image(url=str(monster_data["url"]))
+        await ctx.send(embed=intro_embed)
+
+        await battles_cog.add_player_to_fight(ctx.author.id)
+        try:
+            battle = await battles_cog.battle_factory.create_battle(
+                "pve",
+                ctx,
+                player=ctx.author,
+                monster_data=monster_data,
+                monster_level=self.GREG_BOSS_TIER,
+                macro_penalty_level=0,
+            )
+            await battle.start_battle()
+
+            for boss_line in GREG_BOSS_OPENING_LINES:
+                await battle.add_to_log(boss_line)
+            await battle.update_display()
+            await asyncio.sleep(1)
+
+            while not await battle.is_battle_over():
+                await battle.process_turn()
+                await asyncio.sleep(1)
+
+            result = await battle.end_battle()
+        except Exception as exc:
+            import traceback
+
+            print(traceback.format_exc())
+            await ctx.send(f"An error occurred starting the Greg boss battle: {exc}")
+            return False
+        finally:
+            await battles_cog.remove_player_from_fight(ctx.author.id)
+
+        if not result or result.name != "Player":
+            await ctx.send(
+                "The Greg of All Gregs still stands. The crypt seals itself around its laughter."
+            )
+            return False
+
+        quests_cog = self.bot.get_cog("Quests")
+        if quests_cog and hasattr(quests_cog, "process_external_source_completion"):
+            await quests_cog.process_external_source_completion(
+                ctx,
+                "scripted",
+                candidate_names=(monster_data.get("name"),),
+            )
+
+        async with self.bot.pool.acquire() as conn:
+            already_cleared, granted_badge = await self._record_boss_clear(
+                ctx.author.id,
+                conn=conn,
+            )
+
+        if already_cleared:
+            await ctx.send(
+                "The Greg of All Gregs falls again, though the realm had already marked your victory."
+            )
+            return True
+
+        reward_embed = discord.Embed(
+            title="The Greg of All Gregs Falls",
+            description=(
+                "The throne of ledgers cracks apart, and the chorus of stolen names finally breaks."
+            ),
+            color=0x7A1212,
+        )
+        if granted_badge:
+            reward_embed.add_field(
+                name="Reward Claimed",
+                value=f"**{self.GREG_BADGE_NAME}** has been added to your profile.",
+                inline=False,
+            )
+        else:
+            reward_embed.add_field(
+                name="Reward Recorded",
+                value=(
+                    f"Your clear has been recorded. If needed, you can still use `$greg claim` "
+                    f"for **{self.GREG_BADGE_NAME}**."
+                ),
+                inline=False,
+            )
+        await ctx.send(embed=reward_embed)
+        return True
+
     async def send_status(self, ctx):
         global_state, player_state = await self._get_event_state(ctx.author.id)
         total_skulls = int(global_state["total_skulls"] or 0)
@@ -629,6 +916,7 @@ class Greg(commands.Cog):
         boss_unlocked = bool(global_state["boss_unlocked"])
         player_skulls = int(player_state["skulls"] or 0)
         badge_claimed = bool(player_state["badge_claimed"])
+        boss_cleared = bool(player_state.get("boss_cleared"))
         event_enabled = self._greg_event_enabled()
 
         _, outbreak_label, next_threshold = self._outbreak_tier_data(death_toll)
@@ -644,11 +932,13 @@ class Greg(commands.Cog):
             )
         elif player_skulls < self.BADGE_SKULL_REQUIREMENT:
             remaining = self.BADGE_SKULL_REQUIREMENT - player_skulls
-            badge_status = f"Need **{remaining}** more Greg Skulls to claim the badge."
+            badge_status = f"Need **{remaining}** more Greg Skulls before you can face the finale."
+        elif boss_cleared:
+            badge_status = f"Boss defeated. Use `$greg claim` if the reward was not marked automatically."
         elif not event_enabled:
             badge_status = "Greg mode is off. Turn it back on to claim the badge."
         else:
-            badge_status = f"Eligible now with `$greg claim`."
+            badge_status = "The seal is broken. Use `$greg boss` to enter the Black Crypt."
 
         description = (
             "The Gregbound are on the march."
@@ -693,6 +983,11 @@ class Greg(commands.Cog):
         embed.add_field(
             name="Final Seal",
             value="Broken for the realm." if boss_unlocked else "Still sealed.",
+            inline=True,
+        )
+        embed.add_field(
+            name="Your Finale",
+            value="Cleared." if boss_cleared else "Not yet defeated.",
             inline=True,
         )
         embed.add_field(
@@ -776,10 +1071,11 @@ class Greg(commands.Cog):
                     color=0x7A1212,
                 )
                 embed.add_field(
-                    name="Badge Reward Active",
+                    name="The Crypt Opens",
                     value=(
                         f"Anyone with at least **{self.BADGE_SKULL_REQUIREMENT} Greg Skulls** "
-                        f"can now claim **{self.GREG_BADGE_NAME}** with `$greg claim`."
+                        "and a completed Gregapocalypse investigation can now face "
+                        "**The Greg of All Gregs** with `$greg boss`."
                     ),
                     inline=False,
                 )
@@ -787,7 +1083,8 @@ class Greg(commands.Cog):
             elif award_state["badge_requirement_hit"]:
                 await ctx.send(
                     f"💀 You now have **{award_state['new_player']} Greg Skulls**. "
-                    f"When the final seal breaks, you will qualify for **{self.GREG_BADGE_NAME}**."
+                    "When the final seal breaks, you will qualify to face "
+                    "**The Greg of All Gregs**."
                 )
             elif award_state["crossed_stage"]:
                 await ctx.send(
@@ -826,17 +1123,34 @@ class Greg(commands.Cog):
                 "The final seal is still intact. The realm must gather more Greg Skulls first."
             )
 
-        quests_cog = self.bot.get_cog("Quests")
-        if quests_cog is not None and not await quests_cog.is_quest_completed(
-                ctx.author.id,
-                "gregapocalypse",
-        ):
-            return await ctx.send(
-                "You have not finished the Gregapocalypse investigation. Use `$quests` and "
-                "`$quests turnin gregapocalypse` first."
-            )
+        gate_error = await self._get_greg_boss_gate_error(ctx, require_uncleared=False)
+        if gate_error:
+            return await ctx.send(gate_error)
 
         await self.send_boss_cutscene(ctx)
+
+    @has_char()
+    @greg.command(name="boss", aliases=["fight", "crypt", "finalboss"])
+    async def greg_boss(self, ctx):
+        gate_error = await self._get_greg_boss_gate_error(ctx, require_uncleared=True)
+        if gate_error:
+            return await ctx.send(gate_error)
+
+        await self.send_boss_cutscene(ctx)
+
+        monster_data = self._build_greg_boss_monster()
+        prompt_embed = discord.Embed(
+            title="The Black Crypt",
+            description=(
+                "The confrontation lies before you. When you are ready, press **Begin Battle** "
+                "to face **The Greg of All Gregs**."
+            ),
+            color=0x5C0F0F,
+        )
+        if monster_data.get("url"):
+            prompt_embed.set_image(url=str(monster_data["url"]))
+        prompt_embed.set_footer(text="Use `$greg bossintro` any time if you want to rewatch the cutscene.")
+        await ctx.send(embed=prompt_embed, view=GregBossStartView(self, ctx))
 
     @has_char()
     @greg.command(name="status", aliases=["progress"])
@@ -855,6 +1169,7 @@ class Greg(commands.Cog):
         boss_unlocked = bool(global_state["boss_unlocked"])
         player_skulls = int(player_state["skulls"] or 0)
         badge_claimed = bool(player_state["badge_claimed"])
+        boss_cleared = bool(player_state.get("boss_cleared"))
 
         if badge_claimed:
             return await ctx.send(f"You already claimed **{self.GREG_BADGE_NAME}**.")
@@ -867,15 +1182,19 @@ class Greg(commands.Cog):
             return await ctx.send(
                 f"You need **{remaining}** more Greg Skulls before you can claim the badge."
             )
+        if not boss_cleared:
+            return await ctx.send(
+                "You must defeat **The Greg of All Gregs** with `$greg boss` before claiming the badge."
+            )
 
         async with self.bot.pool.acquire() as conn:
             granted = await self._grant_greg_badge(ctx.author.id, conn=conn)
             await conn.execute(
                 """
-                INSERT INTO greg_event_players (user_id, skulls, badge_claimed, updated_at)
-                VALUES ($1, $2, TRUE, NOW())
+                INSERT INTO greg_event_players (user_id, skulls, badge_claimed, boss_cleared, updated_at)
+                VALUES ($1, $2, TRUE, TRUE, NOW())
                 ON CONFLICT (user_id)
-                DO UPDATE SET badge_claimed = TRUE, updated_at = NOW()
+                DO UPDATE SET badge_claimed = TRUE, boss_cleared = TRUE, updated_at = NOW()
                 """,
                 ctx.author.id,
                 player_skulls,
@@ -894,7 +1213,7 @@ class Greg(commands.Cog):
     @greg.group(name="gm", aliases=["admin"], invoke_without_command=True)
     async def greg_gm(self, ctx):
         global_state, _player_state = await self._get_event_state(ctx.author.id)
-        player_count, claimed_count = await self._get_admin_counts()
+        player_count, claimed_count, cleared_count = await self._get_admin_counts()
         embed = discord.Embed(
             title="Gregapocalypse Admin",
             color=0x6E1212,
@@ -927,6 +1246,11 @@ class Greg(commands.Cog):
         embed.add_field(
             name="Badges Claimed",
             value=f"{claimed_count:,}",
+            inline=True,
+        )
+        embed.add_field(
+            name="Boss Clears",
+            value=f"{cleared_count:,}",
             inline=True,
         )
         embed.set_footer(
@@ -984,10 +1308,12 @@ class Greg(commands.Cog):
     async def greg_gm_player(self, ctx, user: discord.User):
         _global_state, player_state = await self._get_event_state(user.id)
         badge_claimed = bool(player_state["badge_claimed"])
+        boss_cleared = bool(player_state.get("boss_cleared"))
         skulls = int(player_state["skulls"] or 0)
         await ctx.send(
             f"**{user}**: **{skulls:,}** Greg Skulls, "
-            f"badge claimed: **{'yes' if badge_claimed else 'no'}**."
+            f"badge claimed: **{'yes' if badge_claimed else 'no'}**, "
+            f"boss cleared: **{'yes' if boss_cleared else 'no'}**."
         )
 
     @is_gm()
@@ -1087,6 +1413,8 @@ class Greg(commands.Cog):
                 for user_id in user_ids:
                     if await self._remove_greg_badge(user_id, conn=conn):
                         removed_badges += 1
+
+        await self._sync_finale_event_flag(boss_unlocked=False)
 
         message = "Gregapocalypse progress has been fully reset."
         if revoke:

@@ -50,7 +50,7 @@ GREG_QUEST = QuestDef(
         "to the sealed crypt beneath the abbey."
     ),
     reward_text=(
-        "Complete the investigation and unlock access to `$greg bossintro` once the "
+        "Complete the investigation and unlock access to `$greg boss` once the "
         "realm breaks the final seal."
     ),
     start_text=(
@@ -163,7 +163,7 @@ GREG_QUEST = QuestDef(
                         "He steps aside from the final stair and lowers his voice to a whisper.\n\n"
                         "\"When the realm breaks the last seal, go below. And if it speaks your name... pray it still remembers "
                         "the right one.\"\n\n"
-                        "You are ready. When the community opens the way, descend with `$greg bossintro`."
+                        "You are ready. When the community opens the way, descend with `$greg boss`."
                     ),
                     "image": "",
                 },
@@ -185,10 +185,10 @@ KEY_ITEM_DEFINITIONS = {
 }
 
 MONSTERS_PATH = Path("monsters.json")
-CUSTOM_QUEST_SOURCES = {"none", "pve", "adventure", "battletower"}
+CUSTOM_QUEST_SOURCES = {"none", "pve", "adventure", "battletower", "scripted"}
 CUSTOM_QUEST_MODES = {"progress", "key_item"}
 CUSTOM_QUEST_TURNIN_TYPES = {"progress", "key_item", "crate", "egg", "money"}
-CUSTOM_QUEST_REWARD_TYPES = {"money", "crate", "item", "egg"}
+CUSTOM_QUEST_REWARD_TYPES = {"money", "crate", "item", "egg", "none"}
 QUEST_CRATE_RARITIES = {
     "common",
     "uncommon",
@@ -201,7 +201,7 @@ QUEST_CRATE_RARITIES = {
 }
 QUEST_PATREON_TIERS = {tier.name for tier in DonatorRank}
 QUEST_BUILDER_ACTIONS = (
-    ("text", "Quest Text", "Edit the journal description and NPC offer text."),
+    ("text", "Quest Text", "Edit the journal description, NPC offer text, and turn-in text."),
     ("objective_progress", "Progress Objective", "Set source, count, and optional target filter."),
     ("objective_keyitem", "Key Item Objective", "Set a quest key item found from gameplay."),
     ("objective_drops", "Key Item Drops", "Set drop chance, quantity range, and turn-in amount."),
@@ -213,6 +213,7 @@ QUEST_BUILDER_ACTIONS = (
     ("reward_crate", "Reward: Crate", "Grant crates on completion."),
     ("reward_egg", "Reward: Egg", "Grant a monster egg on completion."),
     ("reward_item", "Reward: Item", "Grant a custom weapon or shield."),
+    ("reward_none", "Reward: None", "Story-only turn-in with no material reward."),
     ("access", "Access Rules", "Set GM, booster, and Patreon locks."),
     ("prereq", "Prerequisites", "Require other quests first."),
     ("cutscene", "Cutscenes", "Attach accept and turn-in cutscenes."),
@@ -911,6 +912,14 @@ class GMQuestBuilderView(View):
                     "style": discord.TextStyle.paragraph,
                     "placeholder": "Quest giver text in MMO quest style.",
                 },
+                {
+                    "key": "turnin_text",
+                    "label": "Turn-In Text",
+                    "default": selected.get("turnin_text") or "",
+                    "style": discord.TextStyle.paragraph,
+                    "required": False,
+                    "placeholder": "Optional hand-in hint shown in the quest journal.",
+                },
             ]
 
         if action == "objective_progress":
@@ -919,7 +928,7 @@ class GMQuestBuilderView(View):
                     "key": "source",
                     "label": "Source",
                     "default": objective.get("source") or "pve",
-                    "placeholder": "pve, adventure, battletower, none",
+                    "placeholder": "pve, adventure, battletower, scripted, none",
                 },
                 {
                     "key": "required_count",
@@ -942,7 +951,7 @@ class GMQuestBuilderView(View):
                     "key": "source",
                     "label": "Source",
                     "default": objective.get("source") or "pve",
-                    "placeholder": "pve, adventure, battletower",
+                    "placeholder": "pve, adventure, battletower, scripted",
                 },
                 {
                     "key": "required_count",
@@ -1115,6 +1124,9 @@ class GMQuestBuilderView(View):
                 },
             ]
 
+        if action == "reward_none":
+            return None
+
         if action == "access":
             return [
                 {
@@ -1192,6 +1204,7 @@ class GMQuestBuilderView(View):
                         "category": category,
                         "short_description": str(values.get("short_description") or "").strip(),
                         "offer_text": str(values.get("offer_text") or "").strip(),
+                        "turnin_text": str(values.get("turnin_text") or "").strip(),
                     },
                     conn=conn,
                     created_by=self.author.id,
@@ -1202,7 +1215,7 @@ class GMQuestBuilderView(View):
             if action == "objective_progress":
                 source = self.cog._normalize_source(values.get("source"))
                 if source is None:
-                    raise ValueError("Source must be one of: none, pve, adventure, battletower.")
+                    raise ValueError("Source must be one of: none, pve, adventure, battletower, scripted.")
                 required_count = self._parse_int(values.get("required_count") or "0", "Required count", minimum=0)
                 target_name = str(values.get("target_name") or "").strip()
                 if target_name.lower() == "any":
@@ -1230,7 +1243,7 @@ class GMQuestBuilderView(View):
             if action == "objective_keyitem":
                 source = self.cog._normalize_source(values.get("source"))
                 if source is None or source == "none":
-                    raise ValueError("Key item objectives need a real source: pve, adventure, or battletower.")
+                    raise ValueError("Key item objectives need a real source: pve, adventure, battletower, or scripted.")
                 required_count = self._parse_int(values.get("required_count") or "1", "Required count", minimum=1)
                 key_item_name = str(values.get("key_item_name") or "").strip()
                 key_item_description = str(values.get("key_item_description") or "").strip()
@@ -1435,6 +1448,16 @@ class GMQuestBuilderView(View):
                 self.selected_quest_key = quest_key
                 return f"Reward for **{custom_def['name']}** now grants a custom item."
 
+            if action == "reward_none":
+                custom_def = await self.cog._update_custom_quest_fields(
+                    quest_key,
+                    {"reward_json": json.dumps({"type": "none"}, sort_keys=True)},
+                    conn=conn,
+                    created_by=self.author.id,
+                )
+                self.selected_quest_key = quest_key
+                return f"Reward for **{custom_def['name']}** is now story-only."
+
             if action == "access":
                 gm_only = self.cog._parse_bool(values.get("gm_only"))
                 booster_only = self.cog._parse_bool(values.get("booster_only"))
@@ -1554,11 +1577,11 @@ class GMQuestBuilderView(View):
                 await conn.execute(
                     """
                     INSERT INTO custom_quests (
-                        quest_key, name, category, short_description, offer_text, objective_json,
+                        quest_key, name, category, short_description, offer_text, turnin_text, objective_json,
                         turnin_json, reward_json, access_json, prerequisite_keys_json,
                         accept_cutscene_key, turnin_cutscene_key, repeatable, is_active, created_by, updated_at
                     )
-                    VALUES ($1, $2, $3, '', '', '{}', '{}', '{}', '{}', '[]', NULL, NULL, FALSE, FALSE, $4, NOW())
+                    VALUES ($1, $2, $3, '', '', '', '{}', '{}', '{}', '{}', '[]', NULL, NULL, FALSE, FALSE, $4, NOW())
                     """,
                     quest_key,
                     name,
@@ -1724,6 +1747,7 @@ class Quests(commands.Cog):
                     category TEXT NOT NULL DEFAULT 'General',
                     short_description TEXT NOT NULL DEFAULT '',
                     offer_text TEXT NOT NULL DEFAULT '',
+                    turnin_text TEXT NOT NULL DEFAULT '',
                     objective_json TEXT NOT NULL DEFAULT '{}',
                     turnin_json TEXT NOT NULL DEFAULT '{}',
                     reward_json TEXT NOT NULL DEFAULT '{}',
@@ -1736,6 +1760,12 @@ class Quests(commands.Cog):
                     created_by BIGINT,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
+                """
+            )
+            await conn.execute(
+                """
+                ALTER TABLE custom_quests
+                ADD COLUMN IF NOT EXISTS turnin_text TEXT NOT NULL DEFAULT ''
                 """
             )
             await conn.execute(
@@ -1953,6 +1983,7 @@ class Quests(commands.Cog):
             "category": str(row["category"] or "General"),
             "short_description": str(row["short_description"] or ""),
             "offer_text": str(row["offer_text"] or ""),
+            "turnin_text": str(row["turnin_text"] or ""),
             "objective": self._load_progress(row["objective_json"]),
             "turnin": self._load_progress(row["turnin_json"]),
             "reward": self._load_progress(row["reward_json"]),
@@ -1972,7 +2003,7 @@ class Quests(commands.Cog):
         try:
             row = await conn.fetchrow(
                 """
-                SELECT quest_key, name, category, short_description, offer_text,
+                SELECT quest_key, name, category, short_description, offer_text, turnin_text,
                        objective_json, turnin_json, reward_json, access_json,
                        prerequisite_keys_json, accept_cutscene_key, turnin_cutscene_key,
                        repeatable, is_active, created_by, updated_at
@@ -1993,7 +2024,7 @@ class Quests(commands.Cog):
         try:
             query = (
                 """
-                SELECT quest_key, name, category, short_description, offer_text,
+                SELECT quest_key, name, category, short_description, offer_text, turnin_text,
                        objective_json, turnin_json, reward_json, access_json,
                        prerequisite_keys_json, accept_cutscene_key, turnin_cutscene_key,
                        repeatable, is_active, created_by, updated_at
@@ -2022,6 +2053,8 @@ class Quests(commands.Cog):
             return f"Receive **{reward.get('name', 'a custom item')}**."
         if reward_type == "egg":
             return f"Receive a **{reward.get('monster_name', 'monster')} Egg**."
+        if reward_type == "none":
+            return "Story progression only. No material reward."
         return "Reward not configured yet."
 
     def _custom_objective_text(self, custom_def: dict) -> str:
@@ -2039,6 +2072,7 @@ class Quests(commands.Cog):
             "pve": "PvE",
             "adventure": "Adventure",
             "battletower": "Battle Tower",
+            "scripted": "Scripted Encounter",
         }.get(source, source.title())
         turnin_type = str(turnin.get("type") or "").lower()
 
@@ -2146,6 +2180,7 @@ class Quests(commands.Cog):
                 "pve": "PvE",
                 "adventure": "Adventure",
                 "battletower": "Battle Tower",
+                "scripted": "Scripted Encounter",
             }.get(str(objective.get("source") or "").lower(), "Quest")
             target_text = f" ({target_name})" if target_name else ""
             objective_lines.append(
@@ -2242,12 +2277,13 @@ class Quests(commands.Cog):
             "money": f"Use `$quests turnin {custom_def['quest_key']}` once you have the gold ready.",
             "egg": f"Use `$quests turnin {custom_def['quest_key']}` once the required egg is in your collection.",
         }.get(turnin_type, f"Use `$quests turnin {custom_def['quest_key']}` when ready.")
+        custom_turnin_text = str(custom_def.get("turnin_text") or "").strip()
         return {
             "status_label": status_label,
             "objective": self._custom_objective_text(custom_def),
             "progress_lines": progress_lines,
             "ready_to_turn_in": ready,
-            "turn_in_text": turnin_hint,
+            "turn_in_text": custom_turnin_text or turnin_hint,
             "current_chapter": custom_def["name"],
         }
 
@@ -2406,6 +2442,8 @@ class Quests(commands.Cog):
                 0,
             )
             return f"**{monster['name']} Egg**"
+        if reward_type == "none":
+            return "**no material reward**"
         raise ValueError("This quest reward is not configured correctly.")
 
     async def _resolve_quest_definition(self, quest_key: str, *, conn=None) -> tuple[QuestDef | None, dict | None]:
@@ -2442,11 +2480,11 @@ class Quests(commands.Cog):
             await conn.execute(
                 """
                 INSERT INTO custom_quests (
-                    quest_key, name, category, short_description, offer_text, objective_json,
+                    quest_key, name, category, short_description, offer_text, turnin_text, objective_json,
                     turnin_json, reward_json, access_json, prerequisite_keys_json,
                     accept_cutscene_key, turnin_cutscene_key, repeatable, is_active, created_by, updated_at
                 )
-                VALUES ($1, $2, 'General', '', '', '{}', '{}', '{}', '{}', '[]', NULL, NULL, FALSE, FALSE, $3, NOW())
+                VALUES ($1, $2, 'General', '', '', '', '{}', '{}', '{}', '{}', '[]', NULL, NULL, FALSE, FALSE, $3, NOW())
                 ON CONFLICT (quest_key) DO NOTHING
                 """,
                 quest_key,
@@ -2494,6 +2532,11 @@ class Quests(commands.Cog):
         embed.add_field(
             name="Offer Text",
             value=custom_def["offer_text"] or "Not set.",
+            inline=False,
+        )
+        embed.add_field(
+            name="Turn-In Text",
+            value=custom_def.get("turnin_text") or "Auto-generated from turn-in requirements.",
             inline=False,
         )
         embed.add_field(
@@ -2887,7 +2930,7 @@ class Quests(commands.Cog):
                 rows = await conn.fetch(
                     """
                     SELECT pq.progress_json, pq.completion_count, cq.quest_key, cq.name, cq.category,
-                           cq.short_description, cq.offer_text, cq.objective_json, cq.turnin_json,
+                           cq.short_description, cq.offer_text, cq.turnin_text, cq.objective_json, cq.turnin_json,
                            cq.reward_json, cq.access_json, cq.prerequisite_keys_json,
                            cq.accept_cutscene_key, cq.turnin_cutscene_key, cq.repeatable,
                            cq.is_active, cq.created_by, cq.updated_at
@@ -2983,6 +3026,79 @@ class Quests(commands.Cog):
                 inline=False,
             )
             await ctx.send(embed=embed)
+
+    async def process_external_source_completion(
+        self,
+        ctx,
+        source: str,
+        *,
+        candidate_names: tuple[str | None, ...] = (),
+    ) -> bool:
+        normalized_source = self._normalize_source(source)
+        if normalized_source is None or normalized_source == "none":
+            return False
+        await self._process_custom_source_completion(
+            ctx,
+            normalized_source,
+            candidate_names=candidate_names,
+        )
+        return True
+
+    async def has_active_custom_source_objective(
+        self,
+        user_id: int,
+        source: str,
+        *,
+        candidate_names: tuple[str | None, ...] = (),
+        conn=None,
+    ) -> bool:
+        normalized_source = self._normalize_source(source)
+        if normalized_source is None or normalized_source == "none":
+            return False
+
+        local = conn is None
+        if local:
+            conn = await self.bot.pool.acquire()
+        try:
+            rows = await conn.fetch(
+                """
+                SELECT cq.quest_key, cq.name, cq.category, cq.short_description, cq.offer_text,
+                       cq.turnin_text, cq.objective_json, cq.turnin_json, cq.reward_json,
+                       cq.access_json, cq.prerequisite_keys_json, cq.accept_cutscene_key,
+                       cq.turnin_cutscene_key, cq.repeatable, cq.is_active, cq.created_by
+                FROM player_quests pq
+                JOIN custom_quests cq ON cq.quest_key = pq.quest_key
+                WHERE pq.user_id = $1
+                  AND pq.status = 'active'
+                  AND cq.is_active = TRUE
+                """,
+                user_id,
+            )
+
+            for row in rows:
+                custom_def = self._load_custom_quest_definition(row)
+                meets_access, _reason = await self._user_meets_custom_access(
+                    user_id,
+                    custom_def,
+                    conn=conn,
+                )
+                if not meets_access:
+                    continue
+
+                objective = custom_def.get("objective") or {}
+                if str(objective.get("source") or "").lower() != normalized_source:
+                    continue
+                if not self._match_name_filter(
+                    objective.get("target_name"),
+                    *candidate_names,
+                ):
+                    continue
+                return True
+
+            return False
+        finally:
+            if local:
+                await self.bot.pool.release(conn)
 
     @commands.Cog.listener()
     async def on_PVE_completion(
@@ -3437,7 +3553,7 @@ class Quests(commands.Cog):
 
             if completed:
                 await ctx.send(
-                    "The investigation is complete. When the community breaks the final seal, descend with `$greg bossintro`."
+                    "The investigation is complete. When the community breaks the final seal, descend with `$greg boss`."
                 )
             else:
                 next_step = quest_def.steps[next_step_index]
@@ -3505,11 +3621,11 @@ class Quests(commands.Cog):
             await conn.execute(
                 """
                 INSERT INTO custom_quests (
-                    quest_key, name, category, short_description, offer_text, objective_json,
+                    quest_key, name, category, short_description, offer_text, turnin_text, objective_json,
                     turnin_json, reward_json, access_json, prerequisite_keys_json,
                     accept_cutscene_key, turnin_cutscene_key, repeatable, is_active, created_by, updated_at
                 )
-                VALUES ($1, $2, $3, '', '', '{}', '{}', '{}', '{}', '[]', NULL, NULL, FALSE, FALSE, $4, NOW())
+                VALUES ($1, $2, $3, '', '', '', '{}', '{}', '{}', '{}', '[]', NULL, NULL, FALSE, FALSE, $4, NOW())
                 """,
                 quest_key,
                 name,
@@ -3563,17 +3679,24 @@ class Quests(commands.Cog):
     @gmquest.command(name="text")
     async def gmquest_text(self, ctx, *, data: str):
         try:
-            quest_key_raw, short_description, offer_text = self._split_pipe_args(data, 3, 3)
+            parts = self._split_pipe_args(data, 3, 4)
         except ValueError as exc:
-            return await ctx.send(f"{exc} Example: `$gmquest text fisher_job | Bring the abbey what it needs. | Brother Halric presses a sealed note into your hand...`")
+            return await ctx.send(
+                f"{exc} Example: `$gmquest text fisher_job | Bring the abbey what it needs. | Brother Halric presses a sealed note into your hand... | Return to Halric once the ash is recovered.`"
+            )
+        quest_key_raw, short_description, offer_text = parts[:3]
+        turnin_text = parts[3] if len(parts) > 3 else None
         quest_key = self._normalize_custom_quest_key(quest_key_raw)
+        fields = {
+            "short_description": short_description,
+            "offer_text": offer_text,
+        }
+        if turnin_text is not None:
+            fields["turnin_text"] = turnin_text
         async with self.bot.pool.acquire() as conn:
             custom_def = await self._update_custom_quest_fields(
                 quest_key,
-                {
-                    "short_description": short_description,
-                    "offer_text": offer_text,
-                },
+                fields,
                 conn=conn,
             )
         await ctx.send(f"Updated quest text for **{custom_def['name']}**.")
@@ -3655,7 +3778,7 @@ class Quests(commands.Cog):
         quest_key = self._normalize_custom_quest_key(parts[0])
         source = self._normalize_source(parts[1])
         if source is None:
-            return await ctx.send("Source must be one of: none, pve, adventure, battletower.")
+            return await ctx.send("Source must be one of: none, pve, adventure, battletower, scripted.")
         try:
             required_count = max(0, int(parts[2]))
         except ValueError:
@@ -3691,7 +3814,7 @@ class Quests(commands.Cog):
         quest_key = self._normalize_custom_quest_key(parts[0])
         source = self._normalize_source(parts[1])
         if source is None or source == "none":
-            return await ctx.send("Key item objectives need a real source: pve, adventure, or battletower.")
+            return await ctx.send("Key item objectives need a real source: pve, adventure, battletower, or scripted.")
         try:
             required_count = max(1, int(parts[2]))
         except ValueError:
@@ -3852,7 +3975,19 @@ class Quests(commands.Cog):
 
     @gmquest.group(name="reward", invoke_without_command=True)
     async def gmquest_reward_group(self, ctx):
-        await ctx.send("Use `$gmquest reward money|crate|item|egg ...`.")
+        await ctx.send("Use `$gmquest reward none|money|crate|item|egg ...`.")
+
+    @gmquest_reward_group.command(name="none", aliases=["story"])
+    async def gmquest_reward_none(self, ctx, quest_key_raw: str):
+        quest_key = self._normalize_custom_quest_key(quest_key_raw)
+        reward = {"type": "none"}
+        async with self.bot.pool.acquire() as conn:
+            custom_def = await self._update_custom_quest_fields(
+                quest_key,
+                {"reward_json": json.dumps(reward, sort_keys=True)},
+                conn=conn,
+            )
+        await ctx.send(f"Reward for **{custom_def['name']}** is now story-only.")
 
     @gmquest_reward_group.command(name="money", aliases=["gold"])
     async def gmquest_reward_money(self, ctx, *, data: str):
