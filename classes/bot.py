@@ -733,6 +733,29 @@ class Bot(commands.AutoShardedBot):
             return await self.create_item(**item, conn=conn)
         return item
 
+    def _apply_level_memorial_caps(self, item):
+        if item.get("hand") == Hand.Both.value:
+            item["damage"] = min(int(item.get("damage", 0) or 0), 190)
+        else:
+            item["damage"] = min(int(item.get("damage", 0) or 0), 90)
+            item["armor"] = min(int(item.get("armor", 0) or 0), 90)
+        return item
+
+    async def create_level_memorial_item(self, new_level, owner, *, conn=None):
+        base_stat = min(round(new_level * 1.5), 95)
+        item = await self.create_random_item(
+            minstat=base_stat,
+            maxstat=base_stat,
+            minvalue=1000,
+            maxvalue=1000,
+            owner=owner,
+            insert=False,
+            conn=conn,
+        )
+        self._apply_level_memorial_caps(item)
+        item["name"] = _("Level {new_level} Memorial").format(new_level=new_level)
+        return item
+
     async def process_levelup(self, ctx, new_level, old_level, conn=None):
         if conn is None:
             conn = await self.pool.acquire()
@@ -791,18 +814,11 @@ class Bot(commands.AutoShardedBot):
                 ctx.author.id,
             )
         elif reward == "item":
-            stat = min(round(new_level * 1.5), 75)
-            item = await self.create_random_item(
-                minstat=stat,
-                maxstat=stat,
-                minvalue=1000,
-                maxvalue=1000,
-                owner=ctx.author,
-                insert=False,
+            item = await self.create_level_memorial_item(
+                new_level,
+                ctx.author,
                 conn=conn,
             )
-
-            item["name"] = _("Level {new_level} Memorial").format(new_level=new_level)
             reward_text = _("a special weapon")
             await self.create_item(**item)
             await self.log_transaction(
@@ -977,18 +993,11 @@ class Bot(commands.AutoShardedBot):
                 user_id,
             )
         elif reward == "item":
-            stat = min(round(new_level * 1.5), 75)
-            item = await self.create_random_item(
-                minstat=stat,
-                maxstat=stat,
-                minvalue=1000,
-                maxvalue=1000,
-                owner=user_id,
-                insert=False,
+            item = await self.create_level_memorial_item(
+                new_level,
+                user_id,
                 conn=conn,
             )
-
-            item["name"] = _("Level {new_level} Memorial").format(new_level=new_level)
             reward_text = _("a special weapon")
             await self.create_item(**item)
         elif reward == "money":

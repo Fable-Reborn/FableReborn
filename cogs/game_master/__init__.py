@@ -3372,18 +3372,11 @@ class GameMaster(commands.Cog):
                     target.id,
                 )
             elif reward == "item":
-                stat = min(round(new_level * 1.5), 75)
-                item = await self.bot.create_random_item(
-                    minstat=stat,
-                    maxstat=stat,
-                    minvalue=1000,
-                    maxvalue=1000,
-                    owner=target,
-                    insert=False,
+                item = await self.bot.create_level_memorial_item(
+                    new_level,
+                    target,
                     conn=conn,
                 )
-
-                item["name"] = _("Level {new_level} Memorial").format(new_level=new_level)
                 reward_text = _("a special weapon")
                 await self.bot.create_item(**item)
                 await self.bot.log_transaction(
