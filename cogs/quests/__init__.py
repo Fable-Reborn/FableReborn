@@ -205,6 +205,7 @@ QUEST_BUILDER_ACTIONS = (
     ("objective_progress", "Progress Objective", "Set source, count, and optional target filter."),
     ("objective_keyitem", "Key Item Objective", "Set a quest key item found from gameplay."),
     ("objective_drops", "Key Item Drops", "Set drop chance, quantity range, and turn-in amount."),
+    ("turnin_key_item", "Turn-In: Key Item", "Require the quest key item at hand-in."),
     ("turnin_progress", "Turn-In: Progress", "Turn in with progress only."),
     ("turnin_crate", "Turn-In: Crate", "Require crates at hand-in."),
     ("turnin_money", "Turn-In: Money", "Require gold at hand-in."),
@@ -1012,6 +1013,9 @@ class GMQuestBuilderView(View):
         if action == "turnin_progress":
             return None
 
+        if action == "turnin_key_item":
+            return None
+
         if action == "turnin_crate":
             return [
                 {
@@ -1330,6 +1334,20 @@ class GMQuestBuilderView(View):
                 )
                 self.selected_quest_key = quest_key
                 return f"Turn-in for **{custom_def['name']}** now uses progress only."
+
+            if action == "turnin_key_item":
+                existing = await self.cog._fetch_custom_quest_definition(quest_key, conn=conn)
+                objective = (existing or {}).get("objective") or {}
+                if str(objective.get("mode") or "").lower() != "key_item":
+                    raise ValueError("Set a Key Item Objective first before requiring a key item turn-in.")
+                custom_def = await self.cog._update_custom_quest_fields(
+                    quest_key,
+                    {"turnin_json": json.dumps({"type": "key_item"}, sort_keys=True)},
+                    conn=conn,
+                    created_by=self.author.id,
+                )
+                self.selected_quest_key = quest_key
+                return f"Turn-in for **{custom_def['name']}** now requires the quest key item."
 
             if action == "turnin_crate":
                 rarity = self.cog._normalize_crate_rarity(values.get("rarity"))
@@ -3897,7 +3915,24 @@ class Quests(commands.Cog):
 
     @gmquest.group(name="turnin", invoke_without_command=True)
     async def gmquest_turnin_group(self, ctx):
-        await ctx.send("Use `$gmquest turnin progress|crate|money|egg ...`.")
+        await ctx.send("Use `$gmquest turnin keyitem|progress|crate|money|egg ...`.")
+
+    @gmquest_turnin_group.command(name="keyitem", aliases=["key_item", "item"])
+    async def gmquest_turnin_keyitem(self, ctx, quest_key: str):
+        quest_key = self._normalize_custom_quest_key(quest_key)
+        async with self.bot.pool.acquire() as conn:
+            custom_def = await self._fetch_custom_quest_definition(quest_key, conn=conn)
+            if not custom_def:
+                return await ctx.send("That custom quest does not exist.")
+            objective = custom_def.get("objective") or {}
+            if str(objective.get("mode") or "").lower() != "key_item":
+                return await ctx.send("Set a key-item objective first.")
+            custom_def = await self._update_custom_quest_fields(
+                quest_key,
+                {"turnin_json": json.dumps({"type": "key_item"}, sort_keys=True)},
+                conn=conn,
+            )
+        await ctx.send(f"Turn-in for **{custom_def['name']}** now requires the quest key item.")
 
     @gmquest_turnin_group.command(name="progress")
     async def gmquest_turnin_progress(self, ctx, quest_key: str):
