@@ -3316,17 +3316,27 @@ class GameMaster(commands.Cog):
             else:
                 local = False
             reward_text = ""
-            stat_point_received = False
 
             new_level = int(rpgtools.xptolevel(int(xp)))
             await self._safe_ctx_send(ctx, new_level)
-            if new_level % 2 == 0 and new_level > 0:
+            old_level = new_level - 1
+            stat_points_earned = rpgtools.stat_points_earned(old_level, new_level)
+            if stat_points_earned > 0:
                 await self._safe_ctx_send(ctx, "breaker")
-                # Increment statpoints directly in the database and fetch the updated value
-                update_query = 'UPDATE profile SET "statpoints" = "statpoints" + 1 WHERE "user" = $1 RETURNING "statpoints";'
-                new_statpoints = await conn.fetchval(update_query, target.id)
-                reward_text += f"You also received **1 stat point** (total: {new_statpoints}). "
-                stat_point_received = True
+                update_query = (
+                    'UPDATE profile SET "statpoints" = "statpoints" + $1 '
+                    'WHERE "user" = $2 RETURNING "statpoints";'
+                )
+                new_statpoints = await conn.fetchval(
+                    update_query,
+                    stat_points_earned,
+                    target.id,
+                )
+                point_label = "stat point" if stat_points_earned == 1 else "stat points"
+                reward_text += (
+                    f"You also received **{stat_points_earned} {point_label}** "
+                    f"(total: {new_statpoints}). "
+                )
 
             if (reward := random.choice(["crates", "money", "item"])) == "crates":
                 if new_level < 6:
@@ -3400,7 +3410,6 @@ class GameMaster(commands.Cog):
                     conn=conn,
                 )
                 reward_text = f"**${money}**"
-            old_level = new_level - 1
             additional = (
                 _("You can now choose your second class using `{prefix}class`!").format(
                     prefix=ctx.clean_prefix

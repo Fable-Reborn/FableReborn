@@ -29,7 +29,11 @@ from discord.errors import NotFound
 
 from utils import random
 
-levels = {
+PLAYER_MAX_LEVEL = 1000
+STAT_POINT_INTERVAL = 2
+_LEVEL_EXTENSION_GROWTH_SAMPLE_START = 94
+
+BASE_LEVELS = {
     1: 0,
     2: 1500,
     3: 9000,
@@ -131,6 +135,34 @@ levels = {
     99: 129013829,
     100: 132625263,
 }
+
+
+def _build_levels():
+    extended_levels = dict(BASE_LEVELS)
+    last_defined_level = max(BASE_LEVELS)
+    last_increment = (
+        BASE_LEVELS[last_defined_level] - BASE_LEVELS[last_defined_level - 1]
+    )
+    growth_samples = []
+
+    for level in range(_LEVEL_EXTENSION_GROWTH_SAMPLE_START, last_defined_level + 1):
+        current_increment = BASE_LEVELS[level] - BASE_LEVELS[level - 1]
+        previous_increment = BASE_LEVELS[level - 1] - BASE_LEVELS[level - 2]
+        growth_samples.append(current_increment - previous_increment)
+
+    # Preserve the stable late-game curve when extending past the legacy table.
+    increment_growth = int(round(sum(growth_samples) / len(growth_samples)))
+    total_xp = BASE_LEVELS[last_defined_level]
+
+    for level in range(last_defined_level + 1, PLAYER_MAX_LEVEL + 1):
+        last_increment += increment_growth
+        total_xp += last_increment
+        extended_levels[level] = total_xp
+
+    return extended_levels
+
+
+levels = _build_levels()
 MAX_LEVEL = max(levels)
 
 
@@ -167,6 +199,12 @@ def xptonextlevel(xp):
     else:
         nextxp = levels[level + 1]
         return f"{nextxp - xp}"
+
+
+def stat_points_earned(old_level, new_level):
+    old_level = max(0, int(old_level or 0))
+    new_level = max(old_level, int(new_level or 0))
+    return (new_level // STAT_POINT_INTERVAL) - (old_level // STAT_POINT_INTERVAL)
 
 
 def calcchance(

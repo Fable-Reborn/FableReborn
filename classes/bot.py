@@ -740,13 +740,22 @@ class Bot(commands.AutoShardedBot):
         else:
             local = False
         reward_text = ""
-        stat_point_received = False
-        if new_level % 2 == 0 and new_level > 0:
-            # Increment statpoints directly in the database and fetch the updated value
-            update_query = 'UPDATE profile SET "statpoints" = "statpoints" + 1 WHERE "user" = $1 RETURNING "statpoints";'
-            new_statpoints = await conn.fetchval(update_query, ctx.author.id)
-            reward_text += f"You also received **1 stat point** (total: {new_statpoints}). "
-            stat_point_received = True
+        stat_points_earned = rpgtools.stat_points_earned(old_level, new_level)
+        if stat_points_earned > 0:
+            update_query = (
+                'UPDATE profile SET "statpoints" = "statpoints" + $1 '
+                'WHERE "user" = $2 RETURNING "statpoints";'
+            )
+            new_statpoints = await conn.fetchval(
+                update_query,
+                stat_points_earned,
+                ctx.author.id,
+            )
+            point_label = "stat point" if stat_points_earned == 1 else "stat points"
+            reward_text += (
+                f"You also received **{stat_points_earned} {point_label}** "
+                f"(total: {new_statpoints}). "
+            )
 
         if (reward := random.choice(["crates", "money", "item"])) == "crates":
             if new_level < 6:
@@ -924,14 +933,22 @@ class Bot(commands.AutoShardedBot):
         else:
             local = False
         reward_text = ""
-        stat_point_received = False
-        if new_level % 2 == 0 and new_level > 0:
-            # Increment statpoints directly in the database and fetch the updated value
-            update_query = 'UPDATE profile SET "statpoints" = "statpoints" + 1 WHERE "user" = $1 RETURNING "statpoints";'
-            new_statpoints = await conn.fetchval(update_query, user_id)
-            
-            reward_text += f"You also received **1 stat point** (total: {new_statpoints}). "
-            stat_point_received = True
+        stat_points_earned = rpgtools.stat_points_earned(old_level, new_level)
+        if stat_points_earned > 0:
+            update_query = (
+                'UPDATE profile SET "statpoints" = "statpoints" + $1 '
+                'WHERE "user" = $2 RETURNING "statpoints";'
+            )
+            new_statpoints = await conn.fetchval(
+                update_query,
+                stat_points_earned,
+                user_id,
+            )
+            point_label = "stat point" if stat_points_earned == 1 else "stat points"
+            reward_text += (
+                f"You also received **{stat_points_earned} {point_label}** "
+                f"(total: {new_statpoints}). "
+            )
 
         if (reward := random.choice(["crates", "money", "item"])) == "crates":
             if new_level < 6:

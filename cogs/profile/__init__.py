@@ -984,8 +984,12 @@ class Profile(commands.Cog):
         xp_value = self._safe_int(profile.get("xp"), 0)
         level = int(rpgtools.xptolevel(xp_value))
         floor = rpgtools.levels.get(level, 0)
-        ceil = rpgtools.levels.get(min(level + 1, 100), floor)
-        xp_progress = 1.0 if level >= 100 or ceil <= floor else max(0.0, min(1.0, (xp_value - floor) / (ceil - floor)))
+        ceil = rpgtools.levels.get(min(level + 1, rpgtools.MAX_LEVEL), floor)
+        xp_progress = (
+            1.0
+            if level >= rpgtools.MAX_LEVEL or ceil <= floor
+            else max(0.0, min(1.0, (xp_value - floor) / (ceil - floor)))
+        )
         luck_raw = float(profile.get("luck") or 0.3)
         luck_percent = 20.0 if luck_raw <= 0.3 else ((luck_raw - 0.3) / 1.2) * 80 + 20
         luck_percent = round(max(0.0, min(100.0, luck_percent)), 2)
