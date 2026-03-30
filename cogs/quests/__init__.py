@@ -388,6 +388,47 @@ GREG_BOSS_LIBRARY_PAGES = (
     },
 )
 
+GREG_EPILOGUE_CUTSCENE_PAGES = (
+    {
+        "title": "Gregapocalypse",
+        "subtitle": "The Last Bell Falls Silent",
+        "text": (
+            "Brother Halric is waiting when you climb from the undercroft, as though he never once dared "
+            "leave the abbey steps.\n\n"
+            "You place the shattered seal in his hands.\n\n"
+            "For a moment he says nothing. His thumb brushes the cracked edge, and the last cold pulse of the "
+            "Black Crypt seems to die there between his fingers.\n\n"
+            "\"Then it is done,\" he says at last. \"The last door has broken, and what lay below it will not rise again.\""
+        ),
+        "image": "",
+    },
+    {
+        "title": "Gregapocalypse",
+        "subtitle": "Names Remembered",
+        "text": (
+            "Beyond the abbey walls, the bells finally fall silent.\n\n"
+            "No dead answer them. No hollow voice repeats that stolen name back through the fog. In the kennels, in the "
+            "graveyard, in the dark roads beyond the village, something long-twisted begins at last to loosen its grip.\n\n"
+            "Halric closes his eyes.\n\n"
+            "\"The dead were not asking for Greg,\" he murmurs. \"They were asking not to be forgotten.\""
+        ),
+        "image": "",
+    },
+    {
+        "title": "Gregapocalypse",
+        "subtitle": "The Realm Endures",
+        "text": (
+            "He returns the broken seal to you like a relic, not a trophy.\n\n"
+            "\"Keep it,\" he says. \"Let it remind the living what becomes of a world that stops remembering its own.\"\n\n"
+            "The churchyard is quiet now. The ledgers will need mending. The graves will need blessing. The realm will speak "
+            "of this in laughter before long, because that is what the living do when terror finally passes.\n\n"
+            "But tonight, the names of the lost belong to themselves again.\n\n"
+            "And yours remains your own."
+        ),
+        "image": "",
+    },
+)
+
 DEFAULT_CUTSCENE_DEFINITIONS = {
     "greg_intro_lore": {
         "title": "Gregapocalypse",
@@ -408,6 +449,10 @@ DEFAULT_CUTSCENE_DEFINITIONS = {
     "greg_black_crypt": {
         "title": "Gregapocalypse: The Black Crypt",
         "pages": GREG_QUEST.steps[2].turn_in_pages,
+    },
+    "greg_epilogue": {
+        "title": "Gregapocalypse: The Last Name Left",
+        "pages": GREG_EPILOGUE_CUTSCENE_PAGES,
     },
 }
 
@@ -1186,7 +1231,7 @@ class GMQuestBuilderView(View):
                     "label": "Turn-In Cutscene",
                     "default": selected.get("turnin_cutscene_key") or "none",
                     "required": False,
-                    "placeholder": "greg_black_ledger or none",
+                    "placeholder": "greg_black_ledger, greg_epilogue, or none",
                 },
             ]
 
@@ -1798,6 +1843,7 @@ class Quests(commands.Cog):
                 """
             )
             await self._seed_default_cutscenes(conn)
+            await self._attach_default_greg_finale_cutscene(conn)
 
     async def _seed_default_cutscenes(self, conn):
         for cutscene_key, definition in DEFAULT_CUTSCENE_DEFINITIONS.items():
@@ -1811,6 +1857,17 @@ class Quests(commands.Cog):
                 definition["title"],
                 json.dumps(list(definition["pages"])),
             )
+
+    async def _attach_default_greg_finale_cutscene(self, conn):
+        await conn.execute(
+            """
+            UPDATE custom_quests
+            SET turnin_cutscene_key = 'greg_epilogue',
+                updated_at = NOW()
+            WHERE quest_key = 'greg_finale'
+              AND COALESCE(turnin_cutscene_key, '') = ''
+            """
+        )
 
     def _greg_mode_enabled(self) -> bool:
         flags = getattr(self.bot, "april_fools_flags", {}) or {}
