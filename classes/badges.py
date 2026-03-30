@@ -27,6 +27,7 @@ from classes.context import Context
 
 BADGE_DISPLAY_NAMES = {
     "FAVORED_BY_THE_SEVEN": "Favored by the Seven",
+    "GREGAPOCALYPSE_SURVIVOR": "Gregapocalypse Survivor",
 }
 
 
@@ -43,6 +44,7 @@ class Badge(IntFlag):
     JUNIOR_WEREWOLF = 512
     ETERNAL_SOVEREIGN = 1024
     FAVORED_BY_THE_SEVEN = 2048
+    GREGAPOCALYPSE_SURVIVOR = 4096
 
     @classmethod
     def from_string(cls, string: str) -> Badge | None:

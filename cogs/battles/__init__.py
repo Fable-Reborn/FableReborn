@@ -4013,6 +4013,17 @@ class Battles(commands.Cog):
             async with self.bot.pool.acquire() as connection:
                 await connection.execute('UPDATE battletower SET level = level + 1 WHERE id = $1', ctx.author.id)
             await ctx.send(f'You have advanced to floor: {newlevel}')
+
+        self.bot.dispatch(
+            "battletower_completion",
+            ctx,
+            True,
+            level,
+            level_name,
+            name_value,
+            minion1_name,
+            minion2_name,
+        )
     
     async def handle_chest_rewards(self, ctx, level, name_value, emotes):
         """Handle chest rewards for battle tower victories."""

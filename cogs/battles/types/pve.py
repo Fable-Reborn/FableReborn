@@ -6,11 +6,23 @@ import discord
 import datetime
 
 from ..core.battle import Battle
-from utils.april_fools import get_pet_display_name
+from utils.april_fools import get_pet_display_name, is_greg_mode_enabled
 
 class PvEBattle(Battle):
     """Player vs Environment (monster) battle implementation"""
     GOD_OF_GODS_TIER = 12
+    GREG_OPENING_LINES = (
+        "A black bell tolls in the distance, and every peal seems to say: Greg. Greg. Greg.",
+        "The grave-wind carries a single name through the dark: Greg.",
+        "Something in the wild has forgotten itself. It remembers only Greg.",
+        "The road falls silent as the Gregbound stir beyond the fog, each insisting they are Greg.",
+        "This creature's true name has withered. The curse leaves only Greg behind.",
+        "Ash drifts through the air as if some buried ledger has turned another page and written Greg again.",
+        "The creature lurches forward as though eager to introduce itself as Greg.",
+        "Even the crows cry the same word tonight: Greg.",
+        "A torn name-tag flutters in the mud. Upon it, in shaky ink, is written Greg.",
+        "From somewhere beneath the earth comes a muffled chant: Greg... Greg... Greg...",
+    )
     ADAPTIVE_ELEMENTS = (
         "Light",
         "Dark",
@@ -75,6 +87,13 @@ class PvEBattle(Battle):
 
         if int(self.monster_level or 0) == self.GOD_OF_GODS_TIER:
             self.config["tripping"] = False
+
+    def _get_greg_opening_lines(self):
+        if not is_greg_mode_enabled(self.ctx.bot):
+            return []
+
+        line_count = 2 if random.random() < 0.30 else 1
+        return random.sample(self.GREG_OPENING_LINES, k=line_count)
         
     async def start_battle(self):
         """Initialize and start the battle"""
@@ -86,6 +105,8 @@ class PvEBattle(Battle):
         
         monster_name = self.monster_team.combatants[0].name
         await self.add_to_log(f"Battle against {monster_name} started!")
+        for greg_line in self._get_greg_opening_lines():
+            await self.add_to_log(greg_line)
         await self._handle_godofgods_adaptive_element()
         await self._announce_omnithrone_allies()
         
