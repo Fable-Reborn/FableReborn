@@ -48,6 +48,7 @@ from classes.exceptions import GlobalCooldown
 from classes.http import ProxiedClientSession
 from classes.items import ALL_ITEM_TYPES, Hand, ItemType
 from utils import i18n, paginator, random
+from utils import misc as rpgtools
 from utils.cache import cache
 from utils.checks import user_is_patron
 from utils.config import ConfigLoader
