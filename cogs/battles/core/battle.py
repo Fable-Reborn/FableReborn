@@ -615,13 +615,13 @@ class Battle(ABC):
             if class_ext is not None
             else None
         ) or {
-            1: 0.015,
-            2: 0.020,
-            3: 0.025,
-            4: 0.030,
-            5: 0.035,
-            6: 0.040,
-            7: 0.045,
+            1: 0.030,
+            2: 0.035,
+            3: 0.040,
+            4: 0.045,
+            5: 0.050,
+            6: 0.055,
+            7: 0.060,
         }
         return Decimal(str(shield_map.get(level, 0)))
 
@@ -636,13 +636,13 @@ class Battle(ABC):
             if class_ext is not None
             else None
         ) or {
-            1: 0.06,
-            2: 0.08,
-            3: 0.10,
-            4: 0.12,
-            5: 0.14,
-            6: 0.16,
-            7: 0.18,
+            1: 0.14,
+            2: 0.16,
+            3: 0.18,
+            4: 0.20,
+            5: 0.22,
+            6: 0.24,
+            7: 0.25,
         }
         return Decimal(str(shield_cap_map.get(level, 0)))
 

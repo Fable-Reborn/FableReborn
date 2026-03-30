@@ -42,8 +42,8 @@ class TestBattleClassBuffHelpers(unittest.TestCase):
 
         self.assertFalse(state["fireball_ready"])
         self.assertEqual(Decimal("0.3"), state["charge"])
-        self.assertEqual(Decimal("30.000"), state["shield_gained"])
-        self.assertEqual(Decimal("30.000"), mage.shield)
+        self.assertEqual(Decimal("45.000"), state["shield_gained"])
+        self.assertEqual(Decimal("45.000"), mage.shield)
         self.assertEqual(Decimal("0.3"), mage.fireball_charge)
 
     def test_mage_charge_uses_overflow_when_fireball_triggers(self):
@@ -69,14 +69,14 @@ class TestBattleClassBuffHelpers(unittest.TestCase):
             mage_evolution=4,
             is_pet=False,
             max_hp=Decimal("1000"),
-            shield=Decimal("110"),
+            shield=Decimal("180"),
         )
 
         state = battle.advance_mage_fireball_charge(mage)
 
         self.assertFalse(state["fireball_ready"])
-        self.assertEqual(Decimal("10.00"), state["shield_gained"])
-        self.assertEqual(Decimal("120"), mage.shield)
+        self.assertEqual(Decimal("20.00"), state["shield_gained"])
+        self.assertEqual(Decimal("200"), mage.shield)
 
     def test_cheat_death_recovery_hp_uses_half_max_hp(self):
         battle = self._new_battle()
