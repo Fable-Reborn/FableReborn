@@ -2583,6 +2583,14 @@ class Quests(commands.Cog):
         custom_def = await self._fetch_custom_quest_definition(quest_key, conn=conn)
         return None, custom_def
 
+    def _new_story_progress(self) -> dict:
+        return {
+            "total_pve_wins": 0,
+            "step_pve_wins": 0,
+            "total_high_tier_wins": 0,
+            "step_high_tier_wins": 0,
+        }
+
     def _new_custom_progress(self) -> dict:
         return {
             "count": 0,
@@ -3404,16 +3412,17 @@ class Quests(commands.Cog):
             if existing:
                 if existing["status"] == "active":
                     return await ctx.send("You already accepted that quest.")
-                if quest_def or (custom_def and not custom_def["repeatable"]):
+                if (
+                    (quest_def or (custom_def and not custom_def["repeatable"]))
+                    and (
+                        existing["status"] == "completed"
+                        or int(existing["completion_count"] or 0) > 0
+                    )
+                ):
                     return await ctx.send("You have already completed that quest.")
 
             if quest_def:
-                progress = {
-                    "total_pve_wins": 0,
-                    "step_pve_wins": 0,
-                    "total_high_tier_wins": 0,
-                    "step_high_tier_wins": 0,
-                }
+                progress = self._new_story_progress()
                 category = quest_def.category
                 title = quest_def.name
                 description = quest_def.start_text
@@ -3441,6 +3450,7 @@ class Quests(commands.Cog):
                               step_index = 0,
                               progress_json = EXCLUDED.progress_json,
                               started_at = NOW(),
+                              completed_at = NULL,
                               turned_in_at = NULL
                 """,
                 ctx.author.id,
@@ -3580,7 +3590,6 @@ class Quests(commands.Cog):
                                     ctx.author.id,
                                     conn=conn,
                                 )
-                        completed = not custom_def["repeatable"]
                         await conn.execute(
                             """
                             UPDATE player_quests
@@ -3594,7 +3603,7 @@ class Quests(commands.Cog):
                             """,
                             ctx.author.id,
                             quest_key,
-                            "completed" if completed else "active",
+                            "completed",
                             self._dump_progress(self._new_custom_progress()),
                         )
             except ValueError as exc:
@@ -3626,7 +3635,9 @@ class Quests(commands.Cog):
                 inline=False,
             )
             if custom_def["repeatable"]:
-                embed.set_footer(text="This quest is repeatable and has been reset.")
+                embed.set_footer(
+                    text=f"This quest is repeatable. Accept it again with `$quests accept {custom_def['quest_key']}`."
+                )
             else:
                 embed.set_footer(text="This quest is now complete.")
             await ctx.send(embed=embed)
@@ -3637,6 +3648,70 @@ class Quests(commands.Cog):
                     await ctx.send("**Gregapocalypse Survivor** has been added to your profile.")
                 elif greg_badge_already:
                     await ctx.send("Your Gregapocalypse badge was already on your profile.")
+
+    @quests.command(name="abandon", aliases=["cancel", "drop"])
+    @has_char()
+    async def quests_abandon(self, ctx, *, quest_key: str):
+        raw_quest_key = str(quest_key).strip()
+        quest_key = raw_quest_key.lower()
+        if quest_key not in QUEST_DEFINITIONS:
+            quest_key = self._normalize_custom_quest_key(raw_quest_key)
+
+        async with self.bot.pool.acquire() as conn:
+            quest_def, custom_def = await self._resolve_quest_definition(quest_key, conn=conn)
+            if not quest_def and not custom_def:
+                return await ctx.send("That quest does not exist.")
+
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT status, completion_count
+                    FROM player_quests
+                    WHERE user_id = $1 AND quest_key = $2
+                    FOR UPDATE
+                    """,
+                    ctx.author.id,
+                    quest_key,
+                )
+                if not row or str(row["status"]) != "active":
+                    quest_name = quest_def.name if quest_def else custom_def["name"]
+                    return await ctx.send(
+                        f"**{quest_name}** is not currently active."
+                    )
+
+                progress = (
+                    self._new_story_progress()
+                    if quest_def
+                    else self._new_custom_progress()
+                )
+                await conn.execute(
+                    """
+                    UPDATE player_quests
+                    SET status = 'abandoned',
+                        step_index = 0,
+                        progress_json = $3,
+                        completed_at = NULL,
+                        turned_in_at = NULL
+                    WHERE user_id = $1 AND quest_key = $2
+                    """,
+                    ctx.author.id,
+                    quest_key,
+                    self._dump_progress(progress),
+                )
+                await conn.execute(
+                    """
+                    DELETE FROM player_key_items
+                    WHERE user_id = $1 AND source_quest = $2
+                    """,
+                    ctx.author.id,
+                    quest_key,
+                )
+
+        quest_name = quest_def.name if quest_def else custom_def["name"]
+        await ctx.send(
+            f"You abandoned **{quest_name}**. "
+            f"Use `$quests accept {quest_key}` if you want to start it again."
+        )
 
     @is_gm()
     @commands.group(name="gmquest", aliases=["gmquests"], invoke_without_command=True)
