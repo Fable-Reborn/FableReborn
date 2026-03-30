@@ -139,6 +139,9 @@ class BuyOrderFulfill(commands.Cog):
                     item_id,
                     False
                 )
+                profile_cog = self.bot.get_cog("Profile")
+                if profile_cog is not None:
+                    await profile_cog.sanitize_presets_for_user(ctx.author.id, conn=conn)
                 
                 # Update order status
                 await conn.execute(

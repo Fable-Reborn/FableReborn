@@ -697,6 +697,13 @@ class Transaction(commands.Cog):
                             else:
                                 await conn.execute('INSERT INTO user_consumables (user_id, consumable_type, quantity) VALUES ($1, $2, $3);', user1.id, ctype, qty2)
 
+                profile_cog = self.bot.get_cog("Profile")
+                if profile_cog is not None:
+                    if user1_item_ids:
+                        await profile_cog.sanitize_presets_for_user(user1.id, conn=conn)
+                    if user2_item_ids:
+                        await profile_cog.sanitize_presets_for_user(user2.id, conn=conn)
+
             await chan.send(_("Trade successful."))
 
     @has_no_transaction()

@@ -166,6 +166,453 @@ class ArmoryPaginatorView(discord.ui.View):
         await interaction.response.defer()
 
 
+class InventoryCategorySelect(discord.ui.Select):
+    def __init__(self, inventory_view: "InventoryCategoryView"):
+        self.inventory_view = inventory_view
+        options = [
+            discord.SelectOption(
+                label=category["label"][:100],
+                value=category["key"],
+                description=category["description"][:100],
+                default=category["key"] == inventory_view.selected_key,
+            )
+            for category in inventory_view.categories[:25]
+        ]
+        super().__init__(
+            placeholder="Choose an inventory category",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+            disabled=len(options) <= 1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.inventory_view.selected_key = self.values[0]
+        self.inventory_view.detail_mode = False
+        self.inventory_view.selected_entry_key = None
+        self.inventory_view.item_page = 0
+        self.inventory_view.sync_controls()
+        await interaction.response.edit_message(
+            embed=self.inventory_view.build_embed(),
+            view=self.inventory_view,
+        )
+
+
+class InventoryEntrySelect(discord.ui.Select):
+    def __init__(self, inventory_view: "InventoryCategoryView"):
+        self.inventory_view = inventory_view
+        entries = inventory_view.visible_entries()
+        options = [
+            discord.SelectOption(
+                label=entry["select_label"][:100],
+                value=entry["entry_key"],
+                description=str(entry.get("select_description") or "")[:100],
+                default=entry["entry_key"] == inventory_view.selected_entry_key,
+            )
+            for entry in entries[:25]
+        ]
+        super().__init__(
+            placeholder="Inspect a specific item",
+            min_values=1,
+            max_values=1,
+            options=options or [
+                discord.SelectOption(
+                    label="No items on this page",
+                    value="__none__",
+                    description="Switch category or page.",
+                    default=True,
+                )
+            ],
+            row=1,
+            disabled=not entries,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "__none__":
+            return await interaction.response.defer()
+        self.inventory_view.selected_entry_key = self.values[0]
+        self.inventory_view.detail_mode = True
+        self.inventory_view.sync_controls()
+        await interaction.response.edit_message(
+            embed=self.inventory_view.build_embed(),
+            view=self.inventory_view,
+        )
+
+
+class InventoryCategoryView(discord.ui.View):
+    def __init__(self, ctx: commands.Context, cog: "Profile", categories: list[dict], timeout: float = 180.0):
+        super().__init__(timeout=timeout)
+        self.ctx = ctx
+        self.cog = cog
+        self.categories = categories
+        self.selected_key = categories[0]["key"] if categories else None
+        self.selected_entry_key: str | None = None
+        self.detail_mode = False
+        self.item_page = 0
+        self.sync_controls()
+
+    def _is_allowed_user(self, user_id: int) -> bool:
+        allowed_user_ids = {int(self.ctx.author.id)}
+        alt_invoker_id = getattr(self.ctx, "alt_invoker_id", None)
+        if alt_invoker_id is not None:
+            allowed_user_ids.add(int(alt_invoker_id))
+        return int(user_id) in allowed_user_ids
+
+    def sync_controls(self):
+        self.clear_items()
+        if self.categories:
+            self.add_item(InventoryCategorySelect(self))
+        category = self.selected_category()
+        if category and category.get("entries"):
+            self.add_item(InventoryEntrySelect(self))
+
+        entries = category.get("entries", []) if category else []
+        if len(entries) > 25:
+            prev_page = discord.ui.Button(
+                label="Prev Items",
+                style=discord.ButtonStyle.secondary,
+                row=2,
+                disabled=self.item_page == 0,
+            )
+            prev_page.callback = self.prev_item_page
+            self.add_item(prev_page)
+
+            next_page = discord.ui.Button(
+                label="Next Items",
+                style=discord.ButtonStyle.secondary,
+                row=2,
+                disabled=((self.item_page + 1) * 25) >= len(entries),
+            )
+            next_page.callback = self.next_item_page
+            self.add_item(next_page)
+
+        back_button = discord.ui.Button(
+            label="Back",
+            style=discord.ButtonStyle.secondary,
+            row=3,
+            disabled=not self.detail_mode,
+        )
+        back_button.callback = self.back_to_list
+        self.add_item(back_button)
+
+        selected_entry = self.selected_entry()
+        if self.detail_mode and selected_entry and selected_entry["kind"] == "amulet":
+            equip_button = discord.ui.Button(
+                label="Equip",
+                style=discord.ButtonStyle.green,
+                row=3,
+                disabled=bool(selected_entry.get("equipped")),
+            )
+            equip_button.callback = self.equip_selected_amulet
+            self.add_item(equip_button)
+            recycle_button = discord.ui.Button(
+                label="Recycle",
+                style=discord.ButtonStyle.danger,
+                row=3,
+                disabled=not bool(selected_entry.get("recycle_enabled")),
+            )
+            recycle_button.callback = self.recycle_selected_amulet
+            self.add_item(recycle_button)
+        elif self.detail_mode and selected_entry and selected_entry["kind"] == "potion":
+            consume_button = discord.ui.Button(
+                label="Consume",
+                style=discord.ButtonStyle.green,
+                row=3,
+                disabled=not bool(selected_entry.get("button_enabled")),
+            )
+            consume_button.callback = self.consume_selected_potion
+            self.add_item(consume_button)
+
+        refresh_button = discord.ui.Button(
+            label="Refresh",
+            style=discord.ButtonStyle.secondary,
+            row=3,
+        )
+        refresh_button.callback = self.refresh_inventory
+        self.add_item(refresh_button)
+
+    def selected_category(self) -> dict | None:
+        for category in self.categories:
+            if category["key"] == self.selected_key:
+                return category
+        return self.categories[0] if self.categories else None
+
+    def visible_entries(self) -> list[dict]:
+        category = self.selected_category()
+        if not category:
+            return []
+        start = self.item_page * 25
+        end = start + 25
+        return list(category.get("entries", []))[start:end]
+
+    def selected_entry(self) -> dict | None:
+        category = self.selected_category()
+        if not category:
+            return None
+        for entry in category.get("entries", []):
+            if entry["entry_key"] == self.selected_entry_key:
+                return entry
+        return None
+
+    async def reload_categories(self):
+        self.categories = await self.cog._fetch_inventory_categories(self.ctx.author.id)
+        category_keys = {category["key"] for category in self.categories}
+        if self.selected_key not in category_keys:
+            self.selected_key = self.categories[0]["key"] if self.categories else None
+            self.item_page = 0
+            self.detail_mode = False
+            self.selected_entry_key = None
+        category = self.selected_category()
+        category_entries = category.get("entries", []) if category else []
+        max_page = max(0, (len(category_entries) - 1) // 25) if category_entries else 0
+        if self.item_page > max_page:
+            self.item_page = max_page
+        if self.selected_entry_key and not any(entry["entry_key"] == self.selected_entry_key for entry in category_entries):
+            self.selected_entry_key = None
+            self.detail_mode = False
+
+    def build_embed(self) -> discord.Embed:
+        category = self.selected_category()
+        if self.detail_mode:
+            entry = self.selected_entry()
+            if entry is not None:
+                return self.build_detail_embed(category, entry)
+        return self.build_list_embed(category)
+
+    def build_list_embed(self, category: dict | None) -> discord.Embed:
+        embed = discord.Embed(
+            title=_("{user}'s Inventory").format(user=self.ctx.author.display_name),
+            colour=discord.Colour.blurple(),
+            description=(
+                "Weapons have moved to `$armory` with aliases `$ar` and `$arm`.\n"
+                "Choose a category, then inspect a specific item from the dropdown."
+            ),
+        )
+
+        if not category:
+            embed.add_field(name="Inventory", value="Your inventory is empty.", inline=False)
+            return embed
+
+        embed.add_field(
+            name="Category",
+            value=f"**{category['label']}**\n{category['description']}",
+            inline=False,
+        )
+        summary_chunks = category.get("summary_chunks", [])
+        if not summary_chunks:
+            embed.add_field(
+                name=category["label"],
+                value="No items in this category.",
+                inline=False,
+            )
+        else:
+            for index, chunk in enumerate(summary_chunks, start=1):
+                suffix = "" if len(summary_chunks) == 1 else f" ({index})"
+                embed.add_field(
+                    name=f"{category['label']}{suffix}",
+                    value=chunk,
+                    inline=False,
+                )
+        entry_count = len(category.get("entries", []))
+        if entry_count:
+            embed.add_field(
+                name="Inspect",
+                value="Use the item dropdown below to open a detailed item view.",
+                inline=False,
+            )
+        if entry_count:
+            page_total = max(1, math.ceil(entry_count / 25))
+            embed.set_footer(
+                text=(
+                    f"Category {self.categories.index(category) + 1}/{len(self.categories)}"
+                    f" • Items page {self.item_page + 1}/{page_total}"
+                )
+            )
+        else:
+            embed.set_footer(
+                text=f"Category {self.categories.index(category) + 1}/{len(self.categories)}"
+            )
+        return embed
+
+    def build_detail_embed(self, category: dict, entry: dict) -> discord.Embed:
+        if entry["kind"] == "amulet":
+            status = "Equipped" if entry.get("equipped") else "Stored"
+            embed = discord.Embed(
+                title=entry["name"],
+                description=f"{status} • ID `{entry['amulet_id']}`",
+                colour=discord.Colour.gold(),
+            )
+            embed.add_field(name="Tier", value=str(entry["tier"]), inline=True)
+            embed.add_field(name="Type", value=str(entry["amulet_type"]).upper(), inline=True)
+            embed.add_field(name="Value", value=f"${int(entry['value']):,}", inline=True)
+            embed.add_field(
+                name="Stats",
+                value=(
+                    f"❤️ HP +{int(entry['hp'])}\n"
+                    f"⚔️ ATK +{int(entry['attack'])}\n"
+                    f"🛡️ DEF +{int(entry['defense'])}"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="Recycle Refund",
+                value=entry.get("refund_preview") or "This amulet cannot be recycled right now.",
+                inline=False,
+            )
+            embed.add_field(
+                name="Recycle Cooldown",
+                value="`3 minutes` between recycles.",
+                inline=False,
+            )
+            embed.set_footer(text="Use Equip or Recycle, or Back to return to inventory.")
+            return embed
+
+        if entry["kind"] == "potion":
+            embed = discord.Embed(
+                title=entry["name"],
+                description=entry["description"],
+                colour=discord.Colour.purple(),
+            )
+            embed.add_field(name="You Have", value=f"x{int(entry['quantity'])}", inline=True)
+            embed.add_field(name="Consume Command", value=f"`$consume {entry['usage_command']}`", inline=True)
+            embed.add_field(
+                name="Action",
+                value=entry.get("action_text") or "Use Consume to activate this item.",
+                inline=False,
+            )
+            if entry.get("button_note"):
+                embed.add_field(name="Consume Button", value=entry["button_note"], inline=False)
+            embed.set_footer(text="Use Consume or Back to return to inventory.")
+            return embed
+
+        if entry["kind"] == "key_item":
+            quantity_text = f"x{int(entry['quantity'])}"
+            embed = discord.Embed(
+                title=entry["name"],
+                description=entry["description"],
+                colour=discord.Colour.dark_teal(),
+            )
+            embed.add_field(name="Quantity", value=quantity_text, inline=True)
+            embed.add_field(name="Type", value="Key Item", inline=True)
+            embed.add_field(name="Quest", value=entry.get("quest_name") or "Unknown", inline=True)
+            embed.add_field(
+                name="Restrictions",
+                value="Cannot be traded, sold, discarded, or consumed outside quest turn-in.",
+                inline=False,
+            )
+            embed.set_footer(text="Use Back to return to inventory.")
+            return embed
+
+        embed = discord.Embed(
+            title=entry.get("name", category["label"]),
+            description=entry.get("description", "No additional details."),
+            colour=discord.Colour.blurple(),
+        )
+        embed.set_footer(text="Use Back to return to inventory.")
+        return embed
+
+    async def prev_item_page(self, interaction: discord.Interaction):
+        if self.item_page > 0:
+            self.item_page -= 1
+        self.detail_mode = False
+        self.selected_entry_key = None
+        self.sync_controls()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def next_item_page(self, interaction: discord.Interaction):
+        category = self.selected_category()
+        total_entries = len(category.get("entries", [])) if category else 0
+        if ((self.item_page + 1) * 25) < total_entries:
+            self.item_page += 1
+        self.detail_mode = False
+        self.selected_entry_key = None
+        self.sync_controls()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def back_to_list(self, interaction: discord.Interaction):
+        self.detail_mode = False
+        self.sync_controls()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def refresh_inventory(self, interaction: discord.Interaction):
+        await self.reload_categories()
+        self.sync_controls()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    def _restore_selected_entry(self, entry_key: str | None):
+        if not entry_key:
+            self.detail_mode = False
+            self.selected_entry_key = None
+            return
+        category = self.selected_category()
+        if category and any(entry["entry_key"] == entry_key for entry in category.get("entries", [])):
+            self.detail_mode = True
+            self.selected_entry_key = entry_key
+        else:
+            self.detail_mode = False
+            self.selected_entry_key = None
+
+    async def equip_selected_amulet(self, interaction: discord.Interaction):
+        entry = self.selected_entry()
+        if not entry or entry["kind"] != "amulet":
+            return await interaction.response.send_message("Select an amulet first.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        message = await self.cog._equip_inventory_amulet(self.ctx.author.id, int(entry["amulet_id"]))
+        await self.reload_categories()
+        self._restore_selected_entry(entry["entry_key"])
+        self.sync_controls()
+        if hasattr(interaction, "message") and interaction.message:
+            await interaction.message.edit(embed=self.build_embed(), view=self)
+        await interaction.followup.send(message, ephemeral=True)
+
+    async def recycle_selected_amulet(self, interaction: discord.Interaction):
+        entry = self.selected_entry()
+        if not entry or entry["kind"] != "amulet":
+            return await interaction.response.send_message("Select an amulet first.", ephemeral=True)
+        if not entry.get("recycle_enabled"):
+            return await interaction.response.send_message(
+                "This amulet cannot be recycled right now.",
+                ephemeral=True,
+            )
+        await interaction.response.defer(ephemeral=True)
+        success, message = await self.cog._recycle_inventory_amulet(
+            self.ctx.author.id,
+            int(entry["amulet_id"]),
+        )
+        await self.reload_categories()
+        self._restore_selected_entry(entry["entry_key"])
+        self.sync_controls()
+        if hasattr(interaction, "message") and interaction.message:
+            await interaction.message.edit(embed=self.build_embed(), view=self)
+        await interaction.followup.send(message, ephemeral=True)
+
+    async def consume_selected_potion(self, interaction: discord.Interaction):
+        entry = self.selected_entry()
+        if not entry or entry["kind"] != "potion":
+            return await interaction.response.send_message("Select a potion first.", ephemeral=True)
+        if not entry.get("button_enabled"):
+            return await interaction.response.send_message(entry.get("button_note") or "This potion cannot be consumed from here.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        ok, message = await self.cog._invoke_consume_from_inventory(self.ctx, str(entry["consume_key"]))
+        await self.reload_categories()
+        self._restore_selected_entry(entry["entry_key"])
+        self.sync_controls()
+        if hasattr(interaction, "message") and interaction.message:
+            await interaction.message.edit(embed=self.build_embed(), view=self)
+        if message:
+            await interaction.followup.send(message, ephemeral=True)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not self._is_allowed_user(interaction.user.id):
+            await interaction.response.send_message(
+                "This inventory view is not for you.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+
 class Profile(commands.Cog):
     _PRESET_AMULET_MARKER_OFFSET = 1_000_000_000
     _VETERAN_BADGE_IDS_PATH = Path("assets") / "data" / "veteran_badge_ids.txt"
@@ -1101,6 +1548,145 @@ class Profile(commands.Cog):
         if normalized in {"all", "amulet", "amulets", "full"}:
             return True
         return None
+
+    def _split_preset_saved_ids(
+        self, raw_ids: list[int] | tuple[int, ...] | None
+    ) -> tuple[list[int], bool, Optional[int]]:
+        item_ids: list[int] = []
+        preset_has_amulet_state = False
+        preset_amulet_id: Optional[int] = None
+
+        for raw_id in raw_ids or []:
+            if self._is_preset_amulet_marker(raw_id):
+                preset_has_amulet_state = True
+                parsed_amulet_id = self._preset_marker_to_amulet_id(raw_id)
+                if parsed_amulet_id is not None:
+                    preset_amulet_id = parsed_amulet_id
+                continue
+            item_ids.append(raw_id)
+
+        return item_ids, preset_has_amulet_state, preset_amulet_id
+
+    async def sanitize_presets_for_user(
+        self,
+        user_id: int,
+        *,
+        preset_id: str | None = None,
+        conn=None,
+    ) -> dict[str, list[str]]:
+        local = conn is None
+        if local:
+            conn = await self.bot.pool.acquire()
+        try:
+            if preset_id is None:
+                rows = await conn.fetch(
+                    """
+                    SELECT preset_id, item_ids
+                    FROM presets
+                    WHERE user_id = $1
+                    ORDER BY preset_id;
+                    """,
+                    user_id,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT preset_id, item_ids
+                    FROM presets
+                    WHERE user_id = $1 AND preset_id = $2;
+                    """,
+                    user_id,
+                    preset_id,
+                )
+            if not rows:
+                return {"updated": [], "deleted": []}
+
+            gear_ids: list[int] = []
+            amulet_ids: list[int] = []
+            for row in rows:
+                row_item_ids, _, row_amulet_id = self._split_preset_saved_ids(
+                    row["item_ids"]
+                )
+                gear_ids.extend(row_item_ids)
+                if row_amulet_id is not None:
+                    amulet_ids.append(row_amulet_id)
+
+            valid_gear_ids = set()
+            if gear_ids:
+                valid_gear_rows = await conn.fetch(
+                    """
+                    SELECT id
+                    FROM allitems
+                    WHERE owner = $1 AND id = ANY($2::bigint[]);
+                    """,
+                    user_id,
+                    list(dict.fromkeys(gear_ids)),
+                )
+                valid_gear_ids = {int(row["id"]) for row in valid_gear_rows}
+
+            valid_amulet_ids = set()
+            if amulet_ids:
+                valid_amulet_rows = await conn.fetch(
+                    """
+                    SELECT id
+                    FROM amulets
+                    WHERE user_id = $1 AND id = ANY($2::bigint[]);
+                    """,
+                    user_id,
+                    list(dict.fromkeys(amulet_ids)),
+                )
+                valid_amulet_ids = {int(row["id"]) for row in valid_amulet_rows}
+
+            result = {"updated": [], "deleted": []}
+            for row in rows:
+                original_ids = list(row["item_ids"] or [])
+                cleaned_ids: list[int] = []
+                changed = False
+
+                for raw_id in original_ids:
+                    if self._is_preset_amulet_marker(raw_id):
+                        amulet_marker_id = self._preset_marker_to_amulet_id(raw_id)
+                        if amulet_marker_id is None or amulet_marker_id in valid_amulet_ids:
+                            cleaned_ids.append(raw_id)
+                        else:
+                            changed = True
+                        continue
+
+                    if raw_id in valid_gear_ids:
+                        cleaned_ids.append(raw_id)
+                    else:
+                        changed = True
+
+                if not changed:
+                    continue
+
+                if cleaned_ids:
+                    await conn.execute(
+                        """
+                        UPDATE presets
+                        SET item_ids = $1
+                        WHERE user_id = $2 AND preset_id = $3;
+                        """,
+                        cleaned_ids,
+                        user_id,
+                        row["preset_id"],
+                    )
+                    result["updated"].append(str(row["preset_id"]))
+                else:
+                    await conn.execute(
+                        """
+                        DELETE FROM presets
+                        WHERE user_id = $1 AND preset_id = $2;
+                        """,
+                        user_id,
+                        row["preset_id"],
+                    )
+                    result["deleted"].append(str(row["preset_id"]))
+
+            return result
+        finally:
+            if local:
+                await self.bot.pool.release(conn)
 
     @checks.has_no_char()
     @user_cooldown(3600)
@@ -2621,128 +3207,313 @@ class Profile(commands.Cog):
         )
         return result
 
-    def invembedd(
-            self,
-            ctx,
-            reset_potions_chunk,
-            amulets,
-            level_candies,
-            premium_consumables,
-            god_shards,
-            key_items,
-            current_page,
-            max_page,
-    ):
-        result = discord.Embed(
-            title=_("{user}'s Inventory").format(user=ctx.author.display_name),
-            colour=discord.Colour.blurple(),
+    def _inventory_chunk_lines(self, lines: list[str], *, limit: int = 950) -> list[str]:
+        if not lines:
+            return []
+        chunks_out = []
+        chunk = []
+        current_length = 0
+        for line in lines:
+            addition = len(line) + (2 if chunk else 0)
+            if chunk and current_length + addition > limit:
+                chunks_out.append("\n\n".join(chunk))
+                chunk = [line]
+                current_length = len(line)
+            else:
+                chunk.append(line)
+                current_length += addition
+        if chunk:
+            chunks_out.append("\n\n".join(chunk))
+        return chunks_out
+
+    def _get_amulet_recycle_refund(self, amulet_type_key: str, tier: int) -> dict[str, int]:
+        amulet_cog = self.bot.get_cog("AmuletCrafting")
+        if amulet_cog is None:
+            return {}
+        recipe = (
+            getattr(amulet_cog, "AMULET_RECIPES", {})
+            .get(str(amulet_type_key).lower(), {})
+            .get(int(tier), {})
         )
-        def add_section(name: str, lines: list[str]) -> None:
-            if not lines:
-                return
-            chunk = []
-            chunk_index = 1
-            current_length = 0
-            for line in lines:
-                addition = len(line) + (2 if chunk else 0)
-                if chunk and current_length + addition > 950:
-                    suffix = "" if chunk_index == 1 else f" ({chunk_index})"
-                    result.add_field(
-                        name=f"{name}{suffix}",
-                        value="\n\n".join(chunk),
-                        inline=False,
-                    )
-                    chunk = [line]
-                    current_length = len(line)
-                    chunk_index += 1
-                else:
-                    chunk.append(line)
-                    current_length += addition
-            if chunk:
-                suffix = "" if chunk_index == 1 else f" ({chunk_index})"
-                result.add_field(
-                    name=f"{name}{suffix}",
-                    value="\n\n".join(chunk),
-                    inline=False,
-                )
+        if not recipe:
+            return {}
+        refund = {}
+        for resource, amount in recipe.items():
+            amount = int(amount or 0)
+            if amount <= 0:
+                continue
+            refund[resource] = max(1, int(amount * 0.7))
+        return refund
+
+    def _format_amulet_recycle_refund(self, refund: dict[str, int]) -> str:
+        if not refund:
+            return "No recycle refund is available."
+        return "\n".join(
+            f"{amount}x {resource.replace('_', ' ').title()}"
+            for resource, amount in refund.items()
+        )
+
+    def _build_inventory_categories(
+        self,
+        amulets,
+        profile_row,
+        premium_consumables,
+        god_shards,
+        key_items,
+    ) -> list[dict]:
+        categories = []
+        profile_data = dict(profile_row) if profile_row else {}
 
         amulet_lines = []
-        if current_page == 0:
-            for amulet in amulets:
-                amulet_type = amulet.get("type", "unknown").capitalize()
-                status = "Equipped" if amulet.get("equipped") else "Stored"
-                amulet_lines.append(
-                    f"**{amulet_type} Amulet** (ID: {amulet['id']}) [{status}]\n"
-                    f"HP +{amulet.get('hp', 0)} | DEF +{amulet.get('defense', 0)} | "
-                    f"ATK +{amulet.get('attack', 0)} | Tier {amulet.get('tier', 0)} | "
-                    f"${amulet.get('value', 0):,}"
-                )
+        amulet_entries = []
+        for raw_amulet in amulets:
+            amulet = dict(raw_amulet)
+            amulet_type_key = str(amulet.get("type") or "unknown").lower()
+            amulet_type = amulet_type_key.title()
+            tier = int(amulet.get("tier") or 0)
+            amulet_id = int(amulet["id"])
+            equipped = bool(amulet.get("equipped"))
+            status = "Equipped" if equipped else "Stored"
+            amulet_name = f"Tier {tier} {amulet_type} Amulet"
+            refund = self._get_amulet_recycle_refund(amulet_type_key, tier)
+            amulet_lines.append(
+                f"**{amulet_name}** (ID: {amulet_id}) [{status}]\n"
+                f"HP +{int(amulet.get('hp') or 0)} | DEF +{int(amulet.get('defense') or 0)} | "
+                f"ATK +{int(amulet.get('attack') or 0)} | ${int(amulet.get('value') or 0):,}"
+            )
+            amulet_entries.append(
+                {
+                    "kind": "amulet",
+                    "entry_key": f"amulet:{amulet_id}",
+                    "select_label": f"{amulet_name} #{amulet_id}",
+                    "select_description": f"{status} • HP +{int(amulet.get('hp') or 0)} • ATK +{int(amulet.get('attack') or 0)}",
+                    "name": amulet_name,
+                    "amulet_id": amulet_id,
+                    "amulet_type_key": amulet_type_key,
+                    "amulet_type": amulet_type,
+                    "tier": tier,
+                    "hp": int(amulet.get("hp") or 0),
+                    "attack": int(amulet.get("attack") or 0),
+                    "defense": int(amulet.get("defense") or 0),
+                    "value": int(amulet.get("value") or 0),
+                    "equipped": equipped,
+                    "recycle_enabled": bool(refund),
+                    "refund_preview": self._format_amulet_recycle_refund(refund),
+                }
+            )
+        if amulet_entries:
+            categories.append(
+                {
+                    "key": "amulets",
+                    "label": "Amulets",
+                    "description": "Amulets you own, including equipped and stored pieces.",
+                    "summary_chunks": self._inventory_chunk_lines(amulet_lines),
+                    "entries": amulet_entries,
+                }
+            )
+
+        premium_quantities = {
+            str(row["consumable_type"]): int(row["quantity"] or 0)
+            for row in premium_consumables
+        }
+        potion_definitions = (
+            {
+                "entry_key": "potion:reset",
+                "name": "Reset Potion",
+                "quantity": int(profile_data.get("resetpotion") or 0),
+                "description": "Returns all allocated stat points to your unspent pool.",
+                "summary": "Refunds allocated stat points after confirmation.",
+                "consume_key": "reset",
+                "usage_command": "reset",
+                "button_enabled": True,
+                "action_text": "Drink it to refund your stat build after a confirmation prompt.",
+                "button_note": "",
+            },
+            {
+                "entry_key": "potion:candy",
+                "name": "Level Candy",
+                "quantity": int(profile_data.get("levelcandy") or 0),
+                "description": "A sweet that instantly grants one level.",
+                "summary": "Grants one level after confirmation.",
+                "consume_key": "candy",
+                "usage_command": "candy",
+                "button_enabled": True,
+                "action_text": "Consumes after confirmation and grants one level.",
+                "button_note": "",
+            },
+            {
+                "entry_key": "potion:highcandy",
+                "name": "Super Level Candy",
+                "quantity": int(profile_data.get("highqualitylevelcandy") or 0),
+                "description": "A stronger candy that grants two levels.",
+                "summary": "Grants two levels after confirmation.",
+                "consume_key": "highcandy",
+                "usage_command": "highcandy",
+                "button_enabled": True,
+                "action_text": "Consumes after confirmation and grants two levels.",
+                "button_note": "",
+            },
+            {
+                "entry_key": "potion:pet_age_potion",
+                "name": "Pet Age Potion",
+                "quantity": premium_quantities.get("pet_age_potion", 0),
+                "description": "Instantly ages one pet.",
+                "summary": "Requires a pet target.",
+                "consume_key": "petage",
+                "usage_command": "petage <pet_id>",
+                "button_enabled": False,
+                "action_text": "This potion needs a pet target before it can be used.",
+                "button_note": "Use `$consume petage <pet_id>`.",
+            },
+            {
+                "entry_key": "potion:pet_speed_growth_potion",
+                "name": "Pet Speed Growth Potion",
+                "quantity": premium_quantities.get("pet_speed_growth_potion", 0),
+                "description": "Doubles one pet's growth speed.",
+                "summary": "Requires a pet target.",
+                "consume_key": "petspeed",
+                "usage_command": "petspeed <pet_id>",
+                "button_enabled": False,
+                "action_text": "This potion needs a pet target before it can be used.",
+                "button_note": "Use `$consume petspeed <pet_id>`.",
+            },
+            {
+                "entry_key": "potion:pet_xp_potion",
+                "name": "Pet XP Potion",
+                "quantity": premium_quantities.get("pet_xp_potion", 0),
+                "description": "Gives one pet a permanent x2 pet-care XP bonus.",
+                "summary": "Requires a pet target.",
+                "consume_key": "petxp",
+                "usage_command": "petxp <pet_id>",
+                "button_enabled": False,
+                "action_text": "This potion needs a pet target before it can be used.",
+                "button_note": "Use `$consume petxp <pet_id>`.",
+            },
+            {
+                "entry_key": "potion:pet_mind_wipe",
+                "name": "Pet Mind Wipe",
+                "quantity": premium_quantities.get("pet_mind_wipe", 0),
+                "description": "Resets learned pet skills.",
+                "summary": "Starts the pet skill reset flow.",
+                "consume_key": "petmindwipe",
+                "usage_command": "petmindwipe",
+                "button_enabled": True,
+                "action_text": "Starts the pet skill reset flow in this channel.",
+                "button_note": "",
+            },
+            {
+                "entry_key": "potion:pet_element_scroll",
+                "name": "Pet Element Scroll",
+                "quantity": premium_quantities.get("pet_element_scroll", 0),
+                "description": "Changes a pet's element.",
+                "summary": "Requires a pet target and element.",
+                "consume_key": "petelement",
+                "usage_command": "petelement <pet_id> <element>",
+                "button_enabled": False,
+                "action_text": "This scroll needs a pet target and a new element.",
+                "button_note": "Use `$consume petelement <pet_id> <element>`.",
+            },
+            {
+                "entry_key": "potion:weapon_element_scroll",
+                "name": "Weapon Element Scroll",
+                "quantity": premium_quantities.get("weapon_element_scroll", 0),
+                "description": "Changes a weapon's element.",
+                "summary": "Requires a weapon target and element.",
+                "consume_key": "weapelement",
+                "usage_command": "weapelement <weapon_id> <element>",
+                "button_enabled": False,
+                "action_text": "This scroll needs a weapon target and a new element.",
+                "button_note": "Use `$consume weapelement <weapon_id> <element>`.",
+            },
+            {
+                "entry_key": "potion:splice_final_potion",
+                "name": "Splice Final Potion",
+                "quantity": premium_quantities.get("splice_final_potion", 0),
+                "description": "Improves a splice result's odds of ending as a [FINAL].",
+                "summary": "Used during splice flows.",
+                "consume_key": "splicefinal",
+                "usage_command": "splicefinal",
+                "button_enabled": False,
+                "action_text": "This item is tied to splice flows rather than a direct consume action.",
+                "button_note": "Direct inventory consume is not wired for this item yet.",
+            },
+        )
 
         potion_lines = []
-        for candy in level_candies:
-            if candy['levelcandy'] > 0:
-                potion_lines.append(
-                    f"**Level Candy** x{candy['levelcandy']}\n"
-                    "Grants one level on use (`$consume candy`)."
-                )
-            if candy.get('highqualitylevelcandy', 0) > 0:
-                potion_lines.append(
-                    f"**Super Level Candy** x{candy['highqualitylevelcandy']}\n"
-                    "Grants two levels on use (`$consume highcandy`)."
-                )
-
-        for reset_potion in reset_potions_chunk:
-            if reset_potion > 0:
-                potion_lines.append(
-                    f"**Reset Potion** x{reset_potion}\n"
-                    "Resets spent stat points."
-                )
-
-        premium_consumable_labels = {
-            'pet_age_potion': "Pet Age Potion",
-            'pet_speed_growth_potion': "Pet Speed Growth Potion",
-            'pet_xp_potion': "Pet XP Potion",
-            'pet_mind_wipe': "Pet Mind Wipe",
-            'pet_element_scroll': "Pet Element Scroll",
-            'weapon_element_scroll': "Weapon Element Scroll",
-            'splice_final_potion': "Splice Final Potion",
-        }
-        premium_consumable_desc = {
-            'pet_age_potion': "Instantly ages one pet (`$consume petage <pet_id>`).",
-            'pet_speed_growth_potion': "Doubles one pet's growth speed (`$consume petspeed <pet_id>`).",
-            'pet_xp_potion': "Gives one pet a permanent x2 pet-care XP bonus (`$consume petxp <pet_id>`).",
-            'pet_mind_wipe': "Resets learned pet skills (`$consume petmindwipe`).",
-            'pet_element_scroll': "Changes a pet's element (`$consume petelement <pet_id> <element>`).",
-            'weapon_element_scroll': "Changes a weapon's element (`$consume weapelement <weapon_id> <element>`).",
-            'splice_final_potion': "15% chance for a [FINAL] splice result (`$consume splicefinal`).",
-        }
-        for consumable in premium_consumables:
-            consumable_type = consumable['consumable_type']
-            quantity = consumable['quantity']
-            label = premium_consumable_labels.get(consumable_type)
-            if not label:
+        potion_entries = []
+        for definition in potion_definitions:
+            quantity = int(definition["quantity"] or 0)
+            if quantity < 1:
                 continue
             potion_lines.append(
-                f"**{label}** x{quantity}\n{premium_consumable_desc[consumable_type]}"
+                f"**{definition['name']}** x{quantity}\n{definition['summary']}"
+            )
+            potion_entries.append(
+                {
+                    "kind": "potion",
+                    "entry_key": definition["entry_key"],
+                    "select_label": f"{definition['name']} x{quantity}",
+                    "select_description": definition["summary"],
+                    "name": definition["name"],
+                    "description": definition["description"],
+                    "quantity": quantity,
+                    "consume_key": definition["consume_key"],
+                    "usage_command": definition["usage_command"],
+                    "button_enabled": definition["button_enabled"],
+                    "action_text": definition["action_text"],
+                    "button_note": definition["button_note"],
+                }
+            )
+        if potion_entries:
+            categories.append(
+                {
+                    "key": "potions",
+                    "label": "Potions",
+                    "description": "Consumables, scrolls, and other utility items.",
+                    "summary_chunks": self._inventory_chunk_lines(potion_lines),
+                    "entries": potion_entries,
+                }
             )
 
         key_item_lines = []
-        if current_page == 0 and key_items:
-            for item in key_items:
-                quantity_text = f" x{item['quantity']}" if item["quantity"] > 1 else ""
-                key_item_lines.append(
-                    f"**{item['name']}{quantity_text}**\n"
-                    f"{item['description']}\n"
-                    f"Quest: **{item['quest_name']}**"
-                )
+        key_item_entries = []
+        for raw_item in key_items:
+            item = dict(raw_item)
+            quantity = int(item.get("quantity") or 0)
+            quantity_text = f" x{quantity}" if quantity > 1 else ""
             key_item_lines.append(
-                "These cannot be traded, sold, discarded, or consumed outside quest turn-in."
+                f"**{item['name']}{quantity_text}**\n"
+                f"Quest: **{item['quest_name']}**"
+            )
+            key_item_entries.append(
+                {
+                    "kind": "key_item",
+                    "entry_key": f"key_item:{item['key']}",
+                    "select_label": f"{item['name']} x{quantity}",
+                    "select_description": f"{item['quest_name']} • quest item",
+                    "name": item["name"],
+                    "description": item["description"],
+                    "quantity": quantity,
+                    "quest_key": item["quest_key"],
+                    "quest_name": item["quest_name"],
+                }
+            )
+        if key_item_entries:
+            categories.append(
+                {
+                    "key": "key_items",
+                    "label": "Key Items",
+                    "description": "Quest-bound items kept until a quest turn-in consumes them.",
+                    "summary_chunks": self._inventory_chunk_lines(key_item_lines),
+                    "entries": key_item_entries,
+                }
             )
 
         shard_lines = []
-        if current_page == 0 and god_shards:
+        if god_shards:
             grouped_shards = {}
-            for shard in god_shards:
+            for raw_shard in god_shards:
+                shard = dict(raw_shard)
                 god_name = shard.get("god_name", "Unknown")
                 grouped_shards.setdefault(god_name, []).append(shard)
             for god_name in sorted(grouped_shards.keys()):
@@ -2758,120 +3529,251 @@ class Profile(commands.Cog):
                         for row in shards_for_god
                     )
                 )
-
-        add_section("Amulets", amulet_lines)
-        add_section("Potions", potion_lines)
-        add_section("Key Items", key_item_lines)
-        add_section("Divine Shards", shard_lines)
-        result.set_footer(
-            text=_("Page {page} of {maxpages}").format(
-                page=current_page + 1, maxpages=max_page + 1
+        if shard_lines:
+            categories.append(
+                {
+                    "key": "divine_shards",
+                    "label": "Divine Shards",
+                    "description": "Your collected PvE god shards and current set progress.",
+                    "summary_chunks": self._inventory_chunk_lines(shard_lines),
+                    "entries": [],
+                }
             )
+
+        return categories
+
+    async def _fetch_inventory_categories(self, user_id: int, *, conn=None) -> list[dict]:
+        local = conn is None
+        if local:
+            conn = await self.bot.pool.acquire()
+        try:
+            profile_row = await conn.fetchrow(
+                """
+                SELECT resetpotion, levelcandy, highqualitylevelcandy
+                FROM profile
+                WHERE "user" = $1;
+                """,
+                user_id,
+            )
+            if not profile_row:
+                return []
+
+            amulets = await conn.fetch(
+                """
+                SELECT *
+                FROM amulets
+                WHERE user_id = $1
+                ORDER BY equipped DESC, tier DESC, id ASC;
+                """,
+                user_id,
+            )
+            premium_consumables = await conn.fetch(
+                """
+                SELECT consumable_type, quantity
+                FROM user_consumables
+                WHERE user_id = $1 AND quantity > 0
+                ORDER BY consumable_type ASC;
+                """,
+                user_id,
+            )
+            try:
+                god_shards = await conn.fetch(
+                    """
+                    SELECT god_name, alignment, shard_number, shard_name, obtained_at
+                    FROM god_pve_shards
+                    WHERE user_id = $1
+                    ORDER BY god_name ASC, shard_number ASC
+                    """,
+                    user_id,
+                )
+            except Exception:
+                god_shards = []
+
+            quests_cog = self.bot.get_cog("Quests")
+            if quests_cog is not None:
+                key_items = await quests_cog.get_key_items_for_display(
+                    user_id,
+                    conn=conn,
+                )
+            else:
+                key_items = []
+
+            return self._build_inventory_categories(
+                amulets,
+                profile_row,
+                premium_consumables,
+                god_shards,
+                key_items,
+            )
+        finally:
+            if local:
+                await self.bot.pool.release(conn)
+
+    async def _equip_inventory_amulet(self, user_id: int, amulet_id: int) -> str:
+        async with self.bot.pool.acquire() as conn:
+            amulet = await conn.fetchrow(
+                """
+                SELECT *
+                FROM amulets
+                WHERE id = $1 AND user_id = $2;
+                """,
+                amulet_id,
+                user_id,
+            )
+            if not amulet:
+                return "You don't own this amulet."
+            if amulet["equipped"]:
+                return "This amulet is already equipped."
+
+            existing_equipped = await conn.fetchrow(
+                """
+                SELECT *
+                FROM amulets
+                WHERE user_id = $1 AND equipped = true;
+                """,
+                user_id,
+            )
+
+            message_parts = []
+            if existing_equipped:
+                await conn.execute(
+                    'UPDATE amulets SET equipped = false WHERE id = $1;',
+                    existing_equipped["id"],
+                )
+                message_parts.append(
+                    f"Unequipped your Tier {int(existing_equipped['tier'])} {str(existing_equipped['type']).upper()} amulet."
+                )
+
+            await conn.execute(
+                'UPDATE amulets SET equipped = true WHERE id = $1;',
+                amulet_id,
+            )
+            message_parts.append(
+                f"Successfully equipped your Tier {int(amulet['tier'])} {str(amulet['type']).upper()} amulet."
+            )
+            return " ".join(message_parts)
+
+    async def _recycle_inventory_amulet(self, user_id: int, amulet_id: int) -> tuple[bool, str]:
+        cooldown_key = "inventory_amulet_recycle"
+        cooldown_ttl = await self.bot.redis.execute_command(
+            "TTL",
+            f"cd:{user_id}:{cooldown_key}",
         )
-        return result
+        if cooldown_ttl != -2 and int(cooldown_ttl) > 0:
+            return False, f"You can recycle another amulet in {int(cooldown_ttl)} seconds."
+
+        async with self.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                amulet = await conn.fetchrow(
+                    """
+                    SELECT *
+                    FROM amulets
+                    WHERE id = $1 AND user_id = $2
+                    FOR UPDATE;
+                    """,
+                    amulet_id,
+                    user_id,
+                )
+                if not amulet:
+                    return False, "You don't own this amulet."
+
+                refund = self._get_amulet_recycle_refund(
+                    str(amulet["type"] or "").lower(),
+                    int(amulet["tier"] or 0),
+                )
+                if not refund:
+                    return False, "This amulet does not have a recycle recipe."
+
+                for resource, amount in refund.items():
+                    current_amount = await conn.fetchval(
+                        """
+                        SELECT amount
+                        FROM crafting_resources
+                        WHERE user_id = $1 AND resource_type = $2
+                        FOR UPDATE;
+                        """,
+                        user_id,
+                        resource,
+                    )
+                    if current_amount is None:
+                        await conn.execute(
+                            """
+                            INSERT INTO crafting_resources (user_id, resource_type, amount)
+                            VALUES ($1, $2, $3);
+                            """,
+                            user_id,
+                            resource,
+                            amount,
+                        )
+                    else:
+                        await conn.execute(
+                            """
+                            UPDATE crafting_resources
+                            SET amount = amount + $1
+                            WHERE user_id = $2 AND resource_type = $3;
+                            """,
+                            amount,
+                            user_id,
+                            resource,
+                        )
+
+                await conn.execute(
+                    'DELETE FROM amulets WHERE id = $1 AND user_id = $2;',
+                    amulet_id,
+                    user_id,
+                )
+                await self.sanitize_presets_for_user(user_id, conn=conn)
+
+        await self.bot.set_cooldown(user_id, 180, identifier=cooldown_key)
+        refund_text = ", ".join(
+            f"{amount}x {resource.replace('_', ' ').title()}"
+            for resource, amount in refund.items()
+        )
+        return (
+            True,
+            f"Recycled your Tier {int(amulet['tier'])} {str(amulet['type']).upper()} amulet and refunded {refund_text}.",
+        )
+
+    async def _invoke_consume_from_inventory(self, ctx, consume_key: str) -> tuple[bool, str | None]:
+        consume_command = self.bot.get_command("consume")
+        if consume_command is None:
+            return False, "The consume command is unavailable right now."
+
+        original_command = ctx.command
+        try:
+            ctx.command = consume_command
+            try:
+                allowed = await consume_command.can_run(ctx)
+            except commands.CommandOnCooldown as exc:
+                return False, f"`$consume` is on cooldown for {int(math.ceil(exc.retry_after))} more seconds."
+            except commands.CheckFailure as exc:
+                message = str(exc).strip() or "You cannot use that potion right now."
+                return False, message
+
+            if not allowed:
+                return False, "You cannot use that potion right now."
+
+            await consume_command.callback(self, ctx, consume_key, None)
+        finally:
+            ctx.command = original_command
+
+        if consume_key in {"reset", "candy", "highcandy"}:
+            return True, "Use the confirmation prompt in this channel to finish consuming it."
+        if consume_key == "petmindwipe":
+            return True, "Pet Mind Wipe flow started in this channel."
+        return True, "Potion action invoked in this channel."
 
     @checks.has_char()
     @commands.command(aliases=["i", "inv"], brief=_("Show your gear items"))
     @locale_doc
     async def inventory(self, ctx):
         try:
-            await ctx.send(
-                "weapons has moved to `$armory` with aliases `$ar` and `$arm` to make room for a future update."
-            )
-            await ctx.send("Related commands `$consume <type>`")
-
-            async with self.bot.pool.acquire() as conn:
-                # Fetch reset potions and level candies
-                ret = await conn.fetch(
-                    'SELECT resetpotion, levelcandy, highqualitylevelcandy FROM profile WHERE "user" = $1;',
-                    ctx.author.id,
-                )
-
-                # Fetch amulets
-                amulets = await conn.fetch(
-                    'SELECT * FROM amulets WHERE user_id = $1 ORDER BY equipped DESC;',
-                    ctx.author.id,
-                )
-                
-                # Fetch premium consumables
-                premium_consumables = await conn.fetch(
-                    'SELECT consumable_type, quantity FROM user_consumables WHERE user_id = $1 AND quantity > 0;',
-                    ctx.author.id,
-                )
-
-                # Fetch PvE god shards
-                try:
-                    god_shards = await conn.fetch(
-                        """
-                        SELECT god_name, alignment, shard_number, shard_name, obtained_at
-                        FROM god_pve_shards
-                        WHERE user_id = $1
-                        ORDER BY god_name ASC, shard_number ASC
-                        """,
-                        ctx.author.id,
-                    )
-                except Exception:
-                    god_shards = []
-
-                quests_cog = self.bot.get_cog("Quests")
-                if quests_cog is not None:
-                    key_items = await quests_cog.get_key_items_for_display(
-                        ctx.author.id,
-                        conn=conn,
-                    )
-                else:
-                    key_items = []
-
-            # Check if inventory is empty
-            has_reset_potions = ret and ret[0]['resetpotion'] > 0
-            has_level_candy = ret and ret[0]['levelcandy'] > 0
-            has_high_candy = ret and ret[0]['highqualitylevelcandy'] > 0
-            has_amulets = bool(amulets)
-            has_premium = bool(premium_consumables)
-            has_god_shards = bool(god_shards)
-            has_key_items = bool(key_items)
-            
-            if not (
-                    has_reset_potions
-                    or has_amulets
-                    or has_level_candy
-                    or has_high_candy
-                    or has_premium
-                    or has_god_shards
-                    or has_key_items
-            ):
+            categories = await self._fetch_inventory_categories(ctx.author.id)
+            if not categories:
                 return await ctx.send(_("Your inventory is empty."))
 
-            # Handle reset potions pagination
-            if has_reset_potions:
-                reset_potions = [item['resetpotion'] for item in ret]
-                chunks_size = 5
-                reset_potions_chunks = [
-                    reset_potions[i:i + chunks_size]
-                    for i in range(0, len(reset_potions), chunks_size)
-                ]
-                max_page = len(reset_potions_chunks) - 1
-            else:
-                # If no reset potions, create a single empty chunk
-                reset_potions_chunks = [[]]
-                max_page = 0
-
-            embeds = [
-                self.invembedd(
-                    ctx,
-                    chunk,
-                    amulets,
-                    ret,
-                    premium_consumables,
-                    god_shards,
-                    key_items,
-                    idx,
-                    max_page,
-                )
-                for idx, chunk in enumerate(reset_potions_chunks)
-            ]
-
-            await self.bot.paginator.Paginator(extras=embeds).paginate(ctx)
+            view = InventoryCategoryView(ctx, self, categories)
+            await ctx.send(embed=view.build_embed(), view=view)
 
         except Exception as e:
             import traceback
@@ -3510,6 +4412,11 @@ class Profile(commands.Cog):
 
         # 1) Fetch preset
         async with self.bot.pool.acquire() as conn:
+            sanitize_result = await self.sanitize_presets_for_user(
+                ctx.author.id,
+                preset_id=preset_id,
+                conn=conn,
+            )
             # Get the preset
             record = await conn.fetchrow(
                 """
@@ -3522,21 +4429,16 @@ class Profile(commands.Cog):
                 preset_id
             )
             if not record:
+                if preset_id in sanitize_result["deleted"]:
+                    return await ctx.send(
+                        f"Preset **{preset_id}** was removed because it no longer had any valid saved items."
+                    )
                 return await ctx.send(f"You have no preset **{preset_id}** defined.")
 
             raw_ids = record["item_ids"] or []
-            item_ids: list[int] = []
-            preset_has_amulet_state = False
-            preset_amulet_id: Optional[int] = None
-
-            for raw_id in raw_ids:
-                if self._is_preset_amulet_marker(raw_id):
-                    preset_has_amulet_state = True
-                    parsed_amulet_id = self._preset_marker_to_amulet_id(raw_id)
-                    if parsed_amulet_id is not None:
-                        preset_amulet_id = parsed_amulet_id
-                    continue
-                item_ids.append(raw_id)
+            item_ids, preset_has_amulet_state, preset_amulet_id = (
+                self._split_preset_saved_ids(raw_ids)
+            )
 
             if not item_ids and not preset_has_amulet_state:
                 return await ctx.send(f"Preset **{preset_id}** has no items stored.")
@@ -3699,6 +4601,7 @@ class Profile(commands.Cog):
         Usage: $preset list
         """
         async with self.bot.pool.acquire() as conn:
+            await self.sanitize_presets_for_user(ctx.author.id, conn=conn)
             rows = await conn.fetch(
                 """
                 SELECT preset_id, item_ids
@@ -3716,18 +4619,9 @@ class Profile(commands.Cog):
         for r in rows:
             pid = r["preset_id"]
             raw_items = r["item_ids"] or []
-            item_ids = []
-            preset_has_amulet_state = False
-            preset_amulet_id = None
-
-            for raw_id in raw_items:
-                if self._is_preset_amulet_marker(raw_id):
-                    preset_has_amulet_state = True
-                    parsed_amulet_id = self._preset_marker_to_amulet_id(raw_id)
-                    if parsed_amulet_id is not None:
-                        preset_amulet_id = parsed_amulet_id
-                    continue
-                item_ids.append(raw_id)
+            item_ids, preset_has_amulet_state, preset_amulet_id = (
+                self._split_preset_saved_ids(raw_items)
+            )
 
             items_str = ", ".join(map(str, item_ids)) if item_ids else "(none)"
             if not preset_has_amulet_state:
@@ -3865,6 +4759,7 @@ class Profile(commands.Cog):
             )
             await conn.execute('DELETE FROM inventory WHERE "item"=$1;', seconditemid)
             await conn.execute('DELETE FROM allitems WHERE "id"=$1;', seconditemid)
+            await self.sanitize_presets_for_user(ctx.author.id, conn=conn)
         await ctx.send(
             _(
                 "The {stat} of your **{item}** is now **{newstat}**. The other item was"

@@ -749,6 +749,9 @@ class Trading(commands.Cog):
                 data=item,
                 conn=conn,
             )
+            profile_cog = self.bot.get_cog("Profile")
+            if profile_cog is not None:
+                await profile_cog.sanitize_presets_for_user(item["owner"], conn=conn)
         await ctx.send(
             _(
                 "Successfully bought item `{id}`. Use `{prefix}inventory` to view your"
@@ -1189,6 +1192,9 @@ class Trading(commands.Cog):
                 data=item,
                 conn=conn,
             )
+            profile_cog = self.bot.get_cog("Profile")
+            if profile_cog is not None:
+                await profile_cog.sanitize_presets_for_user(ctx.author.id, conn=conn)
         await ctx.send(
             _(
                 "Successfully bought item `{itemid}`. Use `{prefix}inventory` to view"
