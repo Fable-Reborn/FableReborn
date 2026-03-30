@@ -1,4 +1,5 @@
 import json
+import random
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from pathlib import Path
@@ -203,6 +204,7 @@ QUEST_BUILDER_ACTIONS = (
     ("text", "Quest Text", "Edit the journal description and NPC offer text."),
     ("objective_progress", "Progress Objective", "Set source, count, and optional target filter."),
     ("objective_keyitem", "Key Item Objective", "Set a quest key item found from gameplay."),
+    ("objective_drops", "Key Item Drops", "Set drop chance, quantity range, and turn-in amount."),
     ("turnin_progress", "Turn-In: Progress", "Turn in with progress only."),
     ("turnin_crate", "Turn-In: Crate", "Require crates at hand-in."),
     ("turnin_money", "Turn-In: Money", "Require gold at hand-in."),
@@ -944,7 +946,7 @@ class GMQuestBuilderView(View):
                 },
                 {
                     "key": "required_count",
-                    "label": "Required Count",
+                    "label": "Progress Before Drops",
                     "default": str(objective.get("required_count") or 1),
                     "placeholder": "5",
                 },
@@ -967,6 +969,34 @@ class GMQuestBuilderView(View):
                     "default": objective.get("target_name") or "",
                     "required": False,
                     "placeholder": "Optional specific monster/floor name or any",
+                },
+            ]
+
+        if action == "objective_drops":
+            return [
+                {
+                    "key": "drop_chance_percent",
+                    "label": "Drop Chance %",
+                    "default": str(int(float(objective.get("drop_chance_percent") or 100))),
+                    "placeholder": "100",
+                },
+                {
+                    "key": "drop_quantity_min",
+                    "label": "Drop Min",
+                    "default": str(objective.get("drop_quantity_min") or 1),
+                    "placeholder": "1",
+                },
+                {
+                    "key": "drop_quantity_max",
+                    "label": "Drop Max",
+                    "default": str(objective.get("drop_quantity_max") or 1),
+                    "placeholder": "3",
+                },
+                {
+                    "key": "key_item_required_quantity",
+                    "label": "Turn-In Qty",
+                    "default": str(objective.get("key_item_required_quantity") or 1),
+                    "placeholder": "1",
                 },
             ]
 
@@ -1105,6 +1135,13 @@ class GMQuestBuilderView(View):
                     "default": access.get("patreon_tier") or "none",
                     "placeholder": "none or a DonatorRank tier",
                 },
+                {
+                    "key": "event_flag",
+                    "label": "Event Flag",
+                    "default": access.get("event_flag") or "none",
+                    "required": False,
+                    "placeholder": "none, april:greg_mode, event:halloween",
+                },
             ]
 
         if action == "prereq":
@@ -1217,6 +1254,10 @@ class GMQuestBuilderView(View):
                     "key_item_key": key_item_key,
                     "key_item_name": key_item_name,
                     "key_item_description": key_item_description,
+                    "drop_chance_percent": 100,
+                    "drop_quantity_min": 1,
+                    "drop_quantity_max": 1,
+                    "key_item_required_quantity": 1,
                 }
                 custom_def = await self.cog._update_custom_quest_fields(
                     quest_key,
@@ -1229,6 +1270,43 @@ class GMQuestBuilderView(View):
                 )
                 self.selected_quest_key = quest_key
                 return f"Updated key item objective for **{custom_def['name']}**."
+
+            if action == "objective_drops":
+                existing = await self.cog._fetch_custom_quest_definition(quest_key, conn=conn)
+                objective = (existing or {}).get("objective") or {}
+                if str(objective.get("mode") or "").lower() != "key_item":
+                    raise ValueError("Set a Key Item Objective first before editing drop rules.")
+                try:
+                    drop_chance_percent = float(str(values.get("drop_chance_percent") or "100").replace(",", "").strip())
+                except ValueError as exc:
+                    raise ValueError("Drop chance must be a number between 0 and 100.") from exc
+                if drop_chance_percent < 0 or drop_chance_percent > 100:
+                    raise ValueError("Drop chance must be between 0 and 100.")
+                drop_quantity_min = self._parse_int(values.get("drop_quantity_min") or "1", "Drop minimum", minimum=1)
+                drop_quantity_max = self._parse_int(values.get("drop_quantity_max") or "1", "Drop maximum", minimum=1)
+                key_item_required_quantity = self._parse_int(
+                    values.get("key_item_required_quantity") or "1",
+                    "Turn-in quantity",
+                    minimum=1,
+                )
+                if drop_quantity_max < drop_quantity_min:
+                    raise ValueError("Drop maximum must be greater than or equal to drop minimum.")
+                objective.update(
+                    {
+                        "drop_chance_percent": drop_chance_percent,
+                        "drop_quantity_min": drop_quantity_min,
+                        "drop_quantity_max": drop_quantity_max,
+                        "key_item_required_quantity": key_item_required_quantity,
+                    }
+                )
+                custom_def = await self.cog._update_custom_quest_fields(
+                    quest_key,
+                    {"objective_json": json.dumps(objective, sort_keys=True)},
+                    conn=conn,
+                    created_by=self.author.id,
+                )
+                self.selected_quest_key = quest_key
+                return f"Updated key item drop rules for **{custom_def['name']}**."
 
             if action == "turnin_progress":
                 custom_def = await self.cog._update_custom_quest_fields(
@@ -1367,10 +1445,12 @@ class GMQuestBuilderView(View):
                 if patreon_raw and patreon_raw.lower() != "none" and patreon_tier is None:
                     tiers = ", ".join(sorted(QUEST_PATREON_TIERS))
                     raise ValueError(f"Unknown Patreon tier. Use one of: {tiers}, or `none`.")
+                event_flag = self.cog._normalize_event_flag(values.get("event_flag"))
                 access_json = {
                     "gm_only": gm_only,
                     "booster_only": booster_only,
                     "patreon_tier": patreon_tier or "",
+                    "event_flag": event_flag,
                 }
                 custom_def = await self.cog._update_custom_quest_fields(
                     quest_key,
@@ -1750,6 +1830,41 @@ class Quests(commands.Cog):
         tier = str(raw).strip().lower()
         return tier if tier in QUEST_PATREON_TIERS else None
 
+    def _normalize_event_flag(self, raw: str | None) -> str:
+        value = str(raw or "").strip().lower()
+        if not value or value == "none":
+            return ""
+        return value
+
+    def _event_flag_enabled(self, raw: str | None) -> bool:
+        flag_value = self._normalize_event_flag(raw)
+        if not flag_value:
+            return True
+
+        if flag_value.startswith("april:"):
+            flag_key = flag_value.split(":", 1)[1]
+            flags = getattr(self.bot, "april_fools_flags", {}) or {}
+            return bool(flags.get(flag_key, False))
+
+        if flag_value.startswith("event:"):
+            flag_key = flag_value.split(":", 1)[1]
+            flags = getattr(self.bot, "event_flags", {}) or {}
+            return bool(flags.get(flag_key, False))
+
+        april_flags = getattr(self.bot, "april_fools_flags", {}) or {}
+        if flag_value in april_flags:
+            return bool(april_flags.get(flag_value, False))
+
+        event_flags = getattr(self.bot, "event_flags", {}) or {}
+        if flag_value in event_flags:
+            return bool(event_flags.get(flag_value, False))
+
+        return False
+
+    def _event_flag_label(self, raw: str | None) -> str:
+        value = self._normalize_event_flag(raw)
+        return value or "none"
+
     def _match_name_filter(self, target_name: str | None, *candidates: str | None) -> bool:
         target = str(target_name or "").strip().lower()
         if not target:
@@ -1914,6 +2029,10 @@ class Quests(commands.Cog):
         turnin = custom_def.get("turnin") or {}
         source = str(objective.get("source") or "none").lower()
         required_count = int(objective.get("required_count") or 0)
+        key_item_required_quantity = max(1, int(objective.get("key_item_required_quantity") or 1))
+        drop_chance_percent = max(0.0, min(100.0, float(objective.get("drop_chance_percent") or 100)))
+        drop_quantity_min = max(1, int(objective.get("drop_quantity_min") or 1))
+        drop_quantity_max = max(drop_quantity_min, int(objective.get("drop_quantity_max") or drop_quantity_min))
         target_name = str(objective.get("target_name") or "").strip()
         source_label = {
             "none": "anywhere",
@@ -1942,9 +2061,20 @@ class Quests(commands.Cog):
             return f"Complete **{required_count}** {source_label} objective(s){target_text}."
         if str(objective.get("mode") or "").lower() == "key_item":
             target_text = f" matching **{target_name}**" if target_name else ""
+            progress_text = (
+                f"After **{required_count}** {source_label} clear(s){target_text}, "
+                if required_count > 0
+                else f"From {source_label} clears{target_text}, "
+            )
+            quantity_text = (
+                f"**{drop_quantity_min}** per drop"
+                if drop_quantity_min == drop_quantity_max
+                else f"**{drop_quantity_min}-{drop_quantity_max}** per drop"
+            )
             return (
-                f"Complete **{required_count}** {source_label} objective(s){target_text} to recover "
-                f"**{objective.get('key_item_name', 'the key item')}**."
+                f"{progress_text}recover **{objective.get('key_item_name', 'the key item')}** "
+                f"at **{drop_chance_percent:.0f}%** chance, {quantity_text}. "
+                f"Turn in **{key_item_required_quantity}**."
             )
         target_text = f" matching **{target_name}**" if target_name else ""
         return f"Complete **{required_count}** {source_label} objective(s){target_text}."
@@ -1976,6 +2106,9 @@ class Quests(commands.Cog):
 
     async def _user_meets_custom_access(self, user_id: int, custom_def: dict, *, conn=None) -> tuple[bool, str | None]:
         access = custom_def.get("access") or {}
+        event_flag = self._normalize_event_flag(access.get("event_flag"))
+        if event_flag and not self._event_flag_enabled(event_flag):
+            return False, f"This quest is disabled until event flag **{self._event_flag_label(event_flag)}** is enabled."
         if access.get("gm_only") and not await self._user_is_gm(user_id, conn=conn):
             return False, "This quest is locked to game masters."
         if access.get("booster_only") and not await self._user_has_booster_role(user_id):
@@ -2022,9 +2155,10 @@ class Quests(commands.Cog):
         if turnin_type == "key_item":
             item_key = str(objective.get("key_item_key") or "")
             item_qty = await self._get_key_item_quantity(user_id, item_key, conn=conn)
-            ready = progress_ready and item_qty > 0
+            required_item_qty = max(1, int(objective.get("key_item_required_quantity") or 1))
+            ready = progress_ready and item_qty >= required_item_qty
             objective_lines.append(
-                f"{objective.get('key_item_name', 'Key Item')}: **{'Ready to turn in' if ready else 'Not yet recovered'}**"
+                f"{objective.get('key_item_name', 'Key Item')}: **{item_qty} / {required_item_qty}**"
             )
             return ready, objective_lines, "Ready to turn in" if ready else "In progress"
 
@@ -2092,14 +2226,17 @@ class Quests(commands.Cog):
         )
         if not custom_def.get("is_active"):
             status_label = "Inactive"
+        elif not self._event_flag_enabled((custom_def.get("access") or {}).get("event_flag")):
+            status_label = "Frozen"
         elif not ready:
             meets_access, _reason = await self._user_meets_custom_access(user_id, custom_def, conn=conn)
             if not meets_access:
                 status_label = "Locked"
         turnin = custom_def.get("turnin") or {}
         turnin_type = str(turnin.get("type") or "progress").lower()
+        required_item_qty = max(1, int((custom_def.get("objective") or {}).get("key_item_required_quantity") or 1))
         turnin_hint = {
-            "key_item": f"Use `$quests turnin {custom_def['quest_key']}` once the key item shows up in `$inv`.",
+            "key_item": f"Use `$quests turnin {custom_def['quest_key']}` once `{required_item_qty}` matching key item(s) show up in `$inv`.",
             "progress": f"Use `$quests turnin {custom_def['quest_key']}` once the objective is complete.",
             "crate": f"Use `$quests turnin {custom_def['quest_key']}` once you have the required crates.",
             "money": f"Use `$quests turnin {custom_def['quest_key']}` once you have the gold ready.",
@@ -2123,8 +2260,14 @@ class Quests(commands.Cog):
             return True, None
         if turnin_type == "key_item":
             item_key = str(objective.get("key_item_key") or "")
-            consumed = await self._consume_key_item(user_id, item_key, conn=conn)
-            return consumed, None if consumed else "That key item is missing."
+            required_item_qty = max(1, int(objective.get("key_item_required_quantity") or 1))
+            consumed = await self._consume_key_item(
+                user_id,
+                item_key,
+                conn=conn,
+                quantity_needed=required_item_qty,
+            )
+            return consumed, None if consumed else "You do not have enough of that key item."
         if turnin_type == "crate":
             rarity = self._normalize_crate_rarity(turnin.get("rarity")) or "common"
             amount = int(turnin.get("amount") or 0)
@@ -2369,6 +2512,8 @@ class Quests(commands.Cog):
             inline=False,
         )
         access_lines = []
+        if access.get("event_flag"):
+            access_lines.append(f"Event Flag: {self._event_flag_label(access.get('event_flag'))}")
         if access.get("gm_only"):
             access_lines.append("GM only")
         if access.get("booster_only"):
@@ -2471,22 +2616,25 @@ class Quests(commands.Cog):
             if local:
                 await self.bot.pool.release(conn)
 
-    async def _grant_key_item(self, user_id: int, item_key: str, source_quest: str, *, conn):
+    async def _grant_key_item(self, user_id: int, item_key: str, source_quest: str, *, conn, quantity: int = 1):
+        quantity = max(1, int(quantity or 1))
         await conn.execute(
             """
             INSERT INTO player_key_items (user_id, item_key, quantity, source_quest, obtained_at)
-            VALUES ($1, $2, 1, $3, NOW())
+            VALUES ($1, $2, $4, $3, NOW())
             ON CONFLICT (user_id, item_key)
-            DO UPDATE SET quantity = player_key_items.quantity + 1,
+            DO UPDATE SET quantity = player_key_items.quantity + $4,
                           source_quest = EXCLUDED.source_quest,
                           obtained_at = NOW()
             """,
             user_id,
             item_key,
             source_quest,
+            quantity,
         )
 
-    async def _consume_key_item(self, user_id: int, item_key: str, *, conn) -> bool:
+    async def _consume_key_item(self, user_id: int, item_key: str, *, conn, quantity_needed: int = 1) -> bool:
+        quantity_needed = max(1, int(quantity_needed or 1))
         quantity = await conn.fetchval(
             """
             SELECT quantity
@@ -2498,9 +2646,9 @@ class Quests(commands.Cog):
             item_key,
         )
         quantity = int(quantity or 0)
-        if quantity <= 0:
+        if quantity < quantity_needed:
             return False
-        if quantity == 1:
+        if quantity == quantity_needed:
             await conn.execute(
                 """
                 DELETE FROM player_key_items
@@ -2513,12 +2661,13 @@ class Quests(commands.Cog):
             await conn.execute(
                 """
                 UPDATE player_key_items
-                SET quantity = quantity - 1,
+                SET quantity = quantity - $3,
                     obtained_at = NOW()
                 WHERE user_id = $1 AND item_key = $2
                 """,
                 user_id,
                 item_key,
+                quantity_needed,
             )
         return True
 
@@ -2732,7 +2881,7 @@ class Quests(commands.Cog):
         *,
         candidate_names: tuple[str | None, ...] = (),
     ) -> None:
-        notifications: list[tuple[dict, dict]] = []
+        notifications: list[tuple[dict, dict, int]] = []
         async with self.bot.pool.acquire() as conn:
             async with conn.transaction():
                 rows = await conn.fetch(
@@ -2793,7 +2942,21 @@ class Quests(commands.Cog):
                         str(objective.get("key_item_key") or ""),
                         conn=conn,
                     )
-                    if existing_qty > 0 or progress["count"] < required_count:
+                    required_item_qty = max(1, int(objective.get("key_item_required_quantity") or 1))
+                    if existing_qty >= required_item_qty or progress["count"] < required_count:
+                        continue
+
+                    drop_chance_percent = max(0.0, min(100.0, float(objective.get("drop_chance_percent") or 100)))
+                    if drop_chance_percent <= 0:
+                        continue
+                    if random.uniform(0, 100) > drop_chance_percent:
+                        continue
+
+                    drop_quantity_min = max(1, int(objective.get("drop_quantity_min") or 1))
+                    drop_quantity_max = max(drop_quantity_min, int(objective.get("drop_quantity_max") or drop_quantity_min))
+                    quantity_found = random.randint(drop_quantity_min, drop_quantity_max)
+                    quantity_found = min(quantity_found, required_item_qty - existing_qty)
+                    if quantity_found <= 0:
                         continue
 
                     await self._grant_key_item(
@@ -2801,10 +2964,11 @@ class Quests(commands.Cog):
                         str(objective.get("key_item_key") or ""),
                         custom_def["quest_key"],
                         conn=conn,
+                        quantity=quantity_found,
                     )
-                    notifications.append((custom_def, objective))
+                    notifications.append((custom_def, objective, quantity_found))
 
-        for custom_def, objective in notifications:
+        for custom_def, objective, quantity_found in notifications:
             embed = discord.Embed(
                 title=f"Key Item Found: {objective.get('key_item_name', 'Quest Item')}",
                 description=str(objective.get("key_item_description") or "A quest item has been recovered."),
@@ -2813,6 +2977,7 @@ class Quests(commands.Cog):
             embed.add_field(
                 name="Quest Update",
                 value=(
+                    f"You recovered **{quantity_found}x** {objective.get('key_item_name', 'Quest Item')}.\n\n"
                     f"Check `$inv`, then use `$quests turnin {custom_def['quest_key']}`."
                 ),
                 inline=False,
@@ -3416,12 +3581,15 @@ class Quests(commands.Cog):
     @gmquest.command(name="access")
     async def gmquest_access(self, ctx, *, data: str):
         try:
-            quest_key_raw, gm_only_raw, booster_only_raw, patreon_raw = self._split_pipe_args(data, 4, 4)
+            parts = self._split_pipe_args(data, 4, 5)
         except ValueError as exc:
-            return await ctx.send(f"{exc} Example: `$gmquest access fisher_job | off | off | none`")
+            return await ctx.send(f"{exc} Example: `$gmquest access fisher_job | off | off | none | april:greg_mode`")
+        quest_key_raw, gm_only_raw, booster_only_raw, patreon_raw = parts[:4]
+        event_flag_raw = parts[4] if len(parts) > 4 else "none"
         gm_only = self._parse_bool(gm_only_raw)
         booster_only = self._parse_bool(booster_only_raw)
         patreon_tier = None if patreon_raw.strip().lower() == "none" else self._normalize_patreon_tier(patreon_raw)
+        event_flag = self._normalize_event_flag(event_flag_raw)
         if gm_only is None or booster_only is None:
             return await ctx.send("GM-only and booster-only values must be `on` or `off`.")
         if patreon_raw.strip().lower() != "none" and patreon_tier is None:
@@ -3432,6 +3600,7 @@ class Quests(commands.Cog):
             "gm_only": gm_only,
             "booster_only": booster_only,
             "patreon_tier": patreon_tier or "",
+            "event_flag": event_flag,
         }
         async with self.bot.pool.acquire() as conn:
             custom_def = await self._update_custom_quest_fields(
@@ -3475,7 +3644,7 @@ class Quests(commands.Cog):
 
     @gmquest.group(name="objective", invoke_without_command=True)
     async def gmquest_objective(self, ctx):
-        await ctx.send("Use `$gmquest objective progress ...` or `$gmquest objective keyitem ...`.")
+        await ctx.send("Use `$gmquest objective progress ...`, `$gmquest objective keyitem ...`, or `$gmquest objective drops ...`.")
 
     @gmquest_objective.command(name="progress")
     async def gmquest_objective_progress(self, ctx, *, data: str):
@@ -3541,6 +3710,10 @@ class Quests(commands.Cog):
             "key_item_key": key_item_key,
             "key_item_name": key_item_name,
             "key_item_description": key_item_description,
+            "drop_chance_percent": 100,
+            "drop_quantity_min": 1,
+            "drop_quantity_max": 1,
+            "key_item_required_quantity": 1,
         }
         async with self.bot.pool.acquire() as conn:
             custom_def = await self._update_custom_quest_fields(
@@ -3552,6 +3725,52 @@ class Quests(commands.Cog):
                 conn=conn,
             )
         await ctx.send(f"Updated key-item objective for **{custom_def['name']}**.")
+
+    @gmquest_objective.command(name="drops", aliases=["droprules", "loot"])
+    async def gmquest_objective_drops(self, ctx, *, data: str):
+        try:
+            quest_key_raw, chance_raw, min_raw, max_raw, required_qty_raw = self._split_pipe_args(data, 5, 5)
+        except ValueError as exc:
+            return await ctx.send(
+                f"{exc} Example: `$gmquest objective drops fisher_job | 35 | 1 | 3 | 5`"
+            )
+        quest_key = self._normalize_custom_quest_key(quest_key_raw)
+        try:
+            drop_chance_percent = float(str(chance_raw).replace(",", "").strip())
+        except ValueError:
+            return await ctx.send("Drop chance must be a number between 0 and 100.")
+        if drop_chance_percent < 0 or drop_chance_percent > 100:
+            return await ctx.send("Drop chance must be between 0 and 100.")
+        try:
+            drop_quantity_min = max(1, int(min_raw))
+            drop_quantity_max = max(1, int(max_raw))
+            key_item_required_quantity = max(1, int(required_qty_raw))
+        except ValueError:
+            return await ctx.send("Drop minimum, drop maximum, and turn-in quantity must be numbers.")
+        if drop_quantity_max < drop_quantity_min:
+            return await ctx.send("Drop maximum must be greater than or equal to drop minimum.")
+
+        async with self.bot.pool.acquire() as conn:
+            custom_def = await self._fetch_custom_quest_definition(quest_key, conn=conn)
+            if not custom_def:
+                return await ctx.send("That custom quest does not exist.")
+            objective = custom_def.get("objective") or {}
+            if str(objective.get("mode") or "").lower() != "key_item":
+                return await ctx.send("Set a key-item objective first.")
+            objective.update(
+                {
+                    "drop_chance_percent": drop_chance_percent,
+                    "drop_quantity_min": drop_quantity_min,
+                    "drop_quantity_max": drop_quantity_max,
+                    "key_item_required_quantity": key_item_required_quantity,
+                }
+            )
+            custom_def = await self._update_custom_quest_fields(
+                quest_key,
+                {"objective_json": json.dumps(objective, sort_keys=True)},
+                conn=conn,
+            )
+        await ctx.send(f"Updated key-item drop rules for **{custom_def['name']}**.")
 
     @gmquest.group(name="turnin", invoke_without_command=True)
     async def gmquest_turnin_group(self, ctx):
