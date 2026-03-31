@@ -181,9 +181,9 @@ GREG_BOSS_CUTSCENE_PAGES = [
 
 GREG_BOSS_MONSTER_DATA = {
     "name": "The Greg of All Gregs",
-    "hp": 17500,
-    "attack": 3650,
-    "defense": 2800,
+    "hp": 50000,
+    "attack": 1000,
+    "defense": 0,
     "element": "Corrupted",
     "url": "",
     "encounter_level": 100,
@@ -292,7 +292,7 @@ class GregBossStartView(View):
 
 
 class Greg(commands.Cog):
-    GREG_SKULL_GOAL = 800
+    GREG_SKULL_GOAL = 300
     BADGE_SKULL_REQUIREMENT = 25
     GREG_BOSS_TIER = 11
     GREG_FINALE_EVENT_KEY = "greg_finale_open"
@@ -300,10 +300,10 @@ class Greg(commands.Cog):
     GREG_BADGE_NAME = "Gregapocalypse Survivor"
     COMMUNITY_STAGES = (
         (0, "The Empty Graves"),
-        (200, "The Black Ledger"),
-        (400, "The Bells Toll"),
-        (600, "The Black Crypt"),
-        (800, "The Final Seal"),
+        (75, "The Black Ledger"),
+        (150, "The Bells Toll"),
+        (225, "The Black Crypt"),
+        (300, "The Final Seal"),
     )
     OUTBREAK_TIERS = (
         (0, "Tier I - The Graves Stir"),
@@ -813,7 +813,7 @@ class Greg(commands.Cog):
         if not has_scripted_finale and not bool(player_state.get("boss_cleared")):
             return (
                 "You are not ready to enter the Black Crypt yet. Accept the Greg finale quest "
-                "in `$quests` first."
+                "with `$quests greg` first."
             )
 
         return None
@@ -856,7 +856,9 @@ class Greg(commands.Cog):
                 monster_data=monster_data,
                 monster_level=self.GREG_BOSS_TIER,
                 macro_penalty_level=0,
+                allow_pets=True,
             )
+            battle.config["allow_pets"] = True
             await battle.start_battle()
 
             for boss_line in GREG_BOSS_OPENING_LINES:
@@ -1088,7 +1090,7 @@ class Greg(commands.Cog):
                     name="The Crypt Opens",
                     value=(
                         f"Anyone with at least **{self.BADGE_SKULL_REQUIREMENT} Greg Skulls** "
-                        "can now accept the final Greg quest in `$quests` and face "
+                        "can now accept the final Greg quest with `$quests greg` and face "
                         "**The Greg of All Gregs** with `$greg boss`."
                     ),
                     inline=False,

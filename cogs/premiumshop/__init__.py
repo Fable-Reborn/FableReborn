@@ -1056,6 +1056,7 @@ class PremiumShop(commands.Cog):
         """
         # Check if user has the potion
         async with self.bot.pool.acquire() as conn:
+            pets_cog = self.bot.get_cog("Pets")
             potion = await conn.fetchrow(
                 'SELECT id, quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;',
                 ctx.author.id, 'pet_age_potion'
@@ -1072,6 +1073,13 @@ class PremiumShop(commands.Cog):
             
             if not pet:
                 return False, _("Pet not found or doesn't belong to you.")
+
+            daycare_room_type = None
+            if pets_cog is not None:
+                daycare_room_type = await pets_cog.get_active_daycare_room_type_for_pet(
+                    conn,
+                    pet,
+                )
             
             # Check if pet is already adult
             if pet["growth_stage"] == "adult":
@@ -1104,8 +1112,15 @@ class PremiumShop(commands.Cog):
             
             # Calculate new growth time if not adult
             if stage_data["growth_time"] is not None:
-                import datetime
-                growth_time_interval = datetime.timedelta(days=stage_data["growth_time"])
+                if pets_cog is not None:
+                    growth_time_interval = pets_cog.get_pet_growth_interval_for_stage(
+                        pet,
+                        stage_data["growth_time"],
+                        stage_override=stage_data["stage"],
+                        daycare_room_type=daycare_room_type,
+                    )
+                else:
+                    growth_time_interval = datetime.timedelta(days=stage_data["growth_time"])
                 new_growth_time = datetime.datetime.utcnow() + growth_time_interval
             else:
                 new_growth_time = None
@@ -1140,6 +1155,7 @@ class PremiumShop(commands.Cog):
                     SET 
                         growth_stage = $1,
                         growth_time = NULL,
+                        speed_growth_active = FALSE,
                         hp = $2,
                         attack = $3,
                         defense = $4,
@@ -1227,6 +1243,7 @@ class PremiumShop(commands.Cog):
         """
         # Check if user has the potion
         async with self.bot.pool.acquire() as conn:
+            pets_cog = self.bot.get_cog("Pets")
             potion = await conn.fetchrow(
                 'SELECT id, quantity FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;',
                 ctx.author.id, 'pet_speed_growth_potion'
@@ -1243,6 +1260,13 @@ class PremiumShop(commands.Cog):
             
             if not pet:
                 return False, _("Pet not found or doesn't belong to you.")
+
+            daycare_room_type = None
+            if pets_cog is not None:
+                daycare_room_type = await pets_cog.get_active_daycare_room_type_for_pet(
+                    conn,
+                    pet,
+                )
             
             # Check if pet is already adult (can't apply speed boost to adult pets)
             if pet['growth_stage'] == 'adult':
@@ -1256,22 +1280,37 @@ class PremiumShop(commands.Cog):
             
             # Apply speed growth effect to the pet and recalculate current growth time
             if pet['growth_time'] is not None:
-                # Calculate remaining time and cut it in half
-                remaining_time = pet['growth_time'] - datetime.datetime.utcnow()
-                if remaining_time.total_seconds() > 0:
-                    # Cut remaining time in half
-                    new_growth_time = datetime.datetime.utcnow() + (remaining_time / 2)
-                    
+                if pets_cog is not None:
+                    current_multiplier = pets_cog.get_pet_growth_speed_multiplier(
+                        pet,
+                        daycare_room_type=daycare_room_type,
+                    )
+                    new_growth_time = pets_cog.recalculate_pet_growth_deadline(
+                        pet["growth_time"],
+                        old_multiplier=current_multiplier,
+                        new_multiplier=current_multiplier * 2.0,
+                    )
                     await conn.execute(
                         'UPDATE monster_pets SET speed_growth_active = TRUE, growth_time = $1 WHERE id = $2;',
                         new_growth_time, pet_id
                     )
                 else:
-                    # Pet is already ready to grow, just set the flag
-                    await conn.execute(
-                        'UPDATE monster_pets SET speed_growth_active = TRUE WHERE id = $1;',
-                        pet_id
-                    )
+                    # Calculate remaining time and cut it in half
+                    remaining_time = pet['growth_time'] - datetime.datetime.utcnow()
+                    if remaining_time.total_seconds() > 0:
+                        # Cut remaining time in half
+                        new_growth_time = datetime.datetime.utcnow() + (remaining_time / 2)
+
+                        await conn.execute(
+                            'UPDATE monster_pets SET speed_growth_active = TRUE, growth_time = $1 WHERE id = $2;',
+                            new_growth_time, pet_id
+                        )
+                    else:
+                        # Pet is already ready to grow, just set the flag
+                        await conn.execute(
+                            'UPDATE monster_pets SET speed_growth_active = TRUE WHERE id = $1;',
+                            pet_id
+                        )
             else:
                 # Pet has no growth time (shouldn't happen for non-adult pets)
                 await conn.execute(

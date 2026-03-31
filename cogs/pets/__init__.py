@@ -2030,6 +2030,98 @@ class Pets(commands.Cog):
             return None
         return datetime.timedelta(days=max(1, int(days_booked)) * 0.5)
 
+    async def get_active_daycare_room_type_for_pet(self, conn, pet) -> str | None:
+        boarding_id = pet.get("daycare_boarding_id")
+        if not boarding_id:
+            return None
+        room_type = await conn.fetchval(
+            """
+            SELECT room_type
+            FROM pet_daycare_boardings
+            WHERE id = $1 AND status = 'active';
+            """,
+            boarding_id,
+        )
+        return str(room_type).lower() if room_type else None
+
+    def get_pet_growth_speed_multiplier(
+        self,
+        pet,
+        *,
+        stage_override: str | None = None,
+        daycare_room_type: str | None = None,
+        speed_growth_active: bool | None = None,
+    ) -> float:
+        stage_key = str(stage_override or pet.get("growth_stage") or "adult").lower()
+        room_key = str(daycare_room_type or "standard").lower()
+        speed_active = (
+            bool(pet.get("speed_growth_active", False))
+            if speed_growth_active is None
+            else bool(speed_growth_active)
+        )
+
+        multiplier = 1.0
+        if speed_active:
+            multiplier *= 2.0
+        if room_key == "nursery" and stage_key in {"baby", "juvenile"}:
+            multiplier *= 1.5
+        return multiplier
+
+    def scale_pet_growth_remaining_time(
+        self,
+        remaining_time: datetime.timedelta,
+        *,
+        old_multiplier: float,
+        new_multiplier: float,
+    ) -> datetime.timedelta:
+        seconds_left = float(remaining_time.total_seconds())
+        if seconds_left <= 0:
+            return datetime.timedelta(0)
+        if old_multiplier <= 0 or new_multiplier <= 0:
+            return remaining_time
+        return datetime.timedelta(seconds=max(0.0, seconds_left * (old_multiplier / new_multiplier)))
+
+    def recalculate_pet_growth_deadline(
+        self,
+        growth_time,
+        *,
+        old_multiplier: float,
+        new_multiplier: float,
+    ):
+        if growth_time is None:
+            return None
+        if abs(float(old_multiplier) - float(new_multiplier)) < 1e-9:
+            return growth_time
+
+        now = (
+            datetime.datetime.now(datetime.timezone.utc)
+            if getattr(growth_time, "tzinfo", None) is not None
+            else datetime.datetime.utcnow()
+        )
+        adjusted_remaining = self.scale_pet_growth_remaining_time(
+            growth_time - now,
+            old_multiplier=old_multiplier,
+            new_multiplier=new_multiplier,
+        )
+        return now + adjusted_remaining
+
+    def get_pet_growth_interval_for_stage(
+        self,
+        pet,
+        growth_days: float,
+        *,
+        stage_override: str | None = None,
+        daycare_room_type: str | None = None,
+        speed_growth_active: bool | None = None,
+    ) -> datetime.timedelta:
+        multiplier = self.get_pet_growth_speed_multiplier(
+            pet,
+            stage_override=stage_override,
+            daycare_room_type=daycare_room_type,
+            speed_growth_active=speed_growth_active,
+        )
+        return datetime.timedelta(days=float(growth_days) / max(multiplier, 1.0))
+
     def apply_daycare_room_effects(
         self,
         room_type: str,
@@ -2993,26 +3085,31 @@ class Pets(commands.Cog):
                 owner_subsidy_total,
                 owner_user_id,
             )
+        adjusted_growth_time = pet.get("growth_time")
+        if adjusted_growth_time is not None:
+            old_multiplier = self.get_pet_growth_speed_multiplier(pet)
+            new_multiplier = self.get_pet_growth_speed_multiplier(
+                pet,
+                daycare_room_type=package["room_type"],
+            )
+            adjusted_growth_time = self.recalculate_pet_growth_deadline(
+                adjusted_growth_time,
+                old_multiplier=old_multiplier,
+                new_multiplier=new_multiplier,
+            )
+
         await conn.execute(
-            "UPDATE monster_pets SET daycare_boarding_id = $1, equipped = FALSE WHERE id = $2;",
+            """
+            UPDATE monster_pets
+            SET daycare_boarding_id = $1,
+                equipped = FALSE,
+                growth_time = $2
+            WHERE id = $3;
+            """,
             boarding_id,
+            adjusted_growth_time,
             pet_id,
         )
-        growth_acceleration = self.get_daycare_growth_acceleration(
-            package["room_type"],
-            pet["growth_stage"],
-            days_booked,
-        )
-        if growth_acceleration is not None and pet.get("growth_time") is not None:
-            await conn.execute(
-                """
-                UPDATE monster_pets
-                SET growth_time = GREATEST(NOW(), growth_time - $1::interval)
-                WHERE id = $2;
-                """,
-                growth_acceleration,
-                pet_id,
-            )
 
         return {
             "boarding_id": boarding_id,
@@ -3099,6 +3196,19 @@ class Pets(commands.Cog):
             )
             restore_equipped = other_equipped_pet is None
 
+        adjusted_growth_time = pet.get("growth_time")
+        if adjusted_growth_time is not None:
+            old_multiplier = self.get_pet_growth_speed_multiplier(
+                pet,
+                daycare_room_type=boarding["room_type"],
+            )
+            new_multiplier = self.get_pet_growth_speed_multiplier(pet)
+            adjusted_growth_time = self.recalculate_pet_growth_deadline(
+                adjusted_growth_time,
+                old_multiplier=old_multiplier,
+                new_multiplier=new_multiplier,
+            )
+
         await conn.execute(
             """
             UPDATE monster_pets
@@ -3106,12 +3216,14 @@ class Pets(commands.Cog):
                 happiness = $2,
                 daycare_boarding_id = NULL,
                 equipped = $3,
-                last_update = $4
-            WHERE id = $5;
+                growth_time = $4,
+                last_update = $5
+            WHERE id = $6;
             """,
             new_hunger,
             new_happiness,
             restore_equipped,
+            adjusted_growth_time,
             datetime.datetime.now(datetime.timezone.utc),
             pet["id"],
         )
@@ -7863,6 +7975,7 @@ class Pets(commands.Cog):
             )
             next_stage_index = current_stage_index + 1
             next_stage = self.EGG_GROWTH_STAGES.get(next_stage_index)
+            daycare_room_type = await self.get_active_daycare_room_type_for_pet(conn, pet)
 
             if next_stage is None or str(pet.get("growth_stage") or "").lower() == "adult":
                 return {
@@ -7873,17 +7986,16 @@ class Pets(commands.Cog):
                     "current_stage": current_stage["stage"],
                 }
 
-            if next_stage["growth_time"] is not None:
-                if pet.get("speed_growth_active", False):
-                    growth_time_interval = datetime.timedelta(
-                        days=next_stage["growth_time"] / 2
-                    )
-                else:
-                    growth_time_interval = datetime.timedelta(
-                        days=next_stage["growth_time"]
-                    )
-            else:
-                growth_time_interval = None
+            growth_time_interval = (
+                self.get_pet_growth_interval_for_stage(
+                    pet,
+                    next_stage["growth_time"],
+                    stage_override=next_stage["stage"],
+                    daycare_room_type=daycare_room_type,
+                )
+                if next_stage["growth_time"] is not None
+                else None
+            )
 
             multiplier_ratio = (
                 next_stage["stat_multiplier"] / current_stage["stat_multiplier"]

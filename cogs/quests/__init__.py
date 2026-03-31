@@ -582,7 +582,7 @@ class QuestJournalCategorySelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         self.journal_view.selected_category = self.values[0]
         quests = self.journal_view.filtered_entries
-        self.journal_view.selected_quest_key = quests[0]["quest_def"].key if quests else None
+        self.journal_view.selected_quest_key = quests[0]["quest_key"] if quests else None
         await self.journal_view.refresh(interaction)
 
 
@@ -614,16 +614,35 @@ class QuestJournalQuestSelect(discord.ui.Select):
         await self.journal_view.refresh(interaction)
 
 
+class QuestJournalAvailableButton(Button):
+    def __init__(self, journal_view: "QuestJournalView"):
+        super().__init__(
+            label="Greg Quests",
+            style=discord.ButtonStyle.secondary,
+            row=2,
+        )
+        self.journal_view = journal_view
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.journal_view.show_available(interaction)
+
+
 class QuestJournalView(View):
-    def __init__(self, *, ctx, entries: list[dict]):
+    def __init__(self, *, cog: "Quests", ctx, entries: list[dict]):
         super().__init__(timeout=300)
+        self.cog = cog
         self.ctx = ctx
         self.entries = entries
         self.categories = sorted({entry["category"] for entry in entries})
-        self.selected_category = self.categories[0] if self.categories else None
+        self.selected_category = self._default_category()
         first_entry = self.filtered_entries[0] if self.filtered_entries else None
         self.selected_quest_key = first_entry["quest_key"] if first_entry else None
         self._sync_controls()
+
+    def _default_category(self) -> str | None:
+        if "Events" in self.categories:
+            return "Events"
+        return self.categories[0] if self.categories else None
 
     @property
     def filtered_entries(self) -> list[dict]:
@@ -651,6 +670,7 @@ class QuestJournalView(View):
             }:
                 self.selected_quest_key = self.filtered_entries[0]["quest_key"]
             self.add_item(QuestJournalQuestSelect(self))
+        self.add_item(QuestJournalAvailableButton(self))
 
     def build_embed(self) -> discord.Embed:
         embed = discord.Embed(
@@ -692,7 +712,7 @@ class QuestJournalView(View):
         embed.add_field(name="Requirements", value=requirements_text, inline=False)
         embed.add_field(name="Reward", value=selected["reward_text"], inline=False)
         embed.add_field(name="Turn In", value=turn_in_text, inline=False)
-        embed.set_footer(text="Use the dropdowns to switch category or quest.")
+        embed.set_footer(text="Use the dropdowns to switch quests, or open Greg Quests below.")
         return embed
 
     async def interaction_check(self, interaction: discord.Interaction):
@@ -710,6 +730,275 @@ class QuestJournalView(View):
             embed=self.build_embed(),
             view=self,
         )
+
+    async def show_available(self, interaction: discord.Interaction):
+        embed, view = await self.cog._build_greg_quest_board(
+            self.ctx,
+            has_active_entries=True,
+        )
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class QuestBoardCategorySelect(discord.ui.Select):
+    def __init__(self, board_view: "QuestBoardView"):
+        self.board_view = board_view
+        options = [
+            discord.SelectOption(
+                label=category[:100],
+                value=category,
+                default=category == self.board_view.selected_category,
+            )
+            for category in self.board_view.categories
+        ]
+        super().__init__(
+            placeholder="Select a quest category",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.board_view.selected_category = self.values[0]
+        quests = self.board_view.filtered_entries
+        self.board_view.selected_quest_key = quests[0]["quest_key"] if quests else None
+        await self.board_view.refresh(interaction)
+
+
+class QuestBoardQuestSelect(discord.ui.Select):
+    def __init__(self, board_view: "QuestBoardView"):
+        self.board_view = board_view
+        options = []
+        for entry in self.board_view.filtered_entries[:25]:
+            description = entry["objective_text"].replace("\n", " ")
+            if entry["repeatable"]:
+                description = f"Repeatable • {description}"
+            options.append(
+                discord.SelectOption(
+                    label=entry["name"][:100],
+                    value=entry["quest_key"],
+                    description=description[:100] or entry["category"][:100],
+                    default=entry["quest_key"] == self.board_view.selected_quest_key,
+                )
+            )
+        super().__init__(
+            placeholder="Select a quest to inspect",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.board_view.selected_quest_key = self.values[0]
+        await self.board_view.refresh(interaction)
+
+
+class QuestBoardAcceptButton(Button):
+    def __init__(self, board_view: "QuestBoardView"):
+        super().__init__(
+            label="Accept Quest",
+            style=discord.ButtonStyle.success,
+            row=2,
+            disabled=not board_view.entries,
+        )
+        self.board_view = board_view
+
+    async def callback(self, interaction: discord.Interaction):
+        selected = self.board_view._selected_entry()
+        if selected is None:
+            return await interaction.response.send_message(
+                "No quest is selected.",
+                ephemeral=True,
+            )
+
+        await interaction.response.defer()
+        try:
+            accept_data = await self.board_view.cog._accept_quest_for_user(
+                self.board_view.ctx.author.id,
+                selected["quest_key"],
+            )
+        except ValueError as exc:
+            return await interaction.followup.send(str(exc), ephemeral=True)
+
+        await self.board_view.cog._send_quest_accept_messages(
+            self.board_view.ctx,
+            accept_data,
+        )
+        await self.board_view.reload(has_active_entries=True)
+        await interaction.message.edit(
+            embed=self.board_view.build_embed(),
+            view=self.board_view,
+        )
+
+
+class QuestBoardJournalButton(Button):
+    def __init__(self, board_view: "QuestBoardView"):
+        super().__init__(
+            label="View Journal",
+            style=discord.ButtonStyle.secondary,
+            row=2,
+            disabled=not board_view.has_active_entries,
+        )
+        self.board_view = board_view
+
+    async def callback(self, interaction: discord.Interaction):
+        embed, view = await self.board_view.cog._build_journal_display(
+            self.board_view.ctx
+        )
+        if embed is None or view is None:
+            await self.board_view.reload(has_active_entries=False)
+            return await interaction.response.edit_message(
+                embed=self.board_view.build_embed(),
+                view=self.board_view,
+            )
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class QuestBoardView(View):
+    def __init__(
+        self,
+        *,
+        cog: "Quests",
+        ctx,
+        entries: list[dict],
+        empty_text: str,
+        has_active_entries: bool = False,
+    ):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.ctx = ctx
+        self.entries = entries
+        self.empty_text = empty_text
+        self.has_active_entries = has_active_entries
+        self.categories = sorted({entry["category"] for entry in entries})
+        self.selected_category = self._default_category()
+        first_entry = self.filtered_entries[0] if self.filtered_entries else None
+        self.selected_quest_key = first_entry["quest_key"] if first_entry else None
+        self._sync_controls()
+
+    def _default_category(self) -> str | None:
+        if "Events" in self.categories:
+            return "Events"
+        return self.categories[0] if self.categories else None
+
+    @property
+    def filtered_entries(self) -> list[dict]:
+        if self.selected_category is None:
+            return []
+        return [
+            entry
+            for entry in self.entries
+            if entry["category"] == self.selected_category
+        ]
+
+    def _selected_entry(self) -> dict | None:
+        for entry in self.filtered_entries:
+            if entry["quest_key"] == self.selected_quest_key:
+                return entry
+        return self.filtered_entries[0] if self.filtered_entries else None
+
+    def _sync_controls(self):
+        self.clear_items()
+        if self.categories:
+            self.add_item(QuestBoardCategorySelect(self))
+        if self.filtered_entries:
+            if self.selected_quest_key not in {
+                entry["quest_key"] for entry in self.filtered_entries
+            }:
+                self.selected_quest_key = self.filtered_entries[0]["quest_key"]
+            self.add_item(QuestBoardQuestSelect(self))
+        self.add_item(QuestBoardAcceptButton(self))
+        self.add_item(QuestBoardJournalButton(self))
+
+    def build_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="Greg Quests",
+            color=0x5D2E12,
+        )
+
+        if not self.entries:
+            embed.description = self.empty_text
+            footer_text = (
+                "Use View Journal to return to your active quests."
+                if self.has_active_entries
+                else "No Greg quests are available to accept right now."
+            )
+            embed.set_footer(text=footer_text)
+            return embed
+
+        selected = self._selected_entry()
+        if selected is None:
+            embed.description = "No quest is selected."
+            return embed
+
+        description_parts = [
+            str(selected["short_description"]).strip(),
+        ]
+        offer_text = str(selected.get("offer_text") or "").strip()
+        if offer_text and offer_text not in description_parts:
+            description_parts.append(offer_text)
+        embed.description = "\n\n".join(part for part in description_parts if part)
+
+        embed.add_field(name="Category", value=selected["category"], inline=True)
+        embed.add_field(name="Quest", value=selected["name"], inline=True)
+        embed.add_field(
+            name="Repeatable",
+            value="Yes" if selected["repeatable"] else "No",
+            inline=True,
+        )
+        embed.add_field(
+            name="Objective",
+            value=selected["objective_text"],
+            inline=False,
+        )
+        embed.add_field(name="Reward", value=selected["reward_text"], inline=False)
+        embed.add_field(
+            name="How to Start",
+            value=(
+                f"Press **Accept Quest** below or use "
+                f"`$quests accept {selected['quest_key']}`."
+            ),
+            inline=False,
+        )
+        embed.set_footer(
+            text="Use the dropdowns to browse Greg event quests."
+        )
+        return embed
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "This quest board is not yours.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def refresh(self, interaction: discord.Interaction):
+        self._sync_controls()
+        await interaction.response.edit_message(
+            embed=self.build_embed(),
+            view=self,
+        )
+
+    async def reload(self, *, has_active_entries: bool | None = None):
+        self.entries = await self.cog._get_available_greg_quest_entries(
+            self.ctx.author.id
+        )
+        self.empty_text = await self.cog._greg_quest_board_empty_text(
+            self.ctx.author.id
+        )
+        if has_active_entries is not None:
+            self.has_active_entries = has_active_entries
+        self.categories = sorted({entry["category"] for entry in self.entries})
+        if self.selected_category not in self.categories:
+            self.selected_category = self._default_category()
+        filtered_keys = {entry["quest_key"] for entry in self.filtered_entries}
+        if self.selected_quest_key not in filtered_keys:
+            first_entry = self.filtered_entries[0] if self.filtered_entries else None
+            self.selected_quest_key = first_entry["quest_key"] if first_entry else None
+        self._sync_controls()
 
 
 class GMQuestBuilderFormModal(Modal):
@@ -1779,7 +2068,7 @@ class GMQuestBuilderView(View):
             return await interaction.response.send_message("This quest has no accept cutscene attached.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
         await interaction.followup.send(f"Previewing `{cutscene_key}` in this channel.", ephemeral=True)
-        await self.cog.play_cutscene(self.ctx, cutscene_key)
+        await self.cog.play_cutscene(self.ctx, cutscene_key, mark_seen=False)
 
     async def preview_turnin_callback(self, interaction: discord.Interaction):
         try:
@@ -1791,7 +2080,7 @@ class GMQuestBuilderView(View):
             return await interaction.response.send_message("This quest has no turn-in cutscene attached.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
         await interaction.followup.send(f"Previewing `{cutscene_key}` in this channel.", ephemeral=True)
-        await self.cog.play_cutscene(self.ctx, cutscene_key)
+        await self.cog.play_cutscene(self.ctx, cutscene_key, mark_seen=False)
 
     async def refresh_callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -1800,6 +2089,8 @@ class GMQuestBuilderView(View):
 
 
 class Quests(commands.Cog):
+    GREG_INTRO_CUTSCENE_KEY = "greg_intro_lore"
+
     def __init__(self, bot):
         self.bot = bot
         self._monster_cache = None
@@ -1884,6 +2175,18 @@ class Quests(commands.Cog):
                 )
                 """
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS player_cutscenes (
+                    user_id BIGINT NOT NULL,
+                    cutscene_key TEXT NOT NULL,
+                    view_count INTEGER NOT NULL DEFAULT 1,
+                    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, cutscene_key)
+                )
+                """
+            )
             await self._seed_default_cutscenes(conn)
             await self._attach_default_greg_finale_cutscene(conn)
             await self._remove_legacy_greg_quest_data(conn)
@@ -1938,6 +2241,8 @@ class Quests(commands.Cog):
         return 1
 
     def _quest_available(self, quest_key: str) -> bool:
+        if str(quest_key or "").strip().lower() == GREG_QUEST.key:
+            return self._greg_mode_enabled()
         return True
 
     def _load_progress(self, raw_value) -> dict:
@@ -2060,7 +2365,61 @@ class Quests(commands.Cog):
         pages = self._load_progress(row["pages_json"])
         return pages if isinstance(pages, list) else []
 
-    async def play_cutscene(self, ctx, cutscene_key: str) -> bool:
+    async def _mark_cutscene_seen(self, user_id: int, cutscene_key: str, *, conn=None) -> None:
+        local = conn is None
+        if local:
+            conn = await self.bot.pool.acquire()
+        try:
+            await conn.execute(
+                """
+                INSERT INTO player_cutscenes (
+                    user_id,
+                    cutscene_key,
+                    view_count,
+                    first_seen_at,
+                    last_seen_at
+                )
+                VALUES ($1, $2, 1, NOW(), NOW())
+                ON CONFLICT (user_id, cutscene_key)
+                DO UPDATE SET view_count = player_cutscenes.view_count + 1,
+                              last_seen_at = NOW()
+                """,
+                user_id,
+                cutscene_key,
+            )
+        finally:
+            if local:
+                await self.bot.pool.release(conn)
+
+    async def has_seen_cutscene(self, user_id: int, cutscene_key: str, *, conn=None) -> bool:
+        local = conn is None
+        if local:
+            conn = await self.bot.pool.acquire()
+        try:
+            seen = await conn.fetchval(
+                """
+                SELECT 1
+                FROM player_cutscenes
+                WHERE user_id = $1 AND cutscene_key = $2
+                """,
+                user_id,
+                cutscene_key,
+            )
+            return bool(seen)
+        finally:
+            if local:
+                await self.bot.pool.release(conn)
+
+    def _requires_greg_intro_cutscene(self, quest_key: str | None) -> bool:
+        normalized = str(quest_key or "").strip().lower()
+        return normalized == GREG_QUEST.key or normalized.startswith("greg_")
+
+    async def _ensure_greg_intro_seen(self, user_id: int, *, conn=None) -> tuple[bool, str | None]:
+        if await self.has_seen_cutscene(user_id, self.GREG_INTRO_CUTSCENE_KEY, conn=conn):
+            return True, None
+        return False, "Watch the Gregapocalypse intro with `$greg` before taking Greg quests."
+
+    async def play_cutscene(self, ctx, cutscene_key: str, *, mark_seen: bool = True) -> bool:
         row = await self._fetch_cutscene_row(cutscene_key)
         if not row:
             return False
@@ -2073,6 +2432,8 @@ class Quests(commands.Cog):
         )
         view = QuestPageView(pages, ctx.author.id)
         await ctx.send(embed=pages[0], view=view)
+        if mark_seen:
+            await self._mark_cutscene_seen(ctx.author.id, cutscene_key)
         return True
 
     async def _get_monster_catalog(self) -> list[dict]:
@@ -2290,10 +2651,22 @@ class Quests(commands.Cog):
                 return False, f"You must complete **{prereq_key}** first."
         return True, None
 
+    async def _story_quest_visible_to_user(self, user_id: int, quest_def: QuestDef, *, conn=None) -> tuple[bool, str | None]:
+        if not self._quest_available(quest_def.key):
+            return False, "That quest is not currently available."
+        if self._requires_greg_intro_cutscene(quest_def.key):
+            return await self._ensure_greg_intro_seen(user_id, conn=conn)
+        return True, None
+
     async def _custom_quest_visible_to_user(self, user_id: int, custom_def: dict, *, conn=None) -> tuple[bool, str | None]:
         if not custom_def or not custom_def.get("is_active"):
             return False, "That quest is not currently active."
-        return await self._user_meets_custom_access(user_id, custom_def, conn=conn)
+        visible, reason = await self._user_meets_custom_access(user_id, custom_def, conn=conn)
+        if not visible:
+            return visible, reason
+        if self._requires_greg_intro_cutscene(custom_def.get("quest_key")):
+            return await self._ensure_greg_intro_seen(user_id, conn=conn)
+        return True, None
 
     async def _custom_turnin_status(self, user_id: int, custom_def: dict, progress: dict, *, conn=None) -> tuple[bool, list[str], str]:
         objective = custom_def.get("objective") or {}
@@ -2595,6 +2968,127 @@ class Quests(commands.Cog):
         return {
             "count": 0,
         }
+
+    async def _accept_quest_for_user(self, user_id: int, raw_quest_key: str) -> dict:
+        normalized_input = str(raw_quest_key).strip()
+        quest_key = normalized_input.lower()
+        if quest_key not in QUEST_DEFINITIONS:
+            quest_key = self._normalize_custom_quest_key(normalized_input)
+
+        async with self.bot.pool.acquire() as conn:
+            quest_def, custom_def = await self._resolve_quest_definition(
+                quest_key,
+                conn=conn,
+            )
+            if not quest_def and not custom_def:
+                raise ValueError("That quest does not exist.")
+
+            if quest_def:
+                visible, reason = await self._story_quest_visible_to_user(
+                    user_id,
+                    quest_def,
+                    conn=conn,
+                )
+                if not visible:
+                    raise ValueError(reason or "That quest is not currently available.")
+            else:
+                visible, reason = await self._custom_quest_visible_to_user(
+                    user_id,
+                    custom_def,
+                    conn=conn,
+                )
+                if not visible:
+                    raise ValueError(reason or "That quest is not currently available.")
+
+            existing = await conn.fetchrow(
+                """
+                SELECT status, completion_count
+                FROM player_quests
+                WHERE user_id = $1 AND quest_key = $2
+                """,
+                user_id,
+                quest_key,
+            )
+            if existing:
+                if existing["status"] == "active":
+                    raise ValueError("You already accepted that quest.")
+                if (
+                    (quest_def or (custom_def and not custom_def["repeatable"]))
+                    and (
+                        existing["status"] == "completed"
+                        or int(existing["completion_count"] or 0) > 0
+                    )
+                ):
+                    raise ValueError("You have already completed that quest.")
+
+            if quest_def:
+                progress = self._new_story_progress()
+                category = quest_def.category
+                title = quest_def.name
+                description = quest_def.start_text
+                objective_text = quest_def.steps[0].objective
+                reward_text = quest_def.reward_text
+                footer_text = f"Turn in progress with $quests turnin {quest_def.key}"
+                accept_cutscene_key = ""
+                quest_key = quest_def.key
+            else:
+                progress = self._new_custom_progress()
+                category = custom_def["category"]
+                title = custom_def["name"]
+                description = custom_def["offer_text"] or custom_def["short_description"]
+                objective_text = self._custom_objective_text(custom_def)
+                reward_text = self._custom_reward_text(custom_def)
+                footer_text = f"Turn in progress with $quests turnin {custom_def['quest_key']}"
+                accept_cutscene_key = custom_def.get("accept_cutscene_key", "")
+                quest_key = custom_def["quest_key"]
+
+            await conn.execute(
+                """
+                INSERT INTO player_quests (user_id, quest_key, category, status, step_index, completion_count, progress_json, started_at)
+                VALUES ($1, $2, $3, 'active', 0, 0, $4, NOW())
+                ON CONFLICT (user_id, quest_key)
+                DO UPDATE SET category = EXCLUDED.category,
+                              status = 'active',
+                              step_index = 0,
+                              progress_json = EXCLUDED.progress_json,
+                              started_at = NOW(),
+                              completed_at = NULL,
+                              turned_in_at = NULL
+                """,
+                user_id,
+                quest_key,
+                category,
+                self._dump_progress(progress),
+            )
+
+        return {
+            "quest_key": quest_key,
+            "title": title,
+            "description": description,
+            "objective_text": objective_text,
+            "reward_text": reward_text,
+            "footer_text": footer_text,
+            "accept_cutscene_key": accept_cutscene_key,
+        }
+
+    async def _send_quest_accept_messages(self, ctx, accept_data: dict) -> None:
+        embed = discord.Embed(
+            title=f"Quest Accepted: {accept_data['title']}",
+            description=accept_data["description"],
+            color=0x5D2E12,
+        )
+        embed.add_field(
+            name="Current Objective",
+            value=accept_data["objective_text"],
+            inline=False,
+        )
+        embed.add_field(name="Reward", value=accept_data["reward_text"], inline=False)
+        embed.set_footer(text=accept_data["footer_text"])
+        await ctx.send(embed=embed)
+
+        accept_cutscene_key = str(accept_data.get("accept_cutscene_key") or "").strip()
+        if accept_cutscene_key:
+            await self.play_cutscene(ctx, accept_cutscene_key)
 
     def _parse_bool(self, raw: str | None) -> bool | None:
         if raw is None:
@@ -3055,6 +3549,229 @@ class Quests(commands.Cog):
             if local:
                 await self.bot.pool.release(conn)
 
+    async def _get_available_greg_quest_entries(self, user_id: int, *, conn=None) -> list[dict]:
+        local = conn is None
+        if local:
+            conn = await self.bot.pool.acquire()
+        try:
+            owned_rows = await conn.fetch(
+                """
+                SELECT quest_key, status, completion_count
+                FROM player_quests
+                WHERE user_id = $1
+                """,
+                user_id,
+            )
+            custom_defs = await self._fetch_custom_quest_definitions(
+                conn=conn,
+                active_only=True,
+            )
+            owned_statuses = {
+                str(row["quest_key"]): {
+                    "status": str(row["status"]),
+                    "completion_count": int(row["completion_count"] or 0),
+                }
+                for row in owned_rows
+            }
+
+            entries = []
+            for quest_def in QUEST_DEFINITIONS.values():
+                if not self._requires_greg_intro_cutscene(quest_def.key):
+                    continue
+                quest_state = owned_statuses.get(quest_def.key)
+                if quest_state and (
+                    quest_state["status"] == "active"
+                    or quest_state["completion_count"] > 0
+                ):
+                    continue
+                visible, _reason = await self._story_quest_visible_to_user(
+                    user_id,
+                    quest_def,
+                    conn=conn,
+                )
+                if not visible:
+                    continue
+                entries.append(
+                    {
+                        "quest_key": quest_def.key,
+                        "name": quest_def.name,
+                        "category": quest_def.category,
+                        "short_description": quest_def.short_description,
+                        "offer_text": quest_def.start_text,
+                        "objective_text": quest_def.steps[0].objective,
+                        "reward_text": quest_def.reward_text,
+                        "repeatable": False,
+                    }
+                )
+
+            for custom_def in custom_defs:
+                quest_key = str(custom_def["quest_key"])
+                if not self._requires_greg_intro_cutscene(quest_key):
+                    continue
+                quest_state = owned_statuses.get(quest_key)
+                if quest_state and quest_state["status"] == "active":
+                    continue
+                if (
+                    quest_state
+                    and quest_state["completion_count"] > 0
+                    and not custom_def["repeatable"]
+                ):
+                    continue
+                visible, _reason = await self._custom_quest_visible_to_user(
+                    user_id,
+                    custom_def,
+                    conn=conn,
+                )
+                if not visible:
+                    continue
+                entries.append(
+                    {
+                        "quest_key": quest_key,
+                        "name": custom_def["name"],
+                        "category": custom_def["category"],
+                        "short_description": custom_def["short_description"],
+                        "offer_text": custom_def["offer_text"] or custom_def["short_description"],
+                        "objective_text": self._custom_objective_text(custom_def),
+                        "reward_text": self._custom_reward_text(custom_def),
+                        "repeatable": bool(custom_def["repeatable"]),
+                    }
+                )
+
+            return sorted(
+                entries,
+                key=lambda entry: (entry["category"].lower(), entry["name"].lower()),
+            )
+        finally:
+            if local:
+                await self.bot.pool.release(conn)
+
+    async def _greg_quest_board_empty_text(self, user_id: int, *, conn=None) -> str:
+        intro_seen = await self.has_seen_cutscene(
+            user_id,
+            self.GREG_INTRO_CUTSCENE_KEY,
+            conn=conn,
+        )
+        if self._greg_mode_enabled() and not intro_seen:
+            return (
+                "No Greg quests are visible yet.\n\n"
+                "Watch the Gregapocalypse intro with `$greg` first."
+            )
+        return "No Greg quests are available right now."
+
+    async def _build_greg_quest_board(self, ctx, *, has_active_entries: bool = False):
+        entries = await self._get_available_greg_quest_entries(ctx.author.id)
+        empty_text = await self._greg_quest_board_empty_text(ctx.author.id)
+        view = QuestBoardView(
+            cog=self,
+            ctx=ctx,
+            entries=entries,
+            empty_text=empty_text,
+            has_active_entries=has_active_entries,
+        )
+        return view.build_embed(), view
+
+    async def _build_journal_display(self, ctx):
+        entries = await self._get_journal_entries(ctx.author.id)
+        if not entries:
+            return None, None
+        view = QuestJournalView(cog=self, ctx=ctx, entries=entries)
+        return view.build_embed(), view
+
+    async def _build_no_active_quest_summary(self, user_id: int) -> discord.Embed:
+        async with self.bot.pool.acquire() as conn:
+            owned_rows = await conn.fetch(
+                """
+                SELECT quest_key, status, completion_count
+                FROM player_quests
+                WHERE user_id = $1
+                """,
+                user_id,
+            )
+            custom_defs = await self._fetch_custom_quest_definitions(
+                conn=conn,
+                active_only=True,
+            )
+
+            owned_statuses = {
+                str(row["quest_key"]): {
+                    "status": str(row["status"]),
+                    "completion_count": int(row["completion_count"] or 0),
+                }
+                for row in owned_rows
+            }
+
+            available = []
+            completed = []
+            for quest_def in QUEST_DEFINITIONS.values():
+                quest_state = owned_statuses.get(quest_def.key)
+                if quest_state and quest_state["completion_count"] > 0:
+                    completed.append(f"**{quest_def.name}**")
+                    continue
+                if quest_state and quest_state["status"] == "active":
+                    continue
+                visible, _reason = await self._story_quest_visible_to_user(
+                    user_id,
+                    quest_def,
+                    conn=conn,
+                )
+                if not visible:
+                    continue
+                available.append(
+                    f"**{quest_def.name}**\n{quest_def.short_description}\nStart with `$quests accept {quest_def.key}`."
+                )
+
+            for custom_def in custom_defs:
+                quest_state = owned_statuses.get(custom_def["quest_key"])
+                if (
+                    quest_state
+                    and quest_state["completion_count"] > 0
+                    and not custom_def["repeatable"]
+                ):
+                    completed.append(f"**{custom_def['name']}**")
+                    continue
+                if quest_state and quest_state["status"] == "active":
+                    continue
+                visible, _reason = await self._custom_quest_visible_to_user(
+                    user_id,
+                    custom_def,
+                    conn=conn,
+                )
+                if not visible:
+                    continue
+                repeatable_text = "Repeatable. " if custom_def["repeatable"] else ""
+                available.append(
+                    f"**{custom_def['name']}**\n{custom_def['short_description']}\n"
+                    f"{repeatable_text}Start with `$quests accept {custom_def['quest_key']}`."
+                )
+
+        embed = discord.Embed(
+            title="Quest Journal",
+            description="You have no accepted or ongoing quests right now.",
+            color=0x3E2617,
+        )
+        if completed:
+            embed.add_field(
+                name="Completed",
+                value="\n".join(completed),
+                inline=False,
+            )
+        if available:
+            embed.add_field(
+                name="Available",
+                value="\n\n".join(available),
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="Available",
+                value="No event quests are currently available.",
+                inline=False,
+            )
+        embed.set_footer(
+            text="Use $quests accept <quest> to begin one, or $quests greg for the Greg dropdown."
+        )
+        return embed
+
     async def _process_custom_source_completion(
         self,
         ctx,
@@ -3295,186 +4012,33 @@ class Quests(commands.Cog):
     @commands.group(name="quests", aliases=["quest", "journal"], invoke_without_command=True)
     @has_char()
     async def quests(self, ctx):
-        entries = await self._get_journal_entries(ctx.author.id)
-        if not entries:
-            async with self.bot.pool.acquire() as conn:
-                owned_rows = await conn.fetch(
-                    """
-                    SELECT quest_key, status, completion_count
-                    FROM player_quests
-                    WHERE user_id = $1
-                    """,
-                    ctx.author.id,
-                )
-                custom_defs = await self._fetch_custom_quest_definitions(
-                    conn=conn,
-                    active_only=True,
-                )
-            owned_statuses = {
-                str(row["quest_key"]): {
-                    "status": str(row["status"]),
-                    "completion_count": int(row["completion_count"] or 0),
-                }
-                for row in owned_rows
-            }
-            embed = discord.Embed(
-                title="Quest Journal",
-                description="You have no accepted or ongoing quests right now.",
-                color=0x3E2617,
-            )
-            available = []
-            completed = []
-            for quest_def in QUEST_DEFINITIONS.values():
-                quest_state = owned_statuses.get(quest_def.key)
-                if quest_state and quest_state["completion_count"] > 0:
-                    completed.append(f"**{quest_def.name}**")
-                    continue
-                if quest_state and quest_state["status"] == "active":
-                    continue
-                if self._quest_available(quest_def.key):
-                    available.append(
-                        f"**{quest_def.name}**\n{quest_def.short_description}\nStart with `$quests accept {quest_def.key}`."
-                    )
-            for custom_def in custom_defs:
-                quest_state = owned_statuses.get(custom_def["quest_key"])
-                if quest_state and quest_state["completion_count"] > 0 and not custom_def["repeatable"]:
-                    completed.append(f"**{custom_def['name']}**")
-                    continue
-                if quest_state and quest_state["status"] == "active":
-                    continue
-                visible, reason = await self._custom_quest_visible_to_user(
-                    ctx.author.id,
-                    custom_def,
-                    conn=conn,
-                )
-                if not visible:
-                    continue
-                repeatable_text = "Repeatable. " if custom_def["repeatable"] else ""
-                available.append(
-                    f"**{custom_def['name']}**\n{custom_def['short_description']}\n"
-                    f"{repeatable_text}Start with `$quests accept {custom_def['quest_key']}`."
-                )
-            if completed:
-                embed.add_field(
-                    name="Completed",
-                    value="\n".join(completed),
-                    inline=False,
-                )
-            if available:
-                embed.add_field(
-                    name="Available",
-                    value="\n\n".join(available),
-                    inline=False,
-                )
-            else:
-                embed.add_field(
-                    name="Available",
-                    value="No event quests are currently available.",
-                    inline=False,
-                )
-            embed.set_footer(text="Use $quests accept <quest> to begin one.")
-            return await ctx.send(embed=embed)
+        embed, view = await self._build_journal_display(ctx)
+        if embed is None or view is None:
+            summary = await self._build_no_active_quest_summary(ctx.author.id)
+            return await ctx.send(embed=summary)
+        await ctx.send(embed=embed, view=view)
 
-        view = QuestJournalView(ctx=ctx, entries=entries)
-        await ctx.send(embed=view.build_embed(), view=view)
+    @quests.command(name="greg", aliases=["gregquests"])
+    @has_char()
+    async def quests_greg(self, ctx):
+        active_entries = await self._get_journal_entries(ctx.author.id)
+        embed, view = await self._build_greg_quest_board(
+            ctx,
+            has_active_entries=bool(active_entries),
+        )
+        await ctx.send(embed=embed, view=view)
 
     @quests.command(name="accept", aliases=["start", "take"])
     @has_char()
     async def quests_accept(self, ctx, *, quest_key: str):
-        raw_quest_key = str(quest_key).strip()
-        quest_key = raw_quest_key.lower()
-        if quest_key not in QUEST_DEFINITIONS:
-            quest_key = self._normalize_custom_quest_key(raw_quest_key)
-        async with self.bot.pool.acquire() as conn:
-            quest_def, custom_def = await self._resolve_quest_definition(quest_key, conn=conn)
-            if not quest_def and not custom_def:
-                return await ctx.send("That quest does not exist.")
-            if quest_def and not self._quest_available(quest_key):
-                return await ctx.send("That quest is not currently available.")
-            if custom_def:
-                visible, reason = await self._custom_quest_visible_to_user(
-                    ctx.author.id,
-                    custom_def,
-                    conn=conn,
-                )
-                if not visible:
-                    return await ctx.send(reason or "That quest is not currently available.")
-
-            existing = await conn.fetchrow(
-                """
-                SELECT status, completion_count
-                FROM player_quests
-                WHERE user_id = $1 AND quest_key = $2
-                """,
+        try:
+            accept_data = await self._accept_quest_for_user(
                 ctx.author.id,
                 quest_key,
             )
-            if existing:
-                if existing["status"] == "active":
-                    return await ctx.send("You already accepted that quest.")
-                if (
-                    (quest_def or (custom_def and not custom_def["repeatable"]))
-                    and (
-                        existing["status"] == "completed"
-                        or int(existing["completion_count"] or 0) > 0
-                    )
-                ):
-                    return await ctx.send("You have already completed that quest.")
-
-            if quest_def:
-                progress = self._new_story_progress()
-                category = quest_def.category
-                title = quest_def.name
-                description = quest_def.start_text
-                objective_text = quest_def.steps[0].objective
-                reward_text = quest_def.reward_text
-                footer_text = f"Turn in progress with $quests turnin {quest_def.key}"
-                accept_cutscene_key = ""
-            else:
-                progress = self._new_custom_progress()
-                category = custom_def["category"]
-                title = custom_def["name"]
-                description = custom_def["offer_text"] or custom_def["short_description"]
-                objective_text = self._custom_objective_text(custom_def)
-                reward_text = self._custom_reward_text(custom_def)
-                footer_text = f"Turn in progress with $quests turnin {custom_def['quest_key']}"
-                accept_cutscene_key = custom_def.get("accept_cutscene_key", "")
-
-            await conn.execute(
-                """
-                INSERT INTO player_quests (user_id, quest_key, category, status, step_index, completion_count, progress_json, started_at)
-                VALUES ($1, $2, $3, 'active', 0, 0, $4, NOW())
-                ON CONFLICT (user_id, quest_key)
-                DO UPDATE SET category = EXCLUDED.category,
-                              status = 'active',
-                              step_index = 0,
-                              progress_json = EXCLUDED.progress_json,
-                              started_at = NOW(),
-                              completed_at = NULL,
-                              turned_in_at = NULL
-                """,
-                ctx.author.id,
-                quest_key,
-                category,
-                self._dump_progress(progress),
-            )
-
-        embed = discord.Embed(
-            title=f"Quest Accepted: {title}",
-            description=description,
-            color=0x5D2E12,
-        )
-        embed.add_field(
-            name="Current Objective",
-            value=objective_text,
-            inline=False,
-        )
-        embed.add_field(name="Reward", value=reward_text, inline=False)
-        embed.set_footer(text=footer_text)
-        await ctx.send(embed=embed)
-
-        if accept_cutscene_key:
-            await self.play_cutscene(ctx, accept_cutscene_key)
+        except ValueError as exc:
+            return await ctx.send(str(exc))
+        await self._send_quest_accept_messages(ctx, accept_data)
 
     @quests.command(name="turnin", aliases=["continue", "advance"])
     @has_char()
@@ -4374,7 +4938,7 @@ class Quests(commands.Cog):
     @gmquest_cutscene.command(name="preview", aliases=["show"])
     async def gmquest_cutscene_preview(self, ctx, cutscene_key: str):
         cutscene_key = self._normalize_custom_quest_key(cutscene_key)
-        if not await self.play_cutscene(ctx, cutscene_key):
+        if not await self.play_cutscene(ctx, cutscene_key, mark_seen=False):
             await ctx.send("That cutscene does not exist or has no pages.")
 
 async def setup(bot):
