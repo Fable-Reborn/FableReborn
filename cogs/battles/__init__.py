@@ -5541,6 +5541,15 @@ class Battles(commands.Cog):
                 ctx.author.id,
             )
 
+        await self._progress_custom_quest_source(
+            ctx,
+            [ctx.author],
+            "jurytower",
+            floor_data.get("title"),
+            floor_data.get("seal_name"),
+            str(floor),
+        )
+
         summary = discord.Embed(
             title=f"Verdict: {verdict_name}",
             description=(
@@ -7022,6 +7031,14 @@ class Battles(commands.Cog):
                     ),
                     suppress_failure=True,
                 )
+                await self._progress_custom_quest_source(
+                    ctx,
+                    [winner],
+                    "raidbattle",
+                    "1v1",
+                    getattr(loser, "display_name", None),
+                    getattr(loser, "name", None),
+                )
             else:
                 # Battle ended in a tie
                 await self._send_with_retry(
@@ -7286,6 +7303,14 @@ class Battles(commands.Cog):
                         losing_team=", ".join(member.mention for member in losing_team),
                     ),
                     suppress_failure=True,
+                )
+                losing_names = [member.display_name for member in losing_team] + [member.name for member in losing_team]
+                await self._progress_custom_quest_source(
+                    ctx,
+                    winning_team,
+                    "raidbattle",
+                    "2v1",
+                    *losing_names,
                 )
             else:
                 await self._send_with_retry(
@@ -7689,6 +7714,16 @@ class Battles(commands.Cog):
                         losing_team=losing_team
                     ),
                     suppress_failure=True,
+                )
+                winning_members = team_a if winning_team == "A" else team_b
+                losing_members = team_b if winning_team == "A" else team_a
+                losing_names = [member.display_name for member in losing_members] + [member.name for member in losing_members]
+                await self._progress_custom_quest_source(
+                    ctx,
+                    winning_members,
+                    "raidbattle",
+                    "2v2",
+                    *losing_names,
                 )
             else:
                 # Battle ended in a tie
@@ -9961,6 +9996,16 @@ class Battles(commands.Cog):
         except Exception:
             # Try to continue with embed even if rewards failed
             reward_text = "Error processing rewards."
+
+        await self._progress_custom_quest_source(
+            ctx,
+            party_members,
+            "dragonparty",
+            self._get_dragon_stage_name(old_level),
+            str(stage_id) if stage_id is not None else None,
+            str(old_level),
+            f"level {old_level}",
+        )
         
         # Add rewards to embed
         try:
@@ -10340,6 +10385,32 @@ class Battles(commands.Cog):
         ctx._battle_send_guarded = True
         return ctx
 
+    async def _progress_custom_quest_source(self, ctx, users, source: str, *candidate_names: str | None):
+        quests_cog = self.bot.get_cog("Quests")
+        if quests_cog is None:
+            return
+
+        seen_ids = set()
+        for user in users:
+            user_id = getattr(user, "id", None)
+            if user_id is None or user_id in seen_ids:
+                continue
+            seen_ids.add(user_id)
+            try:
+                await quests_cog.process_external_source_completion_for_user(
+                    ctx,
+                    user,
+                    source,
+                    candidate_names=candidate_names,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to process custom quest source %s for user %s: %s",
+                    source,
+                    user_id,
+                    exc,
+                )
+
     async def get_couple_progress(self, user_id, partner_id):
         """Fetch couple's battle tower progress from the database."""
         id1, id2 = sorted((user_id, partner_id))
@@ -10467,6 +10538,13 @@ class Battles(commands.Cog):
                                                   description=victory_data.get('description', 'You are victorious!'),
                                                   color=discord.Color.gold())
                         await self._send_with_retry(ctx, embed=vic_embed, suppress_failure=True)
+                        await self._progress_custom_quest_source(
+                            ctx,
+                            [author, partner],
+                            "cbt",
+                            level_info.get("title"),
+                            str(level),
+                        )
                         
                         # Check if this level has chest rewards (every 5 levels)
                         if victory_data.get('has_chest', False):
@@ -10794,6 +10872,13 @@ class Battles(commands.Cog):
                                                   description=victory_data.get('description', 'You are victorious!'),
                                                   color=discord.Color.gold())
                         await self._send_with_retry(ctx, embed=vic_embed, suppress_failure=True)
+                        await self._progress_custom_quest_source(
+                            ctx,
+                            [author, partner],
+                            "cbt",
+                            level_info.get("title"),
+                            str(level),
+                        )
                         
                         # Check if this level has chest rewards (every 5 levels)
                         if victory_data.get('has_chest', False):

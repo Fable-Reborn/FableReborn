@@ -3,6 +3,7 @@ import random
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import discord
 
@@ -203,7 +204,61 @@ KEY_ITEM_DEFINITIONS = {
 }
 
 MONSTERS_PATH = Path("monsters.json")
-CUSTOM_QUEST_SOURCES = {"none", "pve", "adventure", "battletower", "scripted"}
+CUSTOM_QUEST_SOURCES = {
+    "none",
+    "pve",
+    "adventure",
+    "battletower",
+    "dragonparty",
+    "cbt",
+    "raidbattle",
+    "jurytower",
+    "scripted",
+}
+CUSTOM_QUEST_SOURCE_ALIASES = {
+    "none": "none",
+    "pve": "pve",
+    "adventure": "adventure",
+    "battletower": "battletower",
+    "battle tower": "battletower",
+    "dragonparty": "dragonparty",
+    "dragon party": "dragonparty",
+    "dragon": "dragonparty",
+    "dragon challenge": "dragonparty",
+    "dragon challenge party": "dragonparty",
+    "dragonchallenge": "dragonparty",
+    "dragonchallengeparty": "dragonparty",
+    "dragonchallenge party": "dragonparty",
+    "cbt": "cbt",
+    "couples battletower": "cbt",
+    "couples battle tower": "cbt",
+    "couplesbattletower": "cbt",
+    "raidbattle": "raidbattle",
+    "raid battle": "raidbattle",
+    "raid battle 2v1": "raidbattle",
+    "raid battle 2v2": "raidbattle",
+    "raidbattle2v1": "raidbattle",
+    "raidbattle2v2": "raidbattle",
+    "jurytower": "jurytower",
+    "jury tower": "jurytower",
+    "jurytower fight": "jurytower",
+    "jurttower": "jurytower",
+    "jurt tower": "jurytower",
+    "scripted": "scripted",
+}
+CUSTOM_QUEST_SOURCE_LABELS = {
+    "none": "anywhere",
+    "pve": "PvE",
+    "adventure": "Adventure",
+    "battletower": "Battle Tower",
+    "dragonparty": "Dragon Party",
+    "cbt": "Couples Battle Tower",
+    "raidbattle": "Raid Battle",
+    "jurytower": "Jury Tower",
+    "scripted": "Scripted Encounter",
+}
+CUSTOM_QUEST_SOURCE_HELP = "none, pve, adventure, battletower, dragonparty, cbt, raidbattle, jurytower, scripted"
+CUSTOM_QUEST_REAL_SOURCE_HELP = "pve, adventure, battletower, dragonparty, cbt, raidbattle, jurytower, scripted"
 CUSTOM_QUEST_MODES = {"progress", "key_item"}
 CUSTOM_QUEST_TURNIN_TYPES = {"progress", "key_item", "crate", "egg", "money"}
 CUSTOM_QUEST_REWARD_TYPES = {"money", "crate", "item", "egg", "none"}
@@ -1305,7 +1360,7 @@ class GMQuestBuilderView(View):
                     "key": "source",
                     "label": "Source",
                     "default": objective.get("source") or "pve",
-                    "placeholder": "pve, adventure, battletower, scripted, none",
+                    "placeholder": CUSTOM_QUEST_SOURCE_HELP,
                 },
                 {
                     "key": "required_count",
@@ -1328,7 +1383,7 @@ class GMQuestBuilderView(View):
                     "key": "source",
                     "label": "Source",
                     "default": objective.get("source") or "pve",
-                    "placeholder": "pve, adventure, battletower, scripted",
+                    "placeholder": CUSTOM_QUEST_REAL_SOURCE_HELP,
                 },
                 {
                     "key": "required_count",
@@ -1595,7 +1650,7 @@ class GMQuestBuilderView(View):
             if action == "objective_progress":
                 source = self.cog._normalize_source(values.get("source"))
                 if source is None:
-                    raise ValueError("Source must be one of: none, pve, adventure, battletower, scripted.")
+                    raise ValueError(f"Source must be one of: {CUSTOM_QUEST_SOURCE_HELP}.")
                 required_count = self._parse_int(values.get("required_count") or "0", "Required count", minimum=0)
                 target_name = str(values.get("target_name") or "").strip()
                 if target_name.lower() == "any":
@@ -1623,7 +1678,7 @@ class GMQuestBuilderView(View):
             if action == "objective_keyitem":
                 source = self.cog._normalize_source(values.get("source"))
                 if source is None or source == "none":
-                    raise ValueError("Key item objectives need a real source: pve, adventure, battletower, or scripted.")
+                    raise ValueError(f"Key item objectives need a real source: {CUSTOM_QUEST_REAL_SOURCE_HELP}.")
                 required_count = self._parse_int(values.get("required_count") or "0", "Required count", minimum=0)
                 key_item_name = str(values.get("key_item_name") or "").strip()
                 key_item_description = str(values.get("key_item_description") or "").strip()
@@ -2282,8 +2337,21 @@ class Quests(commands.Cog):
         return rarity if rarity in QUEST_CRATE_RARITIES else None
 
     def _normalize_source(self, raw: str) -> str | None:
-        source = str(raw or "").strip().lower()
-        return source if source in CUSTOM_QUEST_SOURCES else None
+        source = str(raw or "").strip().lower().replace("_", " ").replace("-", " ")
+        source = " ".join(source.split())
+        if not source:
+            return None
+        canonical = CUSTOM_QUEST_SOURCE_ALIASES.get(source)
+        if canonical:
+            return canonical
+        compact = source.replace(" ", "")
+        return compact if compact in CUSTOM_QUEST_SOURCES else None
+
+    def _source_label(self, raw: str | None) -> str:
+        source = self._normalize_source(raw)
+        if source:
+            return CUSTOM_QUEST_SOURCE_LABELS.get(source, source.title())
+        return str(raw or "Quest").title()
 
     def _normalize_mode(self, raw: str) -> str | None:
         mode = str(raw or "").strip().lower()
@@ -2551,20 +2619,14 @@ class Quests(commands.Cog):
     def _custom_objective_text(self, custom_def: dict) -> str:
         objective = custom_def.get("objective") or {}
         turnin = custom_def.get("turnin") or {}
-        source = str(objective.get("source") or "none").lower()
+        source = self._normalize_source(objective.get("source")) or "none"
         required_count = int(objective.get("required_count") or 0)
         key_item_required_quantity = max(1, int(objective.get("key_item_required_quantity") or 1))
         drop_chance_percent = max(0.0, min(100.0, float(objective.get("drop_chance_percent") or 100)))
         drop_quantity_min = max(1, int(objective.get("drop_quantity_min") or 1))
         drop_quantity_max = max(drop_quantity_min, int(objective.get("drop_quantity_max") or drop_quantity_min))
         target_name = str(objective.get("target_name") or "").strip()
-        source_label = {
-            "none": "anywhere",
-            "pve": "PvE",
-            "adventure": "Adventure",
-            "battletower": "Battle Tower",
-            "scripted": "Scripted Encounter",
-        }.get(source, source.title())
+        source_label = self._source_label(source)
         turnin_type = str(turnin.get("type") or "").lower()
 
         if turnin_type == "crate":
@@ -2679,12 +2741,7 @@ class Quests(commands.Cog):
         objective_lines = []
 
         if required_count > 0:
-            source_label = {
-                "pve": "PvE",
-                "adventure": "Adventure",
-                "battletower": "Battle Tower",
-                "scripted": "Scripted Encounter",
-            }.get(str(objective.get("source") or "").lower(), "Quest")
+            source_label = self._source_label(objective.get("source"))
             target_text = f" ({target_name})" if target_name else ""
             objective_lines.append(
                 f"{source_label} Progress{target_text}: **{current_count} / {required_count}**"
@@ -3809,7 +3866,7 @@ class Quests(commands.Cog):
                         continue
 
                     objective = custom_def.get("objective") or {}
-                    if str(objective.get("source") or "").lower() != source:
+                    if self._normalize_source(objective.get("source")) != source:
                         continue
                     if not self._match_name_filter(
                         objective.get("target_name"),
@@ -3889,11 +3946,31 @@ class Quests(commands.Cog):
         *,
         candidate_names: tuple[str | None, ...] = (),
     ) -> bool:
+        return await self.process_external_source_completion_for_user(
+            ctx,
+            getattr(ctx, "author", None),
+            source,
+            candidate_names=candidate_names,
+        )
+
+    async def process_external_source_completion_for_user(
+        self,
+        ctx,
+        user,
+        source: str,
+        *,
+        candidate_names: tuple[str | None, ...] = (),
+    ) -> bool:
         normalized_source = self._normalize_source(source)
         if normalized_source is None or normalized_source == "none":
             return False
+        if user is None or getattr(user, "id", None) is None:
+            return False
+        proxy_ctx = ctx
+        if getattr(ctx, "author", None) is not user:
+            proxy_ctx = SimpleNamespace(author=user, send=ctx.send)
         await self._process_custom_source_completion(
-            ctx,
+            proxy_ctx,
             normalized_source,
             candidate_names=candidate_names,
         )
@@ -3941,7 +4018,7 @@ class Quests(commands.Cog):
                     continue
 
                 objective = custom_def.get("objective") or {}
-                if str(objective.get("source") or "").lower() != normalized_source:
+                if self._normalize_source(objective.get("source")) != normalized_source:
                     continue
                 if not self._match_name_filter(
                     objective.get("target_name"),
@@ -4476,7 +4553,7 @@ class Quests(commands.Cog):
         quest_key = self._normalize_custom_quest_key(parts[0])
         source = self._normalize_source(parts[1])
         if source is None:
-            return await ctx.send("Source must be one of: none, pve, adventure, battletower, scripted.")
+            return await ctx.send(f"Source must be one of: {CUSTOM_QUEST_SOURCE_HELP}.")
         try:
             required_count = max(0, int(parts[2]))
         except ValueError:
@@ -4512,7 +4589,7 @@ class Quests(commands.Cog):
         quest_key = self._normalize_custom_quest_key(parts[0])
         source = self._normalize_source(parts[1])
         if source is None or source == "none":
-            return await ctx.send("Key item objectives need a real source: pve, adventure, battletower, or scripted.")
+            return await ctx.send(f"Key item objectives need a real source: {CUSTOM_QUEST_REAL_SOURCE_HELP}.")
         try:
             required_count = max(0, int(parts[2]))
         except ValueError:
