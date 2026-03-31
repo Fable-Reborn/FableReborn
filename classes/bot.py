@@ -1124,9 +1124,6 @@ class Bot(commands.AutoShardedBot):
 
     @cache(maxsize=8096)
     async def get_donator_rank(self, user_id):
-        if self.config.bot.is_beta or self.config.bot.is_custom:
-            return DonatorRank.diamond
-
         booster_guild_id, _booster_role_id = self._get_patreon_booster_membership_config()
         guild_ids = []
         for guild_id in (self.support_server_id, booster_guild_id):
