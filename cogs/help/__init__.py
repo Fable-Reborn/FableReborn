@@ -3496,7 +3496,7 @@ class Help(commands.Cog):
 
             Aliases such as `{prefix}booklet` and `{prefix}gettingstarted` open the same guide."""
         )
-        try:
+        try: 
             profile_row = None
             try:
                 profile_row_raw = await self.bot.pool.fetchrow(
