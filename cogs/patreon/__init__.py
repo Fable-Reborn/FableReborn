@@ -373,9 +373,8 @@ class Patreon(commands.Cog):
         )
         await ctx.send(f"You have {weapontoken_value} tokens left")
 
-    @is_patron("bronze")
     @has_char()
-    @commands.command(brief=_("[bronze] Change an item's type"))
+    @commands.command(brief=_("Change an item's type"))
     @locale_doc
     async def weapontype(self, ctx, itemid: int, new_type: str.title):
         _(
@@ -387,15 +386,19 @@ class Patreon(commands.Cog):
             You may not change a two-handed item into a one-handed one, or vice versa.
             This proves useful for merging items.
 
-            Only bronze (or above) tier patrons can use this command."""
+            Users can spend a weapon token to use this command.
+            Patreon tier 4 and above can use it for free."""
         )
-
-        # First, fetch the current value of weapontoken for the user
 
         item_type = ItemType.from_string(new_type)
         if item_type is None:
             return await ctx.send(_("Invalid type."))
         hand = item_type.get_hand().value
+        effective_tier = await self.bot.get_effective_donator_tier(
+            ctx.author.id,
+            sync_profile=True,
+        )
+        remaining_tokens = None
         async with self.bot.pool.acquire() as conn:
             item = await conn.fetchrow(
                 "SELECT * FROM inventory i JOIN allitems ai ON (i.item=ai.id) WHERE"
@@ -425,75 +428,57 @@ class Patreon(commands.Cog):
                     )
                 )
             stat = item["damage"] or item["armor"]
-            result = await self.bot.pool.fetchval('SELECT tier FROM profile WHERE "user" = $1;', ctx.author.id)
-
-            if result != 4:
-
-                if item["hand"] == "both" and stat > 40:
-                    weapontoken_value = await self.bot.pool.fetchval(
+            async with conn.transaction():
+                if effective_tier < 4:
+                    weapontoken_value = await conn.fetchval(
                         'SELECT weapontoken FROM profile WHERE "user"=$1;',
-                        ctx.author.id
+                        ctx.author.id,
                     )
+                    try:
+                        weapontoken_value = int(weapontoken_value or 0)
+                    except (TypeError, ValueError):
+                        weapontoken_value = 0
 
-                    # If the value is 0 or below, you can return
                     if weapontoken_value <= 0:
-                        await ctx.send("You don't have enough Weapon tokens!")
-                        return
+                        return await ctx.send(_("You don't have enough weapon tokens!"))
 
-                    weapontoken_value = weapontoken_value - 1
-                    await ctx.send(f"You have {weapontoken_value} token(s) left!")
-
-                    await self.bot.pool.execute(
-                        'UPDATE profile SET weapontoken = weapontoken - 1 WHERE "user"=$1;',
-                        ctx.author.id
+                    update_result = await conn.execute(
+                        'UPDATE profile SET weapontoken = weapontoken - 1 WHERE "user"=$1 AND weapontoken > 0;',
+                        ctx.author.id,
                     )
+                    if update_result != "UPDATE 1":
+                        return await ctx.send(_("You don't have enough weapon tokens!"))
+                    remaining_tokens = weapontoken_value - 1
 
-                # Check if the item is not both
-                if item["hand"] != "both":
-                    if stat > 40:
-                        weapontoken_value = await self.bot.pool.fetchval(
-                            'SELECT weapontoken FROM profile WHERE "user"=$1;',
-                            ctx.author.id
-                        )
+                await conn.execute(
+                    'UPDATE allitems SET "type"=$1, "original_type"=CASE WHEN'
+                    ' "original_type" IS NULL THEN "type" ELSE "original_type" END,'
+                    ' "damage"=$2, "armor"=$3, "hand"=$4 WHERE "id"=$5;',
+                    new_type,
+                    0 if new_type == "Shield" else stat,
+                    stat if new_type == "Shield" else 0,
+                    hand,
+                    itemid,
+                )
+                await conn.execute(
+                    'UPDATE inventory SET "equipped"=$1 WHERE "item"=$2;', False, itemid
+                )
 
-                        # If the value is 0 or below, you can return
-                        if weapontoken_value <= 0:
-                            await ctx.send("You don't have enough Weapon tokens!")
-                            return
-
-                        weapontoken_value = weapontoken_value - 1
-                        await ctx.send(f"You have {weapontoken_value} token(s) left!")
-
-                        await self.bot.pool.execute(
-                            'UPDATE profile SET weapontoken = weapontoken - 1 WHERE "user"=$1;',
-                            ctx.author.id
-                        )
-
-                # Otherwise, decrement weapontoken by 1
-
-            await conn.execute(
-                'UPDATE allitems SET "type"=$1, "original_type"=CASE WHEN'
-                ' "original_type" IS NULL THEN "type" ELSE "original_type" END,'
-                ' "damage"=$2, "armor"=$3, "hand"=$4 WHERE "id"=$5;',
-                new_type,
-                0 if new_type == "Shield" else stat,
-                stat if new_type == "Shield" else 0,
-                hand,
-                itemid,
-            )
-            await conn.execute(
-                'UPDATE inventory SET "equipped"=$1 WHERE "item"=$2;', False, itemid
-            )
-        await ctx.send(
-            _("The item with the ID `{itemid}` is now a `{itemtype}`.").format(
-                itemid=itemid, itemtype=new_type
-            )
+        message = _("The item with the ID `{itemid}` is now a `{itemtype}`.").format(
+            itemid=itemid, itemtype=new_type
         )
+        if remaining_tokens is not None:
+            message = (
+                f"{message}\n"
+                + _("You have {tokens} weapon token(s) left.").format(
+                    tokens=remaining_tokens
+                )
+            )
+        await ctx.send(message)
 
-    @is_patron("gold")
     @has_char()
     @next_day_cooldown()
-    @commands.command(brief=_("[gold] Receive a daily booster"), aliases=["donatordaily"])
+    @commands.command(brief=_("Receive a daily booster"), aliases=["donatordaily"])
     @locale_doc
     async def boosterdaily(self, ctx):
         _(
@@ -680,26 +665,20 @@ class Patreon(commands.Cog):
 
     @is_patron()
     @is_guild_leader()
-    @commands.command(brief=_("[basic] Upgrade your guild"))
+    @commands.command(brief=_("[tier 1] Upgrade your guild"))
     @locale_doc
     async def updateguild(self, ctx):
         _(
             """Update your guild member limit and bank size according to your donation tier.
 
-            Gold (and above) Donators have their bank space quintupled (x5), Silver Donators have theirs doubled.
-            The member limit is set to 100 regardless of donation tier.
+            Patreon tier 1 and above can use this command.
+            The member limit is set to 100 and the bank space is always quintupled (x5).
 
             ⚠ To use this, you have to be the leader of a guild, not just a member.
 
-            Only basic (or above) tier patrons can use this command."""
+            Only tier 1 (or above) patrons can use this command."""
         )
-        # Silver x2, Gold x5
-        if await user_is_patron(self.bot, ctx.author, "gold"):
-            m = 5
-        elif await user_is_patron(self.bot, ctx.author, "silver"):
-            m = 2
-        else:
-            m = 1
+        m = 5
         async with self.bot.pool.acquire() as conn:
             old = await conn.fetchrow(
                 'SELECT * FROM guild WHERE "leader"=$1;', ctx.author.id

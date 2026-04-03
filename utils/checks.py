@@ -531,20 +531,12 @@ async def has_money(bot: "Bot", userid: int, money: int, conn=None) -> bool:
 
 def is_patreon(min_tier: int = 1) -> "_CheckDecorator":
     async def predicate(ctx: Context) -> bool:
-        tier = await ctx.bot.pool.fetchval(
-            'SELECT tier FROM profile WHERE "user" = $1;', ctx.author.id
+        resolved_tier = await ctx.bot.get_effective_donator_tier(
+            ctx.author.id,
+            sync_profile=True,
         )
-        try:
-            resolved_tier = int(tier or 0)
-        except (TypeError, ValueError):
-            resolved_tier = 0
 
         if resolved_tier >= min_tier:
-            return True
-
-        if min_tier <= DonatorRank.basic.value and await user_is_patron(
-            ctx.bot, ctx.author, "basic"
-        ):
             return True
 
         try:
@@ -592,8 +584,11 @@ def is_patron(role: str = "basic") -> "_CheckDecorator":
 async def user_is_patron(bot: "Bot", user: discord.User, role: str = "basic") -> bool:
     required_rank = getattr(DonatorRank, role)
     user_id = user.id if hasattr(user, "id") else int(user)
-    rank = await bot.get_donator_rank(user_id)
-    return bool(rank and rank >= required_rank)
+    effective_tier = await bot.get_effective_donator_tier(
+        user_id,
+        sync_profile=True,
+    )
+    return effective_tier >= required_rank.value
 
 
 def is_supporter() -> "_CheckDecorator":

@@ -33,7 +33,6 @@ from classes.classes import Ritualist
 from classes.classes import from_string as class_from_string
 from classes.context import Context
 from classes.converters import IntFromTo
-from classes.enums import DonatorRank
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils import items
 from utils import misc as rpgtools
@@ -1447,13 +1446,17 @@ class Adventure(commands.Cog):
 
         if buildings := await self.bot.get_city_buildings(ctx.character_data["guild"]):
             time -= time * (buildings["adventure_building"] / 100)
-        if user_rank := await self.bot.get_donator_rank(ctx.author.id):
-            if user_rank >= DonatorRank.emerald:
-                time = time * 0.75
-            elif user_rank >= DonatorRank.gold:
-                time = time * 0.9
-            elif user_rank >= DonatorRank.silver:
-                time = time * 0.95
+        effective_tier = await self.bot.get_effective_donator_tier(
+            ctx.author.id,
+            sync_profile=True,
+        )
+        effective_tier = 4 # Cannot be fucked isolating it.
+        if effective_tier >= 4:
+            time = time * 0.75
+        elif effective_tier >= 3:
+            time = time * 0.9
+        elif effective_tier >= 2:
+            time = time * 0.95
         if await self.bot.get_booster(ctx.author, "time"):
             time = time / 2
 

@@ -1122,6 +1122,92 @@ class Bot(commands.AutoShardedBot):
 
         return None
 
+    @staticmethod
+    def _coerce_positive_int(value):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    def _get_numeric_patreon_role_sources(self):
+        sources = []
+        ids_section = getattr(self.config, "ids", None)
+
+        patreon_core = self.get_cog("PatreonCore")
+        if patreon_core is not None:
+            guild_id = self._coerce_positive_int(getattr(patreon_core, "guild_id", None))
+            role_mapping = {}
+            tier_role_mapping = getattr(patreon_core, "tier_role_mapping", {})
+            tier_level_mapping = getattr(patreon_core, "tier_level_mapping", {})
+            if isinstance(tier_role_mapping, dict) and isinstance(tier_level_mapping, dict):
+                for tier_id, role_id in tier_role_mapping.items():
+                    parsed_role_id = self._coerce_positive_int(role_id)
+                    parsed_tier = self._coerce_positive_int(tier_level_mapping.get(tier_id))
+                    if parsed_role_id and parsed_tier:
+                        role_mapping[parsed_role_id] = min(parsed_tier, 4)
+            if guild_id and role_mapping:
+                sources.append((guild_id, role_mapping))
+
+        patreonstuff_ids = getattr(ids_section, "patreonstuff", {}) if ids_section else {}
+        if isinstance(patreonstuff_ids, dict):
+            guild_id = self._coerce_positive_int(patreonstuff_ids.get("guild_id"))
+            raw_role_mapping = patreonstuff_ids.get("role_tier_mapping", {})
+            role_mapping = {}
+            if isinstance(raw_role_mapping, dict):
+                for role_id, tier in raw_role_mapping.items():
+                    parsed_role_id = self._coerce_positive_int(role_id)
+                    parsed_tier = self._coerce_positive_int(tier)
+                    if parsed_role_id and parsed_tier:
+                        role_mapping[parsed_role_id] = min(parsed_tier, 4)
+            if guild_id and role_mapping:
+                sources.append((guild_id, role_mapping))
+
+        legacy_role_mapping = {}
+        legacy_tier_names = {
+            "basic": 1,
+            "bronze": 2,
+            "silver": 3,
+            "gold": 4,
+        }
+        for role in self.config.external.donator_roles:
+            parsed_role_id = self._coerce_positive_int(getattr(role, "id", None))
+            parsed_tier = legacy_tier_names.get(str(getattr(role, "tier", "")).strip().lower())
+            if parsed_role_id and parsed_tier:
+                legacy_role_mapping[parsed_role_id] = parsed_tier
+        if self.support_server_id and legacy_role_mapping:
+            sources.append((self.support_server_id, legacy_role_mapping))
+
+        return sources
+
+    def _resolve_numeric_patreon_tier_from_role_ids(self, member_roles):
+        highest_tier = 0
+        member_role_ids = {int(role_id) for role_id in member_roles}
+
+        for _guild_id, role_mapping in self._get_numeric_patreon_role_sources():
+            for role_id, tier in role_mapping.items():
+                if role_id in member_role_ids:
+                    highest_tier = max(highest_tier, int(tier))
+
+        _booster_guild_id, booster_role_id = self._get_patreon_booster_membership_config()
+        if booster_role_id and booster_role_id in member_role_ids:
+            highest_tier = max(highest_tier, 1)
+
+        return highest_tier
+
+    def _get_patreon_tier_lookup_guild_ids(self):
+        guild_ids = []
+        for guild_id, _role_mapping in self._get_numeric_patreon_role_sources():
+            if guild_id and guild_id not in guild_ids:
+                guild_ids.append(guild_id)
+
+        booster_guild_id, _booster_role_id = self._get_patreon_booster_membership_config()
+        for guild_id in (self.support_server_id, booster_guild_id):
+            if guild_id and guild_id not in guild_ids:
+                guild_ids.append(guild_id)
+
+        return guild_ids
+
     @cache(maxsize=8096)
     async def get_donator_rank(self, user_id):
         booster_guild_id, _booster_role_id = self._get_patreon_booster_membership_config()
@@ -1146,6 +1232,53 @@ class Bot(commands.AutoShardedBot):
                 return rank
 
         return None if found_member else False
+
+    async def get_effective_donator_tier(self, user_id, *, sync_profile: bool = False) -> int:
+        user_id = user_id.id if isinstance(user_id, (discord.User, discord.Member)) else int(user_id)
+
+        row = await self.pool.fetchrow(
+            'SELECT "tier" FROM profile WHERE "user" = $1;',
+            user_id,
+        )
+        stored_tier = row["tier"] if row else 0
+        try:
+            effective_tier = int(stored_tier or 0)
+        except (TypeError, ValueError):
+            effective_tier = 0
+
+        role_tier = 0
+        found_member = False
+        for guild_id in self._get_patreon_tier_lookup_guild_ids():
+            try:
+                member = await self.http.get_member(guild_id, user_id)
+            except discord.NotFound:
+                continue
+
+            found_member = True
+            member_roles = [int(i) for i in member.get("roles", [])]
+            role_tier = max(role_tier, self._resolve_numeric_patreon_tier_from_role_ids(member_roles))
+
+        if role_tier < 1 and not found_member:
+            role_rank = await self.get_donator_rank(user_id)
+            if role_rank:
+                role_tier = max(role_tier, min(int(role_rank.value), 4))
+
+        effective_tier = max(effective_tier, role_tier)
+
+        if sync_profile and row is not None:
+            try:
+                stored_tier_value = int(stored_tier or 0)
+            except (TypeError, ValueError):
+                stored_tier_value = 0
+
+            if effective_tier > stored_tier_value:
+                await self.pool.execute(
+                    'UPDATE profile SET "tier" = $1 WHERE "user" = $2;',
+                    effective_tier,
+                    user_id,
+                )
+
+        return effective_tier
 
     async def get_damage_armor_for(
         self, user, items=None, classes=None, race=None, conn=None
