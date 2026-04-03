@@ -3496,25 +3496,28 @@ class Help(commands.Cog):
 
             Aliases such as `{prefix}booklet` and `{prefix}gettingstarted` open the same guide."""
         )
-        profile_row = None
         try:
-            profile_row_raw = await self.bot.pool.fetchrow(
-                'SELECT "class", "god", "race", "money", "dragoncoins", "reset_points" '
-                'FROM profile WHERE "user"=$1;',
-                ctx.author.id,
-            )
-            if profile_row_raw:
-                profile_row = dict(profile_row_raw)
-        except Exception:
             profile_row = None
+            try:
+                profile_row_raw = await self.bot.pool.fetchrow(
+                    'SELECT "class", "god", "race", "money", "dragoncoins", "reset_points" '
+                    'FROM profile WHERE "user"=$1;',
+                    ctx.author.id,
+                )
+                if profile_row_raw:
+                    profile_row = dict(profile_row_raw)
+            except Exception:
+                profile_row = None
 
-        sections = self._build_guidebook_sections(ctx.clean_prefix, profile_row=profile_row)
-        view = GuidebookView(
-            ctx=ctx,
-            sections=sections,
-            color=self.bot.config.game.primary_colour,
-        )
-        await view.start()
+            sections = self._build_guidebook_sections(ctx.clean_prefix, profile_row=profile_row)
+            view = GuidebookView(
+                ctx=ctx,
+                sections=sections,
+                color=self.bot.config.game.primary_colour,
+            )
+            await view.start()
+        except Exception as e:
+            await ctx.send(e)
 
     @is_supporter()
     @commands.command(brief=_("Allow someone/-thing to use help_me again"))
