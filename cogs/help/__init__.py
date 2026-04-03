@@ -17,6 +17,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import asyncio
+import inspect
 import math
 
 from collections import defaultdict
@@ -448,7 +449,56 @@ class Help(commands.Cog):
             for subcommand in sorted(command.commands, key=lambda cmd: cmd.name):
                 yield from self._walk_command_tree(subcommand)
 
-    def _build_command_atlas_pages(self, prefix: str) -> list[dict]:
+    @staticmethod
+    def _extract_command_doc_parts(command: commands.Command) -> tuple[str, str]:
+        raw_doc = inspect.getdoc(command.callback) or command.help or ""
+        if not raw_doc:
+            return ("No detailed help text is available for this command.", "")
+
+        paragraphs = []
+        current = []
+        for raw_line in raw_doc.splitlines():
+            line = raw_line.strip()
+            if not line:
+                if current:
+                    paragraphs.append(" ".join(current).strip())
+                    current = []
+                continue
+            current.append(line)
+        if current:
+            paragraphs.append(" ".join(current).strip())
+
+        if not paragraphs:
+            return ("No detailed help text is available for this command.", "")
+
+        argument_notes = ""
+        summary_parts = []
+        for paragraph in paragraphs:
+            normalized = paragraph.strip()
+            if not normalized:
+                continue
+            if normalized.startswith(("`<", "`[", "<", "[")):
+                if not argument_notes:
+                    argument_notes = normalized
+                continue
+            summary_parts.append(normalized)
+
+        if not summary_parts:
+            summary_parts = paragraphs[:]
+
+        summary = " ".join(summary_parts[:2]).strip()
+        summary = summary.replace("`", "'")
+        if len(summary) > 360:
+            summary = f"{summary[:357]}..."
+
+        if argument_notes:
+            argument_notes = argument_notes.replace("`", "'")
+            if len(argument_notes) > 140:
+                argument_notes = f"{argument_notes[:137]}..."
+
+        return summary, argument_notes
+
+    def _collect_public_command_metadata(self, prefix: str) -> tuple[dict[str, list[dict]], list[str]]:
         commands_by_cog = defaultdict(list)
         seen = set()
 
@@ -469,25 +519,45 @@ class Help(commands.Cog):
                 brief = str(command.brief or "No brief description.").replace("\n", " ").strip()
                 if len(brief) > 90:
                     brief = f"{brief[:87]}..."
+                doc_summary, argument_notes = self._extract_command_doc_parts(command)
 
                 cog_name = command.cog_name or "General"
-                commands_by_cog[cog_name].append(f"• `{usage}` - {brief}")
+                commands_by_cog[cog_name].append(
+                    {
+                        "command": command,
+                        "qualified": qualified,
+                        "usage": usage,
+                        "brief": brief,
+                        "doc_summary": doc_summary,
+                        "argument_notes": argument_notes,
+                    }
+                )
 
         preferred_order = [
             "Profile",
             "Classes",
+            "Races",
             "Adventure",
             "Battles",
+            "Raid",
             "Gods",
+            "Crates",
+            "Store",
+            "Vote",
             "Trading",
+            "BuyOrders",
             "Transaction",
             "Pets",
+            "Marriage",
             "Guild",
             "Alliance",
-            "Raid",
             "Tournament",
+            "Ranks",
             "AmuletCrafting",
-            "Crates",
+            "Scheduler",
+            "Server",
+            "Locale",
+            "Images",
             "Miscellaneous",
             "Help",
         ]
@@ -500,9 +570,20 @@ class Help(commands.Cog):
             )
         )
 
+        return commands_by_cog, ordered_cogs
+
+    def _build_command_atlas_pages(self, prefix: str) -> list[dict]:
+        commands_by_cog, ordered_cogs = self._collect_public_command_metadata(prefix)
+
         pages = []
         for cog_name in ordered_cogs:
-            lines = sorted(commands_by_cog[cog_name], key=lambda line: line.lower())
+            lines = sorted(
+                [
+                    f"• `{entry['usage']}` - {entry['brief']}"
+                    for entry in commands_by_cog[cog_name]
+                ],
+                key=lambda line: line.lower(),
+            )
             total_chunks = math.ceil(len(lines) / 4) if lines else 1
             for page_idx, line_chunk in enumerate(chunks(lines, 4), start=1):
                 pages.append(
@@ -531,6 +612,728 @@ class Help(commands.Cog):
                 }
             )
         return pages
+
+    def _build_command_group_indexes(
+        self, prefix: str, commands_by_cog: dict[str, list[dict]], ordered_cogs: list[str]
+    ) -> list[dict]:
+        category_map = {
+            "Starter & Progression": {
+                "description": "Character creation, leveling, baseline progression, and recurring rewards.",
+                "cogs": [
+                    "Profile",
+                    "Races",
+                    "Classes",
+                    "Adventure",
+                    "Gods",
+                    "Crates",
+                    "Store",
+                    "Vote",
+                    "Miscellaneous",
+                    "Help",
+                ],
+            },
+            "Combat & Challenges": {
+                "description": "PvP, raids, towers, pets, quest combat, and challenge modes.",
+                "cogs": [
+                    "Battles",
+                    "Raid",
+                    "Pets",
+                    "Guild",
+                    "Alliance",
+                    "Tournament",
+                    "Quests",
+                    "IceDragonChallenge",
+                    "SoulforgeDefender",
+                    "ElysiaTrials",
+                    "HorrorRaid",
+                    "Greg",
+                    "SlaySpire",
+                ],
+            },
+            "Economy & Social": {
+                "description": "Trading, buy orders, marriage/family, rankings, gifting, and account utilities.",
+                "cogs": [
+                    "Trading",
+                    "BuyOrders",
+                    "Transaction",
+                    "Marriage",
+                    "Ranks",
+                    "GiftForward",
+                    "Scheduler",
+                    "Server",
+                    "Locale",
+                    "ProfileCustomization",
+                    "Images",
+                    "Patreon",
+                    "PatreonCore",
+                    "PremiumShop",
+                ],
+            },
+            "Games & Side Modes": {
+                "description": "Casino, board/card games, party games, and other side activities.",
+                "cogs": [
+                    "Gambling",
+                    "DragonSlots",
+                    "Russian",
+                    "RRBeta",
+                    "ShotgunRoulette",
+                    "Poker",
+                    "Chess",
+                    "Battleships",
+                    "Trivia",
+                    "Maths",
+                    "Werewolf",
+                    "SinglePlayerWerewolf",
+                    "NewWerewolf",
+                    "HungerGames",
+                    "CAH",
+                    "MurderHouse",
+                    "Lotto",
+                ],
+            },
+            "Events & Special Systems": {
+                "description": "Seasonal content, special events, and late-game or experimental systems.",
+                "cogs": [
+                    "Halloween",
+                    "Wintersday",
+                    "LunarNewYear",
+                    "Easter",
+                    "Eastermanager",
+                    "Valentine",
+                    "PlagueEvent",
+                    "GlobalEvents",
+                    "Warmap",
+                    "Achievements",
+                    "Soulforge",
+                    "SoulforgeExtension",
+                    "ProcessSplice",
+                    "MonsterManager",
+                    "FableAssistant",
+                    "Custom",
+                    "Alt",
+                    "Story",
+                ],
+            },
+        }
+
+        def _format_cog_entry(cog_name: str) -> str:
+            entries = commands_by_cog.get(cog_name, [])
+            if not entries:
+                return ""
+            sample_commands = ", ".join(
+                f"`{prefix}{entry['qualified']}`" for entry in entries[:4]
+            )
+            extra_count = len(entries) - min(len(entries), 4)
+            if extra_count > 0:
+                sample_commands = f"{sample_commands}, +{extra_count} more"
+            return (
+                f"• **{cog_name}** ({len(entries)} commands)\n"
+                f"  Examples: {sample_commands}"
+            )
+
+        pages = []
+        used = set()
+        for category_name, config in category_map.items():
+            category_entries = []
+            for cog_name in config["cogs"]:
+                line = _format_cog_entry(cog_name)
+                if line:
+                    category_entries.append(line)
+                    used.add(cog_name)
+            if not category_entries:
+                continue
+            for page_idx, line_chunk in enumerate(chunks(category_entries, 6), start=1):
+                total_chunks = math.ceil(len(category_entries) / 6)
+                pages.append(
+                    {
+                        "title": f"{category_name} ({page_idx}/{total_chunks})",
+                        "description": config["description"],
+                        "fields": [
+                            {
+                                "name": "Indexed Command Groups",
+                                "value": "\n".join(line_chunk),
+                                "inline": False,
+                            }
+                        ],
+                    }
+                )
+
+        uncategorized = [name for name in ordered_cogs if name not in used]
+        if uncategorized:
+            uncategorized_entries = []
+            for cog_name in uncategorized:
+                line = _format_cog_entry(cog_name)
+                if line:
+                    uncategorized_entries.append(line)
+            for page_idx, line_chunk in enumerate(chunks(uncategorized_entries, 6), start=1):
+                total_chunks = math.ceil(len(uncategorized_entries) / 6)
+                pages.append(
+                    {
+                        "title": f"Additional Command Groups ({page_idx}/{total_chunks})",
+                        "description": (
+                            "Public command groups discovered from the bot that did not fit one of the main handbook buckets."
+                        ),
+                        "fields": [
+                            {
+                                "name": "Indexed Command Groups",
+                                "value": "\n".join(line_chunk),
+                                "inline": False,
+                            }
+                        ],
+                    }
+                )
+
+        if not pages:
+            pages.append(
+                {
+                    "title": "Command Group Index",
+                    "description": "No public command groups were discovered for this build.",
+                    "fields": [],
+                }
+            )
+        return pages
+
+    def _build_command_writeup_pages(
+        self, prefix: str, commands_by_cog: dict[str, list[dict]], ordered_cogs: list[str]
+    ) -> list[dict]:
+        pages = []
+
+        for cog_name in ordered_cogs:
+            entries = sorted(
+                commands_by_cog.get(cog_name, []),
+                key=lambda entry: entry["qualified"].lower(),
+            )
+            if not entries:
+                continue
+
+            total_chunks = math.ceil(len(entries) / 2)
+            for page_idx, chunk_entries in enumerate(chunks(entries, 2), start=1):
+                fields = []
+                for entry in chunk_entries:
+                    lines = [
+                        f"Usage: `{entry['usage']}`",
+                        entry["doc_summary"],
+                    ]
+                    if entry.get("argument_notes"):
+                        lines.append(f"Args: {entry['argument_notes']}")
+                    value = "\n".join(lines)
+                    if len(value) > 1000:
+                        value = f"{value[:997]}..."
+                    fields.append(
+                        {
+                            "name": entry["qualified"],
+                            "value": value,
+                            "inline": False,
+                        }
+                    )
+
+                pages.append(
+                    {
+                        "title": f"{cog_name} Writeups ({page_idx}/{total_chunks})",
+                        "description": (
+                            f"Doc-based handbook notes for public commands in **{cog_name}**. "
+                            f"These summaries are derived from the command help text and docstrings."
+                        ),
+                        "fields": fields,
+                    }
+                )
+
+        if not pages:
+            pages.append(
+                {
+                    "title": "Command Writeups",
+                    "description": "No public command documentation was discovered for this build.",
+                    "fields": [],
+                }
+            )
+
+        return pages
+
+    @staticmethod
+    def _find_command_entry(
+        commands_by_cog: dict[str, list[dict]], qualified_name: str
+    ) -> dict | None:
+        for entries in commands_by_cog.values():
+            for entry in entries:
+                if entry["qualified"] == qualified_name:
+                    return entry
+        return None
+
+    def _build_doc_digest_page(
+        self,
+        *,
+        title: str,
+        description: str,
+        prefix: str,
+        commands_by_cog: dict[str, list[dict]],
+        qualified_names: list[str],
+    ) -> dict | None:
+        fields = []
+        for qualified_name in qualified_names:
+            entry = self._find_command_entry(commands_by_cog, qualified_name)
+            if not entry:
+                continue
+
+            lines = [f"Usage: `{entry['usage']}`", entry["doc_summary"]]
+            if entry.get("argument_notes"):
+                lines.append(f"Args: {entry['argument_notes']}")
+            value = "\n".join(lines)
+            if len(value) > 900:
+                value = f"{value[:897]}..."
+            fields.append(
+                {
+                    "name": qualified_name,
+                    "value": value,
+                    "inline": False,
+                }
+            )
+
+        if not fields:
+            return None
+
+        return {
+            "title": title,
+            "description": description,
+            "fields": fields,
+        }
+
+    def _extend_sections_with_doc_digests(
+        self, sections: list[dict], prefix: str, commands_by_cog: dict[str, list[dict]]
+    ) -> None:
+        section_page_map = {
+            "Getting Started": [
+                {
+                    "title": "Doc Notes: Character Setup",
+                    "description": "These summaries come from the commands' own help text, so the booklet matches the real bot behavior.",
+                    "commands": ["create", "profile", "race", "class"],
+                },
+            ],
+            "Progression Loop": [
+                {
+                    "title": "Doc Notes: Leveling Through Adventures",
+                    "description": "The progression loop below is derived from the actual docs for your main early-game commands.",
+                    "commands": ["adventures", "adventure", "status", "xp", "economy", "exchange"],
+                },
+                {
+                    "title": "Doc Notes: Gear Improvement",
+                    "description": "These are the commands that convert successful runs into permanent account growth.",
+                    "commands": ["inventory", "items", "equip", "merge", "upgrade"],
+                },
+            ],
+            "Combat Systems": [
+                {
+                    "title": "Doc Notes: PvP and Raid Battles",
+                    "description": "These are the public combat commands players hit once they move beyond the basic adventure loop.",
+                    "commands": [
+                        "raidbattle",
+                        "raidbattle2v1",
+                        "raidbattle2v2",
+                        "raidstats",
+                    ],
+                },
+                {
+                    "title": "Doc Notes: Raid Power Growth",
+                    "description": "Raid stat progression has its own upgrade path, so the handbook now uses the exact command docs.",
+                    "commands": [
+                        "increase",
+                        "increase damage",
+                        "increase health",
+                        "increase defense",
+                        "joinraid",
+                        "rspref",
+                        "raid",
+                    ],
+                },
+            ],
+            "Classes": [
+                {
+                    "title": "Doc Notes: Class Progression",
+                    "description": "These summaries explain class setup and evolution using the commands' own help text.",
+                    "commands": ["class", "myclass", "evolve", "tree"],
+                },
+            ],
+            "Gods & Favor": [
+                {
+                    "title": "Doc Notes: God Progression",
+                    "description": "The god system has long-term consequences, so these notes come directly from the command docs.",
+                    "commands": ["follow", "unfollow", "pray", "sacrifice", "favor", "followers"],
+                },
+            ],
+            "Economy & Trading": [
+                {
+                    "title": "Doc Notes: Money, Loot, and Market Flow",
+                    "description": "This is the account economy loop as described by the real command help text.",
+                    "commands": ["economy", "items", "exchange", "sell", "shop", "offer", "merch"],
+                },
+            ],
+            "Group Play": [
+                {
+                    "title": "Doc Notes: Guild Setup and Membership",
+                    "description": "These commands explain how players form guilds, inspect them, and manage member access.",
+                    "commands": [
+                        "guild",
+                        "guild info",
+                        "guild members",
+                        "guild create",
+                        "guild invite",
+                        "guild leave",
+                        "guild kick",
+                    ],
+                },
+                {
+                    "title": "Doc Notes: Guild Progression and Funding",
+                    "description": "This is the real doc-backed workflow for guild banking, events, and guild adventures.",
+                    "commands": [
+                        "guild invest",
+                        "guild pay",
+                        "guild distribute",
+                        "guild upgrade",
+                        "guild adventure",
+                        "guild status",
+                        "guild timers",
+                        "guild event",
+                        "guild claim",
+                    ],
+                },
+                {
+                    "title": "Doc Notes: Alliance and City War",
+                    "description": "Alliance docs are spread across city ownership, defenses, guards, and attack preparation.",
+                    "commands": [
+                        "cities",
+                        "alliance",
+                        "alliance cityhelp",
+                        "alliance cityhelp attack",
+                        "alliance cityhelp defend",
+                        "alliance build",
+                        "alliance build building",
+                        "alliance build defense",
+                        "alliance buildings",
+                        "alliance defenses",
+                        "alliance guards",
+                        "alliance guards add",
+                        "alliance guards pet",
+                        "alliance guards pet set",
+                        "alliance occupy",
+                        "alliance attack",
+                        "alliance timers",
+                    ],
+                },
+                {
+                    "title": "Doc Notes: Shared Objectives and Quest Flow",
+                    "description": "These are the repeatable co-op command paths players use for quests and alliance-scale objectives.",
+                    "commands": [
+                        "quests",
+                        "quests greg",
+                        "quests accept",
+                        "quests turnin",
+                        "quests abandon",
+                    ],
+                },
+            ],
+            "Race & Identity": [
+                {
+                    "title": "Doc Notes: Identity and Profile Control",
+                    "description": "These commands shape how your character is configured and displayed.",
+                    "commands": ["race", "profilepref", "rename", "color", "badges", "public", "private"],
+                },
+            ],
+            "Daily, Vote, Crates, Boosters": [
+                {
+                    "title": "Doc Notes: Recurring Rewards",
+                    "description": "These summaries come from the commands players should hit on a regular schedule.",
+                    "commands": ["daily", "vote", "crates", "open", "store", "boosters", "activate"],
+                },
+            ],
+            "Pets & Eggs": [
+                {
+                    "title": "Doc Notes: Pet Overview and Battle Readiness",
+                    "description": "These docstrings cover the commands that introduce pets, eggs, and battle participation.",
+                    "commands": [
+                        "pets",
+                        "pets help",
+                        "pets eggs",
+                        "pets status",
+                        "pets equip",
+                        "pets unequip",
+                        "pets rename",
+                        "pets alias",
+                    ],
+                },
+                {
+                    "title": "Doc Notes: Care, Trust, and Daily Growth",
+                    "description": "This page uses the actual help text for feeding, bonding, and training loops.",
+                    "commands": [
+                        "pets all",
+                        "pets feed",
+                        "pets pet",
+                        "pets play",
+                        "pets treat",
+                        "pets train",
+                        "pets feedhelp",
+                    ],
+                },
+                {
+                    "title": "Doc Notes: Skills, Trading, and Daycare",
+                    "description": "The pet system expands into build planning, trading, and boarding once you have multiple pets.",
+                    "commands": [
+                        "pets skills",
+                        "pets learn",
+                        "pets skillinfo",
+                        "pets skilllist",
+                        "pets trade",
+                        "pets sell",
+                        "pets release",
+                        "pets daycare",
+                        "pets daycare help",
+                        "pets daycare browse",
+                        "pets daycare board",
+                        "pets daycare collect",
+                        "pets daycare ledger",
+                    ],
+                },
+            ],
+            "Advanced Systems": [
+                {
+                    "title": "Doc Notes: Amulet Crafting",
+                    "description": "These doc-backed notes cover the full amulet loop from resource checks to crafting and selling.",
+                    "commands": [
+                        "amulet",
+                        "amulet help",
+                        "amulet available",
+                        "amulet resources",
+                        "amulet recipe",
+                        "amulet craft",
+                        "amulet equip",
+                        "amulet unequip",
+                        "amulet sell_prices",
+                        "amulet sell",
+                    ],
+                },
+                {
+                    "title": "Doc Notes: Profile and Language Controls",
+                    "description": "These commands are not combat power, but they do control persistent account setup and readability.",
+                    "commands": [
+                        "profilecustom",
+                        "profilereset",
+                        "language",
+                        "language set",
+                    ],
+                },
+            ],
+            "Gambling & Minigames": [
+                {
+                    "title": "Doc Notes: Wagers and Quick Games",
+                    "description": "These are the core gambling commands with real docs instead of handbook summaries.",
+                    "commands": [
+                        "roulette",
+                        "roulette table",
+                        "blackjack",
+                        "flip",
+                        "bet",
+                        "draw",
+                        "edraw",
+                    ],
+                },
+                {
+                    "title": "Doc Notes: Card Games and Side Modes",
+                    "description": "Use these when you want the appendix to explain side modes from the actual command text.",
+                    "commands": [
+                        "pokerdraw",
+                        "fivecarddraw",
+                        "dos",
+                        "farkle",
+                        "farklehelp",
+                        "8ball",
+                    ],
+                },
+            ],
+            "Battle Tower Deep Dive": [
+                {
+                    "title": "Doc Notes: Battle Tower Core",
+                    "description": "These are the real command docs for starting, checking, and running the main tower.",
+                    "commands": [
+                        "battletower",
+                        "battletower start",
+                        "battletower progress",
+                        "battletower fight",
+                        "battletower toggle_dialogue",
+                    ],
+                },
+                {
+                    "title": "Doc Notes: Jury Tower",
+                    "description": "Jury Tower has its own rule set, so it gets a separate doc-backed page.",
+                    "commands": [
+                        "jurytower",
+                        "jurytower help",
+                        "jurytower score",
+                        "jurytower start",
+                        "jurytower progress",
+                        "jurytower shop",
+                        "jurytower buy",
+                        "jurytower fight",
+                    ],
+                },
+            ],
+            "Couples Battle Tower": [
+                {
+                    "title": "Doc Notes: Couples Tower Commands",
+                    "description": "These summaries come from the actual duo-tower command docs.",
+                    "commands": [
+                        "couples_battletower",
+                        "couples_battletower start",
+                        "couples_battletower progress",
+                        "couples_battletower dialogue",
+                        "couples_battletower preview",
+                        "couples_battletower begin",
+                        "couples_battletower help",
+                    ],
+                },
+            ],
+            "Ice Dragon Challenge": [
+                {
+                    "title": "Doc Notes: Dragon Challenge Flow",
+                    "description": "The Ice Dragon system now points directly at its real party, leaderboard, and reset docs.",
+                    "commands": [
+                        "dragonchallenge",
+                        "dragonchallenge party",
+                        "dragonchallenge leaderboard",
+                        "dragonchallenge damageleaderboard",
+                        "dragonchallenge reset",
+                    ],
+                },
+            ],
+            "PvE Pet Combat": [
+                {
+                    "title": "Doc Notes: PvE Routing and Location Control",
+                    "description": "These commands drive encounter selection, scouting, and location defaults.",
+                    "commands": [
+                        "pve",
+                        "scout",
+                        "pvelocations",
+                        "pveinfo",
+                        "pvedefault",
+                    ],
+                },
+                {
+                    "title": "Doc Notes: PvE Battle Preferences and Pet Integration",
+                    "description": "These docs cover the battle options that matter once pets are part of your PvE loop.",
+                    "commands": [
+                        "battlebars",
+                        "pvesplice",
+                        "pets equip",
+                        "pets unequip",
+                        "pets status",
+                        "pets skills",
+                    ],
+                },
+            ],
+            "Egg Lifecycle": [
+                {
+                    "title": "Doc Notes: Egg Handling and Ownership",
+                    "description": "These are the exact commands players use to inspect, move, or permanently remove eggs.",
+                    "commands": [
+                        "pets eggs",
+                        "pets trade",
+                        "pets sell",
+                        "pets release",
+                    ],
+                },
+            ],
+            "Soulforge & Splice": [
+                {
+                    "title": "Doc Notes: Soulforge Flow",
+                    "description": "Late-game Soulforge progression is doc-heavy, so this section now reflects the actual command descriptions.",
+                    "commands": ["soulforge", "soulforgeguide", "soulforgecommands", "forgesoulforge", "splice", "splicestatus", "splices", "forgegodpet"],
+                },
+            ],
+            "Rankings & Achievements": [
+                {
+                    "title": "Doc Notes: Leaderboards",
+                    "description": "These commands expose the main public rankings across wealth, XP, PvP, tower, and dragon systems.",
+                    "commands": [
+                        "richest",
+                        "highscore",
+                        "pvpstats",
+                        "battletowerlb",
+                        "lovers",
+                        "coupleslb",
+                        "totalboard",
+                        "weeklyboard",
+                    ],
+                },
+                {
+                    "title": "Doc Notes: Achievement Tracking",
+                    "description": "This is the command surface for checking long-run completion progress.",
+                    "commands": ["achievement"],
+                },
+            ],
+            "Seasonal & Event Systems": [
+                {
+                    "title": "Doc Notes: Halloween and Wintersday",
+                    "description": "These doc pages cover the seasonal commands players actually use when those events are active.",
+                    "commands": [
+                        "trickortreat",
+                        "spookyshop",
+                        "spookyshop buy",
+                        "spookyshop bal",
+                        "yummy",
+                        "bags",
+                        "calendar",
+                        "calendar open",
+                        "xmasshop",
+                        "xmasshop buy",
+                        "snowflakes",
+                        "combine",
+                    ],
+                },
+                {
+                    "title": "Doc Notes: Lunar New Year and Valentine",
+                    "description": "These command docs explain the bag, shop, and partner-gifting loops for seasonal events.",
+                    "commands": [
+                        "lunarnewyear",
+                        "lunarnewyear buy",
+                        "lunarnewyear bal",
+                        "openlunar",
+                        "lunarbagcount",
+                        "valentine",
+                        "chocolate",
+                    ],
+                },
+                {
+                    "title": "Doc Notes: Easter Guardian Trials",
+                    "description": "Easter is its own full event system, so the handbook now includes the real subcommand docs.",
+                    "commands": [
+                        "easter",
+                        "easter help",
+                        "easter join",
+                        "easter abilities",
+                        "easter customize",
+                        "easter collect",
+                        "easter stats",
+                        "easter battle",
+                        "easter upgrade",
+                        "easter vote",
+                        "easter leaderboard",
+                    ],
+                },
+            ],
+        }
+
+        for section in sections:
+            page_specs = section_page_map.get(section.get("label"))
+            if not page_specs:
+                continue
+
+            for page_spec in page_specs:
+                page = self._build_doc_digest_page(
+                    title=page_spec["title"],
+                    description=page_spec["description"],
+                    prefix=prefix,
+                    commands_by_cog=commands_by_cog,
+                    qualified_names=page_spec["commands"],
+                )
+                if page:
+                    section.setdefault("pages", []).append(page)
 
     def _build_next_steps_section(self, prefix: str, profile_row) -> dict:
         if not profile_row:
@@ -822,11 +1625,231 @@ class Help(commands.Cog):
 
         return guide
 
+    def _build_guidebook_index_section(self, prefix: str, sections: list[dict]) -> dict:
+        section_lookup = {section["label"]: section for section in sections}
+        section_numbers = {
+            section["label"]: idx + 2 for idx, section in enumerate(sections)
+        }
+
+        def _section_lines(labels: list[str]) -> str:
+            lines = []
+            for label in labels:
+                section = section_lookup.get(label)
+                if not section:
+                    continue
+                page_count = len(section.get("pages", []))
+                page_word = "page" if page_count == 1 else "pages"
+                lines.append(
+                    f"• {section_numbers[label]}. {section['emoji']} **{section['label']}**"
+                    f" ({page_count} {page_word}): {section['summary']}"
+                )
+            return "\n".join(lines) if lines else "No sections available."
+
+        return {
+            "label": "Guide Index",
+            "summary": "Master contents pages for the full handbook, from starter flow to endgame systems.",
+            "emoji": "📖",
+            "pages": [
+                {
+                    "title": "How To Use This Booklet",
+                    "description": (
+                        "Use the dropdown to jump between topics, or the buttons to read page by page."
+                    ),
+                    "fields": [
+                        {
+                            "name": "Start Here First",
+                            "value": (
+                                f"1. `{prefix}create`\n"
+                                f"2. `{prefix}profile`\n"
+                                f"3. `{prefix}race`\n"
+                                f"4. `{prefix}adventures`\n"
+                                f"5. `{prefix}adventure 1`\n"
+                                f"6. `{prefix}status`\n"
+                                f"7. `{prefix}daily` and `{prefix}vote`"
+                            ),
+                            "inline": False,
+                        },
+                        {
+                            "name": "Important Early Warnings",
+                            "value": (
+                                f"• `{prefix}follow` is useful, but it changes luck and uses reset-point logic\n"
+                                f"• `{prefix}race` should match the kind of build you want to play\n"
+                                "• Do not spend heavily on random upgrades before your farming loop feels stable"
+                            ),
+                            "inline": False,
+                        },
+                    ],
+                },
+                {
+                    "title": "New Player Command Index",
+                    "description": "These are the commands most players need in their first few sessions.",
+                    "fields": [
+                        {
+                            "name": "Character Setup",
+                            "value": (
+                                f"• `{prefix}create` create your character\n"
+                                f"• `{prefix}profile` inspect stats, money, luck, and progress\n"
+                                f"• `{prefix}race` choose your stat split\n"
+                                f"• `{prefix}class` choose your class path"
+                            ),
+                            "inline": False,
+                        },
+                        {
+                            "name": "Leveling and Progression",
+                            "value": (
+                                f"• `{prefix}adventures` preview what levels you can clear\n"
+                                f"• `{prefix}adventure <level>` start an adventure run\n"
+                                f"• `{prefix}status` check whether your run finished\n"
+                                f"• `{prefix}xp` and `{prefix}exchange` keep your growth moving"
+                            ),
+                            "inline": False,
+                        },
+                        {
+                            "name": "Free Rewards and Long-Term Systems",
+                            "value": (
+                                f"• `{prefix}daily` for your daily reward and streak\n"
+                                f"• `{prefix}vote` for crate rewards\n"
+                                f"• `{prefix}crates` / `{prefix}open <rarity>` to use those rewards\n"
+                                f"• `{prefix}follow`, `{prefix}pray`, `{prefix}sacrifice` when you are ready for god systems"
+                            ),
+                            "inline": False,
+                        },
+                    ],
+                },
+                {
+                    "title": "Leveling Basics",
+                    "description": "Your character level controls how far you can push adventure content.",
+                    "fields": [
+                        {
+                            "name": "How Leveling Works",
+                            "value": (
+                                "• You generally need to match the adventure number with your level to run it\n"
+                                "• Better gear, race choice, class setup, and luck improve success rates\n"
+                                "• Loot and rewards from your PvE loop feed back into stronger future runs"
+                            ),
+                            "inline": False,
+                        },
+                        {
+                            "name": "Simple Early Loop",
+                            "value": (
+                                f"1. `{prefix}adventures` to find a good success chance\n"
+                                f"2. `{prefix}adventure <best_level>` to run content safely\n"
+                                f"3. `{prefix}status` when the timer is up\n"
+                                f"4. `{prefix}exchange` loot for XP or money\n"
+                                f"5. `{prefix}equip`, `{prefix}merge`, or `{prefix}upgrade` when upgrades are worth it"
+                            ),
+                            "inline": False,
+                        },
+                    ],
+                },
+                {
+                    "title": "Early Game Index",
+                    "description": "Core onboarding, routine rewards, and the systems most new players touch first.",
+                    "fields": [
+                        {
+                            "name": "Sections",
+                            "value": _section_lines(
+                                [
+                                    "Your Next Steps",
+                                    "Getting Started",
+                                    "Progression Loop",
+                                    "Race & Identity",
+                                    "Daily, Vote, Crates, Boosters",
+                                    "Glossary & Economy Map",
+                                    "Troubleshooting",
+                                ]
+                            ),
+                            "inline": False,
+                        }
+                    ],
+                },
+                {
+                    "title": "Combat and Build Index",
+                    "description": "Directors for classes, PvE/PvP, gods, pets, tower systems, and challenge content.",
+                    "fields": [
+                        {
+                            "name": "Sections",
+                            "value": _section_lines(
+                                [
+                                    "Combat Systems",
+                                    "Classes",
+                                    "Gods & Favor",
+                                    "Pets & Eggs",
+                                    "Battle Tower Deep Dive",
+                                    "Couples Battle Tower",
+                                    "Ice Dragon Challenge",
+                                    "PvE Pet Combat",
+                                    "Egg Lifecycle",
+                                ]
+                            ),
+                            "inline": False,
+                        }
+                    ],
+                },
+                {
+                    "title": "Economy and Social Index",
+                    "description": "Trading, party systems, side activities, upgrades, and leaderboard-oriented play.",
+                    "fields": [
+                        {
+                            "name": "Sections",
+                            "value": _section_lines(
+                                [
+                                    "Economy & Trading",
+                                    "Group Play",
+                                    "Advanced Systems",
+                                    "Gambling & Minigames",
+                                    "Gear Lifecycle Recipes",
+                                    "Rankings & Achievements",
+                                ]
+                            ),
+                            "inline": False,
+                        }
+                    ],
+                },
+                {
+                    "title": "Endgame and Systems Index",
+                    "description": "Late-game crafting, rotating content, and the full command directory.",
+                    "fields": [
+                        {
+                            "name": "Sections",
+                            "value": _section_lines(
+                                [
+                                    "Soulforge & Splice",
+                                    "Seasonal & Event Systems",
+                                    "Command Group Indexes",
+                                    "Command Writeups",
+                                    "Command Atlas",
+                                ]
+                            ),
+                            "inline": False,
+                        },
+                        {
+                            "name": "Navigation Note",
+                            "value": (
+                                "Section numbers in this index match the dropdown order. "
+                                "Jump directly to any section without paging through the whole handbook."
+                            ),
+                            "inline": False,
+                        },
+                    ],
+                },
+            ],
+        }
+
     def _build_guidebook_sections(self, prefix: str, profile_row=None) -> list[dict]:
         class_lines = ", ".join(
             self._humanize_class_line(name) for name in sorted(ALL_CLASSES_TYPES.keys())
         )
+        commands_by_cog, ordered_cogs = self._collect_public_command_metadata(prefix)
         command_atlas_pages = self._build_command_atlas_pages(prefix)
+        command_group_index_pages = self._build_command_group_indexes(
+            prefix, commands_by_cog, ordered_cogs
+        )
+        command_writeup_pages = self._build_command_writeup_pages(
+            prefix, commands_by_cog, ordered_cogs
+        )
+        total_public_commands = sum(len(entries) for entries in commands_by_cog.values())
+        total_public_cogs = len(commands_by_cog)
 
         god_names = "Configured by your server admins."
         gods = getattr(self.bot, "gods", None)
@@ -897,9 +1920,10 @@ class Help(commands.Cog):
                         "description": (
                             f"1. `{prefix}create` to make your character\n"
                             f"2. `{prefix}profile` to inspect baseline stats\n"
-                            f"3. `{prefix}inventory`, `{prefix}items`, `{prefix}loot`\n"
-                            f"4. `{prefix}adventures` to preview success rates\n"
-                            f"5. `{prefix}adventure <level>` to start progression"
+                            f"3. `{prefix}race` to lock in your early stat identity\n"
+                            f"4. `{prefix}inventory`, `{prefix}items`, `{prefix}loot`\n"
+                            f"5. `{prefix}adventures` to preview success rates\n"
+                            f"6. `{prefix}adventure <level>` to start progression"
                         ),
                         "fields": [
                             {
@@ -908,7 +1932,62 @@ class Help(commands.Cog):
                                     "Build a stable cycle of XP + gold + gear before spending heavily."
                                 ),
                                 "inline": False,
+                            },
+                            {
+                                "name": "Immediate Free Value",
+                                "value": (
+                                    f"• `{prefix}daily` for your daily reward\n"
+                                    f"• `{prefix}vote` for crate income\n"
+                                    f"• `{prefix}status` after every adventure so runs do not sit idle"
+                                ),
+                                "inline": False,
                             }
+                        ],
+                    },
+                    {
+                        "title": "Basic Command Index",
+                        "description": "Grouped starter commands so new players can learn the game in chunks.",
+                        "fields": [
+                            {
+                                "name": "Build Your Character",
+                                "value": (
+                                    f"• `{prefix}create`\n"
+                                    f"• `{prefix}profile`\n"
+                                    f"• `{prefix}race`\n"
+                                    f"• `{prefix}class`"
+                                ),
+                                "inline": False,
+                            },
+                            {
+                                "name": "Start Playing",
+                                "value": (
+                                    f"• `{prefix}adventures`\n"
+                                    f"• `{prefix}adventure <level>`\n"
+                                    f"• `{prefix}status`\n"
+                                    f"• `{prefix}xp`"
+                                ),
+                                "inline": False,
+                            },
+                            {
+                                "name": "Income and Rewards",
+                                "value": (
+                                    f"• `{prefix}daily`\n"
+                                    f"• `{prefix}vote`\n"
+                                    f"• `{prefix}crates`\n"
+                                    f"• `{prefix}open <rarity>`\n"
+                                    f"• `{prefix}exchange`"
+                                ),
+                                "inline": False,
+                            },
+                            {
+                                "name": "Optional But Important",
+                                "value": (
+                                    f"• `{prefix}follow` once you understand luck/favor\n"
+                                    f"• `{prefix}pray` and `{prefix}sacrifice` to build favor\n"
+                                    f"• `{prefix}help <command>` whenever you need command-specific details"
+                                ),
+                                "inline": False,
+                            },
                         ],
                     },
                     {
@@ -2313,6 +3392,22 @@ class Help(commands.Cog):
                     ],
                 },
                 {
+                    "label": "Command Group Indexes",
+                    "summary": (
+                        f"Audited index of {total_public_commands} public commands across {total_public_cogs} command groups."
+                    ),
+                    "emoji": "🗂️",
+                    "pages": command_group_index_pages,
+                },
+                {
+                    "label": "Command Writeups",
+                    "summary": (
+                        "Generated handbook pages based on the actual command help text and locale_doc docstrings."
+                    ),
+                    "emoji": "📝",
+                    "pages": command_writeup_pages,
+                },
+                {
                     "label": "Troubleshooting",
                     "summary": "Common blockers and exact fixes.",
                     "emoji": "🩺",
@@ -2354,6 +3449,8 @@ class Help(commands.Cog):
                 },
             ]
         )
+        self._extend_sections_with_doc_digests(sections, prefix, commands_by_cog)
+        sections.insert(0, self._build_guidebook_index_section(prefix, sections))
         return sections
 
     @commands.command(aliases=["commands", "cmds"], brief=_("View the command list"))
@@ -2379,7 +3476,14 @@ class Help(commands.Cog):
 
     @commands.command(
         name="guidebook",
-        aliases=["guide", "handbook", "newplayerguide", "starterguide"],
+        aliases=[
+            "guide",
+            "handbook",
+            "booklet",
+            "gettingstarted",
+            "newplayerguide",
+            "starterguide",
+        ],
         brief=_("Open the complete interactive new-player guidebook"),
     )
     @locale_doc
@@ -2388,7 +3492,9 @@ class Help(commands.Cog):
             """Open an in-depth guidebook with dropdown navigation and pagination.
 
             Covers getting started, progression loops, combat, elements, classes, gods,
-            pets, economy/trading, group content, and a dynamic command atlas."""
+            pets, economy/trading, group content, and a dynamic command atlas.
+
+            Aliases such as `{prefix}booklet` and `{prefix}gettingstarted` open the same guide."""
         )
         profile_row = None
         try:

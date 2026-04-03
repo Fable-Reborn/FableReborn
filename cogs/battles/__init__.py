@@ -57,108 +57,35 @@ JURY_MAJOR_BONUS_CACHE_MULTIPLIER = Decimal("1.00")
 
 logger = logging.getLogger(__name__)
 
-class PetEggSelect(Select):
-    def __init__(self, items, page=0):
-        self.items = items
-        self.total_pages = max(1, (len(items) + 24) // 25)  # Calculate total pages (25 items per page)
-        self.current_page = min(page, self.total_pages - 1)  # Ensure page is valid
-        
-        # Get items for current page
-        start_idx = self.current_page * 25
-        end_idx = min(start_idx + 25, len(items))
-        page_items = items[start_idx:end_idx]
-        
-        options = [
-            discord.SelectOption(
-                label=f"{start_idx + i + 1}. {item['type'].title()}",
-                description=self._safe_description(item),
-                value=str(start_idx + i)
-            ) for i, item in enumerate(page_items)
-        ]
-        
-        super().__init__(
-            placeholder=f"Select a pet/egg to release... (Page {self.current_page + 1}/{self.total_pages})",
-            min_values=1,
-            max_values=1,
-            options=options
-        )
-    
-    def _safe_description(self, item):
-        """Create a safe description that won't cause Discord API issues"""
-        try:
-            # Use a safe default if display_name is missing
-            display_name = item.get('display_name', 'Unknown')
-            
-            # Ensure it's a string
-            if not isinstance(display_name, str):
-                display_name = str(display_name)
-                
-            # Limit length and strip any problematic characters
-            return display_name[:50].strip()
-        except Exception as e:
-            print(f"Error creating description: {e}")
-            return "Unknown"
-    
-    async def callback(self, interaction: discord.Interaction):
-        # Update the view with the selected item's details
-        view = self.view
-        if interaction.user.id != view.author.id:
-            return await interaction.response.send_message("This is not your selection.", ephemeral=True)
-        
-        try:
-            selected_index = int(self.values[0])
-            if selected_index < 0 or selected_index >= len(self.items):
-                return await interaction.response.send_message("Invalid selection. Please try again.", ephemeral=True)
-                
-            item = self.items[selected_index]
-            
-            # Create an embed with the selected item's details
-            embed = self.create_item_embed(item)
-            
-            # Update the message with the new embed
-            try:
-                if interaction.response.is_done():
-                    if interaction.message:
-                        await interaction.message.edit(embed=embed, view=view)
-                else:
-                    await interaction.response.edit_message(embed=embed, view=view)
-            except Exception as e:
-                print(f"Error updating message: {e}")
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(f"There was an error updating the selection. Please try again. {e}", ephemeral=True)
-        except Exception as e:
-            print(f"Error in PetEggSelect callback: {e}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message(f"An error occurred while processing your selection. Please try again. {e}", ephemeral=True)
-    
-    def create_item_embed(self, item):
-        if item.get('type') == 'pet':
-            return self.create_pet_embed(item)
-        else:  # egg
-            return self.create_egg_embed(item)
-    
-    def create_pet_embed(self, pet):
-        # Safely get pet name with fallback
+def _pet_egg_display_name(item):
+    return str(
+        item.get("display_name")
+        or item.get("name")
+        or item.get("egg_type")
+        or "Unknown"
+    )
+
+
+def _pet_egg_select_description(item):
+    base_name = _pet_egg_display_name(item)
+    type_label = "Pet" if item.get("type") == "pet" else "Egg"
+    description = f"{type_label} | {base_name}"
+    return description[:100].strip() or type_label
+
+
+def build_pet_egg_item_embed(item):
+    if item.get("type") == "pet":
         pet_name = get_pet_display_name(
-            getattr(self, "cog", None).bot if getattr(self, "cog", None) else None,
-            pet.get('name') or pet.get('display_name', 'Unnamed Pet'),
+            None,
+            item.get("name") or item.get("display_name", "Unnamed Pet"),
         )
-        
-        # Safely get growth stage with fallback
-        growth_stage = pet.get('growth_stage', 'baby').lower()
-        
-        # Stage emoji with fallback
-        if growth_stage == "baby":
-            stage_emoji = "🍼"
-        elif growth_stage == "juvenile":
-            stage_emoji = "🌱"
-        elif growth_stage == "young":
-            stage_emoji = "🐕"
-        else:  # adult or any other stage
-            stage_emoji = "🦁"
-            
-        # Element emoji with fallback
-        element = pet.get('element', 'Unknown')
+        growth_stage = str(item.get("growth_stage", "baby")).lower()
+        stage_emoji = {
+            "baby": "🍼",
+            "juvenile": "🌱",
+            "young": "🐕",
+        }.get(growth_stage, "🦁")
+        element = item.get("element", "Unknown")
         element_emoji = {
             "Fire": "🔥",
             "Water": "💧",
@@ -167,113 +94,196 @@ class PetEggSelect(Select):
             "Wind": "💨",
             "Light": "✨",
             "Dark": "🌑",
-            "Corrupted": "☠️"
+            "Corrupted": "☠️",
         }.get(element, "❓")
-        
-        # Safely get level with fallback
-        level = pet.get('level', 1)
-        
-        # Create embed with safe attribute access
+        level = item.get("level", item.get("growth_index", 1))
+
         embed = discord.Embed(
             title=f"{element_emoji} {pet_name} (Lv. {level})",
             description=f"A {element} type pet",
-            color=discord.Color.blue()
+            color=discord.Color.blue(),
         )
-        
-        # Add fields with safe attribute access
-        embed.add_field(name="Growth Stage", value=f"{stage_emoji} {growth_stage.capitalize()}", inline=True)
-        embed.add_field(name="IV", value=f"{pet.get('IV', 0)}%", inline=True)
-        embed.add_field(name="\u200b", value="\u200b", inline=True)  # Empty field for spacing
-        
-        # Stats with fallbacks
-        embed.add_field(name="HP", value=str(pet.get('hp', 0)), inline=True)
-        embed.add_field(name="Attack", value=str(pet.get('attack', 0)), inline=True)
-        embed.add_field(name="Defense", value=str(pet.get('defense', 0)), inline=True)
-        
-        # Additional info with safe access
-        if 'happiness' in pet:
-            embed.add_field(name="Happiness", value=f"{pet['happiness']}%", inline=True)
-        if 'hunger' in pet:
-            embed.add_field(name="Hunger", value=f"{pet['hunger']}%", inline=True)
-        if 'equipped' in pet:
-            status = "✅" if pet['equipped'] else "❌"
-            embed.add_field(name="Equipped", value=status, inline=True)
-            
-        # Set thumbnail if URL is available
-        if 'url' in pet and pet['url']:
-            embed.set_thumbnail(
-                url=get_pet_display_url(
-                    getattr(self, "cog", None).bot if getattr(self, "cog", None) else None,
-                    pet['url'],
-                )
+        embed.add_field(
+            name="Growth Stage",
+            value=f"{stage_emoji} {growth_stage.capitalize()}",
+            inline=True,
+        )
+        embed.add_field(name="IV", value=f"{item.get('IV', 0)}%", inline=True)
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
+        embed.add_field(name="HP", value=str(item.get("hp", 0)), inline=True)
+        embed.add_field(name="Attack", value=str(item.get("attack", 0)), inline=True)
+        embed.add_field(name="Defense", value=str(item.get("defense", 0)), inline=True)
+
+        if "happiness" in item:
+            embed.add_field(
+                name="Happiness",
+                value=f"{item.get('happiness', 0)}%",
+                inline=True,
             )
-            
+        if "hunger" in item:
+            embed.add_field(
+                name="Hunger",
+                value=f"{item.get('hunger', 0)}%",
+                inline=True,
+            )
+        if "equipped" in item:
+            status = "✅" if item.get("equipped") else "❌"
+            embed.add_field(name="Equipped", value=status, inline=True)
+
+        if item.get("url"):
+            embed.set_thumbnail(url=get_pet_display_url(None, item["url"]))
         return embed
-    
-    def create_egg_embed(self, egg):
-        # Safely get egg type and element with fallbacks
-        egg_type = egg.get('display_name', egg.get('egg_type', 'Unknown Egg'))
-        element = egg.get('element', 'Unknown')
-        
-        # Element emoji with fallback
-        element_emoji = {
-            "Fire": "🔥",
-            "Water": "💧",
-            "Electric": "⚡",
-            "Nature": "🌿",
-            "Wind": "💨",
-            "Light": "✨",
-            "Dark": "🌑",
-            "Corrupted": "☠️"
-        }.get(element, "❓")
-        
-        # Create embed with safe attribute access
-        embed = discord.Embed(
-            title=f"{element_emoji} {egg_type} Egg",
-            description=f"A {element} type egg",
-            color=0xADD8E6
-        )
-        
-        # Calculate time until hatch with safe access
-        hatch_time = egg.get('hatch_time')
-        if hatch_time and isinstance(hatch_time, datetime.datetime):
-            time_left = hatch_time - datetime.datetime.utcnow()
-            if time_left.total_seconds() > 0:
-                hours, remainder = divmod(int(time_left.total_seconds()), 3600)
-                minutes, seconds = divmod(remainder, 60)
-                time_str = f"{hours}h {minutes}m {seconds}s"
-            else:
-                time_str = "Ready to hatch!"
+
+    egg_type = item.get("display_name", item.get("egg_type", "Unknown Egg"))
+    element = item.get("element", "Unknown")
+    element_emoji = {
+        "Fire": "🔥",
+        "Water": "💧",
+        "Electric": "⚡",
+        "Nature": "🌿",
+        "Wind": "💨",
+        "Light": "✨",
+        "Dark": "🌑",
+        "Corrupted": "☠️",
+    }.get(element, "❓")
+
+    embed = discord.Embed(
+        title=f"{element_emoji} {egg_type} Egg",
+        description=f"A {element} type egg",
+        color=0xADD8E6,
+    )
+
+    hatch_time = item.get("hatch_time")
+    if hatch_time and isinstance(hatch_time, datetime.datetime):
+        time_left = hatch_time - datetime.datetime.utcnow()
+        if time_left.total_seconds() > 0:
+            hours, remainder = divmod(int(time_left.total_seconds()), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            time_str = f"{hours}h {minutes}m {seconds}s"
         else:
-            time_str = "Not specified"
-        
-        # Add fields with safe attribute access
-        embed.add_field(
-            name="📊 Stats",
-            value=(
-                f"**IV:** {egg.get('IV', 0)}%\n"
-                f"**HP:** {int(egg.get('hp', 0))}\n"
-                f"**Attack:** {int(egg.get('attack', 0))}\n"
-                f"**Defense:** {int(egg.get('defense', 0))}"
+            time_str = "Ready to hatch!"
+    else:
+        time_str = "Not specified"
+
+    embed.add_field(
+        name="📊 Stats",
+        value=(
+            f"**IV:** {item.get('IV', 0)}%\n"
+            f"**HP:** {int(item.get('hp', 0))}\n"
+            f"**Attack:** {int(item.get('attack', 0))}\n"
+            f"**Defense:** {int(item.get('defense', 0))}"
+        ),
+        inline=True,
+    )
+    embed.add_field(name="⏳ Hatch Time", value=time_str, inline=True)
+    if "id" in item:
+        embed.set_footer(text=f"ID: {item['id']}")
+    if item.get("url"):
+        embed.set_thumbnail(url=item["url"])
+    return embed
+
+
+class PetEggTypeSelect(Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(
+                label="Release a Pet",
+                value="pet",
+                description="Choose one of your pets to release.",
             ),
-            inline=True
+            discord.SelectOption(
+                label="Release an Egg",
+                value="egg",
+                description="Choose one of your eggs to release.",
+            ),
+            discord.SelectOption(
+                label="Cancel",
+                value="cancel",
+                description="Keep everything and forfeit the new egg.",
+            ),
+        ]
+        super().__init__(
+            placeholder="Choose what you want to release...",
+            min_values=1,
+            max_values=1,
+            options=options,
         )
-        
-        embed.add_field(
-            name="⏳ Hatch Time",
-            value=time_str,
-            inline=True
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, PetEggReleaseView):
+            await interaction.response.send_message(
+                "Something went wrong with this selection.",
+                ephemeral=True,
+            )
+            return
+
+        selected_value = self.values[0]
+        if selected_value == "cancel":
+            view.value = "cancel"
+            view.stop()
+            await interaction.response.defer()
+            return
+
+        view.select_category(selected_value)
+        await interaction.response.edit_message(
+            embed=view.build_current_embed(),
+            view=view,
         )
-        
-        # Add ID if available
-        if 'id' in egg:
-            embed.set_footer(text=f"ID: {egg['id']}")
-        
-        # Set thumbnail if URL is available
-        if 'url' in egg and egg['url']:
-            embed.set_thumbnail(url=egg['url'])
-            
-        return embed
+
+
+class PetEggItemSelect(Select):
+    def __init__(self, items, page=0):
+        self.items = items
+        self.total_pages = max(1, (len(items) + 24) // 25)
+        self.current_page = min(page, self.total_pages - 1)
+        start_idx = self.current_page * 25
+        end_idx = min(start_idx + 25, len(items))
+        page_items = items[start_idx:end_idx]
+
+        options = [
+            discord.SelectOption(
+                label=f"{start_idx + i + 1}. {_pet_egg_display_name(item)[:80]}",
+                description=_pet_egg_select_description(item),
+                value=str(start_idx + i),
+            )
+            for i, item in enumerate(page_items)
+        ]
+
+        placeholder_type = "pet" if items and items[0].get("type") == "pet" else "egg"
+        super().__init__(
+            placeholder=(
+                f"Select a {placeholder_type} to inspect..."
+                f" ({self.current_page + 1}/{self.total_pages})"
+            ),
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, PetEggReleaseView):
+            await interaction.response.send_message(
+                "Something went wrong with this selection.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            selected_index = int(self.values[0])
+        except (TypeError, ValueError):
+            await interaction.response.send_message(
+                "Invalid selection. Please try again.",
+                ephemeral=True,
+            )
+            return
+
+        view.select_item(selected_index)
+        await interaction.response.edit_message(
+            embed=view.build_current_embed(),
+            view=view,
+        )
 
 
 class PetEggReleaseView(View):
@@ -282,209 +292,292 @@ class PetEggReleaseView(View):
         self.author = author
         self.items = items
         self.value = None
-        self.message = None  # Store the message reference
+        self.message = None
+        self.selected_type = None
+        self.filtered_items = []
         self.current_page = 0
-        self.total_pages = max(1, (len(items) + 24) // 25)  # Calculate total pages (25 items per page)
-        
-        # Add the select dropdown for the first page
-        self.update_select()
-        
-        # Only add page buttons if there are multiple pages
-        if self.total_pages > 1:
-            self.add_item(discord.ui.Button(
+        self.selected_index = None
+        self.confirming_release = False
+        self.rebuild_components()
+
+    def _count_for_type(self, item_type):
+        return sum(1 for item in self.items if item.get("type") == item_type)
+
+    def select_category(self, item_type):
+        self.selected_type = item_type
+        self.filtered_items = [
+            item for item in self.items if item.get("type") == item_type
+        ]
+        self.current_page = 0
+        self.selected_index = None
+        self.confirming_release = False
+        self.rebuild_components()
+
+    def select_item(self, selected_index):
+        if 0 <= selected_index < len(self.filtered_items):
+            self.selected_index = selected_index
+            self.confirming_release = False
+            self.rebuild_components()
+
+    def selected_item(self):
+        if self.selected_index is None:
+            return None
+        if not (0 <= self.selected_index < len(self.filtered_items)):
+            return None
+        return self.filtered_items[self.selected_index]
+
+    def go_back_to_category_choice(self):
+        self.selected_type = None
+        self.filtered_items = []
+        self.current_page = 0
+        self.selected_index = None
+        self.confirming_release = False
+        self.rebuild_components()
+
+    def build_type_embed(self):
+        pet_count = self._count_for_type("pet")
+        egg_count = self._count_for_type("egg")
+        embed = discord.Embed(
+            title=_("Release a Pet or Egg"),
+            description=_(
+                "You've reached the maximum number of pets/eggs. Choose whether "
+                "to release a pet, release an egg, or cancel."
+            ),
+            color=discord.Color.orange(),
+        )
+        embed.add_field(
+            name="Available Choices",
+            value=(
+                f"Pets: **{pet_count}**\n"
+                f"Eggs: **{egg_count}**\n"
+                "Cancel: keep everything and forfeit the new egg."
+            ),
+            inline=False,
+        )
+        return embed
+
+    def build_category_embed(self):
+        item_type = "pet" if self.selected_type == "pet" else "egg"
+        count = len(self.filtered_items)
+        title_label = "Pet" if item_type == "pet" else "Egg"
+        embed = discord.Embed(
+            title=f"Choose a {title_label} to Release",
+            description=(
+                f"Select a {item_type} below to inspect it before releasing it."
+                if count
+                else f"You do not have any {item_type}s available to release."
+            ),
+            color=discord.Color.orange(),
+        )
+        embed.add_field(
+            name="How to proceed",
+            value=(
+                "Pick one from the dropdown to review its stats, then press `Release`."
+                if count
+                else "Use `Back` to choose the other category or `Cancel` to stop."
+            ),
+            inline=False,
+        )
+        return embed
+
+    def build_selected_item_embed(self):
+        item = self.selected_item()
+        if item is None:
+            return self.build_category_embed()
+
+        embed = build_pet_egg_item_embed(item)
+        if self.confirming_release:
+            embed.add_field(
+                name="Confirm Release",
+                value=(
+                    "Are you sure you want to release this item?\n"
+                    "This action cannot be undone."
+                ),
+                inline=False,
+            )
+            embed.set_footer(
+                text="Choose Yes to release it or No to keep reviewing."
+            )
+        else:
+            embed.add_field(
+                name="Ready?",
+                value="Press `Release` to confirm this is the item you want to remove.",
+                inline=False,
+            )
+            embed.set_footer(text="Use Back to change category.")
+        return embed
+
+    def build_current_embed(self):
+        if self.selected_type is None:
+            return self.build_type_embed()
+        if self.selected_item() is not None:
+            return self.build_selected_item_embed()
+        return self.build_category_embed()
+
+    def rebuild_components(self):
+        self.clear_items()
+
+        if self.selected_type is None:
+            self.add_item(PetEggTypeSelect())
+            cancel_button = discord.ui.Button(
+                label="Cancel",
                 style=discord.ButtonStyle.secondary,
-                label="◀️ Previous Page",
-                custom_id="prev_page",
-                row=2,
-                disabled=self.current_page == 0
-            ))
-            self.prev_page_button = self.children[-1]  # Store reference to the button
-            self.prev_page_button.callback = self.prev_page_callback
-            
-            self.add_item(discord.ui.Button(
+                emoji="❌",
+                row=1,
+            )
+            cancel_button.callback = self.cancel_callback
+            self.add_item(cancel_button)
+            return
+
+        if self.filtered_items:
+            self.add_item(PetEggItemSelect(self.filtered_items, self.current_page))
+
+            total_pages = max(1, (len(self.filtered_items) + 24) // 25)
+            if total_pages > 1:
+                prev_button = discord.ui.Button(
+                    style=discord.ButtonStyle.secondary,
+                    label="◀️ Previous Page",
+                    row=1,
+                    disabled=self.current_page == 0,
+                )
+                prev_button.callback = self.prev_page_callback
+                self.add_item(prev_button)
+
+                next_button = discord.ui.Button(
+                    style=discord.ButtonStyle.secondary,
+                    label="Next Page ▶️",
+                    row=1,
+                    disabled=self.current_page >= total_pages - 1,
+                )
+                next_button.callback = self.next_page_callback
+                self.add_item(next_button)
+
+        back_button = discord.ui.Button(
+            label="Back",
+            style=discord.ButtonStyle.primary,
+            emoji="↩️",
+            row=2,
+        )
+        back_button.callback = self.back_callback
+        self.add_item(back_button)
+
+        release_button = discord.ui.Button(
+            label="Release",
+            style=discord.ButtonStyle.danger,
+            emoji="🗑️",
+            row=2,
+            disabled=self.selected_item() is None or self.confirming_release,
+        )
+        release_button.callback = self.release_callback
+        self.add_item(release_button)
+
+        cancel_button = discord.ui.Button(
+            label="Cancel",
+            style=discord.ButtonStyle.secondary,
+            emoji="❌",
+            row=2,
+        )
+        cancel_button.callback = self.cancel_callback
+        self.add_item(cancel_button)
+
+        if self.confirming_release and self.selected_item() is not None:
+            yes_button = discord.ui.Button(
+                label="Yes",
+                style=discord.ButtonStyle.danger,
+                emoji="✅",
+                row=3,
+            )
+            yes_button.callback = self.confirm_yes_callback
+            self.add_item(yes_button)
+
+            no_button = discord.ui.Button(
+                label="No",
                 style=discord.ButtonStyle.secondary,
-                label="Next Page ▶️",
-                custom_id="next_page",
-                row=2,
-                disabled=self.current_page >= self.total_pages - 1
-            ))
-            self.next_page_button = self.children[-1]  # Store reference to the button
-            self.next_page_button.callback = self.next_page_callback
-    
-    def update_select(self):
-        # Remove existing select if any
-        for item in self.children[:]:
-            if isinstance(item, PetEggSelect):
-                self.remove_item(item)
-        
-        # Add new select for current page
-        self.select = PetEggSelect(self.items, self.current_page)
-        self.add_item(self.select)
+                emoji="❌",
+                row=3,
+            )
+            no_button.callback = self.confirm_no_callback
+            self.add_item(no_button)
     
     async def prev_page_callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.author.id:
-            return await interaction.response.send_message("This is not your selection.", ephemeral=True)
-        
         if self.current_page > 0:
             self.current_page -= 1
-            self.update_select()
-            
-            # Update button states
-            if hasattr(self, 'prev_page_button'):
-                self.prev_page_button.disabled = self.current_page == 0
-            if hasattr(self, 'next_page_button'):
-                self.next_page_button.disabled = self.current_page >= self.total_pages - 1
-            
-            await interaction.response.edit_message(view=self)
+            self.rebuild_components()
+        await interaction.response.edit_message(
+            embed=self.build_current_embed(),
+            view=self,
+        )
     
     async def next_page_callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.author.id:
-            return await interaction.response.send_message("This is not your selection.", ephemeral=True)
-        
-        if self.current_page < self.total_pages - 1:
+        total_pages = max(1, (len(self.filtered_items) + 24) // 25)
+        if self.current_page < total_pages - 1:
             self.current_page += 1
-            self.update_select()
-            
-            # Update button states
-            if hasattr(self, 'prev_page_button'):
-                self.prev_page_button.disabled = self.current_page == 0
-            if hasattr(self, 'next_page_button'):
-                self.next_page_button.disabled = self.current_page >= self.total_pages - 1
-            
-            await interaction.response.edit_message(view=self)
-    
-    @discord.ui.button(label="Release", style=discord.ButtonStyle.danger, row=1, emoji="🗑️")
-    async def confirm_release(self, interaction: discord.Interaction, button: Button):
-        try:
-            if interaction.user.id != self.author.id:
-                return await interaction.response.send_message("This is not your selection.", ephemeral=True)
-                
-            if not hasattr(self.select, 'values') or not self.select.values:
-                return await interaction.response.send_message("Please select a pet/egg to release first.", ephemeral=True)
-                
-            # Get the selected item for the confirmation message
-            try:
-                selected_index = int(self.select.values[0])
-                if selected_index < 0 or selected_index >= len(self.items):
-                    return await interaction.response.send_message("Invalid selection. Please try again.", ephemeral=True)
-                    
-                selected_item = self.items[selected_index]
-                
-                # Get the appropriate name based on item type
-                if selected_item.get('type') == 'egg':
-                    item_name = selected_item.get('egg_type', selected_item.get('display_name', 'Unknown Egg'))
-                    item_type = 'Egg'
-                else:
-                    item_name = selected_item.get('name', selected_item.get('display_name', 'Unknown Pet'))
-                    item_type = selected_item.get('type', 'item').capitalize()
-                
-                # Show confirmation dialog with item details
-                confirm_embed = discord.Embed(
-                    title=f"⚠️ Release {item_type}",
-                    description=f"Are you sure you want to release **{item_name}**?\n\nThis action cannot be undone!",
-                    color=discord.Color.orange()
-                )
-                
-                # Add item details to the confirmation
-                if selected_item['type'] == 'pet':
-                    confirm_embed.add_field(
-                        name="Pet Details",
-                        value=f"**Level:** {selected_item.get('growth_stage', 'Unknown')}\n"
-                              f"**IV:** {selected_item.get('IV', '?')}%",
-                        inline=False
-                    )
-                else:  # egg
-                    confirm_embed.add_field(
-                        name="Egg Details",
-                        value=f"**Type:** {selected_item.get('egg_type', 'Unknown')}\n"
-                              f"**IV:** {selected_item.get('IV', '?')}%",
-                        inline=False
-                    )
-                
-                confirm_view = ConfirmView(self.author)
-                
-                # Send the confirmation message
-                await interaction.response.send_message(
-                    embed=confirm_embed,
-                    view=confirm_view,
-                    ephemeral=True
-                )
-                
-                # Wait for confirmation
-                await confirm_view.wait()
-                
-                if confirm_view.value is None:
-                    # Timeout
-                    await interaction.followup.send("Release timed out. No action taken.", ephemeral=True)
-                    return
-                    
-                if confirm_view.value:  # Confirmed
-                    self.value = selected_index
-                    self.stop()
-                else:  # Cancelled
-                    await interaction.followup.send("Release cancelled.", ephemeral=True)
-                    
-            except Exception as e:
-                print(f"Error in confirm_release: {e}")
-                if not interaction.response.is_done():
-                    await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
-                
-        except Exception as e:
-            print(f"Error in confirm_release: {e}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message("An error occurred while processing your request. Please try again.", ephemeral=True)
-    
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, row=1, emoji="❌")
-    async def cancel(self, interaction: discord.Interaction, button: Button):
-        if interaction.user.id != self.author.id:
-            await interaction.response.send_message("This is not your selection.", ephemeral=True)
+            self.rebuild_components()
+        await interaction.response.edit_message(
+            embed=self.build_current_embed(),
+            view=self,
+        )
+
+    async def back_callback(self, interaction: discord.Interaction):
+        self.go_back_to_category_choice()
+        await interaction.response.edit_message(
+            embed=self.build_current_embed(),
+            view=self,
+        )
+
+    async def release_callback(self, interaction: discord.Interaction):
+        if self.selected_item() is None:
+            await interaction.response.send_message(
+                "Please select a pet or egg first.",
+                ephemeral=True,
+            )
             return
-            
+        self.confirming_release = True
+        self.rebuild_components()
+        await interaction.response.edit_message(
+            embed=self.build_current_embed(),
+            view=self,
+        )
+
+    async def confirm_yes_callback(self, interaction: discord.Interaction):
+        item = self.selected_item()
+        if item is None:
+            await interaction.response.send_message(
+                "Please select a pet or egg first.",
+                ephemeral=True,
+            )
+            return
+        self.value = item
+        self.stop()
+        await interaction.response.defer()
+
+    async def confirm_no_callback(self, interaction: discord.Interaction):
+        self.confirming_release = False
+        self.rebuild_components()
+        await interaction.response.edit_message(
+            embed=self.build_current_embed(),
+            view=self,
+        )
+
+    async def cancel_callback(self, interaction: discord.Interaction):
         self.value = "cancel"
         self.stop()
-        
+        await interaction.response.defer()
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author.id:
             await interaction.response.send_message("This is not your selection.", ephemeral=True)
             return False
         return True
-        
+
     async def on_timeout(self):
-        # Disable all buttons on timeout
         for item in self.children:
             item.disabled = True
         if self.message:
             try:
                 await self.message.edit(view=self)
-            except:
+            except Exception:
                 pass
-
-
-class ConfirmView(View):
-    def __init__(self, author, **kwargs):
-        super().__init__(**kwargs)
-        self.author = author
-        self.value = None
-        
-    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger, emoji="✅")
-    async def confirm(self, interaction: discord.Interaction, button: Button):
-        if interaction.user.id == self.author.id:
-            self.value = True
-            self.stop()
-            await interaction.message.delete()
-    
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌")
-    async def cancel(self, interaction: discord.Interaction, button: Button):
-        if interaction.user.id == self.author.id:
-            self.value = False
-            self.stop()
-            await interaction.message.delete()
-    
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.author.id:
-            await interaction.response.send_message("This is not your confirmation.", ephemeral=True)
-            return False
-        return True
 
 
 class OmnithroneCinematicView(View):
@@ -8695,25 +8788,12 @@ class Battles(commands.Cog):
                     timeout=120.0
                 )
                 
-                # Create an initial embed for the release prompt
-                embed = discord.Embed(
-                    title=_("Release a Pet/Egg"),
-                    description=_("You've reached the maximum number of pets/eggs. Please select one to release to make room for the new egg."),
-                    color=discord.Color.orange()
+                message = await ctx.send(
+                    embed=view.build_current_embed(),
+                    view=view,
                 )
-                
-                # Add a field with instructions
-                embed.add_field(
-                    name="How to proceed",
-                    value="Use the dropdown below to select a pet/egg to release. You'll see its details before confirming.",
-                    inline=False
-                )
-                
-                # Send the message with the view
-                message = await ctx.send(embed=embed, view=view)
-                view.message = message  # Store the message reference in the view
-                
-                # Wait for the user to make a selection
+                view.message = message
+
                 try:
                     await view.wait()
                     if view.value is None:
@@ -8722,17 +8802,18 @@ class Battles(commands.Cog):
                     if view.value == "cancel":
                         await message.edit(content=_("❌ No egg awarded."), embed=None, view=None)
                         return
-                    choice = view.value + 1  # Adjust for 0-based index
                 except asyncio.TimeoutError:
                     await message.edit(content=_("Timed out. No egg awarded."), embed=None, view=None)
                     return
-                
-                if not 1 <= choice <= len(pet_and_egg_list):
-                    await ctx.send(_("That number is not in the list. No egg awarded."))
+
+                record_to_remove = view.value
+                if not isinstance(record_to_remove, dict):
+                    await message.edit(
+                        content=_("❌ No egg awarded."),
+                        embed=None,
+                        view=None,
+                    )
                     return
-                
-                # Identify the record to remove
-                record_to_remove = pet_and_egg_list[choice - 1]
                 
                 # Remove the chosen pet/egg from its table
                 try:
@@ -8749,8 +8830,14 @@ class Battles(commands.Cog):
                     # Delete the item
                     await conn.execute(f"DELETE FROM {table} WHERE id = $1;", record_to_remove["id"])
 
-                    await ctx.send(
-                        _(f"Released {record_to_remove['type']} '{record_to_remove['display_name']}' to make room."))
+                    await message.edit(
+                        content=_(
+                            f"Released {record_to_remove['type']} "
+                            f"'{record_to_remove['display_name']}' to make room."
+                        ),
+                        embed=None,
+                        view=None,
+                    )
 
                 except Exception as e:
                     await ctx.send(_("An error occurred while releasing the pet/egg: ") + str(e))
