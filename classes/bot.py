@@ -1341,6 +1341,8 @@ class Bot(commands.AutoShardedBot):
         lines = [class_.get_class_line() for class_ in classes]
         grades = [class_.class_grade() for class_ in classes]
         for line, grade in zip(lines, grades):
+            if line == Mage:
+                damage += grade
             if line == Paragon:
                 damage += grade
                 armor += grade

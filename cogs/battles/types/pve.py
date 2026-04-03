@@ -463,6 +463,10 @@ class PvEBattle(Battle):
                 
                 if not self.attacker.is_alive():
                     message += f" {self.attacker.name} has been defeated by reflected damage!"
+
+            class_messages = self.resolve_post_hit_class_effects(self.attacker, self.defender)
+            if class_messages:
+                message += "\n" + "\n".join(class_messages)
             
             # Check if defender is defeated
             if not self.defender.is_alive():

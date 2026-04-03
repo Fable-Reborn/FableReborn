@@ -40,6 +40,10 @@ class Combatant:
         self.death_cheat_chance = Decimal(str(kwargs.get("death_cheat_chance", 0)))
         self.mage_evolution = kwargs.get("mage_evolution", None)
         self.tank_evolution = kwargs.get("tank_evolution", None)
+        self.paladin_evolution = kwargs.get("paladin_evolution", None)
+        self.raider_evolution = kwargs.get("raider_evolution", None)
+        self.ritualist_evolution = kwargs.get("ritualist_evolution", None)
+        self.paragon_evolution = kwargs.get("paragon_evolution", None)
         self.damage_reflection = Decimal(str(kwargs.get("damage_reflection", 0)))
         self.has_shield = kwargs.get("has_shield", False)
         self.has_cheated_death = False

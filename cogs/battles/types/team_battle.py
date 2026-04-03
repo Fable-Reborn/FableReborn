@@ -299,6 +299,10 @@ class TeamBattle(Battle):
                 
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
+
+            class_messages = self.resolve_post_hit_class_effects(current_combatant, target)
+            if class_messages:
+                message += "\n" + "\n".join(class_messages)
             
             # Check if target is defeated
             if not target.is_alive():

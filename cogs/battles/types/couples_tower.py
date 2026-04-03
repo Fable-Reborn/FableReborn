@@ -2,6 +2,8 @@
 import discord
 import random
 import asyncio
+from decimal import Decimal
+
 from .tower import TowerBattle
 
 class CouplesTowerBattle(TowerBattle):
@@ -97,6 +99,51 @@ class CouplesTowerBattle(TowerBattle):
             error_msg = f"🚨 **COUPLES TOWER INIT ERROR for Level {kwargs.get('level', 'UNKNOWN')}**:\n```\n{traceback.format_exc()}\n```"
             asyncio.create_task(ctx.send(error_msg[:2000]))
             raise e
+
+    def _calculate_couples_mage_fireball_damage(
+        self,
+        attacker,
+        target,
+        *,
+        damage_variance=100,
+        minimum_damage=Decimal("10"),
+        variance_range=None,
+    ):
+        if variance_range is not None:
+            min_variance, max_variance = variance_range
+            raw_damage = Decimal(str(getattr(attacker, "damage", 0) or 0))
+            raw_damage += Decimal(str(random.randint(int(min_variance), int(max_variance))))
+            raw_damage -= Decimal(str(getattr(target, "armor", 0) or 0))
+            return max(
+                raw_damage * self.get_mage_fireball_damage_multiplier(attacker),
+                minimum_damage,
+            )
+
+        return self.calculate_mage_fireball_damage(
+            attacker,
+            target,
+            damage_variance=damage_variance,
+            minimum_damage=minimum_damage,
+        )
+
+    def _append_mage_charge_message(self, message, charge_state):
+        charge_message = self.format_mage_charge_message(charge_state)
+        if not charge_message:
+            return message
+        return f"{message}\n{charge_message}" if message else charge_message
+
+    def _append_visible_shield(self, field_value, combatant):
+        shield_value = Decimal(str(getattr(combatant, "shield", 0) or 0))
+        if shield_value > 0:
+            field_value += f"\nShield: {self.format_number(shield_value)}"
+        return field_value
+
+    def _apply_paladin_smite_to_message(self, attacker, target, message):
+        class_messages = self.resolve_post_hit_class_effects(attacker, target)
+        if not class_messages:
+            return message
+        class_text = "\n".join(class_messages)
+        return f"{message}\n{class_text}" if message else class_text
     
     async def start_battle(self):
         """Override to handle Level 30 (no combat) and other special cases"""
@@ -457,21 +504,43 @@ class CouplesTowerBattle(TowerBattle):
             hit_success = has_perfect_accuracy or (luck_roll <= attacker.luck)
             
         if hit_success:
-            # Calculate damage using standard method
-            from decimal import Decimal
-            damage_variance = random.randint(0, 50) if attacker.is_pet else random.randint(0, 100)
-            raw_damage = attacker.damage + Decimal(damage_variance)
+            mage_charge_state = self.advance_mage_fireball_charge(attacker)
+
+            if mage_charge_state and mage_charge_state["fireball_ready"]:
+                final_damage = self._calculate_couples_mage_fireball_damage(
+                    attacker,
+                    target,
+                )
+                target.take_damage(final_damage)
+                message = (
+                    f"{attacker.name} casts Fireball! {target.name} takes "
+                    f"**{self.format_number(final_damage)} HP** damage."
+                )
+            else:
+                damage_variance = random.randint(0, 50) if attacker.is_pet else random.randint(0, 100)
+                outcome = self.resolve_pet_attack_outcome(
+                    attacker,
+                    target,
+                    attacker.damage,
+                    apply_element_mod=self.config.get("element_effects", True),
+                    damage_variance=damage_variance,
+                    minimum_damage=Decimal("10"),
+                )
+                final_damage = outcome.final_damage
+                target.take_damage(final_damage)
+                message = (
+                    f"{attacker.name} attacks! {target.name} takes "
+                    f"**{self.format_number(final_damage)} HP** damage."
+                )
+                if outcome.skill_messages:
+                    message += "\n" + "\n".join(outcome.skill_messages)
+                if outcome.defender_messages:
+                    message += "\n" + "\n".join(outcome.defender_messages)
+                message = self._append_mage_charge_message(message, mage_charge_state)
+
+            message = self._apply_paladin_smite_to_message(attacker, target, message)
             
-            # Apply armor reduction
-            blocked_damage = min(raw_damage, target.armor)
-            final_damage = max(raw_damage - target.armor, Decimal('10'))  # Minimum 10 damage
-            
-            # Apply damage
-            target.take_damage(final_damage)
-            
-            message = f"{attacker.name} attacks! {target.name} takes **{float(final_damage):.1f} HP** damage."
-            
-            # Check if target is defeated
+            # Check if split target is defeated
             if not target.is_alive():
                 message += f" {target.name} has been defeated!"
             
@@ -941,27 +1010,16 @@ class CouplesTowerBattle(TowerBattle):
             # Attack hits
             
             # Special case for mage fireball
+            blocked_damage = Decimal('0')
+            ignore_reflection_this_hit = False
+            mage_charge_state = self.advance_mage_fireball_charge(current_combatant)
             used_fireball = False
-            if (hasattr(current_combatant, 'mage_evolution') and current_combatant.mage_evolution and 
-                not current_combatant.is_pet and 
-                self.config["class_buffs"] and
-                random.random() < self.config["fireball_chance"]):
-                
-                # Calculate fireball damage
-                evolution_level = current_combatant.mage_evolution
-                damage_multiplier = {
-                    1: 1.10,  # 110%
-                    2: 1.20,  # 120%
-                    3: 1.30,  # 130%
-                    4: 1.50,  # 150%
-                    5: 1.75,  # 175%
-                    6: 2.00,  # 200%
-                    7: 2.10,  # 210%
-                }.get(evolution_level, 1.0)
-                
-                from decimal import Decimal
-                damage = (current_combatant.damage + Decimal(random.randint(0, 100)) - target.armor) * Decimal(str(damage_multiplier))
-                damage = max(damage, Decimal('1'))
+            if mage_charge_state and mage_charge_state["fireball_ready"]:
+                ignore_reflection_this_hit = True
+                damage = self._calculate_couples_mage_fireball_damage(
+                    current_combatant,
+                    target,
+                )
                 
                 # *** LEVEL 7 MEMORY SHIELD FOR FIREBALL ***
                 if target in self.player_team.combatants and self.memory_fragments > 0:
@@ -1037,6 +1095,8 @@ class CouplesTowerBattle(TowerBattle):
                 if defender_messages:
                     message += "\n" + "\n".join(defender_messages)
             
+            message = self._append_mage_charge_message(message, mage_charge_state)
+
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 
                 not current_combatant.is_pet and 
@@ -1059,12 +1119,15 @@ class CouplesTowerBattle(TowerBattle):
                 reflection_value = max(float(reflection_value), tank_reflection)  # Use higher of item reflection or tank reflection
             
             if (self.config.get("reflection_damage", True) and 
-                reflection_value > 0):
-                # For Level 7, use damage-based reflection (simpler than armor-based)
-                reflected_damage = float(damage) * float(reflection_value)
+                reflection_value > 0 and
+                blocked_damage > 0 and
+                not ignore_reflection_this_hit):
+                reflected_damage = blocked_damage * Decimal(str(reflection_value))
                 current_combatant.take_damage(reflected_damage)
                 message += f" **{target.name}** reflects **{self.format_number(reflected_damage)} HP** damage back!"
             
+            message = self._apply_paladin_smite_to_message(current_combatant, target, message)
+
             # Check if target is defeated
             if not target.is_alive():
                 # Check for cheat death ability for players
@@ -1220,27 +1283,16 @@ class CouplesTowerBattle(TowerBattle):
             # Attack hits
             
             # Special case for mage fireball
+            blocked_damage = Decimal('0')
+            ignore_reflection_this_hit = False
+            mage_charge_state = self.advance_mage_fireball_charge(current_combatant)
             used_fireball = False
-            if (hasattr(current_combatant, 'mage_evolution') and current_combatant.mage_evolution and 
-                not current_combatant.is_pet and 
-                self.config["class_buffs"] and
-                random.random() < self.config["fireball_chance"]):
-                
-                # Calculate fireball damage
-                evolution_level = current_combatant.mage_evolution
-                damage_multiplier = {
-                    1: 1.10,  # 110%
-                    2: 1.20,  # 120%
-                    3: 1.30,  # 130%
-                    4: 1.50,  # 150%
-                    5: 1.75,  # 175%
-                    6: 2.00,  # 200%
-                    7: 2.10,  # 210%
-                }.get(evolution_level, 1.0)
-                
-                from decimal import Decimal
-                damage = (current_combatant.damage + Decimal(random.randint(0, 100)) - target.armor) * Decimal(str(damage_multiplier))
-                damage = max(damage, Decimal('1'))
+            if mage_charge_state and mage_charge_state["fireball_ready"]:
+                ignore_reflection_this_hit = True
+                damage = self._calculate_couples_mage_fireball_damage(
+                    current_combatant,
+                    target,
+                )
                 
                 # *** LEVEL 7 MEMORY SHIELD FOR FIREBALL ***
                 if target in self.player_team.combatants and self.memory_fragments > 0:
@@ -1316,6 +1368,8 @@ class CouplesTowerBattle(TowerBattle):
                 if defender_messages:
                     message += "\n" + "\n".join(defender_messages)
             
+            message = self._append_mage_charge_message(message, mage_charge_state)
+
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 
                 not current_combatant.is_pet and 
@@ -1339,7 +1393,8 @@ class CouplesTowerBattle(TowerBattle):
             
             if (self.config["reflection_damage"] and 
                 reflection_value > 0 and 
-                'blocked_damage' in locals() and blocked_damage > 0):
+                blocked_damage > 0 and
+                not ignore_reflection_this_hit):
                 
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
@@ -1350,6 +1405,8 @@ class CouplesTowerBattle(TowerBattle):
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
             
+            message = self._apply_paladin_smite_to_message(current_combatant, target, message)
+
             # Check if target is defeated
             if not target.is_alive():
                 # Check for cheat death ability for players
@@ -1523,27 +1580,16 @@ class CouplesTowerBattle(TowerBattle):
             # Attack hits
             
             # Special case for mage fireball
+            blocked_damage = Decimal('0')
+            ignore_reflection_this_hit = False
+            mage_charge_state = self.advance_mage_fireball_charge(current_combatant)
             used_fireball = False
-            if (hasattr(current_combatant, 'mage_evolution') and current_combatant.mage_evolution and 
-                not current_combatant.is_pet and 
-                self.config["class_buffs"] and
-                random.random() < self.config["fireball_chance"]):
-                
-                # Calculate fireball damage
-                evolution_level = current_combatant.mage_evolution
-                damage_multiplier = {
-                    1: 1.10,  # 110%
-                    2: 1.20,  # 120%
-                    3: 1.30,  # 130%
-                    4: 1.50,  # 150%
-                    5: 1.75,  # 175%
-                    6: 2.00,  # 200%
-                    7: 2.10,  # 210%
-                }.get(evolution_level, 1.0)
-                
-                from decimal import Decimal
-                damage = (current_combatant.damage + Decimal(random.randint(0, 100)) - target.armor) * Decimal(str(damage_multiplier))
-                damage = max(damage, Decimal('1'))
+            if mage_charge_state and mage_charge_state["fireball_ready"]:
+                ignore_reflection_this_hit = True
+                damage = self._calculate_couples_mage_fireball_damage(
+                    current_combatant,
+                    target,
+                )
                 
                 # *** LEVEL 8 FRIENDLY FIRE DAMAGE REDUCTION FOR FIREBALL ***
                 if friendly_fire_occurred:
@@ -1609,6 +1655,8 @@ class CouplesTowerBattle(TowerBattle):
                 if defender_messages:
                     message += "\n" + "\n".join(defender_messages)
             
+            message = self._append_mage_charge_message(message, mage_charge_state)
+
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 
                 not current_combatant.is_pet and 
@@ -1632,7 +1680,8 @@ class CouplesTowerBattle(TowerBattle):
             
             if (self.config["reflection_damage"] and 
                 reflection_value > 0 and 
-                'blocked_damage' in locals() and blocked_damage > 0):
+                blocked_damage > 0 and
+                not ignore_reflection_this_hit):
                 
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
@@ -1643,6 +1692,8 @@ class CouplesTowerBattle(TowerBattle):
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
             
+            message = self._apply_paladin_smite_to_message(current_combatant, target, message)
+
             # Check if target is defeated
             if not target.is_alive():
                 # Check for cheat death ability for players
@@ -1803,27 +1854,16 @@ class CouplesTowerBattle(TowerBattle):
             # Attack hits
             
             # Special case for mage fireball
+            blocked_damage = Decimal('0')
+            ignore_reflection_this_hit = False
+            mage_charge_state = self.advance_mage_fireball_charge(current_combatant)
             used_fireball = False
-            if (hasattr(current_combatant, 'mage_evolution') and current_combatant.mage_evolution and 
-                not current_combatant.is_pet and 
-                self.config["class_buffs"] and
-                random.random() < self.config["fireball_chance"]):
-                
-                # Calculate fireball damage
-                evolution_level = current_combatant.mage_evolution
-                damage_multiplier = {
-                    1: 1.10,  # 110%
-                    2: 1.20,  # 120%
-                    3: 1.30,  # 130%
-                    4: 1.50,  # 150%
-                    5: 1.75,  # 175%
-                    6: 2.00,  # 200%
-                    7: 2.10,  # 210%
-                }.get(evolution_level, 1.0)
-                
-                from decimal import Decimal
-                damage = (current_combatant.damage + Decimal(random.randint(0, 100)) - target.armor) * Decimal(str(damage_multiplier))
-                damage = max(damage, Decimal('1'))
+            if mage_charge_state and mage_charge_state["fireball_ready"]:
+                ignore_reflection_this_hit = True
+                damage = self._calculate_couples_mage_fireball_damage(
+                    current_combatant,
+                    target,
+                )
                 
                 # *** LEVEL 10 UNITY MODE FOR FIREBALL ***
                 if current_combatant in self.player_team.combatants and not current_combatant.is_pet:
@@ -1890,6 +1930,8 @@ class CouplesTowerBattle(TowerBattle):
                 if defender_messages:
                     message += "\n" + "\n".join(defender_messages)
             
+            message = self._append_mage_charge_message(message, mage_charge_state)
+
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 
                 not current_combatant.is_pet and 
@@ -1913,7 +1955,8 @@ class CouplesTowerBattle(TowerBattle):
             
             if (self.config["reflection_damage"] and 
                 reflection_value > 0 and 
-                'blocked_damage' in locals() and blocked_damage > 0):
+                blocked_damage > 0 and
+                not ignore_reflection_this_hit):
                 
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
@@ -1924,6 +1967,8 @@ class CouplesTowerBattle(TowerBattle):
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
             
+            message = self._apply_paladin_smite_to_message(current_combatant, target, message)
+
             # Check if target is defeated
             if not target.is_alive():
                 # Check for cheat death ability for players
@@ -2233,27 +2278,16 @@ class CouplesTowerBattle(TowerBattle):
             # Attack hits
             
             # Special case for mage fireball
+            blocked_damage = Decimal('0')
+            ignore_reflection_this_hit = False
+            mage_charge_state = self.advance_mage_fireball_charge(current_combatant)
             used_fireball = False
-            if (hasattr(current_combatant, 'mage_evolution') and current_combatant.mage_evolution and 
-                not current_combatant.is_pet and 
-                self.config["class_buffs"] and
-                random.random() < self.config["fireball_chance"]):
-                
-                # Calculate fireball damage
-                evolution_level = current_combatant.mage_evolution
-                damage_multiplier = {
-                    1: 1.10,  # 110%
-                    2: 1.20,  # 120%
-                    3: 1.30,  # 130%
-                    4: 1.50,  # 150%
-                    5: 1.75,  # 175%
-                    6: 2.00,  # 200%
-                    7: 2.10,  # 210%
-                }.get(evolution_level, 1.0)
-                
-                from decimal import Decimal
-                damage = (current_combatant.damage + Decimal(random.randint(0, 100)) - target.armor) * Decimal(str(damage_multiplier))
-                damage = max(damage, Decimal('1'))
+            if mage_charge_state and mage_charge_state["fireball_ready"]:
+                ignore_reflection_this_hit = True
+                damage = self._calculate_couples_mage_fireball_damage(
+                    current_combatant,
+                    target,
+                )
                 
                 # *** LEVEL 6 DAMAGE SHARING FOR FIREBALL ***
                 if target in self.player_team.combatants and not target.is_pet:
@@ -2347,6 +2381,8 @@ class CouplesTowerBattle(TowerBattle):
                 if defender_messages:
                     message += "\n" + "\n".join(defender_messages)
             
+            message = self._append_mage_charge_message(message, mage_charge_state)
+
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 
                 not current_combatant.is_pet and 
@@ -2370,7 +2406,8 @@ class CouplesTowerBattle(TowerBattle):
             
             if (self.config["reflection_damage"] and 
                 reflection_value > 0 and 
-                'blocked_damage' in locals() and blocked_damage > 0):
+                blocked_damage > 0 and
+                not ignore_reflection_this_hit):
                 
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
@@ -2381,6 +2418,8 @@ class CouplesTowerBattle(TowerBattle):
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
             
+            message = self._apply_paladin_smite_to_message(current_combatant, target, message)
+
             # Check if target is defeated
             if not target.is_alive():
                 # Check for cheat death ability for players
@@ -2533,27 +2572,16 @@ class CouplesTowerBattle(TowerBattle):
             # Attack hits
             
             # Special case for mage fireball
+            blocked_damage = Decimal('0')
+            ignore_reflection_this_hit = False
+            mage_charge_state = self.advance_mage_fireball_charge(current_combatant)
             used_fireball = False
-            if (hasattr(current_combatant, 'mage_evolution') and current_combatant.mage_evolution and 
-                not current_combatant.is_pet and 
-                self.config["class_buffs"] and
-                random.random() < self.config["fireball_chance"]):
-                
-                # Calculate fireball damage
-                evolution_level = current_combatant.mage_evolution
-                damage_multiplier = {
-                    1: 1.10,  # 110%
-                    2: 1.20,  # 120%
-                    3: 1.30,  # 130%
-                    4: 1.50,  # 150%
-                    5: 1.75,  # 175%
-                    6: 2.00,  # 200%
-                    7: 2.10,  # 210%
-                }.get(evolution_level, 1.0)
-                
-                from decimal import Decimal
-                damage = (current_combatant.damage + Decimal(random.randint(0, 100)) - target.armor) * Decimal(str(damage_multiplier))
-                damage = max(damage, Decimal('1'))
+            if mage_charge_state and mage_charge_state["fireball_ready"]:
+                ignore_reflection_this_hit = True
+                damage = self._calculate_couples_mage_fireball_damage(
+                    current_combatant,
+                    target,
+                )
                 
                 # *** LEVEL 13 MISCOMMUNICATION FOR FIREBALL ***
                 if current_combatant in self.player_team.combatants and not current_combatant.is_pet:
@@ -2622,6 +2650,8 @@ class CouplesTowerBattle(TowerBattle):
                 if defender_messages:
                     message += "\n" + "\n".join(defender_messages)
             
+            message = self._append_mage_charge_message(message, mage_charge_state)
+
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 
                 not current_combatant.is_pet and 
@@ -2645,7 +2675,8 @@ class CouplesTowerBattle(TowerBattle):
             
             if (self.config["reflection_damage"] and 
                 reflection_value > 0 and 
-                'blocked_damage' in locals() and blocked_damage > 0):
+                blocked_damage > 0 and
+                not ignore_reflection_this_hit):
                 
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
@@ -2656,6 +2687,8 @@ class CouplesTowerBattle(TowerBattle):
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
             
+            message = self._apply_paladin_smite_to_message(current_combatant, target, message)
+
             # Check if target is defeated
             if not target.is_alive():
                 # Check for cheat death ability for players
@@ -2816,27 +2849,16 @@ class CouplesTowerBattle(TowerBattle):
             # Attack hits
             
             # Special case for mage fireball
+            blocked_damage = Decimal('0')
+            ignore_reflection_this_hit = False
+            mage_charge_state = self.advance_mage_fireball_charge(current_combatant)
             used_fireball = False
-            if (hasattr(current_combatant, 'mage_evolution') and current_combatant.mage_evolution and 
-                not current_combatant.is_pet and 
-                self.config["class_buffs"] and
-                random.random() < self.config["fireball_chance"]):
-                
-                # Calculate fireball damage
-                evolution_level = current_combatant.mage_evolution
-                damage_multiplier = {
-                    1: 1.10,  # 110%
-                    2: 1.20,  # 120%
-                    3: 1.30,  # 130%
-                    4: 1.50,  # 150%
-                    5: 1.75,  # 175%
-                    6: 2.00,  # 200%
-                    7: 2.10,  # 210%
-                }.get(evolution_level, 1.0)
-                
-                from decimal import Decimal
-                damage = (current_combatant.damage + Decimal(random.randint(0, 100)) - target.armor) * Decimal(str(damage_multiplier))
-                damage = max(damage, Decimal('1'))
+            if mage_charge_state and mage_charge_state["fireball_ready"]:
+                ignore_reflection_this_hit = True
+                damage = self._calculate_couples_mage_fireball_damage(
+                    current_combatant,
+                    target,
+                )
                 
                 target.take_damage(damage)
                 
@@ -2911,6 +2933,8 @@ class CouplesTowerBattle(TowerBattle):
                 if defender_messages:
                     message += "\n" + "\n".join(defender_messages)
             
+            message = self._append_mage_charge_message(message, mage_charge_state)
+
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 
                 not current_combatant.is_pet and 
@@ -2934,7 +2958,8 @@ class CouplesTowerBattle(TowerBattle):
             
             if (self.config["reflection_damage"] and 
                 reflection_value > 0 and 
-                'blocked_damage' in locals() and blocked_damage > 0):
+                blocked_damage > 0 and
+                not ignore_reflection_this_hit):
                 
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
@@ -2945,6 +2970,8 @@ class CouplesTowerBattle(TowerBattle):
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
             
+            message = self._apply_paladin_smite_to_message(current_combatant, target, message)
+
             # Check if target is defeated
             if not target.is_alive():
                 # Check for cheat death ability for players
@@ -3105,27 +3132,16 @@ class CouplesTowerBattle(TowerBattle):
             # Attack hits
             
             # Special case for mage fireball
+            blocked_damage = Decimal('0')
+            ignore_reflection_this_hit = False
+            mage_charge_state = self.advance_mage_fireball_charge(current_combatant)
             used_fireball = False
-            if (hasattr(current_combatant, 'mage_evolution') and current_combatant.mage_evolution and 
-                not current_combatant.is_pet and 
-                self.config["class_buffs"] and
-                random.random() < self.config["fireball_chance"]):
-                
-                # Calculate fireball damage
-                evolution_level = current_combatant.mage_evolution
-                damage_multiplier = {
-                    1: 1.10,  # 110%
-                    2: 1.20,  # 120%
-                    3: 1.30,  # 130%
-                    4: 1.50,  # 150%
-                    5: 1.75,  # 175%
-                    6: 2.00,  # 200%
-                    7: 2.10,  # 210%
-                }.get(evolution_level, 1.0)
-                
-                from decimal import Decimal
-                damage = (current_combatant.damage + Decimal(random.randint(0, 100)) - target.armor) * Decimal(str(damage_multiplier))
-                damage = max(damage, Decimal('1'))
+            if mage_charge_state and mage_charge_state["fireball_ready"]:
+                ignore_reflection_this_hit = True
+                damage = self._calculate_couples_mage_fireball_damage(
+                    current_combatant,
+                    target,
+                )
                 
                 # *** LEVEL 15 BETRAYAL ILLUSIONS FOR FIREBALL ***
                 if current_combatant in self.player_team.combatants and not current_combatant.is_pet:
@@ -3204,6 +3220,8 @@ class CouplesTowerBattle(TowerBattle):
                 if defender_messages:
                     message += "\n" + "\n".join(defender_messages)
             
+            message = self._append_mage_charge_message(message, mage_charge_state)
+
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 
                 not current_combatant.is_pet and 
@@ -3227,7 +3245,8 @@ class CouplesTowerBattle(TowerBattle):
             
             if (self.config["reflection_damage"] and 
                 reflection_value > 0 and 
-                'blocked_damage' in locals() and blocked_damage > 0):
+                blocked_damage > 0 and
+                not ignore_reflection_this_hit):
                 
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
@@ -3238,6 +3257,8 @@ class CouplesTowerBattle(TowerBattle):
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
             
+            message = self._apply_paladin_smite_to_message(current_combatant, target, message)
+
             # Check if target is defeated
             if not target.is_alive():
                 # Check for cheat death ability for players
@@ -3416,27 +3437,16 @@ class CouplesTowerBattle(TowerBattle):
             # Attack hits
             
             # Special case for mage fireball
+            blocked_damage = Decimal('0')
+            ignore_reflection_this_hit = False
+            mage_charge_state = self.advance_mage_fireball_charge(current_combatant)
             used_fireball = False
-            if (hasattr(current_combatant, 'mage_evolution') and current_combatant.mage_evolution and 
-                not current_combatant.is_pet and 
-                self.config["class_buffs"] and
-                random.random() < self.config["fireball_chance"]):
-                
-                # Calculate fireball damage
-                evolution_level = current_combatant.mage_evolution
-                damage_multiplier = {
-                    1: 1.10,  # 110%
-                    2: 1.20,  # 120%
-                    3: 1.30,  # 130%
-                    4: 1.50,  # 150%
-                    5: 1.75,  # 175%
-                    6: 2.00,  # 200%
-                    7: 2.10,  # 210%
-                }.get(evolution_level, 1.0)
-                
-                from decimal import Decimal
-                damage = (current_combatant.damage + Decimal(random.randint(0, 100)) - target.armor) * Decimal(str(damage_multiplier))
-                damage = max(damage, Decimal('1'))
+            if mage_charge_state and mage_charge_state["fireball_ready"]:
+                ignore_reflection_this_hit = True
+                damage = self._calculate_couples_mage_fireball_damage(
+                    current_combatant,
+                    target,
+                )
                 
                 # *** LEVEL 16 GRUDGE DAMAGE BOOST FOR FIREBALL ***
                 if current_combatant in self.player_team.combatants and not current_combatant.is_pet:
@@ -3521,6 +3531,8 @@ class CouplesTowerBattle(TowerBattle):
                 if defender_messages:
                     message += "\n" + "\n".join(defender_messages)
             
+            message = self._append_mage_charge_message(message, mage_charge_state)
+
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 
                 not current_combatant.is_pet and 
@@ -3544,7 +3556,8 @@ class CouplesTowerBattle(TowerBattle):
             
             if (self.config["reflection_damage"] and 
                 reflection_value > 0 and 
-                'blocked_damage' in locals() and blocked_damage > 0):
+                blocked_damage > 0 and
+                not ignore_reflection_this_hit):
                 
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
@@ -3555,6 +3568,8 @@ class CouplesTowerBattle(TowerBattle):
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
             
+            message = self._apply_paladin_smite_to_message(current_combatant, target, message)
+
             # Check if target is defeated
             if not target.is_alive():
                 # Check for cheat death ability for players
@@ -3723,27 +3738,16 @@ class CouplesTowerBattle(TowerBattle):
             # Attack hits
             
             # Special case for mage fireball
+            blocked_damage = Decimal('0')
+            ignore_reflection_this_hit = False
+            mage_charge_state = self.advance_mage_fireball_charge(current_combatant)
             used_fireball = False
-            if (hasattr(current_combatant, 'mage_evolution') and current_combatant.mage_evolution and 
-                not current_combatant.is_pet and 
-                self.config["class_buffs"] and
-                random.random() < self.config["fireball_chance"]):
-                
-                # Calculate fireball damage
-                evolution_level = current_combatant.mage_evolution
-                damage_multiplier = {
-                    1: 1.10,  # 110%
-                    2: 1.20,  # 120%
-                    3: 1.30,  # 130%
-                    4: 1.50,  # 150%
-                    5: 1.75,  # 175%
-                    6: 2.00,  # 200%
-                    7: 2.10,  # 210%
-                }.get(evolution_level, 1.0)
-                
-                from decimal import Decimal
-                damage = (current_combatant.damage + Decimal(random.randint(0, 100)) - target.armor) * Decimal(str(damage_multiplier))
-                damage = max(damage, Decimal('1'))
+            if mage_charge_state and mage_charge_state["fireball_ready"]:
+                ignore_reflection_this_hit = True
+                damage = self._calculate_couples_mage_fireball_damage(
+                    current_combatant,
+                    target,
+                )
                 
                 # *** LEVEL 18 TEMPTATION DAMAGE REDUCTION FOR FIREBALL ***
                 if is_tempted:
@@ -3812,6 +3816,8 @@ class CouplesTowerBattle(TowerBattle):
                 if defender_messages:
                     message += "\n" + "\n".join(defender_messages)
             
+            message = self._append_mage_charge_message(message, mage_charge_state)
+
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 
                 not current_combatant.is_pet and 
@@ -3835,7 +3841,8 @@ class CouplesTowerBattle(TowerBattle):
             
             if (self.config["reflection_damage"] and 
                 reflection_value > 0 and 
-                'blocked_damage' in locals() and blocked_damage > 0):
+                blocked_damage > 0 and
+                not ignore_reflection_this_hit):
                 
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
@@ -3846,6 +3853,8 @@ class CouplesTowerBattle(TowerBattle):
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
             
+            message = self._apply_paladin_smite_to_message(current_combatant, target, message)
+
             # Check if target is defeated
             if not target.is_alive():
                 # Check for cheat death ability for players
@@ -4014,27 +4023,16 @@ class CouplesTowerBattle(TowerBattle):
             # Attack hits
             
             # Special case for mage fireball
+            blocked_damage = Decimal('0')
+            ignore_reflection_this_hit = False
+            mage_charge_state = self.advance_mage_fireball_charge(current_combatant)
             used_fireball = False
-            if (hasattr(current_combatant, 'mage_evolution') and current_combatant.mage_evolution and 
-                not current_combatant.is_pet and 
-                self.config["class_buffs"] and
-                random.random() < self.config["fireball_chance"]):
-                
-                # Calculate fireball damage
-                evolution_level = current_combatant.mage_evolution
-                damage_multiplier = {
-                    1: 1.10,  # 110%
-                    2: 1.20,  # 120%
-                    3: 1.30,  # 130%
-                    4: 1.50,  # 150%
-                    5: 1.75,  # 175%
-                    6: 2.00,  # 200%
-                    7: 2.10,  # 210%
-                }.get(evolution_level, 1.0)
-                
-                from decimal import Decimal
-                damage = (current_combatant.damage + Decimal(random.randint(0, 100)) - target.armor) * Decimal(str(damage_multiplier))
-                damage = max(damage, Decimal('1'))
+            if mage_charge_state and mage_charge_state["fireball_ready"]:
+                ignore_reflection_this_hit = True
+                damage = self._calculate_couples_mage_fireball_damage(
+                    current_combatant,
+                    target,
+                )
                 
                 # *** LEVEL 19 CRITICAL HIT DAMAGE BOOST FOR FIREBALL ***
                 if is_critical_hit:
@@ -4103,6 +4101,8 @@ class CouplesTowerBattle(TowerBattle):
                 if defender_messages:
                     message += "\n" + "\n".join(defender_messages)
             
+            message = self._append_mage_charge_message(message, mage_charge_state)
+
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 
                 not current_combatant.is_pet and 
@@ -4126,7 +4126,8 @@ class CouplesTowerBattle(TowerBattle):
             
             if (self.config["reflection_damage"] and 
                 reflection_value > 0 and 
-                'blocked_damage' in locals() and blocked_damage > 0):
+                blocked_damage > 0 and
+                not ignore_reflection_this_hit):
                 
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
@@ -4137,6 +4138,8 @@ class CouplesTowerBattle(TowerBattle):
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
             
+            message = self._apply_paladin_smite_to_message(current_combatant, target, message)
+
             # Check if target is defeated
             if not target.is_alive():
                 # Check for cheat death ability for players
@@ -4318,27 +4321,16 @@ class CouplesTowerBattle(TowerBattle):
             # Attack hits
             
             # Special case for mage fireball
+            blocked_damage = Decimal('0')
+            ignore_reflection_this_hit = False
+            mage_charge_state = self.advance_mage_fireball_charge(current_combatant)
             used_fireball = False
-            if (hasattr(current_combatant, 'mage_evolution') and current_combatant.mage_evolution and 
-                not current_combatant.is_pet and 
-                self.config["class_buffs"] and
-                random.random() < self.config["fireball_chance"]):
-                
-                # Calculate fireball damage
-                evolution_level = current_combatant.mage_evolution
-                damage_multiplier = {
-                    1: 1.10,  # 110%
-                    2: 1.20,  # 120%
-                    3: 1.30,  # 130%
-                    4: 1.50,  # 150%
-                    5: 1.75,  # 175%
-                    6: 2.00,  # 200%
-                    7: 2.10,  # 210%
-                }.get(evolution_level, 1.0)
-                
-                from decimal import Decimal
-                damage = (current_combatant.damage + Decimal(random.randint(0, 100)) - target.armor) * Decimal(str(damage_multiplier))
-                damage = max(damage, Decimal('1'))
+            if mage_charge_state and mage_charge_state["fireball_ready"]:
+                ignore_reflection_this_hit = True
+                damage = self._calculate_couples_mage_fireball_damage(
+                    current_combatant,
+                    target,
+                )
                 
                 # Level 22: Apply despair damage modifier to player fireballs
                 if current_combatant in self.player_team.combatants:
@@ -4410,6 +4402,8 @@ class CouplesTowerBattle(TowerBattle):
                     self.despair_stacks[current_combatant.name] = max(0, current_despair - 1)
                     hope_gained = True
             
+            message = self._append_mage_charge_message(message, mage_charge_state)
+
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 
                 not current_combatant.is_pet and 
@@ -4433,7 +4427,8 @@ class CouplesTowerBattle(TowerBattle):
             
             if (self.config["reflection_damage"] and 
                 reflection_value > 0 and 
-                'blocked_damage' in locals() and blocked_damage > 0):
+                blocked_damage > 0 and
+                not ignore_reflection_this_hit):
                 
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
@@ -4444,6 +4439,8 @@ class CouplesTowerBattle(TowerBattle):
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
             
+            message = self._apply_paladin_smite_to_message(current_combatant, target, message)
+
             # Check if target is defeated
             if not target.is_alive():
                 # Check for cheat death ability for players
@@ -4687,27 +4684,16 @@ class CouplesTowerBattle(TowerBattle):
             # Attack hits
             
             # Special case for mage fireball
+            blocked_damage = Decimal('0')
+            ignore_reflection_this_hit = False
+            mage_charge_state = self.advance_mage_fireball_charge(current_combatant)
             used_fireball = False
-            if (hasattr(current_combatant, 'mage_evolution') and current_combatant.mage_evolution and 
-                not current_combatant.is_pet and 
-                self.config["class_buffs"] and
-                random.random() < self.config["fireball_chance"]):
-                
-                # Calculate fireball damage
-                evolution_level = current_combatant.mage_evolution
-                damage_multiplier = {
-                    1: 1.10,  # 110%
-                    2: 1.20,  # 120%
-                    3: 1.30,  # 130%
-                    4: 1.50,  # 150%
-                    5: 1.75,  # 175%
-                    6: 2.00,  # 200%
-                    7: 2.10,  # 210%
-                }.get(evolution_level, 1.0)
-                
-                from decimal import Decimal
-                damage = (current_combatant.damage + Decimal(random.randint(0, 100)) - target.armor) * Decimal(str(damage_multiplier))
-                damage = max(damage, Decimal('1'))
+            if mage_charge_state and mage_charge_state["fireball_ready"]:
+                ignore_reflection_this_hit = True
+                damage = self._calculate_couples_mage_fireball_damage(
+                    current_combatant,
+                    target,
+                )
                 
                 # *** LEVEL 26 PAIN FURY DAMAGE BOOST FOR FIREBALL ***
                 pain_bonus = self.pain_damage_bonuses.get(current_combatant.name, 0)
@@ -4784,6 +4770,8 @@ class CouplesTowerBattle(TowerBattle):
                 if defender_messages:
                     message += "\n" + "\n".join(defender_messages)
             
+            message = self._append_mage_charge_message(message, mage_charge_state)
+
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 
                 not current_combatant.is_pet and 
@@ -4807,7 +4795,8 @@ class CouplesTowerBattle(TowerBattle):
             
             if (self.config["reflection_damage"] and 
                 reflection_value > 0 and 
-                'blocked_damage' in locals() and blocked_damage > 0):
+                blocked_damage > 0 and
+                not ignore_reflection_this_hit):
                 
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
@@ -4825,6 +4814,8 @@ class CouplesTowerBattle(TowerBattle):
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
             
+            message = self._apply_paladin_smite_to_message(current_combatant, target, message)
+
             # Check if target is defeated
             if not target.is_alive():
                 # Check for cheat death ability for players
@@ -5121,6 +5112,8 @@ class CouplesTowerBattle(TowerBattle):
                 target.take_damage(damage)
                 message = f"{current_combatant.name} attacks! {target.name} takes **{self.format_number(damage)} HP** damage."
             
+            message = self._apply_paladin_smite_to_message(current_combatant, target, message)
+
             # Check if target is defeated
             if not target.is_alive():
                 message += f" {target.name} has been defeated!"
@@ -5324,8 +5317,10 @@ class CouplesTowerBattle(TowerBattle):
             
             target.take_damage(damage)
             message = f"{attacker.name} attacks! {target.name} takes **{self.format_number(damage)} HP** damage."
+
+            message = self._apply_paladin_smite_to_message(attacker, target, message)
             
-            # Check if target is defeated
+            # Check if spirit target is defeated
             if not target.is_alive():
                 message += f" {target.name} has been defeated!"
                 
@@ -5432,6 +5427,8 @@ class CouplesTowerBattle(TowerBattle):
             
             message = f"{random.choice(possession_attacks)} {target.name} takes **{self.format_number(damage)} HP** damage."
             
+            message = self._apply_paladin_smite_to_message(current_combatant, target, message)
+
             # Check if target is defeated
             if not target.is_alive():
                 message += f"\n💔 {target.name} has been struck down by their own beloved..."
@@ -5580,29 +5577,17 @@ class CouplesTowerBattle(TowerBattle):
             # Attack hits
             
             # Special case for mage fireball
+            blocked_damage = Decimal('0')
+            ignore_reflection_this_hit = False
+            mage_charge_state = self.advance_mage_fireball_charge(current_combatant)
             used_fireball = False
-            if (hasattr(current_combatant, 'mage_evolution') and current_combatant.mage_evolution and 
-                not current_combatant.is_pet and 
-                self.config["class_buffs"] and
-                random.random() < self.config["fireball_chance"]):
-                
-                # Calculate fireball damage with chaos variance
-                evolution_level = current_combatant.mage_evolution
-                damage_multiplier = {
-                    1: 1.10,  # 110%
-                    2: 1.20,  # 120%
-                    3: 1.30,  # 130%
-                    4: 1.50,  # 150%
-                    5: 1.75,  # 175%
-                    6: 2.00,  # 200%
-                    7: 2.10,  # 210%
-                }.get(evolution_level, 1.0)
-                
-                from decimal import Decimal
-                # Level 24: Extreme chaos variance for fireballs
-                chaos_variance = random.randint(-200, 300)  # Much more chaotic
-                damage = (current_combatant.damage + Decimal(chaos_variance) - target.armor) * Decimal(str(damage_multiplier))
-                damage = max(damage, Decimal('1'))
+            if mage_charge_state and mage_charge_state["fireball_ready"]:
+                ignore_reflection_this_hit = True
+                damage = self._calculate_couples_mage_fireball_damage(
+                    current_combatant,
+                    target,
+                    variance_range=(-200, 300),
+                )
                 
                 # Apply chaos effects to damage
                 damage = await self.apply_chaos_effects_to_damage(current_combatant, damage)
@@ -5665,6 +5650,8 @@ class CouplesTowerBattle(TowerBattle):
             if "Chaos Elemental" in current_combatant.name and random.random() < 0.40:
                 await self.chaos_elemental_special_attack(target)
             
+            message = self._append_mage_charge_message(message, mage_charge_state)
+
             # Handle lifesteal if applicable
             if (self.config["class_buffs"] and 
                 not current_combatant.is_pet and 
@@ -5688,7 +5675,8 @@ class CouplesTowerBattle(TowerBattle):
             
             if (self.config["reflection_damage"] and 
                 reflection_value > 0 and 
-                'blocked_damage' in locals() and blocked_damage > 0):
+                blocked_damage > 0 and
+                not ignore_reflection_this_hit):
                 
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
@@ -5699,6 +5687,8 @@ class CouplesTowerBattle(TowerBattle):
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
             
+            message = self._apply_paladin_smite_to_message(current_combatant, target, message)
+
             # Check if target is defeated
             if not target.is_alive():
                 # Check for cheat death ability for players
@@ -5987,6 +5977,7 @@ class CouplesTowerBattle(TowerBattle):
                 
             # Create field value with HP bar
             field_value = f"HP: {hp_display}\n{hp_bar}"
+            field_value = self._append_visible_shield(field_value, combatant)
             
             # Level-specific additions to field value
             if self.level == 7:  # Memory Shield: Show fragments
@@ -6111,6 +6102,7 @@ class CouplesTowerBattle(TowerBattle):
         
         field_name = f"👹 **ENEMY** 👹\n{current_enemy.name} {element_emoji}"
         field_value = f"HP: {enemy_hp_display}\n{enemy_hp_bar}"
+        field_value = self._append_visible_shield(field_value, current_enemy)
         
         # Enemy-specific progression displays
         if self.level == 25 and "Fear Incarnate" in current_enemy.name:
@@ -6213,9 +6205,14 @@ class CouplesTowerBattle(TowerBattle):
                 defender_emoji = emoji
                 break
         
+        defender_value = (
+            f"HP: {defender_hp:.1f}/{defender_max_hp:.1f}\n{defender_hp_bar}\n"
+            "*Must survive without killing their beloved*"
+        )
+        defender_value = self._append_visible_shield(defender_value, self.defender_partner)
         embed.add_field(
             name=f"🛡️ **DEFENDER** 🛡️\n💑 {self.defender_partner.display_name} {defender_emoji}",
-            value=f"HP: {defender_hp:.1f}/{defender_max_hp:.1f}\n{defender_hp_bar}\n*Must survive without killing their beloved*",
+            value=defender_value,
             inline=True
         )
         
@@ -6230,9 +6227,14 @@ class CouplesTowerBattle(TowerBattle):
                 possessed_emoji = emoji
                 break
         
+        possessed_value = (
+            f"HP: {possessed_hp:.1f}/{possessed_max_hp:.1f}\n{possessed_hp_bar}\n"
+            "*Struggles against demonic control*"
+        )
+        possessed_value = self._append_visible_shield(possessed_value, self.possessed_partner)
         embed.add_field(
             name=f"👻 **POSSESSED** 👻\n💔 {self.possessed_partner.display_name} {possessed_emoji}",
-            value=f"HP: {possessed_hp:.1f}/{possessed_max_hp:.1f}\n{possessed_hp_bar}\n*Struggles against demonic control*",
+            value=possessed_value,
             inline=True
         )
         
@@ -6244,9 +6246,14 @@ class CouplesTowerBattle(TowerBattle):
         demon_max_hp = float(self.truth_demon.max_hp) if self.truth_demon else 1
         demon_hp_bar = self.create_hp_bar(demon_hp, demon_max_hp, combatant=self.truth_demon)
         
+        demon_value = (
+            f"HP: {demon_hp:.1f}/{demon_max_hp:.1f}\n{demon_hp_bar}\n"
+            f"*Cannot be targeted - Dies after {self.possession_turn_limit} turns*"
+        )
+        demon_value = self._append_visible_shield(demon_value, self.truth_demon)
         embed.add_field(
             name="🪞 **TRUTH DEMON** 🪞\n👹 Truth Demon 👹",
-            value=f"HP: {demon_hp:.1f}/{demon_max_hp:.1f}\n{demon_hp_bar}\n*Cannot be targeted - Dies after {self.possession_turn_limit} turns*",
+            value=demon_value,
             inline=False
         )
         
@@ -6449,12 +6456,19 @@ class CouplesTowerBattle(TowerBattle):
                     if element == enemy.element:
                         enemy_emoji = emoji
                 
+                partner_info = (
+                    f"💑 **{partner.display_name}** {partner_emoji}\n"
+                    f"HP: {current_hp:.1f}/{max_hp:.1f}\n{hp_bar}"
+                )
+                partner_info = self._append_visible_shield(partner_info, partner)
+                enemy_info = (
+                    f"👹 **{enemy.name}** {enemy_emoji}\n"
+                    f"HP: {enemy_hp:.1f}/{enemy_max_hp:.1f}\n{enemy_hp_bar}"
+                )
+                enemy_info = self._append_visible_shield(enemy_info, enemy)
+
                 field_name = f"⚔️ **BATTLEFIELD {i+1}** ⚔️"
-                field_value = (f"💑 **{partner.display_name}** {partner_emoji}\n"
-                             f"HP: {current_hp:.1f}/{max_hp:.1f}\n{hp_bar}\n\n"
-                             f"**VS**\n\n"
-                             f"👹 **{enemy.name}** {enemy_emoji}\n"
-                             f"HP: {enemy_hp:.1f}/{enemy_max_hp:.1f}\n{enemy_hp_bar}")
+                field_value = f"{partner_info}\n\n**VS**\n\n{enemy_info}"
                 
                 embed.add_field(name=field_name, value=field_value, inline=True)
         
@@ -6466,7 +6480,8 @@ class CouplesTowerBattle(TowerBattle):
                 current_hp = max(0, float(pet.hp))
                 max_hp = float(pet.max_hp)
                 hp_bar = self.create_hp_bar(current_hp, max_hp, combatant=pet)
-                pet_info.append(f"🐾 {pet.name}\nHP: {current_hp:.1f}/{max_hp:.1f}\n{hp_bar}")
+                pet_value = f"🐾 {pet.name}\nHP: {current_hp:.1f}/{max_hp:.1f}\n{hp_bar}"
+                pet_info.append(self._append_visible_shield(pet_value, pet))
             embed.add_field(name="🐾 **COMPANIONS** 🐾", value="\n\n".join(pet_info), inline=False)
         
         # Add battle log
@@ -6752,6 +6767,7 @@ class CouplesTowerBattle(TowerBattle):
                 
             # Create field value with HP bar
             field_value = f"HP: {current_hp:.1f}/{max_hp:.1f}\n{hp_bar}"
+            field_value = self._append_visible_shield(field_value, combatant)
             embed.add_field(name=field_name, value=field_value, inline=True)
         
         # Add all enemies info
@@ -6774,6 +6790,7 @@ class CouplesTowerBattle(TowerBattle):
                     break
             
             enemy_info = f"**{enemy.name} #{i+1}** {element_emoji}\nHP: {current_hp:.1f}/{max_hp:.1f}\n{hp_bar}"
+            enemy_info = self._append_visible_shield(enemy_info, enemy)
             
             if enemy.is_alive():
                 alive_enemies.append(enemy_info)
@@ -6804,4 +6821,5 @@ class CouplesTowerBattle(TowerBattle):
         embed.set_footer(text=f"Battle ID: {self.battle_id}")
         
         return embed
+
 

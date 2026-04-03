@@ -583,6 +583,73 @@ class Battle(ABC):
             and getattr(combatant, "mage_evolution", None)
         )
 
+    def can_use_paladin_smite(self, combatant):
+        return bool(
+            self.config.get("class_buffs", True)
+            and combatant is not None
+            and not getattr(combatant, "is_pet", False)
+            and getattr(combatant, "paladin_evolution", None)
+        )
+
+    def can_use_raider_mark(self, combatant):
+        return bool(
+            self.config.get("class_buffs", True)
+            and combatant is not None
+            and not getattr(combatant, "is_pet", False)
+            and getattr(combatant, "raider_evolution", None)
+        )
+
+    def can_use_ritualist_doom(self, combatant):
+        return bool(
+            self.config.get("class_buffs", True)
+            and combatant is not None
+            and not getattr(combatant, "is_pet", False)
+            and getattr(combatant, "ritualist_evolution", None)
+        )
+
+    def can_use_paragon_mastery(self, combatant):
+        return bool(
+            self.config.get("class_buffs", True)
+            and combatant is not None
+            and not getattr(combatant, "is_pet", False)
+            and getattr(combatant, "paragon_evolution", None)
+        )
+
+    @staticmethod
+    def get_runtime_combatant_marker(combatant):
+        if combatant is None:
+            return None
+        return int(id(combatant))
+
+    @staticmethod
+    def _get_runtime_state_bucket(combatant, attr_name):
+        bucket = getattr(combatant, attr_name, None)
+        if not isinstance(bucket, dict):
+            bucket = {}
+            setattr(combatant, attr_name, bucket)
+        return bucket
+
+    @staticmethod
+    def _trim_runtime_state_bucket(combatant, attr_name):
+        bucket = getattr(combatant, attr_name, None)
+        if isinstance(bucket, dict) and not bucket:
+            delattr(combatant, attr_name)
+
+    def apply_capped_shield(self, combatant, shield_gain, shield_cap):
+        shield_gain = Decimal(str(shield_gain or 0))
+        shield_cap = Decimal(str(shield_cap or 0))
+        if combatant is None or shield_gain <= 0 or shield_cap <= 0:
+            return Decimal("0")
+
+        current_shield = Decimal(str(getattr(combatant, "shield", 0) or 0))
+        if shield_cap <= current_shield:
+            return Decimal("0")
+
+        actual_shield_gain = min(shield_gain, shield_cap - current_shield)
+        if actual_shield_gain > 0:
+            setattr(combatant, "shield", current_shield + actual_shield_gain)
+        return actual_shield_gain
+
     def get_mage_fireball_damage_multiplier(self, combatant):
         level = int(getattr(combatant, "mage_evolution", 0) or 0)
         if level <= 0:
@@ -615,13 +682,13 @@ class Battle(ABC):
             if class_ext is not None
             else None
         ) or {
-            1: 0.030,
-            2: 0.035,
-            3: 0.040,
-            4: 0.045,
-            5: 0.050,
-            6: 0.055,
-            7: 0.060,
+            1: 0.035,
+            2: 0.040,
+            3: 0.045,
+            4: 0.050,
+            5: 0.055,
+            6: 0.060,
+            7: 0.065,
         }
         return Decimal(str(shield_map.get(level, 0)))
 
@@ -636,13 +703,316 @@ class Battle(ABC):
             if class_ext is not None
             else None
         ) or {
-            1: 0.14,
-            2: 0.16,
-            3: 0.18,
-            4: 0.20,
-            5: 0.22,
-            6: 0.24,
+            1: 0.15,
+            2: 0.17,
+            3: 0.19,
+            4: 0.21,
+            5: 0.23,
+            6: 0.25,
+            7: 0.26,
+        }
+        return Decimal(str(shield_cap_map.get(level, 0)))
+
+    def get_paladin_faith_threshold(self):
+        return 3
+
+    def get_paladin_smite_damage_multiplier(self, combatant):
+        level = int(getattr(combatant, "paladin_evolution", 0) or 0)
+        if level <= 0:
+            return Decimal("0")
+
+        class_ext = self._get_class_extension()
+        multiplier_map = (
+            getattr(class_ext, "paladin_smite_damage_multiplier", None)
+            if class_ext is not None
+            else None
+        ) or {
+            1: 0.20,
+            2: 0.25,
+            3: 0.30,
+            4: 0.35,
+            5: 0.40,
+            6: 0.45,
+            7: 0.50,
+        }
+        return Decimal(str(multiplier_map.get(level, 0)))
+
+    def get_paladin_holy_shield_gain(self, combatant):
+        level = int(getattr(combatant, "paladin_evolution", 0) or 0)
+        if level <= 0:
+            return Decimal("0")
+
+        class_ext = self._get_class_extension()
+        shield_map = (
+            getattr(class_ext, "paladin_holy_shield_gain", None)
+            if class_ext is not None
+            else None
+        ) or {
+            1: 0.04,
+            2: 0.05,
+            3: 0.06,
+            4: 0.07,
+            5: 0.08,
+            6: 0.09,
+            7: 0.10,
+        }
+        return Decimal(str(shield_map.get(level, 0)))
+
+    def get_paladin_holy_shield_cap(self, combatant):
+        level = int(getattr(combatant, "paladin_evolution", 0) or 0)
+        if level <= 0:
+            return Decimal("0")
+
+        class_ext = self._get_class_extension()
+        shield_cap_map = (
+            getattr(class_ext, "paladin_holy_shield_cap", None)
+            if class_ext is not None
+            else None
+        ) or {
+            1: 0.12,
+            2: 0.14,
+            3: 0.16,
+            4: 0.18,
+            5: 0.20,
+            6: 0.22,
+            7: 0.24,
+        }
+        return Decimal(str(shield_cap_map.get(level, 0)))
+
+    def get_raider_mark_threshold(self):
+        return 3
+
+    def get_raider_mark_damage_multiplier(self, combatant):
+        level = int(getattr(combatant, "raider_evolution", 0) or 0)
+        if level <= 0:
+            return Decimal("0")
+
+        class_ext = self._get_class_extension()
+        multiplier_map = (
+            getattr(class_ext, "raider_mark_damage_multiplier", None)
+            if class_ext is not None
+            else None
+        ) or {
+            1: 0.15,
+            2: 0.18,
+            3: 0.21,
+            4: 0.24,
+            5: 0.27,
+            6: 0.30,
+            7: 0.35,
+        }
+        return Decimal(str(multiplier_map.get(level, 0)))
+
+    def get_raider_mark_max_hp_ratio(self, combatant):
+        level = int(getattr(combatant, "raider_evolution", 0) or 0)
+        if level <= 0:
+            return Decimal("0")
+
+        class_ext = self._get_class_extension()
+        ratio_map = (
+            getattr(class_ext, "raider_mark_max_hp_ratio", None)
+            if class_ext is not None
+            else None
+        ) or {
+            1: 0.010,
+            2: 0.012,
+            3: 0.014,
+            4: 0.016,
+            5: 0.018,
+            6: 0.020,
+            7: 0.025,
+        }
+        return Decimal(str(ratio_map.get(level, 0)))
+
+    def get_paragon_break_damage_multiplier(self, combatant):
+        level = int(getattr(combatant, "paragon_evolution", 0) or 0)
+        if level <= 0:
+            return Decimal("0")
+
+        class_ext = self._get_class_extension()
+        multiplier_map = (
+            getattr(class_ext, "paragon_break_damage_multiplier", None)
+            if class_ext is not None
+            else None
+        ) or {
+            1: 0.08,
+            2: 0.10,
+            3: 0.12,
+            4: 0.14,
+            5: 0.16,
+            6: 0.18,
+            7: 0.20,
+        }
+        return Decimal(str(multiplier_map.get(level, 0)))
+
+    def get_paragon_guard_shield_gain(self, combatant):
+        level = int(getattr(combatant, "paragon_evolution", 0) or 0)
+        if level <= 0:
+            return Decimal("0")
+
+        class_ext = self._get_class_extension()
+        shield_map = (
+            getattr(class_ext, "paragon_guard_shield_gain", None)
+            if class_ext is not None
+            else None
+        ) or {
+            1: 0.020,
+            2: 0.025,
+            3: 0.030,
+            4: 0.035,
+            5: 0.040,
+            6: 0.045,
+            7: 0.050,
+        }
+        return Decimal(str(shield_map.get(level, 0)))
+
+    def get_paragon_balanced_damage_multiplier(self, combatant):
+        level = int(getattr(combatant, "paragon_evolution", 0) or 0)
+        if level <= 0:
+            return Decimal("0")
+
+        class_ext = self._get_class_extension()
+        multiplier_map = (
+            getattr(class_ext, "paragon_balanced_damage_multiplier", None)
+            if class_ext is not None
+            else None
+        ) or {
+            1: 0.04,
+            2: 0.05,
+            3: 0.06,
+            4: 0.07,
+            5: 0.08,
+            6: 0.09,
+            7: 0.10,
+        }
+        return Decimal(str(multiplier_map.get(level, 0)))
+
+    def get_paragon_balanced_shield_gain(self, combatant):
+        level = int(getattr(combatant, "paragon_evolution", 0) or 0)
+        if level <= 0:
+            return Decimal("0")
+
+        class_ext = self._get_class_extension()
+        shield_map = (
+            getattr(class_ext, "paragon_balanced_shield_gain", None)
+            if class_ext is not None
+            else None
+        ) or {
+            1: 0.010,
+            2: 0.012,
+            3: 0.014,
+            4: 0.016,
+            5: 0.018,
+            6: 0.020,
+            7: 0.025,
+        }
+        return Decimal(str(shield_map.get(level, 0)))
+
+    def get_paragon_shield_cap(self, combatant):
+        level = int(getattr(combatant, "paragon_evolution", 0) or 0)
+        if level <= 0:
+            return Decimal("0")
+
+        class_ext = self._get_class_extension()
+        shield_cap_map = (
+            getattr(class_ext, "paragon_shield_cap", None)
+            if class_ext is not None
+            else None
+        ) or {
+            1: 0.12,
+            2: 0.14,
+            3: 0.16,
+            4: 0.18,
+            5: 0.20,
+            6: 0.22,
             7: 0.25,
+        }
+        return Decimal(str(shield_cap_map.get(level, 0)))
+
+    def get_ritualist_doom_threshold(self):
+        return 3
+
+    def get_ritualist_doom_burst_multiplier(self, combatant):
+        level = int(getattr(combatant, "ritualist_evolution", 0) or 0)
+        if level <= 0:
+            return Decimal("0")
+
+        class_ext = self._get_class_extension()
+        multiplier_map = (
+            getattr(class_ext, "ritualist_doom_burst_multiplier", None)
+            if class_ext is not None
+            else None
+        ) or {
+            1: 0.12,
+            2: 0.15,
+            3: 0.18,
+            4: 0.21,
+            5: 0.24,
+            6: 0.27,
+            7: 0.30,
+        }
+        return Decimal(str(multiplier_map.get(level, 0)))
+
+    def get_ritualist_doom_echo_multiplier(self, combatant):
+        level = int(getattr(combatant, "ritualist_evolution", 0) or 0)
+        if level <= 0:
+            return Decimal("0")
+
+        class_ext = self._get_class_extension()
+        multiplier_map = (
+            getattr(class_ext, "ritualist_doom_echo_multiplier", None)
+            if class_ext is not None
+            else None
+        ) or {
+            1: 0.06,
+            2: 0.07,
+            3: 0.08,
+            4: 0.09,
+            5: 0.10,
+            6: 0.11,
+            7: 0.12,
+        }
+        return Decimal(str(multiplier_map.get(level, 0)))
+
+    def get_ritualist_favor_shield_gain(self, combatant):
+        level = int(getattr(combatant, "ritualist_evolution", 0) or 0)
+        if level <= 0:
+            return Decimal("0")
+
+        class_ext = self._get_class_extension()
+        shield_map = (
+            getattr(class_ext, "ritualist_favor_shield_gain", None)
+            if class_ext is not None
+            else None
+        ) or {
+            1: 0.04,
+            2: 0.05,
+            3: 0.06,
+            4: 0.07,
+            5: 0.08,
+            6: 0.09,
+            7: 0.10,
+        }
+        return Decimal(str(shield_map.get(level, 0)))
+
+    def get_ritualist_favor_shield_cap(self, combatant):
+        level = int(getattr(combatant, "ritualist_evolution", 0) or 0)
+        if level <= 0:
+            return Decimal("0")
+
+        class_ext = self._get_class_extension()
+        shield_cap_map = (
+            getattr(class_ext, "ritualist_favor_shield_cap", None)
+            if class_ext is not None
+            else None
+        ) or {
+            1: 0.12,
+            2: 0.14,
+            3: 0.16,
+            4: 0.18,
+            5: 0.20,
+            6: 0.22,
+            7: 0.24,
         }
         return Decimal(str(shield_cap_map.get(level, 0)))
 
@@ -680,6 +1050,251 @@ class Battle(ABC):
             "shield_gained": actual_shield_gain,
         }
 
+    def advance_paladin_smite(self, combatant, target):
+        if not self.can_use_paladin_smite(combatant):
+            return None
+
+        threshold = self.get_paladin_faith_threshold()
+        current_faith = int(getattr(combatant, "paladin_faith", 0) or 0)
+        new_faith = current_faith + 1
+
+        if new_faith < threshold:
+            setattr(combatant, "paladin_faith", new_faith)
+            return {
+                "smite_triggered": False,
+                "faith": new_faith,
+                "threshold": threshold,
+                "smite_damage": Decimal("0"),
+                "shield_gained": Decimal("0"),
+            }
+
+        setattr(combatant, "paladin_faith", 0)
+
+        base_damage = Decimal(str(getattr(combatant, "damage", 0) or 0))
+        smite_damage = max(
+            Decimal("10"),
+            base_damage * self.get_paladin_smite_damage_multiplier(combatant),
+        )
+
+        actual_smite_damage = Decimal("0")
+        if target is not None and hasattr(target, "take_damage") and target.is_alive():
+            actual_smite_damage = self.apply_damage(combatant, target, smite_damage)
+
+        current_shield = Decimal(str(getattr(combatant, "shield", 0) or 0))
+        max_hp = Decimal(str(getattr(combatant, "max_hp", 0) or 0))
+        shield_cap = max_hp * self.get_paladin_holy_shield_cap(combatant)
+        shield_gain = max_hp * self.get_paladin_holy_shield_gain(combatant)
+        actual_shield_gain = Decimal("0")
+        if shield_cap > current_shield and shield_gain > 0:
+            actual_shield_gain = min(shield_gain, shield_cap - current_shield)
+            if actual_shield_gain > 0:
+                setattr(combatant, "shield", current_shield + actual_shield_gain)
+
+        return {
+            "smite_triggered": True,
+            "faith": 0,
+            "threshold": threshold,
+            "smite_damage": actual_smite_damage,
+            "shield_gained": actual_shield_gain,
+        }
+
+    def advance_raider_mark(self, combatant, target):
+        if not self.can_use_raider_mark(combatant) or target is None:
+            return None
+
+        if not getattr(target, "is_alive", lambda: False)():
+            return None
+
+        marker = self.get_runtime_combatant_marker(combatant)
+        if marker is None:
+            return None
+
+        threshold = self.get_raider_mark_threshold()
+        marks = self._get_runtime_state_bucket(target, "raider_marks")
+        new_marks = int(marks.get(marker, 0) or 0) + 1
+        target_name = getattr(target, "name", "the target")
+
+        if new_marks < threshold:
+            marks[marker] = new_marks
+            return {
+                "mark_triggered": False,
+                "marks": new_marks,
+                "threshold": threshold,
+                "target_name": target_name,
+                "bonus_damage": Decimal("0"),
+            }
+
+        marks.pop(marker, None)
+        self._trim_runtime_state_bucket(target, "raider_marks")
+
+        base_damage = Decimal(str(getattr(combatant, "damage", 0) or 0))
+        max_hp = Decimal(str(getattr(target, "max_hp", 0) or 0))
+        hp_damage = min(
+            max_hp * self.get_raider_mark_max_hp_ratio(combatant),
+            base_damage * Decimal("1.5"),
+        )
+        bonus_damage = max(
+            Decimal("10"),
+            (base_damage * self.get_raider_mark_damage_multiplier(combatant)) + hp_damage,
+        )
+
+        actual_bonus_damage = self.apply_damage(combatant, target, bonus_damage)
+        return {
+            "mark_triggered": True,
+            "marks": 0,
+            "threshold": threshold,
+            "target_name": target_name,
+            "bonus_damage": actual_bonus_damage,
+        }
+
+    def advance_ritualist_doom(self, combatant, target):
+        if not self.can_use_ritualist_doom(combatant) or target is None:
+            return None
+
+        marker = self.get_runtime_combatant_marker(combatant)
+        if marker is None:
+            return None
+
+        target_name = getattr(target, "name", "the target")
+        threshold = self.get_ritualist_doom_threshold()
+        doom_hits_bucket = self._get_runtime_state_bucket(target, "ritualist_doom_hits")
+        sigil_bucket = self._get_runtime_state_bucket(target, "ritualist_sigil_stacks")
+        target_alive = getattr(target, "is_alive", lambda: False)()
+
+        existing_doom_hits = int(doom_hits_bucket.get(marker, 0) or 0)
+        if not target_alive and existing_doom_hits <= 0:
+            self._trim_runtime_state_bucket(target, "ritualist_doom_hits")
+            self._trim_runtime_state_bucket(target, "ritualist_sigil_stacks")
+            return None
+
+        doom_hits_remaining = existing_doom_hits
+        echo_damage = Decimal("0")
+        if existing_doom_hits > 0:
+            if target_alive:
+                echo_damage = self.apply_damage(
+                    combatant,
+                    target,
+                    max(
+                        Decimal("5"),
+                        Decimal(str(getattr(combatant, "damage", 0) or 0))
+                        * self.get_ritualist_doom_echo_multiplier(combatant),
+                    ),
+                )
+            doom_hits_remaining = existing_doom_hits - 1
+            if doom_hits_remaining > 0:
+                doom_hits_bucket[marker] = doom_hits_remaining
+            else:
+                doom_hits_bucket.pop(marker, None)
+            target_alive = getattr(target, "is_alive", lambda: False)()
+
+        burst_triggered = False
+        burst_damage = Decimal("0")
+        current_sigils = int(sigil_bucket.get(marker, 0) or 0)
+        if target_alive:
+            new_sigils = current_sigils + 1
+            if new_sigils >= threshold:
+                sigil_bucket.pop(marker, None)
+                burst_triggered = True
+                burst_damage = self.apply_damage(
+                    combatant,
+                    target,
+                    max(
+                        Decimal("10"),
+                        Decimal(str(getattr(combatant, "damage", 0) or 0))
+                        * self.get_ritualist_doom_burst_multiplier(combatant),
+                    ),
+                )
+                target_alive = getattr(target, "is_alive", lambda: False)()
+                if target_alive:
+                    doom_hits_bucket[marker] = 2
+                    doom_hits_remaining = 2
+                else:
+                    doom_hits_bucket.pop(marker, None)
+                    doom_hits_remaining = 0
+                current_sigils = 0
+            else:
+                sigil_bucket[marker] = new_sigils
+                current_sigils = new_sigils
+
+        favor_shield_gained = Decimal("0")
+        if not getattr(target, "is_alive", lambda: False)() and (existing_doom_hits > 0 or burst_triggered):
+            max_hp = Decimal(str(getattr(combatant, "max_hp", 0) or 0))
+            favor_shield_gained = self.apply_capped_shield(
+                combatant,
+                max_hp * self.get_ritualist_favor_shield_gain(combatant),
+                max_hp * self.get_ritualist_favor_shield_cap(combatant),
+            )
+            doom_hits_bucket.pop(marker, None)
+            sigil_bucket.pop(marker, None)
+            current_sigils = 0
+            doom_hits_remaining = 0
+
+        self._trim_runtime_state_bucket(target, "ritualist_doom_hits")
+        self._trim_runtime_state_bucket(target, "ritualist_sigil_stacks")
+        return {
+            "echo_damage": echo_damage,
+            "burst_triggered": burst_triggered,
+            "burst_damage": burst_damage,
+            "sigils": current_sigils,
+            "threshold": threshold,
+            "doom_hits_remaining": doom_hits_remaining,
+            "target_name": target_name,
+            "favor_shield_gained": favor_shield_gained,
+        }
+
+    def resolve_paragon_mastery(self, combatant, target):
+        if not self.can_use_paragon_mastery(combatant) or target is None:
+            return None
+
+        attacker_damage = Decimal(str(getattr(combatant, "damage", 0) or 0))
+        target_armor = Decimal(str(getattr(target, "armor", 0) or 0))
+        target_damage = Decimal(str(getattr(target, "damage", 0) or 0))
+        max_hp = Decimal(str(getattr(combatant, "max_hp", 0) or 0))
+
+        mode = "harmonic"
+        bonus_damage = Decimal("0")
+        shield_gained = Decimal("0")
+
+        if target_armor >= attacker_damage * Decimal("0.75"):
+            mode = "breaker"
+            if getattr(target, "is_alive", lambda: False)():
+                bonus_damage = self.apply_damage(
+                    combatant,
+                    target,
+                    max(
+                        Decimal("5"),
+                        attacker_damage * self.get_paragon_break_damage_multiplier(combatant),
+                    ),
+                )
+        elif target_damage >= attacker_damage * Decimal("1.10"):
+            mode = "bulwark"
+            shield_gained = self.apply_capped_shield(
+                combatant,
+                max_hp * self.get_paragon_guard_shield_gain(combatant),
+                max_hp * self.get_paragon_shield_cap(combatant),
+            )
+        else:
+            if getattr(target, "is_alive", lambda: False)():
+                bonus_damage = self.apply_damage(
+                    combatant,
+                    target,
+                    max(
+                        Decimal("5"),
+                        attacker_damage * self.get_paragon_balanced_damage_multiplier(combatant),
+                    ),
+                )
+            shield_gained = self.apply_capped_shield(
+                combatant,
+                max_hp * self.get_paragon_balanced_shield_gain(combatant),
+                max_hp * self.get_paragon_shield_cap(combatant),
+            )
+
+        return {
+            "mode": mode,
+            "bonus_damage": bonus_damage,
+            "shield_gained": shield_gained,
+        }
+
     def format_mage_charge_message(self, charge_state):
         if not charge_state or charge_state.get("fireball_ready"):
             return None
@@ -695,6 +1310,127 @@ class Battle(ABC):
                 f"Arcane Shield absorbs **{self.format_number(shield_gained)} HP**."
             )
         return f"✨ Arcane charge rises to **{charge_percent}%**."
+
+    def format_paladin_smite_message(self, smite_state):
+        if not smite_state:
+            return None
+
+        if not smite_state.get("smite_triggered"):
+            faith = int(smite_state.get("faith", 0) or 0)
+            threshold = int(smite_state.get("threshold", self.get_paladin_faith_threshold()) or 1)
+            return f"🙏 Faith rises to **{faith}/{threshold}**."
+
+        smite_damage = Decimal(str(smite_state.get("smite_damage", 0) or 0))
+        shield_gained = Decimal(str(smite_state.get("shield_gained", 0) or 0))
+        if smite_damage > 0 and shield_gained > 0:
+            return (
+                f"✝️ Divine Smite crashes down for **{self.format_number(smite_damage)} HP** "
+                f"holy damage and Holy Shield absorbs **{self.format_number(shield_gained)} HP**."
+            )
+        if smite_damage > 0:
+            return f"✝️ Divine Smite crashes down for **{self.format_number(smite_damage)} HP** holy damage."
+        if shield_gained > 0:
+            return f"🛡️ Faith becomes Holy Shield, absorbing **{self.format_number(shield_gained)} HP**."
+        return "✝️ Divine Smite surges through the battlefield."
+
+    def format_raider_mark_message(self, mark_state):
+        if not mark_state:
+            return None
+
+        target_name = mark_state.get("target_name", "the target")
+        if not mark_state.get("mark_triggered"):
+            return (
+                f"🏴 Raid Mark settles on **{target_name}** "
+                f"(**{int(mark_state.get('marks', 0) or 0)}/{int(mark_state.get('threshold', 3) or 3)}**)."
+            )
+
+        bonus_damage = Decimal(str(mark_state.get("bonus_damage", 0) or 0))
+        return (
+            f"⚔️ Raid Mark detonates on **{target_name}** for "
+            f"**{self.format_number(bonus_damage)} HP** bonus damage!"
+        )
+
+    def format_ritualist_doom_message(self, doom_state):
+        if not doom_state:
+            return None
+
+        parts = []
+        echo_damage = Decimal(str(doom_state.get("echo_damage", 0) or 0))
+        if echo_damage > 0:
+            remaining = int(doom_state.get("doom_hits_remaining", 0) or 0)
+            if remaining > 0:
+                parts.append(
+                    f"☠️ Doom Echo tears for **{self.format_number(echo_damage)} HP** "
+                    f"(**{remaining}** hit(s) remain)."
+                )
+            else:
+                parts.append(f"☠️ Doom Echo tears for **{self.format_number(echo_damage)} HP**.")
+
+        if doom_state.get("burst_triggered"):
+            burst_damage = Decimal(str(doom_state.get("burst_damage", 0) or 0))
+            parts.append(
+                f"🔮 Doom Sigils align on **{doom_state.get('target_name', 'the target')}** for "
+                f"**{self.format_number(burst_damage)} HP** and bind doom for **2 hits**."
+            )
+        elif doom_state.get("sigils", 0):
+            parts.append(
+                f"🔮 Doom Sigils gather on **{doom_state.get('target_name', 'the target')}** "
+                f"(**{int(doom_state.get('sigils', 0) or 0)}/{int(doom_state.get('threshold', 3) or 3)}**)."
+            )
+
+        favor_shield = Decimal(str(doom_state.get("favor_shield_gained", 0) or 0))
+        if favor_shield > 0:
+            parts.append(
+                f"🩸 Fallen doom feeds Favor Ward, absorbing **{self.format_number(favor_shield)} HP**."
+            )
+
+        return "\n".join(parts) if parts else None
+
+    def format_paragon_mastery_message(self, paragon_state):
+        if not paragon_state:
+            return None
+
+        mode = paragon_state.get("mode")
+        bonus_damage = Decimal(str(paragon_state.get("bonus_damage", 0) or 0))
+        shield_gained = Decimal(str(paragon_state.get("shield_gained", 0) or 0))
+
+        if mode == "breaker":
+            return (
+                f"🗡️ Adaptive Mastery breaks through for "
+                f"**{self.format_number(bonus_damage)} HP** bonus damage."
+            )
+        if mode == "bulwark":
+            return (
+                f"🛡️ Adaptive Mastery forms a barrier of "
+                f"**{self.format_number(shield_gained)} HP**."
+            )
+        if bonus_damage > 0 and shield_gained > 0:
+            return (
+                f"✨ Adaptive Mastery balances offense and defense: "
+                f"**{self.format_number(bonus_damage)} HP** bonus damage and "
+                f"**{self.format_number(shield_gained)} HP** barrier."
+            )
+        if bonus_damage > 0:
+            return f"✨ Adaptive Mastery strikes for **{self.format_number(bonus_damage)} HP** bonus damage."
+        if shield_gained > 0:
+            return f"✨ Adaptive Mastery forms a barrier of **{self.format_number(shield_gained)} HP**."
+        return None
+
+    def resolve_post_hit_class_effects(self, combatant, target):
+        messages = []
+
+        for resolver, formatter in (
+            (self.advance_raider_mark, self.format_raider_mark_message),
+            (self.resolve_paragon_mastery, self.format_paragon_mastery_message),
+            (self.advance_ritualist_doom, self.format_ritualist_doom_message),
+            (self.advance_paladin_smite, self.format_paladin_smite_message),
+        ):
+            state = resolver(combatant, target)
+            message = formatter(state)
+            if message:
+                messages.append(message)
+
+        return messages
 
     def calculate_mage_fireball_damage(
         self,

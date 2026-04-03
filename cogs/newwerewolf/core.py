@@ -2312,6 +2312,8 @@ class Game:
         self.loudmouth_mark_tasks: dict[int, asyncio.Task] = {}
         self.avenger_mark_tasks: dict[int, asyncio.Task] = {}
         self.mayor_reveal_tasks: dict[int, asyncio.Task] = {}
+        self.forger_day_tasks: dict[int, asyncio.Task] = {}
+        self.forged_sword_day_tasks: dict[int, asyncio.Task] = {}
         self.fortune_card_reveal_views: dict[int, FortuneCardRevealView] = {}
         self.active_talisman_loadouts: dict[int, set[Role]] = {}
         self.team_assignments: dict[int, int] = {}
@@ -6291,14 +6293,22 @@ class Game:
                     )
                 )
 
-    async def handle_forger_day_actions(self) -> None:
-        forgers = [
-            forger for forger in self.get_players_with_role(Role.FORGER) if not forger.dead
-        ]
-        if not forgers:
-            return
+    async def _collect_forger_day_action(self, forger: Player) -> None:
+        prompt_timeout = max(90, self.timer)
+        await forger.send(
+            _(
+                "🔨 During the day, you can start forging or hand off a ready item."
+                " This stays available until nightfall.\n{game_link}"
+            ).format(game_link=self.game_link)
+        )
 
-        for forger in forgers:
+        while (
+            not self.is_night_phase
+            and self.winner is None
+            and not forger.dead
+            and forger in self.alive_players
+            and forger.role == Role.FORGER
+        ):
             if (
                 forger.forger_forging_item is not None
                 and forger.forger_forge_ready_day is not None
@@ -6327,7 +6337,8 @@ class Game:
                             "\n{game_link}"
                         ).format(game_link=self.game_link)
                     )
-                    continue
+                    return
+
                 try:
                     given_target = await forger.choose_users(
                         _(
@@ -6336,9 +6347,21 @@ class Game:
                         list_of_users=recipients,
                         amount=1,
                         required=False,
+                        timeout=prompt_timeout,
                     )
-                except asyncio.TimeoutError:
-                    given_target = []
+                except asyncio.CancelledError:
+                    return
+                except Exception:
+                    return
+
+                if (
+                    self.is_night_phase
+                    or self.winner is not None
+                    or forger.dead
+                    or forger not in self.alive_players
+                    or forger.role != Role.FORGER
+                ):
+                    return
 
                 if given_target:
                     recipient = given_target[0]
@@ -6373,21 +6396,15 @@ class Game:
                                 "\n{game_link}"
                             ).format(forger=forger.user, game_link=self.game_link)
                         )
-                else:
-                    await forger.send(
-                        _(
-                            "You kept your forged **{item}** for now. You cannot start"
-                            " another forge until you hand this one off."
-                            "\n{game_link}"
-                        ).format(
-                            item=forger.forger_pending_item.title(),
-                            game_link=self.game_link,
-                        )
-                    )
+                        await self.start_forged_sword_day_actions()
+                    await asyncio.sleep(2)
                     continue
 
-            if forger.forger_pending_item is not None or forger.forger_forging_item is not None:
+                await asyncio.sleep(10)
                 continue
+
+            if forger.forger_forging_item is not None:
+                return
 
             forge_entries: list[str] = []
             forge_tokens: list[str] = []
@@ -6403,15 +6420,17 @@ class Game:
                 forge_tokens.append("sword")
 
             if not forge_tokens:
-                continue
+                return
 
             try:
                 action_idx = await self.ctx.bot.paginator.Choose(
                     entries=[_("Do not forge right now"), *forge_entries],
                     return_index=True,
                     title=_("Choose an item to forge (forging takes one full day)."),
-                    timeout=max(10, min(20, int(self.timer / 2))),
+                    timeout=prompt_timeout,
                 ).paginate(self.ctx, location=forger.user)
+            except asyncio.CancelledError:
+                return
             except (
                 self.ctx.bot.paginator.NoChoice,
                 discord.Forbidden,
@@ -6420,7 +6439,17 @@ class Game:
             ):
                 action_idx = 0
 
+            if (
+                self.is_night_phase
+                or self.winner is not None
+                or forger.dead
+                or forger not in self.alive_players
+                or forger.role != Role.FORGER
+            ):
+                return
+
             if action_idx <= 0:
+                await asyncio.sleep(10)
                 continue
 
             forge_item = forge_tokens[action_idx - 1]
@@ -6440,20 +6469,70 @@ class Game:
                     game_link=self.game_link,
                 )
             )
-
-    async def handle_forger_sword_actions(self) -> None:
-        sword_holders = [
-            player for player in self.alive_players if player.forger_swords > 0
-        ]
-        if not sword_holders:
             return
 
-        for holder in sword_holders:
-            if holder.dead or holder.forger_swords <= 0:
+    def _forger_has_day_action(self, forger: Player) -> bool:
+        if forger.dead or forger.role != Role.FORGER:
+            return False
+        if forger.forger_pending_item is not None:
+            return True
+        if (
+            forger.forger_forging_item is not None
+            and forger.forger_forge_ready_day is not None
+            and forger.forger_forge_ready_day <= self.night_no
+        ):
+            return True
+        return (
+            forger.forger_forging_item is None
+            and (forger.forger_shields_left > 0 or forger.forger_swords_left > 0)
+        )
+
+    async def start_forger_day_actions(self) -> None:
+        forgers = [
+            forger
+            for forger in self.get_players_with_role(Role.FORGER)
+            if self._forger_has_day_action(forger)
+        ]
+        active_ids = {player.user.id for player in forgers}
+
+        for player_id, task in list(self.forger_day_tasks.items()):
+            if task.done() or player_id not in active_ids:
+                task.cancel()
+                self.forger_day_tasks.pop(player_id, None)
+
+        for forger in forgers:
+            existing = self.forger_day_tasks.get(forger.user.id)
+            if existing and not existing.done():
                 continue
+            self.forger_day_tasks[forger.user.id] = asyncio.create_task(
+                self._collect_forger_day_action(forger)
+            )
+
+    async def stop_forger_day_actions(self) -> None:
+        for task in self.forger_day_tasks.values():
+            task.cancel()
+        self.forger_day_tasks.clear()
+
+    async def _collect_forged_sword_action(self, holder: Player) -> None:
+        prompt_timeout = max(90, self.timer)
+        await holder.send(
+            _(
+                "⚔️ During the day, you may use your forged sword at any point before"
+                " nightfall.\n{game_link}"
+            ).format(game_link=self.game_link)
+        )
+
+        while (
+            not self.is_night_phase
+            and self.winner is None
+            and not holder.dead
+            and holder in self.alive_players
+            and holder.forger_swords > 0
+        ):
             possible_targets = [player for player in self.alive_players if player != holder]
             if not possible_targets:
-                continue
+                return
+
             try:
                 chosen_target = await holder.choose_users(
                     _(
@@ -6462,11 +6541,24 @@ class Game:
                     list_of_users=possible_targets,
                     amount=1,
                     required=False,
+                    timeout=prompt_timeout,
                 )
-            except asyncio.TimeoutError:
-                chosen_target = []
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                return
+
+            if (
+                self.is_night_phase
+                or self.winner is not None
+                or holder.dead
+                or holder not in self.alive_players
+                or holder.forger_swords <= 0
+            ):
+                return
 
             if not chosen_target:
+                await asyncio.sleep(10)
                 continue
 
             target = chosen_target[0]
@@ -6493,6 +6585,35 @@ class Game:
                     game_link=self.game_link,
                 )
             )
+
+            if holder.forger_swords <= 0:
+                return
+
+            await asyncio.sleep(2)
+
+    async def start_forged_sword_day_actions(self) -> None:
+        sword_holders = [
+            player for player in self.alive_players if player.forger_swords > 0
+        ]
+        active_ids = {player.user.id for player in sword_holders}
+
+        for player_id, task in list(self.forged_sword_day_tasks.items()):
+            if task.done() or player_id not in active_ids:
+                task.cancel()
+                self.forged_sword_day_tasks.pop(player_id, None)
+
+        for holder in sword_holders:
+            existing = self.forged_sword_day_tasks.get(holder.user.id)
+            if existing and not existing.done():
+                continue
+            self.forged_sword_day_tasks[holder.user.id] = asyncio.create_task(
+                self._collect_forged_sword_action(holder)
+            )
+
+    async def stop_forged_sword_day_actions(self) -> None:
+        for task in self.forged_sword_day_tasks.values():
+            task.cancel()
+        self.forged_sword_day_tasks.clear()
 
     async def handle_nightmare_werewolf_day_actions(self) -> None:
         actors = [
@@ -8548,6 +8669,8 @@ class Game:
         await self.start_loudmouth_target_selection()
         await self.start_avenger_target_selection()
         await self.start_mayor_reveal_selection()
+        await self.start_forger_day_actions()
+        await self.start_forged_sword_day_actions()
         await self.start_alpha_day_wolf_relay()
         try:
             for death in unique_night_deaths:
@@ -8576,10 +8699,8 @@ class Game:
             await self.apply_grumpy_grandma_day_silence()
             await self.apply_voodoo_werewolf_day_mute()
             await self.offer_fortune_card_reveals()
-            await self.handle_forger_day_actions()
             await self.handle_priest_holy_water()
             await self.handle_marksman_day_action()
-            await self.handle_forger_sword_actions()
             await self.handle_wolf_shaman_day_enchant()
             await self.handle_wolf_trickster_day_mark()
             await self.handle_nightmare_werewolf_day_actions()
@@ -8637,6 +8758,8 @@ class Game:
                 reason=_("🔮 Night fell, so today's Revelation Card prompts closed.")
             )
             await self.stop_mayor_reveal_selection()
+            await self.stop_forger_day_actions()
+            await self.stop_forged_sword_day_actions()
             await self.resolve_tough_guy_delayed_deaths()
 
     async def run(self):

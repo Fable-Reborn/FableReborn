@@ -1183,6 +1183,10 @@ class DragonBattle(Battle):
             charge_message = self.format_mage_charge_message(mage_charge_state)
             if charge_message:
                 message += "\n" + charge_message
+
+        class_messages = self.resolve_post_hit_class_effects(player, target)
+        if class_messages:
+            message += "\n" + "\n".join(class_messages)
             
         # Handle dragon's reflection damage if reflection_damage is enabled
         if is_dragon_target and self.config.get("reflection_damage", True) and "Reflective Scales" in target.passives:
@@ -1470,6 +1474,10 @@ class DragonBattle(Battle):
             player.lifesteal_percent = player_data.get("lifesteal_percent", 0)
             player.mage_evolution = player_data.get("mage_evolution", None)
             player.tank_evolution = player_data.get("tank_evolution", None)
+            player.paladin_evolution = player_data.get("paladin_evolution", None)
+            player.raider_evolution = player_data.get("raider_evolution", None)
+            player.ritualist_evolution = player_data.get("ritualist_evolution", None)
+            player.paragon_evolution = player_data.get("paragon_evolution", None)
             player.ranger_evolution = player_data.get("ranger_evolution", None)
             player.has_shield = player_data.get("has_shield", False)
             

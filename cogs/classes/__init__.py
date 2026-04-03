@@ -267,14 +267,14 @@ class Classes(commands.Cog):
 
             - Warriors gain added defense (awaiting update)
             - Thieves gain access to `{prefix}steal`
-            - Mages gain added damage and have a chance to cast a fireball to deal massive damage.
+            - Mages gain added damage and build arcane charge in battle, gaining shields until they unleash a fireball.
             - Rangers gain access to a pet which can hunt for gear items
-            - Raiders TBA
-            - Paladins can bless a user to gain additional XP in adventures.
+            - Raiders build Raid Mark in battle; every third hit detonates the mark for bonus damage.
+            - Paladins can bless a user to gain additional XP in adventures and build Faith in battle to unleash Divine Smite with Holy Shield.
             - Reapers have a change to cheat death and survive a fatal hit in raid battles. (Seasonal)
             - Santas Helper can gift users a present and have a life steal effect in raid battles (Seasonal)
-            - Ritualists gain additional favor from sacrificing items and are twice as likely to receive loot from adventures
-            - Paragons gain added damage *and* defense; the class is only available to donators
+            - Ritualists gain additional favor from sacrificing items, are twice as likely to receive loot from adventures, and weave Doom Sigils in battle
+            - Paragons gain added damage *and* defense and use Adaptive Mastery in battle; the class is only available to donators
 
             The second class unlocks at level 12. Selecting a class the first time is free (No Class -> Class), but changing it later will cost $5,000 (Class -> another Class)
 
@@ -303,7 +303,8 @@ class Classes(commands.Cog):
                     # xgettext: no-python-format
                     "The Paladin is a devout warrior, wielding a Hammer and dedicated to upholding justice and safeguarding the innocent. "
                     "With an unwavering commitment to righteousness, they possess the unique ability to bestow blessings upon their allies, "
-                    "granting them a temporary boost in XP gain. (unlocks `$bless`)"
+                    "granting them a temporary boost in XP gain. In battle, successful hits build Faith; every third hit unleashes "
+                    "Divine Smite and grants Holy Shield. (unlocks `$bless`)"
                 ).format(prefix=ctx.clean_prefix),
                 color=self.bot.config.game.primary_colour
             ),
@@ -321,7 +322,8 @@ class Classes(commands.Cog):
                 title=_("Mage"),
                 description=_(
                     "Utilise powerful magic for stronger attacks.\n+1 damage per"
-                    " evolution and the ability to have a chance to cast a fireball in battle for a massive damage boost."
+                    " evolution. Normal battle hits build arcane charge and Arcane Shield"
+                    " until a fireball is unleashed for a massive damage boost."
                 ),
                 color=self.bot.config.game.primary_colour,
             ),
@@ -340,9 +342,10 @@ class Classes(commands.Cog):
                 description=_(
                     "⚔️ **Raider**\n"
                     "A fearless warrior forged in the heat of battle against Ragnarok. Raiders lead the charge with unmatched bravery and strategic prowess.\n\n"
-                    "**🛡️ Abilities:**\n"
-                    "- **Survival Instinct:** Survive one lethal hit per raid, continuing the fight with 1 HP.\n"
-                    "- **Reward Multiplier:** Gain up to a 40% bonus on victory rewards based on Raider evolution."
+                    "**Battle Trait:**\n"
+                    "- Successful hits place **Raid Mark** on the target.\n"
+                    "- Every third mark detonates for bonus damage that scales with your attack and the target's vitality.\n"
+                    "- Best used in longer boss fights where you can stay on one target."
                 ),
                 colour=self.bot.config.game.primary_colour,
             ),
@@ -353,7 +356,10 @@ class Classes(commands.Cog):
                     "A seer, a sacrificer and a follower.\nThe Ritualist devotes their"
                     " life to the god they follow. For every evolution, their"
                     " sacrifices are 5% more effective. They have twice the chance to"
-                    " get loot from adventures."
+                    " get loot from adventures.\n\nIn battle, Ritualists weave **Doom"
+                    " Sigils** onto enemies. When the sigils align, they erupt in a"
+                    " curse burst, cling for follow-up Doom Echo strikes, and grant"
+                    " **Favor Ward** when a doomed foe falls."
                 ),
                 colour=self.bot.config.game.primary_colour,
             ),
@@ -361,7 +367,10 @@ class Classes(commands.Cog):
                 title=_("Paragon"),
                 description=_(
                     "Absorb the appreciation of the devs into your soul to power"
-                    " up.\n+1 damage and defense per evolution."
+                    " up.\n+1 damage and defense per evolution.\n\nIn battle,"
+                    " **Adaptive Mastery** studies the opponent and answers with"
+                    " extra damage against armored foes, barriers against dangerous"
+                    " attackers, or a balanced mix against even matchups."
                 ),
                 color=self.bot.config.game.primary_colour,
             ),
