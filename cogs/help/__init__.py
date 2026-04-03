@@ -279,8 +279,9 @@ class SubcommandMenu(View):
 class GuidebookSectionSelect(discord.ui.Select):
     def __init__(self, guide_view: "GuidebookView"):
         self.guide_view = guide_view
+        start, end = self.guide_view._current_section_chunk_bounds()
         options = []
-        for idx, section in enumerate(self.guide_view.sections):
+        for idx, section in enumerate(self.guide_view.sections[start:end], start=start):
             options.append(
                 discord.SelectOption(
                     label=section["label"][:100],
@@ -290,8 +291,11 @@ class GuidebookSectionSelect(discord.ui.Select):
                     default=idx == self.guide_view.section_index,
                 )
             )
+        placeholder = "Select a guide section"
+        if len(self.guide_view.sections) > self.guide_view.section_chunk_size:
+            placeholder = f"Select a guide section ({start + 1}-{end})"
         super().__init__(
-            placeholder="Select a guide section",
+            placeholder=placeholder,
             min_values=1,
             max_values=1,
             options=options,
@@ -317,9 +321,10 @@ class GuidebookView(View):
         self.section_index = 0
         self.page_index = 0
         self.message: discord.Message | None = None
+        self.section_chunk_size = 25
+        self._section_select_chunk_index = -1
 
-        self.section_select = GuidebookSectionSelect(self)
-        self.add_item(self.section_select)
+        self.section_select: GuidebookSectionSelect | None = None
         self._sync_controls()
 
     def _current_section(self) -> dict:
@@ -332,6 +337,7 @@ class GuidebookView(View):
         section = self._current_section()
         pages = self._current_pages()
         page = pages[self.page_index]
+        section_chunk_start, section_chunk_end = self._current_section_chunk_bounds()
         embed = discord.Embed(
             title=f"{section['emoji']} {section['label']} • {page['title']}",
             description=page.get("description", ""),
@@ -349,18 +355,43 @@ class GuidebookView(View):
             text=(
                 f"Section {self.section_index + 1}/{len(self.sections)} • "
                 f"Page {self.page_index + 1}/{len(pages)} • "
-                "Use the dropdown to jump sections"
+                f"Dropdown {section_chunk_start + 1}-{section_chunk_end}"
             )
         )
         return embed
 
+    def _current_section_chunk_index(self) -> int:
+        return self.section_index // self.section_chunk_size
+
+    def _current_section_chunk_bounds(self) -> tuple[int, int]:
+        start = self._current_section_chunk_index() * self.section_chunk_size
+        end = min(start + self.section_chunk_size, len(self.sections))
+        return start, end
+
+    def _rebuild_section_select(self) -> None:
+        chunk_index = self._current_section_chunk_index()
+        if self.section_select is not None and chunk_index == self._section_select_chunk_index:
+            return
+
+        if self.section_select is not None:
+            self.remove_item(self.section_select)
+
+        self.section_select = GuidebookSectionSelect(self)
+        self.add_item(self.section_select)
+        self._section_select_chunk_index = chunk_index
+
     def _sync_controls(self) -> None:
+        self._rebuild_section_select()
         self.section_select.set_current(self.section_index)
         page_count = len(self._current_pages())
+        chunk_index = self._current_section_chunk_index()
+        max_chunk_index = max(0, math.ceil(len(self.sections) / self.section_chunk_size) - 1)
         self.prev_page_button.disabled = self.page_index <= 0
         self.next_page_button.disabled = self.page_index >= page_count - 1
         self.prev_section_button.disabled = self.section_index <= 0
         self.next_section_button.disabled = self.section_index >= len(self.sections) - 1
+        self.prev_index_button.disabled = chunk_index <= 0
+        self.next_index_button.disabled = chunk_index >= max_chunk_index
 
     async def start(self):
         self._sync_controls()
@@ -412,6 +443,23 @@ class GuidebookView(View):
     async def prev_section_button(self, interaction: Interaction, button: Button):
         if self.section_index > 0:
             self.section_index -= 1
+            self.page_index = 0
+        await self.refresh(interaction=interaction)
+
+    @button(label="Prev Index", style=discord.ButtonStyle.secondary, row=2)
+    async def prev_index_button(self, interaction: Interaction, button: Button):
+        chunk_index = self._current_section_chunk_index()
+        if chunk_index > 0:
+            self.section_index = max(0, (chunk_index - 1) * self.section_chunk_size)
+            self.page_index = 0
+        await self.refresh(interaction=interaction)
+
+    @button(label="Next Index", style=discord.ButtonStyle.secondary, row=2)
+    async def next_index_button(self, interaction: Interaction, button: Button):
+        chunk_index = self._current_section_chunk_index()
+        next_start = (chunk_index + 1) * self.section_chunk_size
+        if next_start < len(self.sections):
+            self.section_index = next_start
             self.page_index = 0
         await self.refresh(interaction=interaction)
 
