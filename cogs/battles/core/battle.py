@@ -1443,10 +1443,11 @@ class Battle(ABC):
         damage_variance = Decimal(str(damage_variance))
         minimum_damage = Decimal(str(minimum_damage))
         raw_damage = Decimal(str(getattr(attacker, "damage", 0) or 0))
+        raw_damage *= self.get_mage_fireball_damage_multiplier(attacker)
         raw_damage += Decimal(str(random.randint(0, int(damage_variance))))
         raw_damage -= Decimal(str(getattr(target, "armor", 0) or 0))
         return max(
-            raw_damage * self.get_mage_fireball_damage_multiplier(attacker),
+            raw_damage,
             minimum_damage,
         )
 
