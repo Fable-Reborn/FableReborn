@@ -17,8 +17,6 @@ class CouplesTowerBattle(TowerBattle):
             if level == 30:
                 # Create a temporary dummy enemy to satisfy parent constructor
                 from cogs.battles.core.combatant import Combatant
-                from decimal import Decimal
-                
                 dummy_enemy = Combatant(
                     user=None,  # NPC
                     name="Dummy",
@@ -604,7 +602,6 @@ class CouplesTowerBattle(TowerBattle):
             await self.add_to_log(f"😈 **GREED TRIUMPHANT!** Neither partner shields the other! The Greed Demons laugh as your selfishness amplifies the forge's punishment!")
         
         # Apply the heat damage
-        from decimal import Decimal
         damage_messages = []
         deaths = []
         
@@ -1040,7 +1037,6 @@ class CouplesTowerBattle(TowerBattle):
                 used_fireball = True
             else:
                 # Regular attack
-                from decimal import Decimal
                 damage_variance = random.randint(0, 50) if current_combatant.is_pet else random.randint(0, 100)
                 
                 # Start with base damage
@@ -1313,7 +1309,6 @@ class CouplesTowerBattle(TowerBattle):
                 used_fireball = True
             else:
                 # Regular attack
-                from decimal import Decimal
                 damage_variance = random.randint(0, 50) if current_combatant.is_pet else random.randint(0, 100)
                 
                 # Start with base damage
@@ -1605,7 +1600,6 @@ class CouplesTowerBattle(TowerBattle):
                 used_fireball = True
             else:
                 # Regular attack
-                from decimal import Decimal
                 damage_variance = random.randint(0, 50) if current_combatant.is_pet else random.randint(0, 100)
                 
                 # Start with base damage
@@ -1879,7 +1873,6 @@ class CouplesTowerBattle(TowerBattle):
                 used_fireball = True
             else:
                 # Regular attack
-                from decimal import Decimal
                 damage_variance = random.randint(0, 50) if current_combatant.is_pet else random.randint(0, 100)
                 
                 # Start with base damage
@@ -2124,8 +2117,6 @@ class CouplesTowerBattle(TowerBattle):
     
     async def execute_guardian_punishment(self):
         """Execute the Guardian's lethal punishment for failing the coordination test"""
-        from decimal import Decimal
-        
         partners = [c for c in self.player_team.combatants if not c.is_pet]
         
         await self.add_to_log("⚡ **GUARDIAN'S WRATH!** The Guardian unleashes devastating divine judgment upon the unworthy lovers!")
@@ -2147,8 +2138,6 @@ class CouplesTowerBattle(TowerBattle):
     async def apply_aging_effect(self):
         """Level 27: Gradually reduce couple's stats (3% per turn)"""
         try:
-            from decimal import Decimal
-            
             self.aging_turns += 1
             
             # Only affect the couple (not pets or enemies) - Time Wraith is immune to aging
@@ -2317,7 +2306,6 @@ class CouplesTowerBattle(TowerBattle):
                 used_fireball = True
             else:
                 # Regular attack
-                from decimal import Decimal
                 damage_variance = random.randint(0, 50) if current_combatant.is_pet else random.randint(0, 100)
                 
                 # Start with base damage
@@ -2451,7 +2439,6 @@ class CouplesTowerBattle(TowerBattle):
         else:
             # Attack misses or attacker trips (if enabled)
             if self.config.get("tripping", False):
-                from decimal import Decimal
                 damage = Decimal('10')
                 current_combatant.take_damage(damage)
                 message = f"{current_combatant.name} tripped and took **{self.format_number(damage)} HP** damage. Bad luck!"
@@ -2598,7 +2585,6 @@ class CouplesTowerBattle(TowerBattle):
                 used_fireball = True
             else:
                 # Regular attack
-                from decimal import Decimal
                 damage_variance = random.randint(0, 50) if current_combatant.is_pet else random.randint(0, 100)
                 
                 # Start with base damage
@@ -2871,7 +2857,6 @@ class CouplesTowerBattle(TowerBattle):
                 used_fireball = True
             else:
                 # Regular attack
-                from decimal import Decimal
                 damage_variance = random.randint(0, 50) if current_combatant.is_pet else random.randint(0, 100)
                 
                 # Start with base damage
@@ -3163,7 +3148,6 @@ class CouplesTowerBattle(TowerBattle):
                 used_fireball = True
             else:
                 # Regular attack
-                from decimal import Decimal
                 damage_variance = random.randint(0, 50) if current_combatant.is_pet else random.randint(0, 100)
                 
                 # Start with base damage
@@ -3471,7 +3455,6 @@ class CouplesTowerBattle(TowerBattle):
                 used_fireball = True
             else:
                 # Regular attack
-                from decimal import Decimal
                 damage_variance = random.randint(0, 50) if current_combatant.is_pet else random.randint(0, 100)
                 
                 # Start with base damage
@@ -3764,7 +3747,6 @@ class CouplesTowerBattle(TowerBattle):
                 used_fireball = True
             else:
                 # Regular attack
-                from decimal import Decimal
                 damage_variance = random.randint(0, 50) if current_combatant.is_pet else random.randint(0, 100)
                 
                 # Start with base damage
@@ -4049,7 +4031,6 @@ class CouplesTowerBattle(TowerBattle):
                 used_fireball = True
             else:
                 # Regular attack
-                from decimal import Decimal
                 damage_variance = random.randint(0, 50) if current_combatant.is_pet else random.randint(0, 100)
                 
                 # Start with base damage
@@ -4345,7 +4326,6 @@ class CouplesTowerBattle(TowerBattle):
                 used_fireball = True
             else:
                 # Regular attack
-                from decimal import Decimal
                 damage_variance = random.randint(0, 50) if current_combatant.is_pet else random.randint(0, 100)
                 
                 # Start with base damage
@@ -4714,7 +4694,6 @@ class CouplesTowerBattle(TowerBattle):
                 used_fireball = True
             else:
                 # Regular attack
-                from decimal import Decimal
                 damage_variance = random.randint(0, 50) if current_combatant.is_pet else random.randint(0, 100)
                 
                 # Start with base damage
@@ -5060,7 +5039,6 @@ class CouplesTowerBattle(TowerBattle):
             
         if hit_success:
             # Attack hits - process damage with protective shielding
-            from decimal import Decimal
             damage_variance = random.randint(0, 50) if current_combatant.is_pet else random.randint(0, 100)
             
             # Start with base damage
@@ -5242,8 +5220,6 @@ class CouplesTowerBattle(TowerBattle):
         
         # Spirit healing mechanics
         if random.random() < 0.80:  # 80% chance for spirit to successfully heal
-            from decimal import Decimal
-            
             # Heal based on spirit's original stats (15-25% of max HP)
             heal_percent = random.uniform(0.15, 0.25)
             heal_amount = living_partner.max_hp * Decimal(str(heal_percent))
@@ -5306,7 +5282,6 @@ class CouplesTowerBattle(TowerBattle):
             
         if hit_success:
             # Attack hits - calculate damage
-            from decimal import Decimal
             damage_variance = random.randint(0, 50) if attacker.is_pet else random.randint(0, 100)
             
             # Start with base damage
@@ -5405,7 +5380,6 @@ class CouplesTowerBattle(TowerBattle):
             
         if hit_success:
             # Attack hits
-            from decimal import Decimal
             damage_variance = random.randint(0, 100)
             
             # Start with base damage
@@ -5597,7 +5571,6 @@ class CouplesTowerBattle(TowerBattle):
                 used_fireball = True
             else:
                 # Regular attack with chaos
-                from decimal import Decimal
                 # Level 24: Extreme chaos variance
                 if current_combatant.is_pet:
                     chaos_variance = random.randint(-50, 150)  # Pets less chaotic
@@ -5811,8 +5784,6 @@ class CouplesTowerBattle(TowerBattle):
             
     async def apply_chaos_effects_to_damage(self, attacker, damage):
         """Modify damage based on chaos effects and anchoring"""
-        from decimal import Decimal
-        
         # Check if attacker is anchored by partner
         if attacker.name in self.partner_anchoring:
             # Anchored: More stable damage
@@ -5845,8 +5816,6 @@ class CouplesTowerBattle(TowerBattle):
         
         # Apply random chaos effect
         effect_roll = random.randint(1, 4)
-        from decimal import Decimal
-        
         if effect_roll == 1:
             # Bonus chaos damage
             chaos_damage = Decimal(random.randint(20, 60))
@@ -5884,8 +5853,6 @@ class CouplesTowerBattle(TowerBattle):
         
         # Create the Truth Demon (1 HP, can't be targeted)
         from cogs.battles.core.combatant import Combatant
-        from decimal import Decimal
-        
         # Create a minimal Truth Demon with None user (it's an NPC)
         self.truth_demon = Combatant(
             user=None,
