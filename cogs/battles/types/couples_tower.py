@@ -5597,7 +5597,7 @@ class CouplesTowerBattle(TowerBattle):
                 used_fireball = True
             else:
                 # Regular attack with chaos
-                from decimal import Decimal
+                
                 # Level 24: Extreme chaos variance
                 if current_combatant.is_pet:
                     chaos_variance = random.randint(-50, 150)  # Pets less chaotic
