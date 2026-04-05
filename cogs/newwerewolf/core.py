@@ -2079,15 +2079,20 @@ class DayElectionView(discord.ui.View):
         self.votes_by_user_id: dict[int, int] = {}
         self.message: discord.Message | None = None
         self.vote_lock = asyncio.Lock()
+        alive_role = self.game._get_ww_alive_role()
+        self.role_ping = alive_role.mention if alive_role is not None else ""
         self.add_item(DayElectionSelect(self))
 
     def build_message(self) -> str:
-        lines = [
+        lines = []
+        if self.role_ping:
+            lines.append(self.role_ping)
+        lines.extend([
             _(
                 "**Use the dropdown to vote for killing someone. You have {timer}"
                 " seconds.**"
             ).format(timer=int(self.timeout or 0))
-        ]
+        ])
         for user in self.nominated_users:
             lines.append(
                 _("**{player}** ({votes} votes)").format(
@@ -8359,6 +8364,11 @@ class Game:
         vote_view.message = await self.send_to_channel(
             vote_view.build_message(),
             view=vote_view,
+            allowed_mentions=discord.AllowedMentions(
+                roles=True,
+                users=True,
+                everyone=False,
+            ),
         )
         if vote_view.message is None:
             return None, second_election
