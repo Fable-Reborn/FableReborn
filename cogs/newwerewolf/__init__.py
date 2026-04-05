@@ -3494,6 +3494,9 @@ class NewWerewolf(commands.Cog):
     def _get_mode_lobby_summary(self, mode: str, *, prefix: str) -> str:
         summaries = {
             "Classic": _("Standard Werewolf rules and Classic role roster."),
+            "Extended": _(
+                "Classic roster plus Beast Hunter, Spirit Seer, and Shadow Wolf."
+            ),
             "Comedy": _(
                 "Classic role roster and rules, but with chaotic comedic narration."
             ),
@@ -3798,19 +3801,21 @@ class NewWerewolf(commands.Cog):
             """
             `[mode]` - The mode to play, see below for available options. (optional and defaults to Classic)
             `[speed]` - The game speed to play, see below available options. (optional and defaults to Normal)
-            `[min_players]` - The minimum players needed to play. (optional and defaults depending on the game mode: Classic: 5, Comedy: 5, Imbalanced: 5, Huntergame: 8, Villagergame: 5, Avengergame: 5, Valentines: 8, IdleRPG: 5, MixedRoles: 5)
+            `[min_players]` - The minimum players needed to play. (optional and defaults depending on the game mode: Classic: 5, Extended: 5, Comedy: 5, Imbalanced: 5, Huntergame: 8, Villagergame: 5, Avengergame: 5, Valentines: 8, IdleRPG: 5, MixedRoles: 5)
 
             Starts a game of NewWerewolf. Find the werewolves, before they find you!
             Your goal to win is indicated on the role you have.
             The command starter is not auto-joined. Click the lobby's **Join** button if you want to play, or **Leave** before the game begins if you want to spectate.
-            **Game modes:** `Classic` (default), `Comedy`, `Imbalanced`, `Huntergame`, `Villagergame`, `Avengergame`, `Valentines`, `IdleRPG`, `Teams`, `MixedRoles`. Use `{prefix}nww modes` for detailed info.
+            **Game modes:** `Classic` (default), `Extended`, `Comedy`, `Imbalanced`, `Huntergame`, `Villagergame`, `Avengergame`, `Valentines`, `IdleRPG`, `Teams`, `MixedRoles`. Use `{prefix}nww modes` for detailed info.
             **Game speeds** (in seconds): `Normal`: 60 (default), `Extended`: 90, `Fast`: 45, `Blitz`: 30. Use `{prefix}nww speeds` for detailed info.
             **Aliases:**
             `nww`
             **Examples:**
             `{prefix}nww Blitz` for Classic mode on Blitz speed
+            `{prefix}nww Extended` for Extended mode on Normal speed
             `{prefix}nww Comedy` for Classic rules with cursed/funny narration
             `{prefix}nww Imbalanced` for Imbalanced mode on Normal speed
+            `{prefix}nww Classic Extended` for Classic mode on Extended speed
             `{prefix}nww Valentines Extended` for Valentines mode on Extended speed
             `{prefix}nww Huntergame Fast` for Huntergame mode on Fast speed
             `{prefix}nww Avengergame` for Avengergame mode on Normal speed
@@ -3825,6 +3830,7 @@ class NewWerewolf(commands.Cog):
 
         game_modes = [
             "Classic",
+            "Extended",
             "Comedy",
             "Imbalanced",
             "Huntergame",
@@ -3838,6 +3844,7 @@ class NewWerewolf(commands.Cog):
         game_speeds = ["Normal", "Extended", "Fast", "Blitz"]
         minimum_players = {
             "Classic": 5,
+            "Extended": 5,
             "Comedy": 5,
             "Imbalanced": 5,
             "Huntergame": 8,
@@ -3864,7 +3871,7 @@ class NewWerewolf(commands.Cog):
 
         # Support shorthand like `nww Blitz` and keep roster behavior tied to mode.
         # Blitz/Fast/Extended/Normal are speeds, not separate role rosters.
-        if mode_token in game_speeds:
+        if mode_token in game_speeds and mode_token not in game_modes:
             inferred_speed = mode_token
             inferred_mode = "Classic"
             if speed_token in game_modes:
@@ -3977,8 +3984,9 @@ class NewWerewolf(commands.Cog):
                 title=_("Werewolf Game Modes"),
                 description=_(
                     """\
-**Game modes:** `Classic` (default), `Comedy`, `Imbalanced`, `Huntergame`, `Villagergame`, `Avengergame`, `Valentines`, `IdleRPG`, `Teams`, `MixedRoles`, `Custom`.
+**Game modes:** `Classic` (default), `Extended`, `Comedy`, `Imbalanced`, `Huntergame`, `Villagergame`, `Avengergame`, `Valentines`, `IdleRPG`, `Teams`, `MixedRoles`, `Custom`.
 `Classic`: Play the classic werewolf game. (default)
+`Extended`: Uses the Classic roster, but can also include Beast Hunter, Spirit Seer, and Shadow Wolf. This mode is eligible for role XP under the normal GM-started games-channel rules.
 `Comedy`: Uses the same role roster and rules as `Classic`, but the public narration is chaotic and funny.
 `Imbalanced`: Some roles that are only available in larger games have chances to join even in smaller games. (The size of the game being referred here is about the number of players, i.e. 5-player game is small)
 `Huntergame`: Only Hunters and Werewolves are available.
@@ -4861,9 +4869,9 @@ class NewWerewolf(commands.Cog):
                 "members": (
                     "Werewolf, Ravager Wolf - Advanced unlock, Junior Werewolf,"
                     " Wolf Seer, Sorcerer - Advanced"
-                    " unlock, White Wolf, Cursed Wolf"
+                    " unlock, White Wolf, Shadow Wolf - Extended mode only, Cursed Wolf"
                     " Father, Big Bad Wolf, Wolf"
-                    f" Shaman - {restriction}, Wolf Necromancer - {restriction},"
+                    f" Shaman - {restriction}, Confusion Wolf - Advanced unlock, Werewolf Fan - Advanced unlock, Wolf Necromancer - {restriction},"
                     f" Alpha Werewolf - {restriction}, Wolf Summoner - Advanced unlock,"
                     " Wolf Trickster - Advanced unlock,"
                     f" Guardian Wolf - {restriction}, Nightmare Werewolf - {restriction},"
@@ -4875,7 +4883,7 @@ class NewWerewolf(commands.Cog):
             {
                 "side": _("The Villagers"),
                 "members": (
-                    "Villager, Cursed, Pure Soul, Flower Child, Seer, Aura Seer,"
+                    "Villager, Cursed, Grave Robber - Advanced unlock, Pure Soul, Flower Child, Seer, Aura Seer,"
                     " Gambler - Advanced unlock, Witch,"
                     " Forger - Advanced unlock,"
                     " Doctor, Bodyguard, Sheriff, Jailer, Medium, Loudmouth, Avenger,"
@@ -4884,7 +4892,7 @@ class NewWerewolf(commands.Cog):
                     " Mortician - Advanced unlock, Warden -"
                     " Advanced unlock, Seer Apprentice - Advanced unlock, Tough Guy -"
                     " Advanced unlock,"
-                    " Healer, Amor,"
+                    " Healer, Beast Hunter - Extended mode only, Flagger - Advanced unlock, Spirit Seer - Extended mode only, Gunner - Extended mode only, Vigilante - Advanced unlock, Amor,"
                     " Knight, Fortune Teller, Hunter -"
                     " Huntergame only,"
                     f" Sister, Brother, The Old, Fox, Judge, Paragon - {restriction},"
@@ -4907,6 +4915,7 @@ class NewWerewolf(commands.Cog):
                     f"White Wolf - {_('Be the sole survivor')}, Flutist -"
                     f" {_('Must enchant every living inhabitants')}, Superspreader -"
                     f" {_('Infect all the players with your virus')} {restriction},"
+                    f" Corruptor - {_('Be the sole survivor')} (Extended mode only),"
                     f" Jester -"
                     f" {_('Die to win')}, Head Hunter -"
                     f" {_('Get your assigned target lynched')},"

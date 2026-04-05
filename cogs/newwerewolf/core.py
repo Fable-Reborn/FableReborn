@@ -65,6 +65,8 @@ class Role(Enum):
     WEREWOLF = 1
     BIG_BAD_WOLF = 2
     RAVAGER_WOLF = 75
+    SHADOW_WOLF = 76
+    CONFUSION_WOLF = 83
     CURSED_WOLF_FATHER = 3
     WOLF_SHAMAN = 4
     WOLF_NECROMANCER = 5
@@ -106,6 +108,7 @@ class Role(Enum):
     JESTER = 32
     SERIAL_KILLER = 66
     CANNIBAL = 68
+    CORRUPTOR = 80
     DOCTOR = 33
     BUTCHER = 70
     ANALYST = 71
@@ -113,8 +116,14 @@ class Role(Enum):
     FLOWER_CHILD = 35
     FORTUNE_TELLER = 36
     AURA_SEER = 37
+    SPIRIT_SEER = 78
+    GUNNER = 79
+    VIGILANTE = 81
+    FLAGGER = 82
+    WEREWOLF_FAN = 84
     GAMBLER = 67
     BODYGUARD = 38
+    BEAST_HUNTER = 77
     JUNIOR_WEREWOLF = 39
     WOLF_SEER = 40
     SORCERER = 69
@@ -152,6 +161,7 @@ class Side(Enum):
     HEAD_HUNTER = 7
     SERIAL_KILLER = 8
     CANNIBAL = 9
+    CORRUPTOR = 10
 
 
 def _normalize_role_token(token: str) -> str:
@@ -174,6 +184,10 @@ ROLE_TOKEN_TO_ROLE.update(
         "preist": Role.PRIEST,
         "grandma": Role.GRUMPY_GRANDMA,
         "guardian": Role.GUARDIAN_WOLF,
+        "shadow": Role.SHADOW_WOLF,
+        "shadowwolf": Role.SHADOW_WOLF,
+        "confusion": Role.CONFUSION_WOLF,
+        "confusionwolf": Role.CONFUSION_WOLF,
         "alpha": Role.ALPHA_WEREWOLF,
         "summoner": Role.WOLF_SUMMONER,
         "wolfpacifist": Role.WOLF_PACIFIST,
@@ -188,6 +202,15 @@ ROLE_TOKEN_TO_ROLE.update(
         "forger": Role.FORGER,
         "sk": Role.SERIAL_KILLER,
         "fool": Role.JESTER,
+        "corruptor": Role.CORRUPTOR,
+        "beasthunter": Role.BEAST_HUNTER,
+        "spiritseer": Role.SPIRIT_SEER,
+        "gunner": Role.GUNNER,
+        "vigilante": Role.VIGILANTE,
+        "flagger": Role.FLAGGER,
+        "werewolffan": Role.WEREWOLF_FAN,
+        "wolfan": Role.WEREWOLF_FAN,
+        "wolf_fan": Role.WEREWOLF_FAN,
         "kittenwolf": Role.KITTEN_WOLF,
         "ravager": Role.RAVAGER_WOLF,
         "ravagerwolf": Role.RAVAGER_WOLF,
@@ -494,6 +517,7 @@ COMEDY_INVESTIGATION_ROLES = {
     Role.SEER,
     Role.ANALYST,
     Role.AURA_SEER,
+    Role.SPIRIT_SEER,
     Role.WOLF_SEER,
     Role.DETECTIVE,
     Role.MORTICIAN,
@@ -504,6 +528,8 @@ COMEDY_PROTECTIVE_ROLES = {
     Role.HEALER,
     Role.DOCTOR,
     Role.BODYGUARD,
+    Role.BEAST_HUNTER,
+    Role.FLAGGER,
     Role.BUTCHER,
     Role.JAILER,
     Role.WARDEN,
@@ -516,9 +542,12 @@ COMEDY_CHAOS_ROLES = {
     Role.JESTER,
     Role.SERIAL_KILLER,
     Role.CANNIBAL,
+    Role.CORRUPTOR,
     Role.FLUTIST,
     Role.SUPERSPREADER,
     Role.HEAD_HUNTER,
+    Role.GUNNER,
+    Role.VIGILANTE,
     Role.TROUBLEMAKER,
     Role.GAMBLER,
     Role.RAIDER,
@@ -559,6 +588,18 @@ DESCRIPTIONS = {
         "Your objective is to kill all villagers together with the other Werewolves."
         " At night, you can talk and vote with the Werewolves. Once per game during"
         " the day, you may protect one player from being lynched."
+    ),
+    Role.SHADOW_WOLF: _(
+        "Your objective is to kill all villagers together with the other Werewolves."
+        " At night, you can talk and vote with the Werewolves. Once per game during"
+        " the day, you may manipulate the village vote so wolf-team votes count"
+        " double and the public vote is hidden."
+    ),
+    Role.CONFUSION_WOLF: _(
+        "Your objective is to kill all villagers together with the other Werewolves."
+        " At night, you can talk and vote with the Werewolves. Twice per game, you"
+        " may hide the roles of all players killed that night from the public."
+        " Werewolves still learn those roles."
     ),
     Role.WOLF_TRICKSTER: _(
         "Your objective is to kill all villagers together with the other Werewolves."
@@ -608,6 +649,29 @@ DESCRIPTIONS = {
         "You are the Aura Seer. Every night, you can inspect one player and learn"
         " whether they have a Good or Evil aura."
     ),
+    Role.SPIRIT_SEER: _(
+        "You are the Spirit Seer. Every night, you may check up to two players. At"
+        " the start of the next day, you learn whether each checked player killed"
+        " someone during the night."
+    ),
+    Role.GUNNER: _(
+        "You are the Gunner. During the day, you may shoot one player, up to twice"
+        " per game and at most once per day. The first time you shoot, you reveal"
+        " your role publicly."
+    ),
+    Role.VIGILANTE: _(
+        "You are the Vigilante, an advanced Gunner role. During the day, you may"
+        " shoot one player once per game, and on a different day you may privately"
+        " reveal one player's role to yourself once per game. Using either action"
+        " reveals your own role publicly."
+    ),
+    Role.FLAGGER: _(
+        "You are the Flagger, an advanced Beast Hunter role. You cannot act on the"
+        " first night. After that, each night you may choose one player to protect"
+        " and a different player to receive the redirected attack instead. You can"
+        " successfully redirect up to two attacks this way, and after each"
+        " successful redirect you must rest on the following night."
+    ),
     Role.GAMBLER: _(
         "You are the Gambler, an advanced Aura Seer role. Each night, you pick one"
         " player and guess their team. You can only make **Village team** guesses"
@@ -652,6 +716,12 @@ DESCRIPTIONS = {
         "You are the Bodyguard. Every night, you may guard one player from attacks."
         " The first time you intercept an attack (on yourself or your protected"
         " target), you survive. The second time, you die."
+    ),
+    Role.BEAST_HUNTER: _(
+        "You are the Beast Hunter. You have one reusable trap. Placing or moving it"
+        " takes one night to arm. Once active, it stays on that player until it is"
+        " moved or triggered. It prevents one attack on that player, and if the"
+        " attack came from the werewolf team, the weakest living werewolf dies."
     ),
     Role.SHERIFF: _(
         "You are the Mayor. Your role is hidden at first. During any day, you may"
@@ -793,6 +863,13 @@ DESCRIPTIONS = {
         " checks. If a Werewolf attack targets you, you survive and turn into a"
         " Werewolf instead."
     ),
+    Role.WEREWOLF_FAN: _(
+        "You are the Werewolf Fan, an advanced Cursed role. Secretly, you win with"
+        " the Werewolves, but you do not count for their win condition and are not"
+        " known to them until they attack you. When that happens, you survive and"
+        " become a regular Werewolf. Once per game during the day, you may privately"
+        " reveal your role to one other player."
+    ),
     Role.GRAVE_ROBBER: _(
         "You are the Grave Robber, an advanced Cursed role. At game start, you are"
         " secretly assigned one target. If that target dies, at the start of the"
@@ -909,6 +986,12 @@ DESCRIPTIONS = {
         " players you can infect by one more. Make it Pandemic! (Note: If an infected"
         " player died and is resurrected, they are free from the virus.)"
     ),
+    Role.CORRUPTOR: _(
+        "You are the Corruptor. Every night, you may glitch one player. On the"
+        " following day they cannot talk, vote, send emojis, or use day abilities,"
+        " and they die after the voting with their role hidden as **?**. You cannot"
+        " be killed by the regular werewolf night attack."
+    ),
     Role.JESTER: _(
         "You are the Jester. Your only objective is to get yourself lynched. If the"
         " village votes to execute you, the game ends immediately and you win."
@@ -1008,6 +1091,7 @@ def is_wolf_team_role(role: Role) -> bool:
         Role.WEREWOLF,
         Role.BIG_BAD_WOLF,
         Role.RAVAGER_WOLF,
+        Role.SHADOW_WOLF,
         Role.CURSED_WOLF_FATHER,
         Role.WOLF_SHAMAN,
         Role.WOLF_NECROMANCER,
@@ -1082,6 +1166,10 @@ def _normalized_unlock_only_advanced_roles() -> set[Role]:
 
 
 UNLOCK_ONLY_ADVANCED_ROLES: set[Role] = _normalized_unlock_only_advanced_roles()
+
+
+def _is_classic_family_mode(mode: str | None) -> bool:
+    return _normalize_mode_token(mode) in {"classic", "extended"}
 
 
 def _is_role_available_in_mode(
@@ -1202,7 +1290,7 @@ def _pick_villager_filler_role(
     if not weighted_candidates:
         return Role.VILLAGER
 
-    if existing_roles and _normalize_mode_token(mode) == "classic":
+    if existing_roles and _is_classic_family_mode(mode):
         capped_candidates = [
             (role, weight)
             for role, weight in weighted_candidates
@@ -1249,7 +1337,7 @@ def enforce_six_player_classic_variety(
 ) -> list[Role]:
     if requested_players != 6:
         return roles
-    if _normalize_mode_token(mode) != "classic":
+    if not _is_classic_family_mode(mode):
         return roles
 
     available_roles = roles[:-2]
@@ -1357,7 +1445,7 @@ def _pick_classic_support_role(existing_roles: list[Role], mode: str | None) -> 
 def _rebalance_classic_role_variety(
     roles: list[Role], *, requested_players: int, mode: str | None
 ) -> list[Role]:
-    if _normalize_mode_token(mode) != "classic":
+    if not _is_classic_family_mode(mode):
         return roles
 
     available_roles = roles[:-2]
@@ -1444,6 +1532,13 @@ def _apply_role_availability(
 
 ROLE_MIN_PLAYER_REQUIREMENTS: dict[Role, int] = {
     Role.CURSED: 7,
+    Role.BEAST_HUNTER: 8,
+    Role.FLAGGER: 8,
+    Role.SHADOW_WOLF: 9,
+    Role.SPIRIT_SEER: 9,
+    Role.GUNNER: 10,
+    Role.CORRUPTOR: 11,
+    Role.VIGILANTE: 10,
 }
 
 
@@ -1698,6 +1793,10 @@ UNKNOWN_AURA_ROLES = {
     Role.WAR_VETERAN,
     Role.MARKSMAN,
     Role.WARDEN,
+    Role.BEAST_HUNTER,
+    Role.FLAGGER,
+    Role.GUNNER,
+    Role.VIGILANTE,
     # Alpha and its advanced path read as Unknown.
     Role.ALPHA_WEREWOLF,
     *ADVANCED_ROLE_TIERS_BY_BASE.get(Role.ALPHA_WEREWOLF, {}).values(),
@@ -1706,6 +1805,7 @@ UNKNOWN_AURA_ROLES = {
     Role.HEAD_HUNTER,
     Role.SERIAL_KILLER,
     Role.CANNIBAL,
+    Role.CORRUPTOR,
     Role.WHITE_WOLF,
     Role.FLUTIST,
     Role.SUPERSPREADER,
@@ -1718,6 +1818,7 @@ INHERITABLE_INFORMATION_ROLES = {
     Role.SEER,
     Role.ANALYST,
     Role.AURA_SEER,
+    Role.SPIRIT_SEER,
     Role.DETECTIVE,
     Role.MORTICIAN,
     Role.FOX,
@@ -1731,6 +1832,7 @@ INHERITABLE_INFORMATION_ROLES = {
 SORCERER_INFORMER_ROLES = {
     Role.SEER,
     Role.ANALYST,
+    Role.SPIRIT_SEER,
     Role.SEER_APPRENTICE,
     Role.AURA_SEER,
     Role.DETECTIVE,
@@ -1951,6 +2053,8 @@ def side_from_role(role: Role) -> Side:
         return Side.SERIAL_KILLER
     if role == Role.CANNIBAL:
         return Side.CANNIBAL
+    if role == Role.CORRUPTOR:
+        return Side.CORRUPTOR
     return Side.VILLAGERS
 
 
@@ -2107,10 +2211,15 @@ class DayElectionView(discord.ui.View):
             ).format(timer=self.vote_duration)
         ])
         for user in self.nominated_users:
+            vote_label = (
+                _("hidden")
+                if self.game.shadow_wolf_vote_active
+                else str(self.vote_totals[user.id])
+            )
             lines.append(
                 _("**{player}** ({votes} votes)").format(
                     player=_display_vote_name(user),
-                    votes=self.vote_totals[user.id],
+                    votes=vote_label,
                 )
             )
         return "\n".join(lines)
@@ -2154,6 +2263,8 @@ class DayElectionView(discord.ui.View):
                     content=self.build_message(),
                     view=self,
                 )
+                if self.game.shadow_wolf_vote_active:
+                    return
                 await self.game.send_to_channel(
                     _("**{voter}** redacted their vote.").format(
                         voter=_display_vote_name(interaction.user),
@@ -2190,6 +2301,9 @@ class DayElectionView(discord.ui.View):
                 view=self,
             )
 
+            if self.game.shadow_wolf_vote_active:
+                return
+
             if previous_target_id is None:
                 announcement = _("**{voter}** voted for **{target}**.").format(
                     voter=_display_vote_name(interaction.user),
@@ -2205,13 +2319,22 @@ class DayElectionView(discord.ui.View):
             await self.game.send_to_channel(announcement)
 
     async def _close_after_timeout(self, timeout: float) -> None:
-        await asyncio.sleep(timeout)
+        try:
+            await asyncio.sleep(timeout)
+        except asyncio.CancelledError:
+            return
         await self.close()
 
     async def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        if (
+            self._close_task is not None
+            and self._close_task != asyncio.current_task()
+            and not self._close_task.done()
+        ):
+            self._close_task.cancel()
         for child in self.children:
             child.disabled = True
         if self.message is not None:
@@ -2482,10 +2605,14 @@ class Game:
         self.previous_jailed_player_ids: set[int] = set()
         self.pending_night_killer_group_by_player_id: dict[int, str] = {}
         self.pending_ravager_pierce_target_ids: set[int] = set()
+        self.current_night_solo_kills: list[tuple[int, int]] = []
+        self.last_night_killer_player_ids: set[int] = set()
         self.kitten_wolf_conversion_pending_night: int | None = None
         self.pending_grumpy_silence_targets: dict[int, Player] = {}
         self.pending_voodoo_silence_targets: dict[int, Player] = {}
+        self.pending_corruptor_targets: dict[int, Player] = {}
         self.active_grumpy_silenced_player_ids: set[int] = set()
+        self.active_corrupted_player_ids: set[int] = set()
         self.pending_nightmare_sleep_targets: dict[int, Player] = {}
         self.active_sleeping_player_ids: set[int] = set()
         self._grumpy_silence_send_restore: dict[int, bool | None] = {}
@@ -2498,6 +2625,7 @@ class Game:
         self.loudmouth_mark_tasks: dict[int, asyncio.Task] = {}
         self.avenger_mark_tasks: dict[int, asyncio.Task] = {}
         self.mayor_reveal_tasks: dict[int, asyncio.Task] = {}
+        self.werewolf_fan_reveal_tasks: dict[int, asyncio.Task] = {}
         self.forger_day_tasks: dict[int, asyncio.Task] = {}
         self.forged_sword_day_tasks: dict[int, asyncio.Task] = {}
         self.fortune_card_reveal_views: dict[int, FortuneCardRevealView] = {}
@@ -2505,6 +2633,8 @@ class Game:
         self.team_assignments: dict[int, int] = {}
         self.after_first_night = False
         self.is_night_phase = False
+        self.shadow_wolf_vote_active = False
+        self.confusion_wolf_night_active = False
         self.pending_night_resurrections: list[
             tuple[Player, Player, Role, int]
         ] = []
@@ -2954,6 +3084,16 @@ class Game:
         death_reveal_role: Role,
         initial_role_info: str,
     ) -> str:
+        if player.hide_role_on_death:
+            if not self.is_comedy_mode:
+                return _("{user} has died. They were a **?**!").format(
+                    user=player.user.mention
+                )
+            return random.choice(COMEDY_LONER_DEATH_TEMPLATES).format(
+                user=player.user.mention,
+                role="?",
+                initial_role_info="",
+            )
         role_name = self.get_role_name(death_reveal_role)
         if not self.is_comedy_mode:
             return _(
@@ -3249,7 +3389,11 @@ class Game:
         tricksters = [
             trickster
             for trickster in self.get_players_with_role(Role.WOLF_TRICKSTER)
-            if not trickster.dead and trickster.has_wolf_trickster_steal_ability
+            if (
+                not trickster.dead
+                and not trickster.is_grumpy_silenced_today
+                and trickster.has_wolf_trickster_steal_ability
+            )
         ]
         for trickster in tricksters:
             if (
@@ -3348,7 +3492,7 @@ class Game:
         shamans = [
             shaman
             for shaman in self.alive_players
-            if shaman.role == Role.WOLF_SHAMAN
+            if shaman.role == Role.WOLF_SHAMAN and not shaman.is_grumpy_silenced_today
         ]
         for shaman in shamans:
             await shaman.queue_wolf_shaman_enchant()
@@ -3364,6 +3508,48 @@ class Game:
             if target is None or target.dead:
                 continue
             target.wolf_shaman_mask_active = True
+
+    async def handle_confusion_wolf_night_masking(self) -> None:
+        self.confusion_wolf_night_active = False
+        confusion_wolves = [
+            player for player in self.alive_players if player.role == Role.CONFUSION_WOLF
+        ]
+        for confusion_wolf in confusion_wolves:
+            if self.confusion_wolf_night_active:
+                await confusion_wolf.send(
+                    _(
+                        "🌫️ A **Confusion Wolf** already activated the mask for"
+                        " tonight.\n{game_link}"
+                    ).format(game_link=self.game_link)
+                )
+                continue
+            await confusion_wolf.activate_confusion_wolf_mask()
+
+    async def notify_wolves_of_hidden_night_roles(
+        self, hidden_deaths: list[Player]
+    ) -> None:
+        if not hidden_deaths:
+            return
+        wolves = [
+            player for player in self.alive_players if is_wolf_team_role(player.role)
+        ]
+        if not wolves:
+            return
+
+        lines = [_("🌫️ Tonight's hidden roles were:")]
+        lines.extend(
+            _(
+                "• **{player}** was **{role}**"
+            ).format(
+                player=dead_player.user,
+                role=self.get_role_name(dead_player.role),
+            )
+            for dead_player in hidden_deaths
+        )
+        lines.append(self.game_link)
+        message = "\n".join(lines)
+        for wolf in wolves:
+            await wolf.send(message)
 
     def get_players_with_role(self, role: Role) -> list[Player]:
         return [player for player in self.alive_players if player.role == role]
@@ -3451,6 +3637,166 @@ class Game:
         if not attackers:
             return None
         return random.choice(attackers)
+
+    def _wolf_strength(self, role: Role) -> int:
+        return {
+            Role.WEREWOLF: 2,
+            Role.JUNIOR_WEREWOLF: 3,
+            Role.KITTEN_WOLF: 3,
+            Role.NIGHTMARE_WEREWOLF: 4,
+            Role.VOODOO_WEREWOLF: 4,
+            Role.WOLF_SHAMAN: 5,
+            Role.WOLF_TRICKSTER: 5,
+            Role.CONFUSION_WOLF: 5,
+            Role.GUARDIAN_WOLF: 6,
+            Role.WOLF_PACIFIST: 6,
+            Role.SHADOW_WOLF: 7,
+            Role.ALPHA_WEREWOLF: 8,
+            Role.WOLF_SUMMONER: 8,
+            Role.WOLF_SEER: 9,
+            Role.SORCERER: 10,
+        }.get(role, 2)
+
+    def _pick_weakest_wolf(self) -> Player | None:
+        wolves = [
+            player
+            for player in self.alive_players
+            if is_wolf_team_role(player.role) and not player.is_jailed
+        ]
+        if not wolves:
+            return None
+        return min(
+            wolves,
+            key=lambda player: (self._wolf_strength(player.role), player.user.id),
+        )
+
+    def _capture_successful_night_killer_ids(self, final_targets: list[Player]) -> None:
+        successful_target_ids = {target.user.id for target in final_targets}
+        killer_ids: set[int] = set()
+
+        wolf_kill_succeeded = any(
+            self.pending_night_killer_group_by_player_id.get(target.user.id)
+            == NIGHT_KILLER_GROUP_WOLVES
+            for target in final_targets
+        )
+        if wolf_kill_succeeded:
+            killer_ids.update(
+                player.user.id
+                for player in self.alive_players
+                if is_wolf_team_role(player.role) and not player.is_jailed
+            )
+
+        killer_ids.update(
+            killer_id
+            for killer_id, target_id in self.current_night_solo_kills
+            if target_id in successful_target_ids
+        )
+        self.last_night_killer_player_ids = killer_ids
+
+    def activate_beast_hunter_traps_for_night(self) -> None:
+        for player in self.players:
+            if player.role != Role.BEAST_HUNTER:
+                continue
+            if player.beast_hunter_pending_target_id is None:
+                active_target = discord.utils.find(
+                    lambda current_player: (
+                        current_player.user.id == player.beast_hunter_active_target_id
+                    ),
+                    self.alive_players,
+                )
+                if (
+                    player.beast_hunter_active_target_id is not None
+                    and active_target is None
+                ):
+                    player.beast_hunter_active_target_id = None
+                continue
+            player.beast_hunter_active_target_id = player.beast_hunter_pending_target_id
+            player.beast_hunter_pending_target_id = None
+
+    async def send_spirit_seer_results(self) -> None:
+        spirit_seers = [
+            player
+            for player in self.alive_players
+            if player.role == Role.SPIRIT_SEER
+            and player.spirit_seer_selected_player_ids
+        ]
+        for spirit_seer in spirit_seers:
+            selected_players = [
+                discord.utils.find(
+                    lambda player: player.user.id == player_id,
+                    self.players,
+                )
+                for player_id in spirit_seer.spirit_seer_selected_player_ids
+            ]
+            selected_players = [
+                player for player in selected_players if player is not None
+            ]
+            if not selected_players:
+                spirit_seer.spirit_seer_selected_player_ids = []
+                continue
+            result_lines = [
+                _("**{player}**: {result}").format(
+                    player=checked_player.user,
+                    result=_("Killed")
+                    if checked_player.user.id in self.last_night_killer_player_ids
+                    else _("Did not kill"),
+                )
+                for checked_player in selected_players
+            ]
+            await spirit_seer.send(
+                _(
+                    "👻 Spirit results from last night:\n{results}\n{game_link}"
+                ).format(
+                    results="\n".join(result_lines),
+                    game_link=self.game_link,
+                )
+            )
+            spirit_seer.spirit_seer_selected_player_ids = []
+
+    async def handle_shadow_wolf_vote_manipulation(self) -> None:
+        if self.shadow_wolf_vote_active:
+            return
+        shadow_wolves = [
+            player
+            for player in self.alive_players
+            if player.role == Role.SHADOW_WOLF
+            and player.has_shadow_wolf_manipulation_ability
+            and not player.is_jailed
+        ]
+        for shadow_wolf in shadow_wolves:
+            try:
+                choice = await self.ctx.bot.paginator.Choose(
+                    entries=[
+                        _("Manipulate today's vote"),
+                        _("Keep manipulation for later"),
+                    ],
+                    return_index=True,
+                    title=_("Use Shadow Wolf vote manipulation today?"),
+                    timeout=max(10, min(20, int(self.timer / 2))),
+                ).paginate(self.ctx, location=shadow_wolf.user)
+            except (
+                self.ctx.bot.paginator.NoChoice,
+                discord.Forbidden,
+                discord.HTTPException,
+            ):
+                continue
+            if choice != 0:
+                continue
+            shadow_wolf.has_shadow_wolf_manipulation_ability = False
+            self.shadow_wolf_vote_active = True
+            await shadow_wolf.send(
+                _(
+                    "🌑 You manipulated today's vote. Wolf-team votes count double"
+                    " and the public vote is hidden.\n{game_link}"
+                ).format(game_link=self.game_link)
+            )
+            await self.send_to_channel(
+                _(
+                    "🌑 A dark influence clouds today's vote. Public votes are hidden"
+                    " and wolf-team votes count double."
+                )
+            )
+            return
 
     async def _mark_tough_guy_injury(
         self,
@@ -3934,7 +4280,11 @@ class Game:
             paginator.add_line(_("**Full Role Roster (Alive + Dead)**"))
 
         for player in self.players:
-            status = _("Alive") if not player.dead else _("Dead")
+            status = (
+                _("Alive")
+                if not player.dead or player.hide_death_in_public_roster
+                else _("Dead")
+            )
             public_role = self.get_public_role_name(player)
             paginator.add_line(
                 _("• **{role}** ({status})").format(
@@ -4423,6 +4773,73 @@ class Game:
             ).format(targets=mentions)
         )
 
+    async def apply_corruptor_day_glitch(self) -> None:
+        if not self.pending_corruptor_targets:
+            return
+
+        applied_targets: list[Player] = []
+        for player_id in list(self.pending_corruptor_targets):
+            target = discord.utils.find(
+                lambda p: p.user.id == player_id and not p.dead,
+                self.alive_players,
+            )
+            if target is None:
+                continue
+            target.is_grumpy_silenced_today = True
+            target.is_corrupted_today = True
+            self.active_grumpy_silenced_player_ids.add(target.user.id)
+            self.active_corrupted_player_ids.add(target.user.id)
+            applied_targets.append(target)
+            await self._set_player_grumpy_silence(target, silenced=True)
+            await target.send(
+                _(
+                    "❓ You were glitched by the **Corruptor**. You cannot talk, vote,"
+                    " send emojis, or use day abilities today, and you will die after"
+                    " the voting.\n{game_link}"
+                ).format(game_link=self.game_link)
+            )
+
+        self.pending_corruptor_targets.clear()
+        if not applied_targets:
+            return
+
+        mentions = ", ".join(target.user.mention for target in applied_targets)
+        await self.send_to_channel(
+            _(
+                "❓ A glitch spreads over {targets}. They cannot talk or vote today."
+            ).format(targets=mentions)
+        )
+
+    async def resolve_corruptor_day_deaths(self) -> None:
+        if not self.active_corrupted_player_ids:
+            return
+
+        to_kill: list[Player] = []
+        for player_id in list(self.active_corrupted_player_ids):
+            target = discord.utils.find(
+                lambda p: p.user.id == player_id and not p.dead,
+                self.alive_players,
+            )
+            if target is None:
+                continue
+            to_kill.append(target)
+
+        self.active_corrupted_player_ids.clear()
+        if not to_kill:
+            return
+
+        mentions = ", ".join(target.user.mention for target in to_kill)
+        await self.send_to_channel(
+            _(
+                "❓ The corruption completed. {targets} died after the voting, and"
+                " their roles were lost in the glitch."
+            ).format(targets=mentions)
+        )
+        for target in to_kill:
+            target.hide_role_on_death = True
+            target.non_villager_killer_group = NIGHT_KILLER_GROUP_SOLO
+            await target.kill()
+
     async def apply_nightmare_sleep_for_night(self) -> None:
         for player in self.players:
             player.is_sleeping_tonight = False
@@ -4456,9 +4873,12 @@ class Game:
     async def clear_grumpy_grandma_day_silence(self) -> None:
         for player in self.players:
             player.is_grumpy_silenced_today = False
+            player.is_corrupted_today = False
         self.active_grumpy_silenced_player_ids.clear()
+        self.active_corrupted_player_ids.clear()
         self.pending_grumpy_silence_targets.clear()
         self.pending_voodoo_silence_targets.clear()
+        self.pending_corruptor_targets.clear()
 
         if not self._grumpy_silence_send_restore:
             return
@@ -4501,7 +4921,12 @@ class Game:
             possible_targets = [
                 player
                 for player in self.alive_players
-                if player != head_hunter and player.side == Side.VILLAGERS
+                if (
+                    player != head_hunter
+                    and player.side == Side.VILLAGERS
+                    and player.role != Role.WEREWOLF_FAN
+                    and player.role not in (Role.GUNNER, Role.VIGILANTE)
+                )
             ]
             if not possible_targets:
                 if head_hunter.initial_roles[-1] != head_hunter.role:
@@ -5152,7 +5577,7 @@ class Game:
             self.jailer_day_pick_task = None
         self.pending_jail_targets = []
         jailer = self._get_jail_controller()
-        if jailer is None or jailer.dead:
+        if jailer is None or jailer.dead or jailer.is_grumpy_silenced_today:
             return
         self.jailer_day_pick_task = asyncio.create_task(
             self._collect_jailer_day_target(jailer)
@@ -5174,6 +5599,7 @@ class Game:
             Side.HEAD_HUNTER,
             Side.SERIAL_KILLER,
             Side.CANNIBAL,
+            Side.CORRUPTOR,
         }
 
     def _is_valid_junior_mark_target(self, junior: Player, player: Player) -> bool:
@@ -5261,7 +5687,7 @@ class Game:
         juniors = [
             player
             for player in self.alive_players
-            if player.role == Role.JUNIOR_WEREWOLF
+            if player.role == Role.JUNIOR_WEREWOLF and not player.is_grumpy_silenced_today
         ]
         active_ids = {player.user.id for player in juniors}
 
@@ -5381,7 +5807,7 @@ class Game:
         loudmouths = [
             player
             for player in self.alive_players
-            if player.role == Role.LOUDMOUTH
+            if player.role == Role.LOUDMOUTH and not player.is_grumpy_silenced_today
         ]
         active_ids = {player.user.id for player in loudmouths}
 
@@ -5544,7 +5970,10 @@ class Game:
         avengers = [
             player
             for player in self.alive_players
-            if player.role in (Role.AVENGER, Role.OATHKEEPER)
+            if (
+                player.role in (Role.AVENGER, Role.OATHKEEPER)
+                and not player.is_grumpy_silenced_today
+            )
         ]
         active_ids = {player.user.id for player in avengers}
 
@@ -5645,7 +6074,11 @@ class Game:
         mayors = [
             player
             for player in self.alive_players
-            if player.role == Role.SHERIFF and not player.is_sheriff
+            if (
+                player.role == Role.SHERIFF
+                and not player.is_sheriff
+                and not player.is_grumpy_silenced_today
+            )
         ]
         active_ids = {player.user.id for player in mayors}
 
@@ -5661,6 +6094,118 @@ class Game:
             self.mayor_reveal_tasks[mayor.user.id] = asyncio.create_task(
                 self._collect_mayor_reveal(mayor)
             )
+
+    async def _collect_werewolf_fan_reveal(self, fan: Player) -> None:
+        await fan.send(
+            _(
+                "🐺 As **Werewolf Fan**, you may once per game privately reveal your"
+                " role to one other living player.\n{game_link}"
+            ).format(game_link=self.game_link)
+        )
+        prompt_timeout = 3600
+        while (
+            not fan.dead
+            and fan in self.alive_players
+            and fan.role == Role.WEREWOLF_FAN
+            and fan.has_werewolf_fan_reveal_ability
+        ):
+            if self.is_night_phase:
+                await asyncio.sleep(3)
+                continue
+            if fan.is_jailed or fan.is_grumpy_silenced_today:
+                await asyncio.sleep(5)
+                continue
+
+            possible_targets = [
+                player for player in self.alive_players if player != fan
+            ]
+            if not possible_targets:
+                await asyncio.sleep(5)
+                continue
+
+            try:
+                picked = await fan.choose_users(
+                    _(
+                        "Choose one player to privately reveal yourself to as"
+                        " **Werewolf Fan**. Leave blank to stay hidden."
+                    ),
+                    list_of_users=possible_targets,
+                    amount=1,
+                    required=False,
+                    timeout=prompt_timeout,
+                )
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                schedule_traceback(self.ctx, e)
+                return
+
+            if (
+                fan.dead
+                or fan not in self.alive_players
+                or fan.role != Role.WEREWOLF_FAN
+                or not fan.has_werewolf_fan_reveal_ability
+            ):
+                return
+
+            if not picked:
+                await asyncio.sleep(5)
+                continue
+
+            target = picked[0]
+            fan.has_werewolf_fan_reveal_ability = False
+            target.revealed_roles.update({fan: fan.role})
+            await fan.send(
+                _(
+                    "🐺 You privately revealed yourself as **Werewolf Fan** to"
+                    " **{target}**.\n{game_link}"
+                ).format(target=target.user, game_link=self.game_link)
+            )
+            await target.send(
+                _(
+                    "🐺 **{fan}** privately revealed that they are the"
+                    " **Werewolf Fan**.\n{game_link}"
+                ).format(fan=fan.user, game_link=self.game_link)
+            )
+            return
+
+    async def start_werewolf_fan_reveal_selection(self) -> None:
+        fans = [
+            player
+            for player in self.alive_players
+            if (
+                player.role == Role.WEREWOLF_FAN
+                and player.has_werewolf_fan_reveal_ability
+                and not player.is_grumpy_silenced_today
+            )
+        ]
+        active_ids = {player.user.id for player in fans}
+
+        for player_id, task in list(self.werewolf_fan_reveal_tasks.items()):
+            if task.done() or player_id not in active_ids:
+                task.cancel()
+                self.werewolf_fan_reveal_tasks.pop(player_id, None)
+
+        for fan in fans:
+            existing = self.werewolf_fan_reveal_tasks.get(fan.user.id)
+            if existing and not existing.done():
+                continue
+            self.werewolf_fan_reveal_tasks[fan.user.id] = asyncio.create_task(
+                self._collect_werewolf_fan_reveal(fan)
+            )
+
+    async def stop_werewolf_fan_reveal_selection(
+        self, fan: Player | None = None
+    ) -> None:
+        if fan is not None:
+            task = self.werewolf_fan_reveal_tasks.pop(fan.user.id, None)
+            if task:
+                task.cancel()
+            return
+
+        for task in self.werewolf_fan_reveal_tasks.values():
+            task.cancel()
+        self.werewolf_fan_reveal_tasks.clear()
 
     async def stop_mayor_reveal_selection(
         self, mayor: Player | None = None
@@ -5709,10 +6254,77 @@ class Game:
                 await head_hunter.send_information()
 
     async def apply_night_protection(self, targets: list[Player]) -> list[Player]:
-        # Serial Killer and Cannibal cannot die to the regular werewolves' night attack.
+        flaggers = [
+            player for player in self.players if player.role == Role.FLAGGER and not player.dead
+        ]
+        for flagger in flaggers:
+            protected_target_id = flagger.flagger_protect_target_id
+            redirect_target_id = flagger.flagger_redirect_target_id
+            flagger.flagger_protect_target_id = None
+            flagger.flagger_redirect_target_id = None
+            if protected_target_id is None or redirect_target_id is None:
+                continue
+
+            protected_target = discord.utils.find(
+                lambda player: player.user.id == protected_target_id and not player.dead,
+                self.players,
+            )
+            redirect_target = discord.utils.find(
+                lambda player: player.user.id == redirect_target_id and not player.dead,
+                self.players,
+            )
+            if (
+                protected_target is None
+                or redirect_target is None
+                or protected_target == redirect_target
+                or protected_target not in targets
+            ):
+                continue
+
+            attack_source = self.pending_night_killer_group_by_player_id.get(
+                protected_target.user.id
+            )
+            while protected_target in targets:
+                targets.remove(protected_target)
+            self.pending_night_killer_group_by_player_id.pop(
+                protected_target.user.id, None
+            )
+            targets.append(redirect_target)
+            if attack_source is not None:
+                self._set_pending_night_killer_group(
+                    redirect_target,
+                    attack_source,
+                )
+
+            flagger.flagger_redirects_left = max(0, flagger.flagger_redirects_left - 1)
+            flagger.flagger_skip_tonight = True
+            await flagger.send(
+                _(
+                    "🚩 Your flag protected **{protected}** and redirected the attack"
+                    " to **{redirected}**. Remaining redirects: {uses}. You must rest"
+                    " on the following night.\n{game_link}"
+                ).format(
+                    protected=protected_target.user,
+                    redirected=redirect_target.user,
+                    uses=flagger.flagger_redirects_left,
+                    game_link=self.game_link,
+                )
+            )
+            await protected_target.send(
+                _(
+                    "🚩 A **Flagger** redirected tonight's attack away from you."
+                    "\n{game_link}"
+                ).format(game_link=self.game_link)
+            )
+
+        # Some solo killers cannot die to the regular werewolves' night attack.
         unique_targets = list(dict.fromkeys(targets))
         for target in unique_targets:
-            if target.dead or target.role not in (Role.SERIAL_KILLER, Role.CANNIBAL):
+            if target.dead or target.role not in (
+                Role.SERIAL_KILLER,
+                Role.CANNIBAL,
+                Role.CORRUPTOR,
+            ):
                 continue
             attack_source = self.pending_night_killer_group_by_player_id.get(target.user.id)
             if attack_source != NIGHT_KILLER_GROUP_WOLVES:
@@ -5722,8 +6334,8 @@ class Game:
             self.pending_night_killer_group_by_player_id.pop(target.user.id, None)
             await target.send(
                 _(
-                    "🔪🐺 The werewolves attacked you, but your killer instinct kept"
-                    " you alive.\n{game_link}"
+                    "🔪🐺 The werewolves attacked you, but your role protected you from"
+                    " their regular night attack.\n{game_link}"
                 ).format(game_link=self.game_link)
             )
 
@@ -5744,6 +6356,55 @@ class Game:
                     " night attack.\n{game_link}"
                 ).format(game_link=self.game_link)
             )
+
+        beast_hunter_traps: dict[int, list[Player]] = {}
+        for hunter in self.players:
+            if hunter.role != Role.BEAST_HUNTER:
+                continue
+            target_id = hunter.beast_hunter_active_target_id
+            if target_id is None:
+                continue
+            beast_hunter_traps.setdefault(target_id, []).append(hunter)
+
+        for target_id, hunters in beast_hunter_traps.items():
+            trapped_target = discord.utils.find(
+                lambda player: player.user.id == target_id,
+                self.players,
+            )
+            if trapped_target is None or trapped_target not in targets:
+                continue
+            attack_source = self.pending_night_killer_group_by_player_id.get(target_id)
+            while trapped_target in targets:
+                targets.remove(trapped_target)
+            self.pending_night_killer_group_by_player_id.pop(target_id, None)
+
+            for hunter in hunters:
+                hunter.beast_hunter_active_target_id = None
+                await hunter.send(
+                    _(
+                        "🪤 Your trap on **{target}** was triggered tonight."
+                        "\n{game_link}"
+                    ).format(target=trapped_target.user, game_link=self.game_link)
+                )
+
+            await trapped_target.send(
+                _(
+                    "🪤 A hidden trap protected you from a night attack."
+                    "\n{game_link}"
+                ).format(game_link=self.game_link)
+            )
+
+            if attack_source == NIGHT_KILLER_GROUP_WOLVES:
+                weakest_wolf = self._pick_weakest_wolf()
+                if weakest_wolf is not None:
+                    weakest_wolf.non_villager_killer_group = NIGHT_KILLER_GROUP_WOLVES
+                    await self.send_to_channel(
+                        _(
+                            "🪤 A Beast Hunter trap was triggered. **{wolf}** died in"
+                            " the backlash."
+                        ).format(wolf=weakest_wolf.user.mention)
+                    )
+                    await weakest_wolf.kill()
 
         protected_players = [
             player for player in self.alive_players if player.is_protected
@@ -6098,10 +6759,16 @@ class Game:
     async def apply_cursed_conversion(self, targets: list[Player]) -> list[Player]:
         # Cursed converts only when directly targeted by the werewolves' night attack.
         for target in list(dict.fromkeys(targets)):
-            if target.dead or target.role != Role.CURSED:
+            if target.dead or target.role not in (Role.CURSED, Role.WEREWOLF_FAN):
                 continue
             while target in targets:
                 targets.remove(target)
+            await self._send_kitten_wolf_team_notice(
+                _(
+                    "🐺 **{target}** survived the werewolves' attack and joined the"
+                    " Werewolves."
+                ).format(target=target.user)
+            )
             if target.initial_roles[-1] != target.role:
                 target.initial_roles.append(target.role)
             target.role = Role.WEREWOLF
@@ -6267,13 +6934,21 @@ class Game:
         priests = [
             priest
             for priest in self.get_players_with_role(Role.PRIEST)
-            if not priest.dead and priest.has_priest_holy_water_ability
+            if (
+                not priest.dead
+                and not priest.is_grumpy_silenced_today
+                and priest.has_priest_holy_water_ability
+            )
         ]
         if not priests:
             return
 
         for priest in priests:
-            if priest.dead or not priest.has_priest_holy_water_ability:
+            if (
+                priest.dead
+                or priest.is_grumpy_silenced_today
+                or not priest.has_priest_holy_water_ability
+            ):
                 continue
 
             possible_targets = [
@@ -6337,11 +7012,192 @@ class Game:
                 )
                 await priest.kill()
 
+    async def handle_gunner_day_action(self) -> None:
+        gunners = [
+            gunner
+            for gunner in self.alive_players
+            if gunner.role in (Role.GUNNER, Role.VIGILANTE)
+            and not gunner.is_grumpy_silenced_today
+            and (
+                gunner.gunner_bullets > 0
+                or (
+                    gunner.role == Role.VIGILANTE
+                    and gunner.vigilante_reveal_available
+                )
+            )
+        ]
+        if not gunners:
+            return
+
+        for gunner in gunners:
+            if gunner.dead or gunner.is_grumpy_silenced_today:
+                continue
+            if self.night_no <= 1:
+                await gunner.send(
+                    _(
+                        "🔫 You cannot act during the first day's discussion."
+                        "\n{game_link}"
+                    ).format(game_link=self.game_link)
+                )
+                continue
+
+            possible_targets = [
+                player
+                for player in self.alive_players
+                if player != gunner and player not in gunner.own_lovers
+            ]
+            if not possible_targets:
+                continue
+
+            await self.send_to_channel(
+                _("**The {role} may act.**").format(role=gunner.role_name)
+            )
+            target = None
+            used_reveal = False
+            if gunner.role == Role.VIGILANTE:
+                entries: list[str] = []
+                actions: list[str] = []
+                if gunner.gunner_bullets > 0 and gunner.vigilante_shot_available:
+                    entries.append(_("Shoot a player"))
+                    actions.append("shoot")
+                if gunner.vigilante_reveal_available:
+                    entries.append(_("Reveal a player's role privately"))
+                    actions.append("reveal")
+                entries.append(_("Do nothing"))
+                actions.append("skip")
+                try:
+                    action_index = await self.ctx.bot.paginator.Choose(
+                        entries=entries,
+                        return_index=True,
+                        title=_("Choose your Vigilante action for today."),
+                        timeout=max(10, min(20, int(self.timer / 2))),
+                    ).paginate(self.ctx, location=gunner.user)
+                except (
+                    self.ctx.bot.paginator.NoChoice,
+                    discord.Forbidden,
+                    discord.HTTPException,
+                    asyncio.TimeoutError,
+                ):
+                    action_index = len(actions) - 1
+                selected_action = actions[action_index]
+                if selected_action == "skip":
+                    await gunner.send(
+                        _("You chose not to act today.\n{game_link}").format(
+                            game_link=self.game_link
+                        )
+                    )
+                    continue
+                prompt = (
+                    _("Choose one player whose role you want to reveal privately.")
+                    if selected_action == "reveal"
+                    else _(
+                        "Choose one player to shoot. You can fire once per day and"
+                        " have {bullets} bullet(s) left."
+                    ).format(bullets=gunner.gunner_bullets)
+                )
+                try:
+                    chosen_target = await gunner.choose_users(
+                        prompt,
+                        list_of_users=possible_targets,
+                        amount=1,
+                        required=False,
+                    )
+                except asyncio.TimeoutError:
+                    chosen_target = []
+                if not chosen_target:
+                    await gunner.send(
+                        _("You chose not to act today.\n{game_link}").format(
+                            game_link=self.game_link
+                        )
+                    )
+                    continue
+                target = chosen_target[0]
+                used_reveal = selected_action == "reveal"
+            else:
+                try:
+                    chosen_target = await gunner.choose_users(
+                        _(
+                            "Choose one player to shoot. You can fire once per day and"
+                            " have {bullets} bullet(s) left."
+                        ).format(bullets=gunner.gunner_bullets),
+                        list_of_users=possible_targets,
+                        amount=1,
+                        required=False,
+                    )
+                except asyncio.TimeoutError:
+                    chosen_target = []
+                if not chosen_target:
+                    await gunner.send(
+                        _("You chose not to shoot today.\n{game_link}").format(
+                            game_link=self.game_link
+                        )
+                    )
+                    continue
+                target = chosen_target[0]
+
+            if not gunner.gunner_has_publicly_revealed:
+                gunner.gunner_has_publicly_revealed = True
+                for player in self.players:
+                    player.revealed_roles.update({gunner: gunner.role})
+                await self.send_to_channel(
+                    _(
+                        "📣 **{gunner}** revealed as **{role}** and acted!"
+                    ).format(
+                        gunner=gunner.user.mention,
+                        role=gunner.role_name,
+                    )
+                )
+            elif not used_reveal:
+                await self.send_to_channel(
+                    _("🔫 **{gunner}** fired at **{target}**!").format(
+                        gunner=gunner.user.mention,
+                        target=target.user.mention,
+                    )
+                )
+
+            if used_reveal:
+                revealed_role = self.get_observed_role(target, observer=gunner)
+                gunner.revealed_roles.update({target: revealed_role})
+                gunner.vigilante_reveal_available = False
+                await gunner.send(
+                    _(
+                        "🔎 You privately revealed **{target}** as **{role}**."
+                        "\n{game_link}"
+                    ).format(
+                        target=target.user,
+                        role=self.get_role_name(revealed_role),
+                        game_link=self.game_link,
+                    )
+                )
+                continue
+
+            gunner.gunner_bullets = max(0, gunner.gunner_bullets - 1)
+            if gunner.role == Role.VIGILANTE:
+                gunner.vigilante_shot_available = False
+            if target.role == Role.THE_OLD:
+                target.died_from_villagers = True
+                target.lives = 1
+            await target.kill()
+            await gunner.send(
+                _(
+                    "You shot **{target}**. Remaining bullets: {bullets}."
+                    "\n{game_link}"
+                ).format(
+                    target=target.user,
+                    bullets=gunner.gunner_bullets,
+                    game_link=self.game_link,
+                )
+            )
+
     async def handle_marksman_day_action(self) -> None:
         marksmen = [
             marksman
             for marksman in self.get_players_with_role(Role.MARKSMAN)
-            if not marksman.dead and marksman.marksman_arrows > 0
+            if (
+                not marksman.dead
+                and not marksman.is_grumpy_silenced_today
+                and marksman.marksman_arrows > 0
+            )
         ]
         if not marksmen:
             return
@@ -6677,7 +7533,7 @@ class Game:
         forgers = [
             forger
             for forger in self.get_players_with_role(Role.FORGER)
-            if self._forger_has_day_action(forger)
+            if self._forger_has_day_action(forger) and not forger.is_grumpy_silenced_today
         ]
         active_ids = {player.user.id for player in forgers}
 
@@ -6779,7 +7635,9 @@ class Game:
 
     async def start_forged_sword_day_actions(self) -> None:
         sword_holders = [
-            player for player in self.alive_players if player.forger_swords > 0
+            player
+            for player in self.alive_players
+            if player.forger_swords > 0 and not player.is_grumpy_silenced_today
         ]
         active_ids = {player.user.id for player in sword_holders}
 
@@ -6805,7 +7663,10 @@ class Game:
         actors = [
             player
             for player in self.alive_players
-            if player.role in (Role.NIGHTMARE_WEREWOLF, Role.VOODOO_WEREWOLF)
+            if (
+                player.role in (Role.NIGHTMARE_WEREWOLF, Role.VOODOO_WEREWOLF)
+                and not player.is_grumpy_silenced_today
+            )
         ]
         if not actors:
             return
@@ -6863,7 +7724,11 @@ class Game:
         pacifists = [
             pacifist
             for pacifist in self.get_players_with_role(Role.PACIFIST)
-            if not pacifist.dead and pacifist.has_pacifist_reveal_ability
+            if (
+                not pacifist.dead
+                and not pacifist.is_grumpy_silenced_today
+                and pacifist.has_pacifist_reveal_ability
+            )
         ]
         if not pacifists:
             return False
@@ -6918,7 +7783,11 @@ class Game:
         wolf_pacifists = [
             wolf_pacifist
             for wolf_pacifist in self.get_players_with_role(Role.WOLF_PACIFIST)
-            if not wolf_pacifist.dead and wolf_pacifist.has_wolf_pacifist_reveal_ability
+            if (
+                not wolf_pacifist.dead
+                and not wolf_pacifist.is_grumpy_silenced_today
+                and wolf_pacifist.has_wolf_pacifist_reveal_ability
+            )
         ]
         if not wolf_pacifists:
             return False
@@ -6990,6 +7859,8 @@ class Game:
         weight = 2 if (player.role == Role.SHERIFF and player.is_sheriff) else 1
         if player.role == Role.PREACHER and player.preacher_revealed:
             weight += max(0, min(3, int(player.preacher_extra_votes or 0)))
+        if self.shadow_wolf_vote_active and player.side == Side.WOLVES:
+            weight *= 2
         return weight
 
     async def resolve_preacher_predictions(
@@ -7042,6 +7913,7 @@ class Game:
             for preacher in self.get_players_with_role(Role.PREACHER)
             if (
                 not preacher.dead
+                and not preacher.is_grumpy_silenced_today
                 and preacher.has_preacher_reveal_ability
                 and not preacher.preacher_revealed
                 and preacher.preacher_extra_votes > 0
@@ -7095,7 +7967,7 @@ class Game:
             # Check if there's only one player left
             if len(self.alive_players) == 1:
                 sole_survivor = self.alive_players[0]
-                if sole_survivor.side in (Side.JESTER, Side.HEAD_HUNTER):
+                if sole_survivor.side in (Side.JESTER, Side.HEAD_HUNTER) or sole_survivor.role == Role.WEREWOLF_FAN:
                     return _("No one")
                 return sole_survivor
             elif len(self.alive_players) == 0:
@@ -7109,6 +7981,7 @@ class Game:
                     Side.SUPERSPREADER,
                     Side.SERIAL_KILLER,
                     Side.CANNIBAL,
+                    Side.CORRUPTOR,
                 }
                 if not any(
                     player.side in active_threat_sides
@@ -7811,7 +8684,10 @@ class Game:
             player.wolf_shaman_mask_active = False
             player.is_sleeping_tonight = False
         self.active_sleeping_player_ids.clear()
+        self.current_night_solo_kills = []
+        self.last_night_killer_player_ids = set()
         self.activate_wolf_shaman_enchants_for_night()
+        self.activate_beast_hunter_traps_for_night()
         if medium := self.get_player_with_role(Role.MEDIUM):
             await medium.send(
                 _(
@@ -7870,6 +8746,19 @@ class Game:
                 await aura_reader.check_analyst_auras()
             else:
                 await aura_reader.guess_player_team_as_gambler()
+        spirit_seers = self.get_players_with_role(Role.SPIRIT_SEER)
+        for spirit_seer in spirit_seers:
+            await spirit_seer.check_spirit_seer_targets()
+        await self.handle_confusion_wolf_night_masking()
+        corruptors = self.get_players_with_role(Role.CORRUPTOR)
+        for corruptor in corruptors:
+            await corruptor.set_corruptor_target()
+        flaggers = self.get_players_with_role(Role.FLAGGER)
+        for flagger in flaggers:
+            await flagger.set_flagger_redirect()
+        beast_hunters = self.get_players_with_role(Role.BEAST_HUNTER)
+        for beast_hunter in beast_hunters:
+            await beast_hunter.set_beast_hunter_trap()
         morticians = self.get_players_with_role(Role.MORTICIAN)
         for mortician in morticians:
             await mortician.mortician_autopsy()
@@ -7924,6 +8813,9 @@ class Game:
         for serial_killer in serial_killers:
             if target := await serial_killer.serial_killer_kill():
                 targets.append(target)
+                self.current_night_solo_kills.append(
+                    (serial_killer.user.id, target.user.id)
+                )
                 self._set_pending_night_killer_group(
                     target, NIGHT_KILLER_GROUP_SOLO, overwrite=True
                 )
@@ -7962,6 +8854,7 @@ class Game:
             await flutist.enchant()
         if superspreader := self.get_player_with_role(Role.SUPERSPREADER):
             await superspreader.infect_virus()
+        self._capture_successful_night_killer_ids(targets)
         return targets
 
     async def night(self, white_wolf_ability: bool) -> list[Player]:
@@ -7974,7 +8867,9 @@ class Game:
             player.wolf_shaman_mask_active = False
             player.is_sleeping_tonight = False
         self.active_sleeping_player_ids.clear()
+        self.current_night_solo_kills = []
         self.activate_wolf_shaman_enchants_for_night()
+        self.activate_beast_hunter_traps_for_night()
         await self._set_night_chat_lock(True)
         await self.send_night_announcement(moon)
         await self.apply_nightmare_sleep_for_night()
@@ -8053,6 +8948,19 @@ class Game:
                 await aura_reader.check_analyst_auras()
             else:
                 await aura_reader.guess_player_team_as_gambler()
+        spirit_seers = self.get_players_with_role(Role.SPIRIT_SEER)
+        for spirit_seer in spirit_seers:
+            await spirit_seer.check_spirit_seer_targets()
+        await self.handle_confusion_wolf_night_masking()
+        corruptors = self.get_players_with_role(Role.CORRUPTOR)
+        for corruptor in corruptors:
+            await corruptor.set_corruptor_target()
+        flaggers = self.get_players_with_role(Role.FLAGGER)
+        for flagger in flaggers:
+            await flagger.set_flagger_redirect()
+        beast_hunters = self.get_players_with_role(Role.BEAST_HUNTER)
+        for beast_hunter in beast_hunters:
+            await beast_hunter.set_beast_hunter_trap()
         morticians = self.get_players_with_role(Role.MORTICIAN)
         for mortician in morticians:
             await mortician.mortician_autopsy()
@@ -8081,6 +8989,9 @@ class Game:
                 target = await white_wolf.choose_werewolf()
                 if target:
                     targets.append(target)
+                    self.current_night_solo_kills.append(
+                        (white_wolf.user.id, target.user.id)
+                    )
                     self._set_pending_night_killer_group(
                         target, NIGHT_KILLER_GROUP_SOLO, overwrite=True
                     )
@@ -8102,6 +9013,9 @@ class Game:
         for serial_killer in serial_killers:
             if target := await serial_killer.serial_killer_kill():
                 targets.append(target)
+                self.current_night_solo_kills.append(
+                    (serial_killer.user.id, target.user.id)
+                )
                 self._set_pending_night_killer_group(
                     target, NIGHT_KILLER_GROUP_SOLO, overwrite=True
                 )
@@ -8111,6 +9025,7 @@ class Game:
             cannibal_targets = self._apply_cannibal_protector_priority(cannibal_targets)
             for target in cannibal_targets:
                 targets.append(target)
+                self.current_night_solo_kills.append((cannibal.user.id, target.user.id))
                 self._set_pending_night_killer_group(
                     target, NIGHT_KILLER_GROUP_SOLO, overwrite=True
                 )
@@ -8140,6 +9055,7 @@ class Game:
             await flutist.enchant()
         if superspreader := self.get_player_with_role(Role.SUPERSPREADER):
             await superspreader.infect_virus()
+        self._capture_successful_night_killer_ids(targets)
         return targets
 
     @staticmethod
@@ -8643,6 +9559,9 @@ class Game:
         to_resurrect.killed_by_lynch = False
         to_resurrect.non_villager_killer_group = None
         to_resurrect.wolf_trickster_death_reveal_role = None
+        to_resurrect.hide_role_on_death = False
+        to_resurrect.hide_death_in_public_roster = False
+        to_resurrect.reveal_hidden_role_to_wolves = False
         to_resurrect.red_lady_visit_target = None
         to_resurrect.ghost_lady_bound_target = None
         to_resurrect.is_sleeping_tonight = False
@@ -8693,7 +9612,10 @@ class Game:
 
     @staticmethod
     def _is_valid_ritualist_resurrection_target(player: Player) -> bool:
-        return player.side in (Side.VILLAGERS, Side.HEAD_HUNTER)
+        return (
+            player.side in (Side.VILLAGERS, Side.HEAD_HUNTER)
+            and player.role != Role.WEREWOLF_FAN
+        )
 
     async def queue_night_resurrection(
             self,
@@ -8837,10 +9759,20 @@ class Game:
         await self.start_loudmouth_target_selection()
         await self.start_avenger_target_selection()
         await self.start_mayor_reveal_selection()
+        await self.start_werewolf_fan_reveal_selection()
         await self.start_forger_day_actions()
         await self.start_forged_sword_day_actions()
         await self.start_alpha_day_wolf_relay()
         try:
+            hidden_night_deaths: list[Player] = []
+            if self.confusion_wolf_night_active:
+                hidden_night_deaths = [death for death in unique_night_deaths if not death.dead]
+                for death in hidden_night_deaths:
+                    death.hide_role_on_death = True
+                    death.hide_death_in_public_roster = True
+                    death.reveal_hidden_role_to_wolves = True
+                await self.notify_wolves_of_hidden_night_roles(hidden_night_deaths)
+                self.confusion_wolf_night_active = False
             for death in unique_night_deaths:
                 death.non_villager_killer_group = (
                     self.pending_night_killer_group_by_player_id.get(death.user.id)
@@ -8855,6 +9787,7 @@ class Game:
             await self.send_public_full_role_roster(
                 day_label=_("Day {day_count:.0f}").format(day_count=self.night_no)
             )
+            await self.send_spirit_seer_results()
             if self.rusty_sword_disease_night is not None:
                 if self.rusty_sword_disease_night == 0:
                     self.rusty_sword_disease_night += 1
@@ -8866,8 +9799,18 @@ class Game:
                 return
             await self.apply_grumpy_grandma_day_silence()
             await self.apply_voodoo_werewolf_day_mute()
+            await self.apply_corruptor_day_glitch()
             await self.offer_fortune_card_reveals()
             await self.handle_priest_holy_water()
+            if len(self.alive_players) < 2:
+                return
+            if self.winner is not None:
+                return
+            await self.handle_gunner_day_action()
+            if len(self.alive_players) < 2:
+                return
+            if self.winner is not None:
+                return
             await self.handle_marksman_day_action()
             await self.handle_wolf_shaman_day_enchant()
             await self.handle_wolf_trickster_day_mark()
@@ -8889,7 +9832,9 @@ class Game:
                 return
             if self.winner is not None:
                 return
+            self.shadow_wolf_vote_active = False
             if not wolf_pacifist_used and not pacifist_used:
+                await self.handle_shadow_wolf_vote_manipulation()
                 to_kill, second_election = await self.election()
                 if to_kill is not None:
                     await self.handle_lynching(to_kill)
@@ -8917,6 +9862,7 @@ class Game:
                         self.get_no_lynch_text(second_election=True)
                     )
                 await self.handle_afk()
+            await self.resolve_corruptor_day_deaths()
         finally:
             await self.stop_alpha_day_wolf_relay()
             await self.clear_grumpy_grandma_day_silence()
@@ -8926,6 +9872,7 @@ class Game:
                 reason=_("🔮 Night fell, so today's Revelation Card prompts closed.")
             )
             await self.stop_mayor_reveal_selection()
+            await self.stop_werewolf_fan_reveal_selection()
             await self.stop_forger_day_actions()
             await self.stop_forged_sword_day_actions()
             await self.resolve_tough_guy_delayed_deaths()
@@ -9023,6 +9970,10 @@ class Game:
                 pass
             try:
                 await self.stop_mayor_reveal_selection()
+            except Exception:
+                pass
+            try:
+                await self.stop_werewolf_fan_reveal_selection()
             except Exception:
                 pass
             try:
@@ -9124,6 +10075,8 @@ class Game:
                 return "Villagers"
             if winner.side == Side.WOLVES:
                 return "Werewolves"
+            if winner.role == Role.WEREWOLF_FAN:
+                return "Werewolves"
             return "Loners"
 
         candidates = [self.winning_side, winner]
@@ -9146,6 +10099,7 @@ class Game:
                 "head hunter",
                 "serial killer",
                 "cannibal",
+                "corruptor",
                 "lover",
             )
         ):
@@ -9205,7 +10159,9 @@ class Game:
         }
 
         for player in self.players:
-            if player.side == Side.VILLAGERS:
+            if player.role == Role.WEREWOLF_FAN:
+                bucket = "Werewolves"
+            elif player.side == Side.VILLAGERS:
                 bucket = "Villagers"
             elif player.side == Side.WOLVES:
                 bucket = "Werewolves"
@@ -9315,6 +10271,23 @@ class Player:
         self.grave_robber_target: Player | None = None
         self.grave_robber_has_stolen_role = False
         self.grave_robber_stolen_from_player_id: int | None = None
+        self.beast_hunter_pending_target_id: int | None = None
+        self.beast_hunter_active_target_id: int | None = None
+        self.flagger_protect_target_id: int | None = None
+        self.flagger_redirect_target_id: int | None = None
+        self.flagger_redirects_left = 2
+        self.flagger_skip_tonight = False
+        self.spirit_seer_selected_player_ids: list[int] = []
+        self.confusion_wolf_masks_left = 2
+        self.has_werewolf_fan_reveal_ability = True
+        self.gunner_bullets = 2
+        self.gunner_has_publicly_revealed = False
+        self.vigilante_shot_available = True
+        self.vigilante_reveal_available = True
+        self.is_corrupted_today = False
+        self.hide_role_on_death = False
+        self.hide_death_in_public_roster = False
+        self.reveal_hidden_role_to_wolves = False
 
         # Witch
         self.witch_protect_potion_available = True
@@ -9385,6 +10358,7 @@ class Player:
 
         # Guardian Wolf
         self.has_guardian_wolf_save_ability = True
+        self.has_shadow_wolf_manipulation_ability = True
 
         # Jailer
         self.has_jailer_execution_ability = True
@@ -10038,6 +11012,296 @@ class Player:
             ).format(protected=target.user, game_link=self.game.game_link)
         )
 
+    async def set_beast_hunter_trap(self) -> None:
+        if self.dead or self.role != Role.BEAST_HUNTER:
+            return
+        if self.is_jailed or self.is_sleeping_tonight:
+            await self.send(
+                _(
+                    "😴 You cannot place or move your trap tonight because you are"
+                    " unable to act."
+                    "\n{game_link}"
+                ).format(game_link=self.game.game_link)
+            )
+            return
+        await self.announce_awake()
+        available = list(self.game.alive_players)
+        active_target = discord.utils.find(
+            lambda player: player.user.id == self.beast_hunter_active_target_id,
+            self.game.alive_players,
+        )
+        pending_target = discord.utils.find(
+            lambda player: player.user.id == self.beast_hunter_pending_target_id,
+            self.game.alive_players,
+        )
+        if not available:
+            await self.send(
+                _("There is no valid player to trap tonight.\n{game_link}").format(
+                    game_link=self.game.game_link
+                )
+            )
+            return
+        try:
+            if pending_target is not None:
+                prompt = _(
+                    "Your trap is currently being set on **{target}** and will be"
+                    " active next night. Choose a different player to move it and"
+                    " restart the setup time, or choose no one to keep it there."
+                ).format(target=pending_target.user)
+            elif active_target is not None:
+                prompt = _(
+                    "Your trap is currently active on **{target}**. Choose a"
+                    " different player to move it. Moving it removes the current trap"
+                    " now, and the new location becomes active next night. Choose no"
+                    " one to keep it where it is."
+                ).format(target=active_target.user)
+            else:
+                prompt = _(
+                    "Choose a player to trap. Your trap becomes active on the next"
+                    " night."
+                )
+            target = await self.choose_users(
+                prompt,
+                list_of_users=available,
+                amount=1,
+                required=False,
+            )
+        except asyncio.TimeoutError:
+            target = []
+        if not target:
+            if pending_target is not None:
+                message = _(
+                    "🪤 Your trap is still being set on **{target}** and will be"
+                    " active next night.\n{game_link}"
+                ).format(target=pending_target.user, game_link=self.game.game_link)
+            elif active_target is not None:
+                message = _(
+                    "🪤 You kept your active trap on **{target}**.\n{game_link}"
+                ).format(target=active_target.user, game_link=self.game.game_link)
+            else:
+                message = _("You did not place a trap tonight.\n{game_link}").format(
+                    game_link=self.game.game_link
+                )
+            await self.send(message)
+            return
+        new_target = target[0]
+        current_target_id = (
+            self.beast_hunter_pending_target_id
+            if self.beast_hunter_pending_target_id is not None
+            else self.beast_hunter_active_target_id
+        )
+        if current_target_id == new_target.user.id:
+            if active_target is not None:
+                await self.send(
+                    _(
+                        "🪤 Your trap is already active on **{target}**."
+                        "\n{game_link}"
+                    ).format(target=new_target.user, game_link=self.game.game_link)
+                )
+            else:
+                await self.send(
+                    _(
+                        "🪤 Your trap is already being set on **{target}** and will"
+                        " be active next night.\n{game_link}"
+                    ).format(target=new_target.user, game_link=self.game.game_link)
+                )
+            return
+
+        if active_target is not None:
+            previous_target = active_target.user
+            self.beast_hunter_active_target_id = None
+            self.beast_hunter_pending_target_id = new_target.user.id
+            await self.send(
+                _(
+                    "🪤 You moved your trap from **{old_target}** to **{new_target}**."
+                    " It must be set again and will be active next night."
+                    "\n{game_link}"
+                ).format(
+                    old_target=previous_target,
+                    new_target=new_target.user,
+                    game_link=self.game.game_link,
+                )
+            )
+            return
+
+        self.beast_hunter_pending_target_id = new_target.user.id
+        await self.send(
+            _(
+                "🪤 You placed your trap on **{target}**. It will be active next"
+                " night.\n{game_link}"
+            ).format(target=new_target.user, game_link=self.game.game_link)
+        )
+
+    async def set_flagger_redirect(self) -> None:
+        if self.dead or self.role != Role.FLAGGER:
+            return
+
+        self.flagger_protect_target_id = None
+        self.flagger_redirect_target_id = None
+
+        if self.is_jailed or self.is_sleeping_tonight:
+            await self.send(
+                _(
+                    "😴 You cannot place any flags tonight because you are unable to"
+                    " act.\n{game_link}"
+                ).format(game_link=self.game.game_link)
+            )
+            return
+        if self.game.night_no == 1 and not self.game.after_first_night:
+            await self.send(
+                _(
+                    "🚩 You cannot place any flags on the first night."
+                    "\n{game_link}"
+                ).format(game_link=self.game.game_link)
+            )
+            return
+        if self.flagger_skip_tonight:
+            self.flagger_skip_tonight = False
+            await self.send(
+                _(
+                    "🚩 You successfully redirected an attack last night, so you must"
+                    " rest tonight.\n{game_link}"
+                ).format(game_link=self.game.game_link)
+            )
+            return
+        if self.flagger_redirects_left <= 0:
+            await self.send(
+                _(
+                    "🚩 You have already used both of your successful redirects."
+                    "\n{game_link}"
+                ).format(game_link=self.game.game_link)
+            )
+            return
+
+        await self.announce_awake()
+        protectable_players = list(self.game.alive_players)
+        if len(protectable_players) < 2:
+            await self.send(
+                _("There are not enough players to place flags tonight.\n{game_link}").format(
+                    game_link=self.game.game_link
+                )
+            )
+            return
+
+        try:
+            protected_choice = await self.choose_users(
+                _(
+                    "Choose one player to protect from a night attack. If they are"
+                    " attacked, the attack will be redirected instead. Remaining"
+                    " redirects: {uses}."
+                ).format(uses=self.flagger_redirects_left),
+                list_of_users=protectable_players,
+                amount=1,
+                required=False,
+            )
+        except asyncio.TimeoutError:
+            protected_choice = []
+        if not protected_choice:
+            await self.send(
+                _("You chose not to place any flags tonight.\n{game_link}").format(
+                    game_link=self.game.game_link
+                )
+            )
+            return
+
+        protected_player = protected_choice[0]
+        redirectable_players = [
+            player for player in self.game.alive_players if player != protected_player
+        ]
+        if not redirectable_players:
+            await self.send(
+                _("There is nobody valid to redirect an attack to.\n{game_link}").format(
+                    game_link=self.game.game_link
+                )
+            )
+            return
+        try:
+            redirect_choice = await self.choose_users(
+                _(
+                    "Choose a different player to receive the redirected attack if"
+                    " **{protected}** is attacked tonight."
+                ).format(protected=protected_player.user),
+                list_of_users=redirectable_players,
+                amount=1,
+                required=False,
+            )
+        except asyncio.TimeoutError:
+            redirect_choice = []
+        if not redirect_choice:
+            await self.send(
+                _("You chose not to place any flags tonight.\n{game_link}").format(
+                    game_link=self.game.game_link
+                )
+            )
+            return
+
+        redirect_player = redirect_choice[0]
+        self.flagger_protect_target_id = protected_player.user.id
+        self.flagger_redirect_target_id = redirect_player.user.id
+        await self.send(
+            _(
+                "🚩 You protected **{protected}**. If they are attacked tonight, the"
+                " attack will be redirected to **{redirected}**."
+                "\n{game_link}"
+            ).format(
+                protected=protected_player.user,
+                redirected=redirect_player.user,
+                game_link=self.game.game_link,
+            )
+        )
+
+    async def check_spirit_seer_targets(self) -> None:
+        if self.dead or self.role != Role.SPIRIT_SEER:
+            return
+        if self.is_jailed or self.is_sleeping_tonight:
+            self.spirit_seer_selected_player_ids = []
+            await self.send(
+                _(
+                    "😴 You cannot read any spirits tonight because you are unable to"
+                    " act.\n{game_link}"
+                ).format(game_link=self.game.game_link)
+            )
+            return
+        await self.announce_awake()
+        available = [player for player in self.game.alive_players if player != self]
+        if not available:
+            self.spirit_seer_selected_player_ids = []
+            await self.send(
+                _("There is no valid spirit to check tonight.\n{game_link}").format(
+                    game_link=self.game.game_link
+                )
+            )
+            return
+        max_targets = min(2, len(available))
+        try:
+            chosen = await self.choose_users(
+                _(
+                    "Choose up to {max_targets} players to check. At daybreak you"
+                    " will learn whether each of them killed during the night."
+                ).format(max_targets=max_targets),
+                list_of_users=available,
+                amount=max_targets,
+                required=False,
+                prefer_multi_select=True,
+            )
+        except asyncio.TimeoutError:
+            chosen = []
+        self.spirit_seer_selected_player_ids = [player.user.id for player in chosen]
+        if not chosen:
+            await self.send(
+                _("You chose not to check any spirits tonight.\n{game_link}").format(
+                    game_link=self.game.game_link
+                )
+            )
+            return
+        checked_names = ", ".join(player.user.mention for player in chosen)
+        await self.send(
+            _(
+                "👻 You will read the spirits of {targets} at daybreak."
+                "\n{game_link}"
+            ).format(targets=checked_names, game_link=self.game.game_link)
+        )
+
     async def set_butcher_targets(self) -> None:
         await self.announce_awake()
         if self.butcher_meat_left <= 0:
@@ -10334,6 +11598,9 @@ class Player:
                                 to_kill.died_from_villagers = True
                                 to_kill.lives = 1
                             targets.append(to_kill)
+                            self.game.current_night_solo_kills.append(
+                                (self.user.id, to_kill.user.id)
+                            )
                             self.witch_poison_potion_available = False
                             await self.send(
                                 _("You've decided to poison **{poisoned}**.").format(
@@ -11375,6 +12642,63 @@ class Player:
             )
         )
 
+    async def set_corruptor_target(self) -> None:
+        if self.role != Role.CORRUPTOR or self.dead:
+            return
+        if self.is_jailed or self.is_sleeping_tonight:
+            await self.send(
+                _(
+                    "😴 You cannot glitch anyone tonight because you are unable to act."
+                    "\n{game_link}"
+                ).format(game_link=self.game.game_link)
+            )
+            return
+
+        await self.announce_awake(variant="curse")
+        available = [player for player in self.game.alive_players if player != self]
+        if not available:
+            await self.send(
+                _("There is no valid player to glitch.\n{game_link}").format(
+                    game_link=self.game.game_link
+                )
+            )
+            return
+
+        try:
+            target = await self.choose_users(
+                _(
+                    "Choose one player to glitch for tomorrow. They will be unable"
+                    " to talk, vote, or use day abilities, then they will die after"
+                    " the voting."
+                ),
+                list_of_users=available,
+                amount=1,
+                required=False,
+            )
+        except asyncio.TimeoutError:
+            await self.send(
+                _("You ran out of time and glitched nobody.\n{game_link}").format(
+                    game_link=self.game.game_link
+                )
+            )
+            return
+
+        if not target:
+            await self.send(
+                _("You chose not to glitch anyone tonight.\n{game_link}").format(
+                    game_link=self.game.game_link
+                )
+            )
+            return
+
+        target_player = target[0]
+        self.game.pending_corruptor_targets[target_player.user.id] = target_player
+        await self.send(
+            _(
+                "❓ You glitched **{target}** for tomorrow.\n{game_link}"
+            ).format(target=target_player.user, game_link=self.game.game_link)
+        )
+
     async def set_grumpy_grandma_target(self) -> None:
         if not self.game.after_first_night:
             await self.send(
@@ -11946,7 +13270,9 @@ class Player:
             return
 
         dead_villagers = [
-            player for player in self.game.dead_players if player.side == Side.VILLAGERS
+            player
+            for player in self.game.dead_players
+            if player.side == Side.VILLAGERS and player.role != Role.WEREWOLF_FAN
         ]
         if not dead_villagers:
             return
@@ -12253,6 +13579,63 @@ class Player:
             )
         )
 
+    async def activate_confusion_wolf_mask(self) -> None:
+        if self.dead or self.role != Role.CONFUSION_WOLF:
+            return
+        if self.is_jailed or self.is_sleeping_tonight:
+            await self.send(
+                _(
+                    "😴 You cannot spread confusion tonight because you are unable to"
+                    " act.\n{game_link}"
+                ).format(game_link=self.game.game_link)
+            )
+            return
+        if self.confusion_wolf_masks_left <= 0:
+            await self.send(
+                _(
+                    "🌫️ You have already used both of your confusion masks."
+                    "\n{game_link}"
+                ).format(game_link=self.game.game_link)
+            )
+            return
+        try:
+            choice = await self.game.ctx.bot.paginator.Choose(
+                entries=[_("Yes"), _("No")],
+                return_index=True,
+                title=_(
+                    "Do you want to hide the roles of all players killed tonight?"
+                    " Remaining uses: {uses}."
+                ).format(uses=self.confusion_wolf_masks_left),
+                timeout=self.game.timer,
+            ).paginate(self.game.ctx, location=self.user)
+        except (
+            self.game.ctx.bot.paginator.NoChoice,
+            discord.Forbidden,
+            discord.HTTPException,
+            asyncio.TimeoutError,
+        ):
+            choice = 1
+
+        if choice != 0:
+            await self.send(
+                _("You chose not to hide tonight's deaths.\n{game_link}").format(
+                    game_link=self.game.game_link
+                )
+            )
+            return
+
+        self.confusion_wolf_masks_left = max(0, self.confusion_wolf_masks_left - 1)
+        self.game.confusion_wolf_night_active = True
+        await self.send(
+            _(
+                "🌫️ The public will not see the roles of tonight's dead."
+                " Remaining uses: {uses}.\n{game_link}"
+            ).format(
+                uses=self.confusion_wolf_masks_left,
+                game_link=self.game.game_link,
+            )
+        )
+
     async def curse_target(self, target: Player) -> None:
         if self.is_jailed:
             return target
@@ -12285,6 +13668,30 @@ class Player:
             return target
         if action == 1:
             return target
+        if target.role == Role.WEREWOLF_FAN:
+            await self.game._send_kitten_wolf_team_notice(
+                _(
+                    "🐺 **{target}** was pulled fully into the Werewolves' ranks."
+                ).format(target=target.user)
+            )
+            if target.initial_roles[-1] != target.role:
+                target.initial_roles.append(target.role)
+            target.role = Role.WEREWOLF
+            target.cursed = False
+            self.has_cursed_wolf_father_ability = False
+            await self.send(
+                _(
+                    "You pulled **{target}** fully into the Werewolves' pack.\n"
+                ).format(target=target.user)
+            )
+            await target.send(
+                _(
+                    "You were targeted by the **{role}** and became a regular"
+                    " **Werewolf**.\n{game_link}"
+                ).format(role=self.role_name, game_link=self.game.game_link)
+            )
+            await target.send_information()
+            return
         target.cursed = True
         self.has_cursed_wolf_father_ability = False
         await self.send(
@@ -12508,9 +13915,14 @@ class Player:
                 death_reveal_role = self.wolf_trickster_disguise_role
             if death_reveal_role is None:
                 death_reveal_role = self.role
-            # Reveal role in death list
-            for p in self.game.players:
-                p.revealed_roles.update({self: death_reveal_role})
+            if self.hide_role_on_death and self.reveal_hidden_role_to_wolves:
+                for player in self.game.players:
+                    if is_wolf_team_role(player.role) and not player.dead:
+                        player.revealed_roles.update({self: death_reveal_role})
+            elif not self.hide_role_on_death:
+                # Reveal role in death list
+                for p in self.game.players:
+                    p.revealed_roles.update({self: death_reveal_role})
             await self.game.send_to_channel(
                 self.game.get_death_reveal_text(
                     player=self,
@@ -12713,7 +14125,7 @@ class Player:
                 ):
                     cursed_one.cursed = False  # set temporarily to False
                 for p in self.game.alive_players:
-                    if p.side not in [Side.WOLVES, Side.WHITE_WOLF]:
+                    if p.side not in [Side.WOLVES, Side.WHITE_WOLF] and p.role != Role.WEREWOLF_FAN:
                         if p.initial_roles[-1] != p.role:
                             p.initial_roles.append(p.role)
                         if p.role != Role.VILLAGER:
@@ -12783,11 +14195,17 @@ class Player:
             return Side.VILLAGERS
         if self.role == Role.AURA_SEER:
             return Side.VILLAGERS
+        if self.role == Role.SPIRIT_SEER:
+            return Side.VILLAGERS
         if self.role == Role.ANALYST:
+            return Side.VILLAGERS
+        if self.role in (Role.GUNNER, Role.VIGILANTE):
             return Side.VILLAGERS
         if self.role == Role.GAMBLER:
             return Side.VILLAGERS
         if self.role == Role.BODYGUARD:
+            return Side.VILLAGERS
+        if self.role in (Role.BEAST_HUNTER, Role.FLAGGER):
             return Side.VILLAGERS
         if self.role == Role.SHERIFF:
             return Side.VILLAGERS
@@ -12825,6 +14243,8 @@ class Player:
             return Side.VILLAGERS
         if self.role == Role.GRAVE_ROBBER:
             return Side.VILLAGERS
+        if self.role == Role.WEREWOLF_FAN:
+            return Side.VILLAGERS
         if self.role == Role.FORGER:
             return Side.VILLAGERS
         if self.role == Role.HEAD_HUNTER:
@@ -12833,6 +14253,8 @@ class Player:
             return Side.SERIAL_KILLER
         if self.role == Role.CANNIBAL:
             return Side.CANNIBAL
+        if self.role == Role.CORRUPTOR:
+            return Side.CORRUPTOR
         if 6 <= self.role.value <= 26:
             return Side.VILLAGERS
         else:
@@ -12878,6 +14300,31 @@ class Player:
             ):
                 self.game.winning_side = self.role_name
                 return True
+        elif self.role == Role.WEREWOLF_FAN:
+            if self.game.winning_side == "Werewolves":
+                return True
+            alive_players = self.game.alive_players
+            wolf_count = sum(
+                1
+                for player in alive_players
+                if player.side in (Side.WOLVES, Side.WHITE_WOLF)
+            )
+            villager_count = sum(
+                1
+                for player in alive_players
+                if player.side in (Side.VILLAGERS, Side.JESTER, Side.HEAD_HUNTER)
+            )
+            if (
+                wolf_count >= villager_count
+                and wolf_count > 0
+                and not any(
+                    player.side in (Side.SERIAL_KILLER, Side.CANNIBAL, Side.CORRUPTOR)
+                    for player in alive_players
+                )
+                and self.game.winning_side != "Flutist"
+            ):
+                self.game.winning_side = "Werewolves"
+                return True
         elif self.side == Side.VILLAGERS:
             if (
                     not any(
@@ -12887,6 +14334,7 @@ class Player:
                                 Side.WHITE_WOLF,
                                 Side.SERIAL_KILLER,
                                 Side.CANNIBAL,
+                                Side.CORRUPTOR,
                             )
                             for player in self.game.alive_players
                         ]
@@ -12907,6 +14355,10 @@ class Player:
             if len(self.game.alive_players) == 1 and not self.dead:
                 self.game.winning_side = "Cannibal"
                 return True
+        elif self.side == Side.CORRUPTOR:
+            if len(self.game.alive_players) == 1 and not self.dead:
+                self.game.winning_side = "Corruptor"
+                return True
         elif self.side == Side.WOLVES:
             alive_players = self.game.alive_players
             wolf_count = sum(
@@ -12923,7 +14375,7 @@ class Player:
             if (
                 wolf_count >= villager_count
                 and not any(
-                    player.side in (Side.SERIAL_KILLER, Side.CANNIBAL)
+                    player.side in (Side.SERIAL_KILLER, Side.CANNIBAL, Side.CORRUPTOR)
                     for player in alive_players
                 )
                 and self.game.winning_side != "Flutist"
@@ -12976,9 +14428,10 @@ def get_roles(number_of_players: int, mode: str = None) -> list[Role]:
     requested_players = number_of_players
     number_of_players += 2  # Thief is in play
     roles_to_give = ROLES_FOR_PLAYERS.copy()
-    if mode == "Imbalanced":
+    normalized_mode = _normalize_mode_token(mode)
+    if normalized_mode == "imbalanced":
         roles_to_give = random.shuffle(roles_to_give)
-    if mode == "IdleRPG":
+    if normalized_mode == "idlerpg":
         roles_to_give.extend(
             [
                 Role.PARAGON,
@@ -13083,6 +14536,11 @@ def get_roles(number_of_players: int, mode: str = None) -> list[Role]:
         if role == Role.THIEF and random.randint(1, 100) <= 90:
             available_roles[idx] = Role.LOUDMOUTH
     roles = available_roles + extra_roles
+    if normalized_mode == "extended":
+        roles = _apply_extended_mode_roles(
+            roles,
+            requested_players=requested_players,
+        )
     roles = _replace_unlock_only_advanced_roles_with_base(roles)
     roles = cap_special_werewolves(roles, requested_players=requested_players)
     roles = enforce_wolf_ratio(roles, requested_players=requested_players, mode=mode)
@@ -13318,6 +14776,149 @@ def force_role(roles: list[Role], role_to_force: Role) -> Role | None:
             # Or just force it manually
             available_roles[idx] = role_to_force
     return random.shuffle(available_roles) + random.shuffle(extra_roles)
+
+
+def _replace_available_role(
+    roles: list[Role],
+    *,
+    replacement_role: Role,
+    candidate_roles: tuple[Role, ...],
+    fallback_predicate=None,
+) -> list[Role]:
+    available_roles = roles[:-2]
+    extra_roles = roles[-2:]
+    if replacement_role in available_roles:
+        return roles
+
+    replace_idx = next(
+        (
+            idx
+            for idx, role in enumerate(available_roles)
+            if role in candidate_roles and role != replacement_role
+        ),
+        None,
+    )
+    if replace_idx is None and fallback_predicate is not None:
+        replace_idx = next(
+            (
+                idx
+                for idx, role in enumerate(available_roles)
+                if role != replacement_role and fallback_predicate(role)
+            ),
+            None,
+        )
+    if replace_idx is None:
+        return roles
+
+    extra_idx = next(
+        (idx for idx, role in enumerate(extra_roles) if role == replacement_role),
+        None,
+    )
+    if extra_idx is not None:
+        available_roles[replace_idx], extra_roles[extra_idx] = (
+            extra_roles[extra_idx],
+            available_roles[replace_idx],
+        )
+    else:
+        available_roles[replace_idx] = replacement_role
+    return available_roles + extra_roles
+
+
+def _apply_extended_mode_roles(
+    roles: list[Role], *, requested_players: int
+) -> list[Role]:
+    extended_roles = roles.copy()
+    if requested_players >= 8:
+        extended_roles = _replace_available_role(
+            extended_roles,
+            replacement_role=Role.BEAST_HUNTER,
+            candidate_roles=(
+                Role.VILLAGER,
+                Role.CURSED,
+                Role.LOUDMOUTH,
+                Role.FLOWER_CHILD,
+                Role.SHERIFF,
+                Role.MEDIUM,
+                Role.PRIEST,
+                Role.BODYGUARD,
+                Role.DOCTOR,
+                Role.WITCH,
+            ),
+            fallback_predicate=lambda role: (
+                is_villager_team_role(role)
+                and role not in {Role.SEER, Role.AURA_SEER, Role.DETECTIVE}
+            ),
+        )
+    if requested_players >= 9:
+        extended_roles = _replace_available_role(
+            extended_roles,
+            replacement_role=Role.SPIRIT_SEER,
+            candidate_roles=(
+                Role.VILLAGER,
+                Role.CURSED,
+                Role.LOUDMOUTH,
+                Role.FLOWER_CHILD,
+                Role.SHERIFF,
+                Role.MEDIUM,
+                Role.PRIEST,
+                Role.BODYGUARD,
+                Role.DOCTOR,
+                Role.WITCH,
+            ),
+            fallback_predicate=lambda role: (
+                is_villager_team_role(role)
+                and role != Role.BEAST_HUNTER
+            ),
+        )
+        extended_roles = _replace_available_role(
+            extended_roles,
+            replacement_role=Role.SHADOW_WOLF,
+            candidate_roles=(
+                Role.WEREWOLF,
+                Role.JUNIOR_WEREWOLF,
+                Role.WOLF_SEER,
+            ),
+            fallback_predicate=lambda role: (
+                is_wolf_team_role(role)
+                and role not in {Role.WHITE_WOLF, Role.BIG_BAD_WOLF}
+            ),
+        )
+    if requested_players >= 10:
+        extended_roles = _replace_available_role(
+            extended_roles,
+            replacement_role=Role.GUNNER,
+            candidate_roles=(
+                Role.VILLAGER,
+                Role.CURSED,
+                Role.LOUDMOUTH,
+                Role.FLOWER_CHILD,
+                Role.SHERIFF,
+                Role.MEDIUM,
+                Role.PRIEST,
+            ),
+            fallback_predicate=lambda role: (
+                is_villager_team_role(role)
+                and role
+                not in {
+                    Role.SEER,
+                    Role.AURA_SEER,
+                    Role.DETECTIVE,
+                    Role.SPIRIT_SEER,
+                    Role.BEAST_HUNTER,
+                }
+            ),
+        )
+    if requested_players >= 11:
+        extended_roles = _replace_available_role(
+            extended_roles,
+            replacement_role=Role.CORRUPTOR,
+            candidate_roles=(
+                Role.JESTER,
+                Role.HEAD_HUNTER,
+            ),
+            fallback_predicate=lambda role: role in {Role.WHITE_WOLF},
+        )
+    return extended_roles
 
 
 if __name__ == "__main__":

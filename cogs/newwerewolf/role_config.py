@@ -13,12 +13,15 @@ How to use:
 
 Valid mode tokens:
 - classic
+- extended
 - imbalanced
 - huntergame
 - villagergame
 - avengergame
 - valentines
 - idlerpg
+- teams
+- mixedroles
 - custom
 
 Role tokens are case-insensitive and punctuation-insensitive.
@@ -75,6 +78,19 @@ CLASSIC_EXCLUDED_ROLES: set[str] = {
 ROLE_MODE_ALLOWLIST: dict[str, set[str]] = {
     role: set(NON_CLASSIC_MODES) for role in CLASSIC_EXCLUDED_ROLES
 }
+ROLE_MODE_ALLOWLIST.update(
+    {
+        "beast_hunter": {"extended", "custom"},
+        "corruptor": {"extended", "custom"},
+        "confusion_wolf": {"extended", "custom"},
+        "flagger": {"extended", "custom"},
+        "gunner": {"extended", "custom"},
+        "shadow_wolf": {"extended", "custom"},
+        "spirit_seer": {"extended", "custom"},
+        "vigilante": {"extended", "custom"},
+        "werewolf_fan": {"extended", "custom"},
+    }
+)
 
 # Base-role -> unlock tiers mapping for role progression.
 # Example:
@@ -92,12 +108,14 @@ ADVANCED_ROLE_TIERS: dict[str, dict[int, str]] = {
     "detective": {5: "mortician"},
     "bodyguard": {5: "seer_apprentice", 10: "tough_guy"},
     "guardian_wolf": {5: "wolf_pacifist"},
-    "wolf_shaman": {5: "wolf_trickster"},
+    "wolf_shaman": {5: "wolf_trickster", 10: "confusion_wolf"},
     "wolf_seer": {5: "sorcerer"},
     "red_lady": {5: "ghost_lady"},
-    "cursed": {5: "grave_robber"},
+    "cursed": {5: "grave_robber", 10: "werewolf_fan"},
     "loudmouth": {5: "fortune_teller"},
     "aura_seer": {5: "gambler"},
+    "beast_hunter": {5: "flagger"},
+    "gunner": {5: "vigilante"},
     "seer": {5: "analyst"},
     "junior_werewolf": {5: "kitten_wolf"},
     "grumpy_grandma": {5: "preacher"},
