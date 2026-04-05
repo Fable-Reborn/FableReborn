@@ -639,6 +639,129 @@ class EndgameIdsView(discord.ui.View):
         )
 
 
+def _display_vote_name(user: discord.abc.User) -> str:
+    display_name = getattr(user, "display_name", str(user))
+    return discord.utils.escape_markdown(str(display_name))
+
+
+class WerewolfElectionSelect(discord.ui.Select):
+    def __init__(self, election_view: WerewolfElectionView) -> None:
+        options = [
+            discord.SelectOption(
+                label=_display_vote_name(user)[:100],
+                value=str(user.id),
+            )
+            for user in election_view.nominated_users
+        ]
+        super().__init__(
+            placeholder=_("Choose who to lynch"),
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await self.view.handle_vote(interaction, int(self.values[0]))
+
+
+class WerewolfElectionView(discord.ui.View):
+    def __init__(
+            self,
+            game: Game,
+            eligible_player_by_user_id: dict[int, Player],
+            nominated_users: list[discord.Member],
+            timeout: float,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.game = game
+        self.eligible_player_by_user_id = eligible_player_by_user_id
+        self.nominated_users = nominated_users
+        self.nominated_by_id = {user.id: user for user in nominated_users}
+        self.vote_totals = {user.id: 0 for user in nominated_users}
+        self.votes_by_user_id: dict[int, int] = {}
+        self.message: discord.Message | None = None
+        self.vote_lock = asyncio.Lock()
+        self.add_item(WerewolfElectionSelect(self))
+
+    def render_message(self) -> str:
+        lines = [
+            _(
+                "**Use the dropdown to vote for killing someone. You have {timer}"
+                " seconds.**"
+            ).format(timer=int(self.timeout or 0))
+        ]
+        for user in self.nominated_users:
+            lines.append(
+                _("**{player}** ({votes} votes)").format(
+                    player=_display_vote_name(user),
+                    votes=self.vote_totals[user.id],
+                )
+            )
+        return "\n".join(lines)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id in self.eligible_player_by_user_id:
+            return True
+        await interaction.response.send_message(
+            _("You're not part of this werewolf vote."),
+            ephemeral=True,
+        )
+        return False
+
+    async def handle_vote(
+            self, interaction: discord.Interaction, nominated_user_id: int
+    ) -> None:
+        async with self.vote_lock:
+            voter = self.eligible_player_by_user_id.get(interaction.user.id)
+            target = self.nominated_by_id.get(nominated_user_id)
+            if voter is None or target is None:
+                await interaction.response.send_message(
+                    _("That vote is no longer valid."),
+                    ephemeral=True,
+                )
+                return
+
+            vote_weight = 2 if voter.is_sheriff else 1
+            previous_target_id = self.votes_by_user_id.get(interaction.user.id)
+            if previous_target_id == nominated_user_id:
+                await interaction.response.send_message(
+                    _("You're already voting for **{target}**.").format(
+                        target=_display_vote_name(target)
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            if previous_target_id is not None:
+                self.vote_totals[previous_target_id] = max(
+                    0, self.vote_totals[previous_target_id] - vote_weight
+                )
+
+            self.votes_by_user_id[interaction.user.id] = nominated_user_id
+            self.vote_totals[nominated_user_id] += vote_weight
+
+            await interaction.response.edit_message(
+                content=self.render_message(),
+                view=self,
+            )
+
+            await self.game.ctx.send(
+                _("**{voter}** voted for **{target}**.").format(
+                    voter=_display_vote_name(interaction.user),
+                    target=_display_vote_name(target),
+                )
+            )
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(content=self.render_message(), view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+
 class Game:
     def __init__(
             self,
@@ -2490,17 +2613,14 @@ class Game:
     async def election(self) -> discord.Member | None:
         paginator = commands.Paginator(prefix="", suffix="")
         players = ""
-        eligible_players_lines = []
         election_players = [player for player in self.alive_players if not player.is_jailed]
         for player in election_players:
             if len(players + player.user.mention + " ") > 1900:
                 paginator.add_line(players)
-                eligible_players_lines.append(players)
                 players = ""
             players += player.user.mention + " "
             if player == election_players[-1]:
                 paginator.add_line(players[:-1])
-                eligible_players_lines.append(players[:-1])
         paginator.add_line(
             _(
                 "You may now submit someone (up to 10 total) for the election who to"
@@ -2514,7 +2634,6 @@ class Game:
         nominated = []
         second_election = False
         eligible_players = [player.user for player in election_players]
-        eligible_player_by_user = {player.user: player for player in election_players}
         if not eligible_players:
             return None, second_election
         try:
@@ -2704,57 +2823,39 @@ class Game:
             return None, second_election
         if len(nominated) == 1:
             return nominated[0], second_election
-        emojis = ([f"{index + 1}\u20e3" for index in range(9)] + ["\U0001f51f"])[
-                 : len(nominated)
-                 ]
-        texts = "\n".join(
-            [f"{emoji} - {user.mention}" for emoji, user in zip(emojis, nominated)]
+        vote_view = WerewolfElectionView(
+            game=self,
+            eligible_player_by_user_id={
+                player.user.id: player for player in election_players
+            },
+            nominated_users=nominated,
+            timeout=self.timer,
         )
-        paginator.clear()
-        for line in eligible_players_lines:
-            paginator.add_line(line)
-        paginator.add_line(
-            _(
-                "**React to vote for killing someone. You have {timer} seconds"
-                ".**\n{texts}"
-            ).format(timer=self.timer, texts=texts)
+        vote_view.message = await self.ctx.send(
+            vote_view.render_message(),
+            view=vote_view,
         )
-        for page in paginator.pages:
-            msg = await self.ctx.send(page)
-        for emoji in emojis:
-            await msg.add_reaction(emoji)
-        # Check for nuisance voters twice, first at half of action timer, and lastly just before counting votes
-        await self.check_nuisances(msg, eligible_players, emojis, repeat=2)
-        msg = await self.ctx.channel.fetch_message(msg.id)
-        nominated = {u: 0 for u in nominated}
-        mapping = {emoji: user for emoji, user in zip(emojis, nominated)}
-        voters = []
-        for reaction in msg.reactions:
-            if str(reaction.emoji) in emojis:
-                nominated[mapping[str(reaction.emoji)]] = sum(
-                    [
-                        2
-                        if eligible_player_by_user[user].is_sheriff
-                        else 1
-                        async for user in reaction.users()
-                        if user in eligible_players
-                    ]
-                )
-                voters += [
-                    user
-                    async for user in reaction.users()
-                    if user in eligible_players and user not in voters
-                ]
-        failed_voters = set(eligible_players) - set(voters)
+        await vote_view.wait()
+        failed_voters = {
+            user.id for user in eligible_players
+            if user.id not in vote_view.votes_by_user_id
+        }
         for player in self.alive_players:
-            if player.user in failed_voters:
+            if player.user.id in failed_voters:
                 player.to_check_afk = True
-        new_mapping = sorted(list(mapping.values()), key=lambda x: -nominated[x])
+        nominated_vote_totals = {
+            user: vote_view.vote_totals[user.id] for user in vote_view.nominated_users
+        }
+        new_mapping = sorted(
+            vote_view.nominated_users,
+            key=lambda user: -nominated_vote_totals[user],
+        )
         return (
             (
                 new_mapping[0]
                 if len(new_mapping) == 1
-                   or nominated[new_mapping[0]] > nominated[new_mapping[1]]
+                   or nominated_vote_totals[new_mapping[0]]
+                   > nominated_vote_totals[new_mapping[1]]
                 else None
             ),
             second_election,
