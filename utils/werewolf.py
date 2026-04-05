@@ -745,12 +745,20 @@ class WerewolfElectionView(discord.ui.View):
                 view=self,
             )
 
-            await self.game.ctx.send(
-                _("**{voter}** voted for **{target}**.").format(
+            if previous_target_id is None:
+                announcement = _("**{voter}** voted for **{target}**.").format(
                     voter=_display_vote_name(interaction.user),
                     target=_display_vote_name(target),
                 )
-            )
+            else:
+                announcement = _(
+                    "**{voter}** changed their vote to **{target}**."
+                ).format(
+                    voter=_display_vote_name(interaction.user),
+                    target=_display_vote_name(target),
+                )
+
+            await self.game.ctx.send(announcement)
 
     async def on_timeout(self) -> None:
         for child in self.children:
