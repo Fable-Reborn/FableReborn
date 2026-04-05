@@ -18,6 +18,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 
+import random as _stdlib_random
 import secrets
 
 from collections.abc import Sequence, Set
@@ -58,3 +59,11 @@ def randint(a, b):
     """Return random integer in range [a, b], including both end points."""
     a, b = int(a), int(b)
     return secrets.randbelow(b - a + 1) + a
+
+
+def __getattr__(name):
+    """Fallback to the standard library random module for missing APIs."""
+    try:
+        return getattr(_stdlib_random, name)
+    except AttributeError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
