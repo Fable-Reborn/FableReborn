@@ -2042,15 +2042,25 @@ def _display_vote_name(user: discord.abc.User) -> str:
     return discord.utils.escape_markdown(str(display_name))
 
 
+DAY_ELECTION_REDACT_VALUE = "__redact_vote__"
+
+
 class DayElectionSelect(discord.ui.Select):
     def __init__(self, election_view: DayElectionView) -> None:
         options = [
+            discord.SelectOption(
+                label=_("Redact vote"),
+                value=DAY_ELECTION_REDACT_VALUE,
+                description=_("Remove your current vote."),
+            )
+        ]
+        options.extend(
             discord.SelectOption(
                 label=_display_vote_name(user)[:100],
                 value=str(user.id),
             )
             for user in election_view.nominated_users
-        ]
+        )
         super().__init__(
             placeholder=_("Choose who to lynch"),
             min_values=1,
@@ -2059,7 +2069,7 @@ class DayElectionSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        await self.view.handle_vote(interaction, int(self.values[0]))
+        await self.view.handle_vote(interaction, self.values[0])
 
 
 class DayElectionView(discord.ui.View):
@@ -2070,7 +2080,7 @@ class DayElectionView(discord.ui.View):
             nominated_users: list[discord.Member],
             timeout: float,
     ) -> None:
-        super().__init__(timeout=timeout)
+        super().__init__(timeout=None)
         self.game = game
         self.eligible_player_by_user_id = eligible_player_by_user_id
         self.nominated_users = nominated_users
@@ -2079,6 +2089,9 @@ class DayElectionView(discord.ui.View):
         self.votes_by_user_id: dict[int, int] = {}
         self.message: discord.Message | None = None
         self.vote_lock = asyncio.Lock()
+        self.vote_duration = int(timeout)
+        self._closed = False
+        self._close_task = asyncio.create_task(self._close_after_timeout(timeout))
         alive_role = self.game._get_ww_alive_role()
         self.role_ping = alive_role.mention if alive_role is not None else ""
         self.add_item(DayElectionSelect(self))
@@ -2091,7 +2104,7 @@ class DayElectionView(discord.ui.View):
             _(
                 "**Use the dropdown to vote for killing someone. You have {timer}"
                 " seconds.**"
-            ).format(timer=int(self.timeout or 0))
+            ).format(timer=self.vote_duration)
         ])
         for user in self.nominated_users:
             lines.append(
@@ -2113,18 +2126,48 @@ class DayElectionView(discord.ui.View):
         return False
 
     async def handle_vote(
-            self, interaction: discord.Interaction, nominated_user_id: int
+            self, interaction: discord.Interaction, selected_value: str
     ) -> None:
         async with self.vote_lock:
             voter = self.eligible_player_by_user_id.get(interaction.user.id)
-            target = self.nominated_by_id.get(nominated_user_id)
-            if voter is None or target is None:
+            if voter is None:
                 if not interaction.response.is_done():
                     await interaction.response.defer()
                 return
 
             vote_weight = self.game._day_vote_weight(voter)
             previous_target_id = self.votes_by_user_id.get(interaction.user.id)
+            if selected_value == DAY_ELECTION_REDACT_VALUE:
+                if previous_target_id is None:
+                    await interaction.response.send_message(
+                        _("You do not have a vote to redact."),
+                        ephemeral=True,
+                    )
+                    return
+
+                self.vote_totals[previous_target_id] = max(
+                    0, self.vote_totals[previous_target_id] - vote_weight
+                )
+                self.votes_by_user_id.pop(interaction.user.id, None)
+
+                await interaction.response.edit_message(
+                    content=self.build_message(),
+                    view=self,
+                )
+                await self.game.send_to_channel(
+                    _("**{voter}** redacted their vote.").format(
+                        voter=_display_vote_name(interaction.user),
+                    )
+                )
+                return
+
+            nominated_user_id = int(selected_value)
+            target = self.nominated_by_id.get(nominated_user_id)
+            if target is None:
+                if not interaction.response.is_done():
+                    await interaction.response.defer()
+                return
+
             if previous_target_id == nominated_user_id:
                 await interaction.response.send_message(
                     _("You're already voting for **{target}**.").format(
@@ -2161,16 +2204,23 @@ class DayElectionView(discord.ui.View):
                 )
             await self.game.send_to_channel(announcement)
 
-    async def on_timeout(self) -> None:
+    async def _close_after_timeout(self, timeout: float) -> None:
+        await asyncio.sleep(timeout)
+        await self.close()
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         for child in self.children:
             child.disabled = True
-        if self.message is None:
-            return
-        await self.game.edit_message(
-            self.message,
-            content=self.build_message(),
-            view=self,
-        )
+        if self.message is not None:
+            await self.game.edit_message(
+                self.message,
+                content=self.build_message(),
+                view=self,
+            )
+        self.stop()
 
 
 class AfkCheckView(discord.ui.View):
