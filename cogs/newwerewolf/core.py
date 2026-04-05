@@ -4857,6 +4857,7 @@ class Game:
         )
         for target in to_kill:
             target.hide_role_on_death = True
+            target.hide_death_in_public_roster = True
             target.non_villager_killer_group = NIGHT_KILLER_GROUP_SOLO
             await target.kill()
 
