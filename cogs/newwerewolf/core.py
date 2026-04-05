@@ -2225,7 +2225,13 @@ class DayElectionView(discord.ui.View):
         return "\n".join(lines)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id in self.eligible_player_by_user_id:
+        current_player = self.game.get_alive_player_by_user_id(interaction.user.id)
+        if (
+            interaction.user.id in self.eligible_player_by_user_id
+            and current_player is not None
+            and not current_player.is_jailed
+            and not current_player.is_grumpy_silenced_today
+        ):
             return True
         if not interaction.response.is_done():
             try:
@@ -2239,12 +2245,18 @@ class DayElectionView(discord.ui.View):
     ) -> None:
         async with self.vote_lock:
             voter = self.eligible_player_by_user_id.get(interaction.user.id)
-            if voter is None:
+            current_voter = self.game.get_alive_player_by_user_id(interaction.user.id)
+            if (
+                voter is None
+                or current_voter is None
+                or current_voter.is_jailed
+                or current_voter.is_grumpy_silenced_today
+            ):
                 if not interaction.response.is_done():
                     await interaction.response.defer()
                 return
 
-            vote_weight = self.game._day_vote_weight(voter)
+            vote_weight = self.game._day_vote_weight(current_voter)
             previous_target_id = self.votes_by_user_id.get(interaction.user.id)
             if selected_value == DAY_ELECTION_REDACT_VALUE:
                 if previous_target_id is None:
@@ -2274,9 +2286,15 @@ class DayElectionView(discord.ui.View):
 
             nominated_user_id = int(selected_value)
             target = self.nominated_by_id.get(nominated_user_id)
-            if target is None:
+            current_target = self.game.get_alive_player_by_user_id(nominated_user_id)
+            if target is None or current_target is None:
+                if previous_target_id == nominated_user_id:
+                    self.votes_by_user_id.pop(interaction.user.id, None)
                 if not interaction.response.is_done():
-                    await interaction.response.defer()
+                    await interaction.response.send_message(
+                        _("That player is no longer alive."),
+                        ephemeral=True,
+                    )
                 return
 
             if previous_target_id == nominated_user_id:
@@ -2626,6 +2644,8 @@ class Game:
         self.avenger_mark_tasks: dict[int, asyncio.Task] = {}
         self.mayor_reveal_tasks: dict[int, asyncio.Task] = {}
         self.werewolf_fan_reveal_tasks: dict[int, asyncio.Task] = {}
+        self.gunner_day_action_tasks: dict[int, asyncio.Task] = {}
+        self.beast_hunter_day_trap_tasks: dict[int, asyncio.Task] = {}
         self.forger_day_tasks: dict[int, asyncio.Task] = {}
         self.forged_sword_day_tasks: dict[int, asyncio.Task] = {}
         self.fortune_card_reveal_views: dict[int, FortuneCardRevealView] = {}
@@ -6207,6 +6227,69 @@ class Game:
             task.cancel()
         self.werewolf_fan_reveal_tasks.clear()
 
+    async def _collect_beast_hunter_day_trap(self, hunter: Player) -> None:
+        await hunter.send(
+            _(
+                "🪤 As **Beast Hunter**, you can place or move your trap at any"
+                " point during the day.\n{game_link}"
+            ).format(game_link=self.game_link)
+        )
+        prompt_timeout = 3600
+        while (
+            not hunter.dead
+            and hunter in self.alive_players
+            and hunter.role == Role.BEAST_HUNTER
+        ):
+            if self.is_night_phase:
+                await asyncio.sleep(3)
+                continue
+            if hunter.is_jailed or hunter.is_grumpy_silenced_today:
+                await asyncio.sleep(5)
+                continue
+
+            try:
+                await hunter.set_beast_hunter_trap(timeout=prompt_timeout)
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                schedule_traceback(self.ctx, e)
+                return
+            await asyncio.sleep(5)
+
+    async def start_beast_hunter_day_trap_selection(self) -> None:
+        hunters = [
+            player
+            for player in self.alive_players
+            if player.role == Role.BEAST_HUNTER and not player.is_grumpy_silenced_today
+        ]
+        active_ids = {player.user.id for player in hunters}
+
+        for player_id, task in list(self.beast_hunter_day_trap_tasks.items()):
+            if task.done() or player_id not in active_ids:
+                task.cancel()
+                self.beast_hunter_day_trap_tasks.pop(player_id, None)
+
+        for hunter in hunters:
+            existing = self.beast_hunter_day_trap_tasks.get(hunter.user.id)
+            if existing and not existing.done():
+                continue
+            self.beast_hunter_day_trap_tasks[hunter.user.id] = asyncio.create_task(
+                self._collect_beast_hunter_day_trap(hunter)
+            )
+
+    async def stop_beast_hunter_day_trap_selection(
+        self, hunter: Player | None = None
+    ) -> None:
+        if hunter is not None:
+            task = self.beast_hunter_day_trap_tasks.pop(hunter.user.id, None)
+            if task:
+                task.cancel()
+            return
+
+        for task in self.beast_hunter_day_trap_tasks.values():
+            task.cancel()
+        self.beast_hunter_day_trap_tasks.clear()
+
     async def stop_mayor_reveal_selection(
         self, mayor: Player | None = None
     ) -> None:
@@ -7012,12 +7095,80 @@ class Game:
                 )
                 await priest.kill()
 
-    async def handle_gunner_day_action(self) -> None:
-        gunners = [
-            gunner
-            for gunner in self.alive_players
-            if gunner.role in (Role.GUNNER, Role.VIGILANTE)
-            and not gunner.is_grumpy_silenced_today
+    async def _resolve_gunner_day_action(
+        self,
+        gunner: Player,
+        *,
+        target: Player,
+        used_reveal: bool,
+    ) -> None:
+        gunner.gunner_last_action_day = self.night_no
+        if not gunner.gunner_has_publicly_revealed:
+            gunner.gunner_has_publicly_revealed = True
+            for player in self.players:
+                player.revealed_roles.update({gunner: gunner.role})
+            await self.send_to_channel(
+                _(
+                    "📣 **{gunner}** revealed as **{role}** and acted!"
+                ).format(
+                    gunner=gunner.user.mention,
+                    role=gunner.role_name,
+                )
+            )
+        elif not used_reveal:
+            await self.send_to_channel(
+                _("🔫 **{gunner}** fired at **{target}**!").format(
+                    gunner=gunner.user.mention,
+                    target=target.user.mention,
+                )
+            )
+
+        if used_reveal:
+            revealed_role = self.get_observed_role(target, observer=gunner)
+            gunner.revealed_roles.update({target: revealed_role})
+            gunner.vigilante_reveal_available = False
+            await gunner.send(
+                _(
+                    "🔎 You privately revealed **{target}** as **{role}**."
+                    "\n{game_link}"
+                ).format(
+                    target=target.user,
+                    role=self.get_role_name(revealed_role),
+                    game_link=self.game_link,
+                )
+            )
+            return
+
+        gunner.gunner_bullets = max(0, gunner.gunner_bullets - 1)
+        if gunner.role == Role.VIGILANTE:
+            gunner.vigilante_shot_available = False
+        if target.role == Role.THE_OLD:
+            target.died_from_villagers = True
+            target.lives = 1
+        await target.kill()
+        await gunner.send(
+            _(
+                "You shot **{target}**. Remaining bullets: {bullets}."
+                "\n{game_link}"
+            ).format(
+                target=target.user,
+                bullets=gunner.gunner_bullets,
+                game_link=self.game_link,
+            )
+        )
+
+    async def _collect_gunner_day_action(self, gunner: Player) -> None:
+        await gunner.send(
+            _(
+                "🔫 As **{role}**, you can act at any point during the day."
+                "\n{game_link}"
+            ).format(role=gunner.role_name, game_link=self.game_link)
+        )
+        prompt_timeout = 3600
+        while (
+            not gunner.dead
+            and gunner in self.alive_players
+            and gunner.role in (Role.GUNNER, Role.VIGILANTE)
             and (
                 gunner.gunner_bullets > 0
                 or (
@@ -7025,20 +7176,15 @@ class Game:
                     and gunner.vigilante_reveal_available
                 )
             )
-        ]
-        if not gunners:
-            return
-
-        for gunner in gunners:
-            if gunner.dead or gunner.is_grumpy_silenced_today:
+        ):
+            if self.is_night_phase:
+                await asyncio.sleep(3)
                 continue
-            if self.night_no <= 1:
-                await gunner.send(
-                    _(
-                        "🔫 You cannot act during the first day's discussion."
-                        "\n{game_link}"
-                    ).format(game_link=self.game_link)
-                )
+            if gunner.is_jailed or gunner.is_grumpy_silenced_today:
+                await asyncio.sleep(5)
+                continue
+            if gunner.gunner_last_action_day == self.night_no:
+                await asyncio.sleep(5)
                 continue
 
             possible_targets = [
@@ -7047,11 +7193,9 @@ class Game:
                 if player != gunner and player not in gunner.own_lovers
             ]
             if not possible_targets:
+                await asyncio.sleep(5)
                 continue
 
-            await self.send_to_channel(
-                _("**The {role} may act.**").format(role=gunner.role_name)
-            )
             target = None
             used_reveal = False
             if gunner.role == Role.VIGILANTE:
@@ -7070,7 +7214,7 @@ class Game:
                         entries=entries,
                         return_index=True,
                         title=_("Choose your Vigilante action for today."),
-                        timeout=max(10, min(20, int(self.timer / 2))),
+                        timeout=prompt_timeout,
                     ).paginate(self.ctx, location=gunner.user)
                 except (
                     self.ctx.bot.paginator.NoChoice,
@@ -7078,14 +7222,11 @@ class Game:
                     discord.HTTPException,
                     asyncio.TimeoutError,
                 ):
-                    action_index = len(actions) - 1
+                    await asyncio.sleep(5)
+                    continue
                 selected_action = actions[action_index]
                 if selected_action == "skip":
-                    await gunner.send(
-                        _("You chose not to act today.\n{game_link}").format(
-                            game_link=self.game_link
-                        )
-                    )
+                    await asyncio.sleep(5)
                     continue
                 prompt = (
                     _("Choose one player whose role you want to reveal privately.")
@@ -7101,15 +7242,15 @@ class Game:
                         list_of_users=possible_targets,
                         amount=1,
                         required=False,
+                        timeout=prompt_timeout,
                     )
-                except asyncio.TimeoutError:
-                    chosen_target = []
+                except asyncio.CancelledError:
+                    return
+                except Exception as e:
+                    schedule_traceback(self.ctx, e)
+                    return
                 if not chosen_target:
-                    await gunner.send(
-                        _("You chose not to act today.\n{game_link}").format(
-                            game_link=self.game_link
-                        )
-                    )
+                    await asyncio.sleep(5)
                     continue
                 target = chosen_target[0]
                 used_reveal = selected_action == "reveal"
@@ -7123,71 +7264,82 @@ class Game:
                         list_of_users=possible_targets,
                         amount=1,
                         required=False,
+                        timeout=prompt_timeout,
                     )
-                except asyncio.TimeoutError:
-                    chosen_target = []
+                except asyncio.CancelledError:
+                    return
+                except Exception as e:
+                    schedule_traceback(self.ctx, e)
+                    return
                 if not chosen_target:
-                    await gunner.send(
-                        _("You chose not to shoot today.\n{game_link}").format(
-                            game_link=self.game_link
-                        )
-                    )
+                    await asyncio.sleep(5)
                     continue
                 target = chosen_target[0]
 
-            if not gunner.gunner_has_publicly_revealed:
-                gunner.gunner_has_publicly_revealed = True
-                for player in self.players:
-                    player.revealed_roles.update({gunner: gunner.role})
-                await self.send_to_channel(
-                    _(
-                        "📣 **{gunner}** revealed as **{role}** and acted!"
-                    ).format(
-                        gunner=gunner.user.mention,
-                        role=gunner.role_name,
-                    )
-                )
-            elif not used_reveal:
-                await self.send_to_channel(
-                    _("🔫 **{gunner}** fired at **{target}**!").format(
-                        gunner=gunner.user.mention,
-                        target=target.user.mention,
-                    )
-                )
-
-            if used_reveal:
-                revealed_role = self.get_observed_role(target, observer=gunner)
-                gunner.revealed_roles.update({target: revealed_role})
-                gunner.vigilante_reveal_available = False
+            if (
+                gunner.dead
+                or gunner not in self.alive_players
+                or gunner.role not in (Role.GUNNER, Role.VIGILANTE)
+                or gunner.gunner_last_action_day == self.night_no
+            ):
+                return
+            if target.dead or target not in self.alive_players:
                 await gunner.send(
-                    _(
-                        "🔎 You privately revealed **{target}** as **{role}**."
-                        "\n{game_link}"
-                    ).format(
-                        target=target.user,
-                        role=self.get_role_name(revealed_role),
-                        game_link=self.game_link,
+                    _("That player is no longer alive.\n{game_link}").format(
+                        game_link=self.game_link
                     )
                 )
+                await asyncio.sleep(2)
                 continue
 
-            gunner.gunner_bullets = max(0, gunner.gunner_bullets - 1)
-            if gunner.role == Role.VIGILANTE:
-                gunner.vigilante_shot_available = False
-            if target.role == Role.THE_OLD:
-                target.died_from_villagers = True
-                target.lives = 1
-            await target.kill()
-            await gunner.send(
-                _(
-                    "You shot **{target}**. Remaining bullets: {bullets}."
-                    "\n{game_link}"
-                ).format(
-                    target=target.user,
-                    bullets=gunner.gunner_bullets,
-                    game_link=self.game_link,
+            await self._resolve_gunner_day_action(
+                gunner,
+                target=target,
+                used_reveal=used_reveal,
+            )
+            await asyncio.sleep(2)
+
+    async def start_gunner_day_action_selection(self) -> None:
+        gunners = [
+            gunner
+            for gunner in self.alive_players
+            if gunner.role in (Role.GUNNER, Role.VIGILANTE)
+            and not gunner.is_grumpy_silenced_today
+            and (
+                gunner.gunner_bullets > 0
+                or (
+                    gunner.role == Role.VIGILANTE
+                    and gunner.vigilante_reveal_available
                 )
             )
+        ]
+        active_ids = {gunner.user.id for gunner in gunners}
+
+        for player_id, task in list(self.gunner_day_action_tasks.items()):
+            if task.done() or player_id not in active_ids:
+                task.cancel()
+                self.gunner_day_action_tasks.pop(player_id, None)
+
+        for gunner in gunners:
+            existing = self.gunner_day_action_tasks.get(gunner.user.id)
+            if existing and not existing.done():
+                continue
+            self.gunner_day_action_tasks[gunner.user.id] = asyncio.create_task(
+                self._collect_gunner_day_action(gunner)
+            )
+
+    async def stop_gunner_day_action_selection(
+        self, gunner: Player | None = None
+    ) -> None:
+        if gunner is not None:
+            task = self.gunner_day_action_tasks.pop(gunner.user.id, None)
+            if task:
+                task.cancel()
+            return
+
+        for task in self.gunner_day_action_tasks.values():
+            task.cancel()
+        self.gunner_day_action_tasks.clear()
 
     async def handle_marksman_day_action(self) -> None:
         marksmen = [
@@ -8756,9 +8908,6 @@ class Game:
         flaggers = self.get_players_with_role(Role.FLAGGER)
         for flagger in flaggers:
             await flagger.set_flagger_redirect()
-        beast_hunters = self.get_players_with_role(Role.BEAST_HUNTER)
-        for beast_hunter in beast_hunters:
-            await beast_hunter.set_beast_hunter_trap()
         morticians = self.get_players_with_role(Role.MORTICIAN)
         for mortician in morticians:
             await mortician.mortician_autopsy()
@@ -8836,9 +8985,9 @@ class Game:
         targets = await self.apply_red_lady_visit_resolution(
             targets, attacked_targets, attacked_source_by_player_id
         )
+        targets = await self.apply_night_protection(targets)
         if not kitten_conversion_mode:
             targets = await self.apply_cursed_conversion(targets)
-        targets = await self.apply_night_protection(targets)
         targets = await self.apply_kitten_wolf_conversion(
             targets,
             conversion_target=kitten_conversion_target,
@@ -8958,9 +9107,6 @@ class Game:
         flaggers = self.get_players_with_role(Role.FLAGGER)
         for flagger in flaggers:
             await flagger.set_flagger_redirect()
-        beast_hunters = self.get_players_with_role(Role.BEAST_HUNTER)
-        for beast_hunter in beast_hunters:
-            await beast_hunter.set_beast_hunter_trap()
         morticians = self.get_players_with_role(Role.MORTICIAN)
         for mortician in morticians:
             await mortician.mortician_autopsy()
@@ -9037,9 +9183,9 @@ class Game:
         targets = await self.apply_red_lady_visit_resolution(
             targets, attacked_targets, attacked_source_by_player_id
         )
+        targets = await self.apply_night_protection(targets)
         if not kitten_conversion_mode:
             targets = await self.apply_cursed_conversion(targets)
-        targets = await self.apply_night_protection(targets)
         targets = await self.apply_kitten_wolf_conversion(
             targets,
             conversion_target=kitten_conversion_target,
@@ -9145,8 +9291,19 @@ class Game:
                 while len(nominated) < 10:
                     msg = await self.ctx.bot.wait_for(
                         "message",
-                        check=lambda x: x.author in eligible_players
-                                        and x.channel.id == self.ctx.channel.id,
+                        check=lambda x: (
+                            x.channel.id == self.ctx.channel.id
+                            and discord.utils.find(
+                                lambda player: (
+                                    player.user == x.author
+                                    and not player.dead
+                                    and not player.is_jailed
+                                    and not player.is_grumpy_silenced_today
+                                ),
+                                self.alive_players,
+                            )
+                            is not None
+                        ),
                     )
                     if "objection" in msg.content.lower() and discord.utils.get(
                             self.alive_players,
@@ -9243,8 +9400,19 @@ class Game:
                     while len(nominated) < 10:
                         msg = await self.ctx.bot.wait_for(
                             "message",
-                            check=lambda x: x.author in eligible_players
-                                            and x.channel.id == self.ctx.channel.id,
+                            check=lambda x: (
+                                x.channel.id == self.ctx.channel.id
+                                and discord.utils.find(
+                                    lambda player: (
+                                        player.user == x.author
+                                        and not player.dead
+                                        and not player.is_jailed
+                                        and not player.is_grumpy_silenced_today
+                                    ),
+                                    self.alive_players,
+                                )
+                                is not None
+                            ),
                         )
                         if "objection" in msg.content.lower() and discord.utils.get(
                                 self.alive_players,
@@ -9315,10 +9483,20 @@ class Game:
         sneaky = False
         if len(nominated_by_paragon) > 0:
             nominated = nominated_by_paragon
+        nominated = [
+            nominee
+            for nominee in nominated
+            if discord.utils.get(self.alive_players, user=nominee) is not None
+        ]
         if not nominated:
             return None, second_election
         if len(nominated) == 1:
             return nominated[0], second_election
+        election_players = [
+            player
+            for player in self.alive_players
+            if not player.is_jailed and not player.is_grumpy_silenced_today
+        ]
         vote_view = DayElectionView(
             game=self,
             eligible_player_by_user_id={
@@ -9349,8 +9527,15 @@ class Game:
         nominated_vote_totals = {
             user: vote_view.vote_totals[user.id] for user in vote_view.nominated_users
         }
+        live_nominated_users = [
+            user
+            for user in vote_view.nominated_users
+            if self.get_alive_player_by_user_id(user.id) is not None
+        ]
+        if not live_nominated_users:
+            return None, second_election
         new_mapping = sorted(
-            vote_view.nominated_users,
+            live_nominated_users,
             key=lambda user: -nominated_vote_totals[user],
         )
         return (
@@ -9760,6 +9945,8 @@ class Game:
         await self.start_avenger_target_selection()
         await self.start_mayor_reveal_selection()
         await self.start_werewolf_fan_reveal_selection()
+        await self.start_gunner_day_action_selection()
+        await self.start_beast_hunter_day_trap_selection()
         await self.start_forger_day_actions()
         await self.start_forged_sword_day_actions()
         await self.start_alpha_day_wolf_relay()
@@ -9802,11 +9989,6 @@ class Game:
             await self.apply_corruptor_day_glitch()
             await self.offer_fortune_card_reveals()
             await self.handle_priest_holy_water()
-            if len(self.alive_players) < 2:
-                return
-            if self.winner is not None:
-                return
-            await self.handle_gunner_day_action()
             if len(self.alive_players) < 2:
                 return
             if self.winner is not None:
@@ -9873,6 +10055,8 @@ class Game:
             )
             await self.stop_mayor_reveal_selection()
             await self.stop_werewolf_fan_reveal_selection()
+            await self.stop_gunner_day_action_selection()
+            await self.stop_beast_hunter_day_trap_selection()
             await self.stop_forger_day_actions()
             await self.stop_forged_sword_day_actions()
             await self.resolve_tough_guy_delayed_deaths()
@@ -9974,6 +10158,14 @@ class Game:
                 pass
             try:
                 await self.stop_werewolf_fan_reveal_selection()
+            except Exception:
+                pass
+            try:
+                await self.stop_gunner_day_action_selection()
+            except Exception:
+                pass
+            try:
+                await self.stop_beast_hunter_day_trap_selection()
             except Exception:
                 pass
             try:
@@ -10282,6 +10474,7 @@ class Player:
         self.has_werewolf_fan_reveal_ability = True
         self.gunner_bullets = 2
         self.gunner_has_publicly_revealed = False
+        self.gunner_last_action_day: int | None = None
         self.vigilante_shot_available = True
         self.vigilante_reveal_available = True
         self.is_corrupted_today = False
@@ -11012,19 +11205,18 @@ class Player:
             ).format(protected=target.user, game_link=self.game.game_link)
         )
 
-    async def set_beast_hunter_trap(self) -> None:
+    async def set_beast_hunter_trap(self, *, timeout: int | None = None) -> None:
         if self.dead or self.role != Role.BEAST_HUNTER:
             return
-        if self.is_jailed or self.is_sleeping_tonight:
+        if self.is_jailed or self.is_grumpy_silenced_today:
             await self.send(
                 _(
-                    "😴 You cannot place or move your trap tonight because you are"
+                    "😴 You cannot place or move your trap today because you are"
                     " unable to act."
                     "\n{game_link}"
                 ).format(game_link=self.game.game_link)
             )
             return
-        await self.announce_awake()
         available = list(self.game.alive_players)
         active_target = discord.utils.find(
             lambda player: player.user.id == self.beast_hunter_active_target_id,
@@ -11036,7 +11228,7 @@ class Player:
         )
         if not available:
             await self.send(
-                _("There is no valid player to trap tonight.\n{game_link}").format(
+                _("There is no valid player to trap today.\n{game_link}").format(
                     game_link=self.game.game_link
                 )
             )
@@ -11045,26 +11237,26 @@ class Player:
             if pending_target is not None:
                 prompt = _(
                     "Your trap is currently being set on **{target}** and will be"
-                    " active next night. Choose a different player to move it and"
+                    " active tonight. Choose a different player to move it and"
                     " restart the setup time, or choose no one to keep it there."
                 ).format(target=pending_target.user)
             elif active_target is not None:
                 prompt = _(
                     "Your trap is currently active on **{target}**. Choose a"
                     " different player to move it. Moving it removes the current trap"
-                    " now, and the new location becomes active next night. Choose no"
+                    " now, and the new location becomes active tonight. Choose no"
                     " one to keep it where it is."
                 ).format(target=active_target.user)
             else:
                 prompt = _(
-                    "Choose a player to trap. Your trap becomes active on the next"
-                    " night."
+                    "Choose a player to trap. Your trap becomes active tonight."
                 )
             target = await self.choose_users(
                 prompt,
                 list_of_users=available,
                 amount=1,
                 required=False,
+                timeout=timeout,
             )
         except asyncio.TimeoutError:
             target = []
@@ -11072,14 +11264,14 @@ class Player:
             if pending_target is not None:
                 message = _(
                     "🪤 Your trap is still being set on **{target}** and will be"
-                    " active next night.\n{game_link}"
+                    " active tonight.\n{game_link}"
                 ).format(target=pending_target.user, game_link=self.game.game_link)
             elif active_target is not None:
                 message = _(
                     "🪤 You kept your active trap on **{target}**.\n{game_link}"
                 ).format(target=active_target.user, game_link=self.game.game_link)
             else:
-                message = _("You did not place a trap tonight.\n{game_link}").format(
+                message = _("You did not place a trap today.\n{game_link}").format(
                     game_link=self.game.game_link
                 )
             await self.send(message)
@@ -11102,7 +11294,7 @@ class Player:
                 await self.send(
                     _(
                         "🪤 Your trap is already being set on **{target}** and will"
-                        " be active next night.\n{game_link}"
+                        " be active tonight.\n{game_link}"
                     ).format(target=new_target.user, game_link=self.game.game_link)
                 )
             return
@@ -11114,7 +11306,7 @@ class Player:
             await self.send(
                 _(
                     "🪤 You moved your trap from **{old_target}** to **{new_target}**."
-                    " It must be set again and will be active next night."
+                    " It must be set again and will be active tonight."
                     "\n{game_link}"
                 ).format(
                     old_target=previous_target,
@@ -11127,8 +11319,8 @@ class Player:
         self.beast_hunter_pending_target_id = new_target.user.id
         await self.send(
             _(
-                "🪤 You placed your trap on **{target}**. It will be active next"
-                " night.\n{game_link}"
+                "🪤 You placed your trap on **{target}**. It will be active tonight."
+                "\n{game_link}"
             ).format(target=new_target.user, game_link=self.game.game_link)
         )
 
