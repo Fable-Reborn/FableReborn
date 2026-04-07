@@ -3257,6 +3257,33 @@ class Game:
             return f"Cursed {self.get_role_name(public_role)}"
         return self.get_role_name(public_role)
 
+    def get_publicly_revealed_role(self, player: Player) -> Role | None:
+        if not self.players:
+            return None
+        revealed_role = self.players[0].revealed_roles.get(player)
+        if revealed_role is None:
+            return None
+        if all(
+            observer.revealed_roles.get(player) == revealed_role
+            for observer in self.players
+        ):
+            return revealed_role
+        return None
+
+    def get_dead_relay_identity_prefix(self, player: Player) -> str:
+        revealed_role = None
+        if player.hide_role_on_death:
+            revealed_role = self.get_publicly_revealed_role(player)
+        else:
+            revealed_role = player.role
+
+        role_name = self.get_role_name(revealed_role) if revealed_role else "?"
+        player_name = getattr(player.user, "display_name", str(player.user))
+        return _("**{player} - {role}**").format(
+            player=player_name,
+            role=role_name,
+        )
+
     def _observer_can_see_sorcerer_disguise(
         self,
         observer: Player | None,
@@ -4180,82 +4207,90 @@ class Game:
         except Exception:
             return
 
+    async def _apply_advanced_role_choice_for_player(self, player: Player) -> None:
+        base_role = player.role
+        xp_value = await self._fetch_player_role_xp(player.user.id, base_role)
+        level = role_level_from_xp(xp_value)
+        unlocked_roles = get_unlocked_advanced_roles(
+            base_role,
+            level=level,
+            mode=self.mode,
+        )
+        if not unlocked_roles:
+            return
+
+        base_name = self.get_role_name(base_role)
+        title = _(
+            "You unlocked an advanced role! {base} reached level {level}. Choose"
+            " your role for this match."
+        ).format(base=base_name, level=level)
+        entries = [_("Stay as {role} (default)").format(role=base_name)]
+        choices = [base_name]
+        for unlock_level, advanced_role in unlocked_roles:
+            advanced_name = self.get_role_name(advanced_role)
+            entries.append(
+                _("Switch to {role} (unlocked at level {level})").format(
+                    role=advanced_name,
+                    level=unlock_level,
+                )
+            )
+            choices.append(advanced_name)
+
+        selected_index = 0
+        try:
+            selected_index = await self.ctx.bot.paginator.Choose(
+                entries=entries,
+                choices=choices,
+                return_index=True,
+                title=title[:250],
+                placeholder=_("Choose your role"),
+                timeout=self.timer,
+            ).paginate(self.ctx, location=player.user)
+        except self.ctx.bot.paginator.NoChoice:
+            selected_index = 0
+        except (discord.Forbidden, discord.HTTPException):
+            selected_index = 0
+
+        if selected_index > len(unlocked_roles):
+            selected_index = 0
+
+        if selected_index > 0:
+            chosen_advanced_role = unlocked_roles[selected_index - 1][1]
+            chosen_advanced_name = self.get_role_name(chosen_advanced_role)
+            player.role = chosen_advanced_role
+            player.initial_roles = [chosen_advanced_role]
+            await player.send(
+                _(
+                    "✅ You chose **{advanced_role}** for this match.\n{game_link}"
+                ).format(
+                    advanced_role=chosen_advanced_name,
+                    game_link=self.game_link,
+                )
+            )
+        else:
+            await player.send(
+                _(
+                    "You stayed as **{base_role}** for this match.\n{game_link}"
+                ).format(
+                    base_role=base_name,
+                    game_link=self.game_link,
+                )
+            )
+
     async def apply_advanced_role_choices(self) -> None:
         if not ADVANCED_ROLE_TIERS_BY_BASE:
             return
         if len(self.players) < max(0, int(ADVANCED_ROLE_MIN_PLAYERS)):
             return
 
-        for player in self.players:
-            base_role = player.role
-
-            xp_value = await self._fetch_player_role_xp(player.user.id, base_role)
-            level = role_level_from_xp(xp_value)
-            unlocked_roles = get_unlocked_advanced_roles(
-                base_role,
-                level=level,
-                mode=self.mode,
-            )
-            if not unlocked_roles:
-                continue
-
-            base_name = self.get_role_name(base_role)
-            title = _(
-                "You unlocked an advanced role! {base} reached level {level}. Choose"
-                " your role for this match."
-            ).format(base=base_name, level=level)
-            entries = [_("Stay as {role} (default)").format(role=base_name)]
-            choices = [base_name]
-            for unlock_level, advanced_role in unlocked_roles:
-                advanced_name = self.get_role_name(advanced_role)
-                entries.append(
-                    _("Switch to {role} (unlocked at level {level})").format(
-                        role=advanced_name,
-                        level=unlock_level,
-                    )
-                )
-                choices.append(advanced_name)
-
-            selected_index = 0
-            try:
-                selected_index = await self.ctx.bot.paginator.Choose(
-                    entries=entries,
-                    choices=choices,
-                    return_index=True,
-                    title=title[:250],
-                    placeholder=_("Choose your role"),
-                    timeout=self.timer,
-                ).paginate(self.ctx, location=player.user)
-            except self.ctx.bot.paginator.NoChoice:
-                selected_index = 0
-            except (discord.Forbidden, discord.HTTPException):
-                selected_index = 0
-
-            if selected_index > len(unlocked_roles):
-                selected_index = 0
-
-            if selected_index > 0:
-                chosen_advanced_role = unlocked_roles[selected_index - 1][1]
-                chosen_advanced_name = self.get_role_name(chosen_advanced_role)
-                player.role = chosen_advanced_role
-                player.initial_roles = [chosen_advanced_role]
-                await player.send(
-                    _(
-                        "✅ You chose **{advanced_role}** for this match.\n{game_link}"
-                    ).format(
-                        advanced_role=chosen_advanced_name,
-                        game_link=self.game_link,
-                    )
-                )
-            else:
-                await player.send(
-                    _(
-                        "You stayed as **{base_role}** for this match.\n{game_link}"
-                    ).format(
-                        base_role=base_name,
-                        game_link=self.game_link,
-                    )
-                )
+        tasks = [
+            self._apply_advanced_role_choice_for_player(player)
+            for player in self.players
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                schedule_traceback(self.ctx, result)
 
     async def send_night_announcement(self, moon: str = "🌘") -> None:
         description = self.get_night_announcement_text(moon)
@@ -5179,10 +5214,7 @@ class Game:
                     )
                     if sender is None:
                         continue
-                    identified_prefix = _("**{player} - {role}**").format(
-                        player=sender.user.display_name,
-                        role=self.get_role_name(sender),
-                    )
+                    identified_prefix = self.get_dead_relay_identity_prefix(sender)
                     anonymous_prefix = _("**A dead soul**")
 
                     medium_speakers = [
