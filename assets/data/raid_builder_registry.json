@@ -1,0 +1,540 @@
+{
+  "definitions": {
+    "chaos_attrition_remaster": {
+      "config": {
+        "announce": {
+          "description": "Reality bends as Eclipse claws at the edge of the realm. The faithful of Drakath must survive long enough to drive it back.",
+          "join_label": "Sacrifice yourself to the raid!",
+          "joined_message": "You've pledged your soul to the raid.",
+          "title": "The Void Awakens"
+        },
+        "boss_attack": {
+          "critical_chance": 0.3,
+          "critical_max": 360,
+          "critical_min": 160,
+          "normal_max": 280,
+          "normal_min": 100
+        },
+        "boss_hp": 5000,
+        "boss_name": "Eclipse the Void Conqueror",
+        "eligibility": {
+          "god": "Drakath"
+        },
+        "events": {
+          "heal_chance": 0.2,
+          "heal_max": 140,
+          "heal_min": 90,
+          "pulse_chance": 0.2,
+          "pulse_damage": 100,
+          "pulse_targets": 3
+        },
+        "join_timeout": 900,
+        "max_rounds": 30,
+        "messages": {
+          "defeat": "The last resistance collapses, and Eclipse feeds on the silence.",
+          "high_damage": [
+            "Eclipse howls as the raid tears through the void.",
+            "The abyss buckles beneath the force of Drakath's faithful."
+          ],
+          "low_damage": [
+            "Eclipse laughs at the shallow wound.",
+            "The void barely notices the glancing strike."
+          ],
+          "medium_damage": [
+            "Eclipse recoils, then steadies itself in the dark.",
+            "The void hisses at the pressure of the assault."
+          ],
+          "retreat": "{boss_name} slips back into the void with **{boss_hp}** HP remaining.",
+          "victory": "{count} followers of Drakath survive as Eclipse is hurled back into the void."
+        },
+        "player_hp": 250,
+        "players": {
+          "critical_chance": 0.15,
+          "critical_max": 150,
+          "critical_min": 70,
+          "normal_max": 45,
+          "normal_min": 20
+        },
+        "presentation": {
+          "colors": {
+            "boss_turn": "#C0392B",
+            "defeat": "#7F1D1D",
+            "intro": "#8E44AD",
+            "raid_turn": "#F1C40F",
+            "victory": "#F39C12"
+          },
+          "media": {
+            "boss_turn": {
+              "image_url": "",
+              "thumbnail_url": ""
+            },
+            "intro": {
+              "image_url": "",
+              "thumbnail_url": ""
+            },
+            "raid_turn": {
+              "image_url": "",
+              "thumbnail_url": ""
+            },
+            "victory": {
+              "image_url": "",
+              "thumbnail_url": ""
+            }
+          }
+        }
+      },
+      "description": "A configurable Drakath attrition raid with boss HP, pulse events, and swarm damage.",
+      "id": "chaos_attrition_remaster",
+      "mode": "chaos",
+      "name": "Void Breach Remaster",
+      "runtime": "native",
+      "skeleton": "attrition",
+      "status": "published"
+    },
+    "evil_ritual_remaster": {
+      "config": {
+        "allow_ai_fallback": true,
+        "announce": {
+          "description": "The moon turns blood red as a forgotten temple rises from the dark. Followers may serve as leaders or lend their will as ritualists.",
+          "follower_joined_message": "You joined as a follower.",
+          "follower_label": "Join as Follower Only",
+          "leader_joined_message": "You joined as a potential leader.",
+          "leader_label": "Join as Champion/Priest",
+          "title": "The Eclipse Begins"
+        },
+        "champion": {
+          "actions": {
+            "Defend": {
+              "description": "Reduce incoming damage.",
+              "display_name": "Defend",
+              "effect": "defend",
+              "result_text": "The {champion_label} braces for the next assault."
+            },
+            "Haste": {
+              "description": "Advance ritual progress and become vulnerable.",
+              "display_name": "Haste",
+              "effect": "haste",
+              "result_text": "The {champion_label} drives the ritual forward and leaves themselves exposed."
+            },
+            "Heal": {
+              "description": "Recover HP.",
+              "display_name": "Heal",
+              "effect": "heal",
+              "result_text": "The {champion_label} restores **{heal_amount}** HP."
+            },
+            "Sacrifice": {
+              "description": "Trade HP for ritual progress.",
+              "display_name": "Sacrifice",
+              "effect": "sacrifice",
+              "result_text": "The {champion_label} offers **{self_damage}** HP to advance the ritual."
+            },
+            "Smite": {
+              "description": "Damage the Guardian.",
+              "display_name": "Smite",
+              "effect": "damage",
+              "result_text": "The {champion_label} smites the {guardian_label} for **{damage}** damage."
+            }
+          },
+          "base_damage": 700,
+          "defend_multiplier": 0.6,
+          "haste_cooldown": 3,
+          "haste_progress": 15,
+          "heal_amount": 200,
+          "max_hp": 1500,
+          "sacrifice_hp": 350,
+          "sacrifice_progress": 18,
+          "vulnerable_multiplier": 1.25
+        },
+        "decision_timeout": 90,
+        "eligibility": {
+          "god": "Sepulchure"
+        },
+        "followers": {
+          "actions": {
+            "Boost Ritual": {
+              "cap_total": 8,
+              "description": "Push the ceremony forward in a coordinated surge.",
+              "display_name": "Boost Ritual",
+              "progress": 2
+            },
+            "Chant": {
+              "description": "Add steady momentum to the ritual circle.",
+              "display_name": "Chant",
+              "progress": 1
+            },
+            "Empower Priest": {
+              "description": "Amplify the Priest's restorative arts.",
+              "display_name": "Empower Priest",
+              "healing_boost": 0.1
+            },
+            "Heal Champion": {
+              "description": "Restore the Champion with lesser rites.",
+              "display_name": "Heal Champion",
+              "heal": 50
+            },
+            "Protect Champion": {
+              "description": "Wrap the Champion in protective shadow.",
+              "display_name": "Protect Champion",
+              "shield": 50
+            },
+            "Sabotage Guardian": {
+              "description": "Wear down the Guardian's assault.",
+              "display_name": "Sabotage Guardian",
+              "guardian_damage_down": 0.1
+            }
+          }
+        },
+        "guardian": {
+          "abilities": {
+            "apocalyptic_roar": {
+              "damage_range": [
+                150,
+                240
+              ],
+              "damage_text": "The {guardian_label} bellows **{ability_name}** for **{damage}** damage.",
+              "description": "Damage the Champion and shake the ritual loose.",
+              "display_name": "Apocalyptic Roar",
+              "progress_down": 10,
+              "progress_text": "The roar rips away **{progress_down}** ritual progress."
+            },
+            "corrupting_blast": {
+              "damage_down": 100,
+              "damage_range": [
+                160,
+                260
+              ],
+              "damage_text": "The {guardian_label} unleashes **{ability_name}** for **{damage}** damage.",
+              "description": "Damage the Champion and sap their power.",
+              "display_name": "Corrupting Blast"
+            },
+            "dark_aegis": {
+              "description": "Raise a stronger shield of abyssal armor.",
+              "display_name": "Dark Aegis",
+              "shield": 350,
+              "shield_text": "A **{shield}** point veil of darkness hardens around the {guardian_label}."
+            },
+            "fear_aura": {
+              "description": "Sow dread that disrupts ritual momentum.",
+              "display_name": "Fear Aura",
+              "progress_down": 6,
+              "progress_text": "Dread from **{ability_name}** tears away **{progress_down}** ritual progress."
+            },
+            "obliterate": {
+              "damage_range": [
+                350,
+                700
+              ],
+              "damage_text": "The {guardian_label} crashes down with **{ability_name}** for **{damage}** damage.",
+              "description": "A devastating finishing strike.",
+              "display_name": "Obliterate"
+            },
+            "purify": {
+              "description": "Push the ritual backwards through violent cleansing.",
+              "display_name": "Purify",
+              "progress_down": 18,
+              "progress_text": "The ritual is driven back by **{progress_down}** progress."
+            },
+            "shield": {
+              "description": "Reinforce the Guardian with a shell of shadow.",
+              "display_name": "Shield",
+              "shield": 200,
+              "shield_text": "The {guardian_label} reinforces itself with **{shield}** shield."
+            },
+            "soul_drain": {
+              "damage_range": [
+                180,
+                260
+              ],
+              "damage_text": "The {guardian_label} tears free essence with **{ability_name}** for **{damage}** damage.",
+              "description": "Drain the Champion and restore the Guardian.",
+              "display_name": "Soul Drain",
+              "heal_ratio": 1.0
+            },
+            "strike": {
+              "damage_range": [
+                120,
+                220
+              ],
+              "damage_text": "The {guardian_label} uses **{ability_name}** for **{damage}** damage.",
+              "description": "A brutal direct blow against the Champion.",
+              "display_name": "Strike"
+            }
+          },
+          "max_hp": 5000,
+          "phases": [
+            {
+              "abilities": [
+                "strike",
+                "shield",
+                "purify"
+              ],
+              "description": "A towering sentinel steps from ancient shadow.",
+              "name": "The Sentinel",
+              "threshold": 0
+            },
+            {
+              "abilities": [
+                "strike",
+                "corrupting_blast",
+                "fear_aura",
+                "purify"
+              ],
+              "description": "The Guardian twists into a darker and faster shape.",
+              "name": "The Corrupted",
+              "threshold": 35
+            },
+            {
+              "abilities": [
+                "obliterate",
+                "soul_drain",
+                "dark_aegis",
+                "apocalyptic_roar"
+              ],
+              "description": "Its final form is a screaming abyss wrapped in armor.",
+              "name": "The Abyssal Horror",
+              "threshold": 70
+            }
+          ],
+          "respawn_hp_ratio": 0.45
+        },
+        "join_timeout": 900,
+        "presentation": {
+          "colors": {
+            "danger": "#C0392B",
+            "intro": "#992D22",
+            "prompt": "#8E44AD",
+            "status": "#7B241C",
+            "victory": "#27AE60"
+          },
+          "labels": {
+            "champion": "Champion",
+            "followers": "Followers",
+            "guardian": "Guardian",
+            "priest": "Priest"
+          },
+          "media": {
+            "guardian": {
+              "image_url": "",
+              "thumbnail_url": ""
+            },
+            "intro": {
+              "image_url": "",
+              "thumbnail_url": ""
+            },
+            "prompts": {
+              "image_url": "",
+              "thumbnail_url": ""
+            },
+            "status": {
+              "image_url": "",
+              "thumbnail_url": ""
+            },
+            "victory": {
+              "image_url": "",
+              "thumbnail_url": ""
+            }
+          },
+          "prompts": {
+            "champion": {
+              "description": "Choose how the Champion acts this turn.",
+              "title": "Champion"
+            },
+            "follower": {
+              "description": "Choose how you support the ritual this turn.",
+              "title": "Followers"
+            },
+            "priest": {
+              "description": "Choose how the Priest shapes the ritual this turn.",
+              "title": "Priest"
+            }
+          },
+          "texts": {
+            "champion_fall": "The {champion_label} falls, and the ritual collapses with them.",
+            "champion_slain": "The {champion_label} is slain before the ritual can recover.",
+            "collapse": "The {guardian_label} collapses and the ritual surges forward.",
+            "followers_summary_empty": "No follower contributions this turn.",
+            "no_valid": "No valid followers answered the ritual.",
+            "respawn": "The {guardian_label} rises again as **{phase_name}**.",
+            "stall": "The ritual stalls at **{progress}/{win_progress}** progress and the {guardian_label} endures.",
+            "success": "The ritual completes successfully. Sepulchure answers the call of **{definition_name}**.",
+            "turn_prompt": "It's {player}'s turn. Check DMs."
+          }
+        },
+        "priest": {
+          "actions": {
+            "Barrier": {
+              "description": "Wrap the Champion in protective shadow.",
+              "display_name": "Barrier",
+              "mana_cost": 30,
+              "result_text": "The {priest_label} casts **{action_name}**, raising **{shield}** shield around the {champion_label}.",
+              "shield": 250
+            },
+            "Bless": {
+              "damage_boost": 200,
+              "description": "Empower the Champion with shadow-wreathed force.",
+              "display_name": "Bless",
+              "mana_cost": 20,
+              "result_text": "The {priest_label} invokes **{action_name}** and grants **{damage_boost}** bonus damage to the {champion_label}."
+            },
+            "Channel": {
+              "description": "Direct raw darkness into the ritual.",
+              "display_name": "Channel",
+              "mana_cost": 15,
+              "progress": 12,
+              "result_text": "The {priest_label} pours **{action_name}** into the ritual for **{progress}** progress."
+            },
+            "Curse": {
+              "description": "Weaken the Guardian's damage output.",
+              "display_name": "Curse",
+              "guardian_damage_down": 0.25,
+              "mana_cost": 25,
+              "result_text": "The {priest_label} brands the {guardian_label} with **{action_name}**, reducing its fury."
+            },
+            "Revitalize": {
+              "description": "Restore the Champion's vitality.",
+              "display_name": "Revitalize",
+              "heal": 300,
+              "mana_cost": 20,
+              "result_text": "The {priest_label} channels **{action_name}** to restore **{heal}** HP to the {champion_label}."
+            }
+          },
+          "mana_regen": 10,
+          "max_mana": 100
+        },
+        "ritual": {
+          "guardian_collapse_progress": 10,
+          "max_turns": 15,
+          "start_progress": 0,
+          "win_progress": 100
+        }
+      },
+      "description": "A configurable Sepulchure ritual using shared leader AI and DM decision buttons.",
+      "id": "evil_ritual_remaster",
+      "mode": "evil",
+      "name": "Infernal Ritual Remaster",
+      "runtime": "native",
+      "skeleton": "ritual",
+      "status": "published"
+    },
+    "good_trial_remaster": {
+      "config": {
+        "announce": {
+          "description": "Champions of compassion, take your stand. Day and night will test the hearts of Elysia's faithful until only the worthiest remain.",
+          "join_label": "Join the trial!",
+          "joined_message": "You joined the trial.",
+          "title": "Champions of Compassion"
+        },
+        "eligibility": {
+          "god": "Elysia"
+        },
+        "join_timeout": 900,
+        "max_rounds": 40,
+        "min_survivors": 1,
+        "phase_delay": 5,
+        "phases": [
+          {
+            "description": "As the sun's golden rays grace the horizon, renewal spreads across the land.",
+            "events": [
+              {
+                "lose_text": "Your healing touch falters when the trial demands more of you.",
+                "success_rate": 80,
+                "text": "Extend a Healing Hand",
+                "win_text": "Your compassionate efforts brought healing and solace."
+              },
+              {
+                "lose_text": "Your words fail to bridge the pain before you.",
+                "success_rate": 50,
+                "text": "Ease Emotional Burdens",
+                "win_text": "Your empathy mends a wounded heart before the crowd."
+              },
+              {
+                "lose_text": "Your kindness does not fully land in the moment that mattered.",
+                "success_rate": 60,
+                "text": "Kindness in Action",
+                "win_text": "Your selfless actions ripple outward with visible grace."
+              }
+            ],
+            "key": "day",
+            "title": "It turns day",
+            "weight": 1
+          },
+          {
+            "description": "The world is wrapped in quiet stars, and mercy must now survive the dark.",
+            "events": [
+              {
+                "lose_text": "Your light does not reach far enough through the night.",
+                "mercy_chance": 10,
+                "success_rate": 30,
+                "text": "Guiding Light of Compassion",
+                "win_text": "You bring light to a darkened soul under the moon."
+              },
+              {
+                "lose_text": "Unseen forces hinder your attempt to heal.",
+                "success_rate": 45,
+                "text": "Healing Moon's Embrace",
+                "win_text": "The moon magnifies your healing touch."
+              },
+              {
+                "lose_text": "The harmonies remain distant, and the chance is lost.",
+                "mercy_chance": 5,
+                "success_rate": 20,
+                "text": "Stellar Harmonies of Renewal",
+                "win_text": "The stars answer and renewal pours through the sky."
+              }
+            ],
+            "key": "night",
+            "title": "It turns night",
+            "weight": 1
+          }
+        ],
+        "presentation": {
+          "colors": {
+            "failure": "#E74C3C",
+            "intro": "#3498DB",
+            "phase": "#F1C40F",
+            "success": "#2ECC71",
+            "victory": "#5DADE2"
+          },
+          "media": {
+            "intro": {
+              "image_url": "",
+              "thumbnail_url": ""
+            },
+            "phase": {
+              "image_url": "",
+              "thumbnail_url": ""
+            },
+            "result": {
+              "image_url": "",
+              "thumbnail_url": ""
+            },
+            "victory": {
+              "image_url": "",
+              "thumbnail_url": ""
+            }
+          }
+        },
+        "result_delay": 3,
+        "winner_text": "{winner} endure the final ordeal beneath Elysia's light."
+      },
+      "description": "A data-driven Elysia trial that keeps the day and night elimination structure.",
+      "id": "good_trial_remaster",
+      "mode": "good",
+      "name": "Elysian Trial Remaster",
+      "runtime": "native",
+      "skeleton": "trial",
+      "status": "published"
+    }
+  },
+  "modes": {
+    "chaos": {
+      "active_definition_id": null
+    },
+    "evil": {
+      "active_definition_id": null
+    },
+    "good": {
+      "active_definition_id": null
+    }
+  }
+}
