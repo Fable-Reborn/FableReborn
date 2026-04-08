@@ -3750,7 +3750,7 @@ class GameMaster(commands.Cog):
             f"{ctx.author.mention} started auction on **{item}**!\n\n"
             f"Current bid: **$0**\n\n"
             f"Please use `{ctx.clean_prefix}bid amount` to raise the bid from any channel.\n\n"
-            f"If no more bids are sent within 30 minutes of the highest bid, the auction will end.\n"
+            f"If no more bids are sent within 12 hours of the highest bid, the auction will end.\n"
             f"{role.mention}", allowed_mentions=discord.AllowedMentions(roles=True)
         )
 
@@ -3768,7 +3768,7 @@ class GameMaster(commands.Cog):
             while True:
                 try:
                     # Wait for a bid
-                    await asyncio.wait_for(self.auction_entry.wait(), timeout=1800)  # 30 minutes
+                    await asyncio.wait_for(self.auction_entry.wait(), timeout=43200)  # 12 hours
                     self.auction_entry.clear()
                 except asyncio.TimeoutError:
                     # No bids received within timeout period
