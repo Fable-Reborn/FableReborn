@@ -370,6 +370,29 @@ class DecisionView(View):
         return interaction.user == self.player
 
 
+class RitualRoleTakeoverView(View):
+    def __init__(self, eligible_user_ids, role_name, timeout=60):
+        super().__init__(timeout=timeout)
+        self.eligible_user_ids = set(eligible_user_ids)
+        self.role_name = role_name
+        self.claimed_by = None
+
+    @discord.ui.button(label="Claim the Mantle", style=ButtonStyle.primary)
+    async def claim_button(self, interaction: Interaction, button: Button):
+        if interaction.user.id not in self.eligible_user_ids:
+            await interaction.response.send_message(
+                "Only current followers may take over this role.",
+                ephemeral=True,
+            )
+            return
+
+        self.claimed_by = interaction.user
+        await interaction.response.send_message(
+            f"You have stepped forward to become the new {self.role_name}.",
+            ephemeral=True,
+        )
+        self.stop()
+
 class Raid(commands.Cog):
     """Raids are only available in the support server. Use the support command for an invite link."""
     DRAGON_COIN_DROP_CHANCE_PERCENT = 10
@@ -2055,7 +2078,7 @@ class Raid(commands.Cog):
                 "champion": "Smite",
                 "priest": "Bless"
             }
-            return default_actions[role]
+            return default_actions[role], False
 
         view = DecisionView(player, options)
 
@@ -2067,7 +2090,7 @@ class Raid(commands.Cog):
         await view.wait()
 
         if view.value:
-            return view.value
+            return view.value, False
         else:
             # Return default action based on role in case of timeout
             default_actions = {
@@ -2076,12 +2099,14 @@ class Raid(commands.Cog):
                 "priest": "Bless"
             }
             await player.send(f"You took too long to decide. Defaulting to '{default_actions[role]}'.")
-            return default_actions[role]
+            return default_actions[role], True
 
     @is_gm()
     @commands.command(hidden=True, brief=_("Start an Infernal Ritual raid"))
     async def evilspawn(self, ctx):
         """[Evil God only] Starts a raid."""
+        directive_listener_task = None
+        ritual_active = False
 
         try:
             # Create single join view with both options
@@ -2260,8 +2285,12 @@ class Raid(commands.Cog):
                 champion = random.choice(leader_participants)
                 leader_participants.remove(champion)
 
-                priest = random.choice(leader_participants) if leader_participants else None
-                if priest:
+                priest = (
+                    random.choice(leader_participants)
+                    if leader_participants
+                    else ShadowPriestAI()
+                )
+                if leader_participants and priest:
                     leader_participants.remove(priest)
 
                 # All remaining participants become followers
@@ -2281,8 +2310,6 @@ class Raid(commands.Cog):
                     color=announcement_color
                 )
                 await ctx.send(embed=priest_embed)
-            else:
-                await ctx.send("No Priest was chosen. The ritual will be more perilous without one.")
 
             # Generate a list of follower mentions
             if followers:
@@ -2371,6 +2398,223 @@ class Raid(commands.Cog):
             priest_embed_help.add_field(name="🌟 Channel",
                                         value="Focus your power to significantly boost ritual progress.",
                                         inline=False)
+
+            role_help_embeds = {
+                "champion": champion_embed_help,
+                "priest": priest_embed_help,
+            }
+            role_missed_turns = {"champion": 0, "priest": 0}
+            pending_ai_directives = {"champion": None, "priest": None}
+            demoted_role_controllers = {"champion": None, "priest": None}
+            ritual_active = True
+            champion_action_aliases = {
+                "smite": "Smite",
+                "heal": "Heal",
+                "haste": "Haste",
+                "defend": "Defend",
+                "sacrifice": "Sacrifice",
+            }
+            priest_action_aliases = {
+                "bless": "Bless",
+                "barrier": "Barrier",
+                "curse": "Curse",
+                "revitalize": "Revitalize",
+                "channel": "Channel",
+            }
+
+            def is_ai_actor(actor):
+                return isinstance(actor, (ShadowChampionAI, ShadowPriestAI))
+
+            def get_role_actor(role_name):
+                if role_name == "champion":
+                    return champion
+                return priest
+
+            def role_title(role_name):
+                return "Champion" if role_name == "champion" else "Priest"
+
+            async def send_role_help(user, role_name):
+                if is_ai_actor(user):
+                    return
+                await user.send(embed=role_help_embeds[role_name])
+
+            async def send_follower_help(user):
+                if is_ai_actor(user):
+                    return
+                await user.send(embed=followers_embed_help)
+
+            def get_human_followers():
+                return [follower for follower in followers if not is_ai_actor(follower)]
+
+            def get_authorized_ai_controllers(role_name):
+                counterpart = priest if role_name == "champion" else champion
+                controllers = []
+                if counterpart is not None and not is_ai_actor(counterpart):
+                    controllers.append(counterpart)
+                demoted = demoted_role_controllers.get(role_name)
+                if demoted is not None and not is_ai_actor(demoted):
+                    controllers.append(demoted)
+
+                deduped = []
+                seen_ids = set()
+                for controller in controllers:
+                    controller_id = getattr(controller, "id", None)
+                    if controller_id is None or controller_id in seen_ids:
+                        continue
+                    seen_ids.add(controller_id)
+                    deduped.append(controller)
+                return deduped
+
+            async def acknowledge_ai_directive(role_name, controller, action):
+                spirit_name = "Shadow Champion" if role_name == "champion" else "Shadow Priest"
+                await ctx.send(
+                    f"👻 **{spirit_name} turns toward {controller.mention}.** "
+                    f"\"Your will reaches the void. On my next turn, I shall {action.lower()}.\""
+                )
+
+            async def resolve_ai_decision(role_name, ai_actor, valid_actions, fallback_decision):
+                directive = pending_ai_directives.get(role_name)
+                if directive is not None:
+                    pending_ai_directives[role_name] = None
+                    requested_action = directive["decision"]
+                    controller = directive["controller"]
+                    if requested_action in valid_actions:
+                        await ctx.send(
+                            f"👻 **{ai_actor.mention} answers {controller.mention}.** "
+                            f"\"As commanded, I will {requested_action.lower()}.\""
+                        )
+                        return requested_action
+                    await ctx.send(
+                        f"👻 **{ai_actor.mention} answers {controller.mention}.** "
+                        f"\"That path is closed to me right now. I will choose another course.\""
+                    )
+                return fallback_decision
+
+            async def listen_for_ritual_directives():
+                while ritual_active:
+                    try:
+                        message = await self.bot.wait_for(
+                            "message",
+                            timeout=1,
+                            check=lambda m: (
+                                m.channel.id == ctx.channel.id and not m.author.bot
+                            ),
+                        )
+                    except asyncio.TimeoutError:
+                        continue
+
+                    normalized = re.sub(r"\s+", " ", message.content.strip().casefold())
+                    match = re.fullmatch(r"(priest|champ|champion)\s+([a-z]+)", normalized)
+                    if match is None:
+                        continue
+
+                    target_token, action_token = match.groups()
+                    target_role = "priest" if target_token == "priest" else "champion"
+                    target_actor = get_role_actor(target_role)
+                    if target_actor is None or not is_ai_actor(target_actor):
+                        continue
+
+                    controllers = {
+                        getattr(controller, "id", None): controller
+                        for controller in get_authorized_ai_controllers(target_role)
+                    }
+                    controller = controllers.get(message.author.id)
+                    if controller is None:
+                        continue
+
+                    aliases = (
+                        priest_action_aliases
+                        if target_role == "priest"
+                        else champion_action_aliases
+                    )
+                    action = aliases.get(action_token)
+                    if action is None:
+                        await ctx.send(
+                            f"{message.author.mention}, that is not a valid {role_title(target_role).lower()} directive."
+                        )
+                        continue
+
+                    pending_ai_directives[target_role] = {
+                        "decision": action,
+                        "controller": controller,
+                    }
+                    await acknowledge_ai_directive(target_role, controller, action)
+
+            async def handle_role_takeover(role_name):
+                nonlocal champion, priest, followers
+
+                current_actor = get_role_actor(role_name)
+                if current_actor is None or is_ai_actor(current_actor):
+                    role_missed_turns[role_name] = 0
+                    return
+
+                eligible_followers = get_human_followers()
+                claimed_by = None
+                if eligible_followers:
+                    takeover_embed = discord.Embed(
+                        title=f"⚠️ {role_title(role_name)} Falters ⚠️",
+                        description=(
+                            f"{current_actor.mention} has missed two consecutive turns and the ritual needs a new "
+                            f"{role_title(role_name)}. A follower has 60 seconds to claim the mantle."
+                        ),
+                        color=discord.Color.dark_red(),
+                    )
+                    takeover_view = RitualRoleTakeoverView(
+                        [follower.id for follower in eligible_followers],
+                        role_title(role_name),
+                        timeout=60,
+                    )
+                    takeover_message = await ctx.send(embed=takeover_embed, view=takeover_view)
+                    await takeover_view.wait()
+                    claimed_by = takeover_view.claimed_by
+                    try:
+                        await takeover_message.edit(view=None)
+                    except (discord.NotFound, discord.HTTPException):
+                        pass
+
+                if current_actor not in followers:
+                    followers.append(current_actor)
+                await current_actor.send(
+                    f"The ritual stripped you of the mantle of {role_title(role_name)} after two silent turns."
+                )
+                await send_follower_help(current_actor)
+
+                if claimed_by is not None:
+                    replacement = discord.utils.find(
+                        lambda follower: follower.id == claimed_by.id,
+                        eligible_followers,
+                    )
+                    if replacement is not None and replacement in followers:
+                        followers.remove(replacement)
+                    demoted_role_controllers[role_name] = None
+                    if role_name == "champion":
+                        champion = replacement
+                    else:
+                        priest = replacement
+                    await ctx.send(
+                        f"🔥 **{replacement.mention} steps from the faithful and takes up the mantle of {role_title(role_name)}.**"
+                    )
+                    await send_role_help(replacement, role_name)
+                else:
+                    demoted_role_controllers[role_name] = current_actor
+                    replacement = (
+                        ShadowChampionAI()
+                        if role_name == "champion"
+                        else ShadowPriestAI()
+                    )
+                    if role_name == "champion":
+                        champion = replacement
+                    else:
+                        priest = replacement
+                    await ctx.send(
+                        f"👻 **No follower seized the mantle of {role_title(role_name)}. "
+                        f"Sepulchure's will shapes a {replacement.mention} from shadow to continue the ritual.**"
+                    )
+
+                pending_ai_directives[role_name] = None
+                role_missed_turns[role_name] = 0
+
+            directive_listener_task = asyncio.create_task(listen_for_ritual_directives())
 
             # Send these embeds to the main chat or to the respective players.
             await ctx.send(embed=ritual_embed_help)
@@ -2483,6 +2727,9 @@ class Raid(commands.Cog):
             for turn in range(TOTAL_TURNS):
 
                 if champion_stats["hp"] <= 0:
+                    ritual_active = False
+                    if directive_listener_task is not None:
+                        directive_listener_task.cancel()
                     await ctx.send(f"💔 {champion.mention} has fallen. The ritual fails as darkness recedes...")
                     await self.clear_raid_timer()
                     return
@@ -2499,15 +2746,31 @@ class Raid(commands.Cog):
                     "Chant": 0,
                     "Heal Champion": 0
                 }
+                priest_takeover_pending = False
+                champion_takeover_pending = False
 
                 # Priest's turn
                 if priest:
+                    priest_used_default = False
                     # Check if priest is AI or human
                     if isinstance(priest, ShadowPriestAI):
                         # AI Priest decision
                         await ctx.send(f"🔮 **{priest.mention} contemplates the mystical energies...**")
-                        priest_decision = await priest.make_decision(priest_stats, champion_stats, guardians_stats, progress, follower_combined_decision)
+                        fallback_priest_decision = await priest.make_decision(
+                            priest_stats,
+                            champion_stats,
+                            guardians_stats,
+                            progress,
+                            follower_combined_decision,
+                        )
+                        priest_decision = await resolve_ai_decision(
+                            "priest",
+                            priest,
+                            priest.get_valid_actions(priest_stats),
+                            fallback_priest_decision,
+                        )
                         await priest.announce_decision(ctx, priest_decision, priest_stats, champion_stats, guardians_stats, progress)
+                        role_missed_turns["priest"] = 0
                     else:
                         # Human Priest decision
                         decision_embed = discord.Embed(
@@ -2540,9 +2803,10 @@ class Raid(commands.Cog):
                         if not valid_priest_options:
                             await ctx.send(f"{priest.mention} has no mana left to perform any action.")
                             priest_decision = None
+                            role_missed_turns["priest"] = 0
                         else:
                             try:
-                                priest_decision = await asyncio.wait_for(
+                                priest_decision, priest_used_default = await asyncio.wait_for(
                                     self.get_player_decision(
                                         player=priest,
                                         options=valid_priest_options,
@@ -2553,7 +2817,16 @@ class Raid(commands.Cog):
                                 )
                             except asyncio.TimeoutError:
                                 await ctx.send(f"{priest.mention} took too long! Moving on...")
-                                priest_decision = None
+                                priest_decision = "Bless"
+                                priest_used_default = True
+
+                            if priest_used_default:
+                                role_missed_turns["priest"] += 1
+                                priest_takeover_pending = (
+                                    role_missed_turns["priest"] >= 2
+                                )
+                            else:
+                                role_missed_turns["priest"] = 0
 
                     # Execute priest decision
                     if priest_decision:
@@ -2767,7 +3040,7 @@ class Raid(commands.Cog):
 
                 # Separate function to obtain each follower's decision
                 async def get_follower_decision(follower):
-                    decision = await self.get_player_decision(
+                    decision, _ = await self.get_player_decision(
                         player=follower,
                         options=list(follower_combined_decision.keys()),
                         role="follower",
@@ -2821,10 +3094,23 @@ class Raid(commands.Cog):
                 if isinstance(champion, ShadowChampionAI):
                     # AI Champion decision
                     await ctx.send(f"👻 **{champion.mention} analyzes the battlefield...**")
-                    champion_decision = await champion.make_decision(champion_stats, guardians_stats, progress, follower_combined_decision)
+                    fallback_champion_decision = await champion.make_decision(
+                        champion_stats,
+                        guardians_stats,
+                        progress,
+                        follower_combined_decision,
+                    )
+                    champion_decision = await resolve_ai_decision(
+                        "champion",
+                        champion,
+                        champion.get_valid_actions(champion_stats),
+                        fallback_champion_decision,
+                    )
                     await champion.announce_decision(ctx, champion_decision, champion_stats, guardians_stats, progress)
+                    role_missed_turns["champion"] = 0
                 else:
                     # Human Champion decision
+                    champion_used_default = False
                     champion_embed = discord.Embed(
                         title="⚔️ Champion's Turn ⚔️",
                         description=f"{champion.mention}, choose your action:",
@@ -2855,7 +3141,7 @@ class Raid(commands.Cog):
                             await champion.send(f"'Haste' is on cooldown for {champion_stats['haste_cooldown']} more turns.")
 
                     try:
-                        champion_decision = await asyncio.wait_for(
+                        champion_decision, champion_used_default = await asyncio.wait_for(
                             self.get_player_decision(
                                 player=champion,
                                 options=valid_actions,
@@ -2867,6 +3153,15 @@ class Raid(commands.Cog):
                     except asyncio.TimeoutError:
                         await ctx.send(f"{champion.mention} took too long to decide! Defaulting to 'Smite'.")
                         champion_decision = "Smite"
+                        champion_used_default = True
+
+                    if champion_used_default:
+                        role_missed_turns["champion"] += 1
+                        champion_takeover_pending = (
+                            role_missed_turns["champion"] >= 2
+                        )
+                    else:
+                        role_missed_turns["champion"] = 0
 
                 # Execute champion decision
                 if champion_decision == "Smite":
@@ -2998,6 +3293,11 @@ class Raid(commands.Cog):
                 if priest:
                     priest_stats["mana"] = min(priest_stats["mana"] + 10, priest_stats["max_mana"])
 
+                if priest_takeover_pending:
+                    await handle_role_takeover("priest")
+                if champion_takeover_pending:
+                    await handle_role_takeover("champion")
+
                 await asyncio.sleep(15)
 
             # Post-Raid Outcome
@@ -3092,6 +3392,10 @@ class Raid(commands.Cog):
         except Exception as e:
             await ctx.send(f"An error occurred: {e}")
             # Log the error if a logger is set up.
+        finally:
+            ritual_active = False
+            if directive_listener_task is not None:
+                directive_listener_task.cancel()
 
     async def convert_to_display_names(self):
         display_names = []

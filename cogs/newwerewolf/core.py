@@ -9284,14 +9284,17 @@ class Game:
 
         return None
 
-    async def election(self) -> discord.Member | None:
-        paginator = commands.Paginator(prefix="", suffix="")
-        players = ""
-        election_players = [
+    def _get_live_day_election_players(self) -> list[Player]:
+        return [
             player
             for player in self.alive_players
             if not player.is_jailed and not player.is_grumpy_silenced_today
         ]
+
+    async def election(self) -> discord.Member | None:
+        paginator = commands.Paginator(prefix="", suffix="")
+        players = ""
+        election_players = self._get_live_day_election_players()
         for player in election_players:
             if len(players + player.user.mention + " ") > 1900:
                 paginator.add_line(players)
@@ -9314,7 +9317,6 @@ class Game:
         nominated = []
         second_election = False
         eligible_players = [player.user for player in election_players]
-        eligible_player_ids = {player.id for player in eligible_players}
         if not eligible_players:
             return None, second_election
         try:
@@ -9367,15 +9369,21 @@ class Game:
                                 " election after this."
                             )
                         )
+                    live_eligible_players = [
+                        player.user for player in self._get_live_day_election_players()
+                    ]
+                    live_eligible_player_ids = {
+                        player.id for player in live_eligible_players
+                    }
                     nominee = await self._extract_day_nomination_nominee(
-                        msg, eligible_player_ids
+                        msg, live_eligible_player_ids
                     )
                     if nominee is None:
                         continue
                     paragon = discord.utils.get(
                         self.alive_players, role=Role.PARAGON, user=msg.author
                     )
-                    if nominee in eligible_players and (
+                    if nominee in live_eligible_players and (
                             (nominee not in nominated and len(nominated) < 10)
                             or (
                                     nominee not in nominated_by_paragon
@@ -9476,15 +9484,22 @@ class Game:
                                     " election after this."
                                 )
                             )
+                        live_eligible_players = [
+                            player.user
+                            for player in self._get_live_day_election_players()
+                        ]
+                        live_eligible_player_ids = {
+                            player.id for player in live_eligible_players
+                        }
                         nominee = await self._extract_day_nomination_nominee(
-                            msg, eligible_player_ids
+                            msg, live_eligible_player_ids
                         )
                         if nominee is None:
                             continue
                         paragon = discord.utils.get(
                             self.alive_players, role=Role.PARAGON, user=msg.author
                         )
-                        if nominee in eligible_players and (
+                        if nominee in live_eligible_players and (
                                 (nominee not in nominated and len(nominated) < 10)
                                 or (
                                         nominee not in nominated_by_paragon
@@ -9525,11 +9540,7 @@ class Game:
             return None, second_election
         if len(nominated) == 1:
             return nominated[0], second_election
-        election_players = [
-            player
-            for player in self.alive_players
-            if not player.is_jailed and not player.is_grumpy_silenced_today
-        ]
+        election_players = self._get_live_day_election_players()
         vote_view = DayElectionView(
             game=self,
             eligible_player_by_user_id={
@@ -9972,17 +9983,6 @@ class Game:
         await self.resolve_preacher_predictions(unique_night_deaths)
         if self.task:
             self.task.cancel()
-        await self.start_jailer_day_target_selection()
-        await self.start_junior_day_mark_selection()
-        await self.start_loudmouth_target_selection()
-        await self.start_avenger_target_selection()
-        await self.start_mayor_reveal_selection()
-        await self.start_werewolf_fan_reveal_selection()
-        await self.start_gunner_day_action_selection()
-        await self.start_beast_hunter_day_trap_selection()
-        await self.start_forger_day_actions()
-        await self.start_forged_sword_day_actions()
-        await self.start_alpha_day_wolf_relay()
         try:
             hidden_night_deaths: list[Player] = []
             if self.confusion_wolf_night_active:
@@ -10020,6 +10020,17 @@ class Game:
             await self.apply_grumpy_grandma_day_silence()
             await self.apply_voodoo_werewolf_day_mute()
             await self.apply_corruptor_day_glitch()
+            await self.start_jailer_day_target_selection()
+            await self.start_junior_day_mark_selection()
+            await self.start_loudmouth_target_selection()
+            await self.start_avenger_target_selection()
+            await self.start_mayor_reveal_selection()
+            await self.start_werewolf_fan_reveal_selection()
+            await self.start_gunner_day_action_selection()
+            await self.start_beast_hunter_day_trap_selection()
+            await self.start_forger_day_actions()
+            await self.start_forged_sword_day_actions()
+            await self.start_alpha_day_wolf_relay()
             await self.offer_fortune_card_reveals()
             await self.handle_priest_holy_water()
             if len(self.alive_players) < 2:
@@ -10653,21 +10664,42 @@ class Player:
             traceback_on_http_error: bool = False,
             prefer_multi_select: bool = False,
     ) -> list[Player]:
-        if self.is_jailed:
-            await self.send(
-                _(
-                    "🔒 You are jailed and cannot use your abilities right now."
-                    "\n{game_link}"
-                ).format(game_link=self.game.game_link)
-            )
-            return []
-        if self.is_sleeping_tonight:
-            await self.send(
-                _(
-                    "😴 You are asleep tonight and cannot use your abilities right"
-                    " now.\n{game_link}"
-                ).format(game_link=self.game.game_link)
-            )
+        async def ensure_selection_available() -> bool:
+            if self.is_jailed:
+                await self.send(
+                    _(
+                        "🔒 You are jailed and cannot use your abilities right now."
+                        "\n{game_link}"
+                    ).format(game_link=self.game.game_link)
+                )
+                return False
+            if self.is_sleeping_tonight:
+                await self.send(
+                    _(
+                        "😴 You are asleep tonight and cannot use your abilities right"
+                        " now.\n{game_link}"
+                    ).format(game_link=self.game.game_link)
+                )
+                return False
+            if not self.game.is_night_phase:
+                if self.is_corrupted_today:
+                    await self.send(
+                        _(
+                            "❓ You are corrupted and cannot use day abilities right"
+                            " now.\n{game_link}"
+                        ).format(game_link=self.game.game_link)
+                    )
+                    return False
+                if self.is_grumpy_silenced_today:
+                    await self.send(
+                        _(
+                            "😴 You cannot use day abilities right now.\n{game_link}"
+                        ).format(game_link=self.game.game_link)
+                    )
+                    return False
+            return True
+
+        if not await ensure_selection_available():
             return []
         if not list_of_users or amount <= 0:
             return []
@@ -10719,12 +10751,16 @@ class Player:
                 if traceback_on_http_error:
                     await send_traceback(self.game.ctx, error)
                 return []
+            if not await ensure_selection_available():
+                return []
             return [list_of_users[index] for index in selected_indices]
 
         async def select_from_dropdown(
             candidates: list[Player], *, can_dismiss: bool, header: str
         ) -> Player | None:
             if not candidates:
+                return None
+            if not await ensure_selection_available():
                 return None
             menu_title = header[:250]
             group_placeholder = _("Choose a group")
@@ -10773,6 +10809,8 @@ class Player:
                 if can_dismiss and chunk_index == 0:
                     return None
 
+                if not await ensure_selection_available():
+                    return None
                 selected_pool = chunks[chunk_index - 1 if can_dismiss else chunk_index]
 
             menu_entries = build_entries(selected_pool)
@@ -10791,6 +10829,8 @@ class Player:
             ).paginate(self.game.ctx, location=self.user)
 
             if can_dismiss and selection_index == 0:
+                return None
+            if not await ensure_selection_available():
                 return None
             return selected_pool[selection_index - 1 if can_dismiss else selection_index]
 
@@ -10831,6 +10871,8 @@ class Player:
                     await send_traceback(self.game.ctx, error)
                 break
 
+            if not await ensure_selection_available():
+                return []
             if selected_player is None:
                 if not required and not chosen:
                     return []
@@ -11240,6 +11282,14 @@ class Player:
 
     async def set_beast_hunter_trap(self, *, timeout: int | None = None) -> None:
         if self.dead or self.role != Role.BEAST_HUNTER:
+            return
+        if self.is_corrupted_today:
+            await self.send(
+                _(
+                    "❓ You are corrupted and cannot place or move your trap today."
+                    "\n{game_link}"
+                ).format(game_link=self.game.game_link)
+            )
             return
         if self.is_jailed or self.is_grumpy_silenced_today:
             await self.send(
