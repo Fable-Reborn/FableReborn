@@ -74,6 +74,8 @@ class TestChatGPTRepoContext(unittest.TestCase):
             root = Path(tmpdir)
             (root / "cogs" / "pets").mkdir(parents=True)
             (root / "cogs" / "battles" / "extensions").mkdir(parents=True)
+            (root / "cogs" / "battles" / "core").mkdir(parents=True)
+            (root / "cogs" / "slayspire").mkdir(parents=True)
             (root / "tests").mkdir(parents=True)
 
             (root / "cogs" / "pets" / "__init__.py").write_text(
@@ -92,6 +94,37 @@ class TestChatGPTRepoContext(unittest.TestCase):
                         '    """Resolve Quick Charge opener."""',
                         "    if 'static_shock' in pet.skill_effects:",
                         "        return 'static_shock'",
+                        "",
+                        "def process_skill_effects_on_attack(pet, target):",
+                        "    opener = _consume_quick_charge_opener(pet, target)",
+                        "    if opener:",
+                        "        return opener",
+                        "    return 'none'",
+                        "",
+                        "def process_skill_effects_per_turn(pet):",
+                        "    if getattr(pet, 'quick_charge_active', False):",
+                        "        return 'quick_charge_active'",
+                        "    return None",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (root / "cogs" / "battles" / "core" / "battle.py").write_text(
+                "\n".join(
+                    [
+                        "def get_turn_priority(combatant):",
+                        "    if getattr(combatant, 'quick_charge_active', False):",
+                        "        return 999",
+                        "    return 0",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (root / "cogs" / "slayspire" / "content.py").write_text(
+                "\n".join(
+                    [
+                        "def attack_bonus_if_enemy_status(value, status, *, bonus):",
+                        "    return {'bonus': bonus, 'status': status}",
                     ]
                 ),
                 encoding="utf-8",
@@ -109,15 +142,17 @@ class TestChatGPTRepoContext(unittest.TestCase):
             snippets = build_repo_context(
                 "What does Quick Charge do?",
                 root,
-                max_snippets=3,
-                max_context_chars=4000,
+                max_snippets=6,
+                max_context_chars=6000,
             )
 
-            self.assertGreaterEqual(len(snippets), 2)
-            top_paths = [snippet.path for snippet in snippets[:2]]
-            self.assertIn("cogs/pets/__init__.py", top_paths)
-            self.assertIn("cogs/battles/extensions/pets.py", top_paths)
-            self.assertTrue(all(not path.startswith("tests/") for path in top_paths))
+            self.assertGreaterEqual(len(snippets), 3)
+            paths = [snippet.path for snippet in snippets]
+            self.assertIn("cogs/pets/__init__.py", paths)
+            self.assertIn("cogs/battles/extensions/pets.py", paths)
+            self.assertIn("cogs/battles/core/battle.py", paths)
+            self.assertNotIn("cogs/slayspire/content.py", paths)
+            self.assertTrue(all(not path.startswith("tests/") for path in paths))
 
     def test_wants_technical_answer_only_for_explicitly_technical_prompts(self):
         self.assertFalse(wants_technical_answer("What does Quick Charge do?"))
@@ -135,14 +170,23 @@ class TestChatGPTRepoContext(unittest.TestCase):
                     [
                         "class Battles:",
                         "    async def jurytower_score(self, ctx, target):",
+                        "        if not self._ensure_jury_tower_dev_access(ctx):",
+                        "            return None",
                         '        """Show Jury Tower score breakdown and ranking."""',
                         "        snapshot = {'attack_base': 100, 'hp_base': 250, 'defense_base': 90}",
                         "        score = self._jury_scale_snapshot_score(snapshot)",
-                        "        bracket = self._jury_bracket_payload_from_score(score)",
-                        "        return bracket",
+                        "        summary = self._jury_rank_summary(score)",
+                        "        return summary",
+                        "",
+                        "    def _ensure_jury_tower_dev_access(self, ctx):",
+                        "        return True",
                         "",
                         "    def _jury_scale_snapshot_score(self, snapshot):",
                         "        return snapshot['attack_base'] + snapshot['defense_base'] + (snapshot['hp_base'] * 0.4)",
+                        "",
+                        "    def _jury_rank_summary(self, power_score):",
+                        "        payload = self._jury_bracket_payload_from_score(power_score)",
+                        "        return self._jury_render_rank(payload)",
                         "",
                         "    def _jury_bracket_payload_from_score(self, power_score):",
                         "        return self._jury_power_bracket_for_score(power_score)",
@@ -151,6 +195,18 @@ class TestChatGPTRepoContext(unittest.TestCase):
                         "        if power_score >= 250:",
                         "            return {'bracket_label': 'Iron III'}",
                         "        return {'bracket_label': 'Iron I'}",
+                        "",
+                        "    def _jury_render_rank(self, payload):",
+                        "        return f\"Rank: {payload['bracket_label']}\"",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (root / "cogs" / "battles" / "factory.py").write_text(
+                "\n".join(
+                    [
+                        "def create_jury_tower_battle(ctx, floor_data):",
+                        "    return {'jury_tower': True, 'ranking': 'not here', 'score': floor_data.get('score')}",
                     ]
                 ),
                 encoding="utf-8",
@@ -166,8 +222,17 @@ class TestChatGPTRepoContext(unittest.TestCase):
             joined_text = "\n".join(snippet.text for snippet in snippets)
             self.assertIn("jurytower_score", joined_text)
             self.assertIn("_jury_scale_snapshot_score", joined_text)
+            self.assertIn("_jury_rank_summary", joined_text)
             self.assertIn("_jury_bracket_payload_from_score", joined_text)
             self.assertIn("_jury_power_bracket_for_score", joined_text)
+            self.assertIn("_jury_render_rank", joined_text)
+            self.assertFalse(
+                any(
+                    snippet.text.lstrip().startswith("def _ensure_jury_tower_dev_access")
+                    for snippet in snippets
+                )
+            )
+            self.assertFalse(any(snippet.path == "cogs/battles/factory.py" for snippet in snippets))
 
 
 if __name__ == "__main__":

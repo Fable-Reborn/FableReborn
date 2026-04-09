@@ -22,11 +22,19 @@ DEFAULT_MAX_OUTPUT_TOKENS = 700
 MAX_FILE_BYTES = 1000000
 WINDOW_SIZE = 40
 WINDOW_OVERLAP = 10
-MAX_FOLLOW_SYMBOLS = 8
-MAX_FOLLOW_DEPTH = 4
+BASE_MAX_FOLLOW_BLOCKS = 16
+FOLLOW_QUEUE_MULTIPLIER = 6
+FOLLOW_SEED_COUNT = 2
+FOLLOW_MIN_SYMBOL_SCORE = 24.0
+MAX_PYTHON_BLOCK_LINES = 80
+MAX_PYTHON_BLOCK_EXCERPTS = 2
 SOURCE_EXTENSIONS = {".py", ".md", ".json", ".toml", ".sql"}
 ROOT_SOURCE_FILES = {"README.md", "config.py", "idlerpg.py", "launcher.py"}
 SOURCE_DIRS = {"cogs", "classes", "utils", "scripts", "tests"}
+EXCLUDED_SOURCE_PATHS = {
+    "cogs/chatgpt/__init__.py",
+    "tests/test_chatgpt_repo_context.py",
+}
 STOP_WORDS = {
     "a",
     "an",
@@ -38,10 +46,13 @@ STOP_WORDS = {
     "code",
     "command",
     "commands",
+    "describe",
     "does",
+    "do",
     "for",
     "from",
     "game",
+    "give",
     "how",
     "i",
     "in",
@@ -57,6 +68,7 @@ STOP_WORDS = {
     "question",
     "questions",
     "repo",
+    "tell",
     "the",
     "this",
     "to",
@@ -66,6 +78,7 @@ STOP_WORDS = {
     "why",
     "with",
 }
+SHORT_QUERY_TERMS = {"ai", "gm", "hp", "jt", "mp", "sp", "ui", "xp"}
 TECHNICAL_HINTS = {
     "attribute",
     "cite",
@@ -158,6 +171,52 @@ FOLLOW_IGNORE_SYMBOLS = {
     "sum",
     "tuple",
 }
+LOW_SIGNAL_SYMBOL_TOKENS = {
+    "build",
+    "clip",
+    "create",
+    "data",
+    "ensure",
+    "format",
+    "guard",
+    "help",
+    "info",
+    "load",
+    "normalize",
+    "preview",
+    "progress",
+    "render",
+    "save",
+    "shop",
+    "start",
+}
+HIGH_SIGNAL_SYMBOL_TOKENS = {
+    "apply",
+    "attack",
+    "battle",
+    "bonus",
+    "bracket",
+    "calculate",
+    "chance",
+    "cooldown",
+    "damage",
+    "effect",
+    "fight",
+    "logic",
+    "multiplier",
+    "payload",
+    "prestige",
+    "process",
+    "rank",
+    "ranking",
+    "resolve",
+    "result",
+    "reward",
+    "score",
+    "snapshot",
+    "state",
+    "update",
+}
 
 
 def _normalize_repo_path(path: Path, repo_root: Path) -> str:
@@ -187,11 +246,21 @@ def iter_repo_source_paths(repo_root: Path) -> list[Path]:
 
     for file_name in sorted(ROOT_SOURCE_FILES):
         path = repo_root / file_name
-        if path.is_file() and path.stat().st_size <= MAX_FILE_BYTES:
+        if (
+            path.is_file()
+            and path.stat().st_size <= MAX_FILE_BYTES
+            and _normalize_repo_path(path, repo_root) not in EXCLUDED_SOURCE_PATHS
+        ):
             results.append(path)
 
     for directory_name in sorted(SOURCE_DIRS):
-        results.extend(sorted(_iter_source_dir_paths(repo_root, directory_name)))
+        results.extend(
+            sorted(
+                path
+                for path in _iter_source_dir_paths(repo_root, directory_name)
+                if _normalize_repo_path(path, repo_root) not in EXCLUDED_SOURCE_PATHS
+            )
+        )
 
     return results
 
@@ -203,7 +272,11 @@ def extract_query_terms(question: str) -> list[str]:
     for raw_token in re.findall(r"[a-zA-Z0-9_./-]+", question.casefold()):
         for token in re.split(r"[_./-]+", raw_token):
             for variant in _expand_query_term_variants(token):
-                if len(variant) < 2 or variant.isdigit() or variant in STOP_WORDS:
+                if (
+                    (len(variant) < 3 and variant not in SHORT_QUERY_TERMS)
+                    or variant.isdigit()
+                    or variant in STOP_WORDS
+                ):
                     continue
                 if variant not in seen:
                     seen.add(variant)
@@ -281,7 +354,7 @@ def _path_priority_score(path_text: str, question_lower: str) -> float:
     if path_text.startswith(("cogs/", "classes/", "utils/")):
         score += 6
     if path_text.startswith("tests/") and "test" not in question_lower and "tests" not in question_lower:
-        score -= 140
+        score -= 260
     if path_text.startswith("tools/") and "tool" not in question_lower and "audit" not in question_lower:
         score -= 90
     if path_text.startswith(("assets/", "locales/")):
@@ -294,6 +367,8 @@ def _score_symbol_name(symbol_name: str | None, terms: list[str], phrases: list[
         return 0.0
 
     normalized = symbol_name.casefold().replace("_", " ")
+    symbol_tokens = set(re.findall(r"[a-z0-9]+", normalized))
+    term_set = set(terms)
     score = 0.0
     for phrase in phrases:
         if any(form in normalized for form in _phrase_forms(phrase)):
@@ -301,7 +376,27 @@ def _score_symbol_name(symbol_name: str | None, terms: list[str], phrases: list[
     for term in terms:
         if term in normalized:
             score += 12
+    for token in HIGH_SIGNAL_SYMBOL_TOKENS:
+        if token in symbol_tokens:
+            score += 14
+    for token in LOW_SIGNAL_SYMBOL_TOKENS:
+        if token in symbol_tokens and token not in term_set:
+            score -= 24
+    if symbol_tokens.intersection(LOW_SIGNAL_SYMBOL_TOKENS) and not symbol_tokens.intersection(HIGH_SIGNAL_SYMBOL_TOKENS):
+        score -= 40
     return score
+
+
+def _is_follow_worthy_symbol(symbol_name: str | None, terms: list[str], phrases: list[str]) -> bool:
+    if not symbol_name:
+        return False
+
+    normalized = symbol_name.casefold().replace("_", " ")
+    symbol_tokens = set(re.findall(r"[a-z0-9]+", normalized))
+    if symbol_tokens.intersection(LOW_SIGNAL_SYMBOL_TOKENS) and not symbol_tokens.intersection(HIGH_SIGNAL_SYMBOL_TOKENS):
+        return False
+
+    return _score_symbol_name(symbol_name, terms, phrases) >= FOLLOW_MIN_SYMBOL_SCORE
 
 
 def _score_text_block(
@@ -343,7 +438,7 @@ def _score_text_block(
         if text_hits:
             score += min(text_hits, 10) * 2
 
-    score += matched_terms * 8
+    score += (matched_terms * 4) + (matched_terms * matched_terms * 4)
     score += _path_priority_score(path_text, question_lower)
     return score
 
@@ -455,6 +550,45 @@ def _iter_python_blocks(text: str) -> Iterable[tuple[int, int, str, str]]:
             yield start_index + 1, end_index, "\n".join(block_lines), symbol_name
 
 
+def _iter_python_block_excerpt_windows(
+    block_start_line: int,
+    block_text: str,
+    terms: list[str],
+    phrases: list[str],
+) -> Iterable[tuple[int, int, str]]:
+    lines = block_text.splitlines()
+    if not lines:
+        return
+
+    if len(lines) <= MAX_PYTHON_BLOCK_LINES:
+        yield block_start_line, block_start_line + len(lines) - 1, block_text
+        return
+
+    targeted_windows = list(
+        _iter_targeted_windows(
+            block_text,
+            terms,
+            phrases,
+            window_size=MAX_PYTHON_BLOCK_LINES,
+        )
+    )
+    if targeted_windows:
+        for rel_start, rel_end, window_text in targeted_windows[:MAX_PYTHON_BLOCK_EXCERPTS]:
+            yield (
+                block_start_line + rel_start - 1,
+                block_start_line + rel_end - 1,
+                window_text,
+            )
+        return
+
+    excerpt_lines = lines[:MAX_PYTHON_BLOCK_LINES]
+    yield (
+        block_start_line,
+        block_start_line + len(excerpt_lines) - 1,
+        "\n".join(excerpt_lines),
+    )
+
+
 def _extract_called_symbols_from_text(text: str) -> list[str]:
     normalized_text = textwrap.dedent(text)
     symbols: list[str] = []
@@ -500,6 +634,7 @@ def _collect_follow_snippets(
     question: str,
     terms: list[str],
     phrases: list[str],
+    max_follow_blocks: int,
 ) -> list[RankedSnippet]:
     follow_candidates: list[RankedSnippet] = []
     seen_symbols: set[str] = set()
@@ -507,16 +642,23 @@ def _collect_follow_snippets(
         (snippet.path, snippet.start_line, snippet.end_line)
         for snippet in snippets
     }
-    queue: list[tuple[str, int]] = []
+    queue: list[tuple[float, str, int]] = []
+    max_queue_pops = max_follow_blocks * FOLLOW_QUEUE_MULTIPLIER
+    queue_pops = 0
 
-    for snippet in snippets:
+    seed_snippets = snippets[: min(FOLLOW_SEED_COUNT, len(snippets))]
+    for snippet in seed_snippets:
         for symbol_name in _extract_called_symbols_from_text(snippet.text):
             if symbol_name in seen_symbols:
                 continue
-            queue.append((symbol_name, 0))
+            if not _is_follow_worthy_symbol(symbol_name, terms, phrases):
+                continue
+            queue.append((snippet.score, symbol_name, 0))
 
-    while queue and len(follow_candidates) < MAX_FOLLOW_SYMBOLS:
-        symbol_name, depth = queue.pop(0)
+    while queue and len(follow_candidates) < max_follow_blocks and queue_pops < max_queue_pops:
+        queue.sort(key=lambda item: item[0], reverse=True)
+        parent_priority, symbol_name, depth = queue.pop(0)
+        queue_pops += 1
         if symbol_name in seen_symbols:
             continue
         seen_symbols.add(symbol_name)
@@ -526,36 +668,53 @@ def _collect_follow_snippets(
             continue
 
         for path_text, start_line, end_line, block_text in blocks:
-            ref = (path_text, start_line, end_line)
-            if ref in seen_refs:
-                continue
+            best_excerpt = None
+            best_excerpt_relevance = 0.0
+            for excerpt_start, excerpt_end, excerpt_text in _iter_python_block_excerpt_windows(
+                start_line,
+                block_text,
+                terms,
+                phrases,
+            ):
+                ref = (path_text, excerpt_start, excerpt_end)
+                if ref in seen_refs:
+                    continue
+                excerpt_relevance = (
+                    _score_text_block(question, terms, phrases, path_text, excerpt_text)
+                    + _score_symbol_name(symbol_name, terms, phrases)
+                )
+                if excerpt_relevance > best_excerpt_relevance:
+                    best_excerpt_relevance = excerpt_relevance
+                    best_excerpt = (excerpt_start, excerpt_end, excerpt_text)
 
+            if best_excerpt is None or best_excerpt_relevance <= 0:
+                continue
+            excerpt_start, excerpt_end, excerpt_text = best_excerpt
             follow_score = (
-                _score_text_block(question, terms, phrases, path_text, block_text)
-                + _score_symbol_name(symbol_name, terms, phrases)
-                + 180
-                - (depth * 20)
+                best_excerpt_relevance
+                + min(80.0, parent_priority * 0.15)
+                - min(depth * 14, 70)
             )
             follow_candidates.append(
                 RankedSnippet(
                     path=path_text,
-                    start_line=start_line,
-                    end_line=end_line,
+                    start_line=excerpt_start,
+                    end_line=excerpt_end,
                     score=follow_score,
-                    text=block_text.strip(),
+                    text=excerpt_text.strip(),
                 )
             )
-            seen_refs.add(ref)
-
-            if depth >= MAX_FOLLOW_DEPTH - 1:
-                continue
+            seen_refs.add((path_text, excerpt_start, excerpt_end))
 
             for nested_symbol in _extract_called_symbols_from_text(block_text):
                 if nested_symbol in seen_symbols:
                     continue
-                queue.append((nested_symbol, depth + 1))
+                if not _is_follow_worthy_symbol(nested_symbol, terms, phrases):
+                    continue
+                nested_priority = max(20.0, follow_score * 0.85)
+                queue.append((nested_priority, nested_symbol, depth + 1))
 
-            if len(follow_candidates) >= MAX_FOLLOW_SYMBOLS:
+            if len(follow_candidates) >= max_follow_blocks:
                 break
 
     return follow_candidates
@@ -566,25 +725,111 @@ def _select_ranked_snippets(
     *,
     max_snippets: int,
     max_context_chars: int,
+    max_per_path: int | None = None,
 ) -> list[RankedSnippet]:
     selected: list[RankedSnippet] = []
     total_chars = 0
     seen_refs: set[tuple[str, int, int]] = set()
+    path_counts: dict[str, int] = {}
+    ordered_candidates = sorted(snippet_candidates, key=lambda item: item.score, reverse=True)
+    if not ordered_candidates:
+        return []
+    min_score_threshold = max(60.0, ordered_candidates[0].score * 0.22)
 
-    for snippet in sorted(snippet_candidates, key=lambda item: item.score, reverse=True):
+    for snippet in ordered_candidates:
         if len(selected) >= max_snippets:
             break
         if not snippet.text:
             continue
+        if snippet.score < min_score_threshold:
+            continue
         ref = (snippet.path, snippet.start_line, snippet.end_line)
         if ref in seen_refs:
+            continue
+        if max_per_path is not None and path_counts.get(snippet.path, 0) >= max_per_path:
             continue
         projected_total = total_chars + len(snippet.text)
         if selected and projected_total > max_context_chars:
             continue
         seen_refs.add(ref)
+        path_counts[snippet.path] = path_counts.get(snippet.path, 0) + 1
         total_chars = projected_total
         selected.append(snippet)
+
+    return selected
+
+
+def _assemble_context_snippets(
+    primary_snippets: list[RankedSnippet],
+    follow_snippets: list[RankedSnippet],
+    anchor_snippets: list[RankedSnippet],
+    snippet_candidates: list[RankedSnippet],
+    *,
+    max_snippets: int,
+    max_context_chars: int,
+) -> list[RankedSnippet]:
+    selected: list[RankedSnippet] = []
+    seen_refs: set[tuple[str, int, int]] = set()
+    total_chars = 0
+    path_counts: dict[str, int] = {}
+
+    def try_add(snippet: RankedSnippet, *, path_cap: int | None = None) -> bool:
+        nonlocal total_chars
+
+        if len(selected) >= max_snippets or not snippet.text:
+            return False
+
+        ref = (snippet.path, snippet.start_line, snippet.end_line)
+        if ref in seen_refs:
+            return False
+        if path_cap is not None and path_counts.get(snippet.path, 0) >= path_cap:
+            return False
+
+        projected_total = total_chars + len(snippet.text)
+        if selected and projected_total > max_context_chars:
+            return False
+
+        seen_refs.add(ref)
+        path_counts[snippet.path] = path_counts.get(snippet.path, 0) + 1
+        total_chars = projected_total
+        selected.append(snippet)
+        return True
+
+    if primary_snippets:
+        try_add(primary_snippets[0], path_cap=4)
+
+    ordered_follow = sorted(follow_snippets, key=lambda item: item.score, reverse=True)
+    follow_added = 0
+    if primary_snippets and ordered_follow:
+        primary_score = primary_snippets[0].score
+        top_follow_score = ordered_follow[0].score
+        follow_threshold = max(45.0, primary_score * 0.25, top_follow_score * 0.4)
+        follow_quota = max(2, max_snippets // 2)
+        for snippet in ordered_follow:
+            if follow_added >= follow_quota or len(selected) >= max_snippets:
+                break
+            if snippet.score < follow_threshold:
+                continue
+            if try_add(snippet, path_cap=4):
+                follow_added += 1
+
+    if follow_added >= 2 and len(selected) >= min(max_snippets, 3):
+        return selected
+
+    for snippet in anchor_snippets:
+        if len(selected) >= max_snippets:
+            break
+        try_add(snippet, path_cap=1)
+
+    fill_threshold = 0.0
+    if primary_snippets:
+        fill_threshold = max(60.0, primary_snippets[0].score * 0.25)
+    for snippet in sorted(snippet_candidates, key=lambda item: item.score, reverse=True):
+        if len(selected) >= max_snippets:
+            break
+        if fill_threshold and snippet.score < fill_threshold:
+            break
+        try_add(snippet, path_cap=2)
 
     return selected
 
@@ -640,8 +885,16 @@ def build_repo_context(
                 )
                 if block_score <= 0:
                     continue
-                candidate_windows.append((start_line, end_line, block_text, symbol_name))
-                seen_window_refs.add((start_line, end_line))
+                for excerpt_start, excerpt_end, excerpt_text in _iter_python_block_excerpt_windows(
+                    start_line,
+                    block_text,
+                    terms,
+                    phrases,
+                ):
+                    if (excerpt_start, excerpt_end) in seen_window_refs:
+                        continue
+                    candidate_windows.append((excerpt_start, excerpt_end, excerpt_text, symbol_name))
+                    seen_window_refs.add((excerpt_start, excerpt_end))
 
         targeted_windows = list(_iter_targeted_windows(text, terms, phrases))
         for start_line, end_line, window_text in targeted_windows:
@@ -697,22 +950,29 @@ def build_repo_context(
                 )
             )
 
-    provisional = _select_ranked_snippets(
+    primary_snippets = _select_ranked_snippets(
         snippet_candidates,
-        max_snippets=max_snippets,
+        max_snippets=FOLLOW_SEED_COUNT,
         max_context_chars=max_context_chars,
     )
+    anchor_snippets = _select_ranked_snippets(
+        snippet_candidates,
+        max_snippets=max(max_snippets, 4),
+        max_context_chars=max_context_chars,
+        max_per_path=1,
+    )
     follow_snippets = _collect_follow_snippets(
-        provisional,
+        primary_snippets,
         python_symbol_defs,
         question=question,
         terms=terms,
         phrases=phrases,
+        max_follow_blocks=max(BASE_MAX_FOLLOW_BLOCKS, max_snippets * 4),
     )
-    if follow_snippets:
-        snippet_candidates.extend(follow_snippets)
-
-    return _select_ranked_snippets(
+    return _assemble_context_snippets(
+        primary_snippets,
+        follow_snippets,
+        anchor_snippets,
         snippet_candidates,
         max_snippets=max_snippets,
         max_context_chars=max_context_chars,
