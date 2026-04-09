@@ -125,6 +125,50 @@ class TestChatGPTRepoContext(unittest.TestCase):
         self.assertTrue(wants_technical_answer("What does Quick Charge do internally?"))
         self.assertTrue(wants_technical_answer("Show the code references for Quick Charge."))
 
+    def test_build_repo_context_follows_called_helper_methods(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "cogs" / "battles").mkdir(parents=True)
+
+            (root / "cogs" / "battles" / "__init__.py").write_text(
+                "\n".join(
+                    [
+                        "class Battles:",
+                        "    async def jurytower_score(self, ctx, target):",
+                        '        """Show Jury Tower score breakdown and ranking."""',
+                        "        snapshot = {'attack_base': 100, 'hp_base': 250, 'defense_base': 90}",
+                        "        score = self._jury_scale_snapshot_score(snapshot)",
+                        "        bracket = self._jury_bracket_payload_from_score(score)",
+                        "        return bracket",
+                        "",
+                        "    def _jury_scale_snapshot_score(self, snapshot):",
+                        "        return snapshot['attack_base'] + snapshot['defense_base'] + (snapshot['hp_base'] * 0.4)",
+                        "",
+                        "    def _jury_bracket_payload_from_score(self, power_score):",
+                        "        return self._jury_power_bracket_for_score(power_score)",
+                        "",
+                        "    def _jury_power_bracket_for_score(self, power_score):",
+                        "        if power_score >= 250:",
+                        "            return {'bracket_label': 'Iron III'}",
+                        "        return {'bracket_label': 'Iron I'}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            snippets = build_repo_context(
+                "How does Jury Tower ranking work?",
+                root,
+                max_snippets=4,
+                max_context_chars=5000,
+            )
+
+            joined_text = "\n".join(snippet.text for snippet in snippets)
+            self.assertIn("jurytower_score", joined_text)
+            self.assertIn("_jury_scale_snapshot_score", joined_text)
+            self.assertIn("_jury_bracket_payload_from_score", joined_text)
+            self.assertIn("_jury_power_bracket_for_score", joined_text)
+
 
 if __name__ == "__main__":
     unittest.main()

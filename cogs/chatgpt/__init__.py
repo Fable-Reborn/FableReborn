@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import re
+import textwrap
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +22,8 @@ DEFAULT_MAX_OUTPUT_TOKENS = 700
 MAX_FILE_BYTES = 1000000
 WINDOW_SIZE = 40
 WINDOW_OVERLAP = 10
+MAX_FOLLOW_SYMBOLS = 8
+MAX_FOLLOW_DEPTH = 4
 SOURCE_EXTENSIONS = {".py", ".md", ".json", ".toml", ".sql"}
 ROOT_SOURCE_FILES = {"README.md", "config.py", "idlerpg.py", "launcher.py"}
 SOURCE_DIRS = {"cogs", "classes", "utils", "scripts", "tests"}
@@ -57,6 +61,8 @@ STOP_WORDS = {
     "this",
     "to",
     "what",
+    "work",
+    "works",
     "why",
     "with",
 }
@@ -107,6 +113,17 @@ BASE_SYSTEM_INSTRUCTIONS = (
     "If the excerpts are not enough, say that clearly. "
     "Do not claim to have inspected files that were not included in the prompt."
 )
+TERM_SYNONYMS = {
+    "rank": ("ranking", "ranks", "bracket", "score", "tier"),
+    "ranking": ("rank", "ranks", "bracket", "score", "tier"),
+    "ranks": ("rank", "ranking", "bracket", "score", "tier"),
+    "score": ("rank", "ranking", "bracket", "tier"),
+    "bracket": ("rank", "ranking", "score", "tier"),
+    "tier": ("rank", "ranking", "bracket", "score"),
+    "prestige": ("cycle", "cycles", "reset"),
+    "cycles": ("cycle", "prestige"),
+    "checkpoint": ("boss", "progress"),
+}
 
 
 @dataclass(frozen=True)
@@ -120,6 +137,27 @@ class RankedSnippet:
     @property
     def reference(self) -> str:
         return f"{self.path}:{self.start_line}-{self.end_line}"
+
+
+PYTHON_DEF_RE = re.compile(r"^(\s*)(?:async\s+def|def)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+PYTHON_CLASS_RE = re.compile(r"^(\s*)class\s+([A-Za-z_][A-Za-z0-9_]*)\b")
+FOLLOW_CALL_RE = re.compile(r"self\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+FOLLOW_IGNORE_SYMBOLS = {
+    "bool",
+    "dict",
+    "float",
+    "int",
+    "len",
+    "list",
+    "max",
+    "min",
+    "print",
+    "round",
+    "set",
+    "str",
+    "sum",
+    "tuple",
+}
 
 
 def _normalize_repo_path(path: Path, repo_root: Path) -> str:
@@ -164,13 +202,39 @@ def extract_query_terms(question: str) -> list[str]:
 
     for raw_token in re.findall(r"[a-zA-Z0-9_./-]+", question.casefold()):
         for token in re.split(r"[_./-]+", raw_token):
-            if len(token) < 2 or token.isdigit() or token in STOP_WORDS:
-                continue
-            if token not in seen:
-                seen.add(token)
-                terms.append(token)
+            for variant in _expand_query_term_variants(token):
+                if len(variant) < 2 or variant.isdigit() or variant in STOP_WORDS:
+                    continue
+                if variant not in seen:
+                    seen.add(variant)
+                    terms.append(variant)
 
     return terms
+
+
+def _expand_query_term_variants(token: str) -> list[str]:
+    normalized = token.casefold().strip()
+    if not normalized:
+        return []
+
+    variants = [normalized]
+    if normalized.endswith("ing") and len(normalized) > 5:
+        variants.append(normalized[:-3])
+    if normalized.endswith("ed") and len(normalized) > 4:
+        variants.append(normalized[:-2])
+    if normalized.endswith("es") and len(normalized) > 4:
+        variants.append(normalized[:-2])
+    if normalized.endswith("s") and len(normalized) > 4:
+        variants.append(normalized[:-1])
+    variants.extend(TERM_SYNONYMS.get(normalized, ()))
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for variant in variants:
+        if variant and variant not in seen:
+            seen.add(variant)
+            deduped.append(variant)
+    return deduped
 
 
 def extract_query_phrases(question: str) -> list[str]:
@@ -225,6 +289,21 @@ def _path_priority_score(path_text: str, question_lower: str) -> float:
     return score
 
 
+def _score_symbol_name(symbol_name: str | None, terms: list[str], phrases: list[str]) -> float:
+    if not symbol_name:
+        return 0.0
+
+    normalized = symbol_name.casefold().replace("_", " ")
+    score = 0.0
+    for phrase in phrases:
+        if any(form in normalized for form in _phrase_forms(phrase)):
+            score += 42
+    for term in terms:
+        if term in normalized:
+            score += 12
+    return score
+
+
 def _score_text_block(
     question: str,
     terms: list[str],
@@ -264,7 +343,7 @@ def _score_text_block(
         if text_hits:
             score += min(text_hits, 10) * 2
 
-    score += matched_terms * 4
+    score += matched_terms * 8
     score += _path_priority_score(path_text, question_lower)
     return score
 
@@ -328,6 +407,188 @@ def _iter_targeted_windows(
         yield start_index + 1, end_index, "\n".join(window)
 
 
+def _iter_python_blocks(text: str) -> Iterable[tuple[int, int, str, str]]:
+    lines = text.splitlines()
+    if not lines:
+        return
+
+    boundaries: list[tuple[int, int, str | None, str]] = []
+    decorator_start: int | None = None
+
+    for index, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith("@"):
+            if decorator_start is None:
+                decorator_start = index
+            continue
+
+        match = PYTHON_DEF_RE.match(line)
+        if match:
+            indent = len(match.group(1))
+            start_index = decorator_start if decorator_start is not None else index
+            boundaries.append((start_index, indent, match.group(2), "def"))
+            decorator_start = None
+            continue
+
+        class_match = PYTHON_CLASS_RE.match(line)
+        if class_match:
+            indent = len(class_match.group(1))
+            boundaries.append((index, indent, None, "class"))
+            decorator_start = None
+            continue
+
+        if stripped and not stripped.startswith("#"):
+            decorator_start = None
+
+    def_boundaries = [boundary for boundary in boundaries if boundary[3] == "def"]
+
+    for position, (start_index, indent, symbol_name, _) in enumerate(def_boundaries):
+        end_index = len(lines)
+        for next_start, next_indent, _, _ in boundaries:
+            if next_start <= start_index:
+                continue
+            if next_indent <= indent:
+                end_index = next_start
+                break
+        block_lines = lines[start_index:end_index]
+        if block_lines:
+            yield start_index + 1, end_index, "\n".join(block_lines), symbol_name
+
+
+def _extract_called_symbols_from_text(text: str) -> list[str]:
+    normalized_text = textwrap.dedent(text)
+    symbols: list[str] = []
+    seen: set[str] = set()
+
+    try:
+        tree = ast.parse(normalized_text)
+    except SyntaxError:
+        for match in FOLLOW_CALL_RE.finditer(text):
+            symbol_name = match.group(1)
+            if symbol_name in FOLLOW_IGNORE_SYMBOLS or symbol_name in seen:
+                continue
+            seen.add(symbol_name)
+            symbols.append(symbol_name)
+        return symbols
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+
+        symbol_name = None
+        if isinstance(node.func, ast.Name):
+            symbol_name = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            symbol_name = node.func.attr
+
+        if not symbol_name:
+            continue
+        if len(symbol_name) < 3 or symbol_name in FOLLOW_IGNORE_SYMBOLS:
+            continue
+        if symbol_name in seen:
+            continue
+        seen.add(symbol_name)
+        symbols.append(symbol_name)
+
+    return symbols
+
+
+def _collect_follow_snippets(
+    snippets: list[RankedSnippet],
+    python_symbol_defs: dict[str, list[tuple[str, int, int, str]]],
+    *,
+    question: str,
+    terms: list[str],
+    phrases: list[str],
+) -> list[RankedSnippet]:
+    follow_candidates: list[RankedSnippet] = []
+    seen_symbols: set[str] = set()
+    seen_refs = {
+        (snippet.path, snippet.start_line, snippet.end_line)
+        for snippet in snippets
+    }
+    queue: list[tuple[str, int]] = []
+
+    for snippet in snippets:
+        for symbol_name in _extract_called_symbols_from_text(snippet.text):
+            if symbol_name in seen_symbols:
+                continue
+            queue.append((symbol_name, 0))
+
+    while queue and len(follow_candidates) < MAX_FOLLOW_SYMBOLS:
+        symbol_name, depth = queue.pop(0)
+        if symbol_name in seen_symbols:
+            continue
+        seen_symbols.add(symbol_name)
+
+        blocks = python_symbol_defs.get(symbol_name, [])
+        if not blocks:
+            continue
+
+        for path_text, start_line, end_line, block_text in blocks:
+            ref = (path_text, start_line, end_line)
+            if ref in seen_refs:
+                continue
+
+            follow_score = (
+                _score_text_block(question, terms, phrases, path_text, block_text)
+                + _score_symbol_name(symbol_name, terms, phrases)
+                + 180
+                - (depth * 20)
+            )
+            follow_candidates.append(
+                RankedSnippet(
+                    path=path_text,
+                    start_line=start_line,
+                    end_line=end_line,
+                    score=follow_score,
+                    text=block_text.strip(),
+                )
+            )
+            seen_refs.add(ref)
+
+            if depth >= MAX_FOLLOW_DEPTH - 1:
+                continue
+
+            for nested_symbol in _extract_called_symbols_from_text(block_text):
+                if nested_symbol in seen_symbols:
+                    continue
+                queue.append((nested_symbol, depth + 1))
+
+            if len(follow_candidates) >= MAX_FOLLOW_SYMBOLS:
+                break
+
+    return follow_candidates
+
+
+def _select_ranked_snippets(
+    snippet_candidates: list[RankedSnippet],
+    *,
+    max_snippets: int,
+    max_context_chars: int,
+) -> list[RankedSnippet]:
+    selected: list[RankedSnippet] = []
+    total_chars = 0
+    seen_refs: set[tuple[str, int, int]] = set()
+
+    for snippet in sorted(snippet_candidates, key=lambda item: item.score, reverse=True):
+        if len(selected) >= max_snippets:
+            break
+        if not snippet.text:
+            continue
+        ref = (snippet.path, snippet.start_line, snippet.end_line)
+        if ref in seen_refs:
+            continue
+        projected_total = total_chars + len(snippet.text)
+        if selected and projected_total > max_context_chars:
+            continue
+        seen_refs.add(ref)
+        total_chars = projected_total
+        selected.append(snippet)
+
+    return selected
+
+
 def build_repo_context(
     question: str,
     repo_root: Path,
@@ -339,6 +600,7 @@ def build_repo_context(
     terms = extract_query_terms(question)
     phrases = extract_query_phrases(question)
     file_candidates: list[tuple[float, Path, str]] = []
+    python_symbol_defs: dict[str, list[tuple[str, int, int, str]]] = {}
 
     for path in iter_repo_source_paths(repo_root):
         try:
@@ -363,15 +625,43 @@ def build_repo_context(
     for file_score, path, text in sorted(file_candidates, key=lambda item: item[0], reverse=True)[:12]:
         path_text = _normalize_repo_path(path, repo_root)
         best_for_file: list[RankedSnippet] = []
-        targeted_windows = list(_iter_targeted_windows(text, terms, phrases))
-        fallback_windows = list(_iter_line_windows(text))
-        candidate_windows = targeted_windows + [
-            window for window in fallback_windows
-            if window not in targeted_windows
-        ]
+        candidate_windows: list[tuple[int, int, str, str | None]] = []
+        seen_window_refs: set[tuple[int, int]] = set()
 
-        for start_line, end_line, window_text in candidate_windows:
-            window_score = _score_text_block(question, terms, phrases, path_text, window_text) + (file_score * 0.15)
+        if path.suffix.lower() == ".py":
+            python_blocks = list(_iter_python_blocks(text))
+            for start_line, end_line, block_text, symbol_name in python_blocks:
+                python_symbol_defs.setdefault(symbol_name, []).append(
+                    (path_text, start_line, end_line, block_text)
+                )
+                block_score = (
+                    _score_text_block(question, terms, phrases, path_text, block_text)
+                    + _score_symbol_name(symbol_name, terms, phrases)
+                )
+                if block_score <= 0:
+                    continue
+                candidate_windows.append((start_line, end_line, block_text, symbol_name))
+                seen_window_refs.add((start_line, end_line))
+
+        targeted_windows = list(_iter_targeted_windows(text, terms, phrases))
+        for start_line, end_line, window_text in targeted_windows:
+            if (start_line, end_line) in seen_window_refs:
+                continue
+            candidate_windows.append((start_line, end_line, window_text, None))
+            seen_window_refs.add((start_line, end_line))
+
+        for start_line, end_line, window_text in _iter_line_windows(text):
+            if (start_line, end_line) in seen_window_refs:
+                continue
+            candidate_windows.append((start_line, end_line, window_text, None))
+            seen_window_refs.add((start_line, end_line))
+
+        for start_line, end_line, window_text, symbol_name in candidate_windows:
+            window_score = (
+                _score_text_block(question, terms, phrases, path_text, window_text)
+                + _score_symbol_name(symbol_name, terms, phrases)
+                + (file_score * 0.15)
+            )
             if window_score <= 0:
                 continue
             best_for_file.append(
@@ -407,26 +697,26 @@ def build_repo_context(
                 )
             )
 
-    selected: list[RankedSnippet] = []
-    total_chars = 0
-    seen_refs: set[tuple[str, int, int]] = set()
+    provisional = _select_ranked_snippets(
+        snippet_candidates,
+        max_snippets=max_snippets,
+        max_context_chars=max_context_chars,
+    )
+    follow_snippets = _collect_follow_snippets(
+        provisional,
+        python_symbol_defs,
+        question=question,
+        terms=terms,
+        phrases=phrases,
+    )
+    if follow_snippets:
+        snippet_candidates.extend(follow_snippets)
 
-    for snippet in sorted(snippet_candidates, key=lambda item: item.score, reverse=True):
-        if len(selected) >= max_snippets:
-            break
-        if not snippet.text:
-            continue
-        ref = (snippet.path, snippet.start_line, snippet.end_line)
-        if ref in seen_refs:
-            continue
-        projected_total = total_chars + len(snippet.text)
-        if selected and projected_total > max_context_chars:
-            continue
-        seen_refs.add(ref)
-        total_chars = projected_total
-        selected.append(snippet)
-
-    return selected
+    return _select_ranked_snippets(
+        snippet_candidates,
+        max_snippets=max_snippets,
+        max_context_chars=max_context_chars,
+    )
 
 
 def format_repo_context(snippets: list[RankedSnippet]) -> str:
