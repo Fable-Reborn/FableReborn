@@ -3,7 +3,7 @@ import unittest
 
 from pathlib import Path
 
-from cogs.chatgpt import build_repo_context, iter_repo_source_paths
+from cogs.chatgpt import build_repo_context, iter_repo_source_paths, wants_technical_answer
 
 
 class TestChatGPTRepoContext(unittest.TestCase):
@@ -118,6 +118,12 @@ class TestChatGPTRepoContext(unittest.TestCase):
             self.assertIn("cogs/pets/__init__.py", top_paths)
             self.assertIn("cogs/battles/extensions/pets.py", top_paths)
             self.assertTrue(all(not path.startswith("tests/") for path in top_paths))
+
+    def test_wants_technical_answer_only_for_explicitly_technical_prompts(self):
+        self.assertFalse(wants_technical_answer("What does Quick Charge do?"))
+        self.assertFalse(wants_technical_answer("Explain this for a player."))
+        self.assertTrue(wants_technical_answer("What does Quick Charge do internally?"))
+        self.assertTrue(wants_technical_answer("Show the code references for Quick Charge."))
 
 
 if __name__ == "__main__":

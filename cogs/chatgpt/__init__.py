@@ -60,12 +60,51 @@ STOP_WORDS = {
     "why",
     "with",
 }
-SYSTEM_INSTRUCTIONS = (
+TECHNICAL_HINTS = {
+    "attribute",
+    "cite",
+    "cites",
+    "citation",
+    "citations",
+    "class",
+    "code",
+    "coder",
+    "coders",
+    "developer",
+    "developers",
+    "dev",
+    "debug",
+    "excerpt",
+    "excerpts",
+    "file",
+    "files",
+    "flag",
+    "function",
+    "implementation",
+    "implemented",
+    "internally",
+    "line",
+    "lines",
+    "logic",
+    "method",
+    "proof",
+    "prove",
+    "reference",
+    "references",
+    "runtime",
+    "show source",
+    "show sources",
+    "show code",
+    "source",
+    "sources",
+    "technical",
+    "technically",
+    "variable",
+}
+BASE_SYSTEM_INSTRUCTIONS = (
     "You answer questions about the FableReborn Discord bot codebase. "
     "Use only the supplied repository excerpts. "
     "If the excerpts are not enough, say that clearly. "
-    "Be concise, practical, and cite concrete claims with bracketed references like "
-    "[cogs/raidbuilder/__init__.py:120-160]. "
     "Do not claim to have inspected files that were not included in the prompt."
 )
 
@@ -443,6 +482,30 @@ def split_for_discord(text: str, limit: int = 1900) -> list[str]:
     return chunks
 
 
+def wants_technical_answer(question: str) -> bool:
+    question_lower = question.casefold()
+    return any(hint in question_lower for hint in TECHNICAL_HINTS)
+
+
+def build_system_instructions(question: str) -> str:
+    if wants_technical_answer(question):
+        return (
+            f"{BASE_SYSTEM_INSTRUCTIONS} "
+            "Answer for a technical reader. "
+            "Include concrete implementation details when useful. "
+            "Cite concrete claims with bracketed references like "
+            "[cogs/raidbuilder/__init__.py:120-160]."
+        )
+
+    return (
+        f"{BASE_SYSTEM_INSTRUCTIONS} "
+        "Default to a non-technical, player-facing explanation in plain English. "
+        "Focus on what the feature does in practice, not internal implementation details. "
+        "Avoid code terms, variable names, file paths, and citations unless the user explicitly asks for them. "
+        "Keep the answer natural and easy to read."
+    )
+
+
 class ChatGPTCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -471,11 +534,11 @@ class ChatGPTCog(commands.Cog):
             f"User question:\n{question.strip()}\n\n"
             "Repository excerpts:\n"
             f"{format_repo_context(snippets)}\n\n"
-            "Answer the question using the excerpts only. Cite claims with the provided file references."
+            "Answer the question using the excerpts only."
         )
         response = await self.client.responses.create(
             model=self.model,
-            instructions=SYSTEM_INSTRUCTIONS,
+            instructions=build_system_instructions(question),
             input=prompt,
             max_output_tokens=self.max_output_tokens,
             reasoning={"effort": self.reasoning_effort},
@@ -486,7 +549,14 @@ class ChatGPTCog(commands.Cog):
             return answer
         raise RuntimeError("OpenAI returned an empty response.")
 
-    async def _send_answer(self, ctx, answer: str, snippets: list[RankedSnippet]) -> None:
+    async def _send_answer(
+        self,
+        ctx,
+        answer: str,
+        snippets: list[RankedSnippet],
+        *,
+        include_sources: bool,
+    ) -> None:
         mention = ctx.author.mention
         sources = "Sources: " + ", ".join(f"`{snippet.reference}`" for snippet in snippets)
         message_parts = split_for_discord(answer)
@@ -495,14 +565,20 @@ class ChatGPTCog(commands.Cog):
             return
 
         single_message = f"{mention} {message_parts[0]}"
-        if len(message_parts) == 1 and len(single_message) + len(sources) + 2 <= 1900:
-            await ctx.send(f"{single_message}\n\n{sources}")
+        if len(message_parts) == 1 and (
+            not include_sources or len(single_message) + len(sources) + 2 <= 1900
+        ):
+            if include_sources:
+                await ctx.send(f"{single_message}\n\n{sources}")
+            else:
+                await ctx.send(single_message)
             return
 
         await ctx.send(f"{mention} {message_parts[0]}")
         for part in message_parts[1:]:
             await ctx.send(part)
-        await ctx.send(sources)
+        if include_sources:
+            await ctx.send(sources)
 
     @commands.command(
         name="askme",
@@ -539,7 +615,12 @@ class ChatGPTCog(commands.Cog):
                 await ctx.send(f"{ctx.author.mention} Codex request failed: {exc}")
                 return
 
-        await self._send_answer(ctx, answer, snippets)
+        await self._send_answer(
+            ctx,
+            answer,
+            snippets,
+            include_sources=wants_technical_answer(question),
+        )
 
 
 async def setup(bot):
