@@ -17,7 +17,7 @@ DEFAULT_REASONING_EFFORT = "medium"
 DEFAULT_MAX_SNIPPETS = 6
 DEFAULT_MAX_CONTEXT_CHARS = 16000
 DEFAULT_MAX_OUTPUT_TOKENS = 700
-MAX_FILE_BYTES = 180000
+MAX_FILE_BYTES = 1000000
 WINDOW_SIZE = 40
 WINDOW_OVERLAP = 10
 SOURCE_EXTENSIONS = {".py", ".md", ".json", ".toml", ".sql"}
@@ -134,16 +134,81 @@ def extract_query_terms(question: str) -> list[str]:
     return terms
 
 
-def _score_text_block(question: str, terms: list[str], path_text: str, text: str) -> float:
+def extract_query_phrases(question: str) -> list[str]:
+    seen: set[str] = set()
+    phrases: list[str] = []
+
+    for phrase in re.findall(r'"([^"]+)"|\'([^\']+)\'', question):
+        value = (phrase[0] or phrase[1]).strip()
+        normalized = " ".join(value.casefold().split())
+        if len(normalized) >= 3 and normalized not in seen:
+            seen.add(normalized)
+            phrases.append(normalized)
+
+    title_case_pattern = re.compile(r"\b(?:[A-Z][A-Za-z0-9']+\s+){1,}[A-Z][A-Za-z0-9']+\b")
+    for match in title_case_pattern.finditer(question):
+        normalized = " ".join(match.group(0).casefold().split())
+        if normalized not in seen:
+            seen.add(normalized)
+            phrases.append(normalized)
+
+    snake_case_pattern = re.compile(r"\b[a-z0-9]+(?:_[a-z0-9]+)+\b", re.IGNORECASE)
+    for match in snake_case_pattern.finditer(question):
+        normalized = match.group(0).casefold().replace("_", " ")
+        if normalized not in seen:
+            seen.add(normalized)
+            phrases.append(normalized)
+
+    return phrases
+
+
+def _phrase_forms(phrase: str) -> set[str]:
+    words = tuple(word for word in phrase.casefold().split() if word)
+    if not words:
+        return set()
+    return {
+        " ".join(words),
+        "_".join(words),
+        "-".join(words),
+    }
+
+
+def _path_priority_score(path_text: str, question_lower: str) -> float:
+    score = 0.0
+    if path_text.startswith(("cogs/", "classes/", "utils/")):
+        score += 6
+    if path_text.startswith("tests/") and "test" not in question_lower and "tests" not in question_lower:
+        score -= 140
+    if path_text.startswith("tools/") and "tool" not in question_lower and "audit" not in question_lower:
+        score -= 90
+    if path_text.startswith(("assets/", "locales/")):
+        score -= 10
+    return score
+
+
+def _score_text_block(
+    question: str,
+    terms: list[str],
+    phrases: list[str],
+    path_text: str,
+    text: str,
+) -> float:
     question_lower = question.casefold().strip()
     path_lower = path_text.casefold()
     text_lower = text.casefold()
 
-    if not terms and not question_lower:
+    if not terms and not phrases and not question_lower:
         return 0.0
 
     score = 0.0
     matched_terms = 0
+
+    for phrase in phrases:
+        for form in _phrase_forms(phrase):
+            if form in path_lower:
+                score += 45
+            if form in text_lower:
+                score += 90
 
     if question_lower and question_lower in path_lower:
         score += 45
@@ -161,6 +226,7 @@ def _score_text_block(question: str, terms: list[str], path_text: str, text: str
             score += min(text_hits, 10) * 2
 
     score += matched_terms * 4
+    score += _path_priority_score(path_text, question_lower)
     return score
 
 
@@ -185,6 +251,44 @@ def _iter_line_windows(text: str, window_size: int = WINDOW_SIZE) -> Iterable[tu
             break
 
 
+def _line_matches_query(line_text: str, terms: list[str], phrases: list[str]) -> bool:
+    line_lower = line_text.casefold()
+    for phrase in phrases:
+        if any(form in line_lower for form in _phrase_forms(phrase)):
+            return True
+    for term in terms:
+        if term in line_lower:
+            return True
+    return False
+
+
+def _iter_targeted_windows(
+    text: str,
+    terms: list[str],
+    phrases: list[str],
+    window_size: int = WINDOW_SIZE,
+) -> Iterable[tuple[int, int, str]]:
+    lines = text.splitlines()
+    if not lines:
+        return
+
+    seen_ranges: set[tuple[int, int]] = set()
+    half_window = max(1, window_size // 2)
+    for index, line in enumerate(lines):
+        if not _line_matches_query(line, terms, phrases):
+            continue
+        start_index = max(0, index - half_window)
+        end_index = min(len(lines), start_index + window_size)
+        window = lines[start_index:end_index]
+        range_key = (start_index, end_index)
+        if not window or range_key in seen_ranges:
+            continue
+        if any(start_index < seen_end and end_index > seen_start for seen_start, seen_end in seen_ranges):
+            continue
+        seen_ranges.add(range_key)
+        yield start_index + 1, end_index, "\n".join(window)
+
+
 def build_repo_context(
     question: str,
     repo_root: Path,
@@ -194,6 +298,7 @@ def build_repo_context(
 ) -> list[RankedSnippet]:
     repo_root = Path(repo_root)
     terms = extract_query_terms(question)
+    phrases = extract_query_phrases(question)
     file_candidates: list[tuple[float, Path, str]] = []
 
     for path in iter_repo_source_paths(repo_root):
@@ -206,7 +311,7 @@ def build_repo_context(
             continue
 
         path_text = _normalize_repo_path(path, repo_root)
-        file_score = _score_text_block(question, terms, path_text, text)
+        file_score = _score_text_block(question, terms, phrases, path_text, text)
         if file_score <= 0:
             continue
 
@@ -219,9 +324,15 @@ def build_repo_context(
     for file_score, path, text in sorted(file_candidates, key=lambda item: item[0], reverse=True)[:12]:
         path_text = _normalize_repo_path(path, repo_root)
         best_for_file: list[RankedSnippet] = []
+        targeted_windows = list(_iter_targeted_windows(text, terms, phrases))
+        fallback_windows = list(_iter_line_windows(text))
+        candidate_windows = targeted_windows + [
+            window for window in fallback_windows
+            if window not in targeted_windows
+        ]
 
-        for start_line, end_line, window_text in _iter_line_windows(text):
-            window_score = _score_text_block(question, terms, path_text, window_text) + (file_score * 0.15)
+        for start_line, end_line, window_text in candidate_windows:
+            window_score = _score_text_block(question, terms, phrases, path_text, window_text) + (file_score * 0.15)
             if window_score <= 0:
                 continue
             best_for_file.append(
@@ -235,7 +346,17 @@ def build_repo_context(
             )
 
         if best_for_file:
-            snippet_candidates.extend(sorted(best_for_file, key=lambda item: item.score, reverse=True)[:2])
+            file_snippets: list[RankedSnippet] = []
+            for candidate in sorted(best_for_file, key=lambda item: item.score, reverse=True):
+                if any(
+                    candidate.start_line <= existing.end_line and candidate.end_line >= existing.start_line
+                    for existing in file_snippets
+                ):
+                    continue
+                file_snippets.append(candidate)
+                if len(file_snippets) >= 3:
+                    break
+            snippet_candidates.extend(file_snippets)
         else:
             snippet_candidates.append(
                 RankedSnippet(
