@@ -20,7 +20,8 @@ DEFAULT_MODEL = "gpt-5.3-codex"
 DEFAULT_REASONING_EFFORT = "medium"
 DEFAULT_MAX_SNIPPETS = 6
 DEFAULT_MAX_CONTEXT_CHARS = 16000
-DEFAULT_MAX_OUTPUT_TOKENS = 700
+DEFAULT_MAX_OUTPUT_TOKENS = 2000
+MAX_RESPONSE_SEGMENTS = 3
 MAX_FILE_BYTES = 1000000
 WINDOW_SIZE = 40
 WINDOW_OVERLAP = 10
@@ -2180,6 +2181,68 @@ def extract_response_text(response) -> str:
     return "\n".join(parts).strip()
 
 
+def response_hit_output_limit(response) -> bool:
+    incomplete_details = getattr(response, "incomplete_details", None)
+    reason = getattr(incomplete_details, "reason", None)
+    status = getattr(response, "status", None)
+    return reason == "max_output_tokens" or (
+        status == "incomplete" and reason == "max_output_tokens"
+    )
+
+
+def _trim_repeated_continuation_prefix(existing: str, continuation: str) -> str:
+    continuation = continuation.strip()
+    if not existing or not continuation:
+        return continuation
+
+    existing_tail = existing[-1200:]
+    max_overlap = min(len(existing_tail), len(continuation), 500)
+    for size in range(max_overlap, 39, -1):
+        if existing_tail[-size:] == continuation[:size]:
+            return continuation[size:].lstrip()
+
+    existing_lines = [line.strip() for line in existing.splitlines() if line.strip()]
+    continuation_lines = continuation.splitlines()
+    normalized_continuation_lines = [line.strip() for line in continuation_lines if line.strip()]
+    max_line_overlap = min(len(existing_lines), len(normalized_continuation_lines), 4)
+    for size in range(max_line_overlap, 0, -1):
+        if existing_lines[-size:] == normalized_continuation_lines[:size]:
+            trimmed_lines: list[str] = []
+            consumed = 0
+            for line in continuation_lines:
+                if line.strip():
+                    consumed += 1
+                    if consumed <= size:
+                        continue
+                trimmed_lines.append(line)
+            return "\n".join(trimmed_lines).lstrip()
+
+    return continuation
+
+
+def join_answer_segments(segments: list[str]) -> str:
+    merged = ""
+    for segment in segments:
+        cleaned = segment.strip()
+        if not cleaned:
+            continue
+        if not merged:
+            merged = cleaned
+            continue
+        cleaned = _trim_repeated_continuation_prefix(merged, cleaned)
+        if not cleaned:
+            continue
+        if (
+            merged.endswith((" ", "\n", "-", "/", "("))
+            or cleaned[0] in ",.;:!?)]}"
+            or (merged[-1].isalnum() and cleaned[0].islower())
+        ):
+            merged = f"{merged}{cleaned}"
+        else:
+            merged = f"{merged}\n\n{cleaned}"
+    return merged.strip()
+
+
 def split_for_discord(text: str, limit: int = 1900) -> list[str]:
     text = text.strip()
     if not text:
@@ -2222,7 +2285,13 @@ def build_system_instructions(question: str) -> str:
     return (
         f"{BASE_SYSTEM_INSTRUCTIONS} "
         "Default to a non-technical, player-facing explanation in plain English. "
+        "Answer the user's exact question first, with the most relevant concrete result up front. "
+        "Prefer the minimum detail needed to answer correctly. "
+        "If the user asks for a list, threshold, rank, reward, cost, requirement, or amount, lead with that list or value and stop there unless extra context is needed. "
+        "If the user asks a two-part question, answer those parts directly and do not expand into adjacent configuration that was not asked for. "
         "Focus on what the feature does in practice, not internal implementation details. "
+        "Do not add formulas, multipliers, edge cases, or related systems unless they are needed to answer the question or the user explicitly asks for them. "
+        "For example, if the user asks for ranks and how they are calculated, answer the rank list and the calculation, but omit reward multipliers or other bracket metadata unless asked. "
         "Avoid code terms, variable names, file paths, and citations unless the user explicitly asks for them. "
         "Keep the answer natural and easy to read."
     )
@@ -2252,6 +2321,7 @@ class ChatGPTCog(commands.Cog):
         if self.client is None:
             raise RuntimeError("Missing OpenAI API key in config.toml under [external].openai.")
 
+        instructions = build_system_instructions(question)
         prompt = (
             f"User question:\n{question.strip()}\n\n"
             "Repository excerpts:\n"
@@ -2260,13 +2330,38 @@ class ChatGPTCog(commands.Cog):
         )
         response = await self.client.responses.create(
             model=self.model,
-            instructions=build_system_instructions(question),
+            instructions=instructions,
             input=prompt,
             max_output_tokens=self.max_output_tokens,
             reasoning={"effort": self.reasoning_effort},
             truncation="auto",
         )
-        answer = extract_response_text(response)
+        answer_segments = [extract_response_text(response)]
+
+        continuation_count = 0
+        while response_hit_output_limit(response) and continuation_count < (MAX_RESPONSE_SEGMENTS - 1):
+            continuation_count += 1
+            response = await self.client.responses.create(
+                model=self.model,
+                instructions=instructions,
+                previous_response_id=response.id,
+                input=(
+                    "Continue the previous answer from exactly where it stopped. "
+                    "Do not restart, summarize, or repeat earlier content. "
+                    "Finish the remaining answer only."
+                ),
+                max_output_tokens=self.max_output_tokens,
+                reasoning={"effort": self.reasoning_effort},
+                truncation="auto",
+            )
+            answer_segments.append(extract_response_text(response))
+
+        answer = join_answer_segments(answer_segments)
+        if response_hit_output_limit(response):
+            answer = (
+                f"{answer}\n\n"
+                "(The reply was very long, so it may still be incomplete. Ask a narrower follow-up if you need the rest.)"
+            ).strip()
         if answer:
             return answer
         raise RuntimeError("OpenAI returned an empty response.")

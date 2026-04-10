@@ -2,8 +2,16 @@ import tempfile
 import unittest
 
 from pathlib import Path
+from types import SimpleNamespace
 
-from cogs.chatgpt import build_repo_context, iter_repo_source_paths, wants_technical_answer
+from cogs.chatgpt import (
+    build_repo_context,
+    build_system_instructions,
+    iter_repo_source_paths,
+    join_answer_segments,
+    response_hit_output_limit,
+    wants_technical_answer,
+)
 
 
 class TestChatGPTRepoContext(unittest.TestCase):
@@ -159,6 +167,44 @@ class TestChatGPTRepoContext(unittest.TestCase):
         self.assertFalse(wants_technical_answer("Explain this for a player."))
         self.assertTrue(wants_technical_answer("What does Quick Charge do internally?"))
         self.assertTrue(wants_technical_answer("Show the code references for Quick Charge."))
+
+    def test_build_system_instructions_prioritize_direct_player_answers(self):
+        instructions = build_system_instructions("what are the ranks in jury tower and their thresholds?")
+
+        self.assertIn("Answer the user's exact question first", instructions)
+        self.assertIn("Prefer the minimum detail needed", instructions)
+        self.assertIn("Do not add formulas, multipliers, edge cases", instructions)
+        self.assertIn("If the user asks a two-part question", instructions)
+        self.assertIn("answer the rank list and the calculation", instructions)
+
+    def test_response_hit_output_limit_detects_max_output_token_cutoff(self):
+        response = SimpleNamespace(
+            status="incomplete",
+            incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+        )
+
+        self.assertTrue(response_hit_output_limit(response))
+        self.assertFalse(
+            response_hit_output_limit(
+                SimpleNamespace(
+                    status="completed",
+                    incomplete_details=SimpleNamespace(reason=None),
+                )
+            )
+        )
+
+    def test_join_answer_segments_trims_overlap_and_keeps_continuation(self):
+        merged = join_answer_segments(
+            [
+                "Maul Ring IX: up to 18,000\nMaul Ring X: above 18,000",
+                "Maul Ring X: above 18,000\nThe score is based on attack, defense, and weighted HP.",
+            ]
+        )
+
+        self.assertEqual(
+            merged,
+            "Maul Ring IX: up to 18,000\nMaul Ring X: above 18,000\n\nThe score is based on attack, defense, and weighted HP.",
+        )
 
     def test_build_repo_context_follows_called_helper_methods(self):
         with tempfile.TemporaryDirectory() as tmpdir:
