@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import difflib
 import json
 import re
 import textwrap
@@ -32,6 +33,9 @@ MAX_PYTHON_BLOCK_EXCERPTS = 2
 MAX_JSON_BLOCK_LINES = 80
 MAX_MARKDOWN_SECTION_LINES = 100
 MAX_SQL_STATEMENT_LINES = 140
+FUZZY_TERM_MIN_LENGTH = 4
+FUZZY_TERM_MAX_MATCHES = 2
+FUZZY_TERM_CUTOFF = 0.74
 SOURCE_EXTENSIONS = {".py", ".md", ".json", ".toml", ".sql"}
 ROOT_SOURCE_FILES = {"README.md", "config.py", "idlerpg.py", "launcher.py"}
 SOURCE_DIRS = {"cogs", "classes", "utils", "scripts", "tests"}
@@ -74,6 +78,7 @@ STOP_WORDS = {
     "repo",
     "tell",
     "the",
+    "their",
     "this",
     "to",
     "what",
@@ -132,6 +137,9 @@ BASE_SYSTEM_INSTRUCTIONS = (
     "Do not claim to have inspected files that were not included in the prompt."
 )
 TERM_SYNONYMS = {
+    "jt": ("jury", "jurytower"),
+    "jury": ("jurytower", "jt"),
+    "jurytower": ("jury", "jt"),
     "cbt": ("couples", "couples_battletower", "battletower", "tower"),
     "couples": ("cbt", "couples_battletower", "battletower", "tower"),
     "battletower": ("battle", "tower"),
@@ -144,6 +152,8 @@ TERM_SYNONYMS = {
     "prestige": ("cycle", "cycles", "reset"),
     "cycles": ("cycle", "prestige"),
     "checkpoint": ("boss", "progress"),
+    "threshold": ("thresholds", "cutoff", "cutoffs", "cap", "caps", "max_score"),
+    "thresholds": ("threshold", "cutoff", "cutoffs", "cap", "caps", "max_score"),
 }
 
 
@@ -332,6 +342,66 @@ def _expand_query_term_variants(token: str) -> list[str]:
     return deduped
 
 
+def _expand_token_variants(token: str) -> set[str]:
+    normalized = token.casefold().strip()
+    if not normalized:
+        return set()
+
+    variants = {normalized}
+    if normalized.endswith("ing") and len(normalized) > 5:
+        variants.add(normalized[:-3])
+    if normalized.endswith("ed") and len(normalized) > 4:
+        variants.add(normalized[:-2])
+    if normalized.endswith("es") and len(normalized) > 4:
+        variants.add(normalized[:-2])
+    if normalized.endswith("s") and len(normalized) > 4:
+        variants.add(normalized[:-1])
+    return {variant for variant in variants if variant}
+
+
+def _extract_repo_vocabulary_terms(value: str) -> set[str]:
+    vocabulary: set[str] = set()
+    for token in re.findall(r"[a-z0-9]+", value.casefold()):
+        if len(token) >= FUZZY_TERM_MIN_LENGTH:
+            vocabulary.update(_expand_token_variants(token))
+    return vocabulary
+
+
+def _expand_terms_with_repo_vocabulary(terms: list[str], repo_vocabulary: set[str]) -> list[str]:
+    if not repo_vocabulary:
+        return terms
+
+    candidates = sorted(repo_vocabulary)
+    expanded_terms = list(terms)
+    seen = set(terms)
+
+    for term in terms:
+        if term.isdigit() or len(term) < FUZZY_TERM_MIN_LENGTH or term in repo_vocabulary:
+            continue
+
+        close_matches = difflib.get_close_matches(
+            term,
+            candidates,
+            n=FUZZY_TERM_MAX_MATCHES,
+            cutoff=FUZZY_TERM_CUTOFF,
+        )
+        for match in close_matches:
+            if not match:
+                continue
+            if abs(len(match) - len(term)) > 2:
+                continue
+            prefix_len = min(2, len(match), len(term))
+            if prefix_len and match[:prefix_len] != term[:prefix_len]:
+                continue
+            for variant in _expand_query_term_variants(match):
+                if variant in seen:
+                    continue
+                seen.add(variant)
+                expanded_terms.append(variant)
+
+    return expanded_terms
+
+
 def extract_query_phrases(question: str) -> list[str]:
     seen: set[str] = set()
     phrases: list[str] = []
@@ -510,7 +580,9 @@ def _score_symbol_name(symbol_name: str | None, terms: list[str], phrases: list[
         return 0.0
 
     normalized = symbol_name.casefold().replace("_", " ")
-    symbol_tokens = set(re.findall(r"[a-z0-9]+", normalized))
+    symbol_tokens: set[str] = set()
+    for token in re.findall(r"[a-z0-9]+", normalized):
+        symbol_tokens.update(_expand_token_variants(token))
     term_set = set(terms)
     score = 0.0
     for phrase in phrases:
@@ -535,7 +607,9 @@ def _is_follow_worthy_symbol(symbol_name: str | None, terms: list[str], phrases:
         return False
 
     normalized = symbol_name.casefold().replace("_", " ")
-    symbol_tokens = set(re.findall(r"[a-z0-9]+", normalized))
+    symbol_tokens: set[str] = set()
+    for token in re.findall(r"[a-z0-9]+", normalized):
+        symbol_tokens.update(_expand_token_variants(token))
     if symbol_tokens.intersection(LOW_SIGNAL_SYMBOL_TOKENS) and not symbol_tokens.intersection(HIGH_SIGNAL_SYMBOL_TOKENS):
         return False
 
@@ -1574,6 +1648,16 @@ def _looks_like_named_value_snippet(snippet: RankedSnippet) -> bool:
     return ("\n" in snippet.text) or any(token in snippet.text for token in ("{", "[", "("))
 
 
+def _looks_like_scalar_named_value_text(text: str) -> bool:
+    first_line = text.splitlines()[0].strip() if text else ""
+    if not first_line or "=" not in first_line:
+        return False
+    candidate_name = first_line.split("=", 1)[0].strip()
+    if not CONSTANT_SYMBOL_RE.match(candidate_name):
+        return False
+    return ("\n" not in text) and all(token not in text for token in ("{", "[", "("))
+
+
 def _collect_follow_snippets(
     snippets: list[RankedSnippet],
     python_symbol_defs: dict[str, list[PythonSymbolBlock]],
@@ -1647,6 +1731,8 @@ def _collect_follow_snippets(
             if best_excerpt is None or best_excerpt_relevance <= 0:
                 continue
             excerpt_start, excerpt_end, excerpt_text = best_excerpt
+            if _looks_like_scalar_named_value_text(excerpt_text):
+                continue
             follow_score = (
                 best_excerpt_relevance
                 + min(80.0, parent_priority * 0.15)
@@ -1845,6 +1931,8 @@ def build_repo_context(
     repo_root = Path(repo_root)
     terms = extract_query_terms(question)
     phrases = extract_query_phrases(question)
+    repo_vocabulary: set[str] = set()
+    source_records: list[tuple[Path, str, str]] = []
     file_candidates: list[tuple[float, Path, str]] = []
     python_symbol_defs: dict[str, list[PythonSymbolBlock]] = {}
     python_symbol_defs_by_path: dict[str, dict[str, list[PythonSymbolBlock]]] = {}
@@ -1862,8 +1950,10 @@ def build_repo_context(
             continue
 
         path_text = _normalize_repo_path(path, repo_root)
+        source_records.append((path, path_text, text))
         source_text_by_path[path_text] = text
         repo_paths_by_basename.setdefault(path.name, []).append(path_text)
+        repo_vocabulary.update(_extract_repo_vocabulary_terms(path_text))
         if path.suffix.lower() == ".py":
             python_imported_symbol_paths[path_text] = _extract_python_imported_symbol_paths(
                 text,
@@ -1875,14 +1965,20 @@ def build_repo_context(
                 block = (path_text, start_line, end_line, block_text)
                 python_symbol_defs.setdefault(symbol_name, []).append(block)
                 path_symbol_defs.setdefault(symbol_name, []).append(block)
+                repo_vocabulary.update(_extract_repo_vocabulary_terms(symbol_name))
                 for assigned_symbol in _extract_self_assigned_symbols(block_text):
                     python_symbol_defs.setdefault(assigned_symbol, []).append(block)
                     path_symbol_defs.setdefault(assigned_symbol, []).append(block)
+                    repo_vocabulary.update(_extract_repo_vocabulary_terms(assigned_symbol))
             for start_line, end_line, block_text, symbol_name in _iter_python_named_value_blocks(text):
                 block = (path_text, start_line, end_line, block_text)
                 python_symbol_defs.setdefault(symbol_name, []).append(block)
                 path_symbol_defs.setdefault(symbol_name, []).append(block)
+                repo_vocabulary.update(_extract_repo_vocabulary_terms(symbol_name))
 
+    terms = _expand_terms_with_repo_vocabulary(terms, repo_vocabulary)
+
+    for path, path_text, text in source_records:
         file_score = (
             _score_json_block(question, terms, phrases, path_text, text)
             if path.suffix.lower() == ".json"
@@ -2025,6 +2121,7 @@ def build_repo_context(
         snippet_candidates,
         max_snippets=FOLLOW_SEED_COUNT,
         max_context_chars=max_context_chars,
+        max_per_path=1,
     )
     anchor_snippets = _select_ranked_snippets(
         snippet_candidates,

@@ -293,6 +293,60 @@ class TestChatGPTRepoContext(unittest.TestCase):
             self.assertIn("max_score", joined_text)
             self.assertTrue(any(snippet.path == "cogs/battles/jury_tower_data.py" for snippet in snippets))
 
+    def test_build_repo_context_handles_close_typos_for_jury_tower_ranks(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "cogs" / "battles").mkdir(parents=True)
+
+            (root / "cogs" / "battles" / "__init__.py").write_text(
+                "\n".join(
+                    [
+                        "from .jury_tower_data import JURY_POWER_BRACKETS",
+                        "",
+                        "class Battles:",
+                        "    async def jurytower_help(self, ctx):",
+                        "        tier_lines = []",
+                        "        for bracket in JURY_POWER_BRACKETS:",
+                        "            tier_lines.append(f\"{bracket['label']}: {bracket['max_score']}\")",
+                        "        return \"\\n\".join(tier_lines)",
+                        "",
+                        "    def _jury_power_bracket_for_score(self, power_score):",
+                        "        selected = JURY_POWER_BRACKETS[-1]",
+                        "        for bracket in JURY_POWER_BRACKETS:",
+                        "            if bracket['max_score'] is None or power_score <= bracket['max_score']:",
+                        "                selected = bracket",
+                        "                break",
+                        "        return selected",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (root / "cogs" / "battles" / "jury_tower_data.py").write_text(
+                "\n".join(
+                    [
+                        "JURY_POWER_BRACKETS = (",
+                        '    {"label": "Maul Ring I", "max_score": 2000},',
+                        '    {"label": "Maul Ring II", "max_score": 4000},',
+                        '    {"label": "Maul Ring X", "max_score": None},',
+                        ")",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            snippets = build_repo_context(
+                "what are the ranks in jurt tower and their thresholds?",
+                root,
+                max_snippets=6,
+                max_context_chars=7000,
+            )
+
+            joined_text = "\n".join(snippet.text for snippet in snippets)
+            self.assertIn("JURY_POWER_BRACKETS", joined_text)
+            self.assertIn("Maul Ring I", joined_text)
+            self.assertIn("max_score", joined_text)
+            self.assertTrue(any(snippet.path == "cogs/battles/jury_tower_data.py" for snippet in snippets))
+
     def test_build_repo_context_follows_json_backing_data_from_python_usage(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
