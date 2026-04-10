@@ -5,6 +5,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from cogs.chatgpt import (
+    _build_query_variants,
+    _expand_terms_with_repo_vocabulary,
+    _extract_compound_phrases_from_terms,
+    _normalize_query_text,
+    answer_looks_partial,
     build_repo_context,
     build_system_instructions,
     iter_repo_source_paths,
@@ -162,6 +167,105 @@ class TestChatGPTRepoContext(unittest.TestCase):
             self.assertNotIn("cogs/slayspire/content.py", paths)
             self.assertTrue(all(not path.startswith("tests/") for path in paths))
 
+    def test_build_repo_context_matches_joined_terms_against_spaced_skill_names(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "cogs" / "pets").mkdir(parents=True)
+            (root / "cogs" / "battles" / "extensions").mkdir(parents=True)
+            (root / "cogs" / "battles" / "core").mkdir(parents=True)
+
+            (root / "cogs" / "pets" / "__init__.py").write_text(
+                '\n'.join(
+                    [
+                        'skill = {"name": "Quick Charge", "description": "Pet gains a major initiative boost."}',
+                        'more = "On its first attack each battle, it guarantees Static Shock."',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (root / "cogs" / "battles" / "extensions" / "pets.py").write_text(
+                '\n'.join(
+                    [
+                        "def _consume_quick_charge_opener(pet, target):",
+                        '    """Resolve Quick Charge opener."""',
+                        "    return 'static_shock'",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (root / "cogs" / "battles" / "core" / "battle.py").write_text(
+                '\n'.join(
+                    [
+                        "def get_turn_priority(combatant):",
+                        "    if getattr(combatant, 'quick_charge_active', False):",
+                        "        return 999",
+                        "    return 0",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            snippets = build_repo_context(
+                "What does quickcharge do?",
+                root,
+                max_snippets=6,
+                max_context_chars=6000,
+            )
+
+            joined_text = "\n".join(snippet.text for snippet in snippets)
+            self.assertIn("Quick Charge", joined_text)
+            self.assertTrue(any(snippet.path == "cogs/pets/__init__.py" for snippet in snippets))
+            self.assertTrue(any(snippet.path == "cogs/battles/extensions/pets.py" for snippet in snippets))
+            self.assertTrue(any(snippet.path == "cogs/battles/core/battle.py" for snippet in snippets))
+
+    def test_expand_terms_with_repo_vocabulary_splits_joined_compound_terms(self):
+        expanded = _expand_terms_with_repo_vocabulary(
+            ["quickcharge"],
+            {"quick", "charge", "quick_charge_active", "consume", "opener"},
+        )
+
+        self.assertIn("quick", expanded)
+        self.assertIn("charge", expanded)
+
+    def test_extract_compound_phrases_from_terms_builds_spaced_phrase(self):
+        phrases = _extract_compound_phrases_from_terms(
+            ["quickcharge"],
+            {"quick", "charge", "quick_charge_active"},
+        )
+
+        self.assertEqual(phrases, ["quick charge"])
+
+    def test_normalize_query_text_recovers_aliases_and_typos(self):
+        normalized = _normalize_query_text(
+            "what are the jurt tower ranks in jt",
+            {"jury", "tower", "rank", "ranks"},
+            {"jury tower"},
+        )
+
+        self.assertEqual(normalized, "what are the jury tower ranks in jury tower")
+
+    def test_normalize_query_text_does_not_corrupt_common_words(self):
+        normalized = _normalize_query_text(
+            "what are the jury tower ranks and how are they calculated?",
+            {"jury", "tower", "rank", "ranks", "calculate"},
+            {"jury tower"},
+        )
+
+        self.assertNotIn("they jury tower", normalized or "")
+        self.assertNotIn("what are they", normalized or "")
+
+    def test_build_query_variants_skips_low_value_normalization_only_changes(self):
+        variants = _build_query_variants(
+            "what are the jury tower ranks and how are they calculated?",
+            {"jury", "tower", "rank", "ranks", "calculate"},
+            {"jury tower"},
+        )
+
+        self.assertEqual(
+            variants,
+            ["what are the jury tower ranks and how are they calculated?"],
+        )
+
     def test_wants_technical_answer_only_for_explicitly_technical_prompts(self):
         self.assertFalse(wants_technical_answer("What does Quick Charge do?"))
         self.assertFalse(wants_technical_answer("Explain this for a player."))
@@ -192,6 +296,10 @@ class TestChatGPTRepoContext(unittest.TestCase):
                 )
             )
         )
+
+    def test_answer_looks_partial_detects_insufficient_answer_language(self):
+        self.assertTrue(answer_looks_partial("From the snippets you shared, I can only give a partial answer."))
+        self.assertFalse(answer_looks_partial("Quick Charge gives a speed boost and opener effect."))
 
     def test_join_answer_segments_trims_overlap_and_keeps_continuation(self):
         merged = join_answer_segments(
@@ -392,6 +500,82 @@ class TestChatGPTRepoContext(unittest.TestCase):
             self.assertIn("Maul Ring I", joined_text)
             self.assertIn("max_score", joined_text)
             self.assertTrue(any(snippet.path == "cogs/battles/jury_tower_data.py" for snippet in snippets))
+
+    def test_build_repo_context_prefers_rank_tables_and_formula_over_wrappers(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "cogs" / "battles").mkdir(parents=True)
+
+            (root / "cogs" / "battles" / "__init__.py").write_text(
+                "\n".join(
+                    [
+                        "from .jury_tower_data import JURY_POWER_BRACKETS",
+                        "",
+                        "class Battles:",
+                        "    async def jurytower_help(self, ctx):",
+                        "        embed = discord.Embed(title='Jury Tower Rewards')",
+                        "        embed.add_field(name='Ranks', value='See the Jury Tower rank list here.')",
+                        "        await ctx.send(embed=embed)",
+                        "",
+                        "    @is_gm()",
+                        "    async def jurytower_score(self, ctx, target):",
+                        "        snapshot = {'attack_base': 1200, 'hp_base': 3000, 'defense_base': 900}",
+                        "        score = self._jury_scale_snapshot_score(snapshot)",
+                        "        return self._jury_bracket_payload_from_score(score)",
+                        "",
+                        "    def _jury_scale_snapshot_score(self, snapshot):",
+                        "        return snapshot['attack_base'] + snapshot['defense_base'] + (snapshot['hp_base'] * 0.4)",
+                        "",
+                        "    def _jury_bracket_payload_from_score(self, power_score):",
+                        "        bracket = self._jury_power_bracket_for_score(power_score)",
+                        "        return {'bracket_label': bracket['label'], 'power_score': int(power_score)}",
+                        "",
+                        "    def _jury_power_bracket_for_score(self, power_score):",
+                        "        selected = JURY_POWER_BRACKETS[-1]",
+                        "        for bracket in JURY_POWER_BRACKETS:",
+                        "            if bracket['max_score'] is None or power_score <= bracket['max_score']:",
+                        "                selected = bracket",
+                        "                break",
+                        "        return selected",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (root / "cogs" / "battles" / "jury_tower_data.py").write_text(
+                "\n".join(
+                    [
+                        "JURY_POWER_BRACKETS = (",
+                        '    {"label": "Maul Ring I", "max_score": 2000},',
+                        '    {"label": "Maul Ring II", "max_score": 4000},',
+                        '    {"label": "Maul Ring X", "max_score": None},',
+                        ")",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (root / "cogs" / "battles" / "factory.py").write_text(
+                "\n".join(
+                    [
+                        "def create_jury_tower_battle(ctx, floor_data):",
+                        "    return {'jury_tower': True, 'score': floor_data.get('score', 0)}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            snippets = build_repo_context(
+                "What are the Jury Tower ranks and how are they calculated?",
+                root,
+                max_snippets=5,
+                max_context_chars=7000,
+            )
+
+            self.assertTrue(snippets)
+            top_joined_text = "\n".join(snippet.text for snippet in snippets[:3])
+            self.assertIn("JURY_POWER_BRACKETS", top_joined_text)
+            self.assertIn("_jury_scale_snapshot_score", top_joined_text)
+            self.assertNotIn("create_jury_tower_battle", top_joined_text)
+            self.assertFalse(snippets[0].text.lstrip().startswith("@is_gm()"))
 
     def test_build_repo_context_follows_json_backing_data_from_python_usage(self):
         with tempfile.TemporaryDirectory() as tmpdir:

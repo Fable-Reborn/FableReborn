@@ -25,6 +25,10 @@ MAX_RESPONSE_SEGMENTS = 3
 MAX_FILE_BYTES = 1000000
 WINDOW_SIZE = 40
 WINDOW_OVERLAP = 10
+DEFAULT_TOP_FILE_LIMIT = 12
+BROAD_TOP_FILE_LIMIT = 20
+DEFAULT_PER_FILE_SNIPPETS = 3
+BROAD_PER_FILE_SNIPPETS = 4
 BASE_MAX_FOLLOW_BLOCKS = 16
 FOLLOW_QUEUE_MULTIPLIER = 6
 FOLLOW_SEED_COUNT = 2
@@ -37,6 +41,9 @@ MAX_SQL_STATEMENT_LINES = 140
 FUZZY_TERM_MIN_LENGTH = 4
 FUZZY_TERM_MAX_MATCHES = 2
 FUZZY_TERM_CUTOFF = 0.74
+QUERY_NORMALIZATION_CUTOFF = 0.74
+COMPACT_MATCH_MIN_LENGTH = 8
+MAX_GLOSSARY_PHRASES = 4000
 SOURCE_EXTENSIONS = {".py", ".md", ".json", ".toml", ".sql"}
 ROOT_SOURCE_FILES = {"README.md", "config.py", "idlerpg.py", "launcher.py"}
 SOURCE_DIRS = {"cogs", "classes", "utils", "scripts", "tests"}
@@ -80,6 +87,9 @@ STOP_WORDS = {
     "tell",
     "the",
     "their",
+    "them",
+    "they",
+    "those",
     "this",
     "to",
     "what",
@@ -155,6 +165,48 @@ TERM_SYNONYMS = {
     "checkpoint": ("boss", "progress"),
     "threshold": ("thresholds", "cutoff", "cutoffs", "cap", "caps", "max_score"),
     "thresholds": ("threshold", "cutoff", "cutoffs", "cap", "caps", "max_score"),
+}
+GENERIC_QUERY_TERMS = {
+    "amount",
+    "amounts",
+    "bonus",
+    "bonuses",
+    "bracket",
+    "brackets",
+    "calculate",
+    "calculated",
+    "calculation",
+    "cost",
+    "costs",
+    "cutoff",
+    "cutoffs",
+    "cap",
+    "caps",
+    "drop",
+    "drops",
+    "effect",
+    "effects",
+    "fight",
+    "help",
+    "level",
+    "levels",
+    "price",
+    "prices",
+    "progress",
+    "rank",
+    "ranks",
+    "ranking",
+    "reward",
+    "rewards",
+    "score",
+    "stats",
+    "threshold",
+    "thresholds",
+    "tier",
+    "tiers",
+    "tower",
+    "work",
+    "works",
 }
 
 
@@ -247,6 +299,104 @@ HIGH_SIGNAL_SYMBOL_TOKENS = {
     "update",
 }
 PythonSymbolBlock = tuple[str, int, int, str]
+PARTIAL_ANSWER_HINTS = (
+    "from the excerpts",
+    "from the snippets",
+    "from what’s shown",
+    "from what's shown",
+    "i can only give a partial",
+    "partial answer",
+    "not enough",
+    "can't determine",
+    "cannot determine",
+    "what’s missing",
+    "what's missing",
+    "if you share",
+)
+COMMAND_HELP_QUERY_TERMS = {
+    "alias",
+    "aliases",
+    "buy",
+    "cmd",
+    "command",
+    "commands",
+    "help",
+    "howto",
+    "info",
+    "open",
+    "run",
+    "start",
+    "syntax",
+    "usage",
+    "use",
+}
+CALCULATION_QUERY_TERMS = {
+    "calculate",
+    "calculated",
+    "calculation",
+    "formula",
+    "formulas",
+    "math",
+    "scaled",
+    "scaling",
+    "weight",
+    "weighted",
+}
+RANKING_QUERY_TERMS = {
+    "bracket",
+    "brackets",
+    "cutoff",
+    "cutoffs",
+    "rank",
+    "ranks",
+    "ranking",
+    "threshold",
+    "thresholds",
+    "tier",
+    "tiers",
+}
+UI_SCAFFOLD_MARKERS = (
+    "discord.embed(",
+    ".add_field(",
+    "await ctx.send(",
+    "ctx.send(embed=",
+    "@commands.command",
+    "@commands.group",
+    ".command(name=",
+    ".group(",
+    "@has_char()",
+    "@is_gm()",
+)
+RANK_DATA_MARKERS = (
+    "max_score",
+    "bracket_label",
+    "jury_power_brackets",
+    '"label"',
+    "['label']",
+    "rank:",
+    "tier",
+    "threshold",
+)
+
+
+@dataclass(frozen=True)
+class RepoSourceRecord:
+    path: Path
+    path_text: str
+    text: str
+
+
+@dataclass
+class RepoSearchIndex:
+    repo_root: Path
+    source_records: list[RepoSourceRecord]
+    repo_vocabulary: set[str]
+    glossary_phrases: set[str]
+    python_symbol_defs: dict[str, list[PythonSymbolBlock]]
+    python_symbol_defs_by_path: dict[str, dict[str, list[PythonSymbolBlock]]]
+    python_imported_symbol_paths: dict[str, dict[str, str]]
+    source_text_by_path: dict[str, str]
+    repo_paths_by_basename: dict[str, list[str]]
 
 
 def _normalize_repo_path(path: Path, repo_root: Path) -> str:
@@ -293,6 +443,78 @@ def iter_repo_source_paths(repo_root: Path) -> list[Path]:
         )
 
     return results
+
+
+def _normalize_glossary_phrase(candidate: str) -> str | None:
+    candidate = re.sub(r"[_-]+", " ", candidate.strip())
+    candidate = re.sub(r"\s+", " ", candidate).strip(" `\"'")
+    if not candidate:
+        return None
+    if len(candidate) < 4 or len(candidate) > 60:
+        return None
+    if any(token in candidate for token in ("/", "\\", "{", "}", "[", "]", "<", ">", "`")):
+        return None
+    if re.search(r"[.!?]", candidate):
+        return None
+
+    words = candidate.split()
+    if len(words) < 2 or len(words) > 5:
+        return None
+    if all(word.casefold() in STOP_WORDS for word in words):
+        return None
+    return candidate.casefold()
+
+
+def _extract_glossary_phrases_from_symbol(symbol_name: str) -> set[str]:
+    phrases: set[str] = set()
+    normalized = _normalize_glossary_phrase(symbol_name.replace("_", " "))
+    if normalized:
+        phrases.add(normalized)
+    return phrases
+
+
+def _extract_glossary_phrases_from_text(path_text: str, text: str) -> set[str]:
+    phrases: set[str] = set()
+
+    path_phrase = _normalize_glossary_phrase(Path(path_text).stem.replace(".", " "))
+    if path_phrase:
+        phrases.add(path_phrase)
+
+    for match in re.finditer(r"""['"]([^'"\n]{4,60})['"]""", text):
+        normalized = _normalize_glossary_phrase(match.group(1))
+        if normalized:
+            phrases.add(normalized)
+        if len(phrases) >= MAX_GLOSSARY_PHRASES:
+            break
+
+    return phrases
+
+
+def _best_repo_vocabulary_match(
+    term: str,
+    repo_vocabulary: set[str],
+    *,
+    cutoff: float,
+) -> str | None:
+    if not repo_vocabulary:
+        return None
+
+    matches = difflib.get_close_matches(
+        term,
+        sorted(repo_vocabulary),
+        n=FUZZY_TERM_MAX_MATCHES,
+        cutoff=cutoff,
+    )
+    if not matches:
+        return None
+
+    best_match = matches[0]
+    if abs(len(best_match) - len(term)) > 2:
+        return None
+    prefix_len = min(2, len(best_match), len(term))
+    if prefix_len and best_match[:prefix_len] != term[:prefix_len]:
+        return None
+    return best_match
 
 
 def extract_query_terms(question: str) -> list[str]:
@@ -368,11 +590,170 @@ def _extract_repo_vocabulary_terms(value: str) -> set[str]:
     return vocabulary
 
 
+def _split_compound_term_with_repo_vocabulary(term: str, repo_vocabulary: set[str]) -> list[str]:
+    normalized = term.casefold().strip()
+    if (
+        len(normalized) < COMPACT_MATCH_MIN_LENGTH
+        or not normalized.isalpha()
+        or normalized in repo_vocabulary
+    ):
+        return []
+
+    for split_index in range(3, len(normalized) - 2):
+        left = normalized[:split_index]
+        right = normalized[split_index:]
+        if left in repo_vocabulary and right in repo_vocabulary:
+            return [left, right]
+
+    for first_split in range(3, len(normalized) - 5):
+        first = normalized[:first_split]
+        if first not in repo_vocabulary:
+            continue
+        remainder = normalized[first_split:]
+        for second_split in range(3, len(remainder) - 2):
+            middle = remainder[:second_split]
+            last = remainder[second_split:]
+            if middle in repo_vocabulary and last in repo_vocabulary:
+                return [first, middle, last]
+
+    return []
+
+
+def _extract_compound_phrases_from_terms(terms: list[str], repo_vocabulary: set[str]) -> list[str]:
+    phrases: list[str] = []
+    seen: set[str] = set()
+
+    for term in terms:
+        parts = _split_compound_term_with_repo_vocabulary(term, repo_vocabulary)
+        if len(parts) < 2:
+            continue
+        phrase = " ".join(parts)
+        if phrase in seen:
+            continue
+        seen.add(phrase)
+        phrases.append(phrase)
+
+    return phrases
+
+
+def _best_glossary_phrase_match(
+    query_tokens: list[str],
+    glossary_phrases: Iterable[str],
+) -> list[str] | None:
+    best_match: list[str] | None = None
+    best_score = 0.0
+
+    for phrase in glossary_phrases:
+        phrase_tokens = phrase.split()
+        if len(phrase_tokens) != len(query_tokens):
+            continue
+
+        ratios = [
+            1.0 if query_token == phrase_token else difflib.SequenceMatcher(None, query_token, phrase_token).ratio()
+            for query_token, phrase_token in zip(query_tokens, phrase_tokens)
+        ]
+        if not any(ratio == 1.0 for ratio in ratios):
+            continue
+        if min(ratios) < 0.72:
+            continue
+
+        average_ratio = sum(ratios) / len(ratios)
+        if average_ratio < 0.86 or average_ratio <= best_score:
+            continue
+
+        best_score = average_ratio
+        best_match = phrase_tokens
+
+    return best_match
+
+
+def _normalize_query_text(
+    question: str,
+    repo_vocabulary: set[str],
+    glossary_phrases: set[str] | None = None,
+) -> str | None:
+    raw_tokens = [
+        token
+        for raw_token in re.findall(r"[a-zA-Z0-9_./-]+", question)
+        for token in re.split(r"[_./-]+", raw_token.casefold())
+        if token
+    ]
+    normalized_tokens: list[str] = []
+    changed = False
+    alias_expansions = {
+        "jt": ("jury", "tower"),
+        "jurytower": ("jury", "tower"),
+        "cbt": ("couples", "battletower"),
+        "battletower": ("battle", "tower"),
+    }
+    glossary_by_length: dict[int, list[str]] = {}
+    if glossary_phrases:
+        for phrase in glossary_phrases:
+            phrase_length = len(phrase.split())
+            if 2 <= phrase_length <= 3:
+                glossary_by_length.setdefault(phrase_length, []).append(phrase)
+
+    index = 0
+    while index < len(raw_tokens):
+        matched_phrase = None
+        for phrase_length in (3, 2):
+            if phrase_length not in glossary_by_length:
+                continue
+            chunk = raw_tokens[index : index + phrase_length]
+            if len(chunk) != phrase_length:
+                continue
+            matched_phrase = _best_glossary_phrase_match(chunk, glossary_by_length[phrase_length])
+            if matched_phrase:
+                if matched_phrase != chunk:
+                    changed = True
+                normalized_tokens.extend(matched_phrase)
+                index += phrase_length
+                break
+        if matched_phrase:
+            continue
+
+        token = raw_tokens[index]
+        replacement_tokens: list[str]
+        if token in alias_expansions:
+            replacement_tokens = list(alias_expansions[token])
+        elif token in STOP_WORDS or len(token) < FUZZY_TERM_MIN_LENGTH:
+            replacement_tokens = [token]
+        else:
+            replacement_tokens = _split_compound_term_with_repo_vocabulary(token, repo_vocabulary)
+            if not replacement_tokens:
+                vocabulary_match = _best_repo_vocabulary_match(
+                    token,
+                    repo_vocabulary,
+                    cutoff=QUERY_NORMALIZATION_CUTOFF,
+                )
+                replacement_tokens = [vocabulary_match] if vocabulary_match else [token]
+
+        if replacement_tokens != [token]:
+            changed = True
+        normalized_tokens.extend(replacement_tokens)
+        index += 1
+
+    normalized_question = " ".join(normalized_tokens).strip()
+    if not changed or not normalized_question:
+        return None
+    if normalized_question == " ".join(re.findall(r"[a-zA-Z0-9_./-]+", question.casefold())).strip():
+        return None
+    return normalized_question
+
+
+def _extract_glossary_phrases_from_question(question: str, glossary_phrases: set[str]) -> list[str]:
+    normalized_question = " ".join(question.casefold().split())
+    matches: list[str] = []
+    for phrase in sorted(glossary_phrases, key=len, reverse=True):
+        if phrase in normalized_question:
+            matches.append(phrase)
+    return matches
+
+
 def _expand_terms_with_repo_vocabulary(terms: list[str], repo_vocabulary: set[str]) -> list[str]:
     if not repo_vocabulary:
         return terms
 
-    candidates = sorted(repo_vocabulary)
     expanded_terms = list(terms)
     seen = set(terms)
 
@@ -380,25 +761,25 @@ def _expand_terms_with_repo_vocabulary(terms: list[str], repo_vocabulary: set[st
         if term.isdigit() or len(term) < FUZZY_TERM_MIN_LENGTH or term in repo_vocabulary:
             continue
 
-        close_matches = difflib.get_close_matches(
-            term,
-            candidates,
-            n=FUZZY_TERM_MAX_MATCHES,
-            cutoff=FUZZY_TERM_CUTOFF,
-        )
-        for match in close_matches:
-            if not match:
-                continue
-            if abs(len(match) - len(term)) > 2:
-                continue
-            prefix_len = min(2, len(match), len(term))
-            if prefix_len and match[:prefix_len] != term[:prefix_len]:
-                continue
-            for variant in _expand_query_term_variants(match):
+        for compound_part in _split_compound_term_with_repo_vocabulary(term, repo_vocabulary):
+            for variant in _expand_query_term_variants(compound_part):
                 if variant in seen:
                     continue
                 seen.add(variant)
                 expanded_terms.append(variant)
+
+        match = _best_repo_vocabulary_match(
+            term,
+            repo_vocabulary,
+            cutoff=FUZZY_TERM_CUTOFF,
+        )
+        if not match:
+            continue
+        for variant in _expand_query_term_variants(match):
+            if variant in seen:
+                continue
+            seen.add(variant)
+            expanded_terms.append(variant)
 
     return expanded_terms
 
@@ -447,7 +828,15 @@ def _count_term_occurrences(text: str, term: str) -> int:
         return 0
     if term.isdigit():
         return len(re.findall(rf"(?<!\d){re.escape(term)}(?!\d)", text))
-    return text.count(term)
+
+    direct_hits = text.count(term)
+    if len(term) < COMPACT_MATCH_MIN_LENGTH or not term.isalpha():
+        return direct_hits
+
+    compact_text = re.sub(r"[\s_-]+", "", text)
+    if compact_text == text:
+        return direct_hits
+    return max(direct_hits, compact_text.count(term))
 
 
 def _path_priority_score(path_text: str, question_lower: str) -> float:
@@ -617,6 +1006,64 @@ def _is_follow_worthy_symbol(symbol_name: str | None, terms: list[str], phrases:
     return _score_symbol_name(symbol_name, terms, phrases) >= FOLLOW_MIN_SYMBOL_SCORE
 
 
+def _question_term_set(question_lower: str, terms: list[str]) -> set[str]:
+    question_terms = set(terms)
+    question_terms.update(re.findall(r"[a-z0-9_]+", question_lower))
+    return question_terms
+
+
+def _question_requests_command_help(question_lower: str, terms: list[str]) -> bool:
+    question_terms = _question_term_set(question_lower, terms)
+    return bool(question_terms.intersection(COMMAND_HELP_QUERY_TERMS))
+
+
+def _question_requests_calculation(question_lower: str, terms: list[str]) -> bool:
+    question_terms = _question_term_set(question_lower, terms)
+    if question_terms.intersection(CALCULATION_QUERY_TERMS):
+        return True
+    return "how are" in question_lower or "how is" in question_lower
+
+
+def _question_requests_ranking_details(question_lower: str, terms: list[str]) -> bool:
+    question_terms = _question_term_set(question_lower, terms)
+    return bool(question_terms.intersection(RANKING_QUERY_TERMS))
+
+
+def _looks_like_ui_scaffolding(text_lower: str) -> bool:
+    matches = sum(1 for marker in UI_SCAFFOLD_MARKERS if marker in text_lower)
+    return matches >= 2 or ("discord.embed(" in text_lower and ".add_field(" in text_lower)
+
+
+def _looks_like_formula_block(text_lower: str) -> bool:
+    math_signals = 0
+    if re.search(r"\breturn\b[^\n]*[+\-*/]", text_lower):
+        math_signals += 1
+    if re.search(r"\b[a-z_][a-z0-9_]*\s*=\s*[^#\n]*[+\-*/]", text_lower):
+        math_signals += 1
+    if "quantize(" in text_lower or "weighted" in text_lower or "contribution" in text_lower:
+        math_signals += 1
+    stat_markers = ("attack_base", "hp_base", "defense_base", "score", "multiplier", "damage")
+    if sum(1 for marker in stat_markers if marker in text_lower) >= 2:
+        math_signals += 1
+    return math_signals >= 2
+
+
+def _looks_like_named_collection_text(text: str) -> bool:
+    first_line = text.splitlines()[0].strip() if text else ""
+    if not first_line or "=" not in first_line:
+        return False
+    candidate_name = first_line.split("=", 1)[0].strip()
+    if not CONSTANT_SYMBOL_RE.match(candidate_name):
+        return False
+    return any(token in text for token in ("{", "[", "("))
+
+
+def _looks_like_rank_data_block(text_lower: str) -> bool:
+    if sum(1 for marker in RANK_DATA_MARKERS if marker in text_lower) >= 2:
+        return True
+    return text_lower.count("maul ring") >= 2
+
+
 def _score_text_block(
     question: str,
     terms: list[str],
@@ -633,6 +1080,20 @@ def _score_text_block(
 
     score = 0.0
     matched_terms = 0
+    dominant_terms = [term for term in terms if term not in GENERIC_QUERY_TERMS]
+    dominant_matched_terms = 0
+    entity_terms = [
+        term
+        for term in terms
+        if (
+            term not in GENERIC_QUERY_TERMS
+            and term not in CALCULATION_QUERY_TERMS
+            and term not in COMMAND_HELP_QUERY_TERMS
+            and term not in STOP_WORDS
+            and len(term) >= 4
+        )
+    ]
+    entity_matched_terms = 0
 
     for phrase in phrases:
         for form in _phrase_forms(phrase):
@@ -651,12 +1112,58 @@ def _score_text_block(
         text_hits = _count_term_occurrences(text_lower, term)
         if path_hits or text_hits:
             matched_terms += 1
+            if term in dominant_terms:
+                dominant_matched_terms += 1
         if path_hits:
             score += 8 + min(path_hits, 4) * 5
         if text_hits:
             score += min(text_hits, 10) * 2
 
+    for term in dict.fromkeys(entity_terms):
+        if _count_term_occurrences(path_lower, term) or _count_term_occurrences(text_lower, term):
+            entity_matched_terms += 1
+
     score += (matched_terms * 4) + (matched_terms * matched_terms * 4)
+    if dominant_matched_terms:
+        score += (dominant_matched_terms * 18) + (dominant_matched_terms * dominant_matched_terms * 8)
+    elif dominant_terms and matched_terms:
+        score -= 30
+    if entity_terms:
+        if entity_matched_terms:
+            score += (entity_matched_terms * 20) + (entity_matched_terms * entity_matched_terms * 6)
+        elif phrases:
+            score -= 180
+        else:
+            score -= 90
+    wants_command_help = _question_requests_command_help(question_lower, terms)
+    wants_ranking_details = _question_requests_ranking_details(question_lower, terms)
+    wants_calculation = _question_requests_calculation(question_lower, terms)
+
+    if wants_ranking_details:
+        if _looks_like_rank_data_block(text_lower):
+            score += 155
+            if _looks_like_named_collection_text(text):
+                score += 70
+        elif any(token in text_lower for token in ("bracket", "rank", "tier")):
+            score += 38
+        elif not wants_command_help:
+            score -= 75
+
+    if wants_calculation:
+        if _looks_like_formula_block(text_lower):
+            score += 165
+        elif any(marker in text_lower for marker in ("weighted", "contribution", "power_score", "score =", "score:")):
+            score += 55
+        elif not wants_command_help:
+            score -= 95
+
+    if not wants_command_help and _looks_like_ui_scaffolding(text_lower):
+        line_count = text.count("\n") + 1 if text else 0
+        score -= 120 + min(max(line_count - 20, 0) * 2.0, 90.0)
+    if path_lower.endswith(".py"):
+        first_line = text.splitlines()[0].strip() if text else ""
+        if text.startswith((" ", "\t")) and first_line and not first_line.startswith(("@", "def ", "async def ", "class ")):
+            score -= 85
     score += _path_priority_score(path_text, question_lower)
     return score
 
@@ -1901,7 +2408,7 @@ def _assemble_context_snippets(
             if try_add(snippet, path_cap=4):
                 follow_added += 1
 
-    if follow_added >= 2 and len(selected) >= min(max_snippets, 3):
+    if follow_added >= 2 and len(selected) >= min(max_snippets, 4):
         return selected
 
     for snippet in anchor_snippets:
@@ -1922,19 +2429,11 @@ def _assemble_context_snippets(
     return selected
 
 
-def build_repo_context(
-    question: str,
-    repo_root: Path,
-    *,
-    max_snippets: int = DEFAULT_MAX_SNIPPETS,
-    max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
-) -> list[RankedSnippet]:
+def _build_repo_search_index(repo_root: Path) -> RepoSearchIndex:
     repo_root = Path(repo_root)
-    terms = extract_query_terms(question)
-    phrases = extract_query_phrases(question)
+    source_records: list[RepoSourceRecord] = []
     repo_vocabulary: set[str] = set()
-    source_records: list[tuple[Path, str, str]] = []
-    file_candidates: list[tuple[float, Path, str]] = []
+    glossary_phrases: set[str] = set()
     python_symbol_defs: dict[str, list[PythonSymbolBlock]] = {}
     python_symbol_defs_by_path: dict[str, dict[str, list[PythonSymbolBlock]]] = {}
     python_imported_symbol_paths: dict[str, dict[str, str]] = {}
@@ -1951,10 +2450,16 @@ def build_repo_context(
             continue
 
         path_text = _normalize_repo_path(path, repo_root)
-        source_records.append((path, path_text, text))
+        source_records.append(RepoSourceRecord(path=path, path_text=path_text, text=text))
         source_text_by_path[path_text] = text
         repo_paths_by_basename.setdefault(path.name, []).append(path_text)
         repo_vocabulary.update(_extract_repo_vocabulary_terms(path_text))
+
+        if len(glossary_phrases) < MAX_GLOSSARY_PHRASES:
+            glossary_phrases.update(
+                set(list(_extract_glossary_phrases_from_text(path_text, text))[:MAX_GLOSSARY_PHRASES - len(glossary_phrases)])
+            )
+
         if path.suffix.lower() == ".py":
             python_imported_symbol_paths[path_text] = _extract_python_imported_symbol_paths(
                 text,
@@ -1967,19 +2472,118 @@ def build_repo_context(
                 python_symbol_defs.setdefault(symbol_name, []).append(block)
                 path_symbol_defs.setdefault(symbol_name, []).append(block)
                 repo_vocabulary.update(_extract_repo_vocabulary_terms(symbol_name))
+                if len(glossary_phrases) < MAX_GLOSSARY_PHRASES:
+                    glossary_phrases.update(_extract_glossary_phrases_from_symbol(symbol_name))
                 for assigned_symbol in _extract_self_assigned_symbols(block_text):
                     python_symbol_defs.setdefault(assigned_symbol, []).append(block)
                     path_symbol_defs.setdefault(assigned_symbol, []).append(block)
                     repo_vocabulary.update(_extract_repo_vocabulary_terms(assigned_symbol))
+                    if len(glossary_phrases) < MAX_GLOSSARY_PHRASES:
+                        glossary_phrases.update(_extract_glossary_phrases_from_symbol(assigned_symbol))
             for start_line, end_line, block_text, symbol_name in _iter_python_named_value_blocks(text):
                 block = (path_text, start_line, end_line, block_text)
                 python_symbol_defs.setdefault(symbol_name, []).append(block)
                 path_symbol_defs.setdefault(symbol_name, []).append(block)
                 repo_vocabulary.update(_extract_repo_vocabulary_terms(symbol_name))
+                if len(glossary_phrases) < MAX_GLOSSARY_PHRASES:
+                    glossary_phrases.update(_extract_glossary_phrases_from_symbol(symbol_name))
 
-    terms = _expand_terms_with_repo_vocabulary(terms, repo_vocabulary)
+    for phrase in list(glossary_phrases):
+        repo_vocabulary.update(_extract_repo_vocabulary_terms(phrase))
 
-    for path, path_text, text in source_records:
+    return RepoSearchIndex(
+        repo_root=repo_root,
+        source_records=source_records,
+        repo_vocabulary=repo_vocabulary,
+        glossary_phrases=glossary_phrases,
+        python_symbol_defs=python_symbol_defs,
+        python_symbol_defs_by_path=python_symbol_defs_by_path,
+        python_imported_symbol_paths=python_imported_symbol_paths,
+        source_text_by_path=source_text_by_path,
+        repo_paths_by_basename=repo_paths_by_basename,
+    )
+
+
+def _prepare_query_terms_and_phrases(
+    question: str,
+    repo_vocabulary: set[str],
+    glossary_phrases: set[str],
+) -> tuple[list[str], list[str]]:
+    raw_terms = extract_query_terms(question)
+    phrases = extract_query_phrases(question)
+
+    seen_phrases = set(phrases)
+    for compound_phrase in _extract_compound_phrases_from_terms(raw_terms, repo_vocabulary):
+        if compound_phrase not in seen_phrases:
+            seen_phrases.add(compound_phrase)
+            phrases.append(compound_phrase)
+    for glossary_phrase in _extract_glossary_phrases_from_question(question, glossary_phrases):
+        if glossary_phrase not in seen_phrases:
+            seen_phrases.add(glossary_phrase)
+            phrases.append(glossary_phrase)
+
+    terms = _expand_terms_with_repo_vocabulary(raw_terms, repo_vocabulary)
+    return terms, phrases
+
+
+def _normalized_variant_is_meaningful(original_question: str, normalized_question: str) -> bool:
+    original_tokens = re.findall(r"[a-z0-9_]+", original_question.casefold())
+    normalized_tokens = re.findall(r"[a-z0-9_]+", normalized_question.casefold())
+    if original_tokens == normalized_tokens:
+        return False
+    if len(original_tokens) != len(normalized_tokens):
+        return True
+
+    for original_token, normalized_token in zip(original_tokens, normalized_tokens):
+        if original_token == normalized_token:
+            continue
+        if original_token in STOP_WORDS and normalized_token in STOP_WORDS:
+            continue
+        if original_token in CALCULATION_QUERY_TERMS and normalized_token in CALCULATION_QUERY_TERMS:
+            continue
+        if original_token in GENERIC_QUERY_TERMS and normalized_token in GENERIC_QUERY_TERMS:
+            continue
+        return True
+    return False
+
+
+def _build_query_variants(
+    question: str,
+    repo_vocabulary: set[str],
+    glossary_phrases: set[str],
+) -> list[str]:
+    variants = [question.strip()]
+    normalized_question = _normalize_query_text(question, repo_vocabulary, glossary_phrases)
+    if (
+        normalized_question
+        and normalized_question not in variants
+        and _normalized_variant_is_meaningful(question, normalized_question)
+    ):
+        variants.append(normalized_question)
+    return variants
+
+
+def _search_repo_context_with_query(
+    question: str,
+    index: RepoSearchIndex,
+    *,
+    max_snippets: int,
+    max_context_chars: int,
+    top_file_limit: int,
+    per_file_snippets: int,
+    broaden: bool,
+) -> list[RankedSnippet]:
+    terms, phrases = _prepare_query_terms_and_phrases(
+        question,
+        index.repo_vocabulary,
+        index.glossary_phrases,
+    )
+
+    file_candidates: list[tuple[float, RepoSourceRecord]] = []
+    for record in index.source_records:
+        path = record.path
+        path_text = record.path_text
+        text = record.text
         file_score = (
             _score_json_block(question, terms, phrases, path_text, text)
             if path.suffix.lower() == ".json"
@@ -1989,15 +2593,16 @@ def build_repo_context(
         )
         if file_score <= 0:
             continue
-
-        file_candidates.append((file_score, path, text))
+        file_candidates.append((file_score, record))
 
     if not file_candidates:
         return []
 
     snippet_candidates: list[RankedSnippet] = []
-    for file_score, path, text in sorted(file_candidates, key=lambda item: item[0], reverse=True)[:12]:
-        path_text = _normalize_repo_path(path, repo_root)
+    for file_score, record in sorted(file_candidates, key=lambda item: item[0], reverse=True)[:top_file_limit]:
+        path = record.path
+        path_text = record.path_text
+        text = record.text
         best_for_file: list[RankedSnippet] = []
         candidate_windows: list[tuple[int, int, str, str | None]] = []
         seen_window_refs: set[tuple[int, int]] = set()
@@ -2005,7 +2610,7 @@ def build_repo_context(
         has_structured_text_windows = False
 
         if path.suffix.lower() == ".py":
-            for symbol_name, entries in python_symbol_defs_by_path.get(path_text, {}).items():
+            for symbol_name, entries in index.python_symbol_defs_by_path.get(path_text, {}).items():
                 for _, start_line, end_line, block_text in entries:
                     block_score = (
                         _score_text_block(question, terms, phrases, path_text, block_text)
@@ -2061,8 +2666,7 @@ def build_repo_context(
             (path.suffix.lower() == ".json" and has_structured_json_windows)
             or has_structured_text_windows
         ):
-            targeted_windows = list(_iter_targeted_windows(text, terms, phrases))
-            for start_line, end_line, window_text in targeted_windows:
+            for start_line, end_line, window_text in _iter_targeted_windows(text, terms, phrases):
                 if (start_line, end_line) in seen_window_refs:
                     continue
                 candidate_windows.append((start_line, end_line, window_text, None))
@@ -2104,7 +2708,7 @@ def build_repo_context(
                 ):
                     continue
                 file_snippets.append(candidate)
-                if len(file_snippets) >= 3:
+                if len(file_snippets) >= per_file_snippets:
                     break
             snippet_candidates.extend(file_snippets)
         else:
@@ -2130,17 +2734,18 @@ def build_repo_context(
         max_context_chars=max_context_chars,
         max_per_path=1,
     )
+    follow_multiplier = 6 if broaden else 4
     follow_snippets = _collect_follow_snippets(
         primary_snippets,
-        python_symbol_defs,
-        python_symbol_defs_by_path,
-        python_imported_symbol_paths,
-        source_text_by_path,
-        repo_paths_by_basename,
+        index.python_symbol_defs,
+        index.python_symbol_defs_by_path,
+        index.python_imported_symbol_paths,
+        index.source_text_by_path,
+        index.repo_paths_by_basename,
         question=question,
         terms=terms,
         phrases=phrases,
-        max_follow_blocks=max(BASE_MAX_FOLLOW_BLOCKS, max_snippets * 4),
+        max_follow_blocks=max(BASE_MAX_FOLLOW_BLOCKS, max_snippets * follow_multiplier),
     )
     return _assemble_context_snippets(
         primary_snippets,
@@ -2150,6 +2755,138 @@ def build_repo_context(
         max_snippets=max_snippets,
         max_context_chars=max_context_chars,
     )
+
+
+def _merge_query_variant_snippets(
+    snippet_groups: list[list[RankedSnippet]],
+    *,
+    max_snippets: int,
+    max_context_chars: int,
+) -> list[RankedSnippet]:
+    merged_by_ref: dict[tuple[str, int, int], RankedSnippet] = {}
+
+    for group_index, snippets in enumerate(snippet_groups):
+        base_bonus = 18.0 if group_index == 0 else 10.0
+        for rank, snippet in enumerate(snippets):
+            adjusted_score = snippet.score + base_bonus - min(rank * 2, 8)
+            ref = (snippet.path, snippet.start_line, snippet.end_line)
+            existing = merged_by_ref.get(ref)
+            candidate = RankedSnippet(
+                path=snippet.path,
+                start_line=snippet.start_line,
+                end_line=snippet.end_line,
+                score=adjusted_score,
+                text=snippet.text,
+            )
+            if existing is None or candidate.score > existing.score:
+                merged_by_ref[ref] = candidate
+
+    merged_candidates = list(merged_by_ref.values())
+    selected = _select_ranked_snippets(
+        merged_candidates,
+        max_snippets=max_snippets,
+        max_context_chars=max_context_chars,
+        max_per_path=2,
+    )
+    if selected:
+        min_selected_score = max(80.0, selected[0].score * 0.25)
+        trimmed_selected = [
+            snippet
+            for index, snippet in enumerate(selected)
+            if index == 0 or snippet.score >= min_selected_score
+        ]
+        if trimmed_selected:
+            selected = trimmed_selected
+    if len(selected) >= max_snippets or len(selected) >= min(max_snippets, 4):
+        return selected
+
+    seen_refs = {(snippet.path, snippet.start_line, snippet.end_line) for snippet in selected}
+    total_chars = sum(len(snippet.text) for snippet in selected)
+    for snippet in sorted(merged_candidates, key=lambda item: item.score, reverse=True):
+        if len(selected) >= max_snippets:
+            break
+        ref = (snippet.path, snippet.start_line, snippet.end_line)
+        if ref in seen_refs:
+            continue
+        if selected and total_chars + len(snippet.text) > max_context_chars:
+            continue
+        selected.append(snippet)
+        seen_refs.add(ref)
+        total_chars += len(snippet.text)
+
+    return selected
+
+
+def context_quality(snippets: list[RankedSnippet]) -> float:
+    if not snippets:
+        return 0.0
+    unique_paths = len({snippet.path for snippet in snippets})
+    return snippets[0].score + (unique_paths * 35.0) + (len(snippets) * 12.0)
+
+
+def context_is_low_confidence(snippets: list[RankedSnippet]) -> bool:
+    if not snippets:
+        return True
+    unique_paths = len({snippet.path for snippet in snippets})
+    return snippets[0].score < 120.0 or (len(snippets) < 3 and unique_paths < 2)
+
+
+def answer_looks_partial(answer: str) -> bool:
+    answer_lower = answer.casefold()
+    return any(hint in answer_lower for hint in PARTIAL_ANSWER_HINTS)
+
+
+def build_repo_context(
+    question: str,
+    repo_root: Path,
+    *,
+    max_snippets: int = DEFAULT_MAX_SNIPPETS,
+    max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
+    broaden: bool = False,
+) -> list[RankedSnippet]:
+    index = _build_repo_search_index(repo_root)
+    query_variants = _build_query_variants(question, index.repo_vocabulary, index.glossary_phrases)
+    top_file_limit = BROAD_TOP_FILE_LIMIT if broaden else DEFAULT_TOP_FILE_LIMIT
+    per_file_snippets = BROAD_PER_FILE_SNIPPETS if broaden else DEFAULT_PER_FILE_SNIPPETS
+
+    snippet_groups = [
+        _search_repo_context_with_query(
+            query_variant,
+            index,
+            max_snippets=max_snippets,
+            max_context_chars=max_context_chars,
+            top_file_limit=top_file_limit,
+            per_file_snippets=per_file_snippets,
+            broaden=broaden,
+        )
+        for query_variant in query_variants
+    ]
+    merged_snippets = _merge_query_variant_snippets(
+        snippet_groups,
+        max_snippets=max_snippets,
+        max_context_chars=max_context_chars,
+    )
+    if broaden or not context_is_low_confidence(merged_snippets):
+        return merged_snippets
+
+    broader_snippet_groups = [
+        _search_repo_context_with_query(
+            query_variant,
+            index,
+            max_snippets=max(max_snippets, DEFAULT_MAX_SNIPPETS + 2),
+            max_context_chars=max_context_chars,
+            top_file_limit=BROAD_TOP_FILE_LIMIT,
+            per_file_snippets=BROAD_PER_FILE_SNIPPETS,
+            broaden=True,
+        )
+        for query_variant in query_variants
+    ]
+    broader_snippets = _merge_query_variant_snippets(
+        broader_snippet_groups,
+        max_snippets=max(max_snippets, DEFAULT_MAX_SNIPPETS + 2),
+        max_context_chars=max_context_chars,
+    )
+    return broader_snippets if context_quality(broader_snippets) > context_quality(merged_snippets) else merged_snippets
 
 
 def format_repo_context(snippets: list[RankedSnippet]) -> str:
@@ -2431,6 +3168,24 @@ class ChatGPTCog(commands.Cog):
                 self.bot.logger.error(f"Codex command failed: {exc}")
                 await ctx.send(f"{ctx.author.mention} Codex request failed: {exc}")
                 return
+
+            if answer_looks_partial(answer):
+                broader_snippets = build_repo_context(
+                    question,
+                    self.repo_root,
+                    max_snippets=max(self.max_snippets, DEFAULT_MAX_SNIPPETS + 2),
+                    max_context_chars=self.max_context_chars,
+                    broaden=True,
+                )
+                if context_quality(broader_snippets) > context_quality(snippets):
+                    try:
+                        broader_answer = await self._ask_openai(question, broader_snippets)
+                    except Exception as exc:
+                        self.bot.logger.error(f"Codex broader retry failed: {exc}")
+                    else:
+                        if context_quality(broader_snippets) > context_quality(snippets) or not answer_looks_partial(broader_answer):
+                            snippets = broader_snippets
+                            answer = broader_answer
 
         await self._send_answer(
             ctx,
