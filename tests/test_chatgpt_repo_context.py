@@ -234,6 +234,266 @@ class TestChatGPTRepoContext(unittest.TestCase):
             )
             self.assertFalse(any(snippet.path == "cogs/battles/factory.py" for snippet in snippets))
 
+    def test_build_repo_context_follows_imported_constant_definitions(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "cogs" / "battles").mkdir(parents=True)
+
+            (root / "cogs" / "battles" / "__init__.py").write_text(
+                "\n".join(
+                    [
+                        "from .jury_tower_data import JURY_POWER_BRACKETS",
+                        "",
+                        "class Battles:",
+                        "    async def jurytower_score(self, ctx, target):",
+                        "        score = self._jury_scale_snapshot_score({'attack_base': 1000, 'hp_base': 2000, 'defense_base': 1000})",
+                        "        return self._jury_bracket_payload_from_score(score)",
+                        "",
+                        "    def _jury_scale_snapshot_score(self, snapshot):",
+                        "        return snapshot['attack_base'] + snapshot['defense_base'] + (snapshot['hp_base'] * 0.4)",
+                        "",
+                        "    def _jury_bracket_payload_from_score(self, power_score):",
+                        "        bracket = self._jury_power_bracket_for_score(power_score)",
+                        "        return {'bracket_label': bracket['label'], 'power_score': int(power_score)}",
+                        "",
+                        "    def _jury_power_bracket_for_score(self, power_score):",
+                        "        selected = JURY_POWER_BRACKETS[-1]",
+                        "        for bracket in JURY_POWER_BRACKETS:",
+                        "            if bracket['max_score'] is None or power_score <= bracket['max_score']:",
+                        "                selected = bracket",
+                        "                break",
+                        "        return selected",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (root / "cogs" / "battles" / "jury_tower_data.py").write_text(
+                "\n".join(
+                    [
+                        "JURY_POWER_BRACKETS = (",
+                        '    {"key": "court_tier_i", "label": "Maul Ring I", "max_score": 2000},',
+                        '    {"key": "court_tier_ii", "label": "Maul Ring II", "max_score": 4000},',
+                        '    {"key": "court_tier_x", "label": "Maul Ring X", "max_score": None},',
+                        ")",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            snippets = build_repo_context(
+                "How does Jury Tower ranking work?",
+                root,
+                max_snippets=6,
+                max_context_chars=6000,
+            )
+
+            joined_text = "\n".join(snippet.text for snippet in snippets)
+            self.assertIn("JURY_POWER_BRACKETS", joined_text)
+            self.assertIn("Maul Ring I", joined_text)
+            self.assertIn("max_score", joined_text)
+            self.assertTrue(any(snippet.path == "cogs/battles/jury_tower_data.py" for snippet in snippets))
+
+    def test_build_repo_context_follows_json_backing_data_from_python_usage(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "cogs" / "battles").mkdir(parents=True)
+
+            (root / "cogs" / "battles" / "__init__.py").write_text(
+                "\n".join(
+                    [
+                        "class Battles:",
+                        "    def __init__(self):",
+                        '        with open("cogs/battles/couples_game_levels.json", "r", encoding="utf-8") as f:',
+                        "            self.couples_game_levels = json.load(f)",
+                        "",
+                        "    async def cbt_preview(self, level):",
+                        '        level_info = self.couples_game_levels["levels"][level - 1]',
+                        '        return f\"{level_info[\'title\']}: {level_info[\'story\']}\"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (root / "cogs" / "battles" / "couples_game_levels.json").write_text(
+                "\n".join(
+                    [
+                        "{",
+                        '  "levels": [',
+                        "    {",
+                        '      "level": 6,',
+                        '      "title": "The Bridge of Sacrifice",',
+                        '      "story": "Shared suffering tests both partners."',
+                        "    },",
+                        "    {",
+                        '      "level": 7,',
+                        '      "title": "The Memory Garden",',
+                        '      "story": "Memory thieves attack your shared history."',
+                        "    }",
+                        "  ]",
+                        "}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            snippets = build_repo_context(
+                "What happens on CBT level 7?",
+                root,
+                max_snippets=6,
+                max_context_chars=7000,
+            )
+
+            joined_text = "\n".join(snippet.text for snippet in snippets)
+            self.assertIn("Memory Garden", joined_text)
+            self.assertIn("Memory thieves", joined_text)
+            self.assertTrue(any(snippet.path == "cogs/battles/couples_game_levels.json" for snippet in snippets))
+
+    def test_build_repo_context_prefers_exact_json_level_match(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "cogs" / "battles").mkdir(parents=True)
+
+            (root / "cogs" / "battles" / "__init__.py").write_text(
+                "\n".join(
+                    [
+                        "class Battles:",
+                        "    def __init__(self):",
+                        '        with open("cogs/battles/couples_game_levels.json", "r", encoding="utf-8") as f:',
+                        "            self.couples_game_levels = json.load(f)",
+                        "",
+                        "    async def cbt_preview(self, level):",
+                        '        level_info = self.couples_game_levels["levels"][level - 1]',
+                        '        return f\"{level_info[\'title\']}: {level_info[\'story\']}\"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (root / "cogs" / "battles" / "couples_game_levels.json").write_text(
+                "\n".join(
+                    [
+                        "{",
+                        '  "levels": [',
+                        "    {",
+                        '      "level": 1,',
+                        '      "title": "First Steps Together",',
+                        '      "story": "An easy intro floor."',
+                        "    },",
+                        "    {",
+                        '      "level": 7,',
+                        '      "title": "The Memory Garden",',
+                        '      "story": "Memory thieves attack your shared history."',
+                        "    }",
+                        "  ],",
+                        '  "victories": {',
+                        '    "7": {"reward": "Moon Pet Shard"}',
+                        "  }",
+                        "}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            snippets = build_repo_context(
+                "What happens on CBT level 7?",
+                root,
+                max_snippets=4,
+                max_context_chars=7000,
+            )
+
+            self.assertTrue(snippets)
+            self.assertEqual(snippets[0].path, "cogs/battles/couples_game_levels.json")
+            self.assertIn("JSON path: levels[7]", snippets[0].text)
+            self.assertIn("Memory Garden", snippets[0].text)
+            self.assertNotIn("First Steps Together", snippets[0].text)
+
+    def test_build_repo_context_chunks_markdown_by_heading_section(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "cogs" / "alliance").mkdir(parents=True)
+
+            (root / "cogs" / "alliance" / "CITY_WARS_HELP.md").write_text(
+                "\n".join(
+                    [
+                        "# City Wars",
+                        "Intro text.",
+                        "",
+                        "## Units",
+                        "- tower: 5,000 HP and 100 retaliation",
+                        "- cannon: ranged siege weapon",
+                        "",
+                        "## Rewards",
+                        "Winning cities gain tax bonuses.",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            snippets = build_repo_context(
+                "How much HP does the tower have in city wars?",
+                root,
+                max_snippets=4,
+                max_context_chars=5000,
+            )
+
+            joined_text = "\n".join(snippet.text for snippet in snippets)
+            self.assertIn("Markdown section: Units", joined_text)
+            self.assertIn("5,000 HP", joined_text)
+            self.assertTrue(any(snippet.path == "cogs/alliance/CITY_WARS_HELP.md" for snippet in snippets))
+
+    def test_build_repo_context_chunks_sql_by_statement(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "scripts").mkdir(parents=True)
+            (root / "cogs" / "battles").mkdir(parents=True)
+
+            (root / "cogs" / "battles" / "__init__.py").write_text(
+                "\n".join(
+                    [
+                        "class Battles:",
+                        "    async def initialize_tables(self, conn):",
+                        '        await conn.execute("""',
+                        "            CREATE TABLE IF NOT EXISTS jurytower (",
+                        "                id BIGINT PRIMARY KEY",
+                        "            )",
+                        '        """)',
+                        '        await conn.execute("ALTER TABLE jurytower ADD COLUMN IF NOT EXISTS scale_power_score BIGINT NOT NULL DEFAULT 0;")',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            (root / "scripts" / "schema.sql").write_text(
+                "\n".join(
+                    [
+                        "CREATE TABLE profile (",
+                        "    user_id BIGINT PRIMARY KEY,",
+                        "    money BIGINT NOT NULL",
+                        ");",
+                        "",
+                        "CREATE TABLE jurytower (",
+                        "    id BIGINT PRIMARY KEY,",
+                        "    scale_power_score BIGINT NOT NULL,",
+                        "    scale_bracket TEXT NOT NULL,",
+                        "    prestige INTEGER NOT NULL DEFAULT 0",
+                        ");",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            snippets = build_repo_context(
+                "What columns are in the jurytower table?",
+                root,
+                max_snippets=4,
+                max_context_chars=5000,
+            )
+
+            joined_text = "\n".join(snippet.text for snippet in snippets)
+            self.assertEqual(snippets[0].path, "scripts/schema.sql")
+            self.assertIn("CREATE TABLE jurytower", joined_text)
+            self.assertIn("scale_power_score", joined_text)
+            self.assertIn("scale_bracket", joined_text)
+            self.assertTrue(any(snippet.path == "scripts/schema.sql" for snippet in snippets))
+
 
 if __name__ == "__main__":
     unittest.main()
