@@ -4801,16 +4801,11 @@ class Pets(commands.Cog):
             return self.get_all_skill_names_for_element(pet.get("element"))
         return self.normalize_learned_skills(pet.get("learned_skills", []))
 
-    def estimate_spent_skill_points(self, element, learned_skills):
-        """
-        Estimate spent skill points for currently learned skills.
-
-        Uses a conservative ordering (Battery Life applied as late as possible at each level)
-        so reconciliation does not over-refund.
-        """
+    def get_skill_point_skill_lookup(self, element):
+        """Build a normalized skill metadata lookup for one element tree."""
         skill_tree = self.SKILL_TREES.get(element, {})
         if not skill_tree:
-            return 0, 0
+            return {}
 
         skill_lookup = {}
         for branch_skills in skill_tree.values():
@@ -4829,6 +4824,18 @@ class Pets(commands.Cog):
                     "required_level": max(1, required_level),
                     "is_battery": "battery life" in skill_name.lower(),
                 }
+        return skill_lookup
+
+    def calculate_spent_skill_points(self, element, learned_skills, *, battery_order: str = "late"):
+        """
+        Estimate spent skill points for a learned skill list.
+
+        `battery_order="late"` matches the conservative reconciliation logic.
+        `battery_order="early"` gives the minimum plausible spend for current skills.
+        """
+        skill_lookup = self.get_skill_point_skill_lookup(element)
+        if not skill_lookup:
+            return 0, 0
 
         ordered = []
         unknown_count = 0
@@ -4839,11 +4846,15 @@ class Pets(commands.Cog):
                 continue
             ordered.append(meta)
 
-        # Battery skills sorted after same-level skills for conservative refunding.
+        if battery_order == "early":
+            battery_rank = 0
+        else:
+            battery_rank = 1
+
         ordered.sort(
             key=lambda entry: (
                 entry["required_level"],
-                1 if entry["is_battery"] else 0,
+                battery_rank if entry["is_battery"] else (1 - battery_rank),
                 entry["name"].lower(),
             )
         )
@@ -4862,6 +4873,165 @@ class Pets(commands.Cog):
                 battery_active = True
 
         return spent, unknown_count
+
+    def estimate_spent_skill_points(self, element, learned_skills):
+        """
+        Estimate spent skill points for currently learned skills.
+
+        Uses a conservative ordering (Battery Life applied as late as possible at each level)
+        so reconciliation does not over-refund.
+        """
+        return self.calculate_spent_skill_points(
+            element,
+            learned_skills,
+            battery_order="late",
+        )
+
+    def get_minimum_possible_spent_skill_points(self, element, learned_skills):
+        """Return the lowest plausible SP spend for the current learned skills."""
+        return self.calculate_spent_skill_points(
+            element,
+            learned_skills,
+            battery_order="early",
+        )
+
+    def pick_skill_to_remove_for_skill_limit(self, element, learned_skills):
+        """
+        Choose the cheapest skill whose removal actually lowers the minimum possible spend.
+
+        Returns a tuple of:
+        - removed_skill_name
+        - remaining_skill_list
+        - new_spent_skill_points
+        """
+        normalized_skills = self.normalize_learned_skills(learned_skills)
+        skill_lookup = self.get_skill_point_skill_lookup(element)
+        if not normalized_skills or not skill_lookup:
+            return None, normalized_skills, 0
+
+        current_spent, _ = self.get_minimum_possible_spent_skill_points(
+            element,
+            normalized_skills,
+        )
+        best_choice = None
+
+        for index, skill_name in enumerate(normalized_skills):
+            meta = skill_lookup.get(skill_name.lower())
+            if not meta:
+                continue
+
+            candidate_skills = normalized_skills[:index] + normalized_skills[index + 1 :]
+            candidate_spent, _ = self.get_minimum_possible_spent_skill_points(
+                element,
+                candidate_skills,
+            )
+            if candidate_spent >= current_spent:
+                continue
+
+            rank = (
+                int(meta["cost"]),
+                int(candidate_spent),
+                int(meta["required_level"]),
+                meta["name"].lower(),
+                index,
+            )
+            if best_choice is None or rank < best_choice["rank"]:
+                best_choice = {
+                    "rank": rank,
+                    "removed_skill_name": skill_name,
+                    "remaining_skills": candidate_skills,
+                    "new_spent": int(candidate_spent),
+                }
+
+        if best_choice is None:
+            return None, normalized_skills, int(current_spent)
+
+        return (
+            best_choice["removed_skill_name"],
+            best_choice["remaining_skills"],
+            best_choice["new_spent"],
+        )
+
+    def audit_pet_skill_limit(self, pet):
+        """Audit and prepare a repair plan for one pet's learned skills and unspent SP."""
+        result = {
+            "pet_id": int(pet["id"]),
+            "pet_name": str(pet.get("name") or "Unknown Pet"),
+            "user_id": int(pet.get("user_id") or 0),
+            "status": "ok",
+            "element": str(pet.get("element") or ""),
+            "level": max(1, int(pet.get("level") or 1)),
+            "earned_skill_points": 0,
+            "current_skill_points": max(0, int(pet.get("skill_points") or 0)),
+            "minimum_spent": 0,
+            "repaired_spent": 0,
+            "unknown_count": 0,
+            "learned_skills": self.normalize_learned_skills(pet.get("learned_skills")),
+            "repaired_skills": [],
+            "removed_skills": [],
+            "repaired_skill_points": 0,
+            "skills_changed": False,
+            "skill_points_changed": False,
+            "update_required": False,
+            "repairable": True,
+            "over_limit": False,
+        }
+        result["repaired_skills"] = list(result["learned_skills"])
+
+        if pet.get("gm_all_skills_enabled"):
+            result["status"] = "gm_all_skills_enabled"
+            result["repairable"] = False
+            return result
+
+        if result["element"] not in self.SKILL_TREES:
+            result["status"] = "unknown_element"
+            result["repairable"] = False
+            return result
+
+        result["earned_skill_points"] = self.get_total_earned_skill_points(result["level"])
+        minimum_spent, unknown_count = self.get_minimum_possible_spent_skill_points(
+            result["element"],
+            result["learned_skills"],
+        )
+        result["minimum_spent"] = int(minimum_spent)
+        result["repaired_spent"] = int(minimum_spent)
+        result["unknown_count"] = int(unknown_count)
+        result["over_limit"] = result["minimum_spent"] > result["earned_skill_points"]
+
+        while result["repaired_spent"] > result["earned_skill_points"] and result["repaired_skills"]:
+            removed_skill, remaining_skills, new_spent = self.pick_skill_to_remove_for_skill_limit(
+                result["element"],
+                result["repaired_skills"],
+            )
+            if not removed_skill:
+                break
+            result["removed_skills"].append(str(removed_skill))
+            result["repaired_skills"] = list(remaining_skills)
+            result["repaired_spent"] = int(new_spent)
+
+        max_valid_skill_points = max(
+            0,
+            int(result["earned_skill_points"] - result["repaired_spent"]),
+        )
+        result["repaired_skill_points"] = min(
+            result["current_skill_points"],
+            max_valid_skill_points,
+        )
+        result["skills_changed"] = result["repaired_skills"] != result["learned_skills"]
+        result["skill_points_changed"] = (
+            result["repaired_skill_points"] != result["current_skill_points"]
+        )
+        result["update_required"] = result["skills_changed"] or result["skill_points_changed"]
+
+        if result["repaired_spent"] > result["earned_skill_points"]:
+            result["status"] = "manual_review"
+            result["repairable"] = False
+            return result
+
+        if result["update_required"]:
+            result["status"] = "needs_update"
+
+        return result
 
     async def gain_experience(self, pet_id, xp_amount, trust_gain=0, apply_xp_multiplier=True, conn=None):
         """Award experience and trust to a pet"""
@@ -9412,6 +9582,233 @@ class Pets(commands.Cog):
                 else ""
             )
         )
+
+    @is_gm()
+    @commands.command(
+        hidden=True,
+        name="gmfixoverspentpetskills",
+        aliases=["gmrepairoverspentpetskills", "gmauditpetskilllimit"],
+    )
+    async def gmfixoverspentpetskills(self, ctx, target: discord.User, pet_ref: str):
+        """
+        GM utility: repair one pet whose learned skills exceed its earned SP limit.
+
+        Usage:
+        - $gmfixoverspentpetskills <user> <pet_id|alias>
+        """
+        async with self.bot.pool.acquire() as conn:
+            pet, pet_id = await self.fetch_pet_for_user(conn, target.id, pet_ref)
+            if not pet:
+                return await ctx.send(
+                    f"❌ {target.mention} does not have a pet with ID or alias `{pet_ref}`."
+                )
+
+            audit = self.audit_pet_skill_limit(pet)
+
+            if audit["status"] == "gm_all_skills_enabled":
+                return await ctx.send(
+                    f"❌ **{pet['name']}** currently has GM all-element-skills mode enabled. "
+                    "Disable that first before repairing learned skills."
+                )
+
+            if audit["status"] == "unknown_element":
+                return await ctx.send(
+                    f"❌ **{pet['name']}** has an unknown element `{audit['element']}`."
+                )
+
+            if not audit["repairable"]:
+                return await ctx.send(
+                    f"❌ Could not fully repair **{pet['name']}** (ID: `{pet_id}`).\n"
+                    f"Minimum possible spent SP is still **{audit['repaired_spent']}** while earned SP is **{audit['earned_skill_points']}**.\n"
+                    + (
+                        f"Unknown skill entries skipped during calculation: **{audit['unknown_count']}**."
+                        if audit["unknown_count"]
+                        else "Manual review is required."
+                    )
+                )
+
+            if audit["update_required"]:
+                await conn.execute(
+                    """
+                    UPDATE monster_pets
+                    SET learned_skills = $1,
+                        skill_points = $2
+                    WHERE id = $3;
+                    """,
+                    json.dumps(audit["repaired_skills"]),
+                    int(audit["repaired_skill_points"]),
+                    pet_id,
+                )
+
+        removed_text = ", ".join(f"**{name}**" for name in audit["removed_skills"]) if audit["removed_skills"] else "None"
+        result_lines = [
+            f"Pet: **{pet['name']}** (ID: `{pet_id}`) owned by {target.mention}",
+            f"Element: **{audit['element']}**",
+            f"Level: **{audit['level']}**",
+            f"Earned SP limit: **{audit['earned_skill_points']}**",
+            f"Minimum spent SP: **{audit['minimum_spent']} -> {audit['repaired_spent']}**",
+            f"Unspent SP: **{audit['current_skill_points']} -> {audit['repaired_skill_points']}**",
+            f"Removed skills: {removed_text}",
+        ]
+        if audit["unknown_count"]:
+            result_lines.append(f"Unknown skill entries skipped: **{audit['unknown_count']}**")
+
+        if audit["update_required"]:
+            await ctx.send("✅ Pet skill limit repair complete.\n" + "\n".join(result_lines))
+        else:
+            await ctx.send("✅ Pet is already within its skill point limit.\n" + "\n".join(result_lines))
+
+        gm_log_channel = self.bot.get_channel(self.bot.config.game.gm_log_channel)
+        if gm_log_channel:
+            await gm_log_channel.send(
+                f"**{ctx.author}** ran `gmfixoverspentpetskills`.\n"
+                f"Target: {target} (`{target.id}`)\n"
+                f"Pet: {pet['name']} (`{pet_id}`)\n"
+                f"Element: {audit['element']}\n"
+                f"Earned SP: {audit['earned_skill_points']}\n"
+                f"Spent SP: {audit['minimum_spent']} -> {audit['repaired_spent']}\n"
+                f"Unspent SP: {audit['current_skill_points']} -> {audit['repaired_skill_points']}\n"
+                f"Removed: {', '.join(audit['removed_skills']) if audit['removed_skills'] else 'None'}"
+                + (
+                    f"\nUnknown skill entries skipped: {audit['unknown_count']}"
+                    if audit["unknown_count"]
+                    else ""
+                )
+            )
+
+    @is_gm()
+    @commands.command(
+        hidden=True,
+        name="gmfixalloverspentpetskills",
+        aliases=["gmrepairalloverspentpetskills", "gmscanallpetskilllimits"],
+    )
+    async def gmfixalloverspentpetskills(self, ctx, confirm: str = None):
+        """
+        GM utility: scan all pets and repair any that exceed their earned SP limit.
+
+        Usage:
+        - $gmfixalloverspentpetskills YES
+        """
+        if (confirm or "").upper() != "YES":
+            return await ctx.send(
+                "This scans all pets and removes the cheapest learned skills until each pet is back within its earned SP limit.\n"
+                "It also clamps unspent skill points down to the maximum valid remaining amount when needed.\n"
+                f"Run `{ctx.prefix}gmfixalloverspentpetskills YES` to execute."
+            )
+
+        async with self.bot.pool.acquire() as conn:
+            pets = await conn.fetch(
+                """
+                SELECT id, user_id, name, level, skill_points, element, learned_skills, gm_all_skills_enabled
+                FROM monster_pets
+                WHERE user_id <> 0;
+                """
+            )
+
+            updates = []
+            scanned_count = len(pets)
+            repaired_count = 0
+            over_limit_fixed_count = 0
+            unchanged_count = 0
+            gm_mode_skipped_count = 0
+            unknown_element_skipped_count = 0
+            manual_review_count = 0
+            total_removed_skills = 0
+            total_unknown_skill_entries = 0
+            sample_lines = []
+
+            for pet in pets:
+                audit = self.audit_pet_skill_limit(pet)
+                total_unknown_skill_entries += int(audit["unknown_count"])
+
+                if audit["status"] == "gm_all_skills_enabled":
+                    gm_mode_skipped_count += 1
+                    continue
+
+                if audit["status"] == "unknown_element":
+                    unknown_element_skipped_count += 1
+                    continue
+
+                if not audit["repairable"]:
+                    manual_review_count += 1
+                    if len(sample_lines) < 10:
+                        sample_lines.append(
+                            f"• `{audit['pet_id']}` {audit['pet_name']}: manual review needed "
+                            f"({audit['repaired_spent']}/{audit['earned_skill_points']} spent/earned)"
+                        )
+                    continue
+
+                if audit["update_required"]:
+                    updates.append(
+                        (
+                            json.dumps(audit["repaired_skills"]),
+                            int(audit["repaired_skill_points"]),
+                            int(audit["pet_id"]),
+                        )
+                    )
+                    repaired_count += 1
+                    total_removed_skills += len(audit["removed_skills"])
+                    if audit["over_limit"]:
+                        over_limit_fixed_count += 1
+                    if len(sample_lines) < 10:
+                        removed_text = ", ".join(audit["removed_skills"]) if audit["removed_skills"] else "SP clamp only"
+                        sample_lines.append(
+                            f"• `{audit['pet_id']}` {audit['pet_name']}: "
+                            f"{audit['minimum_spent']} -> {audit['repaired_spent']} spent, "
+                            f"removed {removed_text}"
+                        )
+                else:
+                    unchanged_count += 1
+
+            async with conn.transaction():
+                if updates:
+                    await conn.executemany(
+                        """
+                        UPDATE monster_pets
+                        SET learned_skills = $1,
+                            skill_points = $2
+                        WHERE id = $3;
+                        """,
+                        updates,
+                    )
+
+        summary_lines = [
+            f"Scanned pets: **{scanned_count:,}**",
+            f"Updated pets: **{repaired_count:,}**",
+            f"Over-limit pets fixed: **{over_limit_fixed_count:,}**",
+            f"Unchanged pets: **{unchanged_count:,}**",
+            f"GM all-skills skipped: **{gm_mode_skipped_count:,}**",
+            f"Unknown-element skipped: **{unknown_element_skipped_count:,}**",
+            f"Manual review needed: **{manual_review_count:,}**",
+            f"Total removed skills: **{total_removed_skills:,}**",
+        ]
+        if total_unknown_skill_entries:
+            summary_lines.append(f"Unknown skill entries skipped: **{total_unknown_skill_entries:,}**")
+        if sample_lines:
+            summary_lines.append("")
+            summary_lines.append("Sample changes:")
+            summary_lines.extend(sample_lines)
+
+        await ctx.send("✅ Bulk pet skill limit scan complete.\n" + "\n".join(summary_lines))
+
+        gm_log_channel = self.bot.get_channel(self.bot.config.game.gm_log_channel)
+        if gm_log_channel:
+            await gm_log_channel.send(
+                f"**{ctx.author}** ran `gmfixalloverspentpetskills`.\n"
+                f"Scanned: {scanned_count}\n"
+                f"Updated: {repaired_count}\n"
+                f"Over-limit fixed: {over_limit_fixed_count}\n"
+                f"Unchanged: {unchanged_count}\n"
+                f"GM all-skills skipped: {gm_mode_skipped_count}\n"
+                f"Unknown-element skipped: {unknown_element_skipped_count}\n"
+                f"Manual review needed: {manual_review_count}\n"
+                f"Total removed skills: {total_removed_skills}"
+                + (
+                    f"\nUnknown skill entries skipped: {total_unknown_skill_entries}"
+                    if total_unknown_skill_entries
+                    else ""
+                )
+            )
 
     @is_gm()
     @commands.command(
