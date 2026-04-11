@@ -270,6 +270,454 @@ class PetPaginator(discord.ui.View):
         self.stop()
 
 
+class PetCollectionCategorySelect(discord.ui.Select):
+    def __init__(self, collection_view):
+        self.collection_view = collection_view
+        options = [
+            discord.SelectOption(
+                label="Pets",
+                value="pets",
+                emoji="🐾",
+                description=f"{len(collection_view.pets)} pet(s) in your collection",
+                default=collection_view.category == "pets",
+            ),
+            discord.SelectOption(
+                label="Eggs",
+                value="eggs",
+                emoji="🥚",
+                description=f"{len(collection_view.eggs)} egg(s) incubating",
+                default=collection_view.category == "eggs",
+            ),
+        ]
+        super().__init__(
+            placeholder="Choose pets or eggs",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if interaction.user.id != view.author.id:
+            return await interaction.response.send_message("This collection is not yours.", ephemeral=True)
+
+        view.category = self.values[0]
+        view.ensure_valid_state()
+        await view.refresh_message(interaction)
+
+
+class PetCollectionItemSelect(discord.ui.Select):
+    def __init__(self, collection_view):
+        self.collection_view = collection_view
+        items, start, _ = collection_view.get_current_page_items()
+        options = []
+
+        if collection_view.category == "pets":
+            for offset, pet in enumerate(items):
+                actual_index = start + offset
+                growth_stage = str(pet.get("growth_stage") or "").lower()
+                if growth_stage == "baby":
+                    stage_emoji = "🍼"
+                elif growth_stage == "juvenile":
+                    stage_emoji = "🌱"
+                elif growth_stage == "young":
+                    stage_emoji = "🐕"
+                else:
+                    stage_emoji = "🦁"
+
+                description_parts = [
+                    f"{pet['element']} | IV: {pet['IV']}% | {pet['growth_stage'].capitalize()}"
+                ]
+                if pet.get("alt_name"):
+                    description_parts.append(f"Alias: {pet['alt_name']}")
+                boarding = collection_view.boarding_lookup.get(int(pet["id"]))
+                if boarding and boarding.get("status") == "active":
+                    description_parts.append(
+                        f"Daycare: {collection_view.cog.format_daycare_time_remaining(boarding['ends_at'])} left"
+                    )
+
+                label = f"{get_pet_display_name(collection_view.cog.bot, pet['name'])} (ID: {pet['id']})"
+                options.append(
+                    discord.SelectOption(
+                        label=label[:100],
+                        description=" | ".join(description_parts)[:100],
+                        value=str(actual_index),
+                        emoji=stage_emoji,
+                        default=actual_index == collection_view.indexes["pets"],
+                    )
+                )
+        else:
+            for offset, egg in enumerate(items):
+                actual_index = start + offset
+                label = f"{egg['egg_type']} (ID: {egg['id']})"
+                description = f"{egg['element']} | IV: {egg['IV']}%"
+                options.append(
+                    discord.SelectOption(
+                        label=label[:100],
+                        description=description[:100],
+                        value=str(actual_index),
+                        emoji=collection_view.cog.get_egg_display_emoji(egg),
+                        default=actual_index == collection_view.indexes["eggs"],
+                    )
+                )
+
+        placeholder = "Select a pet..." if collection_view.category == "pets" else "Select an egg..."
+        super().__init__(
+            placeholder=placeholder,
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if interaction.user.id != view.author.id:
+            return await interaction.response.send_message("This collection is not yours.", ephemeral=True)
+
+        view.set_current_index(int(self.values[0]))
+        await view.refresh_message(interaction)
+
+
+class PetCollectionView(discord.ui.View):
+    PAGE_SIZE = 25
+
+    def __init__(
+        self,
+        cog,
+        author,
+        *,
+        pets=None,
+        eggs=None,
+        boarding_lookup=None,
+        default_category="pets",
+    ):
+        super().__init__(timeout=60)
+        self.cog = cog
+        self.author = author
+        self.pets = list(pets or [])
+        self.eggs = list(eggs or [])
+        self.boarding_lookup = boarding_lookup or {}
+        self.category = default_category if default_category in {"pets", "eggs"} else "pets"
+        self.indexes = {"pets": 0, "eggs": 0}
+        self.page_starts = {"pets": 0, "eggs": 0}
+        self.message = None
+        self.ensure_valid_state()
+        self.rebuild_components()
+
+    def get_items(self, category=None):
+        category = category or self.category
+        return self.pets if category == "pets" else self.eggs
+
+    def get_current_item(self):
+        items = self.get_items()
+        if not items:
+            return None
+        return items[self.indexes[self.category]]
+
+    def set_current_index(self, index: int):
+        items = self.get_items()
+        if not items:
+            self.indexes[self.category] = 0
+            self.page_starts[self.category] = 0
+            return
+
+        index = max(0, min(index, len(items) - 1))
+        self.indexes[self.category] = index
+        self.page_starts[self.category] = (index // self.PAGE_SIZE) * self.PAGE_SIZE
+
+    def ensure_valid_state(self):
+        for category in ("pets", "eggs"):
+            items = self.get_items(category)
+            if not items:
+                self.indexes[category] = 0
+                self.page_starts[category] = 0
+                continue
+
+            self.indexes[category] = max(0, min(self.indexes[category], len(items) - 1))
+            max_start = ((len(items) - 1) // self.PAGE_SIZE) * self.PAGE_SIZE
+            page_start = max(0, min(self.page_starts[category], max_start))
+            if not (page_start <= self.indexes[category] < page_start + self.PAGE_SIZE):
+                page_start = (self.indexes[category] // self.PAGE_SIZE) * self.PAGE_SIZE
+            self.page_starts[category] = page_start
+
+        if self.category not in {"pets", "eggs"}:
+            self.category = "pets"
+
+        if not self.get_items(self.category):
+            other_category = "eggs" if self.category == "pets" else "pets"
+            if self.get_items(other_category):
+                self.category = other_category
+
+    def get_current_page_items(self):
+        items = self.get_items()
+        if not items:
+            return [], 0, 0
+
+        start = self.page_starts[self.category]
+        end = min(start + self.PAGE_SIZE, len(items))
+        return items[start:end], start, end
+
+    def has_previous_page(self) -> bool:
+        items = self.get_items()
+        return bool(items) and self.page_starts[self.category] > 0
+
+    def has_next_page(self) -> bool:
+        items = self.get_items()
+        if not items:
+            return False
+        return self.page_starts[self.category] + self.PAGE_SIZE < len(items)
+
+    def get_page_label(self) -> str:
+        items = self.get_items()
+        if not items:
+            return "Page 0/0"
+        current_page = (self.page_starts[self.category] // self.PAGE_SIZE) + 1
+        total_pages = ((len(items) - 1) // self.PAGE_SIZE) + 1
+        return f"Page {current_page}/{total_pages}"
+
+    def should_show_equip_button(self, pet) -> bool:
+        return bool(
+            pet
+            and self.cog.is_pet_equippable(pet)
+            and not bool(pet.get("equipped"))
+        )
+
+    def rebuild_components(self):
+        self.clear_items()
+
+        if self.pets or self.eggs:
+            self.add_item(PetCollectionCategorySelect(self))
+            if self.get_items():
+                self.add_item(PetCollectionItemSelect(self))
+
+        self.prev_page_button.disabled = not self.has_previous_page()
+        self.next_page_button.disabled = not self.has_next_page()
+        self.release_button.disabled = self.get_current_item() is None
+
+        self.add_item(self.prev_page_button)
+        self.add_item(self.next_page_button)
+        self.add_item(self.release_button)
+
+        current_pet = self.get_current_item() if self.category == "pets" else None
+        self.equip_button.disabled = not self.should_show_equip_button(current_pet)
+        if self.should_show_equip_button(current_pet):
+            self.add_item(self.equip_button)
+
+        self.add_item(self.close_button)
+
+    def build_empty_embed(self):
+        if not self.pets and not self.eggs:
+            description = "You don't have any pets or eggs."
+        elif self.category == "pets":
+            description = "You don't have any pets right now. Use the dropdown above to check your eggs."
+        else:
+            description = "You don't have any eggs incubating. Use the dropdown above to check your pets."
+
+        return discord.Embed(
+            title="🐾 Pet Collection",
+            description=description,
+            color=discord.Color.green(),
+        )
+
+    def build_embed(self):
+        item = self.get_current_item()
+        if not item:
+            embed = self.build_empty_embed()
+            embed.set_footer(text="Use the dropdowns and buttons below")
+            return embed
+
+        items = self.get_items()
+        index = self.indexes[self.category]
+        if self.category == "pets":
+            embed = self.cog.build_pet_browser_embed(
+                item,
+                index,
+                len(items),
+                self.boarding_lookup,
+            )
+            footer = f"Pets {index + 1}/{len(items)}"
+        else:
+            embed = self.cog.build_egg_browser_embed(item, index, len(items))
+            footer = f"Eggs {index + 1}/{len(items)}"
+
+        footer += f" | {self.get_page_label()} | Use the dropdowns and buttons below"
+        embed.set_footer(text=footer)
+        return embed
+
+    async def refresh_collection_data(self):
+        pets, eggs, boarding_lookup = await self.cog.fetch_pet_collection_browser_data(self.author.id)
+        self.pets = pets
+        self.eggs = eggs
+        self.boarding_lookup = boarding_lookup
+        self.ensure_valid_state()
+
+    async def refresh_view_message(self):
+        if not self.message:
+            return
+
+        self.ensure_valid_state()
+        self.rebuild_components()
+        try:
+            await self.message.edit(embed=self.build_embed(), view=self)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+
+    async def refresh_message(self, interaction: discord.Interaction):
+        self.ensure_valid_state()
+        self.rebuild_components()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def on_timeout(self):
+        if self.message:
+            try:
+                await self.message.delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary, row=2)
+    async def prev_page_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("This collection is not yours.", ephemeral=True)
+
+        current_start = self.page_starts[self.category]
+        new_start = max(0, current_start - self.PAGE_SIZE)
+        self.page_starts[self.category] = new_start
+        self.indexes[self.category] = new_start
+        await self.refresh_message(interaction)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, row=2)
+    async def next_page_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("This collection is not yours.", ephemeral=True)
+
+        current_start = self.page_starts[self.category]
+        new_start = min(
+            current_start + self.PAGE_SIZE,
+            max(0, len(self.get_items()) - 1),
+        )
+        self.page_starts[self.category] = (new_start // self.PAGE_SIZE) * self.PAGE_SIZE
+        self.indexes[self.category] = self.page_starts[self.category]
+        await self.refresh_message(interaction)
+
+    @discord.ui.button(label="Release", style=discord.ButtonStyle.danger, row=2)
+    async def release_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("This collection is not yours.", ephemeral=True)
+
+        item = self.get_current_item()
+        if not item:
+            return await interaction.response.send_message("There is nothing selected to release.", ephemeral=True)
+
+        item_type = "pet" if self.category == "pets" else "egg"
+        item_name = item["name"] if item_type == "pet" else item["egg_type"]
+        item_id = int(item["id"])
+
+        await interaction.response.defer()
+        confirmation_message = await interaction.followup.send(
+            _("⚠️ Are you sure you want to release your **{item_name}**? This action cannot be undone.").format(
+                item_name=item_name
+            ),
+            wait=True,
+        )
+
+        confirm_view = discord.ui.View()
+
+        async def disable_confirmation():
+            for child in confirm_view.children:
+                child.disabled = True
+            try:
+                await confirmation_message.edit(view=confirm_view)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+        async def confirm_callback(confirm_interaction: discord.Interaction):
+            if confirm_interaction.user.id != self.author.id:
+                return await confirm_interaction.response.send_message(
+                    _("❌ You are not authorized to respond to this release."),
+                    ephemeral=True,
+                )
+
+            await confirm_interaction.response.defer()
+            result, error = await self.cog.release_collection_item_by_id(
+                self.author.id,
+                item_id,
+                item_type,
+            )
+            if error:
+                await self.refresh_collection_data()
+                await self.refresh_view_message()
+                await confirm_interaction.followup.send(error, ephemeral=True)
+                await disable_confirmation()
+                return
+
+            await self.refresh_collection_data()
+            await self.refresh_view_message()
+            await confirm_interaction.followup.send(
+                self.cog.get_browser_release_farewell(result["type"], result["name"])
+            )
+            await disable_confirmation()
+
+        async def cancel_callback(cancel_interaction: discord.Interaction):
+            if cancel_interaction.user.id != self.author.id:
+                return await cancel_interaction.response.send_message(
+                    _("❌ You are not authorized to cancel this release."),
+                    ephemeral=True,
+                )
+
+            await cancel_interaction.response.send_message(_("✅ Release action cancelled."), ephemeral=True)
+            await disable_confirmation()
+
+        confirm_button = discord.ui.Button(
+            label=_("Confirm Release"),
+            style=discord.ButtonStyle.danger,
+            emoji="💔",
+        )
+        confirm_button.callback = confirm_callback
+        cancel_button = discord.ui.Button(
+            label=_("Cancel"),
+            style=discord.ButtonStyle.secondary,
+            emoji="❌",
+        )
+        cancel_button.callback = cancel_callback
+
+        confirm_view.add_item(confirm_button)
+        confirm_view.add_item(cancel_button)
+        await confirmation_message.edit(view=confirm_view)
+
+    @discord.ui.button(label="Equip", style=discord.ButtonStyle.success, row=2)
+    async def equip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("This collection is not yours.", ephemeral=True)
+
+        pet = self.get_current_item()
+        if not pet or self.category != "pets":
+            return await interaction.response.send_message("Select a pet first.", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+        equipped_pet, error = await self.cog.equip_pet_by_id(self.author.id, int(pet["id"]))
+        await self.refresh_collection_data()
+        await self.refresh_view_message()
+
+        if error:
+            await interaction.followup.send(error, ephemeral=True)
+            return
+
+        await interaction.followup.send(
+            embed=self.cog.build_pet_equipped_embed(equipped_pet),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, row=2)
+    async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("This collection is not yours.", ephemeral=True)
+
+        await interaction.message.delete()
+        self.stop()
+
+
 class DaycarePackageScheduleModal(Modal, title="Set Daycare Schedule"):
     def __init__(self, builder_view):
         super().__init__()
@@ -3886,6 +4334,382 @@ class Pets(commands.Cog):
             pet_id,
         )
 
+    async def fetch_pet_collection_browser_data(self, user_id: int):
+        async with self.bot.pool.acquire() as conn:
+            pets = await conn.fetch(
+                "SELECT * FROM monster_pets WHERE user_id = $1 ORDER BY id ASC;",
+                user_id,
+            )
+            eggs = await conn.fetch(
+                """
+                SELECT *
+                FROM monster_eggs
+                WHERE user_id = $1 AND hatched = FALSE
+                ORDER BY id ASC;
+                """,
+                user_id,
+            )
+
+            pet_ids_with_boarding = [
+                int(pet["id"])
+                for pet in pets
+                if pet.get("daycare_boarding_id")
+            ]
+            boarding_lookup = {}
+            if pet_ids_with_boarding:
+                active_boardings = await conn.fetch(
+                    """
+                    SELECT
+                        b.id,
+                        b.pet_id,
+                        b.ends_at,
+                        b.status,
+                        p.name AS package_name,
+                        d.name AS daycare_name
+                    FROM pet_daycare_boardings b
+                    JOIN pet_daycare_packages p ON p.id = b.package_id
+                    JOIN pet_daycares d ON d.id = b.daycare_id
+                    WHERE b.pet_id = ANY($1::bigint[]);
+                    """,
+                    pet_ids_with_boarding,
+                )
+                boarding_lookup = {
+                    int(boarding["pet_id"]): boarding
+                    for boarding in active_boardings
+                }
+
+        return list(pets), list(eggs), boarding_lookup
+
+    def get_egg_display_emoji(self, egg) -> str:
+        element = str(egg.get("element") or "unknown").lower()
+        if "fire" in element:
+            return "🔥"
+        if "water" in element:
+            return "💧"
+        if "electric" in element:
+            return "⚡"
+        if "light" in element:
+            return "✨"
+        if "dark" in element:
+            return "🌑"
+        if "wind" in element or "nature" in element:
+            return "🌿"
+        if "corrupt" in element:
+            return "☠️"
+        return "🥚"
+
+    def build_pet_browser_embed(self, pet, index: int, total: int, boarding_lookup=None):
+        boarding_lookup = boarding_lookup or {}
+        pet = mask_pet_record_for_display(self.bot, pet)
+
+        growth_stages = {
+            1: {"stage": "baby", "growth_time": 2, "stat_multiplier": 0.25, "hunger_modifier": 1.0},
+            2: {"stage": "juvenile", "growth_time": 2, "stat_multiplier": 0.50, "hunger_modifier": 0.8},
+            3: {"stage": "young", "growth_time": 1, "stat_multiplier": 0.75, "hunger_modifier": 0.6},
+            4: {"stage": "adult", "growth_time": None, "stat_multiplier": 1.0, "hunger_modifier": 0.0},
+        }
+
+        stage_data = growth_stages.get(pet["growth_index"], growth_stages[1])
+        stat_data = self.calculate_pet_battle_stats(pet)
+        hp = round(stat_data["battle_hp"], 1)
+        attack = round(stat_data["battle_attack"], 1)
+        defense = round(stat_data["battle_defense"], 1)
+        base_hp = round(stat_data["base_hp"])
+        base_attack = round(stat_data["base_attack"])
+        base_defense = round(stat_data["base_defense"])
+
+        growth_time_left = None
+        if pet["growth_stage"] != "adult" and pet["growth_time"]:
+            time_left = pet["growth_time"] - datetime.datetime.utcnow()
+            growth_time_left = (
+                str(time_left).split(".")[0]
+                if time_left.total_seconds() > 0
+                else "Ready to grow!"
+            )
+
+        trust_info = self.get_trust_level_info(pet.get("trust_level", 0))
+
+        if pet["growth_stage"] == "baby":
+            stage_icon = "🍼"
+        elif pet["growth_stage"] == "juvenile":
+            stage_icon = "🌱"
+        elif pet["growth_stage"] == "young":
+            stage_icon = "🐕"
+        else:
+            stage_icon = "🦁"
+
+        embed = discord.Embed(
+            title=f"🐾 Your Pet: {pet['name']}",
+            color=discord.Color.green(),
+            description=(
+                f"**Stage:** {pet['growth_stage'].capitalize()} {stage_icon}\n"
+                f"**ID:** {pet['id']}\n"
+                f"**Equipped:** {pet['equipped']}"
+            ),
+        )
+
+        embed.add_field(
+            name="⚔️ **Battle Stats**",
+            value=(
+                f"**IV** {pet['IV']}%\n"
+                f"**HP:** {hp:,} *(Base: {base_hp:,})*\n"
+                f"**Attack:** {attack:,} *(Base: {base_attack:,})*\n"
+                f"**Defense:** {defense:,} *(Base: {base_defense:,})*"
+            ),
+            inline=False,
+        )
+
+        level = pet.get("level", 1)
+        experience = pet.get("experience", 0)
+        skill_points = pet.get("skill_points", 0)
+        trust_level = pet.get("trust_level", 0)
+        xp_multiplier = pet.get("xp_multiplier", 1.0)
+        combat_level_bonus_pct = max(1, min(int(level), self.PET_MAX_LEVEL))
+        xp_multiplier_text = (
+            f"\n**XP Multiplier:** x{xp_multiplier}"
+            if xp_multiplier > 1.0
+            else ""
+        )
+
+        embed.add_field(
+            name="🌟 **Enhanced Stats**",
+            value=(
+                f"**Level:** {level}/{self.PET_MAX_LEVEL}\n"
+                f"**Experience:** {experience}\n"
+                f"**Skill Points:** {skill_points}\n"
+                f"**Combat Level Bonus:** +{combat_level_bonus_pct}%\n"
+                f"**Trust:** {trust_info['emoji']} {trust_info['name']} ({trust_level}/100)"
+                f"{xp_multiplier_text}"
+            ),
+            inline=False,
+        )
+
+        details_value = (
+            f"**Element:** {pet['element']}\n"
+            f"**Happiness:** {pet['happiness']}%\n"
+            f"**Hunger:** {pet['hunger']}%"
+        )
+        if pet.get("alt_name"):
+            details_value += f"\n**Alias:** {pet['alt_name']}"
+        boarding = boarding_lookup.get(int(pet["id"]))
+        if boarding and boarding.get("status") == "active":
+            details_value += (
+                f"\n**Daycare:** In daycare"
+                f"\n**Boarding ID:** {boarding['id']}"
+                f"\n**Package:** {boarding['package_name']}"
+                f"\n**Daycare Name:** {boarding['daycare_name']}"
+                f"\n**Time Left:** {self.format_daycare_time_remaining(boarding['ends_at'])}"
+            )
+
+        embed.add_field(
+            name="🌟 **Details**",
+            value=details_value,
+            inline=False,
+        )
+
+        if growth_time_left:
+            embed.add_field(
+                name="⏳ **Growth Time Left**",
+                value=f"{growth_time_left}",
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="🎉 **Growth**",
+                value="Your pet is fully grown!",
+                inline=False,
+            )
+
+        embed.set_footer(
+            text=f"Viewing pet {index + 1} of {total} | Use the dropdown to navigate"
+        )
+        embed.set_image(url=get_pet_display_url(self.bot, pet["url"]))
+        return embed
+
+    def build_egg_browser_embed(self, egg, index: int, total: int):
+        time_left = egg["hatch_time"] - datetime.datetime.utcnow()
+        time_left_str = str(time_left).split(".")[0]
+        if time_left.total_seconds() <= 0:
+            time_left_str = "Ready to hatch!"
+
+        hp_display = "???" if egg["id"] == 6666 else egg["hp"]
+        attack_display = "???" if egg["id"] == 6666 else egg["attack"]
+        defense_display = "???" if egg["id"] == 6666 else egg["defense"]
+
+        iv = egg["IV"]
+        if iv >= 90:
+            color = discord.Color.gold()
+        elif iv >= 75:
+            color = discord.Color.purple()
+        elif iv >= 50:
+            color = discord.Color.blue()
+        else:
+            color = discord.Color.green()
+
+        embed = discord.Embed(
+            title=f"🥚 Your Egg: {egg['egg_type']}",
+            color=color,
+            description=f"**ID:** {egg['id']}\n**Element:** {egg['element']}",
+        )
+
+        embed.add_field(
+            name="✨ **Stats**",
+            value=(
+                f"**IV:** {egg['IV']}%\n"
+                f"**HP:** {hp_display}\n"
+                f"**Attack:** {attack_display}\n"
+                f"**Defense:** {defense_display}"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="⏳ **Hatching Time**",
+            value=f"{time_left_str}",
+            inline=False,
+        )
+
+        embed.set_footer(
+            text=f"Viewing egg {index + 1} of {total} | Use the dropdown to navigate"
+        )
+        if egg.get("url"):
+            embed.set_image(url=egg["url"])
+        return embed
+
+    def is_pet_equippable(self, pet) -> bool:
+        if not pet or pet.get("daycare_boarding_id"):
+            return False
+        return str(pet.get("growth_stage") or "").lower() in {"young", "adult"}
+
+    async def equip_pet_by_id(self, user_id: int, pet_id: int):
+        async with self.bot.pool.acquire() as conn:
+            pet = await conn.fetchrow(
+                "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
+                user_id,
+                pet_id,
+            )
+            if not pet:
+                return None, "❌ That pet is no longer in your collection."
+
+            if pet.get("daycare_boarding_id"):
+                return None, "❌ This pet is currently boarded in daycare and cannot be used directly."
+
+            if str(pet.get("growth_stage") or "").lower() not in {"young", "adult"}:
+                return (
+                    None,
+                    f"❌ **{pet['name']}** must be at least in the **young** growth stage to be equipped.",
+                )
+
+            equip_result = await conn.execute(
+                """
+                UPDATE monster_pets
+                SET equipped = (id = $2)
+                WHERE user_id = $1
+                  AND EXISTS (
+                      SELECT 1
+                      FROM monster_pets
+                      WHERE user_id = $1 AND id = $2
+                  );
+                """,
+                user_id,
+                pet_id,
+            )
+            if equip_result == "UPDATE 0":
+                return None, "❌ This pet is no longer in your collection. Please try again."
+
+        return pet, None
+
+    def build_pet_equipped_embed(self, pet):
+        trust_info = self.get_trust_level_info(pet["trust_level"])
+        stat_data = self.calculate_pet_battle_stats(pet)
+        battle_hp = round(stat_data["battle_hp"], 1)
+        battle_attack = round(stat_data["battle_attack"], 1)
+        battle_defense = round(stat_data["battle_defense"], 1)
+
+        embed = discord.Embed(
+            title="⚔️ Pet Equipped!",
+            description=f"**{pet['name']}** is now equipped and ready for battle!",
+            color=discord.Color.green(),
+        )
+        embed.add_field(
+            name="📊 Battle Stats",
+            value=(
+                f"**HP:** {battle_hp:,}\n"
+                f"**Attack:** {battle_attack:,}\n"
+                f"**Defense:** {battle_defense:,}\n"
+                f"**Element:** {pet['element']}"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="🌟 Trust Bonus",
+            value=(
+                f"{trust_info['emoji']} **{trust_info['name']}**\n"
+                f"**Battle Bonus:** {trust_info['bonus']:+d}%"
+            ),
+            inline=True,
+        )
+        embed.set_footer(text="Your pet will now fight alongside you in battles and raids!")
+        return embed
+
+    async def release_collection_item_by_id(self, user_id: int, item_id: int, item_type: str):
+        if item_type not in {"pet", "egg"}:
+            return None, "❌ Invalid collection item."
+
+        async with self.bot.pool.acquire() as conn:
+            if item_type == "pet":
+                pet = await conn.fetchrow(
+                    "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2;",
+                    user_id,
+                    item_id,
+                )
+                if not pet:
+                    return None, "❌ That pet is no longer in your collection."
+                if pet.get("daycare_boarding_id"):
+                    return None, "❌ You cannot release a pet while it is boarded in daycare."
+
+                await conn.execute(
+                    "DELETE FROM monster_pets WHERE id = $1 AND user_id = $2;",
+                    item_id,
+                    user_id,
+                )
+                return {"type": "pet", "name": pet["name"], "id": item_id}, None
+
+            egg = await conn.fetchrow(
+                """
+                SELECT *
+                FROM monster_eggs
+                WHERE user_id = $1 AND id = $2 AND hatched = FALSE;
+                """,
+                user_id,
+                item_id,
+            )
+            if not egg:
+                return None, "❌ That egg is no longer in your collection."
+
+            await conn.execute(
+                "DELETE FROM monster_eggs WHERE id = $1 AND user_id = $2;",
+                item_id,
+                user_id,
+            )
+            return {"type": "egg", "name": egg["egg_type"], "id": item_id}, None
+
+    def get_browser_release_farewell(self, item_type: str, item_name: str) -> str:
+        pet_farewells = [
+            _("You release **{name}** and watch it disappear into the wild."),
+            _("With a final glance back, **{name}** leaves your side for good."),
+            _("You set **{name}** free, ending your journey together."),
+            _("**{name}** wanders off as you let go of the bond you shared."),
+        ]
+        egg_farewells = [
+            _("You leave the **{name}** egg behind, giving up the future it might have had with you."),
+            _("The **{name}** egg grows distant as you walk away from it."),
+            _("You release the **{name}** egg into the wild and let fate decide the rest."),
+            _("You part ways with the **{name}** egg before it ever has the chance to hatch by your side."),
+        ]
+        farewells = pet_farewells if item_type == "pet" else egg_farewells
+        return random.choice(farewells).format(name=item_name)
+
     def get_trust_level_info(self, trust_level):
         """Get trust level information based on trust points"""
         for threshold in sorted(self.TRUST_LEVELS.keys(), reverse=True):
@@ -4353,44 +5177,22 @@ class Pets(commands.Cog):
             await ctx.send(e)
 
         try:
-            async with self.bot.pool.acquire() as conn:
-                pets = await conn.fetch("SELECT * FROM monster_pets WHERE user_id = $1;", ctx.author.id)
-                if not pets:
-                    await ctx.send("You don't have any pets.")
-                    return
-                pet_ids_with_boarding = [
-                    int(pet["id"])
-                    for pet in pets
-                    if pet.get("daycare_boarding_id")
-                ]
-                boarding_lookup = {}
-                if pet_ids_with_boarding:
-                    active_boardings = await conn.fetch(
-                        """
-                        SELECT
-                            b.id,
-                            b.pet_id,
-                            b.ends_at,
-                            b.status,
-                            p.name AS package_name,
-                            d.name AS daycare_name
-                        FROM pet_daycare_boardings b
-                        JOIN pet_daycare_packages p ON p.id = b.package_id
-                        JOIN pet_daycares d ON d.id = b.daycare_id
-                        WHERE b.pet_id = ANY($1::bigint[]);
-                        """,
-                        pet_ids_with_boarding,
-                    )
-                    boarding_lookup = {
-                        int(boarding["pet_id"]): boarding
-                        for boarding in active_boardings
-                    }
+            pets, eggs, boarding_lookup = await self.fetch_pet_collection_browser_data(ctx.author.id)
+            if not pets and not eggs:
+                await ctx.send("You don't have any pets or eggs.")
+                return
 
-            view = PetPaginator(pets, ctx.author, self, boarding_lookup)
-            embed = view.get_embed()
-            view.message = await ctx.send(embed=embed, view=view)
+            default_category = "pets" if pets else "eggs"
+            view = PetCollectionView(
+                self,
+                ctx.author,
+                pets=pets,
+                eggs=eggs,
+                boarding_lookup=boarding_lookup,
+                default_category=default_category,
+            )
+            view.message = await ctx.send(embed=view.build_embed(), view=view)
         except Exception as e:
-
             await ctx.send(e)
 
     @user_cooldown(120)
@@ -6542,20 +7344,22 @@ class Pets(commands.Cog):
             await interaction.message.delete()
             self.stop()
 
-    @pets.command(brief=_("Check your monster eggs"))
+    @pets.command(aliases=["egg"], brief=_("Check your monster eggs"))
     async def eggs(self, ctx):
-        async with self.bot.pool.acquire() as conn:
-            eggs = await conn.fetch(
-                "SELECT * FROM monster_eggs WHERE user_id = $1 AND hatched = FALSE;",
-                ctx.author.id,
-            )
-            if not eggs:
-                await ctx.send(_("You don't have any eggs to incubate."))
-                return
+        pets, eggs, boarding_lookup = await self.fetch_pet_collection_browser_data(ctx.author.id)
+        if not pets and not eggs:
+            await ctx.send(_("You don't have any pets or eggs."))
+            return
 
-        view = self.EggPaginator(eggs, ctx.author)
-        embed = view.get_embed()
-        view.message = await ctx.send(embed=embed, view=view)
+        view = PetCollectionView(
+            self,
+            ctx.author,
+            pets=pets,
+            eggs=eggs,
+            boarding_lookup=boarding_lookup,
+            default_category="eggs",
+        )
+        view.message = await ctx.send(embed=view.build_embed(), view=view)
 
     @pets.command(name="all", brief=_("[Tier 1+] Run feed, pet, play, treat, and train in one command"))
     async def pets_all(self, ctx, pet_id_or_food: str | None = None, *, food_type: str = "basic food"):
@@ -7803,72 +8607,17 @@ class Pets(commands.Cog):
         """Equip a pet to fight alongside you in battles and raids"""
         try:
             async with self.bot.pool.acquire() as conn:
-                # Fetch the specified pet
                 pet, pet_id = await self.fetch_pet_for_user(conn, ctx.author.id, pet_ref)
-                
-                if not pet:
-                    await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
-                    return
+            if not pet:
+                await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
+                return
 
-                if not await self.ensure_pet_not_boarded(ctx, pet):
-                    return
-                    
-                # Check if the pet is at least "young"
-                if pet["growth_stage"] not in ["young", "adult"]:
-                    await ctx.send(f"❌ **{pet['name']}** must be at least in the **young** growth stage to be equipped.")
-                    return
+            equipped_pet, error = await self.equip_pet_by_id(ctx.author.id, pet_id)
+            if error:
+                await ctx.send(error)
+                return
 
-                # Atomically set equipped state for this user's pets only.
-                equip_result = await conn.execute(
-                    """
-                    UPDATE monster_pets
-                    SET equipped = (id = $2)
-                    WHERE user_id = $1
-                      AND EXISTS (
-                          SELECT 1
-                          FROM monster_pets
-                          WHERE user_id = $1 AND id = $2
-                      );
-                    """,
-                    ctx.author.id,
-                    pet_id
-                )
-                if equip_result == "UPDATE 0":
-                    await ctx.send("❌ This pet is no longer in your collection. Please try again.")
-                    return
-
-            # Create success embed
-            trust_info = self.get_trust_level_info(pet['trust_level'])
-            
-            embed = discord.Embed(
-                title="⚔️ Pet Equipped!",
-                description=f"**{pet['name']}** is now equipped and ready for battle!",
-                color=discord.Color.green()
-            )
-
-            stat_data = self.calculate_pet_battle_stats(pet)
-            battle_hp = round(stat_data["battle_hp"], 1)
-            battle_attack = round(stat_data["battle_attack"], 1)
-            battle_defense = round(stat_data["battle_defense"], 1)
-            
-            embed.add_field(
-                name="📊 Battle Stats",
-                value=f"**HP:** {battle_hp:,}\n"
-                    f"**Attack:** {battle_attack:,}\n"
-                    f"**Defense:** {battle_defense:,}\n"
-                    f"**Element:** {pet['element']}",
-                inline=True
-            )
-            
-            embed.add_field(
-                name="🌟 Trust Bonus",
-                value=f"{trust_info['emoji']} **{trust_info['name']}**\n"
-                    f"**Battle Bonus:** {trust_info['bonus']:+d}%",
-                inline=True
-            )
-
-            embed.set_footer(text="Your pet will now fight alongside you in battles and raids!")
-            await ctx.send(embed=embed)
+            await ctx.send(embed=self.build_pet_equipped_embed(equipped_pet))
         except Exception as e:
             await ctx.send(f"❌ An error occurred while equipping the pet: {e}")
 
@@ -8932,10 +9681,10 @@ class Pets(commands.Cog):
                 name=_("🐾 Getting Started"),
                 value=_(
                     "**How to Get a Pet:**\n"
-                    "Find **monster eggs** as rare rewards during PVE battles. Use `$pets eggs` to check hatching progress!\n\n"
+                    "Find **monster eggs** as rare rewards during PVE battles. Use `$pets` or `$pets egg` to check hatching progress!\n\n"
                     "**Basic Commands:**\n"
-                    "• `$pets` - View all your pets (paginated list)\n"
-                    "• `$pets eggs` - Check unhatched eggs and timers\n"
+                    "• `$pets` - Browse pets and eggs with dropdowns\n"
+                    "• `$pets eggs` / `$pets egg` - Open the browser on your eggs\n"
                     "• `$pets status <id|alias>` - Detailed pet information"
                 ),
                 inline=False,
