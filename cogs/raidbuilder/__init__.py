@@ -665,6 +665,11 @@ STARTER_DEFINITION_IDS = {
     "chaos": "chaos_attrition_remaster",
 }
 
+SKELETON_STARTER_DEFINITION_IDS = {
+    definition["skeleton"]: definition_id
+    for definition_id, definition in STARTER_DEFINITIONS.items()
+}
+
 DEFAULT_ACTIONS = {
     "follower": "Chant",
     "champion": "Smite",
@@ -719,7 +724,16 @@ class RaidBuilderNewDraftModal(Modal, title="Create Raid Draft"):
             required=True,
             max_length=64,
         )
+        default_skeleton = MODE_SPECS[builder_view.selected_mode].key
+        self.skeleton = TextInput(
+            label="Skeleton Template",
+            placeholder="good/trial, evil/ritual, chaos/attrition",
+            default=default_skeleton,
+            required=True,
+            max_length=16,
+        )
         self.add_item(self.definition_id)
+        self.add_item(self.skeleton)
 
     async def on_submit(self, interaction: discord.Interaction):
         if interaction.user.id != self.builder_view.author.id:
@@ -741,11 +755,18 @@ class RaidBuilderNewDraftModal(Modal, title="Create Raid Draft"):
                 f"Definition `{normalized_definition_id}` already exists.",
                 ephemeral=True,
             )
+        skeleton_key = self.builder_view.cog._coerce_skeleton_key(self.skeleton.value)
+        if skeleton_key is None:
+            return await interaction.response.send_message(
+                "Skeleton templates must be one of `good`, `evil`, `chaos`, `trial`, `ritual`, or `attrition`.",
+                ephemeral=True,
+            )
 
         self.builder_view.cog.registry["definitions"][normalized_definition_id] = (
             self.builder_view.cog.build_draft_from_starter(
                 self.builder_view.selected_mode,
                 normalized_definition_id,
+                skeleton_key=skeleton_key,
             )
         )
         self.builder_view.cog._save_registry()
@@ -755,7 +776,7 @@ class RaidBuilderNewDraftModal(Modal, title="Create Raid Draft"):
         await interaction.response.defer(ephemeral=True)
         await self.builder_view.refresh_message()
         await interaction.followup.send(
-            f"Created draft `{normalized_definition_id}`.",
+            f"Created draft `{normalized_definition_id}` from the `{skeleton_key}` skeleton.",
             ephemeral=True,
         )
 
@@ -801,7 +822,8 @@ class RaidBuilderDefinitionSelect(Select):
                 builder_view.cog._get_active_definition_id(builder_view.selected_mode)
                 == definition_id
             )
-            description = f"{status}"
+            skeleton = builder_view.cog._definition_skeleton_key(definition) or "unknown"
+            description = f"{status} • {skeleton}"
             if active:
                 description += " • active"
             options.append(
@@ -1044,18 +1066,29 @@ class RaidBuilderPanelView(View):
 
     def _default_definition_id(self) -> str | None:
         active_definition_id = self.cog._get_active_definition_id(self.selected_mode)
-        if active_definition_id and self.cog._get_definition(active_definition_id):
-            return active_definition_id
+        if active_definition_id:
+            active_definition = self.cog._get_definition(active_definition_id)
+            if active_definition and active_definition.get("mode") == self.selected_mode:
+                return active_definition_id
+
+        definitions = self._definitions_for_selected_mode()
         starter_definition_id = STARTER_DEFINITION_IDS.get(self.selected_mode)
+        for definition in definitions:
+            if definition.get("id") != starter_definition_id:
+                return definition["id"]
+
         if starter_definition_id and self.cog._get_definition(starter_definition_id):
             return starter_definition_id
-        definitions = self._definitions_for_selected_mode()
         if definitions:
             return definitions[0]["id"]
         return None
 
     def _page_specs(self) -> list[dict[str, str]]:
-        return self.cog._builder_page_specs(self.selected_mode)
+        definition = self.current_definition()
+        skeleton_key = self.cog._definition_skeleton_key(definition)
+        if skeleton_key is None:
+            skeleton_key = MODE_SPECS[self.selected_mode].skeleton
+        return self.cog._builder_page_specs(skeleton_key)
 
     def _item_options(self) -> list[dict[str, str]]:
         definition = self.current_definition()
@@ -1191,8 +1224,10 @@ class RaidBuilderPanelView(View):
 
         if definition is not None:
             active_definition_id = self.cog._get_active_definition_id(self.selected_mode)
+            skeleton_key = self.cog._definition_skeleton_key(definition) or "unknown"
             footer_bits = [
                 f"Mode: {self.selected_mode}",
+                f"Skeleton: {skeleton_key}",
                 f"Definition: {definition['id']}",
                 f"Status: {definition.get('status', 'draft')}",
                 f"Route: {'active' if active_definition_id == definition['id'] else 'inactive'}",
@@ -1331,17 +1366,24 @@ class RaidBuilder(commands.Cog):
     ) -> dict[str, Any]:
         definition.setdefault("id", definition_id)
         mode = definition.get("mode")
-        starter_id = STARTER_DEFINITION_IDS.get(mode)
+        if isinstance(mode, str):
+            mode = mode.casefold()
+            definition["mode"] = mode
+        skeleton = cls._normalize_skeleton_key(definition.get("skeleton"), mode_key=mode)
+        if skeleton is not None:
+            definition["skeleton"] = skeleton
+
+        starter_id = SKELETON_STARTER_DEFINITION_IDS.get(skeleton)
         if starter_id:
             cls._fill_missing(definition, copy.deepcopy(STARTER_DEFINITIONS[starter_id]))
 
         config = definition.setdefault("config", {})
         announce = config.setdefault("announce", {})
-        if mode == "good":
+        if skeleton == "trial":
             cls._fill_missing(config.setdefault("presentation", {}), _good_presentation())
             announce.setdefault("join_label", "Join the trial!")
             announce.setdefault("joined_message", "You joined the trial.")
-        elif mode == "chaos":
+        elif skeleton == "attrition":
             cls._fill_missing(config.setdefault("presentation", {}), _chaos_presentation())
             announce.setdefault("join_label", "Join the raid!")
             announce.setdefault("joined_message", "You joined the raid.")
@@ -1350,7 +1392,7 @@ class RaidBuilder(commands.Cog):
                 "retreat",
                 "{boss_name} slips back into the void with **{boss_hp}** HP remaining.",
             )
-        elif mode == "evil":
+        elif skeleton == "ritual":
             cls._fill_missing(config.setdefault("presentation", {}), _evil_presentation())
             announce.setdefault("leader_label", "Join as Champion/Priest")
             announce.setdefault("follower_label", "Join as Follower Only")
@@ -1458,15 +1500,26 @@ class RaidBuilder(commands.Cog):
         return registry
 
     @classmethod
-    def build_draft_from_starter(cls, mode_key: str, definition_id: str) -> dict[str, Any]:
-        starter_definition = cls._upgrade_definition_schema(
-            STARTER_DEFINITION_IDS[mode_key],
-            copy.deepcopy(STARTER_DEFINITIONS[STARTER_DEFINITION_IDS[mode_key]]),
-        )
+    def build_draft_from_starter(
+        cls,
+        mode_key: str,
+        definition_id: str,
+        *,
+        skeleton_key: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_mode = mode_key.casefold()
+        normalized_skeleton = cls._normalize_skeleton_key(skeleton_key, mode_key=normalized_mode)
+        if normalized_skeleton is None:
+            raise ValueError(f"Unknown skeleton `{skeleton_key}`.")
+        starter_definition_id = SKELETON_STARTER_DEFINITION_IDS[normalized_skeleton]
+        starter_definition = copy.deepcopy(STARTER_DEFINITIONS[starter_definition_id])
+        starter_definition["mode"] = normalized_mode
+        starter_definition["skeleton"] = normalized_skeleton
+        starter_definition = cls._upgrade_definition_schema(definition_id, starter_definition)
         starter_definition["id"] = definition_id
         starter_definition["status"] = "draft"
         starter_definition["name"] = f"{starter_definition['name']} ({definition_id})"
-        starter_definition["source_definition_id"] = STARTER_DEFINITION_IDS[mode_key]
+        starter_definition["source_definition_id"] = starter_definition_id
         return starter_definition
 
     def _load_registry(self) -> dict[str, Any]:
@@ -1492,6 +1545,45 @@ class RaidBuilder(commands.Cog):
     def _get_mode_spec(self, mode_key: str) -> RaidModeSpec | None:
         return MODE_SPECS.get(mode_key.casefold())
 
+    @staticmethod
+    def _default_skeleton_for_mode(mode_key: str | None) -> str | None:
+        if not isinstance(mode_key, str):
+            return None
+        spec = MODE_SPECS.get(mode_key.casefold())
+        if spec is None:
+            return None
+        return spec.skeleton
+
+    @staticmethod
+    def _coerce_skeleton_key(value: str | None) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.casefold().strip()
+        if normalized in SKELETON_STARTER_DEFINITION_IDS:
+            return normalized
+        spec = MODE_SPECS.get(normalized)
+        if spec is not None:
+            return spec.skeleton
+        return None
+
+    @classmethod
+    def _normalize_skeleton_key(
+        cls,
+        skeleton_key: str | None,
+        *,
+        mode_key: str | None = None,
+    ) -> str | None:
+        return cls._coerce_skeleton_key(skeleton_key) or cls._default_skeleton_for_mode(mode_key)
+
+    @classmethod
+    def _definition_skeleton_key(cls, definition: dict[str, Any] | None) -> str | None:
+        if not isinstance(definition, dict):
+            return None
+        return cls._normalize_skeleton_key(
+            definition.get("skeleton"),
+            mode_key=definition.get("mode"),
+        )
+
     def _get_definition(self, definition_id: str) -> dict[str, Any] | None:
         definition = self.registry["definitions"].get(definition_id)
         if isinstance(definition, dict):
@@ -1516,6 +1608,8 @@ class RaidBuilder(commands.Cog):
         if definition.get("mode") != mode_key:
             return None
         if definition.get("status") != "published":
+            return None
+        if self._definition_skeleton_key(definition) is None:
             return None
         return definition
 
@@ -1669,7 +1763,7 @@ class RaidBuilder(commands.Cog):
             if active_definition_id:
                 await ctx.send(
                     f"Mode `{spec.display_name}` points at `{active_definition_id}`, but it is not a published "
-                    f"{spec.skeleton} definition. Falling back to `{spec.legacy_command}`."
+                    f"custom definition. Falling back to `{spec.legacy_command}`."
                 )
             await self._invoke_legacy_command(ctx, spec, **kwargs)
             return
@@ -1687,18 +1781,18 @@ class RaidBuilder(commands.Cog):
         definition: dict[str, Any],
         **kwargs: Any,
     ) -> None:
-        mode = definition["mode"]
-        if mode == "good":
+        skeleton = self._definition_skeleton_key(definition)
+        if skeleton == "trial":
             await self._run_trial_definition(ctx, definition)
             return
-        if mode == "evil":
+        if skeleton == "ritual":
             await self._run_ritual_definition(ctx, definition)
             return
-        if mode == "chaos":
+        if skeleton == "attrition":
             await self._run_attrition_definition(ctx, definition, kwargs.get("boss_hp"))
             return
 
-        raise ValueError(f"Unsupported custom mode `{mode}`.")
+        raise ValueError(f"Unsupported custom skeleton `{definition.get('skeleton', 'unknown')}`.")
 
     async def _run_trial_definition(self, ctx, definition: dict[str, Any]) -> None:
         config = definition["config"]
@@ -3117,7 +3211,8 @@ class RaidBuilder(commands.Cog):
             return {"supported": False, "reason": "Choose a list page first."}
 
         config = definition["config"]
-        if definition["mode"] == "good":
+        skeleton = self._definition_skeleton_key(definition)
+        if skeleton == "trial":
             if page_key == "phase":
                 phases = config.get("phases", [])
                 if not phases:
@@ -3157,7 +3252,7 @@ class RaidBuilder(commands.Cog):
                 }
             return {"supported": False, "reason": "This page is not a list editor."}
 
-        if definition["mode"] == "evil":
+        if skeleton == "ritual":
             if page_key in {"champion_action", "priest_action", "follower_action", "guardian_ability", "guardian_ability_copy"}:
                 if page_key == "champion_action":
                     container = config["champion"]["actions"]
@@ -3209,7 +3304,7 @@ class RaidBuilder(commands.Cog):
                 }
             return {"supported": False, "reason": "This page is not a list editor."}
 
-        return {"supported": False, "reason": "This mode does not expose structural editing here."}
+        return {"supported": False, "reason": "This skeleton does not expose structural editing here."}
 
     def _builder_structure_action(
         self,
@@ -3222,8 +3317,9 @@ class RaidBuilder(commands.Cog):
     ) -> tuple[str | None, str | None, str]:
         config = definition["config"]
         normalized_page = "guardian_ability" if page_key == "guardian_ability_copy" else page_key
+        skeleton = self._definition_skeleton_key(definition)
 
-        if definition["mode"] == "good" and normalized_page == "phase":
+        if skeleton == "trial" and normalized_page == "phase":
             phases = config.get("phases", [])
             phase_keys = [phase["key"] for phase in phases]
             current_key = item_key if item_key in phase_keys else phase_keys[0]
@@ -3256,7 +3352,7 @@ class RaidBuilder(commands.Cog):
                 self._save_registry()
                 return "phase", phase["key"], f"Moved phase `{phase['key']}`."
 
-        if definition["mode"] == "good" and normalized_page == "event":
+        if skeleton == "trial" and normalized_page == "event":
             phase_key, raw_index = (item_key or "day:0").split(":")
             phase = next((phase for phase in config.get("phases", []) if phase["key"] == phase_key), None)
             if phase is None:
@@ -3289,7 +3385,7 @@ class RaidBuilder(commands.Cog):
                 self._save_registry()
                 return "event", f"{phase_key}:{target_index}", f"Moved an event within `{phase_key}`."
 
-        if definition["mode"] == "evil" and normalized_page in {
+        if skeleton == "ritual" and normalized_page in {
             "champion_action",
             "priest_action",
             "follower_action",
@@ -3352,7 +3448,7 @@ class RaidBuilder(commands.Cog):
                 self._save_registry()
                 return page_key, current_key, f"Moved {entity_name} `{current_key}`."
 
-        if definition["mode"] == "evil" and normalized_page == "guardian_phase":
+        if skeleton == "ritual" and normalized_page == "guardian_phase":
             phases = config["guardian"].setdefault("phases", [])
             if not phases:
                 phases.append(self._new_guardian_phase("New Phase", list(config["guardian"]["abilities"].keys()), 0))
@@ -3393,9 +3489,9 @@ class RaidBuilder(commands.Cog):
         raise ValueError("This page does not support structural editing yet.")
 
     def _media_slot_specs(self, mode: str) -> tuple[tuple[str, str, str], ...]:
-        if mode == "good":
+        if mode == "trial":
             return GOOD_MEDIA_SLOTS
-        if mode == "evil":
+        if mode == "ritual":
             return EVIL_MEDIA_SLOTS
         return CHAOS_MEDIA_SLOTS
 
@@ -3426,8 +3522,8 @@ class RaidBuilder(commands.Cog):
             embed.set_thumbnail(url=thumbnail_url)
         return embed
 
-    def _builder_page_specs(self, mode: str) -> list[dict[str, str]]:
-        if mode == "good":
+    def _builder_page_specs(self, skeleton_key: str) -> list[dict[str, str]]:
+        if skeleton_key == "trial":
             return [
                 {"key": "overview", "label": "Overview", "description": "Name, description, join settings"},
                 {"key": "announce", "label": "Announce", "description": "Join title, intro text, and button copy"},
@@ -3437,7 +3533,7 @@ class RaidBuilder(commands.Cog):
                 {"key": "phase", "label": "Phase", "description": "Edit a phase shell like day or night"},
                 {"key": "event", "label": "Event", "description": "Edit a specific event inside a phase"},
             ]
-        if mode == "evil":
+        if skeleton_key == "ritual":
             return [
                 {"key": "overview", "label": "Overview", "description": "Name, description, faith, timers"},
                 {"key": "announce", "label": "Announce", "description": "Intro copy and join button text"},
@@ -3472,11 +3568,12 @@ class RaidBuilder(commands.Cog):
 
     def _builder_item_options(self, definition: dict[str, Any], page_key: str) -> list[dict[str, str]]:
         config = definition["config"]
-        if definition["mode"] == "good":
+        skeleton = self._definition_skeleton_key(definition)
+        if skeleton == "trial":
             if page_key == "media_slot":
                 return [
                     {"key": key, "label": label, "description": description}
-                    for key, label, description in self._media_slot_specs("good")
+                    for key, label, description in self._media_slot_specs("trial")
                 ]
             if page_key == "phase":
                 return [
@@ -3501,11 +3598,11 @@ class RaidBuilder(commands.Cog):
                 return options
             return []
 
-        if definition["mode"] == "evil":
+        if skeleton == "ritual":
             if page_key == "media_slot":
                 return [
                     {"key": key, "label": label, "description": description}
-                    for key, label, description in self._media_slot_specs("evil")
+                    for key, label, description in self._media_slot_specs("ritual")
                 ]
             if page_key == "prompt_copy":
                 return [
@@ -3562,7 +3659,7 @@ class RaidBuilder(commands.Cog):
         if page_key == "media_slot":
             return [
                 {"key": key, "label": label, "description": description}
-                for key, label, description in self._media_slot_specs("chaos")
+                for key, label, description in self._media_slot_specs("attrition")
             ]
         if page_key == "message_bucket":
             options = []
@@ -3587,9 +3684,10 @@ class RaidBuilder(commands.Cog):
                 "form_title": "Edit",
                 "submit_handler": None,
             }
-        if definition["mode"] == "good":
+        skeleton = self._definition_skeleton_key(definition)
+        if skeleton == "trial":
             return self._good_builder_page_payload(definition, page_key, item_key)
-        if definition["mode"] == "evil":
+        if skeleton == "ritual":
             return self._evil_builder_page_payload(definition, page_key, item_key)
         return self._chaos_builder_page_payload(definition, page_key, item_key)
 
@@ -3601,7 +3699,8 @@ class RaidBuilder(commands.Cog):
         presentation = definition["config"].setdefault("presentation", {})
         media = presentation.setdefault("media", {})
         slot = media.setdefault(slot_key, _blank_media())
-        slot_label, slot_description = self._media_slot_meta(definition["mode"], slot_key)
+        skeleton = self._definition_skeleton_key(definition) or "attrition"
+        slot_label, slot_description = self._media_slot_meta(skeleton, slot_key)
 
         async def submit(values):
             slot["image_url"] = self._parse_optional_text(values["image_url"])
@@ -3650,7 +3749,7 @@ class RaidBuilder(commands.Cog):
             for key, label in fields_spec:
                 colors[key] = self._parse_hex_color(values[key], label)
             self._save_registry()
-            return f"Updated {definition['mode']} theme colors."
+            return "Updated theme colors."
 
         return {
             "title": f"{definition['name']} • {title_suffix}",
@@ -4709,6 +4808,7 @@ class RaidBuilder(commands.Cog):
         return embed
 
     def _build_definition_embed(self, definition: dict[str, Any]) -> discord.Embed:
+        skeleton = self._definition_skeleton_key(definition) or "unknown"
         embed = discord.Embed(
             title=definition.get("name", definition["id"]),
             description=definition.get("description", ""),
@@ -4716,11 +4816,11 @@ class RaidBuilder(commands.Cog):
         )
         embed.add_field(name="ID", value=f"`{definition['id']}`", inline=True)
         embed.add_field(name="Mode", value=f"`{definition.get('mode', 'unknown')}`", inline=True)
+        embed.add_field(name="Skeleton", value=f"`{skeleton}`", inline=True)
         embed.add_field(name="Status", value=f"`{definition.get('status', 'draft')}`", inline=True)
 
         config = definition.get("config", {})
-        mode = definition.get("mode")
-        if mode == "good":
+        if skeleton == "trial":
             embed.add_field(
                 name="Trial Summary",
                 value=(
@@ -4730,7 +4830,7 @@ class RaidBuilder(commands.Cog):
                 ),
                 inline=False,
             )
-        elif mode == "evil":
+        elif skeleton == "ritual":
             embed.add_field(
                 name="Ritual Summary",
                 value=(
@@ -4740,7 +4840,7 @@ class RaidBuilder(commands.Cog):
                 ),
                 inline=False,
             )
-        elif mode == "chaos":
+        elif skeleton == "attrition":
             embed.add_field(
                 name="Attrition Summary",
                 value=(
@@ -4847,6 +4947,7 @@ class RaidBuilder(commands.Cog):
                 name=f"{definition_id}{active_marker}",
                 value=(
                     f"Mode: `{definition_mode}`\n"
+                    f"Skeleton: `{self._definition_skeleton_key(definition) or 'unknown'}`\n"
                     f"Status: `{definition.get('status', 'draft')}`\n"
                     f"Runtime: `{definition.get('runtime', 'native')}`"
                 ),
@@ -4867,7 +4968,7 @@ class RaidBuilder(commands.Cog):
         await ctx.send(embed=self._build_definition_embed(definition))
 
     @raidmode.command(name="create", hidden=True, brief=_("Create a draft definition from a skeleton starter."))
-    async def raidmode_create(self, ctx, mode: str, definition_id: str):
+    async def raidmode_create(self, ctx, mode: str, definition_id: str, skeleton: str = None):
         spec = self._get_mode_spec(mode)
         if spec is None:
             await ctx.send("Valid modes are `good`, `evil`, and `chaos`.")
@@ -4881,13 +4982,22 @@ class RaidBuilder(commands.Cog):
             await ctx.send(f"Definition `{normalized_definition_id}` already exists.")
             return
 
+        skeleton_key = self._coerce_skeleton_key(skeleton) if skeleton is not None else spec.skeleton
+        if skeleton_key is None:
+            await ctx.send(
+                "Valid skeletons are `good`, `evil`, `chaos`, `trial`, `ritual`, and `attrition`."
+            )
+            return
+
         self.registry["definitions"][normalized_definition_id] = self.build_draft_from_starter(
             spec.key,
             normalized_definition_id,
+            skeleton_key=skeleton_key,
         )
         self._save_registry()
         await ctx.send(
-            f"Created draft `{normalized_definition_id}` from `{STARTER_DEFINITION_IDS[spec.key]}`. "
+            f"Created draft `{normalized_definition_id}` for `{spec.key}` from "
+            f"`{SKELETON_STARTER_DEFINITION_IDS[skeleton_key]}`. "
             f"Open `raidmode builder {spec.key} {normalized_definition_id}` to customize it, then publish it."
         )
 
