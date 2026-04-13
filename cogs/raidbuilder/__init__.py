@@ -724,10 +724,10 @@ class RaidBuilderNewDraftModal(Modal, title="Create Raid Draft"):
             required=True,
             max_length=64,
         )
-        default_skeleton = MODE_SPECS[builder_view.selected_mode].key
+        default_skeleton = MODE_SPECS[builder_view.selected_mode].skeleton
         self.skeleton = TextInput(
             label="Skeleton Template",
-            placeholder="good/trial, evil/ritual, chaos/attrition",
+            placeholder="trial, ritual, or attrition",
             default=default_skeleton,
             required=True,
             max_length=16,
@@ -788,13 +788,13 @@ class RaidBuilderModeSelect(Select):
             discord.SelectOption(
                 label=spec.display_name,
                 value=spec.key,
-                description=f"{spec.skeleton} skeleton"[:100],
+                description=f"Definitions owned by {spec.display_name}"[:100],
                 default=spec.key == builder_view.selected_mode,
             )
             for spec in MODE_SPECS.values()
         ]
         super().__init__(
-            placeholder="Choose a raid mode",
+            placeholder="Choose a raid owner",
             min_values=1,
             max_values=1,
             options=options,
@@ -940,7 +940,7 @@ class RaidBuilderStructureView(View):
             "Create placeholder items, duplicate the current one, delete it, or change its order. "
             "The main builder panel will refresh after each change."
         )
-        embed.add_field(name="Mode", value=self.builder_view.selected_mode, inline=True)
+        embed.add_field(name="Owner", value=self.builder_view.selected_mode, inline=True)
         embed.add_field(name="Definition", value=definition["id"] if definition else "none", inline=True)
         embed.add_field(name="Target", value=state["entity_label"].title(), inline=True)
         embed.add_field(name="Selected", value=state["selected_label"], inline=False)
@@ -1015,6 +1015,100 @@ class RaidBuilderStructureView(View):
     @discord.ui.button(label="Down", style=discord.ButtonStyle.secondary)
     async def move_down_button(self, interaction: discord.Interaction, button: Button):
         await self._run_action(interaction, "move", delta=1)
+
+
+class RaidBuilderDeleteDefinitionView(View):
+    def __init__(self, builder_view: "RaidBuilderPanelView"):
+        super().__init__(timeout=120)
+        self.builder_view = builder_view
+
+    def _build_embed(self) -> discord.Embed:
+        definition = self.builder_view.current_definition()
+        embed = discord.Embed(
+            title="Delete Raid Definition",
+            color=discord.Color.red(),
+        )
+        if definition is None:
+            embed.description = "No definition is selected."
+            return embed
+
+        skeleton = self.builder_view.cog._definition_skeleton_key(definition) or "unknown"
+        active_modes = self.builder_view.cog._definition_active_modes(definition["id"])
+        starter = definition["id"] in STARTER_DEFINITIONS
+        embed.description = (
+            "Delete this definition from the registry. "
+            "Starter templates cannot be deleted."
+        )
+        embed.add_field(name="Owner", value=definition.get("mode", "unknown"), inline=True)
+        embed.add_field(name="Skeleton", value=skeleton, inline=True)
+        embed.add_field(name="Definition", value=definition["id"], inline=True)
+        embed.add_field(
+            name="Active On",
+            value=", ".join(active_modes) if active_modes else "none",
+            inline=True,
+        )
+        embed.add_field(
+            name="Protected",
+            value="yes" if starter else "no",
+            inline=True,
+        )
+        return embed
+
+    async def _deny_foreign_user(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.builder_view.author.id:
+            await interaction.response.send_message(
+                "This delete panel is not for you.",
+                ephemeral=True,
+            )
+            return True
+        return False
+
+    @discord.ui.button(label="Delete", style=discord.ButtonStyle.danger)
+    async def confirm_button(self, interaction: discord.Interaction, button: Button):
+        if await self._deny_foreign_user(interaction):
+            return
+        definition = self.builder_view.current_definition()
+        if definition is None:
+            return await interaction.response.send_message(
+                "No definition is selected.",
+                ephemeral=True,
+            )
+        try:
+            cleared_modes = self.builder_view.cog._delete_definition(definition["id"])
+        except ValueError as exc:
+            return await interaction.response.send_message(str(exc), ephemeral=True)
+
+        self.builder_view.selected_definition_id = None
+        self.builder_view.current_page_key = None
+        self.builder_view.current_item_key = None
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="Raid Definition Deleted",
+                description=f"Deleted `{definition['id']}`.",
+                color=discord.Color.red(),
+            ),
+            view=None,
+        )
+        await self.builder_view.refresh_message()
+
+        if cleared_modes:
+            await interaction.followup.send(
+                f"Cleared active routing for: {', '.join(f'`{mode_key}`' for mode_key in cleared_modes)}.",
+                ephemeral=True,
+            )
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_button(self, interaction: discord.Interaction, button: Button):
+        if await self._deny_foreign_user(interaction):
+            return
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="Delete Raid Definition",
+                description="Deletion canceled.",
+                color=discord.Color.blurple(),
+            ),
+            view=None,
+        )
 
 
 class RaidBuilderPanelView(View):
@@ -1162,13 +1256,14 @@ class RaidBuilderPanelView(View):
             self.item_select = RaidBuilderItemSelect(self)
             self.add_item(self.item_select)
 
-        page_count = len(self._page_specs())
-        page_index = self._current_page_index()
         self.structure_button.disabled = (
             self.current_definition() is None or not self.structure_state().get("supported")
         )
-        self.next_page_button.disabled = page_count <= 1 or page_index >= page_count - 1
         self.edit_page_button.disabled = self.current_definition() is None
+        self.delete_definition_button.disabled = (
+            self.current_definition() is None
+            or not self.cog._can_delete_definition(self.current_definition()["id"])
+        )
 
         definition = self.current_definition()
         if definition is None:
@@ -1226,14 +1321,14 @@ class RaidBuilderPanelView(View):
             active_definition_id = self.cog._get_active_definition_id(self.selected_mode)
             skeleton_key = self.cog._definition_skeleton_key(definition) or "unknown"
             footer_bits = [
-                f"Mode: {self.selected_mode}",
+                f"Owner: {self.selected_mode}",
                 f"Skeleton: {skeleton_key}",
                 f"Definition: {definition['id']}",
                 f"Status: {definition.get('status', 'draft')}",
                 f"Route: {'active' if active_definition_id == definition['id'] else 'inactive'}",
             ]
         else:
-            footer_bits = [f"Mode: {self.selected_mode}", "Definition: none"]
+            footer_bits = [f"Owner: {self.selected_mode}", "Definition: none"]
         embed.set_footer(text=" • ".join(footer_bits))
         return embed
 
@@ -1254,16 +1349,6 @@ class RaidBuilderPanelView(View):
             view=structure_view,
             ephemeral=True,
         )
-
-    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, row=4)
-    async def next_page_button(self, interaction: discord.Interaction, button: Button):
-        page_specs = self._page_specs()
-        page_index = self._current_page_index()
-        if page_index < len(page_specs) - 1:
-            self.current_page_key = page_specs[page_index + 1]["key"]
-            self.current_item_key = None
-        await interaction.response.defer()
-        await self.refresh_message()
 
     @discord.ui.button(label="New Draft", style=discord.ButtonStyle.primary, row=4)
     async def new_draft_button(self, interaction: discord.Interaction, button: Button):
@@ -1286,6 +1371,21 @@ class RaidBuilderPanelView(View):
                 fields=form_fields,
                 submit_handler=submit_handler,
             )
+        )
+
+    @discord.ui.button(label="Delete", style=discord.ButtonStyle.danger, row=4)
+    async def delete_definition_button(self, interaction: discord.Interaction, button: Button):
+        definition = self.current_definition()
+        if definition is None:
+            return await interaction.response.send_message(
+                "No definition is selected.",
+                ephemeral=True,
+            )
+        delete_view = RaidBuilderDeleteDefinitionView(self)
+        await interaction.response.send_message(
+            embed=delete_view._build_embed(),
+            view=delete_view,
+            ephemeral=True,
         )
 
     @discord.ui.button(label="State", style=discord.ButtonStyle.success, row=4)
@@ -1583,6 +1683,31 @@ class RaidBuilder(commands.Cog):
             definition.get("skeleton"),
             mode_key=definition.get("mode"),
         )
+
+    def _definition_active_modes(self, definition_id: str) -> list[str]:
+        return [
+            mode_key
+            for mode_key, mode_state in self.registry["modes"].items()
+            if mode_state.get("active_definition_id") == definition_id
+        ]
+
+    def _can_delete_definition(self, definition_id: str) -> bool:
+        return definition_id not in STARTER_DEFINITION_IDS.values()
+
+    def _delete_definition(self, definition_id: str) -> list[str]:
+        normalized_definition_id = definition_id.casefold()
+        if normalized_definition_id not in self.registry["definitions"]:
+            raise ValueError(f"Definition `{normalized_definition_id}` does not exist.")
+        if not self._can_delete_definition(normalized_definition_id):
+            raise ValueError("Starter templates cannot be deleted.")
+
+        cleared_modes = self._definition_active_modes(normalized_definition_id)
+        for mode_key in cleared_modes:
+            self.registry["modes"][mode_key]["active_definition_id"] = None
+
+        del self.registry["definitions"][normalized_definition_id]
+        self._save_registry()
+        return cleared_modes
 
     def _get_definition(self, definition_id: str) -> dict[str, Any] | None:
         definition = self.registry["definitions"].get(definition_id)
@@ -4815,7 +4940,7 @@ class RaidBuilder(commands.Cog):
             color=discord.Color.blurple(),
         )
         embed.add_field(name="ID", value=f"`{definition['id']}`", inline=True)
-        embed.add_field(name="Mode", value=f"`{definition.get('mode', 'unknown')}`", inline=True)
+        embed.add_field(name="Owner", value=f"`{definition.get('mode', 'unknown')}`", inline=True)
         embed.add_field(name="Skeleton", value=f"`{skeleton}`", inline=True)
         embed.add_field(name="Status", value=f"`{definition.get('status', 'draft')}`", inline=True)
 
@@ -4946,7 +5071,7 @@ class RaidBuilder(commands.Cog):
             embed.add_field(
                 name=f"{definition_id}{active_marker}",
                 value=(
-                    f"Mode: `{definition_mode}`\n"
+                    f"Owner: `{definition_mode}`\n"
                     f"Skeleton: `{self._definition_skeleton_key(definition) or 'unknown'}`\n"
                     f"Status: `{definition.get('status', 'draft')}`\n"
                     f"Runtime: `{definition.get('runtime', 'native')}`"

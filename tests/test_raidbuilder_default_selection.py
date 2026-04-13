@@ -7,10 +7,17 @@ class DummyRaidBuilderCog:
     _get_active_definition_id = RaidBuilder._get_active_definition_id
     _get_definition = RaidBuilder._get_definition
     _definition_skeleton_key = RaidBuilder._definition_skeleton_key
+    _definition_active_modes = RaidBuilder._definition_active_modes
+    _can_delete_definition = RaidBuilder._can_delete_definition
+    _delete_definition = RaidBuilder._delete_definition
     _builder_page_specs = RaidBuilder._builder_page_specs
 
     def __init__(self, registry):
         self.registry = registry
+        self.saved = False
+
+    def _save_registry(self, registry=None):
+        self.saved = True
 
 
 class DummyRaidBuilderView:
@@ -86,6 +93,32 @@ class TestRaidBuilderSkeletonVariants(unittest.TestCase):
         page_keys = [page["key"] for page in view._page_specs()]
         self.assertIn("timings", page_keys)
         self.assertNotIn("ritual_core", page_keys)
+
+
+class TestRaidBuilderDeletion(unittest.TestCase):
+    def test_delete_definition_removes_custom_entry_and_clears_active_modes(self):
+        registry = RaidBuilder.default_registry()
+        registry["definitions"]["sep_trial"] = RaidBuilder.build_draft_from_starter(
+            "evil",
+            "sep_trial",
+            skeleton_key="trial",
+        )
+        registry["modes"]["evil"]["active_definition_id"] = "sep_trial"
+        cog = DummyRaidBuilderCog(registry)
+
+        cleared_modes = cog._delete_definition("sep_trial")
+
+        self.assertEqual(cleared_modes, ["evil"])
+        self.assertNotIn("sep_trial", registry["definitions"])
+        self.assertIsNone(registry["modes"]["evil"]["active_definition_id"])
+        self.assertTrue(cog.saved)
+
+    def test_delete_definition_rejects_starter_templates(self):
+        registry = RaidBuilder.default_registry()
+        cog = DummyRaidBuilderCog(registry)
+
+        with self.assertRaisesRegex(ValueError, "Starter templates cannot be deleted"):
+            cog._delete_definition("evil_ritual_remaster")
 
 
 if __name__ == "__main__":
