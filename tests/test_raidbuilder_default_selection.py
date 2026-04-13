@@ -254,6 +254,10 @@ class TestRaidBuilderSkeletonVariants(unittest.TestCase):
         self.assertEqual(payload["fields"][0]["value"], "$20,000-$50,000")
         self.assertEqual(payload["form_fields"][0]["default"], "20000-50000")
         self.assertEqual(payload["form_fields"][1]["default"], "0")
+        self.assertIn("20000-50000", payload["description"])
+        self.assertIn("weights", payload["description"])
+        self.assertEqual(payload["fields"][2]["name"], "Crate Pool Weights")
+        self.assertEqual(payload["fields"][3]["name"], "Format Help")
 
 
 class TestRaidBuilderDeletion(unittest.TestCase):

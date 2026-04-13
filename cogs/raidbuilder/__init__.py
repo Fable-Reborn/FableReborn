@@ -4554,8 +4554,17 @@ class RaidBuilder(commands.Cog):
                     "inline": True,
                 },
                 {
-                    "name": "Crate Pool",
+                    "name": "Crate Pool Weights",
                     "value": crate_pool_text,
+                    "inline": False,
+                },
+                {
+                    "name": "Format Help",
+                    "value": (
+                        "Gold/Dragon Coins: `5000` or `20000-50000`. "
+                        "Crates use weights like `legendary=40, divine=40, fortune=20`. "
+                        "That means 40/40/20 odds. If the total weight is 100, those act like percentages."
+                    ),
                     "inline": False,
                 },
             )
@@ -4570,10 +4579,10 @@ class RaidBuilder(commands.Cog):
                 },
                 {
                     "key": "crate_pool",
-                    "label": "Crate Pool",
+                    "label": "Crate Pool Weights",
                     "default": crate_pool_text if crate_pool_text != "none" else "none",
                     "style": discord.TextStyle.paragraph,
-                    "placeholder": "legendary=40, fortune=40, divine=20",
+                    "placeholder": "legendary=40, divine=40, fortune=20",
                 },
             )
         )
@@ -4582,7 +4591,9 @@ class RaidBuilder(commands.Cog):
             "title": f"{definition['name']} • Rewards",
             "description": (
                 f"{description} Gold and dragon coins accept `5000` or `20000-50000`. "
-                f"Crate pool format: `legendary=40, fortune=40`. "
+                f"Crate pools use weights, not required percentages. "
+                f"`legendary=40, divine=40, fortune=20` means 40/40/20 odds, "
+                f"and if the total is 100 those match percentages. "
                 f"Use `none` to disable the random {crate_recipient_label} crate."
             ),
             "fields": fields,
