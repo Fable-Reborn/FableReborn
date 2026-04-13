@@ -154,6 +154,18 @@ RITUAL_PROMPT_SLOTS = (
     ("priest", "Priest Prompt", "Priest DM prompt title and description."),
 )
 
+RITUAL_TEXT_SLOTS = (
+    ("no_valid", "No Valid", "Shown when nobody eligible joins the ritual."),
+    ("champion_slain", "Champion Slain", "Shown when the champion dies before recovery."),
+    ("champion_fall", "Champion Fall", "Shown when the ritual collapses with the champion."),
+    ("collapse", "Guardian Collapse", "Shown when the guardian temporarily falls."),
+    ("respawn", "Guardian Respawn", "Shown when the guardian rises into a new phase."),
+    ("success", "Success", "Shown when the ritual completes successfully."),
+    ("stall", "Stall", "Shown when the ritual fails to reach completion."),
+    ("turn_prompt", "Turn Prompt", "Shown when a player should check DMs."),
+    ("followers_summary_empty", "Empty Summary", "Shown when followers contribute nothing."),
+)
+
 RITUAL_COUNTDOWN_SLOTS = (
     ("ten_minutes", "10 Minutes", 600, "**The shadows deepen... The ritual begins in 10 minutes.**"),
     ("five_minutes", "5 Minutes", 300, "**Whispers fill the air... 5 minutes remain.**"),
@@ -317,6 +329,8 @@ def _build_good_starter() -> dict[str, Any]:
             "phase_delay": 5,
             "result_delay": 3,
             "eligibility": {"god": "Elysia"},
+            "no_valid_text": "No valid followers of {eligible_god} answered the trial.",
+            "defeat_text": "The trial ends with no survivors.",
             "announce": {
                 "title": "Champions of Compassion",
                 "description": (
@@ -652,6 +666,7 @@ def _build_chaos_starter() -> dict[str, Any]:
                 "critical_max": 150,
             },
             "messages": {
+                "no_valid": "The void finds no worthy followers to consume.",
                 "high_damage": [
                     "Eclipse howls as the raid tears through the void.",
                     "The abyss buckles beneath the force of Drakath's faithful.",
@@ -1507,11 +1522,14 @@ class RaidBuilder(commands.Cog):
             cls._fill_missing(config.setdefault("presentation", {}), _good_presentation())
             announce.setdefault("join_label", "Join the trial!")
             announce.setdefault("joined_message", "You joined the trial.")
+            config.setdefault("no_valid_text", "No valid followers of {eligible_god} answered the trial.")
+            config.setdefault("defeat_text", "The trial ends with no survivors.")
         elif skeleton == "attrition":
             cls._fill_missing(config.setdefault("presentation", {}), _chaos_presentation())
             announce.setdefault("join_label", "Join the raid!")
             announce.setdefault("joined_message", "You joined the raid.")
             messages = config.setdefault("messages", {})
+            messages.setdefault("no_valid", "The void finds no worthy followers to consume.")
             messages.setdefault(
                 "retreat",
                 "{boss_name} slips back into the void with **{boss_hp}** HP remaining.",
@@ -2022,7 +2040,14 @@ class RaidBuilder(commands.Cog):
 
         if len(participants) < min_survivors:
             await ctx.send(
-                f"No valid followers of {eligible_god or 'the required faith'} answered the trial."
+                self._format_template(
+                    config.get(
+                        "no_valid_text",
+                        "No valid followers of {eligible_god} answered the trial.",
+                    ),
+                    eligible_god=eligible_god or "the required faith",
+                    definition_name=definition["name"],
+                )
             )
             return
 
@@ -2126,7 +2151,12 @@ class RaidBuilder(commands.Cog):
             await ctx.send(embed=winner_embed)
             return
 
-        await ctx.send("The trial ends with no survivors.")
+        await ctx.send(
+            self._format_template(
+                config.get("defeat_text", "The trial ends with no survivors."),
+                definition_name=definition["name"],
+            )
+        )
 
     async def _run_attrition_definition(
         self,
@@ -2173,7 +2203,13 @@ class RaidBuilder(commands.Cog):
             config.get("eligibility", {}).get("god"),
         )
         if not participants:
-            await ctx.send("The void finds no worthy followers to consume.")
+            await ctx.send(
+                self._format_template(
+                    messages.get("no_valid", "The void finds no worthy followers to consume."),
+                    definition_name=definition["name"],
+                    boss_name=boss_name,
+                )
+            )
             return
 
         raid = {
@@ -3762,6 +3798,7 @@ class RaidBuilder(commands.Cog):
             return [
                 {"key": "overview", "label": "Overview", "description": "Name, description, join settings"},
                 {"key": "announce", "label": "Announce", "description": "Join title, intro text, and button copy"},
+                {"key": "outcome_copy", "label": "Outcome Copy", "description": "No-valid, victory, and defeat text"},
                 {"key": "theme", "label": "Theme", "description": "Embed colors for this raid mode"},
                 {"key": "media_slot", "label": "Media", "description": "Attach images and thumbnails to embed slots"},
                 {"key": "timings", "label": "Timing", "description": "Faith, pacing, and victory text"},
@@ -3773,6 +3810,7 @@ class RaidBuilder(commands.Cog):
                 {"key": "overview", "label": "Overview", "description": "Name, description, faith, timers"},
                 {"key": "announce", "label": "Announce", "description": "Intro copy and join button text"},
                 {"key": "countdown_copy", "label": "Countdown", "description": "Edit countdown, start, and eligibility text"},
+                {"key": "outcome_copy", "label": "Outcome Copy", "description": "No-valid, fail, success, and turn text"},
                 {"key": "theme", "label": "Theme", "description": "Embed colors for the ritual"},
                 {"key": "media_slot", "label": "Media", "description": "Attach images and thumbnails to ritual embeds"},
                 {"key": "role_labels", "label": "Role Labels", "description": "Rename Champion, Priest, Followers, and Guardian"},
@@ -3792,6 +3830,7 @@ class RaidBuilder(commands.Cog):
         return [
             {"key": "overview", "label": "Overview", "description": "Name, description, faith, pacing"},
             {"key": "announce", "label": "Announce", "description": "Join title, intro text, and button copy"},
+            {"key": "outcome_copy", "label": "Outcome Copy", "description": "No-valid and end-state text"},
             {"key": "theme", "label": "Theme", "description": "Embed colors for the attrition loop"},
             {"key": "media_slot", "label": "Media", "description": "Attach images and thumbnails to embed slots"},
             {"key": "boss_core", "label": "Boss Core", "description": "Boss name, boss HP, follower HP"},
@@ -3810,6 +3849,12 @@ class RaidBuilder(commands.Cog):
                 return [
                     {"key": key, "label": label, "description": description}
                     for key, label, description in self._media_slot_specs("trial")
+                ]
+            if page_key == "outcome_copy":
+                return [
+                    {"key": "no_valid", "label": "No Valid", "description": "Shown when nobody eligible joins"},
+                    {"key": "victory", "label": "Victory", "description": "Shown when the trial has winners"},
+                    {"key": "defeat", "label": "Defeat", "description": "Shown when the trial has no survivors"},
                 ]
             if page_key == "phase":
                 return [
@@ -3869,6 +3914,11 @@ class RaidBuilder(commands.Cog):
                     )
                 )
                 return countdown_options
+            if page_key == "outcome_copy":
+                return [
+                    {"key": key, "label": label, "description": description}
+                    for key, label, description in RITUAL_TEXT_SLOTS
+                ]
             if page_key == "prompt_copy":
                 return [
                     {"key": key, "label": label, "description": description}
@@ -3921,6 +3971,13 @@ class RaidBuilder(commands.Cog):
                 ]
             return []
 
+        if page_key == "outcome_copy":
+            return [
+                {"key": "no_valid", "label": "No Valid", "description": "Shown when nobody eligible joins"},
+                {"key": "victory", "label": "Victory", "description": "Shown when the raid wins"},
+                {"key": "defeat", "label": "Defeat", "description": "Shown when the raid wipes"},
+                {"key": "retreat", "label": "Retreat", "description": "Shown when the boss survives the timer"},
+            ]
         if page_key == "media_slot":
             return [
                 {"key": key, "label": label, "description": description}
@@ -3928,7 +3985,7 @@ class RaidBuilder(commands.Cog):
             ]
         if page_key == "message_bucket":
             options = []
-            for key in ("high_damage", "medium_damage", "low_damage", "victory", "defeat", "retreat"):
+            for key in ("high_damage", "medium_damage", "low_damage", "victory", "defeat", "retreat", "no_valid"):
                 label = key.replace("_", " ").title()
                 options.append({"key": key, "label": label, "description": "Message content"})
             return options
@@ -4094,6 +4151,78 @@ class RaidBuilder(commands.Cog):
                     {"key": "description", "label": "Description", "default": announce.get("description", ""), "style": discord.TextStyle.paragraph},
                     {"key": "join_label", "label": "Join Label", "default": announce.get("join_label", "")},
                     {"key": "joined_message", "label": "Joined Message", "default": announce.get("joined_message", ""), "style": discord.TextStyle.paragraph},
+                ],
+                "submit_handler": submit,
+            }
+
+        if page_key == "outcome_copy":
+            if item_key == "no_valid":
+                async def submit(values):
+                    config["no_valid_text"] = self._require_text(values["message"], "No valid text")
+                    self._save_registry()
+                    return "Updated trial no-valid copy."
+
+                return {
+                    "title": f"{definition['name']} • Outcome Copy • No Valid",
+                    "description": "Shown when too few eligible followers join the trial.",
+                    "fields": [
+                        {"name": "Message", "value": config.get("no_valid_text", "None"), "inline": False},
+                    ],
+                    "form_title": "Edit Trial No Valid Copy",
+                    "form_fields": [
+                        {
+                            "key": "message",
+                            "label": "Message",
+                            "default": config.get("no_valid_text", ""),
+                            "style": discord.TextStyle.paragraph,
+                        },
+                    ],
+                    "submit_handler": submit,
+                }
+
+            if item_key == "defeat":
+                async def submit(values):
+                    config["defeat_text"] = self._require_text(values["message"], "Defeat text")
+                    self._save_registry()
+                    return "Updated trial defeat copy."
+
+                return {
+                    "title": f"{definition['name']} • Outcome Copy • Defeat",
+                    "description": "Shown when the trial ends with no survivors.",
+                    "fields": [
+                        {"name": "Message", "value": config.get("defeat_text", "None"), "inline": False},
+                    ],
+                    "form_title": "Edit Trial Defeat Copy",
+                    "form_fields": [
+                        {
+                            "key": "message",
+                            "label": "Message",
+                            "default": config.get("defeat_text", ""),
+                            "style": discord.TextStyle.paragraph,
+                        },
+                    ],
+                    "submit_handler": submit,
+                }
+
+            async def submit(values):
+                config["winner_text"] = self._require_text(values["message"], "Victory text")
+                self._save_registry()
+                return "Updated trial victory copy."
+
+            return {
+                "title": f"{definition['name']} • Outcome Copy • Victory",
+                "description": "Shown when the trial has surviving winners.",
+                "fields": [
+                    {"name": "Message", "value": config.get("winner_text", "None"), "inline": False},
+                ],
+                "form_title": "Edit Trial Victory Copy",
+                "form_fields": [
+                    {
+                        "key": "message",
+                        "label": "Message",
+                        "default": config.get("winner_text", ""),
+                        "style": discord.TextStyle.paragraph,
+                    },
                 ],
                 "submit_handler": submit,
             }
@@ -4284,6 +4413,34 @@ class RaidBuilder(commands.Cog):
 
         if page_key == "media_slot":
             return self._media_slot_payload(definition, item_key or "intro")
+
+        if page_key == "outcome_copy":
+            messages = config["messages"]
+            bucket_key = item_key or "victory"
+            label = bucket_key.replace("_", " ").title()
+
+            async def submit(values):
+                messages[bucket_key] = self._require_text(values["message"], label)
+                self._save_registry()
+                return f"Updated chaos outcome copy `{bucket_key}`."
+
+            return {
+                "title": f"{definition['name']} • Outcome Copy • {label}",
+                "description": "Narration shown for this attrition outcome.",
+                "fields": [
+                    {"name": "Message", "value": str(messages.get(bucket_key, "None")), "inline": False},
+                ],
+                "form_title": f"Edit {label}",
+                "form_fields": [
+                    {
+                        "key": "message",
+                        "label": "Message",
+                        "default": str(messages.get(bucket_key, "")),
+                        "style": discord.TextStyle.paragraph,
+                    },
+                ],
+                "submit_handler": submit,
+            }
 
         if page_key == "boss_core":
             async def submit(values):
@@ -4664,6 +4821,41 @@ class RaidBuilder(commands.Cog):
                     {"key": "priest", "label": "Priest", "default": labels.get("priest", "")},
                     {"key": "followers", "label": "Followers", "default": labels.get("followers", "")},
                     {"key": "guardian", "label": "Guardian", "default": labels.get("guardian", "")},
+                ],
+                "submit_handler": submit,
+            }
+
+        if page_key == "outcome_copy":
+            texts = presentation["texts"]
+            text_key = item_key or "success"
+            slot_meta = {
+                key: (label, description)
+                for key, label, description in RITUAL_TEXT_SLOTS
+            }
+            label, description = slot_meta.get(
+                text_key,
+                (text_key.replace("_", " ").title(), "Ritual narration text."),
+            )
+
+            async def submit(values, text_key=text_key, label=label):
+                texts[text_key] = self._require_text(values["message"], label)
+                self._save_registry()
+                return f"Updated ritual outcome copy `{text_key}`."
+
+            return {
+                "title": f"{definition['name']} • Outcome Copy • {label}",
+                "description": description,
+                "fields": [
+                    {"name": "Message", "value": texts.get(text_key, "None"), "inline": False},
+                ],
+                "form_title": f"Edit {label}",
+                "form_fields": [
+                    {
+                        "key": "message",
+                        "label": "Message",
+                        "default": texts.get(text_key, ""),
+                        "style": discord.TextStyle.paragraph,
+                    },
                 ],
                 "submit_handler": submit,
             }

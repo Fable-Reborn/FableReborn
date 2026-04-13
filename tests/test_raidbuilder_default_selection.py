@@ -12,6 +12,9 @@ class DummyRaidBuilderCog:
     _delete_definition = RaidBuilder._delete_definition
     _builder_page_specs = RaidBuilder._builder_page_specs
     _builder_item_options = RaidBuilder._builder_item_options
+    _good_builder_page_payload = RaidBuilder._good_builder_page_payload
+    _evil_builder_page_payload = RaidBuilder._evil_builder_page_payload
+    _chaos_builder_page_payload = RaidBuilder._chaos_builder_page_payload
 
     def __init__(self, registry):
         self.registry = registry
@@ -127,6 +130,42 @@ class TestRaidBuilderSkeletonVariants(unittest.TestCase):
         self.assertIn("countdown:ten_minutes", item_keys)
         self.assertIn("start_message", item_keys)
         self.assertIn("eligibility_message", item_keys)
+
+    def test_outcome_copy_defaults_exist_for_all_skeletons(self):
+        good_definition = RaidBuilder.build_draft_from_starter("good", "ely_custom")
+        evil_definition = RaidBuilder.build_draft_from_starter("evil", "sep_custom")
+        chaos_definition = RaidBuilder.build_draft_from_starter("chaos", "dra_custom")
+
+        self.assertIn("no_valid_text", good_definition["config"])
+        self.assertIn("defeat_text", good_definition["config"])
+        self.assertIn("no_valid", evil_definition["config"]["presentation"]["texts"])
+        self.assertIn("no_valid", chaos_definition["config"]["messages"])
+
+    def test_outcome_copy_builder_items_exist(self):
+        registry = RaidBuilder.default_registry()
+        registry["definitions"]["sep_custom"] = RaidBuilder.build_draft_from_starter(
+            "evil",
+            "sep_custom",
+        )
+        cog = DummyRaidBuilderCog(registry)
+
+        good_items = [
+            item["key"]
+            for item in cog._builder_item_options(registry["definitions"]["good_trial_remaster"], "outcome_copy")
+        ]
+        evil_items = [
+            item["key"]
+            for item in cog._builder_item_options(registry["definitions"]["sep_custom"], "outcome_copy")
+        ]
+        chaos_items = [
+            item["key"]
+            for item in cog._builder_item_options(registry["definitions"]["chaos_attrition_remaster"], "outcome_copy")
+        ]
+
+        self.assertEqual(good_items, ["no_valid", "victory", "defeat"])
+        self.assertIn("success", evil_items)
+        self.assertIn("stall", evil_items)
+        self.assertEqual(chaos_items, ["no_valid", "victory", "defeat", "retreat"])
 
 
 class TestRaidBuilderDeletion(unittest.TestCase):
