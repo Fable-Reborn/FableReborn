@@ -188,6 +188,92 @@ def _ritual_countdown_defaults() -> list[dict[str, Any]]:
     ]
 
 
+CRATE_RARITIES = (
+    "common",
+    "uncommon",
+    "rare",
+    "magic",
+    "legendary",
+    "fortune",
+    "divine",
+    "materials",
+)
+
+
+def _default_crate_pool(*entries: tuple[str, int]) -> list[dict[str, Any]]:
+    return [
+        {"rarity": rarity, "weight": weight}
+        for rarity, weight in entries
+    ]
+
+
+def _normalize_crate_pool(
+    entries: Any,
+    *,
+    fallback: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    if not isinstance(entries, list):
+        return copy.deepcopy(fallback or [])
+    if not entries:
+        return []
+
+    normalized = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        rarity = str(entry.get("rarity") or "").strip().casefold()
+        if rarity not in CRATE_RARITIES:
+            continue
+        try:
+            weight = int(entry.get("weight", 1))
+        except (TypeError, ValueError):
+            continue
+        if weight <= 0:
+            continue
+        normalized.append({"rarity": rarity, "weight": weight})
+    return normalized
+
+
+def _trial_reward_defaults() -> dict[str, Any]:
+    return {
+        "participant_gold": 0,
+        "winner_gold_bonus": 0,
+        "dragon_coins": 0,
+        "crate_pool": _default_crate_pool(
+            ("legendary", 40),
+            ("fortune", 40),
+            ("divine", 20),
+        ),
+    }
+
+
+def _ritual_reward_defaults() -> dict[str, Any]:
+    return {
+        "participant_gold": 35000,
+        "dragon_coins": 0,
+        "crate_pool": _default_crate_pool(
+            ("legendary", 30),
+            ("fortune", 30),
+            ("materials", 20),
+            ("divine", 20),
+        ),
+    }
+
+
+def _attrition_reward_defaults() -> dict[str, Any]:
+    return {
+        "participant_gold": 0,
+        "winner_gold_bonus": 0,
+        "dragon_coins": 0,
+        "crate_pool": _default_crate_pool(
+            ("legendary", 30),
+            ("fortune", 30),
+            ("materials", 20),
+            ("divine", 20),
+        ),
+    }
+
+
 def _blank_media() -> dict[str, str]:
     return {"image_url": "", "thumbnail_url": ""}
 
@@ -341,6 +427,7 @@ def _build_good_starter() -> dict[str, Any]:
                 "joined_message": "You joined the trial.",
             },
             "presentation": _good_presentation(),
+            "rewards": _trial_reward_defaults(),
             "winner_text": "{winner} endure the final ordeal beneath Elysia's light.",
             "phases": [
                 {
@@ -435,6 +522,7 @@ def _build_evil_starter() -> dict[str, Any]:
                 "eligibility_message": "**Gathering the faithful... checking dm eligibility this may take awhile**",
             },
             "presentation": _evil_presentation(),
+            "rewards": _ritual_reward_defaults(),
             "ritual": {
                 "start_progress": 0,
                 "win_progress": 100,
@@ -643,6 +731,7 @@ def _build_chaos_starter() -> dict[str, Any]:
                 "joined_message": "You've pledged your soul to the raid.",
             },
             "presentation": _chaos_presentation(),
+            "rewards": _attrition_reward_defaults(),
             "boss_attack": {
                 "critical_chance": 0.3,
                 "normal_min": 100,
@@ -1520,12 +1609,48 @@ class RaidBuilder(commands.Cog):
         announce = config.setdefault("announce", {})
         if skeleton == "trial":
             cls._fill_missing(config.setdefault("presentation", {}), _good_presentation())
+            rewards = config.setdefault("rewards", {})
+            cls._fill_missing(rewards, _trial_reward_defaults())
+            rewards["participant_gold"] = cls._normalize_reward_amount_spec(
+                rewards.get("participant_gold", 0),
+                default=0,
+            )
+            rewards["winner_gold_bonus"] = cls._normalize_reward_amount_spec(
+                rewards.get("winner_gold_bonus", 0),
+                default=0,
+            )
+            rewards["dragon_coins"] = cls._normalize_reward_amount_spec(
+                rewards.get("dragon_coins", 0),
+                default=0,
+            )
+            rewards["crate_pool"] = _normalize_crate_pool(
+                rewards.get("crate_pool"),
+                fallback=_trial_reward_defaults()["crate_pool"],
+            )
             announce.setdefault("join_label", "Join the trial!")
             announce.setdefault("joined_message", "You joined the trial.")
             config.setdefault("no_valid_text", "No valid followers of {eligible_god} answered the trial.")
             config.setdefault("defeat_text", "The trial ends with no survivors.")
         elif skeleton == "attrition":
             cls._fill_missing(config.setdefault("presentation", {}), _chaos_presentation())
+            rewards = config.setdefault("rewards", {})
+            cls._fill_missing(rewards, _attrition_reward_defaults())
+            rewards["participant_gold"] = cls._normalize_reward_amount_spec(
+                rewards.get("participant_gold", 0),
+                default=0,
+            )
+            rewards["winner_gold_bonus"] = cls._normalize_reward_amount_spec(
+                rewards.get("winner_gold_bonus", 0),
+                default=0,
+            )
+            rewards["dragon_coins"] = cls._normalize_reward_amount_spec(
+                rewards.get("dragon_coins", 0),
+                default=0,
+            )
+            rewards["crate_pool"] = _normalize_crate_pool(
+                rewards.get("crate_pool"),
+                fallback=_attrition_reward_defaults()["crate_pool"],
+            )
             announce.setdefault("join_label", "Join the raid!")
             announce.setdefault("joined_message", "You joined the raid.")
             messages = config.setdefault("messages", {})
@@ -1536,6 +1661,20 @@ class RaidBuilder(commands.Cog):
             )
         elif skeleton == "ritual":
             cls._fill_missing(config.setdefault("presentation", {}), _evil_presentation())
+            rewards = config.setdefault("rewards", {})
+            cls._fill_missing(rewards, _ritual_reward_defaults())
+            rewards["participant_gold"] = cls._normalize_reward_amount_spec(
+                rewards.get("participant_gold", 0),
+                default=0,
+            )
+            rewards["dragon_coins"] = cls._normalize_reward_amount_spec(
+                rewards.get("dragon_coins", 0),
+                default=0,
+            )
+            rewards["crate_pool"] = _normalize_crate_pool(
+                rewards.get("crate_pool"),
+                fallback=_ritual_reward_defaults()["crate_pool"],
+            )
             announce.setdefault("leader_label", "Join as Champion/Priest")
             announce.setdefault("follower_label", "Join as Follower Only")
             announce.setdefault("leader_joined_message", "You joined as a potential leader.")
@@ -1878,6 +2017,83 @@ class RaidBuilder(commands.Cog):
         weights = [max(1, int(entry.get("weight", 1))) for entry in entries]
         return randomm.choices(entries, weights=weights, k=1)[0]
 
+    @staticmethod
+    def _unique_user_ids(users: list[Any]) -> list[int]:
+        user_ids = []
+        seen_ids = set()
+        for user in users:
+            user_id = user if isinstance(user, int) else getattr(user, "id", None)
+            if not isinstance(user_id, int) or user_id in seen_ids:
+                continue
+            seen_ids.add(user_id)
+            user_ids.append(user_id)
+        return user_ids
+
+    async def _award_definition_rewards(
+        self,
+        ctx,
+        rewards: dict[str, Any],
+        *,
+        participant_users: list[Any],
+        bonus_users: list[Any],
+        crate_users: list[Any],
+        participant_label: str,
+        bonus_label: str,
+    ) -> None:
+        participant_ids = self._unique_user_ids(participant_users)
+        bonus_ids = self._unique_user_ids(bonus_users)
+        crate_ids = self._unique_user_ids(crate_users)
+        participant_gold = self._roll_reward_amount_spec(rewards.get("participant_gold", 0))
+        winner_gold_bonus = self._roll_reward_amount_spec(rewards.get("winner_gold_bonus", 0))
+        dragon_coins = self._roll_reward_amount_spec(rewards.get("dragon_coins", 0))
+        crate_pool = _normalize_crate_pool(rewards.get("crate_pool"))
+        updates = []
+
+        async with self.bot.pool.acquire() as conn:
+            if participant_gold > 0 and participant_ids:
+                await conn.execute(
+                    'UPDATE profile SET money=money+$1 WHERE "user"=ANY($2);',
+                    participant_gold,
+                    participant_ids,
+                )
+                updates.append(
+                    f"💰 Each {participant_label} receives **${participant_gold:,}**."
+                )
+
+            if winner_gold_bonus > 0 and bonus_ids:
+                await conn.execute(
+                    'UPDATE profile SET money=money+$1 WHERE "user"=ANY($2);',
+                    winner_gold_bonus,
+                    bonus_ids,
+                )
+                updates.append(
+                    f"💰 Each {bonus_label} also receives **${winner_gold_bonus:,}**."
+                )
+
+            if dragon_coins > 0 and bonus_ids:
+                await conn.execute(
+                    'UPDATE profile SET dragoncoins = dragoncoins + $1 WHERE "user"=ANY($2);',
+                    dragon_coins,
+                    bonus_ids,
+                )
+                updates.append(
+                    f"🐉 Each {bonus_label} receives **{dragon_coins} Dragon Coins**."
+                )
+
+            if crate_pool and crate_ids:
+                crate_rarity = self._weighted_choice(crate_pool)["rarity"]
+                crate_winner_id = randomm.choice(crate_ids)
+                await conn.execute(
+                    f'UPDATE profile SET "crates_{crate_rarity}" = "crates_{crate_rarity}" + 1 WHERE "user" = $1;',
+                    crate_winner_id,
+                )
+                updates.append(
+                    f"🎁 <@{crate_winner_id}> receives a **{crate_rarity.title()} crate**."
+                )
+
+        for update in updates:
+            await ctx.send(update)
+
     async def _safe_get_player_decision(
         self,
         raid_cog,
@@ -2051,6 +2267,7 @@ class RaidBuilder(commands.Cog):
             )
             return
 
+        reward_participants = list(participants)
         await ctx.send(f"**{len(participants)}** participants enter `{definition['name']}`.")
 
         rounds_played = 0
@@ -2149,6 +2366,15 @@ class RaidBuilder(commands.Cog):
                 default_color=discord.Color.blue(),
             )
             await ctx.send(embed=winner_embed)
+            await self._award_definition_rewards(
+                ctx,
+                config.get("rewards", {}),
+                participant_users=reward_participants,
+                bonus_users=participants,
+                crate_users=participants,
+                participant_label="participant",
+                bonus_label="winner",
+            )
             return
 
         await ctx.send(
@@ -2202,6 +2428,7 @@ class RaidBuilder(commands.Cog):
             list(join_view.joined),
             config.get("eligibility", {}).get("god"),
         )
+        messages = config.get("messages", {})
         if not participants:
             await ctx.send(
                 self._format_template(
@@ -2216,7 +2443,7 @@ class RaidBuilder(commands.Cog):
             participant: int(config.get("player_hp", 250))
             for participant in participants
         }
-        messages = config.get("messages", {})
+        reward_participants = list(raid.keys())
         attack_config = config.get("boss_attack", {})
         events_config = config.get("events", {})
         players_config = config.get("players", {})
@@ -2366,6 +2593,15 @@ class RaidBuilder(commands.Cog):
                 inline=False,
             )
             await ctx.send(embed=victory_embed)
+            await self._award_definition_rewards(
+                ctx,
+                config.get("rewards", {}),
+                participant_users=reward_participants,
+                bonus_users=list(raid.keys()),
+                crate_users=list(raid.keys()),
+                participant_label="participant",
+                bonus_label="survivor",
+            )
             return
 
         if not raid:
@@ -2518,6 +2754,8 @@ class RaidBuilder(commands.Cog):
                 ritual_texts.get("no_valid", "No valid followers answered the ritual.")
             )
             return
+
+        reward_participants = list(participants)
 
         if not leader_participants:
             champion = ShadowChampionAI()
@@ -3184,6 +3422,15 @@ class RaidBuilder(commands.Cog):
                 default_color=discord.Color.green(),
             )
             await ctx.send(embed=victory_embed)
+            await self._award_definition_rewards(
+                ctx,
+                config.get("rewards", {}),
+                participant_users=reward_participants,
+                bonus_users=reward_participants,
+                crate_users=reward_participants,
+                participant_label="participant",
+                bonus_label="participant",
+            )
             return
         await ctx.send(
             self._format_template(
@@ -3215,6 +3462,82 @@ class RaidBuilder(commands.Cog):
         if max_value is not None and parsed > max_value:
             raise ValueError(f"{field_name} must be at most {max_value}.")
         return parsed
+
+    @staticmethod
+    def _normalize_reward_amount_spec(value: Any, *, default: int = 0) -> int | dict[str, int]:
+        fallback = max(0, int(default))
+        if isinstance(value, bool):
+            return fallback
+        if isinstance(value, int):
+            return max(0, value)
+        if isinstance(value, float):
+            return max(0, int(value))
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if not cleaned:
+                return fallback
+            if re.fullmatch(r"\d+", cleaned):
+                return int(cleaned)
+            match = re.fullmatch(r"(\d+)\s*-\s*(\d+)", cleaned)
+            if match is None:
+                return fallback
+            low = int(match.group(1))
+            high = int(match.group(2))
+            if low > high:
+                low, high = high, low
+            if low == high:
+                return low
+            return {"min": low, "max": high}
+        if isinstance(value, dict):
+            try:
+                low = int(value.get("min", value.get("low", fallback)))
+                high = int(value.get("max", value.get("high", fallback)))
+            except (TypeError, ValueError):
+                return fallback
+            low = max(0, low)
+            high = max(0, high)
+            if low > high:
+                low, high = high, low
+            if low == high:
+                return low
+            return {"min": low, "max": high}
+        return fallback
+
+    @staticmethod
+    def _parse_reward_amount_spec(value: str, field_name: str) -> int | dict[str, int]:
+        cleaned = value.strip()
+        if re.fullmatch(r"\d+", cleaned):
+            return int(cleaned)
+        match = re.fullmatch(r"(\d+)\s*-\s*(\d+)", cleaned)
+        if match is None:
+            raise ValueError(
+                f"{field_name} must be a whole number or a range like `20000-50000`."
+            )
+        low = int(match.group(1))
+        high = int(match.group(2))
+        if low > high:
+            raise ValueError(f"{field_name} range min cannot be greater than max.")
+        if low == high:
+            return low
+        return {"min": low, "max": high}
+
+    @staticmethod
+    def _roll_reward_amount_spec(value: Any) -> int:
+        normalized = RaidBuilder._normalize_reward_amount_spec(value, default=0)
+        if isinstance(normalized, dict):
+            return randomm.randint(normalized["min"], normalized["max"])
+        return normalized
+
+    @staticmethod
+    def _format_reward_amount_spec(value: Any, *, currency: bool = False) -> str:
+        normalized = RaidBuilder._normalize_reward_amount_spec(value, default=0)
+        if isinstance(normalized, dict):
+            if currency:
+                return f"${normalized['min']:,}-${normalized['max']:,}"
+            return f"{normalized['min']}-{normalized['max']}"
+        if currency:
+            return f"${normalized:,}"
+        return str(normalized)
 
     @staticmethod
     def _parse_float(value: str, field_name: str, *, min_value: float | None = None, max_value: float | None = None) -> float:
@@ -3249,6 +3572,49 @@ class RaidBuilder(commands.Cog):
         return lines
 
     @staticmethod
+    def _parse_weighted_crate_pool(value: str, field_name: str) -> list[dict[str, Any]]:
+        cleaned = value.strip()
+        if not cleaned or cleaned.casefold() in {"none", "off", "disable", "disabled"}:
+            return []
+
+        weights_by_rarity: dict[str, int] = {}
+        for raw_entry in cleaned.split(","):
+            entry = raw_entry.strip()
+            if not entry:
+                continue
+            if "=" in entry:
+                rarity_text, weight_text = entry.split("=", 1)
+            elif ":" in entry:
+                rarity_text, weight_text = entry.split(":", 1)
+            else:
+                raise ValueError(
+                    f"{field_name} entries must look like `legendary=40`."
+                )
+
+            rarity = rarity_text.strip().casefold()
+            if rarity not in CRATE_RARITIES:
+                supported = ", ".join(CRATE_RARITIES)
+                raise ValueError(
+                    f"{field_name} only supports: {supported}."
+                )
+
+            try:
+                weight = int(weight_text.strip())
+            except ValueError as exc:
+                raise ValueError(
+                    f"{field_name} weights must be integers."
+                ) from exc
+            if weight <= 0:
+                raise ValueError(f"{field_name} weights must be at least 1.")
+
+            weights_by_rarity[rarity] = weights_by_rarity.get(rarity, 0) + weight
+
+        return [
+            {"rarity": rarity, "weight": weight}
+            for rarity, weight in weights_by_rarity.items()
+        ]
+
+    @staticmethod
     def _parse_optional_text(value: str) -> str:
         return value.strip()
 
@@ -3275,6 +3641,16 @@ class RaidBuilder(commands.Cog):
                 return "{" + key + "}"
 
         return str(template).format_map(_SafeDict(kwargs))
+
+    @staticmethod
+    def _format_weighted_crate_pool(entries: list[dict[str, Any]]) -> str:
+        normalized = _normalize_crate_pool(entries)
+        if not normalized:
+            return "none"
+        return ", ".join(
+            f"{entry['rarity']}={int(entry.get('weight', 1))}"
+            for entry in normalized
+        )
 
     @staticmethod
     def _action_display_name(action_name: str, action_config: dict[str, Any]) -> str:
@@ -3799,6 +4175,7 @@ class RaidBuilder(commands.Cog):
                 {"key": "overview", "label": "Overview", "description": "Name, description, join settings"},
                 {"key": "announce", "label": "Announce", "description": "Join title, intro text, and button copy"},
                 {"key": "outcome_copy", "label": "Outcome Copy", "description": "No-valid, victory, and defeat text"},
+                {"key": "rewards", "label": "Rewards", "description": "Gold, dragon coins, and crate pool"},
                 {"key": "theme", "label": "Theme", "description": "Embed colors for this raid mode"},
                 {"key": "media_slot", "label": "Media", "description": "Attach images and thumbnails to embed slots"},
                 {"key": "timings", "label": "Timing", "description": "Faith, pacing, and victory text"},
@@ -3811,6 +4188,7 @@ class RaidBuilder(commands.Cog):
                 {"key": "announce", "label": "Announce", "description": "Intro copy and join button text"},
                 {"key": "countdown_copy", "label": "Countdown", "description": "Edit countdown, start, and eligibility text"},
                 {"key": "outcome_copy", "label": "Outcome Copy", "description": "No-valid, fail, success, and turn text"},
+                {"key": "rewards", "label": "Rewards", "description": "Gold, dragon coins, and crate pool"},
                 {"key": "theme", "label": "Theme", "description": "Embed colors for the ritual"},
                 {"key": "media_slot", "label": "Media", "description": "Attach images and thumbnails to ritual embeds"},
                 {"key": "role_labels", "label": "Role Labels", "description": "Rename Champion, Priest, Followers, and Guardian"},
@@ -3831,6 +4209,7 @@ class RaidBuilder(commands.Cog):
             {"key": "overview", "label": "Overview", "description": "Name, description, faith, pacing"},
             {"key": "announce", "label": "Announce", "description": "Join title, intro text, and button copy"},
             {"key": "outcome_copy", "label": "Outcome Copy", "description": "No-valid and end-state text"},
+            {"key": "rewards", "label": "Rewards", "description": "Gold, dragon coins, and crate pool"},
             {"key": "theme", "label": "Theme", "description": "Embed colors for the attrition loop"},
             {"key": "media_slot", "label": "Media", "description": "Attach images and thumbnails to embed slots"},
             {"key": "boss_core", "label": "Boss Core", "description": "Boss name, boss HP, follower HP"},
@@ -4088,6 +4467,130 @@ class RaidBuilder(commands.Cog):
             "submit_handler": submit,
         }
 
+    def _reward_page_payload(
+        self,
+        definition: dict[str, Any],
+        *,
+        description: str,
+        bonus_label: str | None,
+        dragon_coin_label: str,
+        crate_recipient_label: str,
+        submit_message: str,
+    ) -> dict[str, Any]:
+        rewards = definition["config"].setdefault("rewards", {})
+        crate_pool_text = self._format_weighted_crate_pool(rewards.get("crate_pool", []))
+        participant_gold_text = self._format_reward_amount_spec(
+            rewards.get("participant_gold", 0),
+            currency=True,
+        )
+        participant_gold_default = self._format_reward_amount_spec(
+            rewards.get("participant_gold", 0),
+        )
+
+        async def submit(values):
+            rewards["participant_gold"] = self._parse_reward_amount_spec(
+                values["participant_gold"],
+                "Participant gold",
+            )
+            if bonus_label is not None:
+                rewards["winner_gold_bonus"] = self._parse_reward_amount_spec(
+                    values["winner_gold_bonus"],
+                    f"{bonus_label} gold bonus",
+                )
+            rewards["dragon_coins"] = self._parse_reward_amount_spec(
+                values["dragon_coins"],
+                "Dragon coins",
+            )
+            rewards["crate_pool"] = self._parse_weighted_crate_pool(
+                values["crate_pool"],
+                "Crate pool",
+            )
+            self._save_registry()
+            return submit_message
+
+        fields = [
+            {
+                "name": "Gold / Participant",
+                "value": participant_gold_text,
+                "inline": True,
+            },
+        ]
+        form_fields = [
+            {
+                "key": "participant_gold",
+                "label": "Gold / Participant",
+                "default": participant_gold_default,
+                "placeholder": "5000 or 20000-50000",
+            },
+        ]
+        if bonus_label is not None:
+            winner_gold_bonus_text = self._format_reward_amount_spec(
+                rewards.get("winner_gold_bonus", 0),
+                currency=True,
+            )
+            winner_gold_bonus_default = self._format_reward_amount_spec(
+                rewards.get("winner_gold_bonus", 0),
+            )
+            fields.append(
+                {
+                    "name": f"Bonus Gold / {bonus_label}",
+                    "value": winner_gold_bonus_text,
+                    "inline": True,
+                }
+            )
+            form_fields.append(
+                {
+                    "key": "winner_gold_bonus",
+                    "label": f"Bonus Gold / {bonus_label}",
+                    "default": winner_gold_bonus_default,
+                    "placeholder": "0 or 1000-3000",
+                }
+            )
+        fields.extend(
+            (
+                {
+                    "name": f"Dragon Coins / {dragon_coin_label}",
+                    "value": self._format_reward_amount_spec(rewards.get("dragon_coins", 0)),
+                    "inline": True,
+                },
+                {
+                    "name": "Crate Pool",
+                    "value": crate_pool_text,
+                    "inline": False,
+                },
+            )
+        )
+        form_fields.extend(
+            (
+                {
+                    "key": "dragon_coins",
+                    "label": f"Dragon Coins / {dragon_coin_label}",
+                    "default": self._format_reward_amount_spec(rewards.get("dragon_coins", 0)),
+                    "placeholder": "0 or 1-3",
+                },
+                {
+                    "key": "crate_pool",
+                    "label": "Crate Pool",
+                    "default": crate_pool_text if crate_pool_text != "none" else "none",
+                    "style": discord.TextStyle.paragraph,
+                    "placeholder": "legendary=40, fortune=40, divine=20",
+                },
+            )
+        )
+
+        return {
+            "title": f"{definition['name']} • Rewards",
+            "description": (
+                f"{description} Gold and dragon coins accept `5000` or `20000-50000`. "
+                f"Crate pool format: `legendary=40, fortune=40`. "
+                f"Use `none` to disable the random {crate_recipient_label} crate."
+            ),
+            "fields": fields,
+            "form_title": "Edit Rewards",
+            "form_fields": form_fields,
+            "submit_handler": submit,
+        }
+
     def _good_builder_page_payload(
         self,
         definition: dict[str, Any],
@@ -4226,6 +4729,16 @@ class RaidBuilder(commands.Cog):
                 ],
                 "submit_handler": submit,
             }
+
+        if page_key == "rewards":
+            return self._reward_page_payload(
+                definition,
+                description="Set flat victory payouts for this trial.",
+                bonus_label="Winner",
+                dragon_coin_label="Winner",
+                crate_recipient_label="winner",
+                submit_message="Updated trial rewards.",
+            )
 
         if page_key == "theme":
             return self._theme_payload(
@@ -4441,6 +4954,16 @@ class RaidBuilder(commands.Cog):
                 ],
                 "submit_handler": submit,
             }
+
+        if page_key == "rewards":
+            return self._reward_page_payload(
+                definition,
+                description="Set flat victory payouts for this attrition raid.",
+                bonus_label="Survivor",
+                dragon_coin_label="Survivor",
+                crate_recipient_label="survivor",
+                submit_message="Updated chaos rewards.",
+            )
 
         if page_key == "boss_core":
             async def submit(values):
@@ -4777,6 +5300,16 @@ class RaidBuilder(commands.Cog):
                 ],
                 "submit_handler": submit,
             }
+
+        if page_key == "rewards":
+            return self._reward_page_payload(
+                definition,
+                description="Set success payouts for this ritual.",
+                bonus_label=None,
+                dragon_coin_label="Participant",
+                crate_recipient_label="participant",
+                submit_message="Updated ritual rewards.",
+            )
 
         if page_key == "theme":
             return self._theme_payload(

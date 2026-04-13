@@ -12,9 +12,16 @@ class DummyRaidBuilderCog:
     _delete_definition = RaidBuilder._delete_definition
     _builder_page_specs = RaidBuilder._builder_page_specs
     _builder_item_options = RaidBuilder._builder_item_options
+    _reward_page_payload = RaidBuilder._reward_page_payload
     _good_builder_page_payload = RaidBuilder._good_builder_page_payload
     _evil_builder_page_payload = RaidBuilder._evil_builder_page_payload
     _chaos_builder_page_payload = RaidBuilder._chaos_builder_page_payload
+    _normalize_reward_amount_spec = staticmethod(RaidBuilder._normalize_reward_amount_spec)
+    _parse_reward_amount_spec = staticmethod(RaidBuilder._parse_reward_amount_spec)
+    _roll_reward_amount_spec = staticmethod(RaidBuilder._roll_reward_amount_spec)
+    _format_reward_amount_spec = staticmethod(RaidBuilder._format_reward_amount_spec)
+    _format_weighted_crate_pool = staticmethod(RaidBuilder._format_weighted_crate_pool)
+    _parse_weighted_crate_pool = staticmethod(RaidBuilder._parse_weighted_crate_pool)
 
     def __init__(self, registry):
         self.registry = registry
@@ -166,6 +173,87 @@ class TestRaidBuilderSkeletonVariants(unittest.TestCase):
         self.assertIn("success", evil_items)
         self.assertIn("stall", evil_items)
         self.assertEqual(chaos_items, ["no_valid", "victory", "defeat", "retreat"])
+
+    def test_reward_defaults_exist_for_all_skeletons(self):
+        good_definition = RaidBuilder.build_draft_from_starter("good", "ely_rewards")
+        evil_definition = RaidBuilder.build_draft_from_starter("evil", "sep_rewards")
+        chaos_definition = RaidBuilder.build_draft_from_starter("chaos", "dra_rewards")
+
+        self.assertIn("rewards", good_definition["config"])
+        self.assertEqual(good_definition["config"]["rewards"]["participant_gold"], 0)
+        self.assertIn("crate_pool", good_definition["config"]["rewards"])
+        self.assertEqual(evil_definition["config"]["rewards"]["participant_gold"], 35000)
+        self.assertIn("crate_pool", evil_definition["config"]["rewards"])
+        self.assertIn("winner_gold_bonus", chaos_definition["config"]["rewards"])
+        self.assertIn("crate_pool", chaos_definition["config"]["rewards"])
+
+    def test_builder_pages_expose_rewards_page_for_all_skeletons(self):
+        cog = DummyRaidBuilderCog(RaidBuilder.default_registry())
+        trial_pages = [page["key"] for page in cog._builder_page_specs("trial")]
+        ritual_pages = [page["key"] for page in cog._builder_page_specs("ritual")]
+        attrition_pages = [page["key"] for page in cog._builder_page_specs("attrition")]
+
+        self.assertIn("rewards", trial_pages)
+        self.assertIn("rewards", ritual_pages)
+        self.assertIn("rewards", attrition_pages)
+
+    def test_parse_weighted_crate_pool_supports_disable_and_merges_duplicates(self):
+        self.assertEqual(
+            RaidBuilder._parse_weighted_crate_pool("none", "Crate pool"),
+            [],
+        )
+        self.assertEqual(
+            RaidBuilder._parse_weighted_crate_pool(
+                "legendary=40, fortune=10, legendary=5",
+                "Crate pool",
+            ),
+            [
+                {"rarity": "legendary", "weight": 45},
+                {"rarity": "fortune", "weight": 10},
+            ],
+        )
+
+    def test_reward_amount_spec_supports_fixed_values_and_ranges(self):
+        self.assertEqual(
+            RaidBuilder._parse_reward_amount_spec("0", "Dragon coins"),
+            0,
+        )
+        self.assertEqual(
+            RaidBuilder._parse_reward_amount_spec("20000-50000", "Participant gold"),
+            {"min": 20000, "max": 50000},
+        )
+        self.assertEqual(
+            RaidBuilder._normalize_reward_amount_spec("5-1", default=0),
+            {"min": 1, "max": 5},
+        )
+        self.assertEqual(
+            RaidBuilder._format_reward_amount_spec({"min": 2, "max": 5}),
+            "2-5",
+        )
+        self.assertEqual(
+            RaidBuilder._format_reward_amount_spec({"min": 20000, "max": 50000}, currency=True),
+            "$20,000-$50,000",
+        )
+
+    def test_reward_page_payload_displays_range_defaults(self):
+        registry = RaidBuilder.default_registry()
+        definition = registry["definitions"]["evil_ritual_remaster"]
+        definition["config"]["rewards"]["participant_gold"] = {"min": 20000, "max": 50000}
+        definition["config"]["rewards"]["dragon_coins"] = 0
+        cog = DummyRaidBuilderCog(registry)
+
+        payload = cog._reward_page_payload(
+            definition,
+            description="Set success payouts for this ritual.",
+            bonus_label=None,
+            dragon_coin_label="Participant",
+            crate_recipient_label="participant",
+            submit_message="Updated ritual rewards.",
+        )
+
+        self.assertEqual(payload["fields"][0]["value"], "$20,000-$50,000")
+        self.assertEqual(payload["form_fields"][0]["default"], "20000-50000")
+        self.assertEqual(payload["form_fields"][1]["default"], "0")
 
 
 class TestRaidBuilderDeletion(unittest.TestCase):
