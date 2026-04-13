@@ -11,6 +11,7 @@ class DummyRaidBuilderCog:
     _can_delete_definition = RaidBuilder._can_delete_definition
     _delete_definition = RaidBuilder._delete_definition
     _builder_page_specs = RaidBuilder._builder_page_specs
+    _builder_item_options = RaidBuilder._builder_item_options
 
     def __init__(self, registry):
         self.registry = registry
@@ -93,6 +94,39 @@ class TestRaidBuilderSkeletonVariants(unittest.TestCase):
         page_keys = [page["key"] for page in view._page_specs()]
         self.assertIn("timings", page_keys)
         self.assertNotIn("ritual_core", page_keys)
+
+    def test_ritual_starter_includes_countdown_copy_defaults(self):
+        definition = RaidBuilder.build_draft_from_starter("evil", "sep_custom")
+        announce = definition["config"]["announce"]
+
+        self.assertIn("countdown_messages", announce)
+        self.assertEqual(announce["countdown_messages"][0]["key"], "ten_minutes")
+        self.assertIn("start_message", announce)
+        self.assertIn("eligibility_message", announce)
+
+    def test_ritual_builder_exposes_countdown_page_and_items(self):
+        registry = RaidBuilder.default_registry()
+        registry["definitions"]["sep_custom"] = RaidBuilder.build_draft_from_starter(
+            "evil",
+            "sep_custom",
+        )
+        cog = DummyRaidBuilderCog(registry)
+        view = DummyRaidBuilderView(
+            cog,
+            "evil",
+            selected_definition_id="sep_custom",
+        )
+
+        page_keys = [page["key"] for page in view._page_specs()]
+        item_keys = [
+            item["key"]
+            for item in cog._builder_item_options(registry["definitions"]["sep_custom"], "countdown_copy")
+        ]
+
+        self.assertIn("countdown_copy", page_keys)
+        self.assertIn("countdown:ten_minutes", item_keys)
+        self.assertIn("start_message", item_keys)
+        self.assertIn("eligibility_message", item_keys)
 
 
 class TestRaidBuilderDeletion(unittest.TestCase):

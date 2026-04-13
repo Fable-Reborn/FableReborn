@@ -154,6 +154,27 @@ RITUAL_PROMPT_SLOTS = (
     ("priest", "Priest Prompt", "Priest DM prompt title and description."),
 )
 
+RITUAL_COUNTDOWN_SLOTS = (
+    ("ten_minutes", "10 Minutes", 600, "**The shadows deepen... The ritual begins in 10 minutes.**"),
+    ("five_minutes", "5 Minutes", 300, "**Whispers fill the air... 5 minutes remain.**"),
+    ("two_minutes", "2 Minutes", 120, "**Your heart pounds... 2 minutes until the ritual commences.**"),
+    ("one_minute", "1 Minute", 60, "**A chill runs down your spine... 1 minute left.**"),
+    ("thirty_seconds", "30 Seconds", 30, "**The ground trembles... 30 seconds.**"),
+    ("ten_seconds", "10 Seconds", 10, "**Darkness engulfs you... 10 seconds.**"),
+)
+
+
+def _ritual_countdown_defaults() -> list[dict[str, Any]]:
+    return [
+        {
+            "key": key,
+            "label": label,
+            "remaining": remaining,
+            "message": message,
+        }
+        for key, label, remaining, message in RITUAL_COUNTDOWN_SLOTS
+    ]
+
 
 def _blank_media() -> dict[str, str]:
     return {"image_url": "", "thumbnail_url": ""}
@@ -395,6 +416,9 @@ def _build_evil_starter() -> dict[str, Any]:
                 "follower_label": "Join as Follower Only",
                 "leader_joined_message": "You joined as a potential leader.",
                 "follower_joined_message": "You joined as a follower.",
+                "countdown_messages": _ritual_countdown_defaults(),
+                "start_message": "**💀 The ritual begins! The Guardian awakens from its slumber... 💀**",
+                "eligibility_message": "**Gathering the faithful... checking dm eligibility this may take awhile**",
             },
             "presentation": _evil_presentation(),
             "ritual": {
@@ -1498,6 +1522,48 @@ class RaidBuilder(commands.Cog):
             announce.setdefault("follower_label", "Join as Follower Only")
             announce.setdefault("leader_joined_message", "You joined as a potential leader.")
             announce.setdefault("follower_joined_message", "You joined as a follower.")
+            announce.setdefault("start_message", "**💀 The ritual begins! The Guardian awakens from its slumber... 💀**")
+            announce.setdefault(
+                "eligibility_message",
+                "**Gathering the faithful... checking dm eligibility this may take awhile**",
+            )
+            countdown_messages = announce.get("countdown_messages")
+            default_countdown_entries = _ritual_countdown_defaults()
+            default_countdown_map = {
+                entry["key"]: entry
+                for entry in default_countdown_entries
+            }
+            if not isinstance(countdown_messages, list) or not countdown_messages:
+                announce["countdown_messages"] = default_countdown_entries
+            else:
+                normalized_countdown_messages = []
+                seen_keys = set()
+                for index, entry in enumerate(countdown_messages):
+                    if not isinstance(entry, dict):
+                        continue
+                    raw_key = str(entry.get("key") or f"countdown_{index + 1}").casefold().strip()
+                    default_entry = default_countdown_map.get(raw_key, {})
+                    label = str(entry.get("label") or default_entry.get("label") or raw_key.replace("_", " ").title())
+                    try:
+                        remaining = int(entry.get("remaining", default_entry.get("remaining", 0)))
+                    except (TypeError, ValueError):
+                        remaining = int(default_entry.get("remaining", 0))
+                    message = str(entry.get("message") or default_entry.get("message") or "").strip()
+                    if not message:
+                        continue
+                    normalized_countdown_messages.append(
+                        {
+                            "key": raw_key,
+                            "label": label,
+                            "remaining": max(0, remaining),
+                            "message": message,
+                        }
+                    )
+                    seen_keys.add(raw_key)
+                for default_entry in default_countdown_entries:
+                    if default_entry["key"] not in seen_keys:
+                        normalized_countdown_messages.append(copy.deepcopy(default_entry))
+                announce["countdown_messages"] = normalized_countdown_messages
 
             champion = config.setdefault("champion", {})
             champion_actions = champion.get("actions")
@@ -2353,8 +2419,52 @@ class RaidBuilder(commands.Cog):
         intro_embed.set_footer(text=f"Skeleton: {definition['skeleton']}")
         await ctx.send(embed=intro_embed, view=join_view)
 
-        await asyncio.sleep(join_timeout)
+        countdown_messages = sorted(
+            (
+                entry
+                for entry in announce.get("countdown_messages", [])
+                if isinstance(entry, dict)
+            ),
+            key=lambda entry: int(entry.get("remaining", 0)),
+            reverse=True,
+        )
+        countdown_context = {
+            "definition_name": definition["name"],
+            "champion_label": champion_label,
+            "priest_label": priest_label,
+            "followers_label": followers_label,
+            "guardian_label": guardian_label,
+        }
+        remaining_time = join_timeout
+        for countdown_entry in countdown_messages:
+            checkpoint = max(0, int(countdown_entry.get("remaining", 0)))
+            if checkpoint >= remaining_time:
+                continue
+            await asyncio.sleep(remaining_time - checkpoint)
+            remaining_time = checkpoint
+            countdown_text = self._format_template(
+                countdown_entry.get("message", ""),
+                **countdown_context,
+            ).strip()
+            if countdown_text:
+                await ctx.send(countdown_text)
+
+        await asyncio.sleep(remaining_time)
         join_view.stop()
+
+        start_message = self._format_template(
+            announce.get("start_message", ""),
+            **countdown_context,
+        ).strip()
+        if start_message:
+            await ctx.send(start_message)
+
+        eligibility_message = self._format_template(
+            announce.get("eligibility_message", ""),
+            **countdown_context,
+        ).strip()
+        if eligibility_message:
+            await ctx.send(eligibility_message)
 
         eligible_god = config.get("eligibility", {}).get("god")
         follower_participants = await self._filter_eligible_users(
@@ -3662,6 +3772,7 @@ class RaidBuilder(commands.Cog):
             return [
                 {"key": "overview", "label": "Overview", "description": "Name, description, faith, timers"},
                 {"key": "announce", "label": "Announce", "description": "Intro copy and join button text"},
+                {"key": "countdown_copy", "label": "Countdown", "description": "Edit countdown, start, and eligibility text"},
                 {"key": "theme", "label": "Theme", "description": "Embed colors for the ritual"},
                 {"key": "media_slot", "label": "Media", "description": "Attach images and thumbnails to ritual embeds"},
                 {"key": "role_labels", "label": "Role Labels", "description": "Rename Champion, Priest, Followers, and Guardian"},
@@ -3729,6 +3840,35 @@ class RaidBuilder(commands.Cog):
                     {"key": key, "label": label, "description": description}
                     for key, label, description in self._media_slot_specs("ritual")
                 ]
+            if page_key == "countdown_copy":
+                countdown_options = [
+                    {
+                        "key": f"countdown:{entry['key']}",
+                        "label": str(entry.get("label") or entry.get("key", "Countdown")),
+                        "description": f"{int(entry.get('remaining', 0))}s remaining",
+                    }
+                    for entry in sorted(
+                        config["announce"].get("countdown_messages", []),
+                        key=lambda entry: int(entry.get("remaining", 0)),
+                        reverse=True,
+                    )
+                    if isinstance(entry, dict)
+                ]
+                countdown_options.extend(
+                    (
+                        {
+                            "key": "start_message",
+                            "label": "Start Message",
+                            "description": "Posted when the ritual begins",
+                        },
+                        {
+                            "key": "eligibility_message",
+                            "label": "Eligibility Check",
+                            "description": "Posted before eligibility filtering starts",
+                        },
+                    )
+                )
+                return countdown_options
             if page_key == "prompt_copy":
                 return [
                     {"key": key, "label": label, "description": description}
@@ -4380,6 +4520,103 @@ class RaidBuilder(commands.Cog):
                     {"key": "leader_label", "label": "Leader Label", "default": announce.get("leader_label", "")},
                     {"key": "follower_label", "label": "Follower Label", "default": announce.get("follower_label", "")},
                     {"key": "leader_joined_message", "label": "Leader Joined Message", "default": announce.get("leader_joined_message", ""), "style": discord.TextStyle.paragraph},
+                ],
+                "submit_handler": submit,
+            }
+
+        if page_key == "countdown_copy":
+            countdown_messages = announce.get("countdown_messages", [])
+            countdown_map = {
+                entry.get("key"): entry
+                for entry in countdown_messages
+                if isinstance(entry, dict)
+            }
+
+            if item_key == "start_message":
+                async def submit(values):
+                    announce["start_message"] = self._require_text(values["message"], "Start message")
+                    self._save_registry()
+                    return "Updated ritual start message."
+
+                return {
+                    "title": f"{definition['name']} • Countdown • Start Message",
+                    "description": "Sent immediately after the join window closes and the ritual starts.",
+                    "fields": [
+                        {"name": "Message", "value": announce.get("start_message", "None"), "inline": False},
+                    ],
+                    "form_title": "Edit Start Message",
+                    "form_fields": [
+                        {
+                            "key": "message",
+                            "label": "Message",
+                            "default": announce.get("start_message", ""),
+                            "style": discord.TextStyle.paragraph,
+                        },
+                    ],
+                    "submit_handler": submit,
+                }
+
+            if item_key == "eligibility_message":
+                async def submit(values):
+                    announce["eligibility_message"] = self._require_text(values["message"], "Eligibility message")
+                    self._save_registry()
+                    return "Updated ritual eligibility check message."
+
+                return {
+                    "title": f"{definition['name']} • Countdown • Eligibility Check",
+                    "description": "Sent before the ritual filters players by eligibility and DMs leaders.",
+                    "fields": [
+                        {"name": "Message", "value": announce.get("eligibility_message", "None"), "inline": False},
+                    ],
+                    "form_title": "Edit Eligibility Check Message",
+                    "form_fields": [
+                        {
+                            "key": "message",
+                            "label": "Message",
+                            "default": announce.get("eligibility_message", ""),
+                            "style": discord.TextStyle.paragraph,
+                        },
+                    ],
+                    "submit_handler": submit,
+                }
+
+            countdown_key = (item_key or "countdown:ten_minutes").split(":", 1)[-1]
+            countdown_entry = countdown_map.get(countdown_key)
+            if countdown_entry is None and countdown_messages:
+                countdown_entry = countdown_messages[0]
+                countdown_key = countdown_entry.get("key", countdown_key)
+            if countdown_entry is None:
+                raise ValueError("No countdown entries are configured.")
+
+            async def submit(values, countdown_entry=countdown_entry):
+                countdown_entry["label"] = self._require_text(values["label"], "Label")
+                countdown_entry["remaining"] = self._parse_int(
+                    values["remaining"],
+                    "Seconds remaining",
+                    min_value=1,
+                )
+                countdown_entry["message"] = self._require_text(values["message"], "Message")
+                self._save_registry()
+                return f"Updated countdown `{countdown_entry.get('label', countdown_key)}`."
+
+            return {
+                "title": f"{definition['name']} • Countdown • {countdown_entry.get('label', countdown_key)}",
+                "description": "Edit one pre-ritual countdown checkpoint.",
+                "fields": [
+                    {"name": "Label", "value": countdown_entry.get("label", countdown_key), "inline": True},
+                    {"name": "Seconds Remaining", "value": str(countdown_entry.get("remaining", 0)), "inline": True},
+                    {"name": "Message", "value": countdown_entry.get("message", "None"), "inline": False},
+                ],
+                "form_title": f"Edit {countdown_entry.get('label', countdown_key)}",
+                "form_fields": [
+                    {"key": "label", "label": "Label", "default": countdown_entry.get("label", countdown_key)},
+                    {"key": "remaining", "label": "Seconds Remaining", "default": str(countdown_entry.get("remaining", 0))},
+                    {
+                        "key": "message",
+                        "label": "Message",
+                        "default": countdown_entry.get("message", ""),
+                        "style": discord.TextStyle.paragraph,
+                    },
                 ],
                 "submit_handler": submit,
             }
