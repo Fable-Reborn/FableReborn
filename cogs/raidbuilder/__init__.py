@@ -176,6 +176,28 @@ RITUAL_COUNTDOWN_SLOTS = (
 )
 
 
+TRIAL_COUNTDOWN_SLOTS = (
+    ("ten_minutes", "10 Minutes", 600, "**{definition_name} will commence in 10 minutes.**"),
+    ("five_minutes", "5 Minutes", 300, "**{definition_name} will commence in 5 minutes.**"),
+    ("two_minutes", "2 Minutes", 120, "**{definition_name} will commence in 2 minutes.**"),
+    ("one_minute", "1 Minute", 60, "**{definition_name} will commence in 1 minute.**"),
+    ("thirty_seconds", "30 Seconds", 30, "**{definition_name} will commence in 30 seconds.**"),
+    ("ten_seconds", "10 Seconds", 10, "**{definition_name} will commence in 10 seconds.**"),
+)
+
+
+def _trial_countdown_defaults() -> list[dict[str, Any]]:
+    return [
+        {
+            "key": key,
+            "label": label,
+            "remaining": remaining,
+            "message": message,
+        }
+        for key, label, remaining, message in TRIAL_COUNTDOWN_SLOTS
+    ]
+
+
 def _ritual_countdown_defaults() -> list[dict[str, Any]]:
     return [
         {
@@ -232,6 +254,48 @@ def _normalize_crate_pool(
             continue
         normalized.append({"rarity": rarity, "weight": weight})
     return normalized
+
+
+def _normalize_countdown_messages(
+    countdown_messages: Any,
+    *,
+    defaults: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    default_countdown_map = {
+        entry["key"]: entry
+        for entry in defaults
+    }
+    if not isinstance(countdown_messages, list) or not countdown_messages:
+        return copy.deepcopy(defaults)
+
+    normalized_countdown_messages = []
+    seen_keys = set()
+    for index, entry in enumerate(countdown_messages):
+        if not isinstance(entry, dict):
+            continue
+        raw_key = str(entry.get("key") or f"countdown_{index + 1}").casefold().strip()
+        default_entry = default_countdown_map.get(raw_key, {})
+        label = str(entry.get("label") or default_entry.get("label") or raw_key.replace("_", " ").title())
+        try:
+            remaining = int(entry.get("remaining", default_entry.get("remaining", 0)))
+        except (TypeError, ValueError):
+            remaining = int(default_entry.get("remaining", 0))
+        message = str(entry.get("message") or default_entry.get("message") or "").strip()
+        if not message:
+            continue
+        normalized_countdown_messages.append(
+            {
+                "key": raw_key,
+                "label": label,
+                "remaining": max(0, remaining),
+                "message": message,
+            }
+        )
+        seen_keys.add(raw_key)
+    for default_entry in defaults:
+        if default_entry["key"] not in seen_keys:
+            normalized_countdown_messages.append(copy.deepcopy(default_entry))
+    return normalized_countdown_messages
 
 
 def _trial_reward_defaults() -> dict[str, Any]:
@@ -412,7 +476,7 @@ def _build_good_starter() -> dict[str, Any]:
             "join_timeout": 900,
             "min_survivors": 1,
             "max_rounds": 40,
-            "phase_delay": 5,
+            "transition_delay": 5,
             "result_delay": 3,
             "eligibility": {"god": "Elysia"},
             "no_valid_text": "No valid followers of {eligible_god} answered the trial.",
@@ -425,6 +489,8 @@ def _build_good_starter() -> dict[str, Any]:
                 ),
                 "join_label": "Join the trial!",
                 "joined_message": "You joined the trial.",
+                "countdown_messages": _trial_countdown_defaults(),
+                "start_message": "**{definition_name} will commence! Fetch participant data... Hang on!**",
             },
             "presentation": _good_presentation(),
             "rewards": _trial_reward_defaults(),
@@ -1627,8 +1693,19 @@ class RaidBuilder(commands.Cog):
                 rewards.get("crate_pool"),
                 fallback=_trial_reward_defaults()["crate_pool"],
             )
+            if "transition_delay" not in config and "phase_delay" in config:
+                config["transition_delay"] = config["phase_delay"]
+            config.setdefault("transition_delay", 5)
             announce.setdefault("join_label", "Join the trial!")
             announce.setdefault("joined_message", "You joined the trial.")
+            announce.setdefault(
+                "start_message",
+                "**{definition_name} will commence! Fetch participant data... Hang on!**",
+            )
+            announce["countdown_messages"] = _normalize_countdown_messages(
+                announce.get("countdown_messages"),
+                defaults=_trial_countdown_defaults(),
+            )
             config.setdefault("no_valid_text", "No valid followers of {eligible_god} answered the trial.")
             config.setdefault("defeat_text", "The trial ends with no survivors.")
         elif skeleton == "attrition":
@@ -1684,43 +1761,10 @@ class RaidBuilder(commands.Cog):
                 "eligibility_message",
                 "**Gathering the faithful... checking dm eligibility this may take awhile**",
             )
-            countdown_messages = announce.get("countdown_messages")
-            default_countdown_entries = _ritual_countdown_defaults()
-            default_countdown_map = {
-                entry["key"]: entry
-                for entry in default_countdown_entries
-            }
-            if not isinstance(countdown_messages, list) or not countdown_messages:
-                announce["countdown_messages"] = default_countdown_entries
-            else:
-                normalized_countdown_messages = []
-                seen_keys = set()
-                for index, entry in enumerate(countdown_messages):
-                    if not isinstance(entry, dict):
-                        continue
-                    raw_key = str(entry.get("key") or f"countdown_{index + 1}").casefold().strip()
-                    default_entry = default_countdown_map.get(raw_key, {})
-                    label = str(entry.get("label") or default_entry.get("label") or raw_key.replace("_", " ").title())
-                    try:
-                        remaining = int(entry.get("remaining", default_entry.get("remaining", 0)))
-                    except (TypeError, ValueError):
-                        remaining = int(default_entry.get("remaining", 0))
-                    message = str(entry.get("message") or default_entry.get("message") or "").strip()
-                    if not message:
-                        continue
-                    normalized_countdown_messages.append(
-                        {
-                            "key": raw_key,
-                            "label": label,
-                            "remaining": max(0, remaining),
-                            "message": message,
-                        }
-                    )
-                    seen_keys.add(raw_key)
-                for default_entry in default_countdown_entries:
-                    if default_entry["key"] not in seen_keys:
-                        normalized_countdown_messages.append(copy.deepcopy(default_entry))
-                announce["countdown_messages"] = normalized_countdown_messages
+            announce["countdown_messages"] = _normalize_countdown_messages(
+                announce.get("countdown_messages"),
+                defaults=_ritual_countdown_defaults(),
+            )
 
             champion = config.setdefault("champion", {})
             champion_actions = champion.get("actions")
@@ -2244,10 +2288,47 @@ class RaidBuilder(commands.Cog):
         intro_embed.set_footer(text=f"Skeleton: {definition['skeleton']}")
         await ctx.send(embed=intro_embed, view=join_view)
 
-        await asyncio.sleep(join_timeout)
+        countdown_messages = sorted(
+            (
+                entry
+                for entry in announce.get("countdown_messages", [])
+                if isinstance(entry, dict)
+            ),
+            key=lambda entry: int(entry.get("remaining", 0)),
+            reverse=True,
+        )
+        countdown_context = {
+            "definition_name": definition["name"],
+            "eligible_god": config.get("eligibility", {}).get("god") or "the required faith",
+        }
+        remaining_time = join_timeout
+        for countdown_entry in countdown_messages:
+            checkpoint = max(0, int(countdown_entry.get("remaining", 0)))
+            if checkpoint >= remaining_time:
+                continue
+            await asyncio.sleep(remaining_time - checkpoint)
+            remaining_time = checkpoint
+            countdown_text = self._format_template(
+                countdown_entry.get("message", ""),
+                **countdown_context,
+            ).strip()
+            if countdown_text:
+                await ctx.send(countdown_text)
+
+        await asyncio.sleep(remaining_time)
         join_view.stop()
 
-        phase_delay = max(0, int(config.get("phase_delay", 5)))
+        start_message = self._format_template(
+            announce.get("start_message", ""),
+            **countdown_context,
+        ).strip()
+        if start_message:
+            await ctx.send(start_message)
+
+        transition_delay = max(
+            0,
+            int(config.get("transition_delay", config.get("phase_delay", 5))),
+        )
         result_delay = max(0, int(config.get("result_delay", 3)))
         min_survivors = max(1, int(config.get("min_survivors", 1)))
         max_rounds = max(1, int(config.get("max_rounds", 40)))
@@ -2293,8 +2374,8 @@ class RaidBuilder(commands.Cog):
             )
             phase_embed.set_footer(text=f"Round {rounds_played}")
             await ctx.send(embed=phase_embed)
-            if phase_delay:
-                await asyncio.sleep(phase_delay)
+            if transition_delay:
+                await asyncio.sleep(transition_delay)
 
             target_count = min(
                 int(phase.get("targets_per_round", 1)),
@@ -4174,11 +4255,12 @@ class RaidBuilder(commands.Cog):
             return [
                 {"key": "overview", "label": "Overview", "description": "Name, description, join settings"},
                 {"key": "announce", "label": "Announce", "description": "Join title, intro text, and button copy"},
+                {"key": "countdown_copy", "label": "Countdown", "description": "Edit countdown and start text"},
                 {"key": "outcome_copy", "label": "Outcome Copy", "description": "No-valid, victory, and defeat text"},
                 {"key": "rewards", "label": "Rewards", "description": "Gold, dragon coins, and crate pool"},
                 {"key": "theme", "label": "Theme", "description": "Embed colors for this raid mode"},
                 {"key": "media_slot", "label": "Media", "description": "Attach images and thumbnails to embed slots"},
-                {"key": "timings", "label": "Timing", "description": "Faith, pacing, and victory text"},
+                {"key": "timings", "label": "Timing", "description": "Faith, day/night pacing, and victory text"},
                 {"key": "phase", "label": "Phase", "description": "Edit a phase shell like day or night"},
                 {"key": "event", "label": "Event", "description": "Edit a specific event inside a phase"},
             ]
@@ -4229,6 +4311,28 @@ class RaidBuilder(commands.Cog):
                     {"key": key, "label": label, "description": description}
                     for key, label, description in self._media_slot_specs("trial")
                 ]
+            if page_key == "countdown_copy":
+                countdown_options = [
+                    {
+                        "key": f"countdown:{entry['key']}",
+                        "label": str(entry.get("label") or entry.get("key", "Countdown")),
+                        "description": f"{int(entry.get('remaining', 0))}s remaining",
+                    }
+                    for entry in sorted(
+                        config["announce"].get("countdown_messages", []),
+                        key=lambda entry: int(entry.get("remaining", 0)),
+                        reverse=True,
+                    )
+                    if isinstance(entry, dict)
+                ]
+                countdown_options.append(
+                    {
+                        "key": "start_message",
+                        "label": "Start Message",
+                        "description": "Posted when the trial begins",
+                    }
+                )
+                return countdown_options
             if page_key == "outcome_copy":
                 return [
                     {"key": "no_valid", "label": "No Valid", "description": "Shown when nobody eligible joins"},
@@ -4669,6 +4773,83 @@ class RaidBuilder(commands.Cog):
                 "submit_handler": submit,
             }
 
+        if page_key == "countdown_copy":
+            countdown_messages = announce.get("countdown_messages", [])
+            countdown_map = {
+                entry.get("key"): entry
+                for entry in countdown_messages
+                if isinstance(entry, dict)
+            }
+
+            if item_key == "start_message":
+                async def submit(values):
+                    announce["start_message"] = self._require_text(values["message"], "Start message")
+                    self._save_registry()
+                    return "Updated trial start message."
+
+                return {
+                    "title": f"{definition['name']} • Countdown • Start Message",
+                    "description": "Sent immediately after the join window closes and the trial starts.",
+                    "fields": [
+                        {"name": "Message", "value": announce.get("start_message", "None"), "inline": False},
+                    ],
+                    "form_title": "Edit Trial Start Message",
+                    "form_fields": [
+                        {
+                            "key": "message",
+                            "label": "Message",
+                            "default": announce.get("start_message", ""),
+                            "style": discord.TextStyle.paragraph,
+                        },
+                    ],
+                    "submit_handler": submit,
+                }
+
+            countdown_key = (item_key or "countdown:ten_minutes").split(":", 1)[-1]
+            countdown_entry = countdown_map.get(countdown_key)
+            if countdown_entry is None and countdown_messages:
+                countdown_entry = countdown_messages[0]
+            if countdown_entry is None:
+                raise ValueError("No trial countdown entries are configured.")
+
+            async def submit(values, countdown_entry=countdown_entry):
+                countdown_entry["label"] = self._require_text(values["label"], "Label")
+                countdown_entry["remaining"] = self._parse_int(
+                    values["remaining"],
+                    "Seconds remaining",
+                    min_value=0,
+                )
+                countdown_entry["message"] = self._require_text(values["message"], "Message")
+                announce["countdown_messages"] = sorted(
+                    countdown_messages,
+                    key=lambda entry: int(entry.get("remaining", 0)),
+                    reverse=True,
+                )
+                self._save_registry()
+                return f"Updated trial countdown `{countdown_entry.get('label', countdown_key)}`."
+
+            return {
+                "title": f"{definition['name']} • Countdown • {countdown_entry.get('label', countdown_key)}",
+                "description": "Countdown copy sent before the trial begins.",
+                "fields": [
+                    {"name": "Label", "value": countdown_entry.get("label", countdown_key), "inline": True},
+                    {"name": "Seconds Remaining", "value": str(countdown_entry.get("remaining", 0)), "inline": True},
+                    {"name": "Message", "value": countdown_entry.get("message", "None"), "inline": False},
+                ],
+                "form_title": f"Edit {countdown_entry.get('label', countdown_key)}",
+                "form_fields": [
+                    {"key": "label", "label": "Label", "default": countdown_entry.get("label", countdown_key)},
+                    {"key": "remaining", "label": "Seconds Remaining", "default": str(countdown_entry.get("remaining", 0))},
+                    {
+                        "key": "message",
+                        "label": "Message",
+                        "default": countdown_entry.get("message", ""),
+                        "style": discord.TextStyle.paragraph,
+                    },
+                ],
+                "submit_handler": submit,
+            }
+
         if page_key == "outcome_copy":
             if item_key == "no_valid":
                 async def submit(values):
@@ -4770,7 +4951,13 @@ class RaidBuilder(commands.Cog):
 
         if page_key == "timings":
             async def submit(values):
-                config["phase_delay"] = self._parse_int(values["phase_delay"], "Phase delay", min_value=0)
+                transition_delay = self._parse_int(
+                    values["transition_delay"],
+                    "Day/night transition delay",
+                    min_value=0,
+                )
+                config["transition_delay"] = transition_delay
+                config["phase_delay"] = transition_delay
                 config["result_delay"] = self._parse_int(values["result_delay"], "Result delay", min_value=0)
                 config["eligibility"]["god"] = self._require_text(values["eligibility_god"], "Eligibility god")
                 config["winner_text"] = self._require_text(values["winner_text"], "Winner text")
@@ -4779,17 +4966,25 @@ class RaidBuilder(commands.Cog):
 
             return {
                 "title": f"{definition['name']} • Timing",
-                "description": "Faith, pacing, and final narration.",
+                "description": "Faith, day/night transition pacing, and final narration.",
                 "fields": [
                     {"name": "Faith", "value": config.get("eligibility", {}).get("god", "Any"), "inline": True},
-                    {"name": "Phase Delay", "value": f"{config.get('phase_delay', 0)}s", "inline": True},
+                    {
+                        "name": "Day/Night Transition Delay",
+                        "value": f"{config.get('transition_delay', config.get('phase_delay', 0))}s",
+                        "inline": True,
+                    },
                     {"name": "Result Delay", "value": f"{config.get('result_delay', 0)}s", "inline": True},
                     {"name": "Winner Text", "value": config.get("winner_text", "None"), "inline": False},
                 ],
                 "form_title": "Edit Good Timing",
                 "form_fields": [
                     {"key": "eligibility_god", "label": "Eligibility God", "default": config.get("eligibility", {}).get("god", "Elysia")},
-                    {"key": "phase_delay", "label": "Phase Delay", "default": str(config.get("phase_delay", 5))},
+                    {
+                        "key": "transition_delay",
+                        "label": "Day/Night Transition Delay",
+                        "default": str(config.get("transition_delay", config.get("phase_delay", 5))),
+                    },
                     {"key": "result_delay", "label": "Result Delay", "default": str(config.get("result_delay", 3))},
                     {"key": "winner_text", "label": "Winner Text", "default": config.get("winner_text", ""), "style": discord.TextStyle.paragraph},
                 ],

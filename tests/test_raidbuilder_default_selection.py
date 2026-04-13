@@ -138,6 +138,38 @@ class TestRaidBuilderSkeletonVariants(unittest.TestCase):
         self.assertIn("start_message", item_keys)
         self.assertIn("eligibility_message", item_keys)
 
+    def test_trial_starter_includes_countdown_defaults_and_transition_delay(self):
+        definition = RaidBuilder.build_draft_from_starter("good", "ely_custom")
+        announce = definition["config"]["announce"]
+
+        self.assertIn("countdown_messages", announce)
+        self.assertEqual(announce["countdown_messages"][0]["key"], "ten_minutes")
+        self.assertIn("start_message", announce)
+        self.assertEqual(definition["config"]["transition_delay"], 5)
+
+    def test_trial_builder_exposes_countdown_page_and_items(self):
+        registry = RaidBuilder.default_registry()
+        registry["definitions"]["ely_custom"] = RaidBuilder.build_draft_from_starter(
+            "good",
+            "ely_custom",
+        )
+        cog = DummyRaidBuilderCog(registry)
+        view = DummyRaidBuilderView(
+            cog,
+            "good",
+            selected_definition_id="ely_custom",
+        )
+
+        page_keys = [page["key"] for page in view._page_specs()]
+        item_keys = [
+            item["key"]
+            for item in cog._builder_item_options(registry["definitions"]["ely_custom"], "countdown_copy")
+        ]
+
+        self.assertIn("countdown_copy", page_keys)
+        self.assertIn("countdown:ten_minutes", item_keys)
+        self.assertIn("start_message", item_keys)
+
     def test_outcome_copy_defaults_exist_for_all_skeletons(self):
         good_definition = RaidBuilder.build_draft_from_starter("good", "ely_custom")
         evil_definition = RaidBuilder.build_draft_from_starter("evil", "sep_custom")
