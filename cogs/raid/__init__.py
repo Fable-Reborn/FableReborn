@@ -2079,8 +2079,9 @@ class Raid(commands.Cog):
                 "priest": "Bless"
             }
             return default_actions[role], False
-
-        view = DecisionView(player, options)
+        if role == "follower":
+            timeout = 30
+        view = DecisionView(player, options, timeout=timeout)
 
         if embed:
             message = await player.send(embed=embed, view=view)
@@ -2855,7 +2856,7 @@ class Raid(commands.Cog):
                                 champion_stats["hp"] + heal_amount, champion_stats["max_hp"])
                             await ctx.send(f"❤️ The Priest heals the Champion for {int(heal_amount)} HP!")
                         elif priest_decision == "Channel":
-                            progress += 5
+                            progress += 10
                             await ctx.send(f"🌟 The Priest channels energy, advancing the ritual!")
                 else:
                     priest_decision = None
