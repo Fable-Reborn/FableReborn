@@ -42,51 +42,30 @@ SPIN_GODLESS_KEY = "Godless"
 SPIN_CONFIG_PATH = Path(__file__).with_name("spin_config.json")
 DEFAULT_SPIN_COOLDOWN_SECONDS = 86400
 SPIN_MAX_POOL_ENTRIES = 1000
+DEFAULT_SPIN_TEMPLATE = (
+    "{choose:Fortune Crate;500k Gold;50k XP;300k Gold;Legendary Crate;"
+    "Materials Crate;Fortune Crate;Common Crate;Rare Crate;350k Gold;"
+    "15k XP;Weapon token;30k favor;Divine Crate;mystery crate;Magic Crate;"
+    "Fortune Crate;25k XP;30k XP;Legendary Crate;Rare Crate;Magic Crate;"
+    "Divine Crate;Common Crate;200k Gold;150k Gold;Fortune Crate;"
+    "Divine Crate;25k XP;Blank;100k XP;50k XP;Fortune Crate;350k Gold;"
+    "Materials Crate;50k XP;300k Gold;75k XP;Fortune Crate;5000 XP;"
+    "Divine Crate;50k XP;100k Gold;15k XP}\n"
+    "{user} got {choice}!"
+)
+
+
+def _spin_pool_text_from_template(pool):
+    match = re.search(r"\{choose:(.*?)\}", pool, flags=re.I | re.S)
+    if match:
+        return match.group(1)
+    return pool
+
+
 DEFAULT_SPIN_POOL = [
-    "Fortune Crate",
-    "500k Gold",
-    "50k XP",
-    "300k Gold",
-    "Legendary Crate",
-    "Materials Crate",
-    "Fortune Crate",
-    "Common Crate",
-    "Rare Crate",
-    "350k Gold",
-    "15k XP",
-    "Weapon token",
-    "30k favor",
-    "Divine Crate",
-    "mystery crate",
-    "Magic Crate",
-    "Fortune Crate",
-    "25k XP",
-    "30k XP",
-    "Legendary Crate",
-    "Rare Crate",
-    "Magic Crate",
-    "Divine Crate",
-    "Common Crate",
-    "200k Gold",
-    "150k Gold",
-    "Fortune Crate",
-    "Divine Crate",
-    "25k XP",
-    "Blank",
-    "100k XP",
-    "50k XP",
-    "Fortune Crate",
-    "350k Gold",
-    "Materials Crate",
-    "50k XP",
-    "300k Gold",
-    "75k XP",
-    "Fortune Crate",
-    "5000 XP",
-    "Divine Crate",
-    "50k XP",
-    "100k Gold",
-    "15k XP",
+    reward.strip()
+    for reward in _spin_pool_text_from_template(DEFAULT_SPIN_TEMPLATE).split(";")
+    if reward.strip()
 ]
 SPIN_CRATE_COLUMNS = {
     "common": "crates_common",
@@ -216,7 +195,7 @@ class SpinPoolModal(discord.ui.Modal):
         self.pool_input = discord.ui.TextInput(
             label="Reward weights, one per line",
             default=panel_view.cog._format_spin_pool_for_edit(config["pool"]),
-            placeholder="Fortune Crate x6\n500k Gold x1\nBlank x1",
+            placeholder="Fortune Crate: 6\n500k Gold: 1\nBlank: 1",
             style=discord.TextStyle.paragraph,
             required=True,
             max_length=4000,
@@ -462,13 +441,11 @@ class Gods(commands.Cog):
             value=self._format_spin_pool_summary(config["pool"], 1024),
             inline=False,
         )
-        embed.set_footer(text="Set Pool accepts 'Reward x Count', one per line.")
+        embed.set_footer(text="Set Pool accepts 'Reward: weight', one per line.")
         return embed
 
     def _parse_spin_pool(self, pool):
-        pool = pool.strip()
-        if pool.lower().startswith("{choose:") and pool.endswith("}"):
-            pool = pool[len("{choose:"):-1]
+        pool = _spin_pool_text_from_template(pool.strip())
         rewards = []
         unsupported = []
         total_entries = 0
@@ -558,7 +535,7 @@ class Gods(commands.Cog):
 
     def _format_spin_pool_for_edit(self, pool):
         pool_text = "\n".join(
-            f"{reward} x{count}"
+            f"{reward}: {count}"
             for reward, count in self._spin_pool_counts(pool).items()
         )
         if len(pool_text) <= 4000:
@@ -567,7 +544,7 @@ class Gods(commands.Cog):
         lines = []
         current_length = 0
         for reward, count in self._spin_pool_counts(pool).items():
-            line = f"{reward} x{count}"
+            line = f"{reward}: {count}"
             next_length = current_length + len(line) + (1 if lines else 0)
             if next_length > 4000:
                 break
@@ -584,7 +561,7 @@ class Gods(commands.Cog):
         lines = []
         for reward, count in counts.items():
             percentage = count / total * 100
-            line = f"{count}x {reward} - {percentage:.1f}%"
+            line = f"{reward} - weight {count} ({percentage:.1f}%)"
             projected = "\n".join([*lines, line])
             if len(projected) > max_chars:
                 remaining = len(counts) - len(lines)
