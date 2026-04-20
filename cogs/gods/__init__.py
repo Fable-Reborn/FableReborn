@@ -16,26 +16,335 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
+import json
+import re
+
+from datetime import timedelta
 from decimal import Decimal
 from io import BytesIO
+from pathlib import Path
 
 import discord
 
 from discord.ext import commands
+from discord.http import handle_message_parameters
 
 from classes.classes import Ritualist, from_string
 from classes.converters import IntGreaterThan
 from cogs.shard_communication import next_day_cooldown
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils import random
-from utils.checks import has_char, has_god, has_no_god
+from utils.checks import has_char, has_god, has_no_god, is_gm
 from utils.i18n import _, locale_doc
+
+
+SPIN_GODLESS_KEY = "Godless"
+SPIN_CONFIG_PATH = Path(__file__).with_name("spin_config.json")
+DEFAULT_SPIN_COOLDOWN_SECONDS = 86400
+DEFAULT_SPIN_POOL = [
+    "Fortune Crate",
+    "500k Gold",
+    "50k XP",
+    "300k Gold",
+    "Legendary Crate",
+    "Materials Crate",
+    "Fortune Crate",
+    "Common Crate",
+    "Rare Crate",
+    "350k Gold",
+    "15k XP",
+    "Weapon token",
+    "30k favor",
+    "Divine Crate",
+    "mystery crate",
+    "Magic Crate",
+    "Fortune Crate",
+    "25k XP",
+    "30k XP",
+    "Legendary Crate",
+    "Rare Crate",
+    "Magic Crate",
+    "Divine Crate",
+    "Common Crate",
+    "200k Gold",
+    "150k Gold",
+    "Fortune Crate",
+    "Divine Crate",
+    "25k XP",
+    "Blank",
+    "100k XP",
+    "50k XP",
+    "Fortune Crate",
+    "350k Gold",
+    "Materials Crate",
+    "50k XP",
+    "300k Gold",
+    "75k XP",
+    "Fortune Crate",
+    "5000 XP",
+    "Divine Crate",
+    "50k XP",
+    "100k Gold",
+    "15k XP",
+]
+SPIN_CRATE_COLUMNS = {
+    "common": "crates_common",
+    "uncommon": "crates_uncommon",
+    "rare": "crates_rare",
+    "magic": "crates_magic",
+    "legendary": "crates_legendary",
+    "fortune": "crates_fortune",
+    "divine": "crates_divine",
+    "materials": "crates_materials",
+    "mystery": "crates_mystery",
+}
+
+
+class SpinConfigGodSelect(discord.ui.Select):
+    def __init__(self, view):
+        self.panel_view = view
+        god_keys = view.cog._spin_config_god_keys()
+        if view.selected_god not in god_keys:
+            god_keys.insert(0, view.selected_god)
+
+        selected_first = []
+        if view.selected_god in god_keys:
+            selected_first.append(view.selected_god)
+        option_gods = selected_first + [
+            god for god in god_keys if god not in selected_first
+        ]
+        self.option_gods = option_gods[:25]
+
+        options = []
+        for index, god in enumerate(self.option_gods):
+            config = view.cog._get_spin_config_for_god(god)
+            source = "custom" if god in view.cog.spin_config else "default"
+            options.append(
+                discord.SelectOption(
+                    label=god[:100],
+                    value=str(index),
+                    description=(
+                        f"{config['cooldown_seconds']}s, "
+                        f"{len(config['pool'])} rewards ({source})"
+                    )[:100],
+                    default=god == view.selected_god,
+                )
+            )
+
+        super().__init__(
+            placeholder="Choose a god",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        selected_index = int(self.values[0])
+        selected_god = self.option_gods[selected_index]
+        fresh_view = SpinConfigPanelView(
+            self.panel_view.cog,
+            self.panel_view.author_id,
+            selected_god,
+        )
+        fresh_view.message = interaction.message
+        await interaction.response.edit_message(
+            embed=self.panel_view.cog._build_spin_config_embed(selected_god),
+            view=fresh_view,
+        )
+        self.panel_view.stop()
+
+
+class SpinCooldownModal(discord.ui.Modal):
+    def __init__(self, panel_view):
+        super().__init__(title="Set Spin Cooldown")
+        self.panel_view = panel_view
+        config = panel_view.cog._get_spin_config_for_god(panel_view.selected_god)
+        self.cooldown_input = discord.ui.TextInput(
+            label="Cooldown seconds",
+            default=str(config["cooldown_seconds"]),
+            placeholder="86400",
+            required=True,
+            max_length=10,
+        )
+        self.add_item(self.cooldown_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.panel_view.author_id:
+            return await interaction.response.send_message(
+                "This spin config menu is not for you.",
+                ephemeral=True,
+            )
+
+        try:
+            cooldown_seconds = int(self.cooldown_input.value.strip())
+        except ValueError:
+            return await interaction.response.send_message(
+                "Cooldown must be a whole number of seconds.",
+                ephemeral=True,
+            )
+        if cooldown_seconds < 0:
+            return await interaction.response.send_message(
+                "Cooldown must be 0 seconds or greater.",
+                ephemeral=True,
+            )
+
+        await interaction.response.defer(ephemeral=True)
+        await self.panel_view.cog._update_spin_cooldown(
+            interaction,
+            self.panel_view.selected_god,
+            cooldown_seconds,
+        )
+        await self.panel_view.refresh_message()
+        await interaction.followup.send(
+            (
+                f"Set {self.panel_view.selected_god} spin cooldown "
+                f"to {cooldown_seconds} seconds."
+            ),
+            ephemeral=True,
+        )
+
+
+class SpinPoolModal(discord.ui.Modal):
+    def __init__(self, panel_view):
+        super().__init__(title="Set Spin Pool")
+        self.panel_view = panel_view
+        config = panel_view.cog._get_spin_config_for_god(panel_view.selected_god)
+        self.pool_input = discord.ui.TextInput(
+            label="Reward pool",
+            default=panel_view.cog._format_spin_pool(config["pool"], 3900),
+            placeholder="Fortune Crate;500k Gold;Blank",
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=4000,
+        )
+        self.add_item(self.pool_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.panel_view.author_id:
+            return await interaction.response.send_message(
+                "This spin config menu is not for you.",
+                ephemeral=True,
+            )
+
+        try:
+            rewards = self.panel_view.cog._parse_spin_pool(self.pool_input.value)
+        except commands.BadArgument as error:
+            return await interaction.response.send_message(
+                str(error),
+                ephemeral=True,
+            )
+
+        await interaction.response.defer(ephemeral=True)
+        await self.panel_view.cog._update_spin_pool(
+            interaction,
+            self.panel_view.selected_god,
+            rewards,
+        )
+        await self.panel_view.refresh_message()
+        await interaction.followup.send(
+            (
+                f"Set {self.panel_view.selected_god} spin reward pool "
+                f"to {len(rewards)} entries."
+            ),
+            ephemeral=True,
+        )
+
+
+class SpinConfigPanelView(discord.ui.View):
+    def __init__(self, cog, author_id, selected_god=None):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.author_id = author_id
+        self.selected_god = selected_god or SPIN_GODLESS_KEY
+        self.message = None
+        self.add_item(SpinConfigGodSelect(self))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.author_id:
+            return True
+        await interaction.response.send_message(
+            "This spin config menu is not for you.",
+            ephemeral=True,
+        )
+        return False
+
+    async def refresh_message(self):
+        if self.message is None:
+            return
+        fresh_view = SpinConfigPanelView(
+            self.cog,
+            self.author_id,
+            self.selected_god,
+        )
+        fresh_view.message = self.message
+        await self.message.edit(
+            embed=self.cog._build_spin_config_embed(self.selected_god),
+            view=fresh_view,
+        )
+        self.stop()
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message is None:
+            return
+        try:
+            await self.message.edit(view=self)
+        except discord.HTTPException:
+            pass
+
+    @discord.ui.button(label="Set Cooldown", style=discord.ButtonStyle.primary, row=1)
+    async def set_cooldown(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+        await interaction.response.send_modal(SpinCooldownModal(self))
+
+    @discord.ui.button(label="Set Pool", style=discord.ButtonStyle.primary, row=1)
+    async def set_pool(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+        await interaction.response.send_modal(SpinPoolModal(self))
+
+    @discord.ui.button(label="Reset", style=discord.ButtonStyle.danger, row=1)
+    async def reset_config(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+        before = self.cog._get_spin_config_for_god(self.selected_god)
+        self.cog.spin_config.pop(self.selected_god, None)
+        self.cog._save_spin_config()
+        after = self.cog._get_spin_config_for_god(self.selected_god)
+        await self.cog._log_spin_config_change(
+            interaction,
+            "reset",
+            self.selected_god,
+            before,
+            after,
+        )
+        fresh_view = SpinConfigPanelView(
+            self.cog,
+            self.author_id,
+            self.selected_god,
+        )
+        fresh_view.message = interaction.message
+        await interaction.response.edit_message(
+            embed=self.cog._build_spin_config_embed(self.selected_god),
+            view=fresh_view,
+        )
+        self.stop()
 
 
 class Gods(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.bot.gods = {god["user"]: god for god in self.bot.config.gods}
+        self.spin_config = self._load_spin_config()
         ids_section = getattr(self.bot.config, "ids", None)
         gods_ids = getattr(ids_section, "gods", {}) if ids_section else {}
         if not isinstance(gods_ids, dict):
@@ -45,6 +354,282 @@ class Gods(commands.Cog):
         self.support_god_role_ids = support_roles if isinstance(support_roles, dict) else {}
         self.primary_god_role_ids = primary_roles if isinstance(primary_roles, dict) else {}
         self.godless_role_id = gods_ids.get("godless_role_id")
+
+    def _load_spin_config(self):
+        if not SPIN_CONFIG_PATH.exists():
+            return {}
+        try:
+            data = json.loads(SPIN_CONFIG_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+
+        config = {}
+        for god, settings in data.items():
+            if not isinstance(settings, dict):
+                continue
+            god_key = str(god).strip() or SPIN_GODLESS_KEY
+            pool = settings.get("pool", DEFAULT_SPIN_POOL)
+            if not isinstance(pool, list):
+                pool = DEFAULT_SPIN_POOL
+            pool = [str(item).strip() for item in pool if str(item).strip()]
+            if not pool:
+                pool = list(DEFAULT_SPIN_POOL)
+            try:
+                cooldown_seconds = int(
+                    settings.get("cooldown_seconds", DEFAULT_SPIN_COOLDOWN_SECONDS)
+                )
+            except (TypeError, ValueError):
+                cooldown_seconds = DEFAULT_SPIN_COOLDOWN_SECONDS
+            config[god_key] = {
+                "cooldown_seconds": max(0, cooldown_seconds),
+                "pool": pool,
+            }
+        return config
+
+    def _save_spin_config(self):
+        SPIN_CONFIG_PATH.write_text(
+            json.dumps(self.spin_config, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    def _canonical_spin_god(self, god):
+        if god is None:
+            return SPIN_GODLESS_KEY
+        cleaned = str(god).strip()
+        if not cleaned or cleaned.lower() in {
+            "godless",
+            "no god",
+            "nogod",
+            "none",
+            "null",
+        }:
+            return SPIN_GODLESS_KEY
+
+        for god_data in self.bot.gods.values():
+            god_name = str(god_data.get("name", "")).strip()
+            if cleaned.lower() == god_name.lower():
+                return god_name
+
+        for configured_god in self.spin_config:
+            if cleaned.lower() == configured_god.lower():
+                return configured_god
+
+        raise commands.BadArgument(f"Unknown god: {cleaned}")
+
+    def _spin_config_god_keys(self):
+        god_keys = {SPIN_GODLESS_KEY}
+        god_keys.update(self.spin_config)
+        god_keys.update(
+            str(god_data.get("name", "")).strip()
+            for god_data in self.bot.gods.values()
+            if str(god_data.get("name", "")).strip()
+        )
+        ordered = [SPIN_GODLESS_KEY]
+        ordered.extend(sorted(god for god in god_keys if god != SPIN_GODLESS_KEY))
+        return ordered
+
+    def _get_spin_config_for_god(self, god):
+        configured = self.spin_config.get(god, {})
+        pool = configured.get("pool") or DEFAULT_SPIN_POOL
+        return {
+            "cooldown_seconds": int(
+                configured.get("cooldown_seconds", DEFAULT_SPIN_COOLDOWN_SECONDS)
+            ),
+            "pool": list(pool),
+        }
+
+    def _build_spin_config_embed(self, god):
+        config = self._get_spin_config_for_god(god)
+        source = "custom" if god in self.spin_config else "default"
+        embed = discord.Embed(
+            title=f"Spin Config: {god}",
+            color=self.bot.config.game.primary_colour,
+        )
+        embed.add_field(name="Source", value=source, inline=True)
+        embed.add_field(
+            name="Cooldown",
+            value=f"{config['cooldown_seconds']} seconds",
+            inline=True,
+        )
+        embed.add_field(
+            name=f"Reward Pool ({len(config['pool'])})",
+            value=self._format_spin_pool(config["pool"], 1024),
+            inline=False,
+        )
+        return embed
+
+    def _parse_spin_pool(self, pool):
+        pool = pool.strip()
+        if pool.lower().startswith("{choose:") and pool.endswith("}"):
+            pool = pool[len("{choose:"):-1]
+        rewards = [reward.strip() for reward in pool.split(";") if reward.strip()]
+        if not rewards:
+            raise commands.BadArgument("Reward pool cannot be empty.")
+        unsupported = [
+            reward for reward in rewards if self._spin_reward_descriptor(reward) is None
+        ]
+        if unsupported:
+            raise commands.BadArgument(
+                "Unsupported spin rewards: " + ", ".join(unsupported[:10])
+            )
+        return rewards
+
+    def _spin_reward_descriptor(self, reward):
+        reward_text = str(reward).strip()
+        normalized = reward_text.lower().replace(",", "")
+        if normalized == "blank":
+            return ("blank", None)
+        if normalized in {"weapon token", "weapon type token", "weapontoken"}:
+            return ("weapon_token", 1)
+
+        amount_match = re.fullmatch(r"(\d+)(k?)\s+(gold|xp|favor|favour)", normalized)
+        if amount_match:
+            amount = int(amount_match.group(1))
+            if amount_match.group(2) == "k":
+                amount *= 1000
+            reward_type = amount_match.group(3)
+            if reward_type == "favour":
+                reward_type = "favor"
+            return (reward_type, amount)
+
+        crate_match = re.fullmatch(r"([a-z]+)\s+crate", normalized)
+        if crate_match:
+            rarity = crate_match.group(1)
+            if rarity in SPIN_CRATE_COLUMNS:
+                return ("crate", rarity)
+        return None
+
+    def _format_spin_pool(self, pool, max_chars=1000):
+        pool_text = "; ".join(pool)
+        if len(pool_text) <= max_chars:
+            return pool_text
+        return pool_text[: max_chars - 3] + "..."
+
+    def _format_spin_config_for_log(self, config):
+        pool = config["pool"]
+        return (
+            f"cooldown={config['cooldown_seconds']}s, "
+            f"pool_count={len(pool)}, pool={self._format_spin_pool(pool, 650)}"
+        )
+
+    async def _log_spin_config_change(self, ctx, action, god, before, after):
+        gm_log_channel = getattr(self.bot.config.game, "gm_log_channel", None)
+        if not gm_log_channel:
+            return
+        source = ctx
+        actor = getattr(source, "author", None) or getattr(source, "user", None)
+        actor_name = str(actor) if actor is not None else "Unknown"
+        actor_id = getattr(actor, "id", "unknown")
+        message = getattr(source, "message", None)
+        jump_url = getattr(message, "jump_url", None)
+        reason = f"<{jump_url}>" if jump_url else "Interaction"
+        content = (
+            "**Spin config updated**\n"
+            f"GM: **{actor_name}** (`{actor_id}`)\n"
+            f"God: **{god}**\n"
+            f"Action: {action}\n"
+            f"Before: {self._format_spin_config_for_log(before)}\n"
+            f"After: {self._format_spin_config_for_log(after)}\n"
+            f"Reason: {reason}"
+        )
+        with handle_message_parameters(content=content[:2000]) as params:
+            await self.bot.http.send_message(gm_log_channel, params=params)
+
+    async def _update_spin_cooldown(self, source, god, cooldown_seconds):
+        before = self._get_spin_config_for_god(god)
+        after = {
+            "cooldown_seconds": cooldown_seconds,
+            "pool": list(before["pool"]),
+        }
+        self.spin_config[god] = after
+        self._save_spin_config()
+        await self._log_spin_config_change(source, "cooldown", god, before, after)
+        return before, after
+
+    async def _update_spin_pool(self, source, god, rewards):
+        before = self._get_spin_config_for_god(god)
+        after = {
+            "cooldown_seconds": before["cooldown_seconds"],
+            "pool": list(rewards),
+        }
+        self.spin_config[god] = after
+        self._save_spin_config()
+        await self._log_spin_config_change(source, "pool", god, before, after)
+        return before, after
+
+    async def _apply_spin_reward(self, ctx, reward):
+        descriptor = self._spin_reward_descriptor(reward)
+        if descriptor is None:
+            raise commands.BadArgument(f"Unsupported spin reward: {reward}")
+
+        kind, value = descriptor
+        if kind == "blank":
+            return
+
+        async with self.bot.pool.acquire() as conn:
+            if kind == "gold":
+                await conn.execute(
+                    'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                    value,
+                    ctx.author.id,
+                )
+                await self.bot.log_transaction(
+                    ctx,
+                    from_=1,
+                    to=ctx.author.id,
+                    subject="money",
+                    data={"Amount": value, "Source": "spin", "Reward": reward},
+                    conn=conn,
+                )
+            elif kind == "xp":
+                before_xp = await conn.fetchval(
+                    'SELECT "xp" FROM profile WHERE "user"=$1;',
+                    ctx.author.id,
+                )
+                await conn.execute(
+                    'UPDATE profile SET "xp"="xp"+$1::BIGINT WHERE "user"=$2;',
+                    value,
+                    ctx.author.id,
+                )
+                after_xp = int(before_xp) + value if before_xp is not None else None
+                await self.bot.log_xp_watch_event(
+                    ctx=ctx,
+                    user_id=ctx.author.id,
+                    delta=value,
+                    source="gods.spin",
+                    details={"reward": reward},
+                    before_xp=before_xp,
+                    after_xp=after_xp,
+                    conn=conn,
+                )
+            elif kind == "favor":
+                await conn.execute(
+                    'UPDATE profile SET "favor"="favor"+$1 WHERE "user"=$2;',
+                    value,
+                    ctx.author.id,
+                )
+            elif kind == "crate":
+                column = SPIN_CRATE_COLUMNS[value]
+                await conn.execute(
+                    f'UPDATE profile SET "{column}"="{column}"+1 WHERE "user"=$1;',
+                    ctx.author.id,
+                )
+                await self.bot.log_transaction(
+                    ctx,
+                    from_=1,
+                    to=ctx.author.id,
+                    subject="crates",
+                    data={"Rarity": value, "Amount": 1, "Source": "spin", "Reward": reward},
+                    conn=conn,
+                )
+            elif kind == "weapon_token":
+                await conn.execute(
+                    'UPDATE profile SET "weapontoken"="weapontoken"+$1 WHERE "user"=$2;',
+                    value,
+                    ctx.author.id,
+                )
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
@@ -78,6 +663,120 @@ class Gods(commands.Cog):
         except Exception:
             # Avoid breaking joins due to role or DB issues
             return
+
+    @has_char()
+    @commands.command(brief=_("Spin for a reward from your god's pool"))
+    @locale_doc
+    async def spin(self, ctx):
+        _(
+            """Spin for a random reward from the reward pool configured for your current God.
+
+            Godless players use the Godless reward pool.
+            """
+        )
+        god = self._canonical_spin_god(ctx.character_data["god"])
+        config = self._get_spin_config_for_god(god)
+        cooldown_seconds = max(0, int(config["cooldown_seconds"]))
+        cooldown_key = f"cd:{ctx.author.id}:spin"
+
+        if cooldown_seconds > 0:
+            cooldown_set = await self.bot.redis.execute_command(
+                "SET",
+                cooldown_key,
+                "spin",
+                "EX",
+                cooldown_seconds,
+                "NX",
+            )
+            if not cooldown_set:
+                ttl = await self.bot.redis.execute_command("TTL", cooldown_key)
+                if ttl != -2:
+                    return await ctx.send(
+                        _("You are on cooldown. Try again in {time}.").format(
+                            time=timedelta(seconds=max(0, int(ttl)))
+                        )
+                    )
+
+        reward = random.choice(config["pool"])
+        try:
+            await self._apply_spin_reward(ctx, reward)
+        except commands.BadArgument as error:
+            if cooldown_seconds > 0:
+                await self.bot.redis.execute_command("DEL", cooldown_key)
+            return await ctx.send(str(error))
+        except Exception:
+            if cooldown_seconds > 0:
+                await self.bot.redis.execute_command("DEL", cooldown_key)
+            raise
+
+        await ctx.send(
+            _("{user} got {choice}!").format(
+                user=ctx.author.mention,
+                choice=reward,
+            )
+        )
+
+    @is_gm()
+    @commands.group(
+        name="spinconfig",
+        aliases=["spincfg"],
+        hidden=True,
+        invoke_without_command=True,
+    )
+    async def spinconfig(self, ctx, *, god: str = None):
+        if ctx.invoked_subcommand is not None:
+            return
+
+        god_key = SPIN_GODLESS_KEY
+        if god is not None:
+            try:
+                god_key = self._canonical_spin_god(god)
+            except commands.BadArgument as error:
+                return await ctx.send(str(error))
+
+        view = SpinConfigPanelView(self, ctx.author.id, god_key)
+        view.message = await ctx.send(
+            embed=self._build_spin_config_embed(god_key),
+            view=view,
+        )
+
+    @is_gm()
+    @spinconfig.command(name="cooldown", aliases=["cd"], hidden=True)
+    async def spinconfig_cooldown(self, ctx, god: str, cooldown_seconds: int):
+        if cooldown_seconds < 0:
+            return await ctx.send("Cooldown must be 0 seconds or greater.")
+
+        try:
+            god_key = self._canonical_spin_god(god)
+        except commands.BadArgument as error:
+            return await ctx.send(str(error))
+        await self._update_spin_cooldown(ctx, god_key, cooldown_seconds)
+        await ctx.send(f"Set {god_key} spin cooldown to {cooldown_seconds} seconds.")
+
+    @is_gm()
+    @spinconfig.command(name="pool", aliases=["rewards"], hidden=True)
+    async def spinconfig_pool(self, ctx, god: str, *, pool: str):
+        try:
+            god_key = self._canonical_spin_god(god)
+            rewards = self._parse_spin_pool(pool)
+        except commands.BadArgument as error:
+            return await ctx.send(str(error))
+        await self._update_spin_pool(ctx, god_key, rewards)
+        await ctx.send(f"Set {god_key} spin reward pool to {len(rewards)} entries.")
+
+    @is_gm()
+    @spinconfig.command(name="reset", aliases=["default"], hidden=True)
+    async def spinconfig_reset(self, ctx, god: str):
+        try:
+            god_key = self._canonical_spin_god(god)
+        except commands.BadArgument as error:
+            return await ctx.send(str(error))
+        before = self._get_spin_config_for_god(god_key)
+        self.spin_config.pop(god_key, None)
+        self._save_spin_config()
+        after = self._get_spin_config_for_god(god_key)
+        await self._log_spin_config_change(ctx, "reset", god_key, before, after)
+        await ctx.send(f"Reset {god_key} spin config to the default.")
 
     @has_god()
     @has_char()
