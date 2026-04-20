@@ -41,6 +41,7 @@ from utils.i18n import _, locale_doc
 SPIN_GODLESS_KEY = "Godless"
 SPIN_CONFIG_PATH = Path(__file__).with_name("spin_config.json")
 DEFAULT_SPIN_COOLDOWN_SECONDS = 86400
+SPIN_MAX_POOL_ENTRIES = 1000
 DEFAULT_SPIN_POOL = [
     "Fortune Crate",
     "500k Gold",
@@ -119,13 +120,15 @@ class SpinConfigGodSelect(discord.ui.Select):
         for index, god in enumerate(self.option_gods):
             config = view.cog._get_spin_config_for_god(god)
             source = "custom" if god in view.cog.spin_config else "default"
+            unique_rewards = view.cog._spin_pool_unique_count(config["pool"])
             options.append(
                 discord.SelectOption(
                     label=god[:100],
                     value=str(index),
                     description=(
                         f"{config['cooldown_seconds']}s, "
-                        f"{len(config['pool'])} rewards ({source})"
+                        f"{len(config['pool'])} entries, "
+                        f"{unique_rewards} types ({source})"
                     )[:100],
                     default=god == view.selected_god,
                 )
@@ -211,9 +214,9 @@ class SpinPoolModal(discord.ui.Modal):
         self.panel_view = panel_view
         config = panel_view.cog._get_spin_config_for_god(panel_view.selected_god)
         self.pool_input = discord.ui.TextInput(
-            label="Reward pool",
-            default=panel_view.cog._format_spin_pool(config["pool"], 3900),
-            placeholder="Fortune Crate;500k Gold;Blank",
+            label="Reward weights, one per line",
+            default=panel_view.cog._format_spin_pool_for_edit(config["pool"]),
+            placeholder="Fortune Crate x6\n500k Gold x1\nBlank x1",
             style=discord.TextStyle.paragraph,
             required=True,
             max_length=4000,
@@ -443,6 +446,7 @@ class Gods(commands.Cog):
     def _build_spin_config_embed(self, god):
         config = self._get_spin_config_for_god(god)
         source = "custom" if god in self.spin_config else "default"
+        unique_rewards = self._spin_pool_unique_count(config["pool"])
         embed = discord.Embed(
             title=f"Spin Config: {god}",
             color=self.bot.config.game.primary_colour,
@@ -454,27 +458,69 @@ class Gods(commands.Cog):
             inline=True,
         )
         embed.add_field(
-            name=f"Reward Pool ({len(config['pool'])})",
-            value=self._format_spin_pool(config["pool"], 1024),
+            name=f"Reward Odds ({len(config['pool'])} entries, {unique_rewards} types)",
+            value=self._format_spin_pool_summary(config["pool"], 1024),
             inline=False,
         )
+        embed.set_footer(text="Set Pool accepts 'Reward x Count', one per line.")
         return embed
 
     def _parse_spin_pool(self, pool):
         pool = pool.strip()
         if pool.lower().startswith("{choose:") and pool.endswith("}"):
             pool = pool[len("{choose:"):-1]
-        rewards = [reward.strip() for reward in pool.split(";") if reward.strip()]
-        if not rewards:
-            raise commands.BadArgument("Reward pool cannot be empty.")
-        unsupported = [
-            reward for reward in rewards if self._spin_reward_descriptor(reward) is None
-        ]
+        rewards = []
+        unsupported = []
+        total_entries = 0
+        for entry in re.split(r"[;\r\n]+", pool):
+            entry = entry.strip()
+            if not entry:
+                continue
+
+            reward, count = self._parse_spin_pool_entry(entry)
+            if self._spin_reward_descriptor(reward) is None:
+                unsupported.append(reward)
+                continue
+
+            total_entries += count
+            if total_entries > SPIN_MAX_POOL_ENTRIES:
+                raise commands.BadArgument(
+                    (
+                        "Reward pool cannot have more than "
+                        f"{SPIN_MAX_POOL_ENTRIES} entries."
+                    )
+                )
+            rewards.extend([reward] * count)
+
         if unsupported:
             raise commands.BadArgument(
                 "Unsupported spin rewards: " + ", ".join(unsupported[:10])
             )
+        if not rewards:
+            raise commands.BadArgument("Reward pool cannot be empty.")
         return rewards
+
+    def _parse_spin_pool_entry(self, entry):
+        leading_count = re.fullmatch(r"(\d+)\s*x\s+(.+)", entry, flags=re.I)
+        if leading_count:
+            count = int(leading_count.group(1))
+            reward = leading_count.group(2).strip()
+        else:
+            trailing_count = re.fullmatch(
+                r"(.+?)\s*(?:x|\*|:|\|)\s*(\d+)",
+                entry,
+                flags=re.I,
+            )
+            if trailing_count:
+                reward = trailing_count.group(1).strip()
+                count = int(trailing_count.group(2))
+            else:
+                reward = entry
+                count = 1
+
+        if count <= 0:
+            raise commands.BadArgument("Reward counts must be greater than 0.")
+        return reward, count
 
     def _spin_reward_descriptor(self, reward):
         reward_text = str(reward).strip()
@@ -501,17 +547,65 @@ class Gods(commands.Cog):
                 return ("crate", rarity)
         return None
 
-    def _format_spin_pool(self, pool, max_chars=1000):
-        pool_text = "; ".join(pool)
-        if len(pool_text) <= max_chars:
+    def _spin_pool_counts(self, pool):
+        counts = {}
+        for reward in pool:
+            counts[reward] = counts.get(reward, 0) + 1
+        return counts
+
+    def _spin_pool_unique_count(self, pool):
+        return len(self._spin_pool_counts(pool))
+
+    def _format_spin_pool_for_edit(self, pool):
+        pool_text = "\n".join(
+            f"{reward} x{count}"
+            for reward, count in self._spin_pool_counts(pool).items()
+        )
+        if len(pool_text) <= 4000:
             return pool_text
-        return pool_text[: max_chars - 3] + "..."
+
+        lines = []
+        current_length = 0
+        for reward, count in self._spin_pool_counts(pool).items():
+            line = f"{reward} x{count}"
+            next_length = current_length + len(line) + (1 if lines else 0)
+            if next_length > 4000:
+                break
+            lines.append(line)
+            current_length = next_length
+        return "\n".join(lines)
+
+    def _format_spin_pool_summary(self, pool, max_chars=1000):
+        if not pool:
+            return "No rewards configured."
+
+        counts = self._spin_pool_counts(pool)
+        total = len(pool)
+        lines = []
+        for reward, count in counts.items():
+            percentage = count / total * 100
+            line = f"{count}x {reward} - {percentage:.1f}%"
+            projected = "\n".join([*lines, line])
+            if len(projected) > max_chars:
+                remaining = len(counts) - len(lines)
+                suffix = f"... and {remaining} more reward types."
+                while lines and len("\n".join([*lines, suffix])) > max_chars:
+                    lines.pop()
+                    remaining += 1
+                    suffix = f"... and {remaining} more reward types."
+                lines.append(suffix)
+                break
+            lines.append(line)
+        return "\n".join(lines)
 
     def _format_spin_config_for_log(self, config):
         pool = config["pool"]
+        pool_summary = self._format_spin_pool_summary(pool, 650).replace("\n", "; ")
         return (
             f"cooldown={config['cooldown_seconds']}s, "
-            f"pool_count={len(pool)}, pool={self._format_spin_pool(pool, 650)}"
+            f"pool_count={len(pool)}, "
+            f"unique_rewards={self._spin_pool_unique_count(pool)}, "
+            f"pool_summary={pool_summary}"
         )
 
     async def _log_spin_config_change(self, ctx, action, god, before, after):
