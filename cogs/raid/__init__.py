@@ -117,6 +117,16 @@ def is_donator():
     return commands.check(predicate)
 
 
+EVILSPAWN_INTRO_IMAGE_URL = "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_78926c12-aef0-4c89-8d83-867a1d82cef0.png"
+EVILSPAWN_GUARDIAN_PHASE_IMAGES = {
+    "The Sentinel": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_68592fa3-a675-4f9e-afea-d71716725426.png",
+    "The Corrupted": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_a85f005e-852b-4097-80db-b0a1bedb476d.png",
+    "The Abyssal Horror": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_b179bf98-e1d2-4543-b430-554b6569aa68.png",
+}
+EVILSPAWN_VICTORY_IMAGE_URL = "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_0b662ddb-88a0-4a9c-b4ca-bab13164be62.png"
+EVILSPAWN_DEFEAT_IMAGE_URL = "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_a6314cf3-ea31-4a20-890d-d76143ccaf27.png"
+
+
 class DecisionButton(Button):
     def __init__(self, label, *args, **kwargs):
         super().__init__(label=label, *args, **kwargs)
@@ -2149,9 +2159,7 @@ class Raid(commands.Cog):
                 color=0x550000  # Dark red color
             )
 
-            # Use an image URL for dramatic effect
-            image_url = "https://i.ibb.co/Yf6q0K4/OIG-15.png"
-            embed.set_image(url=image_url)
+            embed.set_image(url=EVILSPAWN_INTRO_IMAGE_URL)
 
             await ctx.send(embed=embed, view=dual_view)
 
@@ -2188,6 +2196,16 @@ class Raid(commands.Cog):
                 space = '⬜'
                 num_of_arrows = int(progress * bar_length)
                 return arrow * num_of_arrows + space * (bar_length - num_of_arrows)
+
+            async def send_ritual_failure(description):
+                failure_embed = discord.Embed(
+                    title="💔 The Ritual Fails 💔",
+                    description=description,
+                    color=0x550000,
+                )
+                failure_embed.set_image(url=EVILSPAWN_DEFEAT_IMAGE_URL)
+                await ctx.send(embed=failure_embed)
+
             HowMany = 0
 
             async with self.bot.pool.acquire() as conn:
@@ -2661,18 +2679,21 @@ class Raid(commands.Cog):
                 1: {
                     "name": "The Sentinel",
                     "description": "A towering figure emerges, cloaked in ancient armor. Its eyes glow with a cold light.",
+                    "image_url": EVILSPAWN_GUARDIAN_PHASE_IMAGES["The Sentinel"],
                     "abilities": ["strike", "shield", "purify"],
                     "progress_threshold": 10  # Ritual progress percentage to move to next phase
                 },
                 2: {
                     "name": "The Corrupted",
                     "description": "The Guardian's form twists and darkens, tendrils of shadow emanate from its body.",
+                    "image_url": EVILSPAWN_GUARDIAN_PHASE_IMAGES["The Corrupted"],
                     "abilities": ["strike", "corrupting_blast", "shadow_shield", "purify", "fear_aura"],
                     "progress_threshold": 30
                 },
                 3: {
                     "name": "The Abyssal Horror",
                     "description": "With a deafening roar, the Guardian transforms into a nightmarish entity from the abyss. Its mere presence instills terror.",
+                    "image_url": EVILSPAWN_GUARDIAN_PHASE_IMAGES["The Abyssal Horror"],
                     "abilities": ["obliterate", "dark_aegis", "soul_drain", "apocalyptic_roar"],
                     "progress_threshold": 60  # Final phase; beyond ritual completion
                 }
@@ -2723,6 +2744,7 @@ class Raid(commands.Cog):
                 description=phase_info["description"],
                 color=0x550000
             )
+            guardian_appearance_embed.set_image(url=phase_info["image_url"])
             await ctx.send(embed=guardian_appearance_embed)
 
             for turn in range(TOTAL_TURNS):
@@ -2731,7 +2753,9 @@ class Raid(commands.Cog):
                     ritual_active = False
                     if directive_listener_task is not None:
                         directive_listener_task.cancel()
-                    await ctx.send(f"💔 {champion.mention} has fallen. The ritual fails as darkness recedes...")
+                    await send_ritual_failure(
+                        f"{champion.mention} has fallen. The ritual fails as darkness recedes..."
+                    )
                     await self.clear_raid_timer()
                     return
 
@@ -2886,6 +2910,7 @@ class Raid(commands.Cog):
                                 description=phase_info["description"],
                                 color=0x8B0000  # Dark red color
                             )
+                            phase_embed.set_image(url=phase_info["image_url"])
                             await ctx.send(embed=phase_embed)
                     else:
                         await ctx.send("💀 The Guardian is incapacitated and cannot act this turn.")
@@ -2907,6 +2932,7 @@ class Raid(commands.Cog):
                                 description=phase_info_next["description"],
                                 color=0x8B0000
                             )
+                            phase_embed.set_image(url=phase_info_next["image_url"])
                             await ctx.send(embed=phase_embed)
                             # Update phase_info to the new phase
                             phase_info = phase_info_next
@@ -3356,8 +3382,7 @@ class Raid(commands.Cog):
                     color=0x901C1C  # Dark color
                 )
 
-                # Add the image to the embed
-                embed.set_image(url="https://i.ibb.co/G09cMBq/OIG-17.png")
+                embed.set_image(url=EVILSPAWN_VICTORY_IMAGE_URL)
 
                 await ctx.send(embed=embed)
                 await ctx.send(
@@ -3387,7 +3412,9 @@ class Raid(commands.Cog):
                     )
 
             else:
-                await ctx.send(f"💔 The ritual failed to reach completion. Darkness retreats as the Guardian prevails.")
+                await send_ritual_failure(
+                    "The ritual failed to reach completion. Darkness retreats as the Guardian prevails."
+                )
 
             await self.clear_raid_timer()
         except Exception as e:

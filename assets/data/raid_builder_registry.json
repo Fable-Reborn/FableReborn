@@ -269,7 +269,9 @@
                 "purify"
               ],
               "description": "A towering sentinel steps from ancient shadow.",
+              "image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_68592fa3-a675-4f9e-afea-d71716725426.png",
               "name": "The Sentinel",
+              "thumbnail_url": "",
               "threshold": 0
             },
             {
@@ -280,7 +282,9 @@
                 "purify"
               ],
               "description": "The Guardian twists into a darker and faster shape.",
+              "image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_a85f005e-852b-4097-80db-b0a1bedb476d.png",
               "name": "The Corrupted",
+              "thumbnail_url": "",
               "threshold": 35
             },
             {
@@ -291,7 +295,9 @@
                 "apocalyptic_roar"
               ],
               "description": "Its final form is a screaming abyss wrapped in armor.",
+              "image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_b179bf98-e1d2-4543-b430-554b6569aa68.png",
               "name": "The Abyssal Horror",
+              "thumbnail_url": "",
               "threshold": 70
             }
           ],
@@ -313,12 +319,16 @@
             "priest": "Priest"
           },
           "media": {
+            "defeat": {
+              "image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_a6314cf3-ea31-4a20-890d-d76143ccaf27.png",
+              "thumbnail_url": ""
+            },
             "guardian": {
               "image_url": "",
               "thumbnail_url": ""
             },
             "intro": {
-              "image_url": "",
+              "image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_78926c12-aef0-4c89-8d83-867a1d82cef0.png",
               "thumbnail_url": ""
             },
             "prompts": {
@@ -330,7 +340,7 @@
               "thumbnail_url": ""
             },
             "victory": {
-              "image_url": "",
+              "image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_0b662ddb-88a0-4a9c-b4ca-bab13164be62.png",
               "thumbnail_url": ""
             }
           },

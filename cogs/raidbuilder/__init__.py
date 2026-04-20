@@ -20,6 +20,19 @@ from utils.i18n import _
 from utils.joins import JoinView
 
 
+EVIL_INTRO_IMAGE_URL = "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_78926c12-aef0-4c89-8d83-867a1d82cef0.png"
+EVIL_SENTINEL_IMAGE_URL = "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_68592fa3-a675-4f9e-afea-d71716725426.png"
+EVIL_CORRUPTED_IMAGE_URL = "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_a85f005e-852b-4097-80db-b0a1bedb476d.png"
+EVIL_ABYSSAL_HORROR_IMAGE_URL = "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_b179bf98-e1d2-4543-b430-554b6569aa68.png"
+EVIL_VICTORY_IMAGE_URL = "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_0b662ddb-88a0-4a9c-b4ca-bab13164be62.png"
+EVIL_DEFEAT_IMAGE_URL = "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_a6314cf3-ea31-4a20-890d-d76143ccaf27.png"
+EVIL_GUARDIAN_PHASE_IMAGE_URLS = {
+    "The Sentinel": EVIL_SENTINEL_IMAGE_URL,
+    "The Corrupted": EVIL_CORRUPTED_IMAGE_URL,
+    "The Abyssal Horror": EVIL_ABYSSAL_HORROR_IMAGE_URL,
+}
+
+
 @dataclass(frozen=True)
 class SkeletonOptionGroup:
     title: str
@@ -146,6 +159,7 @@ EVIL_MEDIA_SLOTS = (
     ("guardian", "Guardian", "Guardian phase and attack embed art."),
     ("status", "Status", "Turn summary embed art."),
     ("victory", "Victory", "Final ritual outcome embed art."),
+    ("defeat", "Defeat", "Failed ritual outcome embed art."),
 )
 
 RITUAL_PROMPT_SLOTS = (
@@ -388,11 +402,12 @@ def _evil_presentation() -> dict[str, Any]:
             "danger": "#C0392B",
         },
         "media": {
-            "intro": _blank_media(),
+            "intro": {"image_url": EVIL_INTRO_IMAGE_URL, "thumbnail_url": ""},
             "prompts": _blank_media(),
             "guardian": _blank_media(),
             "status": _blank_media(),
-            "victory": _blank_media(),
+            "victory": {"image_url": EVIL_VICTORY_IMAGE_URL, "thumbnail_url": ""},
+            "defeat": {"image_url": EVIL_DEFEAT_IMAGE_URL, "thumbnail_url": ""},
         },
         "labels": {
             "champion": "Champion",
@@ -426,6 +441,10 @@ def _evil_presentation() -> dict[str, Any]:
             "followers_summary_empty": "No follower contributions this turn.",
         },
     }
+
+
+def _evil_guardian_phase_image_url(phase_name: str) -> str:
+    return EVIL_GUARDIAN_PHASE_IMAGE_URLS.get(phase_name, "")
 
 
 def _champion_action_defaults() -> dict[str, dict[str, Any]]:
@@ -691,18 +710,24 @@ def _build_evil_starter() -> dict[str, Any]:
                         "threshold": 0,
                         "name": "The Sentinel",
                         "description": "A towering sentinel steps from ancient shadow.",
+                        "image_url": EVIL_SENTINEL_IMAGE_URL,
+                        "thumbnail_url": "",
                         "abilities": ["strike", "shield", "purify"],
                     },
                     {
                         "threshold": 35,
                         "name": "The Corrupted",
                         "description": "The Guardian twists into a darker and faster shape.",
+                        "image_url": EVIL_CORRUPTED_IMAGE_URL,
+                        "thumbnail_url": "",
                         "abilities": ["strike", "corrupting_blast", "fear_aura", "purify"],
                     },
                     {
                         "threshold": 70,
                         "name": "The Abyssal Horror",
                         "description": "Its final form is a screaming abyss wrapped in armor.",
+                        "image_url": EVIL_ABYSSAL_HORROR_IMAGE_URL,
+                        "thumbnail_url": "",
                         "abilities": ["obliterate", "soul_drain", "dark_aegis", "apocalyptic_roar"],
                     },
                 ],
@@ -1812,6 +1837,14 @@ class RaidBuilder(commands.Cog):
 
             guardian = config.setdefault("guardian", {})
             guardian.setdefault("phases", [])
+            for phase in guardian["phases"]:
+                if not isinstance(phase, dict):
+                    continue
+                phase.setdefault(
+                    "image_url",
+                    _evil_guardian_phase_image_url(str(phase.get("name", ""))),
+                )
+                phase.setdefault("thumbnail_url", "")
             guardian_abilities = guardian.setdefault("abilities", {})
             for ability_name, ability in guardian_abilities.items():
                 if not isinstance(ability, dict):
@@ -3048,6 +3081,53 @@ class RaidBuilder(commands.Cog):
                     current = phase
             return current
 
+        announced_phase_name: str | None = None
+
+        async def announce_guardian_phase(phase: dict[str, Any], *, initial: bool = False) -> None:
+            nonlocal announced_phase_name
+            phase_name = str(phase.get("name") or guardian_label)
+            if announced_phase_name == phase_name:
+                return
+            announced_phase_name = phase_name
+            phase_embed = discord.Embed(
+                title=(
+                    f"{guardian_label} Appears as {phase_name}"
+                    if initial
+                    else f"{guardian_label} Evolves Into {phase_name}"
+                ),
+                description=str(phase.get("description", "")),
+                color=discord.Color.dark_red(),
+            )
+            self._apply_presentation(
+                phase_embed,
+                definition,
+                color_key="danger",
+                media_key="guardian",
+                default_color=discord.Color.dark_red(),
+            )
+            image_url = phase.get("image_url")
+            thumbnail_url = phase.get("thumbnail_url")
+            if image_url:
+                phase_embed.set_image(url=str(image_url))
+            if thumbnail_url:
+                phase_embed.set_thumbnail(url=str(thumbnail_url))
+            await ctx.send(embed=phase_embed)
+
+        async def send_ritual_defeat(description: str) -> None:
+            defeat_embed = discord.Embed(
+                title="Ritual Failed",
+                description=description,
+                color=discord.Color.dark_red(),
+            )
+            self._apply_presentation(
+                defeat_embed,
+                definition,
+                color_key="danger",
+                media_key="defeat",
+                default_color=discord.Color.dark_red(),
+            )
+            await ctx.send(embed=defeat_embed)
+
         def choose_guardian_action(abilities: list[str]) -> str:
             if guardians_stats["shield_points"] <= 0 and "shield" in abilities and guardians_stats["hp"] < guardians_stats["max_hp"] * 0.5:
                 return "shield"
@@ -3059,9 +3139,11 @@ class RaidBuilder(commands.Cog):
                 return "soul_drain"
             return randomm.choice(abilities)
 
+        await announce_guardian_phase(current_guardian_phase(), initial=True)
+
         for turn_number in range(1, max_turns + 1):
             if champion_stats["hp"] <= 0:
-                await ctx.send(
+                await send_ritual_defeat(
                     self._format_template(
                         ritual_texts.get(
                             "champion_fall",
@@ -3188,7 +3270,9 @@ class RaidBuilder(commands.Cog):
                             phase_name=phase_info["name"],
                         )
                     )
+                    await announce_guardian_phase(phase_info)
             else:
+                await announce_guardian_phase(phase_info)
                 ability_name = choose_guardian_action(list(phase_info.get("abilities", [])))
                 ability_config = guardian_config["abilities"][ability_name]
                 display_ability_name = self._guardian_ability_display_name(
@@ -3248,7 +3332,7 @@ class RaidBuilder(commands.Cog):
                     )
 
             if champion_stats["hp"] <= 0:
-                await ctx.send(
+                await send_ritual_defeat(
                     self._format_template(
                         ritual_texts.get(
                             "champion_slain",
@@ -3408,6 +3492,9 @@ class RaidBuilder(commands.Cog):
             if champion_stats["haste_cooldown"] > 0:
                 champion_stats["haste_cooldown"] -= 1
 
+            phase_info = current_guardian_phase()
+            await announce_guardian_phase(phase_info)
+
             status_embed = discord.Embed(
                 title=f"{definition['name']} - Turn {turn_number}",
                 color=discord.Color.dark_red(),
@@ -3473,7 +3560,7 @@ class RaidBuilder(commands.Cog):
             guardians_stats["cursed"] = False
 
         if champion_stats["hp"] <= 0:
-            await ctx.send(
+            await send_ritual_defeat(
                 self._format_template(
                     ritual_texts.get(
                         "champion_fall",
@@ -3513,7 +3600,7 @@ class RaidBuilder(commands.Cog):
                 bonus_label="participant",
             )
             return
-        await ctx.send(
+        await send_ritual_defeat(
             self._format_template(
                 ritual_texts.get(
                     "stall",
@@ -3853,6 +3940,8 @@ class RaidBuilder(commands.Cog):
             "threshold": threshold,
             "name": phase_name,
             "description": "Describe how the Guardian changes in this phase.",
+            "image_url": "",
+            "thumbnail_url": "",
             "abilities": available_abilities[:1] if available_abilities else [],
         }
 
@@ -5922,6 +6011,7 @@ class RaidBuilder(commands.Cog):
                 phase["threshold"] = self._parse_int(values["threshold"], "Threshold", min_value=0)
                 phase["name"] = self._require_text(values["name"], "Phase name")
                 phase["description"] = self._require_text(values["description"], "Phase description")
+                phase["image_url"] = self._parse_optional_text(values["image_url"])
                 phase["abilities"] = self._parse_csv_list(values["abilities"])
                 self._save_registry()
                 return f"Updated guardian phase `{phase['name']}`."
@@ -5932,12 +6022,15 @@ class RaidBuilder(commands.Cog):
                 "fields": [
                     {"name": "Threshold", "value": str(phase.get("threshold", 0)), "inline": True},
                     {"name": "Abilities", "value": ", ".join(phase.get("abilities", [])) or "None", "inline": False},
+                    {"name": "Image URL", "value": phase.get("image_url") or "None", "inline": False},
+                    {"name": "Thumbnail URL", "value": phase.get("thumbnail_url") or "None", "inline": False},
                 ],
                 "form_title": "Edit Guardian Phase",
                 "form_fields": [
                     {"key": "threshold", "label": "Threshold", "default": str(phase.get("threshold", 0))},
                     {"key": "name", "label": "Name", "default": phase.get("name", "")},
                     {"key": "description", "label": "Description", "default": phase.get("description", ""), "style": discord.TextStyle.paragraph},
+                    {"key": "image_url", "label": "Image URL", "default": phase.get("image_url", ""), "required": False},
                     {"key": "abilities", "label": "Abilities CSV", "default": ", ".join(phase.get("abilities", []))},
                 ],
                 "submit_handler": submit,
