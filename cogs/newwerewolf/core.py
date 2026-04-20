@@ -603,9 +603,9 @@ DESCRIPTIONS = {
     ),
     Role.WOLF_TRICKSTER: _(
         "Your objective is to kill all villagers together with the other Werewolves."
-        " During the day, you may mark one player. If that player dies by any means"
-        " other than the Werewolves, they are seen as **Wolf Trickster**, and you are"
-        " seen as their role when checked. This can trigger once per game."
+        " At any point during the day, you may mark one player. If that player dies"
+        " by any means other than the Werewolves, they are seen as **Wolf Trickster**,"
+        " and you are seen as their role when checked. This can trigger once per game."
     ),
     Role.NIGHTMARE_WEREWOLF: _(
         "Your objective is to kill all villagers together with the other Werewolves."
@@ -674,8 +674,9 @@ DESCRIPTIONS = {
     ),
     Role.GAMBLER: _(
         "You are the Gambler, an advanced Aura Seer role. Each night, you pick one"
-        " player and guess their team. You can only make **Village team** guesses"
-        " twice per game."
+        " player and guess their team. Wrong guesses do not reveal the exact team."
+        " A correct guess lets you gamble one second player that night. You can only"
+        " make **Village team** guesses twice per game."
     ),
     Role.AMOR: _(
         "You are the personification of the Greek god and get to choose two lovers at"
@@ -770,9 +771,9 @@ DESCRIPTIONS = {
     Role.MARKSMAN: _(
         "You are the Marksman, an advanced Priest role. Every night, you mark one"
         " target. During the day, you may spend an arrow to kill your marked target"
-        " or change your target for free. If you shoot a villager-team target, you"
-        " die instead. You have 2 arrows, and once they are gone you can no longer"
-        " mark anyone."
+        " and may change your target for free before firing. If you shoot a"
+        " villager-team target, you die instead. You have 2 arrows, and once they"
+        " are gone you can no longer mark anyone."
     ),
     Role.PACIFIST: _(
         "You are the Pacifist. Once per game during the day, you may reveal one"
@@ -1092,6 +1093,7 @@ def is_wolf_team_role(role: Role) -> bool:
         Role.BIG_BAD_WOLF,
         Role.RAVAGER_WOLF,
         Role.SHADOW_WOLF,
+        Role.CONFUSION_WOLF,
         Role.CURSED_WOLF_FATHER,
         Role.WOLF_SHAMAN,
         Role.WOLF_NECROMANCER,
@@ -1752,6 +1754,7 @@ SPECIAL_WOLF_ROLES = {
     Role.GUARDIAN_WOLF,
     Role.WOLF_SUMMONER,
     Role.WOLF_TRICKSTER,
+    Role.CONFUSION_WOLF,
     Role.NIGHTMARE_WEREWOLF,
     Role.VOODOO_WEREWOLF,
     Role.JUNIOR_WEREWOLF,
@@ -1773,6 +1776,7 @@ PACK_SPECIAL_WOLF_ROLES = {
     Role.GUARDIAN_WOLF,
     Role.WOLF_SUMMONER,
     Role.WOLF_TRICKSTER,
+    Role.CONFUSION_WOLF,
     Role.NIGHTMARE_WEREWOLF,
     Role.VOODOO_WEREWOLF,
     Role.JUNIOR_WEREWOLF,
@@ -2645,6 +2649,7 @@ class Game:
         self.mayor_reveal_tasks: dict[int, asyncio.Task] = {}
         self.werewolf_fan_reveal_tasks: dict[int, asyncio.Task] = {}
         self.gunner_day_action_tasks: dict[int, asyncio.Task] = {}
+        self.wolf_trickster_day_mark_tasks: dict[int, asyncio.Task] = {}
         self.beast_hunter_day_trap_tasks: dict[int, asyncio.Task] = {}
         self.forger_day_tasks: dict[int, asyncio.Task] = {}
         self.forged_sword_day_tasks: dict[int, asyncio.Task] = {}
@@ -3432,7 +3437,89 @@ class Game:
             return player.side
         return side_from_role(observed_role)
 
-    async def handle_wolf_trickster_day_mark(self) -> None:
+    def _wolf_trickster_mark_candidates(self, trickster: Player) -> list[Player]:
+        return [player for player in self.alive_players if player != trickster]
+
+    async def _collect_wolf_trickster_day_mark(self, trickster: Player) -> None:
+        await trickster.send(
+            _(
+                "🎭 During the day, choose one player to mark for appearance steal."
+                " You can update this mark until nightfall.\n{game_link}"
+            ).format(game_link=self.game_link)
+        )
+        prompt_timeout = 3600
+        while (
+            not self.is_night_phase
+            and self.winner is None
+            and not trickster.dead
+            and trickster in self.alive_players
+            and trickster.role == Role.WOLF_TRICKSTER
+            and trickster.has_wolf_trickster_steal_ability
+        ):
+            if trickster.is_jailed or trickster.is_grumpy_silenced_today:
+                await asyncio.sleep(5)
+                continue
+            if (
+                trickster.wolf_trickster_mark_target is not None
+                and trickster.wolf_trickster_mark_target.dead
+            ):
+                trickster.wolf_trickster_mark_target = None
+
+            possible_targets = self._wolf_trickster_mark_candidates(trickster)
+            if not possible_targets:
+                await asyncio.sleep(10)
+                continue
+
+            current_target = trickster.wolf_trickster_mark_target
+            current_label = (
+                current_target.user if current_target is not None else _("None")
+            )
+            try:
+                chosen_target = await trickster.choose_users(
+                    _(
+                        "Choose one player to mark for appearance steal. Current mark:"
+                        " **{current}**. If your marked player dies by a non-werewolf"
+                        " cause, they will appear as Wolf Trickster and you will appear as"
+                        " their role to checks. (One-time trigger)"
+                    ).format(current=current_label),
+                    list_of_users=possible_targets,
+                    amount=1,
+                    required=False,
+                    timeout=prompt_timeout,
+                )
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                schedule_traceback(self.ctx, e)
+                return
+
+            if (
+                self.is_night_phase
+                or trickster.dead
+                or trickster not in self.alive_players
+                or trickster.role != Role.WOLF_TRICKSTER
+                or not trickster.has_wolf_trickster_steal_ability
+            ):
+                return
+
+            if not chosen_target:
+                await asyncio.sleep(5)
+                continue
+
+            trickster.wolf_trickster_mark_target = chosen_target[0]
+            await trickster.send(
+                _(
+                    "🎭 You marked **{target}** for appearance steal."
+                    " You can still change this mark before night."
+                    "\n{game_link}"
+                ).format(
+                    target=trickster.wolf_trickster_mark_target.user,
+                    game_link=self.game_link,
+                )
+            )
+            await asyncio.sleep(2)
+
+    async def start_wolf_trickster_day_mark_selection(self) -> None:
         tricksters = [
             trickster
             for trickster in self.get_players_with_role(Role.WOLF_TRICKSTER)
@@ -3442,52 +3529,36 @@ class Game:
                 and trickster.has_wolf_trickster_steal_ability
             )
         ]
+        active_ids = {trickster.user.id for trickster in tricksters}
+
+        for player_id, task in list(self.wolf_trickster_day_mark_tasks.items()):
+            if task.done() or player_id not in active_ids:
+                task.cancel()
+                self.wolf_trickster_day_mark_tasks.pop(player_id, None)
+
         for trickster in tricksters:
-            if (
-                trickster.wolf_trickster_mark_target is not None
-                and trickster.wolf_trickster_mark_target.dead
-            ):
-                trickster.wolf_trickster_mark_target = None
-
-            possible_targets = [
-                player for player in self.alive_players if player != trickster
-            ]
-            if not possible_targets:
+            existing = self.wolf_trickster_day_mark_tasks.get(trickster.user.id)
+            if existing and not existing.done():
                 continue
+            self.wolf_trickster_day_mark_tasks[trickster.user.id] = (
+                asyncio.create_task(self._collect_wolf_trickster_day_mark(trickster))
+            )
 
-            current_target = trickster.wolf_trickster_mark_target
-            current_label = (
-                current_target.user if current_target is not None else _("None")
-            )
-            chosen_target = await trickster.choose_users(
-                _(
-                    "Choose one player to mark for appearance steal. Current mark:"
-                    " **{current}**. If your marked player dies by a non-werewolf"
-                    " cause, they will appear as Wolf Trickster and you will appear as"
-                    " their role to checks. (One-time trigger)"
-                ).format(current=current_label),
-                list_of_users=possible_targets,
-                amount=1,
-                required=False,
-            )
-            if not chosen_target:
-                await trickster.send(
-                    _(
-                        "You kept your current mark unchanged.\n{game_link}"
-                    ).format(game_link=self.game_link)
-                )
-                continue
+    async def stop_wolf_trickster_day_mark_selection(
+        self, trickster: Player | None = None
+    ) -> None:
+        if trickster is not None:
+            task = self.wolf_trickster_day_mark_tasks.pop(trickster.user.id, None)
+            if task:
+                task.cancel()
+            return
 
-            trickster.wolf_trickster_mark_target = chosen_target[0]
-            await trickster.send(
-                _(
-                    "🎭 You marked **{target}** for appearance steal."
-                    "\n{game_link}"
-                ).format(
-                    target=trickster.wolf_trickster_mark_target.user,
-                    game_link=self.game_link,
-                )
-            )
+        for task in self.wolf_trickster_day_mark_tasks.values():
+            task.cancel()
+        self.wolf_trickster_day_mark_tasks.clear()
+
+    async def handle_wolf_trickster_day_mark(self) -> None:
+        await self.start_wolf_trickster_day_mark_selection()
 
     async def handle_wolf_trickster_appearance_steal(
         self, dead_player: Player
@@ -4529,6 +4600,7 @@ class Game:
         everyone = guild.default_role
         dead_role = self._get_ww_dead_role()
         dead_role_send_opened = False
+        everyone_chat_opened = False
 
         try:
             if dead_role is not None and self._can_manage_ww_roles():
@@ -4550,6 +4622,7 @@ class Game:
                     overwrite=overwrite,
                     reason="Werewolf post-game chat window open",
                 )
+            everyone_chat_opened = True
             self._everyone_chat_locked = False
             end_at = datetime.datetime.now(
                 datetime.timezone.utc
@@ -4582,6 +4655,19 @@ class Game:
                     )
                 )
         finally:
+            if everyone_chat_opened:
+                try:
+                    overwrite = channel.overwrites_for(everyone)
+                    if overwrite.send_messages is not False:
+                        overwrite.send_messages = False
+                        await channel.set_permissions(
+                            everyone,
+                            overwrite=overwrite,
+                            reason="Werewolf post-game chat window closed",
+                        )
+                    self._everyone_chat_locked = True
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
             if dead_role_send_opened and dead_role is not None:
                 try:
                     dead_overwrite = channel.overwrites_for(dead_role)
@@ -7391,48 +7477,11 @@ class Game:
             if marksman.dead or marksman.marksman_arrows <= 0:
                 continue
 
-            if (
-                marksman.marksman_target is not None
-                and marksman.marksman_target.dead
-            ):
-                marksman.marksman_target = None
-
-            if marksman.marksman_target is None:
-                await marksman.send(
-                    _(
-                        "🏹 You have no marked target. Mark someone at night first."
-                        "\n{game_link}"
-                    ).format(game_link=self.game_link)
-                )
-                continue
-
-            marked_target = marksman.marksman_target
             await self.send_to_channel(
                 _("**The {role} may act.**").format(role=marksman.role_name)
             )
-            try:
-                action_index = await self.ctx.bot.paginator.Choose(
-                    entries=[
-                        _("Shoot marked target"),
-                        _("Change marked target"),
-                        _("Do nothing"),
-                    ],
-                    return_index=True,
-                    title=_("Target: {target} | Arrows: {arrows}").format(
-                        target=marked_target.user,
-                        arrows=marksman.marksman_arrows,
-                    ),
-                    timeout=max(10, min(20, int(self.timer / 2))),
-                ).paginate(self.ctx, location=marksman.user)
-            except (
-                self.ctx.bot.paginator.NoChoice,
-                discord.Forbidden,
-                discord.HTTPException,
-                asyncio.TimeoutError,
-            ):
-                action_index = 2
 
-            if action_index == 0:
+            async def shoot_marked_target(marked_target: Player) -> None:
                 marksman.marksman_arrows = max(0, marksman.marksman_arrows - 1)
                 marksman.marksman_target = None
                 await self.send_to_channel(
@@ -7464,54 +7513,118 @@ class Game:
                                 "\n{game_link}"
                             ).format(target=marked_target.user, game_link=self.game_link)
                         )
-            elif action_index == 1:
-                possible_targets = [
-                    player for player in self.alive_players if player != marksman
-                ]
-                if not possible_targets:
-                    await marksman.send(
-                        _(
-                            "There is no valid target to mark right now."
-                            "\n{game_link}"
-                        ).format(game_link=self.game_link)
-                    )
-                    continue
+
+            changed_target_this_day = False
+            while (
+                not marksman.dead
+                and marksman.marksman_arrows > 0
+                and marksman in self.alive_players
+            ):
+                if (
+                    marksman.marksman_target is not None
+                    and marksman.marksman_target.dead
+                ):
+                    marksman.marksman_target = None
+
+                actions: list[tuple[str, str]] = []
+                if marksman.marksman_target is not None:
+                    actions.append(("shoot", _("Shoot marked target")))
+                if not changed_target_this_day:
+                    actions.append(("change", _("Change marked target")))
+                actions.append(("skip", _("Do nothing")))
+
+                current_target_label = (
+                    marksman.marksman_target.user
+                    if marksman.marksman_target is not None
+                    else _("None")
+                )
                 try:
-                    chosen_target = await marksman.choose_users(
-                        _(
-                            "Choose a new marked target."
+                    action_index = await self.ctx.bot.paginator.Choose(
+                        entries=[label for _, label in actions],
+                        return_index=True,
+                        title=_("Target: {target} | Arrows: {arrows}").format(
+                            target=current_target_label,
+                            arrows=marksman.marksman_arrows,
                         ),
-                        list_of_users=possible_targets,
-                        amount=1,
-                        required=False,
-                    )
-                except asyncio.TimeoutError:
-                    chosen_target = []
-                if chosen_target:
-                    marksman.marksman_target = chosen_target[0]
-                    await marksman.send(
-                        _(
-                            "🏹 You changed your marked target to **{target}**."
-                            "\n{game_link}"
-                        ).format(
-                            target=marksman.marksman_target.user,
-                            game_link=self.game_link,
+                        timeout=max(10, min(20, int(self.timer / 2))),
+                    ).paginate(self.ctx, location=marksman.user)
+                except (
+                    self.ctx.bot.paginator.NoChoice,
+                    discord.Forbidden,
+                    discord.HTTPException,
+                    asyncio.TimeoutError,
+                ):
+                    action_index = len(actions) - 1
+
+                if action_index < 0 or action_index >= len(actions):
+                    action_index = len(actions) - 1
+                action = actions[action_index][0]
+
+                if action == "shoot" and marksman.marksman_target is not None:
+                    await shoot_marked_target(marksman.marksman_target)
+                    break
+
+                if action == "change":
+                    possible_targets = [
+                        player for player in self.alive_players if player != marksman
+                    ]
+                    if not possible_targets:
+                        await marksman.send(
+                            _(
+                                "There is no valid target to mark right now."
+                                "\n{game_link}"
+                            ).format(game_link=self.game_link)
                         )
-                    )
-                else:
-                    await marksman.send(
-                        _(
-                            "You kept **{target}** as your marked target."
-                            "\n{game_link}"
-                        ).format(target=marked_target.user, game_link=self.game_link)
-                    )
-            else:
+                        break
+                    previous_target = marksman.marksman_target
+                    try:
+                        chosen_target = await marksman.choose_users(
+                            _("Choose a new marked target."),
+                            list_of_users=possible_targets,
+                            amount=1,
+                            required=False,
+                        )
+                    except asyncio.TimeoutError:
+                        chosen_target = []
+                    if chosen_target:
+                        marksman.marksman_target = chosen_target[0]
+                        changed_target_this_day = True
+                        await marksman.send(
+                            _(
+                                "🏹 You changed your marked target to **{target}**."
+                                " You may still fire at that target today."
+                                "\n{game_link}"
+                            ).format(
+                                target=marksman.marksman_target.user,
+                                game_link=self.game_link,
+                            )
+                        )
+                        continue
+                    if previous_target is not None:
+                        await marksman.send(
+                            _(
+                                "You kept **{target}** as your marked target."
+                                "\n{game_link}"
+                            ).format(
+                                target=previous_target.user,
+                                game_link=self.game_link,
+                            )
+                        )
+                    else:
+                        await marksman.send(
+                            _("You chose not to mark anyone today.\n{game_link}").format(
+                                game_link=self.game_link
+                            )
+                        )
+                    break
+
                 await marksman.send(
                     _(
                         "You chose not to use an arrow today."
                         "\n{game_link}"
                     ).format(game_link=self.game_link)
                 )
+                break
 
             if not marksman.dead and marksman.marksman_arrows == 0:
                 await marksman.send(
@@ -10027,6 +10140,7 @@ class Game:
             await self.start_mayor_reveal_selection()
             await self.start_werewolf_fan_reveal_selection()
             await self.start_gunner_day_action_selection()
+            await self.start_wolf_trickster_day_mark_selection()
             await self.start_beast_hunter_day_trap_selection()
             await self.start_forger_day_actions()
             await self.start_forged_sword_day_actions()
@@ -10039,7 +10153,6 @@ class Game:
                 return
             await self.handle_marksman_day_action()
             await self.handle_wolf_shaman_day_enchant()
-            await self.handle_wolf_trickster_day_mark()
             await self.handle_nightmare_werewolf_day_actions()
             await self.handle_preacher_reveal()
             if len(self.alive_players) < 2:
@@ -10100,6 +10213,7 @@ class Game:
             await self.stop_mayor_reveal_selection()
             await self.stop_werewolf_fan_reveal_selection()
             await self.stop_gunner_day_action_selection()
+            await self.stop_wolf_trickster_day_mark_selection()
             await self.stop_beast_hunter_day_trap_selection()
             await self.stop_forger_day_actions()
             await self.stop_forged_sword_day_actions()
@@ -10209,6 +10323,10 @@ class Game:
             except Exception:
                 pass
             try:
+                await self.stop_wolf_trickster_day_mark_selection()
+            except Exception:
+                pass
+            try:
                 await self.stop_beast_hunter_day_trap_selection()
             except Exception:
                 pass
@@ -10243,7 +10361,7 @@ class Game:
             except Exception:
                 pass
             try:
-                await self._set_everyone_chat_lock(False)
+                await self._set_everyone_chat_lock(True)
             except Exception:
                 pass
             try:
@@ -12435,101 +12553,185 @@ class Player:
 
     async def guess_player_team_as_gambler(self) -> None:
         await self.announce_awake(variant="gamble")
-        try:
-            to_guess = await self.choose_users(
-                _("🎲 Choose one player whose team you want to guess."),
-                list_of_users=[p for p in self.game.alive_players if p != self],
-                amount=1,
-                required=False,
+        checked_player_ids: set[int] = set()
+
+        def classify_target(target: Player) -> tuple[str, str]:
+            observed_side = (
+                self.game.get_observed_side(target, observer=self)
+                if hasattr(self.game, "get_observed_side")
+                else target.side
             )
-            if to_guess:
-                to_guess = to_guess[0]
-            else:
+            if observed_side == Side.VILLAGERS:
+                return "village", _("Village")
+            if observed_side == Side.WOLVES:
+                return "wolves", _("Werewolf")
+            return "solo", _("Solo")
+
+        async def choose_gamble_target(prompt: str) -> Player | None:
+            possible_targets = [
+                p
+                for p in self.game.alive_players
+                if p != self and p.user.id not in checked_player_ids
+            ]
+            if not possible_targets:
+                await self.send(
+                    _("There are no valid players left to gamble tonight.\n{game_link}").format(
+                        game_link=self.game.game_link
+                    )
+                )
+                return None
+            try:
+                picked = await self.choose_users(
+                    prompt,
+                    list_of_users=possible_targets,
+                    amount=1,
+                    required=False,
+                )
+            except asyncio.TimeoutError:
+                await self.send(
+                    _("You ran out of time and missed your gamble.\n{game_link}").format(
+                        game_link=self.game.game_link
+                    )
+                )
+                return None
+            if not picked:
                 await self.send(
                     _("You chose not to gamble tonight.\n{game_link}").format(
                         game_link=self.game.game_link
                     )
                 )
+                return None
+            return picked[0]
+
+        async def choose_team_guess(target: Player) -> str | None:
+            guess_entries: list[str] = [
+                _("Guess Werewolf team"),
+                _("Guess Solo team"),
+            ]
+            guess_tokens: list[str] = ["wolves", "solo"]
+            if self.gambler_village_guesses_left > 0:
+                guess_entries.insert(
+                    0,
+                    _("Guess Village team ({left} left)").format(
+                        left=self.gambler_village_guesses_left
+                    ),
+                )
+                guess_tokens.insert(0, "village")
+
+            try:
+                guessed_index = await self.game.ctx.bot.paginator.Choose(
+                    entries=guess_entries,
+                    return_index=True,
+                    title=_("Pick your team guess for {target}.").format(
+                        target=target.user
+                    ),
+                    timeout=self.game.timer,
+                ).paginate(self.game.ctx, location=self.user)
+            except (
+                self.game.ctx.bot.paginator.NoChoice,
+                discord.Forbidden,
+                discord.HTTPException,
+                asyncio.TimeoutError,
+            ):
+                await self.send(
+                    _("You did not lock in a guess tonight.\n{game_link}").format(
+                        game_link=self.game.game_link
+                    )
+                )
+                return None
+            if guessed_index < 0 or guessed_index >= len(guess_tokens):
+                await self.send(
+                    _("You did not lock in a valid guess tonight.\n{game_link}").format(
+                        game_link=self.game.game_link
+                    )
+                )
+                return None
+            return guess_tokens[guessed_index]
+
+        for attempt_no in range(2):
+            target_prompt = (
+                _("🎲 Choose one player whose team you want to guess.")
+                if attempt_no == 0
+                else _("🎲 Correct gamble bonus: choose one more player to guess.")
+            )
+            to_guess = await choose_gamble_target(target_prompt)
+            if to_guess is None:
                 return
-        except asyncio.TimeoutError:
-            await self.send(
-                _("You ran out of time and missed your gamble.\n{game_link}").format(
-                    game_link=self.game.game_link
+
+            guessed_team = await choose_team_guess(to_guess)
+            if guessed_team is None:
+                return
+            checked_player_ids.add(to_guess.user.id)
+
+            if guessed_team == "village":
+                self.gambler_village_guesses_left = max(
+                    0, self.gambler_village_guesses_left - 1
                 )
-            )
-            return
 
-        guess_entries: list[str] = [
-            _("Guess Werewolf team"),
-            _("Guess Solo team"),
-        ]
-        guess_tokens: list[str] = ["wolves", "solo"]
-        if self.gambler_village_guesses_left > 0:
-            guess_entries.insert(
-                0,
-                _("Guess Village team ({left} left)").format(
-                    left=self.gambler_village_guesses_left
-                ),
-            )
-            guess_tokens.insert(0, "village")
+            actual_team, actual_label = classify_target(to_guess)
+            guessed_label = {
+                "village": _("Village"),
+                "wolves": _("Werewolf"),
+                "solo": _("Solo"),
+            }[guessed_team]
+            is_correct = guessed_team == actual_team
 
-        try:
-            guessed_index = await self.game.ctx.bot.paginator.Choose(
-                entries=guess_entries,
-                return_index=True,
-                title=_(
-                    "Pick your team guess for {target}."
-                ).format(target=to_guess.user),
-                timeout=self.game.timer,
-            ).paginate(self.game.ctx, location=self.user)
-        except (
-            self.game.ctx.bot.paginator.NoChoice,
-            discord.Forbidden,
-            discord.HTTPException,
-        ):
-            await self.send(
-                _("You did not lock in a guess tonight.\n{game_link}").format(
-                    game_link=self.game.game_link
+            if is_correct:
+                await self.send(
+                    _(
+                        "🎲 You guessed **{guess} team** for **{target}**:"
+                        " **Correct**. Their team is **{actual}**.\nVillage"
+                        " guesses left: **{left}**.\n{game_link}"
+                    ).format(
+                        guess=guessed_label,
+                        target=to_guess.user,
+                        actual=actual_label,
+                        left=self.gambler_village_guesses_left,
+                        game_link=self.game.game_link,
+                    )
                 )
-            )
-            return
+            else:
+                await self.send(
+                    _(
+                        "🎲 You guessed **{guess} team** for **{target}**:"
+                        " **Wrong**. Their exact team remains hidden.\nVillage"
+                        " guesses left: **{left}**.\n{game_link}"
+                    ).format(
+                        guess=guessed_label,
+                        target=to_guess.user,
+                        left=self.gambler_village_guesses_left,
+                        game_link=self.game.game_link,
+                    )
+                )
+                return
 
-        guessed_team = guess_tokens[guessed_index]
-        if guessed_team == "village":
-            self.gambler_village_guesses_left = max(
-                0, self.gambler_village_guesses_left - 1
-            )
+            if attempt_no == 1:
+                return
 
-        if to_guess.side == Side.VILLAGERS:
-            actual_team = "village"
-            actual_label = _("Village")
-        elif to_guess.side == Side.WOLVES:
-            actual_team = "wolves"
-            actual_label = _("Werewolf")
-        else:
-            actual_team = "solo"
-            actual_label = _("Solo")
+            remaining_targets = [
+                p
+                for p in self.game.alive_players
+                if p != self and p.user.id not in checked_player_ids
+            ]
+            if not remaining_targets:
+                return
 
-        guessed_label = {
-            "village": _("Village"),
-            "wolves": _("Werewolf"),
-            "solo": _("Solo"),
-        }[guessed_team]
-        is_correct = guessed_team == actual_team
-        await self.send(
-            _(
-                "🎲 You guessed **{guess} team** for **{target}**: **{result}**."
-                " Their team is **{actual}**.\nVillage guesses left:"
-                " **{left}**.\n{game_link}"
-            ).format(
-                guess=guessed_label,
-                target=to_guess.user,
-                result=_("Correct") if is_correct else _("Wrong"),
-                actual=actual_label,
-                left=self.gambler_village_guesses_left,
-                game_link=self.game.game_link,
-            )
-        )
+            try:
+                continue_choice = await self.game.ctx.bot.paginator.Choose(
+                    entries=[_("Use bonus gamble"), _("Stop gambling")],
+                    return_index=True,
+                    title=_("Your guess was correct. Use your bonus second gamble?"),
+                    timeout=self.game.timer,
+                ).paginate(self.game.ctx, location=self.user)
+            except (
+                self.game.ctx.bot.paginator.NoChoice,
+                discord.Forbidden,
+                discord.HTTPException,
+                asyncio.TimeoutError,
+            ):
+                return
+            if continue_choice != 0:
+                return
 
     async def check_wolf_seer_target(self) -> None:
         await self.announce_awake()

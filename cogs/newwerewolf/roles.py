@@ -23,6 +23,7 @@ class RoleId(str, Enum):
     GUARDIAN_WOLF = "guardian_wolf"
     WOLF_SUMMONER = "wolf_summoner"
     WOLF_TRICKSTER = "wolf_trickster"
+    CONFUSION_WOLF = "confusion_wolf"
     NIGHTMARE_WEREWOLF = "nightmare_werewolf"
     VOODOO_WEREWOLF = "voodoo_werewolf"
 
@@ -205,10 +206,21 @@ ROLE_DEFS: dict[RoleId, RoleDef] = {
         display_name="Wolf Trickster",
         team=Team.WOLVES,
         description=(
-            "Advanced Wolf Shaman role. During the day marks one player. If that"
-            " player dies by any non-werewolf means, the dead player is seen as Wolf"
-            " Trickster and the Wolf Trickster is seen as the dead player's role by"
-            " checks. Can trigger once per game."
+            "Advanced Wolf Shaman role. At any point during the day marks one"
+            " player. If that player dies by any non-werewolf means, the dead player"
+            " is seen as Wolf Trickster and the Wolf Trickster is seen as the dead"
+            " player's role by checks. Can trigger once per game."
+        ),
+        implemented=True,
+    ),
+    RoleId.CONFUSION_WOLF: RoleDef(
+        role=RoleId.CONFUSION_WOLF,
+        display_name="Confusion Wolf",
+        team=Team.WOLVES,
+        description=(
+            "Advanced Wolf Shaman role. Votes and chats with the wolves at night."
+            " Twice per game can hide the roles of all players killed that night"
+            " from the public while wolves still learn those roles."
         ),
         implemented=True,
     ),
@@ -472,7 +484,9 @@ ROLE_DEFS: dict[RoleId, RoleDef] = {
         implemented=True,
         description=(
             "Advanced Aura Seer role. Each night, guesses one player's team."
-            " Village-team guesses can only be attempted twice per game."
+            " Wrong guesses do not reveal the exact team. A correct guess allows one"
+            " bonus second gamble that night. Village-team guesses can only be"
+            " attempted twice per game."
         ),
     ),
     RoleId.BODYGUARD: _villager_def(
@@ -604,9 +618,9 @@ ROLE_DEFS: dict[RoleId, RoleDef] = {
         implemented=True,
         description=(
             "Advanced Priest role. Marks one target at night. During the day may"
-            " spend an arrow to kill the marked target or change target for free. If"
-            " they shoot a villager-team target, the Marksman dies instead. Has 2"
-            " arrows and cannot mark once out of ammo."
+            " spend an arrow to kill the marked target and may change target for"
+            " free before firing. If they shoot a villager-team target, the Marksman"
+            " dies instead. Has 2 arrows and cannot mark once out of ammo."
         ),
     ),
     RoleId.PACIFIST: _villager_def(
@@ -679,6 +693,8 @@ ROLE_TOKEN_TO_ROLE.update(
         "guardian": RoleId.GUARDIAN_WOLF,
         "wolfpacifist": RoleId.WOLF_PACIFIST,
         "wolftrickster": RoleId.WOLF_TRICKSTER,
+        "confusion": RoleId.CONFUSION_WOLF,
+        "confusionwolf": RoleId.CONFUSION_WOLF,
         "sorc": RoleId.SORCERER,
         "nightmare": RoleId.NIGHTMARE_WEREWOLF,
         "nightmarewolf": RoleId.NIGHTMARE_WEREWOLF,

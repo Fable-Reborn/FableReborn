@@ -30,7 +30,9 @@ class DummyPlayer:
         self.sorcerer_has_resigned = False
         self.wolf_shaman_mask_active = False
         self.wolf_trickster_disguise_role = None
+        self.is_grumpy_silenced_today = False
         self.send = AsyncMock()
+        self.kill = AsyncMock()
 
     @property
     def side(self) -> Side:
@@ -55,7 +57,25 @@ class MultiChooseResult:
         return self.result
 
 
+class SequenceChoose:
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = []
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        if not self.results:
+            raise AssertionError("No queued paginator result")
+        return ChooseResult(self.results.pop(0))
+
+
 class TestNewWerewolfRoleBehaviors(unittest.IsolatedAsyncioTestCase):
+    def test_confusion_wolf_counts_as_werewolf_team(self):
+        confusion_wolf = DummyPlayer(1, "Confusion", Role.CONFUSION_WOLF)
+
+        self.assertEqual(Side.WOLVES, side_from_role(Role.CONFUSION_WOLF))
+        self.assertEqual(Side.WOLVES, confusion_wolf.side)
+
     def test_mixed_roles_mode_uses_classic_roster(self):
         ctx = SimpleNamespace(
             channel=SimpleNamespace(mention="#nww"),
@@ -490,8 +510,9 @@ class TestNewWerewolfRoleBehaviors(unittest.IsolatedAsyncioTestCase):
     async def test_marksman_retarget_does_not_spend_arrow(self):
         current_target = DummyPlayer(2, "Current", Role.VILLAGER)
         new_target = DummyPlayer(3, "New", Role.WEREWOLF)
+        choose = SequenceChoose([1, 1])
         paginator = SimpleNamespace(
-            Choose=lambda **kwargs: ChooseResult(1),
+            Choose=choose,
             NoChoice=RuntimeError,
         )
         game = SimpleNamespace(
@@ -502,11 +523,13 @@ class TestNewWerewolfRoleBehaviors(unittest.IsolatedAsyncioTestCase):
             game_link="https://example.invalid/game",
             timer=60,
             alive_players=[],
+            send_to_channel=AsyncMock(),
         )
         marksman = SimpleNamespace(
             role=Role.MARKSMAN,
             role_name="Marksman",
             dead=False,
+            is_grumpy_silenced_today=False,
             marksman_arrows=2,
             marksman_target=current_target,
             user=DummyUser(id=1, name="Marksman", mention="<@1>"),
@@ -521,7 +544,117 @@ class TestNewWerewolfRoleBehaviors(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, marksman.marksman_arrows)
         self.assertIs(new_target, marksman.marksman_target)
         marksman.choose_users.assert_awaited_once()
-        marksman.send.assert_awaited_once()
+        self.assertGreaterEqual(marksman.send.await_count, 1)
+        self.assertEqual(2, len(choose.calls))
+
+    async def test_marksman_can_retarget_then_shoot_same_day(self):
+        current_target = DummyPlayer(2, "Current", Role.VILLAGER)
+        new_target = DummyPlayer(3, "New", Role.WEREWOLF)
+        choose = SequenceChoose([1, 0])
+        paginator = SimpleNamespace(
+            Choose=choose,
+            NoChoice=RuntimeError,
+        )
+        game = SimpleNamespace(
+            ctx=SimpleNamespace(
+                send=AsyncMock(),
+                bot=SimpleNamespace(paginator=paginator),
+            ),
+            game_link="https://example.invalid/game",
+            timer=60,
+            alive_players=[],
+            send_to_channel=AsyncMock(),
+        )
+        marksman = SimpleNamespace(
+            role=Role.MARKSMAN,
+            role_name="Marksman",
+            dead=False,
+            is_grumpy_silenced_today=False,
+            marksman_arrows=2,
+            marksman_target=current_target,
+            user=DummyUser(id=1, name="Marksman", mention="<@1>"),
+            choose_users=AsyncMock(return_value=[new_target]),
+            send=AsyncMock(),
+            kill=AsyncMock(),
+        )
+        game.alive_players = [marksman, current_target, new_target]
+        game.get_players_with_role = lambda role: [marksman] if role == Role.MARKSMAN else []
+
+        await Game.handle_marksman_day_action(game)
+
+        self.assertEqual(1, marksman.marksman_arrows)
+        self.assertIsNone(marksman.marksman_target)
+        marksman.choose_users.assert_awaited_once()
+        new_target.kill.assert_awaited_once()
+        marksman.kill.assert_not_awaited()
+        self.assertEqual(2, len(choose.calls))
+
+    async def test_gambler_wrong_guess_does_not_reveal_actual_team(self):
+        target = DummyPlayer(2, "Target", Role.WEREWOLF)
+        choose = SequenceChoose([0])
+        paginator = SimpleNamespace(
+            Choose=choose,
+            NoChoice=RuntimeError,
+        )
+        game = SimpleNamespace(
+            ctx=SimpleNamespace(bot=SimpleNamespace(paginator=paginator)),
+            alive_players=[],
+            timer=60,
+            game_link="https://example.invalid/game",
+        )
+        game.get_observed_side = lambda player, observer=None: player.side
+        gambler = SimpleNamespace(
+            user=DummyUser(id=1, name="Gambler", mention="<@1>"),
+            game=game,
+            gambler_village_guesses_left=2,
+            announce_awake=AsyncMock(),
+            choose_users=AsyncMock(return_value=[target]),
+            send=AsyncMock(),
+        )
+        game.alive_players = [gambler, target]
+
+        await Player.guess_player_team_as_gambler(gambler)
+
+        self.assertEqual(1, gambler.gambler_village_guesses_left)
+        gambler.choose_users.assert_awaited_once()
+        sent_text = "\n".join(call.args[0] for call in gambler.send.await_args_list)
+        self.assertIn("Wrong", sent_text)
+        self.assertIn("exact team remains hidden", sent_text)
+        self.assertNotIn("Their team is", sent_text)
+
+    async def test_gambler_correct_guess_can_check_second_player(self):
+        first_target = DummyPlayer(2, "Villager", Role.VILLAGER)
+        second_target = DummyPlayer(3, "Wolf", Role.WEREWOLF)
+        choose = SequenceChoose([0, 0, 1])
+        paginator = SimpleNamespace(
+            Choose=choose,
+            NoChoice=RuntimeError,
+        )
+        game = SimpleNamespace(
+            ctx=SimpleNamespace(bot=SimpleNamespace(paginator=paginator)),
+            alive_players=[],
+            timer=60,
+            game_link="https://example.invalid/game",
+        )
+        game.get_observed_side = lambda player, observer=None: player.side
+        gambler = SimpleNamespace(
+            user=DummyUser(id=1, name="Gambler", mention="<@1>"),
+            game=game,
+            gambler_village_guesses_left=2,
+            announce_awake=AsyncMock(),
+            choose_users=AsyncMock(side_effect=[[first_target], [second_target]]),
+            send=AsyncMock(),
+        )
+        game.alive_players = [gambler, first_target, second_target]
+
+        await Player.guess_player_team_as_gambler(gambler)
+
+        self.assertEqual(1, gambler.gambler_village_guesses_left)
+        self.assertEqual(2, gambler.choose_users.await_count)
+        self.assertEqual(3, len(choose.calls))
+        sent_text = "\n".join(call.args[0] for call in gambler.send.await_args_list)
+        self.assertEqual(2, sent_text.count("Correct"))
+        self.assertIn("Their team is **Werewolf**", sent_text)
 
     async def test_sorcerer_disguise_uses_present_non_seer_informers(self):
         sorcerer = DummyPlayer(1, "Sorcerer", Role.SORCERER)
