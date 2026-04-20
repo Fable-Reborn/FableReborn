@@ -106,7 +106,7 @@ class SpinConfigGodSelect(discord.ui.Select):
                     value=str(index),
                     description=(
                         f"{config['cooldown_seconds']}s, "
-                        f"{len(config['pool'])} entries, "
+                        f"weight {len(config['pool'])}, "
                         f"{unique_rewards} types ({source})"
                     )[:100],
                     default=god == view.selected_god,
@@ -292,6 +292,29 @@ class SpinConfigPanelView(discord.ui.View):
     ):
         await interaction.response.send_modal(SpinPoolModal(self))
 
+    @discord.ui.button(label="Validate", style=discord.ButtonStyle.secondary, row=1)
+    async def validate_config(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+        config = self.cog._get_spin_config_for_god(self.selected_god)
+        errors = self.cog._validate_spin_pool(config["pool"])
+        if errors:
+            return await interaction.response.send_message(
+                "Invalid spin pool:\n" + "\n".join(f"- {error}" for error in errors),
+                ephemeral=True,
+            )
+
+        await interaction.response.send_message(
+            (
+                f"{self.selected_god} spin pool is valid.\n"
+                f"Total weight: **{len(config['pool'])}**\n"
+                f"Reward types: **{self.cog._spin_pool_unique_count(config['pool'])}**"
+            ),
+            ephemeral=True,
+        )
+
     @discord.ui.button(label="Reset", style=discord.ButtonStyle.danger, row=1)
     async def reset_config(
         self,
@@ -357,6 +380,8 @@ class Gods(commands.Cog):
                 pool = DEFAULT_SPIN_POOL
             pool = [str(item).strip() for item in pool if str(item).strip()]
             if not pool:
+                pool = list(DEFAULT_SPIN_POOL)
+            elif self._validate_spin_pool(pool):
                 pool = list(DEFAULT_SPIN_POOL)
             try:
                 cooldown_seconds = int(
@@ -437,11 +462,23 @@ class Gods(commands.Cog):
             inline=True,
         )
         embed.add_field(
-            name=f"Reward Odds ({len(config['pool'])} entries, {unique_rewards} types)",
+            name="Total Weight",
+            value=str(len(config["pool"])),
+            inline=True,
+        )
+        embed.add_field(
+            name="Reward Types",
+            value=str(unique_rewards),
+            inline=True,
+        )
+        embed.add_field(
+            name="Reward Odds",
             value=self._format_spin_pool_summary(config["pool"], 1024),
             inline=False,
         )
-        embed.set_footer(text="Set Pool accepts 'Reward: weight', one per line.")
+        embed.set_footer(
+            text="Set Pool accepts 'Reward: weight', one per line. Example: 50 Dragon Coins: 1."
+        )
         return embed
 
     def _parse_spin_pool(self, pool):
@@ -463,15 +500,18 @@ class Gods(commands.Cog):
             if total_entries > SPIN_MAX_POOL_ENTRIES:
                 raise commands.BadArgument(
                     (
-                        "Reward pool cannot have more than "
-                        f"{SPIN_MAX_POOL_ENTRIES} entries."
+                        "Reward pool total weight cannot be more than "
+                        f"{SPIN_MAX_POOL_ENTRIES}."
                     )
                 )
             rewards.extend([reward] * count)
 
         if unsupported:
             raise commands.BadArgument(
-                "Unsupported spin rewards: " + ", ".join(unsupported[:10])
+                "Unsupported spin rewards: "
+                + ", ".join(unsupported[:10])
+                + ". Use rewards like `500k Gold`, `50 Dragon Coins`, "
+                "`Fortune Crate`, `Weapon token`, or `Blank`."
             )
         if not rewards:
             raise commands.BadArgument("Reward pool cannot be empty.")
@@ -499,22 +539,72 @@ class Gods(commands.Cog):
             raise commands.BadArgument("Reward counts must be greater than 0.")
         return reward, count
 
+    def _validate_spin_pool(self, pool):
+        errors = []
+        if not isinstance(pool, list):
+            return ["Pool must be a list of reward entries."]
+        if not pool:
+            return ["Pool cannot be empty."]
+        if len(pool) > SPIN_MAX_POOL_ENTRIES:
+            errors.append(
+                f"Total weight cannot be more than {SPIN_MAX_POOL_ENTRIES}."
+            )
+
+        unsupported = []
+        for reward in pool:
+            reward = str(reward).strip()
+            if not reward:
+                unsupported.append("<blank entry>")
+            elif self._spin_reward_descriptor(reward) is None:
+                unsupported.append(reward)
+
+        if unsupported:
+            errors.append(
+                "Unsupported rewards: "
+                + ", ".join(unsupported[:10])
+                + ". Supported examples: `500k Gold`, `50 Dragon Coins`, "
+                "`Fortune Crate`, `Weapon token`, `Blank`."
+            )
+        return errors
+
     def _spin_reward_descriptor(self, reward):
         reward_text = str(reward).strip()
-        normalized = reward_text.lower().replace(",", "")
+        normalized = " ".join(reward_text.lower().replace(",", "").split())
         if normalized == "blank":
             return ("blank", None)
         if normalized in {"weapon token", "weapon type token", "weapontoken"}:
             return ("weapon_token", 1)
+        if normalized in {
+            "dragon coin",
+            "dragon coins",
+            "dragoncoin",
+            "dragoncoins",
+            "dc",
+        }:
+            return ("dragoncoins", 1)
 
-        amount_match = re.fullmatch(r"(\d+)(k?)\s+(gold|xp|favor|favour)", normalized)
+        amount_match = re.fullmatch(
+            r"(\d+)(k?)\s+"
+            r"(gold|xp|favor|favour|dragon coins?|dragoncoins?|dc)",
+            normalized,
+        )
         if amount_match:
             amount = int(amount_match.group(1))
             if amount_match.group(2) == "k":
                 amount *= 1000
+            if amount <= 0:
+                return None
             reward_type = amount_match.group(3)
             if reward_type == "favour":
                 reward_type = "favor"
+            elif reward_type in {
+                "dragon coin",
+                "dragon coins",
+                "dragoncoin",
+                "dragoncoins",
+                "dc",
+            }:
+                reward_type = "dragoncoins"
             return (reward_type, amount)
 
         crate_match = re.fullmatch(r"([a-z]+)\s+crate", normalized)
@@ -620,6 +710,10 @@ class Gods(commands.Cog):
         return before, after
 
     async def _update_spin_pool(self, source, god, rewards):
+        errors = self._validate_spin_pool(rewards)
+        if errors:
+            raise commands.BadArgument("\n".join(errors))
+
         before = self._get_spin_config_for_god(god)
         after = {
             "cooldown_seconds": before["cooldown_seconds"],
@@ -678,6 +772,12 @@ class Gods(commands.Cog):
             elif kind == "favor":
                 await conn.execute(
                     'UPDATE profile SET "favor"="favor"+$1 WHERE "user"=$2;',
+                    value,
+                    ctx.author.id,
+                )
+            elif kind == "dragoncoins":
+                await conn.execute(
+                    'UPDATE profile SET "dragoncoins"="dragoncoins"+$1 WHERE "user"=$2;',
                     value,
                     ctx.author.id,
                 )
@@ -830,9 +930,9 @@ class Gods(commands.Cog):
         try:
             god_key = self._canonical_spin_god(god)
             rewards = self._parse_spin_pool(pool)
+            await self._update_spin_pool(ctx, god_key, rewards)
         except commands.BadArgument as error:
             return await ctx.send(str(error))
-        await self._update_spin_pool(ctx, god_key, rewards)
         await ctx.send(f"Set {god_key} spin reward pool to {len(rewards)} entries.")
 
     @is_gm()
