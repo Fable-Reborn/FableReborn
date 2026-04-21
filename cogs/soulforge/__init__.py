@@ -3427,7 +3427,8 @@ class Soulforge(commands.Cog):
                     f"Are you sure you want to splice {pet1_data['name']} and {pet2_data['name']} together into a new beast? "
                     "This action cannot be undone.\n\n"
                     "Known combination: **Yes**\n"
-                    "This splice has been discovered before, so it will use a **1 day cooldown** instead of 5 days."
+                    "This splice has been discovered before, so it will use a **1 day cooldown** instead of 5 days.\n"
+                    "Known combinations use the discovered stat pattern and do not inherit parent-level creation bonuses."
                 )
             else:
                 confirm_msg = (
@@ -3481,24 +3482,6 @@ class Soulforge(commands.Cog):
             growth_time_interval = datetime.timedelta(days=baby_stage["growth_time"])
             growth_time = datetime.datetime.utcnow() + growth_time_interval
 
-            pets_cog = self.bot.get_cog("Pets")
-            max_level = int(getattr(pets_cog, "PET_MAX_LEVEL", 100))
-            level_bonus_per_level = float(getattr(pets_cog, "PET_LEVEL_STAT_BONUS", 0.01))
-
-            def get_splice_level_bonus_pct(level):
-                effective_level = max(1, min(int(level or 1), max_level))
-                return round(effective_level * level_bonus_per_level * 0.5 * 100, 1)
-
-            splice_creation_bonus_pct = round(
-                (
-                    get_splice_level_bonus_pct(pet1_data.get("level"))
-                    + get_splice_level_bonus_pct(pet2_data.get("level"))
-                )
-                / 2,
-                1,
-            )
-            splice_creation_multiplier = 1 + (splice_creation_bonus_pct / 100.0)
-            
             # Create sequence of splicing ritual
             pages = []
             
@@ -3663,9 +3646,11 @@ class Soulforge(commands.Cog):
                     base_hp = existing_splice["hp"]
                     base_attack = existing_splice["attack"]
                     base_defense = existing_splice["defense"]
-                    baby_hp = int(round(round(base_hp * stat_multiplier) * splice_creation_multiplier))
-                    baby_attack = int(round(round(base_attack * stat_multiplier) * splice_creation_multiplier))
-                    baby_defense = int(round(round(base_defense * stat_multiplier) * splice_creation_multiplier))
+                    # Known recipes reuse the discovered stat pattern. Parent levels must not
+                    # permanently inflate copied splice stats.
+                    baby_hp = int(round(base_hp * stat_multiplier))
+                    baby_attack = int(round(base_attack * stat_multiplier))
+                    baby_defense = int(round(base_defense * stat_multiplier))
 
                     baby_hp = baby_hp + hp_iv
                     baby_attack = baby_attack + attack_iv

@@ -5413,17 +5413,12 @@ class ProcessSplice(commands.Cog):
 
                     total_iv_points = (iv_percentage / 100) * 100
                     pending_hp_iv, pending_attack_iv, pending_defense_iv = await self.allocate_iv_points(total_iv_points)
-                    pending_creation_bonus_pct = await self._get_splice_creation_bonus_pct_for_ids(
-                        conn,
-                        pending["pet1_id"],
-                        pending["pet2_id"],
-                    )
-                    this_baby_hp, this_baby_attack, this_baby_defense = self._apply_splice_creation_bonus_pct(
-                        round(hp * stat_multiplier),
-                        round(attack * stat_multiplier),
-                        round(defense * stat_multiplier),
-                        pending_creation_bonus_pct,
-                    )
+                    # These extra requests are copied from the now-discovered recipe.
+                    # Keep known recipe stats stable instead of baking parent levels into
+                    # each copied result.
+                    this_baby_hp = round(hp * stat_multiplier)
+                    this_baby_attack = round(attack * stat_multiplier)
+                    this_baby_defense = round(defense * stat_multiplier)
                     this_baby_hp += pending_hp_iv
                     this_baby_attack += pending_attack_iv
                     this_baby_defense += pending_defense_iv
