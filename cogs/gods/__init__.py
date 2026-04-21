@@ -19,7 +19,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import json
 import re
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
@@ -40,6 +40,9 @@ from utils.i18n import _, locale_doc
 
 SPIN_GODLESS_KEY = "Godless"
 SPIN_CONFIG_PATH = Path(__file__).with_name("spin_config.json")
+SPIN_APPROVAL_THREAD_ID = 1496075318212165652
+SPIN_APPROVAL_APPROVE_CUSTOM_ID = "gods_spin_approval:approve"
+SPIN_APPROVAL_REJECT_CUSTOM_ID = "gods_spin_approval:reject"
 DEFAULT_SPIN_COOLDOWN_SECONDS = 86400
 SPIN_MAX_POOL_ENTRIES = 1000
 DEFAULT_SPIN_TEMPLATE = (
@@ -345,6 +348,38 @@ class SpinConfigPanelView(discord.ui.View):
         self.stop()
 
 
+class SpinApprovalView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(
+        label="Approve",
+        style=discord.ButtonStyle.success,
+        emoji="✅",
+        custom_id=SPIN_APPROVAL_APPROVE_CUSTOM_ID,
+    )
+    async def approve(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+        await self.cog._handle_spin_approval_decision(interaction, "approved")
+
+    @discord.ui.button(
+        label="Reject",
+        style=discord.ButtonStyle.danger,
+        emoji="❌",
+        custom_id=SPIN_APPROVAL_REJECT_CUSTOM_ID,
+    )
+    async def reject(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+        await self.cog._handle_spin_approval_decision(interaction, "rejected")
+
+
 class Gods(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -359,6 +394,12 @@ class Gods(commands.Cog):
         self.support_god_role_ids = support_roles if isinstance(support_roles, dict) else {}
         self.primary_god_role_ids = primary_roles if isinstance(primary_roles, dict) else {}
         self.godless_role_id = gods_ids.get("godless_role_id")
+        self.spin_approval_thread_id = gods_ids.get(
+            "spin_approval_thread_id",
+            SPIN_APPROVAL_THREAD_ID,
+        )
+        self._spin_approval_schema_ready = False
+        self.bot.add_view(SpinApprovalView(self))
 
     def _load_spin_config(self):
         if not SPIN_CONFIG_PATH.exists():
@@ -698,6 +739,446 @@ class Gods(commands.Cog):
         with handle_message_parameters(content=content[:2000]) as params:
             await self.bot.http.send_message(gm_log_channel, params=params)
 
+    async def _ensure_spin_approval_schema(self, conn=None):
+        if self._spin_approval_schema_ready:
+            return
+
+        if conn is None:
+            async with self.bot.pool.acquire() as acquired:
+                return await self._ensure_spin_approval_schema(acquired)
+
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS spin_approval_requests (
+                user_id BIGINT PRIMARY KEY,
+                god TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                requested_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                decided_at TIMESTAMP,
+                decided_by BIGINT,
+                approval_message_id BIGINT,
+                request_guild_id BIGINT,
+                request_channel_id BIGINT,
+                request_message_id BIGINT,
+                request_prefix TEXT
+            );
+            """
+        )
+        for column_sql in (
+            "ALTER TABLE spin_approval_requests ADD COLUMN IF NOT EXISTS god TEXT NOT NULL DEFAULT 'Godless';",
+            "ALTER TABLE spin_approval_requests ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';",
+            "ALTER TABLE spin_approval_requests ADD COLUMN IF NOT EXISTS requested_at TIMESTAMP NOT NULL DEFAULT NOW();",
+            "ALTER TABLE spin_approval_requests ADD COLUMN IF NOT EXISTS decided_at TIMESTAMP;",
+            "ALTER TABLE spin_approval_requests ADD COLUMN IF NOT EXISTS decided_by BIGINT;",
+            "ALTER TABLE spin_approval_requests ADD COLUMN IF NOT EXISTS approval_message_id BIGINT;",
+            "ALTER TABLE spin_approval_requests ADD COLUMN IF NOT EXISTS request_guild_id BIGINT;",
+            "ALTER TABLE spin_approval_requests ADD COLUMN IF NOT EXISTS request_channel_id BIGINT;",
+            "ALTER TABLE spin_approval_requests ADD COLUMN IF NOT EXISTS request_message_id BIGINT;",
+            "ALTER TABLE spin_approval_requests ADD COLUMN IF NOT EXISTS request_prefix TEXT;",
+        ):
+            await conn.execute(column_sql)
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS spin_approval_requests_message_idx
+            ON spin_approval_requests (approval_message_id);
+            """
+        )
+        self._spin_approval_schema_ready = True
+
+    async def _is_user_in_support_server(self, user_id: int) -> bool:
+        support_server_id = getattr(self.bot.config.game, "support_server_id", None)
+        if not support_server_id:
+            return False
+
+        guild = self.bot.get_guild(int(support_server_id))
+        if guild and guild.get_member(int(user_id)):
+            return True
+
+        try:
+            await self.bot.http.get_member(int(support_server_id), int(user_id))
+        except discord.NotFound:
+            return False
+        except discord.HTTPException:
+            return False
+        return True
+
+    async def _get_spin_approver_roles(self, user_id: int) -> list[str]:
+        roles = []
+        config_gms = set(getattr(self.bot.config.game, "game_masters", []) or [])
+        if int(user_id) in {int(gm_id) for gm_id in config_gms}:
+            roles.append("GM")
+
+        async with self.bot.pool.acquire() as conn:
+            is_db_gm = await conn.fetchval(
+                "SELECT 1 FROM game_masters WHERE user_id = $1;",
+                int(user_id),
+            )
+            is_db_god = await conn.fetchval(
+                "SELECT 1 FROM gods WHERE user_id = $1;",
+                int(user_id),
+            )
+
+        if is_db_gm and "GM" not in roles:
+            roles.append("GM")
+        if is_db_god:
+            roles.append("God")
+        return roles
+
+    def _build_spin_approval_embed(
+        self,
+        *,
+        user_id: int,
+        user_label: str,
+        god: str,
+        status: str,
+        requested_at=None,
+        approver_label: str | None = None,
+    ):
+        color_by_status = {
+            "pending": discord.Color.gold(),
+            "approved": discord.Color.green(),
+            "rejected": discord.Color.red(),
+        }
+        embed = discord.Embed(
+            title="First Spin Approval",
+            color=color_by_status.get(status, discord.Color.gold()),
+        )
+        embed.add_field(
+            name="Player",
+            value=f"{user_label}\n`{int(user_id)}`",
+            inline=True,
+        )
+        embed.add_field(name="God", value=god or SPIN_GODLESS_KEY, inline=True)
+        embed.add_field(name="Status", value=status.title(), inline=True)
+        if requested_at:
+            embed.add_field(
+                name="Requested",
+                value=str(requested_at).split(".")[0],
+                inline=True,
+            )
+        if approver_label:
+            embed.add_field(name="Decided By", value=approver_label, inline=True)
+        return embed
+
+    def _spin_approval_message_content(self, ctx, god: str) -> str:
+        prefix = getattr(ctx, "clean_prefix", None) or getattr(ctx, "prefix", "$") or "$"
+        return (
+            "**First spin approval request**\n"
+            f"Player: {ctx.author.mention} (`{ctx.author.id}`)\n"
+            f"God: **{god or SPIN_GODLESS_KEY}**\n"
+            f"Character check: `{prefix}pp {ctx.author.id}`"
+        )
+
+    async def _get_spin_approval_channel(self):
+        channel_id = int(self.spin_approval_thread_id)
+        channel = self.bot.get_channel(channel_id)
+        if channel is None:
+            channel = await self.bot.fetch_channel(channel_id)
+        if not hasattr(channel, "send"):
+            raise commands.BadArgument("Spin approval thread is not sendable.")
+        return channel
+
+    async def _send_spin_approval_request(self, ctx, god: str):
+        approval_channel = await self._get_spin_approval_channel()
+        prefix = getattr(ctx, "clean_prefix", None) or getattr(ctx, "prefix", "$") or "$"
+        request_message_id = getattr(getattr(ctx, "message", None), "id", None)
+        request_channel_id = getattr(getattr(ctx, "channel", None), "id", None)
+        request_guild_id = getattr(getattr(ctx, "guild", None), "id", None)
+        source_jump = getattr(getattr(ctx, "message", None), "jump_url", None)
+
+        embed = self._build_spin_approval_embed(
+            user_id=ctx.author.id,
+            user_label=str(ctx.author),
+            god=god,
+            status="pending",
+            requested_at=datetime.utcnow(),
+        )
+        if source_jump:
+            embed.add_field(
+                name="Source",
+                value=f"[Jump to request]({source_jump})",
+                inline=False,
+            )
+
+        async with self.bot.pool.acquire() as conn:
+            await self._ensure_spin_approval_schema(conn)
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT status, approval_message_id
+                    FROM spin_approval_requests
+                    WHERE user_id = $1
+                    FOR UPDATE;
+                    """,
+                    ctx.author.id,
+                )
+                if (
+                    not row
+                    or str(row["status"]).lower() != "pending"
+                    or row["approval_message_id"]
+                ):
+                    return None
+
+                message = await approval_channel.send(
+                    content=self._spin_approval_message_content(ctx, god),
+                    embed=embed,
+                    view=SpinApprovalView(self),
+                )
+                await conn.execute(
+                    """
+                    UPDATE spin_approval_requests
+                    SET approval_message_id = $1,
+                        request_guild_id = $2,
+                        request_channel_id = $3,
+                        request_message_id = $4,
+                        request_prefix = $5
+                    WHERE user_id = $6 AND status = 'pending';
+                    """,
+                    message.id,
+                    request_guild_id,
+                    request_channel_id,
+                    request_message_id,
+                    prefix,
+                    ctx.author.id,
+                )
+        return message
+
+    async def _send_spin_approval_gate_message(
+        self,
+        ctx,
+        gate: str,
+        content: str,
+        *,
+        seconds: int = 60,
+    ):
+        key = f"cd:{ctx.author.id}:spin_approval:{gate}"
+        try:
+            can_send = await self.bot.redis.execute_command(
+                "SET",
+                key,
+                "1",
+                "EX",
+                max(1, int(seconds)),
+                "NX",
+            )
+        except Exception:
+            can_send = True
+
+        if can_send:
+            await ctx.send(content)
+
+    async def _ensure_spin_approved_for_reward(self, ctx, god: str) -> bool:
+        await self._ensure_spin_approval_schema()
+        async with self.bot.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM spin_approval_requests WHERE user_id = $1;",
+                ctx.author.id,
+            )
+
+        if row:
+            status = str(row["status"]).lower()
+            if status == "approved":
+                return True
+            if status == "pending":
+                if not row["approval_message_id"]:
+                    try:
+                        await self._send_spin_approval_request(ctx, god)
+                    except Exception:
+                        await self._send_spin_approval_gate_message(
+                            ctx,
+                            "pending_repost_failed",
+                            "Your first spin approval is pending, but I could not repost the approval request."
+                        )
+                        return False
+                await self._send_spin_approval_gate_message(
+                    ctx,
+                    "pending",
+                    "Your first spin approval request is still pending. "
+                    "Once it is approved, run this command again to claim a reward."
+                )
+                return False
+            if status == "rejected":
+                await self._send_spin_approval_gate_message(
+                    ctx,
+                    "rejected",
+                    "Your first spin approval request was rejected.",
+                )
+                return False
+
+        if not await self._is_user_in_support_server(ctx.author.id):
+            await self._send_spin_approval_gate_message(
+                ctx,
+                "support_required",
+                "You must be in the support server before requesting first spin approval."
+            )
+            return False
+
+        async with self.bot.pool.acquire() as conn:
+            await self._ensure_spin_approval_schema(conn)
+            row = await conn.fetchrow(
+                """
+                INSERT INTO spin_approval_requests (
+                    user_id, god, status, requested_at,
+                    request_guild_id, request_channel_id,
+                    request_message_id, request_prefix
+                )
+                VALUES ($1, $2, 'pending', NOW(), $3, $4, $5, $6)
+                ON CONFLICT (user_id) DO NOTHING
+                RETURNING *;
+                """,
+                ctx.author.id,
+                god,
+                getattr(getattr(ctx, "guild", None), "id", None),
+                getattr(getattr(ctx, "channel", None), "id", None),
+                getattr(getattr(ctx, "message", None), "id", None),
+                getattr(ctx, "clean_prefix", None) or getattr(ctx, "prefix", "$") or "$",
+            )
+
+        if not row:
+            return await self._ensure_spin_approved_for_reward(ctx, god)
+
+        try:
+            await self._send_spin_approval_request(ctx, god)
+        except Exception as error:
+            async with self.bot.pool.acquire() as conn:
+                await conn.execute(
+                    "DELETE FROM spin_approval_requests WHERE user_id = $1 AND status = 'pending';",
+                    ctx.author.id,
+                )
+            await ctx.send(f"Could not send the spin approval request: {error}")
+            return False
+
+        await ctx.send(
+            "Your first spin approval request has been sent. "
+            "Once approved, run this command again to claim a reward."
+        )
+        return False
+
+    async def _notify_spin_approval_applicant(self, row, status: str):
+        user_id = int(row["user_id"])
+        prefix = row["request_prefix"] or "$"
+        if status == "approved":
+            content = (
+                f"<@{user_id}> your first spin was approved. "
+                f"You can now run `{prefix}spin` again to claim your reward."
+            )
+        else:
+            content = f"<@{user_id}> your first spin approval request was rejected."
+
+        channel_id = row["request_channel_id"]
+        if channel_id:
+            try:
+                channel = self.bot.get_channel(
+                    int(channel_id)
+                ) or await self.bot.fetch_channel(int(channel_id))
+                await channel.send(content)
+                return
+            except (discord.HTTPException, discord.NotFound, discord.Forbidden):
+                pass
+
+        try:
+            user = await self.bot.fetch_user(user_id)
+            await user.send(content)
+        except (discord.HTTPException, discord.NotFound, discord.Forbidden):
+            pass
+
+    async def _log_spin_approval_decision(
+        self,
+        interaction: discord.Interaction,
+        row,
+        status: str,
+        approver_roles: list[str],
+    ):
+        gm_log_channel = getattr(self.bot.config.game, "gm_log_channel", None)
+        if not gm_log_channel:
+            return
+
+        jump_url = getattr(getattr(interaction, "message", None), "jump_url", None)
+        role_text = ", ".join(approver_roles) if approver_roles else "Unknown"
+        content = (
+            f"**Spin approval {status}**\n"
+            f"Player: <@{int(row['user_id'])}> (`{int(row['user_id'])}`)\n"
+            f"God: **{row['god']}**\n"
+            f"Approver: **{interaction.user}** (`{interaction.user.id}`) [{role_text}]\n"
+            f"Approval message: {jump_url or 'unknown'}"
+        )
+        with handle_message_parameters(content=content[:2000]) as params:
+            await self.bot.http.send_message(gm_log_channel, params=params)
+
+    async def _handle_spin_approval_decision(
+        self,
+        interaction: discord.Interaction,
+        status: str,
+    ):
+        approver_roles = await self._get_spin_approver_roles(interaction.user.id)
+        if not approver_roles:
+            return await interaction.response.send_message(
+                "Only a GM or God can decide first spin approvals.",
+                ephemeral=True,
+            )
+
+        await interaction.response.defer(ephemeral=True)
+        async with self.bot.pool.acquire() as conn:
+            await self._ensure_spin_approval_schema(conn)
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT *
+                    FROM spin_approval_requests
+                    WHERE approval_message_id = $1
+                    FOR UPDATE;
+                    """,
+                    interaction.message.id,
+                )
+                if not row:
+                    return await interaction.followup.send(
+                        "No pending spin approval request is linked to this message.",
+                        ephemeral=True,
+                    )
+                if str(row["status"]).lower() != "pending":
+                    return await interaction.followup.send(
+                        f"This request is already {row['status']}.",
+                        ephemeral=True,
+                    )
+                row = await conn.fetchrow(
+                    """
+                    UPDATE spin_approval_requests
+                    SET status = $1,
+                        decided_at = NOW(),
+                        decided_by = $2
+                    WHERE user_id = $3
+                    RETURNING *;
+                    """,
+                    status,
+                    interaction.user.id,
+                    row["user_id"],
+                )
+
+        embed = self._build_spin_approval_embed(
+            user_id=row["user_id"],
+            user_label=f"<@{int(row['user_id'])}>",
+            god=row["god"],
+            status=status,
+            requested_at=row["requested_at"],
+            approver_label=f"{interaction.user} ({', '.join(approver_roles)})",
+        )
+        try:
+            await interaction.message.edit(embed=embed, view=None)
+        except discord.HTTPException:
+            pass
+
+        await self._notify_spin_approval_applicant(row, status)
+        await self._log_spin_approval_decision(
+            interaction,
+            row,
+            status,
+            approver_roles,
+        )
+        await interaction.followup.send(
+            f"Spin approval {status} for <@{int(row['user_id'])}>.",
+            ephemeral=True,
+        )
+
     async def _update_spin_cooldown(self, source, god, cooldown_seconds):
         before = self._get_spin_config_for_god(god)
         after = {
@@ -846,6 +1327,9 @@ class Gods(commands.Cog):
             """
         )
         god = self._canonical_spin_god(ctx.character_data["god"])
+        if not await self._ensure_spin_approved_for_reward(ctx, god):
+            return
+
         config = self._get_spin_config_for_god(god)
         cooldown_seconds = max(0, int(config["cooldown_seconds"]))
         cooldown_key = f"cd:{ctx.author.id}:spin"
