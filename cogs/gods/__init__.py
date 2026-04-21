@@ -43,6 +43,7 @@ SPIN_CONFIG_PATH = Path(__file__).with_name("spin_config.json")
 SPIN_APPROVAL_THREAD_ID = 1496075318212165652
 SPIN_APPROVAL_APPROVE_CUSTOM_ID = "gods_spin_approval:approve"
 SPIN_APPROVAL_REJECT_CUSTOM_ID = "gods_spin_approval:reject"
+SPIN_BLOCKED_ALT_ROLE_ID = 1470792499789430917
 DEFAULT_SPIN_COOLDOWN_SECONDS = 86400
 SPIN_MAX_POOL_ENTRIES = 1000
 DEFAULT_SPIN_TEMPLATE = (
@@ -802,6 +803,31 @@ class Gods(commands.Cog):
             return False
         return True
 
+    async def _has_spin_blocked_alt_role(self, user_id: int) -> bool:
+        support_server_id = getattr(self.bot.config.game, "support_server_id", None)
+        if not support_server_id:
+            return False
+
+        guild = self.bot.get_guild(int(support_server_id))
+        member = guild.get_member(int(user_id)) if guild else None
+        if member:
+            return any(
+                int(role.id) == SPIN_BLOCKED_ALT_ROLE_ID
+                for role in getattr(member, "roles", [])
+            )
+
+        try:
+            member_payload = await self.bot.http.get_member(
+                int(support_server_id),
+                int(user_id),
+            )
+        except (discord.NotFound, discord.HTTPException):
+            return False
+
+        return SPIN_BLOCKED_ALT_ROLE_ID in {
+            int(role_id) for role_id in member_payload.get("roles", [])
+        }
+
     async def _get_spin_approver_roles(self, user_id: int) -> list[str]:
         roles = []
         config_gms = set(getattr(self.bot.config.game, "game_masters", []) or [])
@@ -1327,6 +1353,14 @@ class Gods(commands.Cog):
             """
         )
         god = self._canonical_spin_god(ctx.character_data["god"])
+        if await self._has_spin_blocked_alt_role(ctx.author.id):
+            await self._send_spin_approval_gate_message(
+                ctx,
+                "alt_blocked",
+                "Alts cannot participate in spin.",
+            )
+            return
+
         if not await self._ensure_spin_approved_for_reward(ctx, god):
             return
 
