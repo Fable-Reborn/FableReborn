@@ -2089,8 +2089,12 @@ class Raid(commands.Cog):
                 "priest": "Bless"
             }
             return default_actions[role], False
-        if role == "follower":
-            timeout = 30
+        decision_timeouts = {
+            "follower": 30,
+            "champion": 90,
+            "priest": 90,
+        }
+        timeout = decision_timeouts.get(role, 60)
         view = DecisionView(player, options, timeout=timeout)
 
         if embed:
