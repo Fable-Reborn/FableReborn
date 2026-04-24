@@ -3,7 +3,7 @@ import discord
 from discord.ext import commands
 from discord.ui import Button, View
 import asyncio
-from typing import Optional, List, Dict, Tuple, Union, Any
+from typing import Optional, List, Dict, Tuple, Union, Any, Set
 from discord import ButtonStyle, SelectOption, ui
 from discord.ui import Button, View, Select
 import firebase_admin
@@ -13,6 +13,9 @@ import json
 import aiohttp
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils.checks import has_char, is_gm, is_patreon
+
+SPLICE_ARCHIVE_USER_ID = 0
+SPLICE_ALIAS_MAX_LENGTH = 20
 
 SPLICE_ELEMENT_ORDER = [
     "Fire",
@@ -1339,6 +1342,109 @@ class Soulforge(commands.Cog):
 
     def _get_splice_background_label(self, theme_key: Optional[str]) -> str:
         return SPLICE_BACKGROUND_LABELS[self._normalize_splice_background_theme(theme_key)]
+
+    @staticmethod
+    def _build_archive_alias_candidate(alias: str, suffix_number: int) -> str:
+        base_alias = str(alias or "").strip()
+        if not base_alias:
+            return ""
+        if suffix_number <= 0:
+            return base_alias[:SPLICE_ALIAS_MAX_LENGTH]
+
+        suffix = str(suffix_number)
+        available = SPLICE_ALIAS_MAX_LENGTH - len(suffix)
+        if available <= 0:
+            return suffix[-SPLICE_ALIAS_MAX_LENGTH:]
+        return f"{base_alias[:available]}{suffix}"
+
+    async def _get_unique_archive_alias(
+        self,
+        conn,
+        alias: Optional[str],
+        *,
+        reserved_aliases: Set[str],
+        exclude_pet_ids: List[int],
+    ) -> Optional[str]:
+        base_alias = str(alias or "").strip()
+        if not base_alias:
+            return None
+
+        suffix_number = 0
+        while True:
+            candidate = self._build_archive_alias_candidate(base_alias, suffix_number)
+            candidate_key = candidate.lower()
+            if candidate_key in reserved_aliases:
+                suffix_number += 1
+                continue
+
+            exists = await conn.fetchval(
+                """
+                SELECT 1
+                FROM monster_pets
+                WHERE user_id = $1
+                  AND alt_name IS NOT NULL
+                  AND lower(alt_name) = lower($2)
+                  AND NOT (id = ANY($3::int[]))
+                LIMIT 1;
+                """,
+                SPLICE_ARCHIVE_USER_ID,
+                candidate,
+                exclude_pet_ids,
+            )
+            if not exists:
+                reserved_aliases.add(candidate_key)
+                return candidate
+            suffix_number += 1
+
+    async def _archive_splice_source_pets(self, conn, pet_ids: List[int]) -> None:
+        archive_pet_ids: List[int] = []
+        seen_pet_ids: Set[int] = set()
+        for pet_id in pet_ids:
+            if pet_id is None:
+                continue
+            pet_id = int(pet_id)
+            if pet_id in seen_pet_ids:
+                continue
+            seen_pet_ids.add(pet_id)
+            archive_pet_ids.append(pet_id)
+
+        if not archive_pet_ids:
+            return
+
+        pet_rows = await conn.fetch(
+            """
+            SELECT id, alt_name
+            FROM monster_pets
+            WHERE id = ANY($1::int[])
+            FOR UPDATE;
+            """,
+            archive_pet_ids,
+        )
+        rows_by_id = {int(row["id"]): row for row in pet_rows}
+        reserved_aliases: Set[str] = set()
+
+        for pet_id in archive_pet_ids:
+            row = rows_by_id.get(pet_id)
+            if row is None:
+                continue
+
+            archive_alias = await self._get_unique_archive_alias(
+                conn,
+                row["alt_name"],
+                reserved_aliases=reserved_aliases,
+                exclude_pet_ids=archive_pet_ids,
+            )
+            await conn.execute(
+                """
+                UPDATE monster_pets
+                SET user_id = $1,
+                    alt_name = $2
+                WHERE id = $3;
+                """,
+                SPLICE_ARCHIVE_USER_ID,
+                archive_alias,
+                pet_id,
+            )
 
     async def _ensure_splice_request_schema(self, conn) -> None:
         await conn.execute(
@@ -3549,21 +3655,19 @@ class Soulforge(commands.Cog):
             )
             pages.append(embed)
             
-            # First, set pets to user_id 0 to prevent trading while request is processed
+            # First, archive the source pets so they cannot be traded while the splice resolves.
             async with self.bot.pool.acquire() as conn:
-                await conn.execute(
-                    "UPDATE monster_pets SET user_id = 0 WHERE id IN ($1, $2)",
-                    pet1_id, pet2_id
-                )
-                
-                # NEW: Update forge condition and divine attention
-                new_condition = max(0, forge_condition - condition_reduction)
-                await conn.execute("""
-                    UPDATE splicing_quest 
-                    SET forge_condition = $1,
-                        divine_attention = $2
-                    WHERE user_id = $3 AND crucible_built = TRUE
-                """, new_condition, new_divine_attention, ctx.author.id)
+                async with conn.transaction():
+                    await self._archive_splice_source_pets(conn, [pet1_id, pet2_id])
+
+                    # NEW: Update forge condition and divine attention
+                    new_condition = max(0, forge_condition - condition_reduction)
+                    await conn.execute("""
+                        UPDATE splicing_quest 
+                        SET forge_condition = $1,
+                            divine_attention = $2
+                        WHERE user_id = $3 AND crucible_built = TRUE
+                    """, new_condition, new_divine_attention, ctx.author.id)
             
             if existing_splice:
                 # If this combination has been spliced before, use the existing data
