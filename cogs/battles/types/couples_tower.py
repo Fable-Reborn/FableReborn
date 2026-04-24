@@ -136,6 +136,31 @@ class CouplesTowerBattle(TowerBattle):
             field_value += f"\nShield: {self.format_number(shield_value)}"
         return field_value
 
+    def _truncate_embed_field_text(
+        self,
+        text,
+        *,
+        max_length=1020,
+        truncation_notice="*...earlier actions truncated...*",
+    ):
+        """Clamp text to Discord's embed field limit while keeping the newest sections."""
+        if not text or len(text) <= max_length:
+            return text
+
+        sections = [section for section in text.split("\n\n") if section]
+        while sections:
+            candidate = "\n\n".join(sections)
+            if len(candidate) + len(truncation_notice) + 2 <= max_length:
+                return f"{truncation_notice}\n\n{candidate}"
+            sections.pop(0)
+
+        available = max(max_length - len(truncation_notice) - 2, 0)
+        if available <= 0:
+            return truncation_notice[:max_length]
+
+        tail = text[-available:]
+        return f"{truncation_notice}\n\n{tail}"
+
     def _apply_paladin_smite_to_message(self, attacker, target, message):
         class_messages = self.resolve_post_hit_class_effects(attacker, target)
         if not class_messages:
@@ -6310,9 +6335,10 @@ class CouplesTowerBattle(TowerBattle):
             
             formatted_log.append(f"**Action #{i}**\n{msg}")
         
+        result = "\n\n".join(formatted_log)
+
         # Level 24: Aggressive truncation for chaos battles to prevent overflow
         if self.level == 24:
-            result = "\n\n".join(formatted_log)
             if len(result) > 900:  # More aggressive limit for Level 24
                 # Keep only the last 5 actions for chaos levels
                 recent_actions = formatted_log[-5:]
@@ -6320,11 +6346,9 @@ class CouplesTowerBattle(TowerBattle):
                 if len(result) > 900:  # Still too long, be even more aggressive
                     recent_actions = formatted_log[-3:]
                     result = "*...chaos...*\n\n" + "\n\n".join(recent_actions)
-            return result
         
         # Level 16: Aggressive truncation for grudge mechanics to prevent overflow  
-        if self.level == 16:
-            result = "\n\n".join(formatted_log)
+        elif self.level == 16:
             if len(result) > 900:  # More aggressive limit for Level 16 grudge mechanics
                 # Keep only the last 5 actions for grudge levels
                 recent_actions = formatted_log[-5:]
@@ -6332,11 +6356,9 @@ class CouplesTowerBattle(TowerBattle):
                 if len(result) > 900:  # Still too long, be even more aggressive
                     recent_actions = formatted_log[-3:]
                     result = "*...fury builds...*\n\n" + "\n\n".join(recent_actions)
-            return result
         
         # Level 18: Aggressive truncation for temptation mechanics to prevent overflow
-        if self.level == 18:
-            result = "\n\n".join(formatted_log)
+        elif self.level == 18:
             if len(result) > 900:  # More aggressive limit for Level 18 temptation mechanics
                 # Keep only the last 5 actions for temptation levels to prevent Discord embed limit
                 recent_actions = formatted_log[-5:]
@@ -6344,11 +6366,9 @@ class CouplesTowerBattle(TowerBattle):
                 if len(result) > 900:  # Still too long, be even more aggressive
                     recent_actions = formatted_log[-3:]
                     result = "*...seductive whispers...*\n\n" + "\n\n".join(recent_actions)
-            return result
         
         # Level 19: Aggressive truncation for vulnerability mechanics to prevent overflow
-        if self.level == 19:
-            result = "\n\n".join(formatted_log)
+        elif self.level == 19:
             if len(result) > 900:  # More aggressive limit for Level 19 vulnerability mechanics
                 # Keep only the last 5 actions for vulnerability levels to prevent Discord embed limit
                 recent_actions = formatted_log[-5:]
@@ -6356,11 +6376,9 @@ class CouplesTowerBattle(TowerBattle):
                 if len(result) > 900:  # Still too long, be even more aggressive
                     recent_actions = formatted_log[-3:]
                     result = "*...insecurities targeted...*\n\n" + "\n\n".join(recent_actions)
-            return result
         
         # Level 21: Aggressive truncation for forge heat mechanics to prevent overflow
-        if self.level == 21:
-            result = "\n\n".join(formatted_log)
+        elif self.level == 21:
             if len(result) > 900:  # More aggressive limit for Level 21 forge heat mechanics
                 # Keep only the last 5 actions for forge heat levels to prevent Discord embed limit
                 recent_actions = formatted_log[-5:]
@@ -6368,11 +6386,9 @@ class CouplesTowerBattle(TowerBattle):
                 if len(result) > 900:  # Still too long, be even more aggressive
                     recent_actions = formatted_log[-3:]
                     result = "*...heat rises...*\n\n" + "\n\n".join(recent_actions)
-            return result
             
         # Level 22: Aggressive truncation for despair mechanics to prevent overflow
-        if self.level == 22:
-            result = "\n\n".join(formatted_log)
+        elif self.level == 22:
             if len(result) > 900:  # More aggressive limit for Level 22 despair mechanics
                 # Keep only the last 3 actions for despair levels to prevent Discord embed limit
                 recent_actions = formatted_log[-3:]
@@ -6380,9 +6396,8 @@ class CouplesTowerBattle(TowerBattle):
                 if len(result) > 900:  # Still too long, be even more aggressive
                     recent_actions = formatted_log[-2:]
                     result = "*...darkness spreads...*\n\n" + "\n\n".join(recent_actions)
-            return result
-            
-        return "\n\n".join(formatted_log)
+
+        return self._truncate_embed_field_text(result)
 
     async def create_split_combat_embed(self):
         """Special embed for Level 5 split combat"""
