@@ -161,6 +161,33 @@ class CouplesTowerBattle(TowerBattle):
         tail = text[-available:]
         return f"{truncation_notice}\n\n{tail}"
 
+    def _pack_embed_sections(self, sections, *, max_length=1020):
+        """Pack section blocks into embed-safe field values."""
+        chunks = []
+        current_chunk = ""
+
+        for section in sections:
+            if not section:
+                continue
+
+            section_chunks = self._split_embed_text(section, max_length=max_length)
+            for section_chunk in section_chunks:
+                if not current_chunk:
+                    current_chunk = section_chunk
+                    continue
+
+                candidate = f"{current_chunk}\n\n{section_chunk}"
+                if len(candidate) <= max_length:
+                    current_chunk = candidate
+                else:
+                    chunks.append(current_chunk)
+                    current_chunk = section_chunk
+
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        return chunks or ["No information available."]
+
     def _apply_paladin_smite_to_message(self, attacker, target, message):
         class_messages = self.resolve_post_hit_class_effects(attacker, target)
         if not class_messages:
@@ -6782,18 +6809,12 @@ class CouplesTowerBattle(TowerBattle):
         # Show alive enemies first, then dead ones
         all_enemy_info = alive_enemies + dead_enemies
         
-        # Split into columns if there are many enemies
-        if len(all_enemy_info) <= 3:
-            # Show in single column
-            embed.add_field(name="Active Sprites", value="\n\n".join(all_enemy_info), inline=False)
+        sprite_chunks = self._pack_embed_sections(all_enemy_info)
+        if len(sprite_chunks) == 1:
+            embed.add_field(name="Active Sprites", value=sprite_chunks[0], inline=False)
         else:
-            # Split into two columns
-            half = len(all_enemy_info) // 2
-            left_column = all_enemy_info[:half + (len(all_enemy_info) % 2)]
-            right_column = all_enemy_info[half + (len(all_enemy_info) % 2):]
-            
-            embed.add_field(name="Sprites (1)", value="\n\n".join(left_column), inline=True)
-            embed.add_field(name="Sprites (2)", value="\n\n".join(right_column), inline=True)
+            for index, chunk in enumerate(sprite_chunks, start=1):
+                embed.add_field(name=f"Sprites ({index})", value=chunk, inline=True)
         
         # Add battle log
         log_text = self.format_battle_log()
