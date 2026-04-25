@@ -144,6 +144,27 @@ class Guild(commands.Cog):
             return city["name"]
         return None
 
+    async def _get_guild_city_alert_settings(self, guild_id: int):
+        await self.bot._ensure_city_war_tables()
+        return await self.bot.pool.fetchrow(
+            'SELECT "city_attack_channel", "city_attack_role_id" FROM guild WHERE "id"=$1;',
+            guild_id,
+        )
+
+    async def _resolve_guild_city_alert_channel(self, channel_id: int | None):
+        parsed_channel_id = self.bot._coerce_positive_int(channel_id)
+        if not parsed_channel_id:
+            return None
+
+        channel = self.bot.get_channel(parsed_channel_id)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(parsed_channel_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                return None
+
+        return channel if isinstance(channel, discord.TextChannel) else None
+
     def cog_unload(self):
         if self._resume_guild_adventure_joins_task:
             self._resume_guild_adventure_joins_task.cancel()
@@ -1413,6 +1434,229 @@ class Guild(commands.Cog):
         await ctx.send(
             _("**Guild logs will go to {channel} ** ✅").format(channel=channel.mention)
         )
+
+    @commands.has_permissions(administrator=True, manage_channels=True)
+    @is_guild_leader()
+    @guild.group(
+        name="cityalerts",
+        aliases=["cityalert", "citywaralerts"],
+        invoke_without_command=True,
+        brief=_("Show or manage the city attack alert relay."),
+    )
+    @locale_doc
+    async def cityalerts(self, ctx):
+        _(
+            """Show or manage the guild's city attack alert relay.
+
+            Use `{prefix}guild cityalerts set` in the channel you want alerts sent to.
+            Use `{prefix}guild cityalerts role <role>` to optionally ping a role when the alert is relayed.
+
+            Only guild leaders can use this command."""
+        )
+        settings = await self._get_guild_city_alert_settings(ctx.character_data["guild"])
+        channel_id = self.bot._coerce_positive_int(
+            settings["city_attack_channel"] if settings else None
+        )
+        role_id = self.bot._coerce_positive_int(
+            settings["city_attack_role_id"] if settings else None
+        )
+
+        channel = await self._resolve_guild_city_alert_channel(channel_id)
+        role = channel.guild.get_role(role_id) if channel and role_id else None
+
+        if channel:
+            channel_text = channel.mention
+        elif channel_id:
+            channel_text = _("Unavailable channel (`{channel_id}`)").format(
+                channel_id=channel_id
+            )
+        else:
+            channel_text = _("Not configured")
+
+        if role:
+            role_text = f"@{discord.utils.escape_mentions(role.name)}"
+        elif role_id:
+            role_text = _("Unavailable role (`{role_id}`)").format(role_id=role_id)
+        else:
+            role_text = _("No ping role")
+
+        await ctx.send(
+            _(
+                "**City attack alerts**\n"
+                "Channel: {channel}\n"
+                "Ping role: {role}\n\n"
+                "Use `{prefix}guild cityalerts set` in the target channel to update it."
+            ).format(
+                channel=channel_text,
+                role=role_text,
+                prefix=ctx.clean_prefix,
+            )
+        )
+
+    @commands.has_permissions(administrator=True, manage_channels=True)
+    @is_guild_leader()
+    @cityalerts.command(name="set", brief=_("Set the city attack alert channel."))
+    @locale_doc
+    async def cityalerts_set(self, ctx, channel: discord.TextChannel = None):
+        _(
+            """`[channel]` - The channel to relay city attack alerts to, defaults to the current channel
+
+            Set the guild's city attack alert relay channel.
+            You must have administrator and Manage Channels permissions in the target server/channel.
+
+            Only guild leaders can use this command."""
+        )
+        channel = channel or ctx.channel
+        author_permissions = channel.permissions_for(ctx.author)
+        if not author_permissions.administrator or not author_permissions.manage_channels:
+            return await ctx.send(
+                _(
+                    "You need administrator and Manage Channels permissions in {channel} to use it for city attack alerts."
+                ).format(channel=channel.mention)
+            )
+
+        bot_permissions = channel.permissions_for(ctx.me)
+        if not bot_permissions.send_messages:
+            return await ctx.send(
+                _("I cannot send messages in {channel}.").format(channel=channel.mention)
+            )
+
+        settings = await self._get_guild_city_alert_settings(ctx.character_data["guild"])
+        existing_role_id = self.bot._coerce_positive_int(
+            settings["city_attack_role_id"] if settings else None
+        )
+        role = channel.guild.get_role(existing_role_id) if existing_role_id else None
+        preserved_role_id = existing_role_id if role else None
+        if role and not (role.mentionable or bot_permissions.mention_everyone):
+            preserved_role_id = None
+
+        if not await ctx.confirm(
+            _("{channel} will receive city attack alerts for your guild. Are you sure?").format(
+                channel=channel.mention
+            )
+        ):
+            return
+
+        await self.bot.pool.execute(
+            'UPDATE guild SET "city_attack_channel"=$1, "city_attack_role_id"=$2 WHERE "id"=$3;',
+            channel.id,
+            preserved_role_id,
+            ctx.character_data["guild"],
+        )
+
+        message = _("**City attack alerts will go to {channel}.** ✅").format(
+            channel=channel.mention
+        )
+        if existing_role_id and preserved_role_id is None:
+            message += " " + _(
+                "The configured ping role was cleared because it is not valid for that channel."
+            )
+        await ctx.send(message)
+
+    @commands.has_permissions(administrator=True, manage_channels=True)
+    @is_guild_leader()
+    @cityalerts.command(name="role", brief=_("Set the optional city attack ping role."))
+    @locale_doc
+    async def cityalerts_role(self, ctx, role: discord.Role):
+        _(
+            """`<role>` - The role to ping when a city attack alert is relayed
+
+            Set the optional role to ping for city attack alerts.
+            The role must be in the same server as the configured alert channel.
+
+            Only guild leaders can use this command."""
+        )
+        settings = await self._get_guild_city_alert_settings(ctx.character_data["guild"])
+        channel_id = self.bot._coerce_positive_int(
+            settings["city_attack_channel"] if settings else None
+        )
+        role_text = f"@{discord.utils.escape_mentions(role.name)}"
+        if not channel_id:
+            return await ctx.send(
+                _(
+                    "Set an alert channel first with `{prefix}guild cityalerts set`."
+                ).format(prefix=ctx.clean_prefix)
+            )
+
+        channel = await self._resolve_guild_city_alert_channel(channel_id)
+        if channel is None:
+            return await ctx.send(
+                _(
+                    "Your configured city alert channel is unavailable. Set it again with `{prefix}guild cityalerts set`."
+                ).format(prefix=ctx.clean_prefix)
+            )
+
+        if role.guild.id != channel.guild.id:
+            return await ctx.send(
+                _(
+                    "{role} is not in the same server as the configured alert channel {channel}."
+                ).format(role=role_text, channel=channel.mention)
+            )
+
+        author_permissions = channel.permissions_for(ctx.author)
+        if not author_permissions.administrator or not author_permissions.manage_channels:
+            return await ctx.send(
+                _(
+                    "You need administrator and Manage Channels permissions in {channel} to configure its city attack ping role."
+                ).format(channel=channel.mention)
+            )
+
+        bot_permissions = channel.permissions_for(ctx.me)
+        if not role.mentionable and not bot_permissions.mention_everyone:
+            return await ctx.send(
+                _(
+                    "I cannot ping {role} in {channel}. Make the role mentionable or give me permission to mention everyone there."
+                ).format(role=role_text, channel=channel.mention)
+            )
+
+        await self.bot.pool.execute(
+            'UPDATE guild SET "city_attack_role_id"=$1 WHERE "id"=$2;',
+            role.id,
+            ctx.character_data["guild"],
+        )
+        await ctx.send(
+            _("**City attack alerts will ping {role}.** ✅").format(role=role_text)
+        )
+
+    @commands.has_permissions(administrator=True, manage_channels=True)
+    @is_guild_leader()
+    @cityalerts.command(
+        name="disable",
+        aliases=["off", "remove"],
+        brief=_("Disable the city attack alert relay."),
+    )
+    @locale_doc
+    async def cityalerts_disable(self, ctx):
+        _(
+            """Disable the guild's city attack alert relay and clear the optional ping role.
+
+            Only guild leaders can use this command."""
+        )
+        await self.bot.pool.execute(
+            'UPDATE guild SET "city_attack_channel"=NULL, "city_attack_role_id"=NULL WHERE "id"=$1;',
+            ctx.character_data["guild"],
+        )
+        await ctx.send(_("City attack alerts have been disabled."))
+
+    @commands.has_permissions(administrator=True, manage_channels=True)
+    @is_guild_leader()
+    @cityalerts.command(
+        name="roleclear",
+        aliases=["roleremove", "roleoff"],
+        brief=_("Remove the city attack ping role."),
+    )
+    @locale_doc
+    async def cityalerts_roleclear(self, ctx):
+        _(
+            """Remove the optional ping role for city attack alerts.
+
+            Only guild leaders can use this command."""
+        )
+        await self.bot.pool.execute(
+            'UPDATE guild SET "city_attack_role_id"=NULL WHERE "id"=$1;',
+            ctx.character_data["guild"],
+        )
+        await ctx.send(_("The city attack ping role has been cleared."))
 
     @has_guild()
     @guild.command(brief=_("Show the richest guild members"))

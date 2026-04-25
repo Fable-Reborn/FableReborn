@@ -1729,6 +1729,18 @@ class Bot(commands.AutoShardedBot):
                 )
                 await conn.execute(
                     """
+                    ALTER TABLE guild
+                    ADD COLUMN IF NOT EXISTS city_attack_channel bigint;
+                    """
+                )
+                await conn.execute(
+                    """
+                    ALTER TABLE guild
+                    ADD COLUMN IF NOT EXISTS city_attack_role_id bigint;
+                    """
+                )
+                await conn.execute(
+                    """
                     CREATE INDEX IF NOT EXISTS defenses_city_slot_idx
                     ON defenses (city, slot_id);
                     """

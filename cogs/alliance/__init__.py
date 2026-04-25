@@ -97,6 +97,230 @@ class Alliance(commands.Cog):
         self.bot = bot
         self.city_configs = {name.title(): i for name, i in bot.config.cities.items()}
 
+    async def _get_city_attack_alert_settings(
+        self,
+        guild_id: int | None,
+        conn=None,
+    ) -> tuple[int | None, int | None]:
+        parsed_guild_id = self.bot._coerce_positive_int(guild_id)
+        if not parsed_guild_id:
+            return None, None
+
+        await self.bot._ensure_city_war_tables()
+        local = conn is None
+        if local:
+            conn = await self.bot.pool.acquire()
+
+        try:
+            row = await conn.fetchrow(
+                'SELECT "city_attack_channel", "city_attack_role_id" FROM guild WHERE "id"=$1;',
+                parsed_guild_id,
+            )
+            if not row:
+                return None, None
+            return (
+                self.bot._coerce_positive_int(row["city_attack_channel"]),
+                self.bot._coerce_positive_int(row["city_attack_role_id"]),
+            )
+        finally:
+            if local:
+                await self.bot.pool.release(conn)
+
+    async def _resolve_city_attack_alert_channel(self, channel_id: int | None):
+        parsed_channel_id = self.bot._coerce_positive_int(channel_id)
+        if not parsed_channel_id:
+            return None
+
+        channel = self.bot.get_channel(parsed_channel_id)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(parsed_channel_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                return None
+
+        return channel if isinstance(channel, discord.TextChannel) else None
+
+    def _build_city_attack_start_alert_embed(
+        self,
+        *,
+        city: str,
+        attacking_guild_name: str,
+        defending_guild_name: str,
+        attacker_count: int,
+        defense_count: int,
+        guard_count: int,
+        guard_pet_count: int,
+        attack_pet_text: str = "",
+        guard_pet_text: str = "",
+    ) -> tuple[discord.Embed, str]:
+        embed = discord.Embed(
+            title=_("City Under Attack: {city}").format(city=city),
+            colour=discord.Color.red(),
+            description=_(
+                "**{attacking_guild}** has launched a city war against **{defending_guild}**."
+            ).format(
+                attacking_guild=attacking_guild_name,
+                defending_guild=defending_guild_name,
+            ),
+        )
+        embed.add_field(
+            name=_("Attackers"),
+            value=_("**{count}** frontline attackers").format(count=attacker_count),
+            inline=False,
+        )
+        embed.add_field(
+            name=_("Defenders"),
+            value=_(
+                "**{defenses}** fortifications, **{guards}** guards, and **{guard_pets}** stationed pet"
+            ).format(
+                defenses=defense_count,
+                guards=guard_count,
+                guard_pets=guard_pet_count,
+            ),
+            inline=False,
+        )
+
+        pet_lines = []
+        if attack_pet_text:
+            pet_lines.append(attack_pet_text.strip())
+        if guard_pet_text:
+            pet_lines.append(guard_pet_text.strip())
+        if pet_lines:
+            embed.add_field(name=_("Pets"), value="\n".join(pet_lines), inline=False)
+
+        embed.set_footer(
+            text=_("This alert is informational. City wars resolve automatically once started.")
+        )
+
+        fallback_text = _(
+            "{attacking_guild} has launched a city war against {defending_guild} in {city}. "
+            "Attackers: {attacker_count}. Defenders: {defense_count} fortifications, "
+            "{guard_count} guards, {guard_pet_count} stationed pet."
+        ).format(
+            attacking_guild=attacking_guild_name,
+            defending_guild=defending_guild_name,
+            city=city,
+            attacker_count=attacker_count,
+            defense_count=defense_count,
+            guard_count=guard_count,
+            guard_pet_count=guard_pet_count,
+        )
+        return embed, fallback_text
+
+    def _build_city_attack_result_alert_embed(
+        self,
+        *,
+        city: str,
+        attacking_guild_name: str,
+        defending_guild_name: str,
+        result: dict,
+    ) -> tuple[discord.Embed, str]:
+        attackers_won = bool(result.get("attackers_won"))
+        structures_remaining = int(result.get("structures_remaining", 0))
+        guards_remaining = int(result.get("guards_remaining", 0))
+        attackers_remaining = int(result.get("attackers_remaining", 0))
+
+        if attackers_won:
+            embed = discord.Embed(
+                title=_("City Defenses Broken: {city}").format(city=city),
+                colour=discord.Color.orange(),
+                description=_(
+                    "**{attacking_guild}** cleared every defender in **{city}**. The city can now be occupied."
+                ).format(attacking_guild=attacking_guild_name, city=city),
+            )
+            fallback_text = _(
+                "{attacking_guild} cleared every defender in {city}. The city can now be occupied."
+            ).format(attacking_guild=attacking_guild_name, city=city)
+        else:
+            embed = discord.Embed(
+                title=_("City Held: {city}").format(city=city),
+                colour=discord.Color.green(),
+                description=_(
+                    "**{defending_guild}** held **{city}** against **{attacking_guild}**."
+                ).format(
+                    defending_guild=defending_guild_name,
+                    city=city,
+                    attacking_guild=attacking_guild_name,
+                ),
+            )
+            fallback_text = _(
+                "{defending_guild} held {city} against {attacking_guild}."
+            ).format(
+                defending_guild=defending_guild_name,
+                city=city,
+                attacking_guild=attacking_guild_name,
+            )
+
+        embed.add_field(
+            name=_("Attackers Remaining"),
+            value=str(attackers_remaining),
+            inline=True,
+        )
+        embed.add_field(
+            name=_("Fortifications Remaining"),
+            value=str(structures_remaining),
+            inline=True,
+        )
+        embed.add_field(
+            name=_("Guards/Pets Remaining"),
+            value=str(guards_remaining),
+            inline=True,
+        )
+        return embed, fallback_text
+
+    async def _send_city_attack_alert(
+        self,
+        guild_id: int | None,
+        *,
+        embed: discord.Embed,
+        fallback_text: str,
+    ) -> bool:
+        channel_id, role_id = await self._get_city_attack_alert_settings(guild_id)
+        if not channel_id:
+            return False
+
+        try:
+            channel = await self._resolve_city_attack_alert_channel(channel_id)
+            if channel is None:
+                return False
+
+            me = channel.guild.me or channel.guild.get_member(self.bot.user.id)
+            if me is None:
+                return False
+
+            permissions = channel.permissions_for(me)
+            if not permissions.send_messages:
+                return False
+
+            content = None
+            allowed_mentions = discord.AllowedMentions.none()
+            role = channel.guild.get_role(role_id) if role_id else None
+            if role is not None and (role.mentionable or permissions.mention_everyone):
+                content = role.mention
+                allowed_mentions = discord.AllowedMentions(roles=True)
+
+            if permissions.embed_links:
+                await channel.send(
+                    content=content,
+                    embed=embed,
+                    allowed_mentions=allowed_mentions,
+                )
+            else:
+                if content:
+                    fallback_text = f"{content}\n{fallback_text}"
+                await channel.send(
+                    content=fallback_text,
+                    allowed_mentions=allowed_mentions,
+                )
+            return True
+        except Exception:
+            self.bot.logger.exception(
+                "Failed to relay city attack alert for guild %s to channel %s.",
+                guild_id,
+                channel_id,
+            )
+            return False
+
     def _build_city_help_overview_embed(self, ctx: Context) -> discord.Embed:
         embed = discord.Embed(
             title=_("City War Help"),
@@ -258,6 +482,14 @@ class Alliance(commands.Cog):
                 "City ownership increases the vault cap of every guild in the owning alliance.\n"
                 "If the city falls, `25%` of the defending alliance's stored overflow above base caps is split as evenly as possible across its guilds and transferred into the attackers' guild bank."
             ),
+            inline=False,
+        )
+        embed.add_field(
+            name=_("Alerts"),
+            value=_(
+                "Guild leaders can relay city attack alerts to a Discord channel with `{prefix}guild cityalerts set`.\n"
+                "Add an optional ping role with `{prefix}guild cityalerts role <role>`."
+            ).format(prefix=ctx.clean_prefix),
             inline=False,
         )
         return embed
@@ -2536,6 +2768,7 @@ class Alliance(commands.Cog):
                 ctx.character_data["guild"],
             )
             city_data = await conn.fetchrow('SELECT * FROM city WHERE "name"=$1;', city)
+            defending_guild_id = self.bot._coerce_positive_int(city_data["owner"])
             if city_data["owner"] == ctx.character_data["guild"]:
                 await self.bot.reset_alliance_cooldown(ctx)
                 return await ctx.send(_("You cannot attack your own city."))
@@ -2795,6 +3028,22 @@ class Alliance(commands.Cog):
             f" attackers, {len(structure_combatants)} fortifications, {len(guard_combatants)}"
             f" guards, and {1 if guard_pet_combatant else 0} stationed pet."
         )
+        start_alert_embed, start_alert_text = self._build_city_attack_start_alert_embed(
+            city=city,
+            attacking_guild_name=attacking_guild_name,
+            defending_guild_name=defending_guild_name,
+            attacker_count=len(frontline_attackers),
+            defense_count=len(structure_combatants),
+            guard_count=len(guard_combatants),
+            guard_pet_count=1 if guard_pet_combatant else 0,
+            attack_pet_text=attack_pet_text,
+            guard_pet_text=guard_pet_text,
+        )
+        await self._send_city_attack_alert(
+            defending_guild_id,
+            embed=start_alert_embed,
+            fallback_text=start_alert_text,
+        )
 
         attacker_team = Team("Attackers", attacker_combatants)
         defender_team = Team("Defenders", defender_combatants)
@@ -2840,6 +3089,18 @@ class Alliance(commands.Cog):
             await self.bot.public_log(
                 f"**{attacking_guild_name}** failed to break **{city}**'s defenses!"
             )
+
+        result_alert_embed, result_alert_text = self._build_city_attack_result_alert_embed(
+            city=city,
+            attacking_guild_name=attacking_guild_name,
+            defending_guild_name=defending_guild_name,
+            result=result,
+        )
+        await self._send_city_attack_alert(
+            defending_guild_id,
+            embed=result_alert_embed,
+            fallback_text=result_alert_text,
+        )
 
     @has_char()
     @alliance.command(
