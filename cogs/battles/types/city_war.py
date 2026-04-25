@@ -1,10 +1,12 @@
 import asyncio
 import datetime
+import random
 from decimal import Decimal
 
 import discord
 
 from ..core.battle import Battle
+from .raid import RaidBattle
 
 
 class CityWarBattle(Battle):
@@ -18,6 +20,15 @@ class CityWarBattle(Battle):
         self.turn_delay = float(kwargs.get("turn_delay", 2.0))
         self.attacker_team = self.teams[0]
         self.defender_team = self.teams[1]
+        self.team_a = self.attacker_team
+        self.team_b = self.defender_team
+        self.current_turn = 0
+        self.turn_order = []
+        self.guard_phase_started = False
+        self.had_structures = any(
+            getattr(combatant, "city_role", "") == "structure"
+            for combatant in self.defender_team.combatants
+        )
         self.round_number = 0
         self.result = {
             "attackers_won": False,
@@ -107,6 +118,29 @@ class CityWarBattle(Battle):
         armor_reduction = Decimal(str(getattr(target, "armor", 0) or 0)) * Decimal("0.25")
         return max(Decimal("1"), base_damage + hp_pressure - armor_reduction)
 
+    async def _start_guard_phase(self):
+        if self.guard_phase_started:
+            return
+
+        self.guard_phase_started = True
+        self.current_turn = 0
+        self.turn_order = (
+            list(self.attacker_team.get_alive_combatants())
+            + list(self._get_alive_city_defenders())
+        )
+        random.shuffle(self.turn_order)
+        self.turn_order = self.prioritize_turn_order(self.turn_order)
+
+        if self.had_structures:
+            await self.add_to_log(
+                f"The fortifications of {self.city} fall. "
+                f"{self.defending_guild_name}'s guards move in to meet the attackers."
+            )
+        else:
+            await self.add_to_log(
+                f"The defenders of {self.city} rush forward to meet the attackers."
+            )
+
     async def start_battle(self):
         self.started = True
         self.start_time = datetime.datetime.utcnow()
@@ -128,17 +162,18 @@ class CityWarBattle(Battle):
         self.round_number += 1
         if self._get_alive_structures():
             await self._process_structure_round()
-        else:
-            await self._process_guard_round()
+            await self.update_display()
+            await asyncio.sleep(self.turn_delay)
+            return True
 
-        await self.update_display()
-        await asyncio.sleep(self.turn_delay)
-        return True
+        await self._start_guard_phase()
+        return await RaidBattle.process_turn(self)
 
     async def _process_structure_round(self):
         attackers = self.attacker_team.get_alive_combatants()
+        structures = self._get_alive_structures()
         target = self._pick_structure_target()
-        if not attackers or target is None:
+        if not attackers or not structures or target is None:
             return
 
         outgoing_damage = max(
@@ -158,8 +193,7 @@ class CityWarBattle(Battle):
                 f"{self.attacking_guild_name} destroys {target.name} in {self.city}."
             )
 
-        structures = self._get_alive_structures()
-        if not structures or not self.attacker_team.get_alive_combatants():
+        if not self.attacker_team.get_alive_combatants():
             return
 
         attacker_target = self._pick_primary_attacker_target()
@@ -184,53 +218,7 @@ class CityWarBattle(Battle):
             )
 
     async def _process_guard_round(self):
-        attackers = self.attacker_team.get_alive_combatants()
-        defenders = self._get_alive_city_defenders()
-        if not attackers or not defenders:
-            return
-
-        defender_target = self._pick_primary_defender_target()
-        if defender_target is None:
-            return
-
-        outgoing_damage = self._sum_damage(attackers) - Decimal(str(defender_target.armor))
-        outgoing_damage = max(Decimal("1"), outgoing_damage)
-        actual_damage = self.apply_damage(None, defender_target, outgoing_damage)
-        target_hp = max(Decimal("0"), defender_target.hp)
-        if defender_target.is_alive():
-            await self.add_to_log(
-                f"{self.attacking_guild_name} hits {defender_target.name} in {self.city} for "
-                f"**{self.format_number(actual_damage)} HP**. "
-                f"({self.format_number(target_hp)} HP left)"
-            )
-        else:
-            await self.add_to_log(
-                f"{self.attacking_guild_name} defeats {defender_target.name} in {self.city}."
-            )
-
-        defenders = self._get_alive_city_defenders()
-        attackers = self.attacker_team.get_alive_combatants()
-        if not defenders or not attackers:
-            return
-
-        attacker_target = self._pick_primary_attacker_target()
-        if attacker_target is None:
-            return
-
-        retaliation = self._sum_damage(defenders) - Decimal(str(attacker_target.armor))
-        retaliation = max(Decimal("1"), retaliation)
-        actual_damage = self.apply_damage(None, attacker_target, retaliation)
-        target_hp = max(Decimal("0"), attacker_target.hp)
-        if attacker_target.is_alive():
-            await self.add_to_log(
-                f"City defenders hit {attacker_target.name} in {self.city} for "
-                f"**{self.format_number(actual_damage)} HP**. "
-                f"({self.format_number(target_hp)} HP left)"
-            )
-        else:
-            await self.add_to_log(
-                f"City defenders defeat {attacker_target.name} in {self.city}."
-            )
+        return await RaidBattle.process_turn(self)
 
     async def create_battle_embed(self):
         embed = discord.Embed(
