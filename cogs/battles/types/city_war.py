@@ -11,6 +11,34 @@ from .raid import RaidBattle
 
 class CityWarBattle(Battle):
     """City-war battle flow with fortification and guard phases."""
+    SUPPORT_PET_SKILL_NAMES = {
+        "coffee_break",
+        "divine_protection",
+        "guardian_angel",
+        "healing_light",
+        "healing_rain",
+        "holy_aura",
+        "immortal_waters",
+        "life_force",
+        "life_spring",
+        "natural_healing",
+        "natures_blessing",
+        "oceans_embrace",
+        "purification",
+        "purify",
+        "symbiotic_bond",
+        "warmth",
+    }
+    SUPPORT_PET_SKILL_TYPES = {
+        "damage_reduction",
+        "owner_heal_on_attack",
+        "owner_sharing",
+        "regen_per_turn",
+        "revive",
+        "sacrifice_save",
+        "shield",
+        "team_heal_per_turn",
+    }
 
     def __init__(self, ctx, teams, **kwargs):
         super().__init__(ctx, teams, **kwargs)
@@ -38,6 +66,9 @@ class CityWarBattle(Battle):
         }
         self.config["allow_pets"] = kwargs.get("allow_pets", True)
         self.config["pets_continue_battle"] = True
+        self.pet_heal_multiplier = Decimal(
+            str(kwargs.get("pet_heal_multiplier", "0.60"))
+        )
 
     def serialize_battle_data(self):
         data = super().serialize_battle_data()
@@ -94,6 +125,80 @@ class CityWarBattle(Battle):
         if len({float(combatant.hp) for combatant in attackers}) == 1:
             return sorted(attackers, key=lambda combatant: float(combatant.damage))[-1]
         return sorted(attackers, key=lambda combatant: float(combatant.hp))[0]
+
+    def _get_hp_ratio(self, combatant):
+        max_hp = max(1.0, float(getattr(combatant, "max_hp", 0) or 0))
+        current_hp = max(0.0, float(getattr(combatant, "hp", 0) or 0))
+        return current_hp / max_hp
+
+    def _get_city_war_threat_score(self, combatant):
+        damage = float(getattr(combatant, "damage", 0) or 0)
+        armor = float(getattr(combatant, "armor", 0) or 0)
+        max_hp = float(getattr(combatant, "max_hp", 0) or 0)
+        hp_ratio = self._get_hp_ratio(combatant)
+        return (
+            (damage * 1.0)
+            + (armor * 0.45)
+            + (max_hp * 0.04)
+            + ((1.0 - hp_ratio) * 120.0)
+        )
+
+    def _is_support_pet(self, combatant):
+        if combatant is None or not getattr(combatant, "is_pet", False):
+            return False
+
+        skill_effects = getattr(combatant, "skill_effects", {})
+        if not isinstance(skill_effects, dict):
+            return False
+
+        for skill_name, skill_data in skill_effects.items():
+            if skill_name in self.SUPPORT_PET_SKILL_NAMES:
+                return True
+            if (
+                isinstance(skill_data, dict)
+                and skill_data.get("type") in self.SUPPORT_PET_SKILL_TYPES
+            ):
+                return True
+
+        return False
+
+    def select_target(self, current_combatant, alive_enemies):
+        if self._get_alive_structures():
+            return RaidBattle.select_target(self, current_combatant, alive_enemies)
+
+        if not alive_enemies:
+            return None
+
+        kill_targets = [
+            enemy for enemy in alive_enemies if self._get_hp_ratio(enemy) <= 0.28
+        ]
+        if kill_targets:
+            return min(
+                kill_targets,
+                key=lambda enemy: (
+                    self._get_hp_ratio(enemy),
+                    -self._get_city_war_threat_score(enemy),
+                    0 if enemy.is_pet else -1,
+                ),
+            )
+
+        support_pets = [
+            enemy for enemy in alive_enemies if self._is_support_pet(enemy)
+        ]
+        if support_pets:
+            return max(support_pets, key=self._get_city_war_threat_score)
+
+        player_targets = [enemy for enemy in alive_enemies if not enemy.is_pet]
+        if player_targets:
+            return max(player_targets, key=self._get_city_war_threat_score)
+
+        return max(
+            alive_enemies,
+            key=lambda enemy: (
+                self._get_city_war_threat_score(enemy),
+                -self._get_hp_ratio(enemy),
+            ),
+        )
 
     def _sum_damage(self, combatants):
         total = Decimal("0")

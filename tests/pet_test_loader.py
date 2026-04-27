@@ -64,3 +64,25 @@ def load_battle_runtime_type() -> Type[object]:
         ROOT / "cogs" / "battles" / "core" / "battle.py",
     )
     return battle_mod.Battle
+
+
+def load_city_war_runtime_type() -> Type[object]:
+    """Return `CityWarBattle` from the battle runtime modules."""
+    _ensure_namespace("cogs", ROOT / "cogs")
+    _ensure_namespace("cogs.battles", ROOT / "cogs" / "battles")
+    _ensure_namespace("cogs.battles.core", ROOT / "cogs" / "battles" / "core")
+    _ensure_namespace("cogs.battles.types", ROOT / "cogs" / "battles" / "types")
+
+    _load_module(
+        "cogs.battles.core.battle",
+        ROOT / "cogs" / "battles" / "core" / "battle.py",
+    )
+    _load_module(
+        "cogs.battles.types.raid",
+        ROOT / "cogs" / "battles" / "types" / "raid.py",
+    )
+    city_war_mod = _load_module(
+        "cogs.battles.types.city_war",
+        ROOT / "cogs" / "battles" / "types" / "city_war.py",
+    )
+    return city_war_mod.CityWarBattle

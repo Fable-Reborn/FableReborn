@@ -271,7 +271,17 @@ class PetExtension:
         else:
             heal_cap = target_hp * self.PASSIVE_ALLY_HEAL_CAP
 
-        return max(Decimal('0'), min(heal_amount, heal_cap))
+        heal_amount = max(Decimal('0'), min(heal_amount, heal_cap))
+
+        battle = getattr(source, 'battle', None) or getattr(target, 'battle', None)
+        if battle is not None:
+            heal_multiplier = self._to_decimal(
+                getattr(battle, 'pet_heal_multiplier', 1),
+                '1',
+            )
+            heal_amount *= max(Decimal('0'), heal_multiplier)
+
+        return heal_amount
 
     def _get_active_shadow_skeleton_count(self, pet_combatant):
         team = getattr(pet_combatant, 'team', None)

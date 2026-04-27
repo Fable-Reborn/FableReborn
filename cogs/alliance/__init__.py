@@ -55,6 +55,7 @@ CITY_CONQUEST_OVERFLOW_LOSS_PERCENT = 25
 CITY_ATTACK_LOCK_KEY = "citywars:lock_until"
 CITY_WAR_ATTACKER_LIMIT = 3
 CITY_WAR_PET_BUDGET_MULTIPLIER = Decimal("1.10")
+CITY_WAR_PET_HEAL_MULTIPLIER = Decimal("0.60")
 CITY_WAR_DEFENSE_BASE_SLOTS = ("wall", "weapon", "utility")
 CITY_WAR_DEFENSE_SLOT_LAYOUTS = {
     1: ("wall_1", "weapon_1", "utility_1"),
@@ -858,29 +859,46 @@ class Alliance(commands.Cog):
         ]
         return self._partition_city_defenses(defenses, city)
 
-    def _scale_city_war_stat(self, raw_value, *, base: int, factor: int) -> int:
+    def _scale_city_war_stat(
+        self,
+        raw_value,
+        *,
+        base: int,
+        linear: Decimal | str | float,
+        sqrt_factor: Decimal | str | float,
+        minimum: int = 1,
+    ) -> int:
         value = max(0.0, float(raw_value or 0))
-        return max(1, int(round(base + (factor * math.sqrt(value)))))
+        scaled_value = Decimal(str(base))
+        if value > 0:
+            scaled_value += Decimal(str(linear)) * Decimal(str(value))
+            scaled_value += Decimal(str(sqrt_factor)) * Decimal(str(math.sqrt(value)))
+        return max(minimum, int(round(float(scaled_value))))
 
     def _apply_city_war_scaling(self, combatant: Combatant) -> Combatant:
         current_hp = float(getattr(combatant, "hp", 0) or 0)
         max_hp = float(getattr(combatant, "max_hp", current_hp) or current_hp or 1)
         hp_ratio = 1.0 if max_hp <= 0 else max(0.0, min(1.0, current_hp / max_hp))
 
+        # Preserve stronger combatants as meaningfully stronger while still
+        # normalizing runaway raid stats for city-war battles.
         scaled_max_hp = self._scale_city_war_stat(
             getattr(combatant, "max_hp", current_hp),
-            base=2500,
-            factor=40,
+            base=700,
+            linear=Decimal("0.38"),
+            sqrt_factor=Decimal("18"),
         )
         scaled_damage = self._scale_city_war_stat(
             getattr(combatant, "damage", 0),
-            base=150,
-            factor=18,
+            base=30,
+            linear=Decimal("0.42"),
+            sqrt_factor=Decimal("5"),
         )
         scaled_armor = self._scale_city_war_stat(
             getattr(combatant, "armor", 0),
-            base=100,
-            factor=15,
+            base=20,
+            linear=Decimal("0.38"),
+            sqrt_factor=Decimal("4"),
         )
 
         scaled_current_hp = max(
@@ -904,13 +922,49 @@ class Alliance(commands.Cog):
             + Decimal(str(getattr(combatant, "armor", 0) or 0))
         )
 
-    def _cap_city_war_pet(self, pet_combatant: Combatant, owner_combatant: Combatant | None) -> Combatant:
-        if not pet_combatant or not owner_combatant:
+    def _get_city_war_team_baseline_budget(
+        self, team_combatants: list[Combatant] | None
+    ) -> Decimal | None:
+        if not team_combatants:
+            return None
+
+        budgets = [
+            self._get_city_war_budget(combatant)
+            for combatant in team_combatants
+            if combatant and not getattr(combatant, "is_pet", False)
+        ]
+        if not budgets:
+            return None
+
+        budgets.sort()
+        return budgets[len(budgets) // 2]
+
+    def _cap_city_war_pet(
+        self,
+        pet_combatant: Combatant,
+        owner_combatant: Combatant | None,
+        team_combatants: list[Combatant] | None = None,
+    ) -> Combatant:
+        if not pet_combatant:
             return pet_combatant
 
         pet_budget = self._get_city_war_budget(pet_combatant)
-        owner_budget = self._get_city_war_budget(owner_combatant)
-        max_budget = owner_budget * CITY_WAR_PET_BUDGET_MULTIPLIER
+        budget_ceiling_candidates: list[Decimal] = []
+
+        owner_budget = None
+        if owner_combatant:
+            owner_budget = self._get_city_war_budget(owner_combatant)
+            budget_ceiling_candidates.append(owner_budget)
+
+        team_baseline_budget = self._get_city_war_team_baseline_budget(team_combatants)
+        if team_baseline_budget is not None:
+            budget_ceiling_candidates.append(team_baseline_budget)
+
+        if not budget_ceiling_candidates:
+            return pet_combatant
+
+        budget_ceiling = min(budget_ceiling_candidates)
+        max_budget = budget_ceiling * CITY_WAR_PET_BUDGET_MULTIPLIER
 
         if pet_budget <= 0 or pet_budget <= max_budget:
             return pet_combatant
@@ -950,6 +1004,11 @@ class Alliance(commands.Cog):
         pet_combatant.damage = Decimal(str(scaled_damage))
         pet_combatant.armor = Decimal(str(scaled_armor))
         pet_combatant.city_war_pet_capped = True
+        if owner_budget is not None:
+            pet_combatant.city_war_pet_owner_budget = owner_budget
+        if team_baseline_budget is not None:
+            pet_combatant.city_war_pet_team_baseline_budget = team_baseline_budget
+        pet_combatant.city_war_pet_budget_ceiling = budget_ceiling
         return pet_combatant
 
     def _sort_city_attackers(self, ctx: Context, attackers: list[discord.abc.User]) -> list[discord.abc.User]:
@@ -1162,7 +1221,11 @@ class Alliance(commands.Cog):
             return None
 
         self._apply_city_war_scaling(pet_combatant)
-        self._cap_city_war_pet(pet_combatant, owner_combatants.get(owner_id))
+        self._cap_city_war_pet(
+            pet_combatant,
+            owner_combatants.get(owner_id),
+            list(owner_combatants.values()),
+        )
         pet_combatant.city_role = "guard_pet"
         pet_combatant.city_guard_pet_id = int(assigned_pet["pet_id"])
         pet_combatant.city_guard_pet_owner_id = owner_id
@@ -2981,6 +3044,7 @@ class Alliance(commands.Cog):
                     attacker_combatants_by_user_id.get(
                         attack_pet_selection["owner"].id
                     ),
+                    attacker_combatants,
                 )
                 attacker_combatants.append(attack_pet_combatant)
 
@@ -3075,6 +3139,7 @@ class Alliance(commands.Cog):
             attacking_guild_name=attacking_guild_name,
             defending_guild_name=defending_guild_name,
             allow_pets=True,
+            pet_heal_multiplier=CITY_WAR_PET_HEAL_MULTIPLIER,
             max_duration=timedelta(minutes=15),
         )
 

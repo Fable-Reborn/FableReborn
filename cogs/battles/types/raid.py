@@ -55,6 +55,34 @@ class RaidBattle(Battle):
                 "status_effects": False,
                 "pets_continue_battle": False
             }
+
+    def select_target(self, current_combatant, alive_enemies):
+        """Pick an enemy target for the acting combatant."""
+        if current_combatant.is_pet:
+            pet_targets = [c for c in alive_enemies if c.is_pet]
+            player_targets = [c for c in alive_enemies if not c.is_pet]
+
+            if pet_targets and player_targets:
+                if random.random() < 0.6:  # 60% chance to target players
+                    return random.choice(player_targets)
+                return random.choice(pet_targets)
+
+            return random.choice(alive_enemies)
+
+        weighted_targets = []
+        weights = []
+
+        for enemy in alive_enemies:
+            if enemy.is_pet:
+                weighted_targets.append(enemy)
+                weights.append(0.4)  # 40% chance to target pets
+            else:
+                weighted_targets.append(enemy)
+                weights.append(0.6)  # 60% chance to target players
+
+        total_weight = sum(weights)
+        normalized_weights = [weight / total_weight for weight in weights]
+        return random.choices(weighted_targets, weights=normalized_weights)[0]
         
     async def start_battle(self):
         """Initialize and start the battle"""
@@ -142,39 +170,7 @@ class RaidBattle(Battle):
         if not alive_enemies:
             return False
         
-        # Select target
-        if current_combatant.is_pet:
-            # Pets have slightly different targeting - more likely to target other pets
-            pet_targets = [c for c in alive_enemies if c.is_pet]
-            player_targets = [c for c in alive_enemies if not c.is_pet]
-            
-            if pet_targets and player_targets:
-                # If both exist, randomly choose with bias
-                if random.random() < 0.6:  # 60% chance to target players
-                    target = random.choice(player_targets)
-                else:
-                    target = random.choice(pet_targets)
-            else:
-                # Otherwise use whatever we have
-                target = random.choice(alive_enemies)
-        else:
-            # Players target weighted by probability
-            weighted_targets = []
-            weights = []
-            
-            for enemy in alive_enemies:
-                if enemy.is_pet:
-                    weighted_targets.append(enemy)
-                    weights.append(0.4)  # 40% chance to target pets
-                else:
-                    weighted_targets.append(enemy)
-                    weights.append(0.6)  # 60% chance to target players
-            
-            # Normalize weights
-            total_weight = sum(weights)
-            weights = [w/total_weight for w in weights]
-            
-            target = random.choices(weighted_targets, weights=weights)[0]
+        target = self.select_target(current_combatant, alive_enemies)
         
         # Process attack based on luck
         luck_roll = random.randint(1, 100)
