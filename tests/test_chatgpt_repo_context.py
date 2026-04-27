@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 
@@ -5,7 +6,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from cogs.chatgpt import (
+    ChatGPTCog,
+    RepoToolSession,
     _build_query_variants,
+    _build_repo_search_index,
     _expand_terms_with_repo_vocabulary,
     _extract_compound_phrases_from_terms,
     _normalize_query_text,
@@ -17,6 +21,23 @@ from cogs.chatgpt import (
     response_hit_output_limit,
     wants_technical_answer,
 )
+
+
+class FakeResponsesAPI:
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if not self._responses:
+            raise AssertionError("Unexpected extra responses.create call")
+        return self._responses.pop(0)
+
+
+class FakeClient:
+    def __init__(self, responses):
+        self.responses = FakeResponsesAPI(responses)
 
 
 class TestChatGPTRepoContext(unittest.TestCase):
@@ -777,6 +798,132 @@ class TestChatGPTRepoContext(unittest.TestCase):
             self.assertIn("scale_power_score", joined_text)
             self.assertIn("scale_bracket", joined_text)
             self.assertTrue(any(snippet.path == "scripts/schema.sql" for snippet in snippets))
+
+    def test_repo_tool_session_search_and_source_reads_collect_references(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "cogs" / "raidbuilder").mkdir(parents=True)
+
+            (root / "cogs" / "raidbuilder" / "__init__.py").write_text(
+                "\n".join(
+                    [
+                        "class RaidBuilder:",
+                        "    async def raidmode_activate(self, ctx, mode, definition_id):",
+                        '        """Activate a published raid definition for a mode."""',
+                        "        if definition_id is None:",
+                        "            return False",
+                        "        return True",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            index = _build_repo_search_index(root)
+            session = RepoToolSession(
+                index,
+                default_max_snippets=4,
+                default_max_context_chars=4000,
+            )
+
+            search_output = session.search_repo(
+                "How do I activate a raid definition?",
+                max_snippets=4,
+                broaden=False,
+            )
+            self.assertIn("raidmode_activate", search_output)
+            self.assertTrue(any(snippet.path == "cogs/raidbuilder/__init__.py" for snippet in session.sources))
+
+            symbol_output = session.read_symbol(
+                "raidmode_activate",
+                path="cogs/raidbuilder/__init__.py",
+                max_matches=2,
+            )
+            self.assertIn("raidmode_activate", symbol_output)
+
+            source_output = session.read_source(
+                "cogs/raidbuilder/__init__.py",
+                start_line=1,
+                end_line=5,
+            )
+            self.assertIn("lines 1-5", source_output)
+            self.assertTrue(
+                any(
+                    snippet.reference == "cogs/raidbuilder/__init__.py:1-5"
+                    for snippet in session.sources
+                )
+            )
+
+
+class TestChatGPTRepoAgentLoop(unittest.IsolatedAsyncioTestCase):
+    async def test_ask_openai_uses_repo_tools_before_answering(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "cogs" / "raidbuilder").mkdir(parents=True)
+
+            (root / "cogs" / "raidbuilder" / "__init__.py").write_text(
+                "\n".join(
+                    [
+                        "class RaidBuilder:",
+                        "    async def raidmode_activate(self, ctx, mode, definition_id):",
+                        '        """Activate a published raid definition for a mode."""',
+                        "        if definition_id is None:",
+                        "            return False",
+                        "        return True",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            response_one = SimpleNamespace(
+                id="resp_1",
+                output=[
+                    SimpleNamespace(
+                        type="function_call",
+                        name="search_repo",
+                        call_id="call_1",
+                        arguments=json.dumps(
+                            {
+                                "query": "How do I activate a raid definition?",
+                                "max_snippets": 4,
+                                "broaden": False,
+                            }
+                        ),
+                    )
+                ],
+                output_text="",
+                status="completed",
+                incomplete_details=SimpleNamespace(reason=None),
+            )
+            response_two = SimpleNamespace(
+                id="resp_2",
+                output=[],
+                output_text=(
+                    "Activate published raid definitions with `raidmode_activate`; "
+                    "it returns `False` when `definition_id` is `None` and `True` otherwise."
+                ),
+                status="completed",
+                incomplete_details=SimpleNamespace(reason=None),
+            )
+
+            cog = object.__new__(ChatGPTCog)
+            cog.bot = SimpleNamespace(logger=SimpleNamespace(error=lambda message: None))
+            cog.repo_root = root
+            cog.model = "test-model"
+            cog.reasoning_effort = "medium"
+            cog.max_snippets = 4
+            cog.max_context_chars = 4000
+            cog.max_output_tokens = 800
+            cog.client = FakeClient([response_one, response_two])
+
+            result = await ChatGPTCog._ask_openai(cog, "How do I activate a raid definition?")
+
+            self.assertIn("raidmode_activate", result.answer)
+            self.assertTrue(any(snippet.path == "cogs/raidbuilder/__init__.py" for snippet in result.snippets))
+            self.assertEqual(cog.client.responses.calls[0]["tool_choice"], "required")
+            self.assertEqual(cog.client.responses.calls[1]["tool_choice"], "auto")
+            self.assertEqual(cog.client.responses.calls[1]["previous_response_id"], "resp_1")
+            self.assertEqual(cog.client.responses.calls[1]["input"][0]["type"], "function_call_output")
+            self.assertIn("raidmode_activate", cog.client.responses.calls[1]["input"][0]["output"])
 
 
 if __name__ == "__main__":

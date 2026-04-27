@@ -8,7 +8,7 @@ import textwrap
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from discord.ext import commands
 from openai import AsyncOpenAI
@@ -22,6 +22,7 @@ DEFAULT_MAX_SNIPPETS = 6
 DEFAULT_MAX_CONTEXT_CHARS = 16000
 DEFAULT_MAX_OUTPUT_TOKENS = 2000
 MAX_RESPONSE_SEGMENTS = 3
+MAX_TOOL_ROUNDS = 8
 MAX_FILE_BYTES = 1000000
 WINDOW_SIZE = 40
 WINDOW_OVERLAP = 10
@@ -38,6 +39,11 @@ MAX_PYTHON_BLOCK_EXCERPTS = 2
 MAX_JSON_BLOCK_LINES = 80
 MAX_MARKDOWN_SECTION_LINES = 100
 MAX_SQL_STATEMENT_LINES = 140
+SEARCH_TOOL_MAX_SNIPPETS = 8
+SEARCH_TOOL_MAX_CONTEXT_CHARS = 24000
+READ_TOOL_MAX_LINES = 220
+SYMBOL_TOOL_MAX_MATCHES = 4
+MAX_SOURCE_REFERENCES = 12
 FUZZY_TERM_MIN_LENGTH = 4
 FUZZY_TERM_MAX_MATCHES = 2
 FUZZY_TERM_CUTOFF = 0.74
@@ -142,8 +148,8 @@ TECHNICAL_HINTS = {
 }
 BASE_SYSTEM_INSTRUCTIONS = (
     "You answer questions about the FableReborn Discord bot codebase. "
-    "Use only the supplied repository excerpts. "
-    "When the excerpts include exact values, names, thresholds, or formulas, state them directly. "
+    "Use only the supplied repository evidence. "
+    "When the evidence includes exact values, names, thresholds, or formulas, state them directly. "
     "If the excerpts are not enough, say that clearly. "
     "Do not claim to have inspected files that were not included in the prompt."
 )
@@ -223,11 +229,25 @@ class RankedSnippet:
         return f"{self.path}:{self.start_line}-{self.end_line}"
 
 
+@dataclass(frozen=True)
+class RepoToolCall:
+    call_id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+@dataclass
+class RepoAnswer:
+    answer: str
+    snippets: list[RankedSnippet]
+
+
 PYTHON_DEF_RE = re.compile(r"^(\s*)(?:async\s+def|def)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 PYTHON_CLASS_RE = re.compile(r"^(\s*)class\s+([A-Za-z_][A-Za-z0-9_]*)\b")
 FOLLOW_CALL_RE = re.compile(r"self\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 CONSTANT_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
 SELF_ASSIGN_RE = re.compile(r"self\.([A-Za-z_][A-Za-z0-9_]*)\s*=")
+REPO_REFERENCE_RE = re.compile(r"^(?P<path>.+?)(?::(?P<start>\d+)(?:-(?P<end>\d+))?)?$")
 FILE_REFERENCE_RE = re.compile(
     r"['\"]([^'\"]+\.(?:py|json|toml|sql|md))['\"]",
     re.IGNORECASE,
@@ -2836,15 +2856,14 @@ def answer_looks_partial(answer: str) -> bool:
     return any(hint in answer_lower for hint in PARTIAL_ANSWER_HINTS)
 
 
-def build_repo_context(
+def _build_repo_context_from_index(
     question: str,
-    repo_root: Path,
+    index: RepoSearchIndex,
     *,
     max_snippets: int = DEFAULT_MAX_SNIPPETS,
     max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
     broaden: bool = False,
 ) -> list[RankedSnippet]:
-    index = _build_repo_search_index(repo_root)
     query_variants = _build_query_variants(question, index.repo_vocabulary, index.glossary_phrases)
     top_file_limit = BROAD_TOP_FILE_LIMIT if broaden else DEFAULT_TOP_FILE_LIMIT
     per_file_snippets = BROAD_PER_FILE_SNIPPETS if broaden else DEFAULT_PER_FILE_SNIPPETS
@@ -2889,6 +2908,24 @@ def build_repo_context(
     return broader_snippets if context_quality(broader_snippets) > context_quality(merged_snippets) else merged_snippets
 
 
+def build_repo_context(
+    question: str,
+    repo_root: Path,
+    *,
+    max_snippets: int = DEFAULT_MAX_SNIPPETS,
+    max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
+    broaden: bool = False,
+) -> list[RankedSnippet]:
+    index = _build_repo_search_index(repo_root)
+    return _build_repo_context_from_index(
+        question,
+        index,
+        max_snippets=max_snippets,
+        max_context_chars=max_context_chars,
+        broaden=broaden,
+    )
+
+
 def format_repo_context(snippets: list[RankedSnippet]) -> str:
     parts: list[str] = []
     for snippet in snippets:
@@ -2899,19 +2936,379 @@ def format_repo_context(snippets: list[RankedSnippet]) -> str:
     return "\n\n".join(parts)
 
 
+def _response_field(value: object, field: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(field, default)
+    return getattr(value, field, default)
+
+
+def extract_response_function_calls(response) -> list[RepoToolCall]:
+    tool_calls: list[RepoToolCall] = []
+    for item in _response_field(response, "output", []) or []:
+        if _response_field(item, "type") != "function_call":
+            continue
+        name = _response_field(item, "name")
+        call_id = _response_field(item, "call_id") or _response_field(item, "id")
+        if not isinstance(name, str) or not isinstance(call_id, str):
+            continue
+        arguments = _response_field(item, "arguments", {})
+        if isinstance(arguments, str):
+            if arguments.strip():
+                try:
+                    arguments = json.loads(arguments)
+                except json.JSONDecodeError:
+                    arguments = {}
+            else:
+                arguments = {}
+        elif not isinstance(arguments, dict):
+            arguments = {}
+        tool_calls.append(RepoToolCall(call_id=call_id, name=name, arguments=arguments))
+    return tool_calls
+
+
+def _parse_repo_reference(reference: str) -> tuple[str, int | None, int | None]:
+    normalized = reference.strip().strip("`'\"").replace("\\", "/").lstrip("./")
+    match = REPO_REFERENCE_RE.match(normalized)
+    if not match:
+        return normalized, None, None
+    start_line = int(match.group("start")) if match.group("start") else None
+    end_line = int(match.group("end")) if match.group("end") else None
+    return match.group("path").lstrip("./"), start_line, end_line
+
+
+def _resolve_repo_source_path(path_query: str, index: RepoSearchIndex) -> tuple[str | None, list[str]]:
+    normalized_path, _, _ = _parse_repo_reference(path_query)
+    if not normalized_path:
+        return None, []
+
+    all_paths = list(index.source_text_by_path)
+    lowered = normalized_path.casefold()
+
+    if normalized_path in index.source_text_by_path:
+        return normalized_path, []
+
+    casefold_matches = [path for path in all_paths if path.casefold() == lowered]
+    if len(casefold_matches) == 1:
+        return casefold_matches[0], []
+
+    basename = Path(normalized_path).name.casefold()
+    basename_matches = [
+        path
+        for path in index.repo_paths_by_basename.get(Path(normalized_path).name, [])
+        if path in index.source_text_by_path
+    ]
+    if len(basename_matches) == 1:
+        return basename_matches[0], []
+    if not basename_matches:
+        basename_matches = [path for path in all_paths if Path(path).name.casefold() == basename]
+
+    suffix_matches = [path for path in all_paths if path.casefold().endswith(lowered)]
+    if len(suffix_matches) == 1:
+        return suffix_matches[0], []
+
+    substring_matches = [path for path in all_paths if lowered in path.casefold()]
+    ranked_ambiguity = sorted(set(casefold_matches + basename_matches + suffix_matches + substring_matches))
+    if ranked_ambiguity:
+        return None, ranked_ambiguity[:8]
+
+    close_lookup = {path.casefold(): path for path in all_paths}
+    close_matches = difflib.get_close_matches(lowered, list(close_lookup), n=5, cutoff=0.62)
+    return None, [close_lookup[match] for match in close_matches]
+
+
+def _rank_symbol_name_match(symbol_name: str, query: str) -> float:
+    normalized_query = query.strip().strip("`'\"").replace(" ", "_").replace("-", "_").casefold()
+    normalized_symbol = symbol_name.casefold()
+    if not normalized_query:
+        return 0.0
+
+    compact_query = normalized_query.replace("_", "")
+    compact_symbol = normalized_symbol.replace("_", "")
+    query_tokens = {token for token in re.findall(r"[a-z0-9]+", normalized_query) if token}
+    token_overlap = sum(1 for token in query_tokens if token in normalized_symbol)
+    ratio = difflib.SequenceMatcher(None, normalized_query, normalized_symbol).ratio()
+
+    score = 0.0
+    if normalized_symbol == normalized_query:
+        score += 220.0
+    if compact_query and compact_symbol == compact_query:
+        score += 180.0
+    if normalized_query in normalized_symbol or normalized_symbol in normalized_query:
+        score += 80.0
+    score += token_overlap * 18.0
+    score += ratio * 30.0
+
+    if score < 35.0 and token_overlap == 0 and ratio < 0.72:
+        return 0.0
+    return score
+
+
+def _lookup_symbol_snippets(
+    symbol_query: str,
+    index: RepoSearchIndex,
+    *,
+    path_text: str | None = None,
+    max_matches: int = SYMBOL_TOOL_MAX_MATCHES,
+) -> list[RankedSnippet]:
+    if path_text is not None:
+        symbol_map = index.python_symbol_defs_by_path.get(path_text, {})
+    else:
+        symbol_map = index.python_symbol_defs
+
+    ranked_blocks: list[tuple[float, RankedSnippet]] = []
+    for symbol_name, blocks in symbol_map.items():
+        match_score = _rank_symbol_name_match(symbol_name, symbol_query)
+        if match_score <= 0:
+            continue
+        for block_path, start_line, end_line, block_text in blocks:
+            ranked_blocks.append(
+                (
+                    match_score + (25.0 if path_text and block_path == path_text else 0.0),
+                    RankedSnippet(
+                        path=block_path,
+                        start_line=start_line,
+                        end_line=end_line,
+                        score=match_score,
+                        text=block_text.strip(),
+                    ),
+                )
+            )
+
+    snippets: list[RankedSnippet] = []
+    seen_refs: set[tuple[str, int, int]] = set()
+    for _, snippet in sorted(ranked_blocks, key=lambda item: item[0], reverse=True):
+        ref = (snippet.path, snippet.start_line, snippet.end_line)
+        if ref in seen_refs:
+            continue
+        seen_refs.add(ref)
+        snippets.append(snippet)
+        if len(snippets) >= max(1, min(max_matches, SYMBOL_TOOL_MAX_MATCHES)):
+            break
+    return snippets
+
+
+class RepoToolSession:
+    def __init__(
+        self,
+        index: RepoSearchIndex,
+        *,
+        default_max_snippets: int,
+        default_max_context_chars: int,
+    ) -> None:
+        self.index = index
+        self.default_max_snippets = max(1, min(default_max_snippets, SEARCH_TOOL_MAX_SNIPPETS))
+        self.default_max_context_chars = max(default_max_context_chars, SEARCH_TOOL_MAX_CONTEXT_CHARS)
+        self._sources_by_ref: dict[tuple[str, int, int], RankedSnippet] = {}
+
+    @property
+    def sources(self) -> list[RankedSnippet]:
+        return list(self._sources_by_ref.values())
+
+    def remember_sources(self, snippets: Iterable[RankedSnippet]) -> None:
+        for snippet in snippets:
+            ref = (snippet.path, snippet.start_line, snippet.end_line)
+            if ref not in self._sources_by_ref:
+                self._sources_by_ref[ref] = snippet
+
+    def search_repo(self, query: str, *, max_snippets: int, broaden: bool) -> str:
+        snippet_limit = max(1, min(max_snippets, SEARCH_TOOL_MAX_SNIPPETS))
+        snippets = _build_repo_context_from_index(
+            query,
+            self.index,
+            max_snippets=snippet_limit,
+            max_context_chars=self.default_max_context_chars,
+            broaden=broaden,
+        )
+        if not snippets:
+            return f"No repo snippets matched query: {query}"
+        self.remember_sources(snippets)
+        quality = context_quality(snippets)
+        return (
+            f"Top repo matches for query: {query}\n"
+            f"Context quality: {quality:.1f}\n\n"
+            f"{format_repo_context(snippets)}"
+        )
+
+    def find_paths(self, pattern: str, *, limit: int) -> str:
+        normalized = pattern.strip().strip("`'\"").replace("\\", "/").lstrip("./").casefold()
+        if not normalized:
+            return "No path pattern was provided."
+
+        scored_matches: list[tuple[float, str]] = []
+        for path_text in self.index.source_text_by_path:
+            path_lower = path_text.casefold()
+            score = 0.0
+            if path_lower == normalized:
+                score += 220.0
+            if path_lower.endswith(normalized):
+                score += 160.0
+            if Path(path_text).name.casefold() == Path(normalized).name.casefold():
+                score += 140.0
+            if normalized in path_lower:
+                score += 90.0
+            if score > 0:
+                scored_matches.append((score, path_text))
+
+        if not scored_matches:
+            close_lookup = {path.casefold(): path for path in self.index.source_text_by_path}
+            for match in difflib.get_close_matches(normalized, list(close_lookup), n=limit, cutoff=0.62):
+                scored_matches.append((30.0, close_lookup[match]))
+
+        paths = [path for _, path in sorted(scored_matches, key=lambda item: (-item[0], item[1]))[: max(1, limit)]]
+        if not paths:
+            return f"No repo paths matched: {pattern}"
+        return "Matching repo paths:\n" + "\n".join(f"- {path}" for path in paths)
+
+    def read_source(self, path: str, *, start_line: int | None, end_line: int | None) -> str:
+        resolved_path, matches = _resolve_repo_source_path(path, self.index)
+        if resolved_path is None:
+            if matches:
+                return (
+                    f"Path `{path}` did not resolve uniquely.\n"
+                    "Matching files:\n"
+                    + "\n".join(f"- {match}" for match in matches)
+                )
+            return f"Path `{path}` was not found in the repo index."
+
+        _, embedded_start, embedded_end = _parse_repo_reference(path)
+        start_line = start_line or embedded_start or 1
+        lines = self.index.source_text_by_path[resolved_path].splitlines()
+        if not lines:
+            return f"File `{resolved_path}` is empty."
+
+        if end_line is None:
+            end_line = embedded_end or min(len(lines), start_line + READ_TOOL_MAX_LINES - 1)
+
+        start_line = max(1, min(start_line, len(lines)))
+        end_line = max(start_line, min(end_line, len(lines)))
+        excerpt_text = "\n".join(lines[start_line - 1 : end_line]).strip()
+        snippet = RankedSnippet(
+            path=resolved_path,
+            start_line=start_line,
+            end_line=end_line,
+            score=0.0,
+            text=excerpt_text,
+        )
+        self.remember_sources([snippet])
+        return (
+            f"Read source from `{resolved_path}` lines {start_line}-{end_line}"
+            f" (file has {len(lines)} lines).\n\n"
+            f"{format_repo_context([snippet])}"
+        )
+
+    def read_symbol(self, symbol: str, *, path: str | None, max_matches: int) -> str:
+        resolved_path = None
+        if path:
+            resolved_path, matches = _resolve_repo_source_path(path, self.index)
+            if resolved_path is None:
+                if matches:
+                    return (
+                        f"Path `{path}` did not resolve uniquely.\n"
+                        "Matching files:\n"
+                        + "\n".join(f"- {match}" for match in matches)
+                    )
+                return f"Path `{path}` was not found in the repo index."
+
+        snippets = _lookup_symbol_snippets(
+            symbol,
+            self.index,
+            path_text=resolved_path,
+            max_matches=max_matches,
+        )
+        if not snippets:
+            scope = f" in `{resolved_path}`" if resolved_path else ""
+            return f"No symbol definitions matched `{symbol}`{scope}."
+        self.remember_sources(snippets)
+        return f"Symbol matches for `{symbol}`:\n\n{format_repo_context(snippets)}"
+
+
+def build_repo_tool_definitions() -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "function",
+            "name": "search_repo",
+            "description": (
+                "Search the repository for code, JSON, SQL, or markdown relevant to the question. "
+                "Use this first for most questions."
+            ),
+            "strict": True,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "max_snippets": {"type": "integer", "minimum": 1, "maximum": SEARCH_TOOL_MAX_SNIPPETS},
+                    "broaden": {"type": "boolean"},
+                },
+                "required": ["query", "max_snippets", "broaden"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "type": "function",
+            "name": "find_paths",
+            "description": "Find repo file paths by exact path, basename, or partial path match.",
+            "strict": True,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 12},
+                },
+                "required": ["pattern", "limit"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "type": "function",
+            "name": "read_source",
+            "description": "Read an exact source file range when you know the file path or a referenced line range.",
+            "strict": True,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "start_line": {"type": ["integer", "null"]},
+                    "end_line": {"type": ["integer", "null"]},
+                },
+                "required": ["path", "start_line", "end_line"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "type": "function",
+            "name": "read_symbol",
+            "description": (
+                "Read Python function, class, or constant definitions by symbol name. "
+                "Optionally narrow the lookup to one file path."
+            ),
+            "strict": True,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string"},
+                    "path": {"type": ["string", "null"]},
+                    "max_matches": {"type": "integer", "minimum": 1, "maximum": SYMBOL_TOOL_MAX_MATCHES},
+                },
+                "required": ["symbol", "path", "max_matches"],
+                "additionalProperties": False,
+            },
+        },
+    ]
+
+
 def extract_response_text(response) -> str:
-    output_text = getattr(response, "output_text", None)
+    output_text = _response_field(response, "output_text", None)
     if isinstance(output_text, str) and output_text.strip():
         return output_text.strip()
 
     parts: list[str] = []
-    for item in getattr(response, "output", []) or []:
-        for content in getattr(item, "content", []) or []:
-            text_value = getattr(content, "text", None)
+    for item in _response_field(response, "output", []) or []:
+        for content in _response_field(item, "content", []) or []:
+            text_value = _response_field(content, "text", None)
             if isinstance(text_value, str) and text_value.strip():
                 parts.append(text_value.strip())
                 continue
-            value = getattr(text_value, "value", None)
+            value = _response_field(text_value, "value", None)
             if isinstance(value, str) and value.strip():
                 parts.append(value.strip())
 
@@ -2919,9 +3316,9 @@ def extract_response_text(response) -> str:
 
 
 def response_hit_output_limit(response) -> bool:
-    incomplete_details = getattr(response, "incomplete_details", None)
-    reason = getattr(incomplete_details, "reason", None)
-    status = getattr(response, "status", None)
+    incomplete_details = _response_field(response, "incomplete_details", None)
+    reason = _response_field(incomplete_details, "reason", None)
+    status = _response_field(response, "status", None)
     return reason == "max_output_tokens" or (
         status == "incomplete" and reason == "max_output_tokens"
     )
@@ -3054,7 +3451,7 @@ class ChatGPTCog(commands.Cog):
         settings = getattr(ids_section, "chatgpt", {})
         return settings if isinstance(settings, dict) else {}
 
-    async def _ask_openai(self, question: str, snippets: list[RankedSnippet]) -> str:
+    async def _answer_from_snippets(self, question: str, snippets: list[RankedSnippet]) -> str:
         if self.client is None:
             raise RuntimeError("Missing OpenAI API key in config.toml under [external].openai.")
 
@@ -3103,6 +3500,225 @@ class ChatGPTCog(commands.Cog):
             return answer
         raise RuntimeError("OpenAI returned an empty response.")
 
+    async def _continue_answer(self, response, *, instructions: str) -> str:
+        answer_segments = [extract_response_text(response)]
+        continuation_count = 0
+        while response_hit_output_limit(response) and continuation_count < (MAX_RESPONSE_SEGMENTS - 1):
+            continuation_count += 1
+            response = await self.client.responses.create(
+                model=self.model,
+                instructions=instructions,
+                previous_response_id=response.id,
+                input=(
+                    "Continue the previous answer from exactly where it stopped. "
+                    "Do not restart, summarize, or repeat earlier content. "
+                    "Finish the remaining answer only."
+                ),
+                max_output_tokens=self.max_output_tokens,
+                reasoning={"effort": self.reasoning_effort},
+                truncation="auto",
+            )
+            answer_segments.append(extract_response_text(response))
+
+        answer = join_answer_segments(answer_segments)
+        if response_hit_output_limit(response):
+            answer = (
+                f"{answer}\n\n"
+                "(The reply was very long, so it may still be incomplete. Ask a narrower follow-up if you need the rest.)"
+            ).strip()
+        return answer
+
+    def _execute_repo_tool(self, session: RepoToolSession, tool_call: RepoToolCall) -> str:
+        arguments = tool_call.arguments
+
+        def coerce_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+            value = arguments.get(name, default)
+            try:
+                coerced = int(value)
+            except (TypeError, ValueError):
+                coerced = default
+            return max(minimum, min(coerced, maximum))
+
+        def coerce_bool(name: str, default: bool) -> bool:
+            value = arguments.get(name, default)
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                return value.casefold() in {"1", "true", "yes", "on"}
+            return default
+
+        if tool_call.name == "search_repo":
+            query = str(arguments.get("query", "")).strip()
+            if not query:
+                return "search_repo requires a non-empty query."
+            return session.search_repo(
+                query,
+                max_snippets=coerce_int(
+                    "max_snippets",
+                    session.default_max_snippets,
+                    minimum=1,
+                    maximum=SEARCH_TOOL_MAX_SNIPPETS,
+                ),
+                broaden=coerce_bool("broaden", False),
+            )
+
+        if tool_call.name == "find_paths":
+            pattern = str(arguments.get("pattern", "")).strip()
+            if not pattern:
+                return "find_paths requires a non-empty pattern."
+            return session.find_paths(
+                pattern,
+                limit=coerce_int("limit", 6, minimum=1, maximum=12),
+            )
+
+        if tool_call.name == "read_source":
+            path = str(arguments.get("path", "")).strip()
+            if not path:
+                return "read_source requires a repo path."
+            start_line = arguments.get("start_line")
+            end_line = arguments.get("end_line")
+            return session.read_source(
+                path,
+                start_line=int(start_line) if isinstance(start_line, int) else None,
+                end_line=int(end_line) if isinstance(end_line, int) else None,
+            )
+
+        if tool_call.name == "read_symbol":
+            symbol = str(arguments.get("symbol", "")).strip()
+            if not symbol:
+                return "read_symbol requires a symbol name."
+            path = arguments.get("path")
+            return session.read_symbol(
+                symbol,
+                path=str(path).strip() if isinstance(path, str) and path.strip() else None,
+                max_matches=coerce_int(
+                    "max_matches",
+                    2,
+                    minimum=1,
+                    maximum=SYMBOL_TOOL_MAX_MATCHES,
+                ),
+            )
+
+        return f"Unknown repo tool requested: {tool_call.name}"
+
+    async def _ask_openai(self, question: str) -> RepoAnswer:
+        if self.client is None:
+            raise RuntimeError("Missing OpenAI API key in config.toml under [external].openai.")
+
+        index = _build_repo_search_index(self.repo_root)
+        initial_snippets = _build_repo_context_from_index(
+            question,
+            index,
+            max_snippets=max(self.max_snippets, DEFAULT_MAX_SNIPPETS),
+            max_context_chars=max(self.max_context_chars, DEFAULT_MAX_CONTEXT_CHARS),
+        )
+        session = RepoToolSession(
+            index,
+            default_max_snippets=max(self.max_snippets, DEFAULT_MAX_SNIPPETS + 2),
+            default_max_context_chars=max(self.max_context_chars, SEARCH_TOOL_MAX_CONTEXT_CHARS),
+        )
+        session.remember_sources(initial_snippets)
+
+        instructions = (
+            f"{build_system_instructions(question)} "
+            "You have repo inspection tools. Use them to inspect the repository before answering. "
+            "Search for the relevant implementation, then read exact files or symbols as needed. "
+            "Follow helper methods, imported constants, and backing JSON, SQL, or markdown data when they affect the answer. "
+            "Do not guess."
+        )
+        prompt_parts = [
+            f"User question:\n{question.strip()}",
+            (
+                "Use the available repo tools to gather enough evidence to answer precisely. "
+                "Unless the answer is already explicit in the initial excerpts, inspect more repo context before answering."
+            ),
+        ]
+        if initial_snippets:
+            prompt_parts.append(
+                "Initial ranked repo excerpts (useful but often incomplete):\n"
+                f"{format_repo_context(initial_snippets)}"
+            )
+        else:
+            prompt_parts.append(
+                "No initial excerpt bundle matched strongly. Start by searching the repo with the tools."
+            )
+        prompt = "\n\n".join(prompt_parts)
+        tools = build_repo_tool_definitions()
+
+        try:
+            response = await self.client.responses.create(
+                model=self.model,
+                instructions=instructions,
+                input=prompt,
+                tools=tools,
+                tool_choice="required",
+                parallel_tool_calls=False,
+                max_output_tokens=self.max_output_tokens,
+                reasoning={"effort": self.reasoning_effort},
+                truncation="auto",
+            )
+
+            tool_rounds = 0
+            while True:
+                tool_calls = extract_response_function_calls(response)
+                if not tool_calls:
+                    break
+                if tool_rounds >= MAX_TOOL_ROUNDS:
+                    response = await self.client.responses.create(
+                        model=self.model,
+                        instructions=instructions,
+                        previous_response_id=response.id,
+                        input=(
+                            "Stop researching and answer the user now using only the repository evidence already gathered."
+                        ),
+                        max_output_tokens=self.max_output_tokens,
+                        reasoning={"effort": self.reasoning_effort},
+                        truncation="auto",
+                    )
+                    break
+
+                tool_rounds += 1
+                tool_outputs = [
+                    {
+                        "type": "function_call_output",
+                        "call_id": tool_call.call_id,
+                        "output": self._execute_repo_tool(session, tool_call),
+                    }
+                    for tool_call in tool_calls
+                ]
+                response = await self.client.responses.create(
+                    model=self.model,
+                    instructions=instructions,
+                    previous_response_id=response.id,
+                    input=tool_outputs,
+                    tools=tools,
+                    tool_choice="auto",
+                    parallel_tool_calls=False,
+                    max_output_tokens=self.max_output_tokens,
+                    reasoning={"effort": self.reasoning_effort},
+                    truncation="auto",
+                )
+
+            answer = await self._continue_answer(response, instructions=instructions)
+            if answer:
+                return RepoAnswer(answer=answer, snippets=session.sources or initial_snippets)
+        except Exception:
+            fallback_snippets = session.sources or initial_snippets
+            if fallback_snippets:
+                return RepoAnswer(
+                    answer=await self._answer_from_snippets(question, fallback_snippets),
+                    snippets=fallback_snippets,
+                )
+            raise
+
+        fallback_snippets = session.sources or initial_snippets
+        if fallback_snippets:
+            return RepoAnswer(
+                answer=await self._answer_from_snippets(question, fallback_snippets),
+                snippets=fallback_snippets,
+            )
+        raise RuntimeError("OpenAI returned an empty response.")
+
     async def _send_answer(
         self,
         ctx,
@@ -3112,10 +3728,18 @@ class ChatGPTCog(commands.Cog):
         include_sources: bool,
     ) -> None:
         mention = ctx.author.mention
-        sources = "Sources: " + ", ".join(f"`{snippet.reference}`" for snippet in snippets)
+        unique_references = list(dict.fromkeys(snippet.reference for snippet in snippets))
+        visible_references = unique_references[:MAX_SOURCE_REFERENCES]
+        if visible_references:
+            sources = "Sources: " + ", ".join(f"`{reference}`" for reference in visible_references)
+            if len(unique_references) > len(visible_references):
+                sources += ", ..."
+        else:
+            sources = ""
+            include_sources = False
         message_parts = split_for_discord(answer)
         if not message_parts:
-            await ctx.send(f"{mention} I couldn't produce an answer from the selected repo context.")
+            await ctx.send(f"{mention} I couldn't produce an answer from the gathered repo evidence.")
             return
 
         single_message = f"{mention} {message_parts[0]}"
@@ -3149,49 +3773,18 @@ class ChatGPTCog(commands.Cog):
             "but I'll ping you when it's ready."
         )
         async with ctx.typing():
-            snippets = build_repo_context(
-                question,
-                self.repo_root,
-                max_snippets=self.max_snippets,
-                max_context_chars=self.max_context_chars,
-            )
-            if not snippets:
-                await ctx.send(
-                    f"{ctx.author.mention} I couldn't find relevant repo snippets for that question. "
-                    "Try naming a file, command, class, or feature more directly."
-                )
-                return
-
             try:
-                answer = await self._ask_openai(question, snippets)
+                result = await self._ask_openai(question)
             except Exception as exc:
                 self.bot.logger.error(f"Codex command failed: {exc}")
                 await ctx.send(f"{ctx.author.mention} Codex request failed: {exc}")
                 return
 
-            if answer_looks_partial(answer):
-                broader_snippets = build_repo_context(
-                    question,
-                    self.repo_root,
-                    max_snippets=max(self.max_snippets, DEFAULT_MAX_SNIPPETS + 2),
-                    max_context_chars=self.max_context_chars,
-                    broaden=True,
-                )
-                if context_quality(broader_snippets) > context_quality(snippets):
-                    try:
-                        broader_answer = await self._ask_openai(question, broader_snippets)
-                    except Exception as exc:
-                        self.bot.logger.error(f"Codex broader retry failed: {exc}")
-                    else:
-                        if context_quality(broader_snippets) > context_quality(snippets) or not answer_looks_partial(broader_answer):
-                            snippets = broader_snippets
-                            answer = broader_answer
-
         await self._send_answer(
             ctx,
-            answer,
-            snippets,
-            include_sources=wants_technical_answer(question),
+            result.answer,
+            result.snippets,
+            include_sources=bool(result.snippets),
         )
 
 
