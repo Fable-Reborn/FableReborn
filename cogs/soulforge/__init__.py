@@ -106,6 +106,38 @@ SPLICE_BACKGROUND_LABELS = {
     key: label for key, label, _description in SPLICE_BACKGROUND_OPTIONS
 }
 
+SPLICE_STYLE_OPTIONS = [
+    ("auto", "Forge's Choice", "Let the forge decide the most fitting visual style"),
+    ("anime", "Anime", "Bold fantasy action, expressive energy, and stylized clarity"),
+    ("manga", "Manga", "Monochrome comic intensity, dramatic ink work, and sharp motion"),
+    ("chibi", "Chibi", "Cute exaggerated proportions with playful fantasy charm"),
+    ("vintage", "Vintage Illustration", "Old-world fantasy print mood with aged dramatic character"),
+    ("horror", "Horror", "Nightmarish anatomy, oppressive mood, and unsettling detail"),
+    ("dark_fantasy", "Dark Fantasy", "Bleak epic fantasy with grim atmosphere and weight"),
+    ("gothic", "Gothic", "Cathedral gloom, ornate darkness, and severe elegance"),
+    ("noir", "Noir", "Heavy shadows, stark contrast, and moody cinematic menace"),
+    ("storybook", "Storybook", "Illustrated folklore tone with whimsical mythical charm"),
+    ("comic", "Comic Splash", "Graphic contrast, crisp outlines, and splash-panel impact"),
+    ("watercolor", "Watercolor", "Soft pigment washes and painterly fantasy softness"),
+    ("oil_painting", "Oil Painting", "Rich brushwork, layered paint, and classical drama"),
+    ("ink_wash", "Ink Wash", "Expressive ink flow, brush rhythm, and atmospheric restraint"),
+    ("stained_glass", "Stained Glass", "Luminous panes, leaded lines, and sacred color blocks"),
+    ("art_nouveau", "Art Nouveau", "Elegant curves, decorative framing, and organic ornament"),
+    ("baroque", "Baroque", "Grand opulence, theatrical light, and lavish ornament"),
+    ("surreal", "Surreal", "Dream logic, uncanny forms, and impossible visual poetry"),
+    ("cel_shaded", "Cel-Shaded", "Clean shapes, strong edges, and stylized game-art finish"),
+    ("pixel", "Pixel Art", "Retro pixel-crafted creature styling with readable silhouette"),
+    ("retro_rpg", "Retro RPG", "SNES-era creature portrait energy and classic fantasy game feel"),
+    ("low_poly", "Low Poly", "Faceted forms, simple geometry, and stylized 3D abstraction"),
+    ("stop_motion", "Stop-Motion", "Handcrafted miniature feel with tactile sculpted presence"),
+    ("biomechanical", "Biomechanical", "Organic flesh fused with engineered forms and machinery"),
+    ("cyberpunk", "Cyberpunk", "Neon tech-noir energy, chrome detail, and electric atmosphere"),
+]
+
+SPLICE_STYLE_LABELS = {
+    key: label for key, label, _description in SPLICE_STYLE_OPTIONS
+}
+
 
 class SpliceSearchModal(discord.ui.Modal, title="Search Splices"):
     def __init__(self, browser_view: "SpliceBrowserView"):
@@ -685,9 +717,24 @@ class SpliceStatusPaginator(discord.ui.View):
             
         for splice in current_splices:
             status_emoji = "🕒" if splice["status"] == "pending" else "✅"
+            background_label = SPLICE_BACKGROUND_LABELS.get(
+                str(
+                    splice["background_theme"] if "background_theme" in splice else "auto"
+                ).strip().lower(),
+                "Forge's Choice",
+            )
+            style_label = SPLICE_STYLE_LABELS.get(
+                str(splice["splice_style"] if "splice_style" in splice else "auto").strip().lower(),
+                "Forge's Choice",
+            )
             embed.add_field(
                 name=f"ID: {splice['id']} {status_emoji}",
-                value=f"{splice['pet1_name']} + {splice['pet2_name']}\nStatus: {splice['status'].capitalize()}\nRequested: {splice['created_at'].strftime('%Y-%m-%d %H:%M')}\n",
+                value=(
+                    f"{splice['pet1_name']} + {splice['pet2_name']}\n"
+                    f"Status: {splice['status'].capitalize()}\n"
+                    f"Visuals: {background_label} / {style_label}\n"
+                    f"Requested: {splice['created_at'].strftime('%Y-%m-%d %H:%M')}\n"
+                ),
                 inline=False
             )
             
@@ -1027,13 +1074,14 @@ class SoulforgeCommandHelpView(View):
         self.stop()
 
 
-class SpliceBackgroundPreferenceView(View):
+class SpliceAppearancePreferenceView(View):
     def __init__(self, ctx, pet1_name: str, pet2_name: str):
         super().__init__(timeout=120)
         self.ctx = ctx
         self.pet1_name = pet1_name
         self.pet2_name = pet2_name
         self.selected_theme = "auto"
+        self.selected_style = "auto"
         self.confirmed = False
         self.message = None
 
@@ -1041,12 +1089,23 @@ class SpliceBackgroundPreferenceView(View):
             placeholder="Choose a background influence",
             min_values=1,
             max_values=1,
-            options=self._build_options(),
+            options=self._build_background_options(),
+            row=0,
         )
         self.theme_select.callback = self.theme_select_callback
         self.add_item(self.theme_select)
 
-    def _build_options(self) -> List[SelectOption]:
+        self.style_select = Select(
+            placeholder="Choose an art style",
+            min_values=1,
+            max_values=1,
+            options=self._build_style_options(),
+            row=1,
+        )
+        self.style_select.callback = self.style_select_callback
+        self.add_item(self.style_select)
+
+    def _build_background_options(self) -> List[SelectOption]:
         return [
             SelectOption(
                 label=label,
@@ -1057,19 +1116,34 @@ class SpliceBackgroundPreferenceView(View):
             for key, label, description in SPLICE_BACKGROUND_OPTIONS
         ]
 
+    def _build_style_options(self) -> List[SelectOption]:
+        return [
+            SelectOption(
+                label=label,
+                value=key,
+                description=description,
+                default=key == self.selected_style,
+            )
+            for key, label, description in SPLICE_STYLE_OPTIONS
+        ]
+
     def _build_embed(self) -> discord.Embed:
-        label = SPLICE_BACKGROUND_LABELS.get(self.selected_theme, "Forge's Choice")
+        background_label = SPLICE_BACKGROUND_LABELS.get(
+            self.selected_theme, "Forge's Choice"
+        )
+        style_label = SPLICE_STYLE_LABELS.get(self.selected_style, "Forge's Choice")
         embed = discord.Embed(
-            title="Choose Background Influence",
+            title="Choose Splice Art Preferences",
             description=(
                 f"Your splice between **{self.pet1_name}** and **{self.pet2_name}** is a new combination.\n"
-                "Pick a background direction to slightly influence the generated art. "
+                "Pick a background direction and art style to influence the generated result. "
                 "The creature will still remain the main focus."
             ),
             color=0x9d4edd,
         )
-        embed.add_field(name="Current Selection", value=label, inline=False)
-        embed.set_footer(text="This only affects newly generated art for this splice request.")
+        embed.add_field(name="Background", value=background_label, inline=False)
+        embed.add_field(name="Art Style", value=style_label, inline=False)
+        embed.set_footer(text="These only affect newly generated art for this splice request.")
         return embed
 
     async def start(self):
@@ -1091,7 +1165,7 @@ class SpliceBackgroundPreferenceView(View):
                 child.disabled = True
             try:
                 await self.message.edit(
-                    content="⏰ Background selection timed out.",
+                    content="⏰ Splice art preference selection timed out.",
                     embed=self._build_embed(),
                     view=self,
                 )
@@ -1100,19 +1174,30 @@ class SpliceBackgroundPreferenceView(View):
 
     async def theme_select_callback(self, interaction: discord.Interaction):
         self.selected_theme = self.theme_select.values[0]
-        self.theme_select.options = self._build_options()
+        self.theme_select.options = self._build_background_options()
+        await interaction.response.edit_message(embed=self._build_embed(), view=self)
+
+    async def style_select_callback(self, interaction: discord.Interaction):
+        self.selected_style = self.style_select.values[0]
+        self.style_select.options = self._build_style_options()
         await interaction.response.edit_message(embed=self._build_embed(), view=self)
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
     async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.confirmed = True
-        selected_label = SPLICE_BACKGROUND_LABELS.get(
+        selected_background = SPLICE_BACKGROUND_LABELS.get(
             self.selected_theme, "Forge's Choice"
+        )
+        selected_style = SPLICE_STYLE_LABELS.get(
+            self.selected_style, "Forge's Choice"
         )
         for child in self.children:
             child.disabled = True
         await interaction.response.edit_message(
-            content=f"✅ Background influence locked to **{selected_label}**.",
+            content=(
+                f"✅ Art preferences locked to **{selected_background}** background and "
+                f"**{selected_style}** styling."
+            ),
             embed=self._build_embed(),
             view=self,
         )
@@ -1121,11 +1206,12 @@ class SpliceBackgroundPreferenceView(View):
     @discord.ui.button(label="Skip", style=discord.ButtonStyle.secondary)
     async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.selected_theme = "auto"
+        self.selected_style = "auto"
         self.confirmed = True
         for child in self.children:
             child.disabled = True
         await interaction.response.edit_message(
-            content="✅ Background influence left to the forge.",
+            content="✅ Background and styling left to the forge.",
             embed=self._build_embed(),
             view=self,
         )
@@ -1344,6 +1430,16 @@ class Soulforge(commands.Cog):
         return SPLICE_BACKGROUND_LABELS[self._normalize_splice_background_theme(theme_key)]
 
     @staticmethod
+    def _normalize_splice_style(style_key: Optional[str]) -> str:
+        key = str(style_key or "auto").strip().lower()
+        if key not in SPLICE_STYLE_LABELS:
+            return "auto"
+        return key
+
+    def _get_splice_style_label(self, style_key: Optional[str]) -> str:
+        return SPLICE_STYLE_LABELS[self._normalize_splice_style(style_key)]
+
+    @staticmethod
     def _build_archive_alias_candidate(alias: str, suffix_number: int) -> str:
         base_alias = str(alias or "").strip()
         if not base_alias:
@@ -1470,6 +1566,7 @@ class Soulforge(commands.Cog):
                 pet2_element TEXT,
                 pet2_url TEXT,
                 background_theme TEXT NOT NULL DEFAULT 'auto',
+                splice_style TEXT NOT NULL DEFAULT 'auto',
                 status TEXT DEFAULT 'pending',
                 created_at TIMESTAMP DEFAULT NOW()
             )
@@ -1477,6 +1574,9 @@ class Soulforge(commands.Cog):
         )
         await conn.execute(
             "ALTER TABLE splice_requests ADD COLUMN IF NOT EXISTS background_theme TEXT NOT NULL DEFAULT 'auto';"
+        )
+        await conn.execute(
+            "ALTER TABLE splice_requests ADD COLUMN IF NOT EXISTS splice_style TEXT NOT NULL DEFAULT 'auto';"
         )
 
     async def _count_user_pet_capacity_items(self, conn, user_id: int) -> int:
@@ -3550,21 +3650,25 @@ class Soulforge(commands.Cog):
                 return await ctx.send("Splice canceled.")
 
             background_theme = "auto"
+            splice_style = "auto"
             if not known_combination:
-                background_view = SpliceBackgroundPreferenceView(
+                appearance_view = SpliceAppearancePreferenceView(
                     ctx,
                     pet1_data["name"],
                     pet2_data["name"],
                 )
-                await background_view.start()
-                timed_out = await background_view.wait()
-                if not background_view.confirmed:
+                await appearance_view.start()
+                timed_out = await appearance_view.wait()
+                if not appearance_view.confirmed:
                     await self.bot.reset_cooldown(ctx)
                     if timed_out:
-                        return await ctx.send("Splice canceled because background selection timed out.")
+                        return await ctx.send("Splice canceled because art preference selection timed out.")
                     return await ctx.send("Splice canceled.")
                 background_theme = self._normalize_splice_background_theme(
-                    background_view.selected_theme
+                    appearance_view.selected_theme
+                )
+                splice_style = self._normalize_splice_style(
+                    appearance_view.selected_style
                 )
 
             if known_combination:
@@ -3826,8 +3930,8 @@ class Soulforge(commands.Cog):
                         INSERT INTO splice_requests 
                         (user_id, pet1_id, pet2_id, pet1_name, pet2_name, pet1_default, pet2_default, temp_name,
                         pet1_hp, pet1_attack, pet1_defense, pet1_element, pet1_url,
-                        pet2_hp, pet2_attack, pet2_defense, pet2_element, pet2_url, background_theme) 
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) 
+                        pet2_hp, pet2_attack, pet2_defense, pet2_element, pet2_url, background_theme, splice_style)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
                         RETURNING id
                         """,
                         ctx.author.id,
@@ -3849,6 +3953,7 @@ class Soulforge(commands.Cog):
                         pet2_data["element"],
                         pet2_data["url"],
                         background_theme,
+                        splice_style,
                     )
                 
                 # Notify the splice request channel
@@ -3879,6 +3984,11 @@ class Soulforge(commands.Cog):
                         value=self._get_splice_background_label(background_theme),
                         inline=False,
                     )
+                    embed.add_field(
+                        name="Art Style",
+                        value=self._get_splice_style_label(splice_style),
+                        inline=False,
+                    )
                     embed.add_field(name="Pet 1 Stats", value=f"HP: {pet1_data['hp']}, ATK: {pet1_data['attack']}, DEF: {pet1_data['defense']}, Element: {pet1_data['element']}\nURL: {pet1_data['url']}", inline=True)
                     embed.add_field(name="Pet 2 Stats", value=f"HP: {pet2_data['hp']}, ATK: {pet2_data['attack']}, DEF: {pet2_data['defense']}, Element: {pet2_data['element']}\nURL: {pet2_data['url']}", inline=True)
                     embed.add_field(name="Command", value=f"Splice ID {splice_id}`", inline=False)
@@ -3891,6 +4001,7 @@ class Soulforge(commands.Cog):
                     f"*The Soulforge begins pulsing with purple and blue energies as primordial forces embrace your offering. The essence of your creatures slowly dissolves into the ancient crucible, where Eidolith fragments commence their delicate dance of transformation.*\n\n"
                     f"As Vaedrith's ancient texts warn: soul-binding cannot be rushed. The patterns must align naturally, following rhythms older than the gods themselves.\n\n"
                     f"Requested background influence: **{self._get_splice_background_label(background_theme)}**\n\n"
+                    f"Requested art style: **{self._get_splice_style_label(splice_style)}**\n\n"
                     f"Check your creation's progress: `$splicestatus {splice_id}`\n\n"
                     f"*Note: This splicing has reduced your forge's condition to {new_condition}% and increased divine scrutiny to {new_divine_attention}%.*"
                 )
@@ -4117,7 +4228,7 @@ class Soulforge(commands.Cog):
             async with self.bot.pool.acquire() as conn:
                 await self._ensure_splice_request_schema(conn)
                 splices = await conn.fetch(
-                    "SELECT id, pet1_name, pet2_name, status, created_at FROM splice_requests WHERE user_id = $1 ORDER BY created_at DESC",
+                    "SELECT id, pet1_name, pet2_name, status, created_at, background_theme, splice_style FROM splice_requests WHERE user_id = $1 ORDER BY created_at DESC",
                     ctx.author.id
                 )
             
@@ -4152,6 +4263,13 @@ class Soulforge(commands.Cog):
             name="Background Preference",
             value=self._get_splice_background_label(
                 splice["background_theme"] if "background_theme" in splice else None
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Art Style",
+            value=self._get_splice_style_label(
+                splice["splice_style"] if "splice_style" in splice else None
             ),
             inline=False,
         )

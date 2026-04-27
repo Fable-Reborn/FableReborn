@@ -30,6 +30,7 @@ import secrets
 
 # Constants for auto splice persistence
 AUTO_SPLICE_SAVE_FILE = "auto_splice_saves.json"
+SPLICE_IMAGE_MODEL = "gpt-image-2-2026-04-21"
 
 SPLICE_BACKGROUND_THEME_DATA = {
     "auto": {
@@ -181,6 +182,184 @@ SPLICE_BACKGROUND_THEME_DATA = {
         "label": "Dreamscape",
         "prompt": (
             "Set the creature in a surreal dreamscape of impossible geometry, floating fragments, strange gradients, and reality-bending atmosphere."
+        ),
+    },
+}
+
+SPLICE_STYLE_DATA = {
+    "auto": {
+        "label": "Forge's Choice",
+        "descriptor": None,
+        "prompt": (
+            "Let the forge choose the most fitting visual treatment for this creature while preserving a strong fantasy splash-art finish."
+        ),
+    },
+    "anime": {
+        "label": "Anime",
+        "descriptor": "anime-inspired",
+        "prompt": (
+            "Use polished anime fantasy illustration with expressive motion, strong silhouette design, crisp stylization, and heightened dramatic energy."
+        ),
+    },
+    "manga": {
+        "label": "Manga",
+        "descriptor": "manga-styled",
+        "prompt": (
+            "Use manga-inspired fantasy illustration with bold ink shapes, dramatic monochrome value design, speed, impact, and sharp expressive linework."
+        ),
+    },
+    "chibi": {
+        "label": "Chibi",
+        "descriptor": "chibi",
+        "prompt": (
+            "Use chibi fantasy styling with exaggerated proportions, oversized personality, cute readability, and playful creature charm without losing design clarity."
+        ),
+    },
+    "vintage": {
+        "label": "Vintage Illustration",
+        "descriptor": "vintage fantasy",
+        "prompt": (
+            "Use vintage fantasy illustration cues with aged print character, restrained palette choices, poster-like composition, and old-world mythic drama."
+        ),
+    },
+    "horror": {
+        "label": "Horror",
+        "descriptor": "horror-themed",
+        "prompt": (
+            "Use horror art direction with oppressive mood, disturbing anatomical emphasis, unsettling lighting, and a threatening nightmare presence."
+        ),
+    },
+    "dark_fantasy": {
+        "label": "Dark Fantasy",
+        "descriptor": "dark-fantasy",
+        "prompt": (
+            "Use dark fantasy styling with grim atmosphere, bleak grandeur, severe contrast, weathered textures, and ominous mythical weight."
+        ),
+    },
+    "gothic": {
+        "label": "Gothic",
+        "descriptor": "gothic",
+        "prompt": (
+            "Use gothic fantasy styling with cathedral-like severity, ornate darkness, spired silhouettes, solemn elegance, and haunted grandeur."
+        ),
+    },
+    "noir": {
+        "label": "Noir",
+        "descriptor": "noir",
+        "prompt": (
+            "Use noir-inspired creature art with hard shadow shapes, narrow highlights, moody contrast, smoke-like atmosphere, and cinematic menace."
+        ),
+    },
+    "storybook": {
+        "label": "Storybook",
+        "descriptor": "storybook",
+        "prompt": (
+            "Use storybook fantasy illustration with folkloric charm, painterly imagination, enchanted readability, and a sense of mythic wonder."
+        ),
+    },
+    "comic": {
+        "label": "Comic Splash",
+        "descriptor": "comic-book",
+        "prompt": (
+            "Use comic splash-page energy with bold graphic contrast, decisive outlines, dramatic posing, and stylized action clarity."
+        ),
+    },
+    "watercolor": {
+        "label": "Watercolor",
+        "descriptor": "watercolor",
+        "prompt": (
+            "Use watercolor fantasy illustration with controlled pigment blooms, layered washes, softened transitions, and elegant painterly atmosphere."
+        ),
+    },
+    "oil_painting": {
+        "label": "Oil Painting",
+        "descriptor": "oil-painted",
+        "prompt": (
+            "Use classical oil-painting treatment with rich brushwork, layered texture, dramatic chiaroscuro, and museum-scale fantasy gravitas."
+        ),
+    },
+    "ink_wash": {
+        "label": "Ink Wash",
+        "descriptor": "ink-wash",
+        "prompt": (
+            "Use ink-wash fantasy illustration with flowing brush rhythm, controlled bleed, misty negative space, and elegant atmospheric restraint."
+        ),
+    },
+    "stained_glass": {
+        "label": "Stained Glass",
+        "descriptor": "stained-glass",
+        "prompt": (
+            "Use stained-glass styling with luminous segmented color panes, strong leaded outlines, sacred symmetry, and jewel-toned radiance."
+        ),
+    },
+    "art_nouveau": {
+        "label": "Art Nouveau",
+        "descriptor": "art-nouveau",
+        "prompt": (
+            "Use Art Nouveau fantasy styling with sinuous curves, decorative organic framing, elegant silhouettes, and ornamental natural motifs."
+        ),
+    },
+    "baroque": {
+        "label": "Baroque",
+        "descriptor": "baroque",
+        "prompt": (
+            "Use baroque fantasy styling with lavish ornament, theatrical lighting, opulent grandeur, and intense dramatic movement."
+        ),
+    },
+    "surreal": {
+        "label": "Surreal",
+        "descriptor": "surrealist",
+        "prompt": (
+            "Use surreal fantasy art direction with dream logic, uncanny transformations, impossible spatial relationships, and poetic visual strangeness."
+        ),
+    },
+    "cel_shaded": {
+        "label": "Cel-Shaded",
+        "descriptor": "cel-shaded",
+        "prompt": (
+            "Use cel-shaded fantasy art with clean shape language, hard shadow blocks, vivid readability, and stylized game-art finish."
+        ),
+    },
+    "pixel": {
+        "label": "Pixel Art",
+        "descriptor": "pixel-art",
+        "prompt": (
+            "Use deliberate pixel-art styling with readable retro creature design, clean clustering, restrained dithering, and iconic silhouette clarity."
+        ),
+    },
+    "retro_rpg": {
+        "label": "Retro RPG",
+        "descriptor": "retro-RPG",
+        "prompt": (
+            "Use retro RPG fantasy art direction with classic 16-bit-era creature portrait energy, iconic readable forms, and nostalgic game-world charm."
+        ),
+    },
+    "low_poly": {
+        "label": "Low Poly",
+        "descriptor": "low-poly",
+        "prompt": (
+            "Use low-poly stylization with faceted geometry, simplified planes, bold lighting separation, and intentional 3D abstraction."
+        ),
+    },
+    "stop_motion": {
+        "label": "Stop-Motion",
+        "descriptor": "stop-motion",
+        "prompt": (
+            "Use stop-motion-inspired fantasy styling with handcrafted miniature texture, tactile sculpted forms, and practical diorama presence."
+        ),
+    },
+    "biomechanical": {
+        "label": "Biomechanical",
+        "descriptor": "biomechanical",
+        "prompt": (
+            "Use biomechanical fantasy styling with fused sinew and machinery, engineered anatomy, mechanical detail, and unnerving synthetic life."
+        ),
+    },
+    "cyberpunk": {
+        "label": "Cyberpunk",
+        "descriptor": "cyberpunk",
+        "prompt": (
+            "Use cyberpunk creature styling with neon tech-noir atmosphere, chrome accents, electric color contrast, and futuristic urban menace."
         ),
     },
 }
@@ -638,13 +817,23 @@ class SpliceRequestPaginator(View):
             else:
                 days = int(hours_ago / 24)
                 time_str = f"{days}d ago"
+
+            background_label = SPLICE_BACKGROUND_THEME_DATA.get(
+                splice["background_theme"] if "background_theme" in splice else "auto",
+                SPLICE_BACKGROUND_THEME_DATA["auto"],
+            )["label"]
+            style_label = SPLICE_STYLE_DATA.get(
+                splice["splice_style"] if "splice_style" in splice else "auto",
+                SPLICE_STYLE_DATA["auto"],
+            )["label"]
             
             embed.add_field(
                 name=f"#{splice['id']} • {user} • {time_str}",
                 value=(
                     f"🐾 **{splice['pet1_name']}** (`{splice['pet1_default']}`) + "
                     f"**{splice['pet2_name']}** (`{splice['pet2_default']}`)\n"
-                    f"🎨 Background: `{SPLICE_BACKGROUND_THEME_DATA.get(splice['background_theme'] if 'background_theme' in splice else 'auto', SPLICE_BACKGROUND_THEME_DATA['auto'])['label']}`\n"
+                    f"🎨 Background: `{background_label}`\n"
+                    f"🖌️ Style: `{style_label}`\n"
                     f"🔗 [Pet 1]({splice['pet1_url']}) • [Pet 2]({splice['pet2_url']})"
                 ),
                 inline=False
@@ -729,6 +918,25 @@ class ProcessSplice(commands.Cog):
         key = self._normalize_splice_background_theme(theme_key)
         return SPLICE_BACKGROUND_THEME_DATA[key]["prompt"]
 
+    @staticmethod
+    def _normalize_splice_style(style_key: Optional[str]) -> str:
+        key = str(style_key or "auto").strip().lower()
+        if key not in SPLICE_STYLE_DATA:
+            return "auto"
+        return key
+
+    def _get_splice_style_label(self, style_key: Optional[str]) -> str:
+        key = self._normalize_splice_style(style_key)
+        return SPLICE_STYLE_DATA[key]["label"]
+
+    def _get_splice_style_prompt(self, style_key: Optional[str]) -> str:
+        key = self._normalize_splice_style(style_key)
+        return SPLICE_STYLE_DATA[key]["prompt"]
+
+    def _get_splice_style_descriptor(self, style_key: Optional[str]) -> Optional[str]:
+        key = self._normalize_splice_style(style_key)
+        return SPLICE_STYLE_DATA[key]["descriptor"]
+
     async def _ensure_splice_request_background_column(self, conn) -> None:
         exists = await conn.fetchval(
             "SELECT to_regclass('public.splice_requests') IS NOT NULL;"
@@ -737,6 +945,9 @@ class ProcessSplice(commands.Cog):
             return
         await conn.execute(
             "ALTER TABLE splice_requests ADD COLUMN IF NOT EXISTS background_theme TEXT NOT NULL DEFAULT 'auto';"
+        )
+        await conn.execute(
+            "ALTER TABLE splice_requests ADD COLUMN IF NOT EXISTS splice_style TEXT NOT NULL DEFAULT 'auto';"
         )
 
     async def _ensure_splice_tree_tracking_table(self, conn) -> None:
@@ -1205,14 +1416,21 @@ class ProcessSplice(commands.Cog):
 
         return hydrated_rows
 
-    def _build_batch_splice_ai_prompt(self, theme_key: Optional[str]) -> str:
+    def _build_batch_splice_ai_prompt(
+        self,
+        theme_key: Optional[str],
+        style_key: Optional[str] = None,
+    ) -> str:
         background_prompt = self._get_splice_background_theme_prompt(theme_key)
+        style_prompt = self._get_splice_style_prompt(style_key)
         return (
             "Fuse these two monsters into one impossible hybrid creature. "
             "Merge their strongest visual traits into a single anatomically coherent fantasy beast. "
             "Show exactly one fully visible creature in a dynamic pose with clean silhouette readability. "
-            "Use a polished splash-art presentation with dramatic lighting and strong focal clarity. "
+            "Use dramatic lighting, strong focal clarity, and a polished finish appropriate to the chosen style. "
+            f"Visual style direction: {style_prompt} "
             f"Background direction: {background_prompt} "
+            "If the selected style implies painterly, graphic, retro, sculptural, or mosaic-like rendering, commit fully to that look instead of generic splash-art realism. "
             "Keep the environment secondary to the creature, with no extra creatures, no humanoids, no text, and no collage effect."
         )
 
@@ -3197,7 +3415,7 @@ class ProcessSplice(commands.Cog):
                         pet1_url, pet2_url,
                         pet1_hp, pet1_attack, pet1_defense,
                         pet2_hp, pet2_attack, pet2_defense,
-                        pet1_element, pet2_element, temp_name, background_theme
+                        pet1_element, pet2_element, temp_name, background_theme, splice_style
                 FROM    splice_requests
                 WHERE   status='pending'
                 ORDER BY created_at
@@ -3235,6 +3453,7 @@ class ProcessSplice(commands.Cog):
                     pet1_url=r["pet1_url"],
                     pet2_url=r["pet2_url"],
                     background_theme=r["background_theme"],
+                    splice_style=r["splice_style"],
                     url=None,
                     hp=None,
                     attack=None,
@@ -3261,7 +3480,9 @@ class ProcessSplice(commands.Cog):
         # ──────────────────────────────────────────────────────────
         # 3) STEP-1 AUTO IMAGE GENERATION
         # ──────────────────────────────────────────────────────────
-        await ctx.send("🎨 **AUTO-GENERATING IMAGES** (using gpt-image-1.5 with enhanced creative prompts...)")
+        await ctx.send(
+            f"🎨 **AUTO-GENERATING IMAGES** (using {SPLICE_IMAGE_MODEL} with enhanced creative prompts...)"
+        )
         
         # Define creative elements for dynamic prompt generation
         creature_types = ['mythical', 'elemental', 'celestial', 'abyssal', 'arcane', 'primordial', 'ethereal', 'fey',
@@ -3354,7 +3575,13 @@ class ProcessSplice(commands.Cog):
                 
                 # Get random unique elements for this specific creature
                 creature_type = random.choice(creature_types)
-                art_style = random.choice(art_styles)
+                selected_style_key = self._normalize_splice_style(
+                    pet.get("splice_style")
+                )
+                style_descriptor = self._get_splice_style_descriptor(
+                    selected_style_key
+                )
+                art_style = style_descriptor or random.choice(art_styles)
                 special_trait = random.choice(special_traits)
                 anatomical_feature = random.choice(anatomical_features)
                 
@@ -3363,6 +3590,7 @@ class ProcessSplice(commands.Cog):
                 background_prompt = self._get_splice_background_theme_prompt(
                     pet.get("background_theme")
                 )
+                style_prompt = self._get_splice_style_prompt(selected_style_key)
                 
                 # Generate a unique random seed for this creature to ensure distinctiveness
                 unique_seed = random.randint(10000, 99999)
@@ -3386,16 +3614,14 @@ class ProcessSplice(commands.Cog):
 
                     "Design should combine organic, mystical, and fantastical elements while maintaining visual cohesion and balance. "
 
-                    "Ultra high contrast cinematic lighting with deep shadows and luminous highlights. "
-                    "Clean digital rendering with crisp edges, smooth gradients, and refined detailing. "
-                    "Highly polished AAA game splash art quality. "
-                    "No painterly texture, no brush strokes, no canvas grain, no sketch lines, no messy shading. "
-                    "Sharp focus, high dynamic range, studio-quality clarity. "
-                    "Hard-surface detailing combined with organic realism where appropriate. "
+                    "Use strong readability, deliberate contrast, and a polished finish appropriate to the chosen style. "
+                    "If the requested style implies painterly, graphic, retro, handcrafted, mosaic-like, or simplified geometric rendering, fully commit to that visual language instead of defaulting to generic realism. "
+                    "Preserve clear focal hierarchy, intentional materials, and confident execution within the chosen style. "
 
                     "Cinematic composition with dramatic perspective and strong visual hierarchy. "
                     "Volumetric lighting, atmospheric effects, glowing energy interactions, environmental storytelling. "
 
+                    f"Visual style direction: {style_prompt} "
                     f"Background direction: {background_prompt} "
                     "Build an epic, immersive background that reinforces scale, mood, and narrative impact while remaining secondary to the creature. "
                     f"Guidelines: {selected_guidelines[0]} {selected_guidelines[1]} {selected_guidelines[2]}"
@@ -3446,10 +3672,10 @@ class ProcessSplice(commands.Cog):
                 with open(p2_file, "wb") as f:
                     f.write(p2_bytes)
 
-                # Generate with gpt-image-1.5
+                # Generate with the configured splice image model
                 def _edit():
                     return openai_client.images.edit(
-                        model="gpt-image-1.5",
+                        model=SPLICE_IMAGE_MODEL,
                         image=[open(p1_file, "rb"), open(p2_file, "rb")],
                         prompt=prompt,
                     )
@@ -4141,7 +4367,7 @@ class ProcessSplice(commands.Cog):
             await ctx.send(f"❌ Error clearing saves: {e}")
 
     # ──────────────────────────────────────────────────────────────────────
-    #  BATCH S P L I C E   (full command – gpt-image-1.5, retry loops, etc.)
+    #  BATCH S P L I C E   (full command – configured image model, retry loops, etc.)
     # ──────────────────────────────────────────────────────────────────────
     @is_gm()
     @commands.command(hidden=True)
@@ -4195,7 +4421,7 @@ class ProcessSplice(commands.Cog):
 
         try:
             openai_client = self._create_openai_client()
-            await ctx.send("✅ OpenAI client initialised – gpt-image-1.5 enabled.")
+            await ctx.send(f"✅ OpenAI client initialised – {SPLICE_IMAGE_MODEL} enabled.")
         except Exception as e:
             openai_client = None
             await ctx.send(f"⚠️  OpenAI init failed ({e}) – AI disabled.")
@@ -4212,7 +4438,7 @@ class ProcessSplice(commands.Cog):
                         pet1_url, pet2_url,
                         pet1_hp, pet1_attack, pet1_defense,
                         pet2_hp, pet2_attack, pet2_defense,
-                        pet1_element, pet2_element, temp_name, background_theme
+                        pet1_element, pet2_element, temp_name, background_theme, splice_style
                 FROM    splice_requests
                 WHERE   status='pending'
                 ORDER BY created_at
@@ -4250,6 +4476,7 @@ class ProcessSplice(commands.Cog):
                     pet1_url=r["pet1_url"],
                     pet2_url=r["pet2_url"],
                     background_theme=r["background_theme"],
+                    splice_style=r["splice_style"],
                     url=None,
                     hp=None,
                     attack=None,
@@ -4262,7 +4489,7 @@ class ProcessSplice(commands.Cog):
             )
 
         # ──────────────────────────────────────────────────────────
-        # 3) STEP-1  IMAGE  (with retry loop + gpt-image-1.5 edit)
+        # 3) STEP-1  IMAGE  (with retry loop + configured image edit model)
         # ──────────────────────────────────────────────────────────
         await ctx.send("__**STEP-1  – choose / create an image for each pet**__")
 
@@ -4273,7 +4500,7 @@ class ProcessSplice(commands.Cog):
                         f"**{idx}/{len(pets)} – {pet['name']}**\n"
                         "Choose:\n"
                         "`1` upload attachment\n`2` paste URL\n"
-                        "`3` generate with gpt-image-1.5 (parent pictures merged)\n"
+                        f"`3` generate with {SPLICE_IMAGE_MODEL} (parent pictures merged)\n"
                         "`cancel` abort batch"
                     )
                     await ctx.send(menu)
@@ -4313,7 +4540,7 @@ class ProcessSplice(commands.Cog):
                         pet["url"] = (await admin_wait()).content.strip()
                         break
 
-                    # ── 3) gpt-image-1.5  (merge parents)
+                    # ── 3) configured image model (merge parents)
                     if choice == "3" and openai_client:
                         # download parent images to temp files
                         p1_bytes = await download_bytes(pet["pet1_url"])
@@ -4326,10 +4553,12 @@ class ProcessSplice(commands.Cog):
                             f.write(p2_bytes)
 
                         default_prompt = self._build_batch_splice_ai_prompt(
-                            pet.get("background_theme")
+                            pet.get("background_theme"),
+                            pet.get("splice_style"),
                         )
                         await ctx.send(
                             f"Background preference: **{self._get_splice_background_theme_label(pet.get('background_theme'))}**\n"
+                            f"Style preference: **{self._get_splice_style_label(pet.get('splice_style'))}**\n"
                             f"Default prompt:\n`{default_prompt}`\nAdd anything? (`yes`/`no`)"
                         )
                         extra = (await admin_wait()).content.lower().startswith("y")
@@ -4337,11 +4566,11 @@ class ProcessSplice(commands.Cog):
                             await ctx.send("Enter extra prompt:")
                             default_prompt += " " + (await admin_wait(timeout=120)).content.strip()
 
-                        await ctx.send("Creating image with gpt-image-1.5…")
+                        await ctx.send(f"Creating image with {SPLICE_IMAGE_MODEL}…")
 
                         def _edit():
                             return openai_client.images.edit(
-                                model="gpt-image-1.5",
+                                model=SPLICE_IMAGE_MODEL,
                                 image=[open(p1_file, "rb"), open(p2_file, "rb")],
                                 prompt=default_prompt,
                             )
@@ -4742,7 +4971,7 @@ class ProcessSplice(commands.Cog):
                         SELECT 
                             id, user_id, pet1_name, pet2_name, 
                             pet1_default, pet2_default, created_at,
-                            pet1_url, pet2_url, temp_name, background_theme
+                            pet1_url, pet2_url, temp_name, background_theme, splice_style
                         FROM splice_requests 
                         WHERE status = 'pending' 
                         ORDER BY created_at ASC
@@ -4808,6 +5037,13 @@ class ProcessSplice(commands.Cog):
             name="Background Preference",
             value=self._get_splice_background_theme_label(
                 splice["background_theme"] if "background_theme" in splice else None
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Art Style",
+            value=self._get_splice_style_label(
+                splice["splice_style"] if "splice_style" in splice else None
             ),
             inline=False,
         )
