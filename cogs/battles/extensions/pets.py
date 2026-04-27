@@ -110,19 +110,30 @@ class PetExtension:
         if entity is None:
             return None
 
-        # Combatants store the discord user object in `user`.
-        if hasattr(entity, 'user'):
-            entity = getattr(entity, 'user', None)
+        candidate = entity
+        for _ in range(4):
+            if candidate is None:
+                return None
+            if isinstance(candidate, int):
+                return candidate
+            if hasattr(candidate, 'user'):
+                nested_user = getattr(candidate, 'user', None)
+                if nested_user is not None and nested_user is not candidate:
+                    candidate = nested_user
+                    continue
+            nested_id = getattr(candidate, 'id', None)
+            if nested_id is not None and nested_id is not candidate:
+                candidate = nested_id
+                continue
+            break
 
-        user_id = getattr(entity, 'id', None)
-        if user_id is not None:
-            return user_id
+        try:
+            return int(candidate)
+        except (TypeError, ValueError):
+            pass
 
-        if isinstance(entity, int):
-            return entity
-
-        if isinstance(entity, str):
-            cleaned = entity.strip()
+        if isinstance(candidate, str):
+            cleaned = candidate.strip()
             if cleaned.isdigit():
                 return int(cleaned)
 
@@ -3912,11 +3923,15 @@ class PetExtension:
             conn = await ctx.bot.pool.acquire()
 
         try:
+            owner_user_id = self._extract_user_id(user)
+            if owner_user_id is None:
+                return None
+
             pet_element = pet["element"].capitalize() if pet["element"] and include_element else "Unknown"
 
             owner_stats = await conn.fetchrow(
                 "SELECT * FROM profile WHERE \"user\" = $1;",
-                user.id
+                owner_user_id,
             )
 
             owner_luck = owner_stats["luck"] if owner_stats and "luck" in owner_stats else 0.6
@@ -3955,6 +3970,7 @@ class PetExtension:
                 element=pet_element,
                 is_pet=True,
                 owner=user,
+                user_id=owner_user_id,
                 name=mask_runtime_name(ctx.bot, pet["name"]),
                 pet_id=pet["id"]
             )
@@ -4015,15 +4031,19 @@ class PetExtension:
             conn = await ctx.bot.pool.acquire()
 
         try:
+            owner_user_id = self._extract_user_id(user)
+            if owner_user_id is None:
+                return None
+
             if pet_id is None:
                 pet = await conn.fetchrow(
                     "SELECT * FROM monster_pets WHERE user_id = $1 AND equipped = TRUE AND daycare_boarding_id IS NULL;",
-                    user.id
+                    owner_user_id,
                 )
             else:
                 pet = await conn.fetchrow(
                     "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2 AND daycare_boarding_id IS NULL;",
-                    user.id,
+                    owner_user_id,
                     int(pet_id),
                 )
 

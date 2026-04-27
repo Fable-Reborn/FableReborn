@@ -88,6 +88,12 @@ class CityWarUserProxy:
         self.id = int(user_id)
         self.display_name = display_name
 
+    def __int__(self) -> int:
+        return self.id
+
+    def __index__(self) -> int:
+        return self.id
+
     def __str__(self) -> str:
         return self.display_name
 

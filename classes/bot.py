@@ -256,7 +256,7 @@ class Bot(commands.AutoShardedBot):
 
     async def get_ranks_for(self, thing, conn=None):
         """Returns the rank in money and xp for a user"""
-        v = thing.id if isinstance(thing, (discord.Member, discord.User)) else thing
+        v = self._coerce_user_id(thing)
         if conn is None:
             conn = await self.pool.acquire()
             local = True
@@ -289,7 +289,7 @@ class Bot(commands.AutoShardedBot):
         conn=None,
     ):
         """Generates the raidstats for a user"""
-        v = thing.id if isinstance(thing, (discord.Member, discord.User)) else thing
+        v = self._coerce_user_id(thing)
         local = False
         if conn is None:
             conn = await self.pool.acquire()
@@ -366,7 +366,7 @@ class Bot(commands.AutoShardedBot):
     ):
         """Generates the raidstats for a user"""
         from cogs.tournament import Tournament
-        v = thing.id if isinstance(thing, (discord.Member, discord.User)) else thing
+        v = self._coerce_user_id(thing)
         local = False
         if conn is None:
             conn = await self.pool.acquire()
@@ -414,7 +414,7 @@ class Bot(commands.AutoShardedBot):
 
     async def get_equipped_items_for(self, thing, conn=None):
         """Fetches a list of equipped items of a user from the database"""
-        v = thing.id if isinstance(thing, (discord.Member, discord.User)) else thing
+        v = self._coerce_user_id(thing)
         local = False
         if conn is None:
             conn = await self.pool.acquire()
@@ -531,27 +531,27 @@ class Bot(commands.AutoShardedBot):
         """Activates a boost of type_ for a user"""
         if type_ not in ["time", "luck", "money"]:
             raise ValueError("Not a valid booster type.")
-        user = user.id if isinstance(user, (discord.User, discord.Member)) else user
+        user = self._coerce_user_id(user)
         await self.redis.execute_command(
             "SET", f"booster:{user}:{type_}", 1, "EX", 86400
         )
 
     async def get_booster(self, user, type_):
         """Returns how longer a user has a booster running"""
-        user = user.id if isinstance(user, (discord.User, discord.Member)) else user
+        user = self._coerce_user_id(user)
         val = await self.redis.execute_command("TTL", f"booster:{user}:{type_}")
         return datetime.timedelta(seconds=val) if val != -2 else None
 
     async def start_adventure(self, user, number, time):
         """Sends a user on an adventure"""
-        user = user.id if isinstance(user, (discord.User, discord.Member)) else user
+        user = self._coerce_user_id(user)
         await self.redis.execute_command(
             "SET", f"adv:{user}", number, "EX", int(time.total_seconds()) + 15_552_000
         )  # +3 days
 
     async def get_adventure(self, user):
         """Returns a user's adventure"""
-        user = user.id if isinstance(user, (discord.User, discord.Member)) else user
+        user = self._coerce_user_id(user)
         ttl = await self.redis.execute_command("TTL", f"adv:{user}")
         if ttl == -2:
             return
@@ -563,11 +563,11 @@ class Bot(commands.AutoShardedBot):
 
     async def delete_adventure(self, user):
         """Deletes a user's adventure"""
-        user = user.id if isinstance(user, (discord.User, discord.Member)) else user
+        user = self._coerce_user_id(user)
         await self.redis.execute_command("DEL", f"adv:{user}")
 
     async def has_money(self, user, money, conn=None):
-        user = user.id if isinstance(user, (discord.User, discord.Member)) else user
+        user = self._coerce_user_id(user)
         if conn is None:
             conn = await self.pool.acquire()
             local = True
@@ -582,7 +582,7 @@ class Bot(commands.AutoShardedBot):
         return val
 
     async def has_crates(self, user, crates, rarity, conn=None):
-        user = user.id if isinstance(user, (discord.User, discord.Member)) else user
+        user = self._coerce_user_id(user)
         if conn is None:
             conn = await self.pool.acquire()
             local = True
@@ -596,7 +596,7 @@ class Bot(commands.AutoShardedBot):
         return cur_crates is not None and cur_crates >= crates
 
     async def has_item(self, user, item, conn=None):
-        user = user.id if isinstance(user, (discord.User, discord.Member)) else user
+        user = self._coerce_user_id(user)
         if conn:
             return await conn.fetchrow(
                 'SELECT * FROM allitems WHERE "owner"=$1 AND "id"=$2;', user, item
@@ -661,7 +661,7 @@ class Bot(commands.AutoShardedBot):
     async def create_item(
         self, name, value, type_, damage, armor, owner, hand, element, equipped=False, conn=None
     ):
-        owner = owner.id if isinstance(owner, (discord.User, discord.Member)) else owner
+        owner = self._coerce_user_id(owner)
         if conn is None:
             conn = await self.pool.acquire()
             local = True
@@ -704,7 +704,7 @@ class Bot(commands.AutoShardedBot):
 
         # Randomly select an element
         element = random.choice(elements)
-        owner = owner.id if isinstance(owner, (discord.User, discord.Member)) else owner
+        owner = self._coerce_user_id(owner)
         item = {}
         item["owner"] = owner
         type_ = random.choice(ALL_ITEM_TYPES)
@@ -1130,6 +1130,25 @@ class Bot(commands.AutoShardedBot):
             return None
         return parsed if parsed > 0 else None
 
+    @staticmethod
+    def _coerce_user_id(value):
+        candidate = value
+        for _ in range(4):
+            if candidate is None:
+                return None
+            if isinstance(candidate, int):
+                return candidate
+            nested_user = getattr(candidate, "user", None)
+            if nested_user is not None and nested_user is not candidate:
+                candidate = nested_user
+                continue
+            nested_id = getattr(candidate, "id", None)
+            if nested_id is not None and nested_id is not candidate:
+                candidate = nested_id
+                continue
+            break
+        return int(candidate)
+
     def _get_numeric_patreon_role_sources(self):
         sources = []
         ids_section = getattr(self.config, "ids", None)
@@ -1234,7 +1253,7 @@ class Bot(commands.AutoShardedBot):
         return None if found_member else False
 
     async def get_effective_donator_tier(self, user_id, *, sync_profile: bool = False) -> int:
-        user_id = user_id.id if isinstance(user_id, (discord.User, discord.Member)) else int(user_id)
+        user_id = self._coerce_user_id(user_id)
 
         row = await self.pool.fetchrow(
             'SELECT "tier" FROM profile WHERE "user" = $1;',
@@ -1283,7 +1302,7 @@ class Bot(commands.AutoShardedBot):
     async def get_damage_armor_for(
         self, user, items=None, classes=None, race=None, conn=None
     ):
-        user = user.id if isinstance(user, (discord.User, discord.Member)) else user
+        user = self._coerce_user_id(user)
         if conn is None:
             conn = await self.pool.acquire()
             local = True
