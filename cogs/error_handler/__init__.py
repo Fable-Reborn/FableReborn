@@ -344,11 +344,20 @@ class Errorhandler(commands.Cog):
                 # TimeoutError: A Discord operation timed out. All others should be handled by us
                 return
             elif isinstance(error.original, AsyncpgDataError):
+                detail = str(error.original).strip() or type(error.original).__name__
+                if len(detail) > 1200:
+                    detail = f"{detail[:1197]}..."
+                self.bot.logger.exception(
+                    "AsyncpgDataError in %s: %s",
+                    ctx.command.qualified_name,
+                    detail,
+                    exc_info=error.original,
+                )
                 return await ctx.send(
                     _(
-                        "An argument or value you entered was far too high for me to"
-                        " handle properly!"
-                    )
+                        "A database value error occurred while running"
+                        " **{command}**:\n```{detail}```"
+                    ).format(command=ctx.command.qualified_name, detail=detail)
                 )
             elif isinstance(error.original, LookupError):
                 tb = "\n".join(traceback.format_tb(error.original.__traceback__))
