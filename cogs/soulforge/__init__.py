@@ -1182,7 +1182,7 @@ class SpliceAppearancePreferenceView(View):
         self.style_select.options = self._build_style_options()
         await interaction.response.edit_message(embed=self._build_embed(), view=self)
 
-    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, row=2)
     async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.confirmed = True
         selected_background = SPLICE_BACKGROUND_LABELS.get(
@@ -1203,7 +1203,7 @@ class SpliceAppearancePreferenceView(View):
         )
         self.stop()
 
-    @discord.ui.button(label="Skip", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Skip", style=discord.ButtonStyle.secondary, row=2)
     async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.selected_theme = "auto"
         self.selected_style = "auto"
@@ -1217,7 +1217,7 @@ class SpliceAppearancePreferenceView(View):
         )
         self.stop()
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=2)
     async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         for child in self.children:
             child.disabled = True
