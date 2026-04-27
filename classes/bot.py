@@ -1985,7 +1985,20 @@ class Bot(commands.AutoShardedBot):
         try:
             pet = await conn.fetchrow(
                 """
-                SELECT cgp.*, mp."name" AS "pet_name", mp."alt_name", mp."growth_stage"
+                SELECT
+                    cgp.*,
+                    mp."name" AS "pet_name",
+                    mp."alt_name",
+                    mp."growth_stage",
+                    mp."hp" AS "pet_hp",
+                    mp."attack" AS "pet_attack",
+                    mp."defense" AS "pet_defense",
+                    mp."element" AS "pet_element",
+                    mp."level" AS "pet_level",
+                    mp."trust_level" AS "pet_trust_level",
+                    mp."happiness" AS "pet_happiness",
+                    mp."learned_skills" AS "pet_learned_skills",
+                    mp."gm_all_skills_enabled" AS "pet_gm_all_skills_enabled"
                 FROM city_guard_pet cgp
                 JOIN city c ON c."name"=cgp."city"
                 JOIN profile p ON p."user"=cgp."user_id"

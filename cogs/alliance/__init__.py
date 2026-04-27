@@ -1130,10 +1130,25 @@ class Alliance(commands.Cog):
             owner_id,
             await rpgtools.lookup(self.bot, owner_id),
         )
-        pet_combatant = await battles_cog.battle_factory.pet_ext.get_pet_combatant(
+        pet_record = {
+            "id": assigned_pet["pet_id"],
+            "user_id": assigned_pet["user_id"],
+            "name": assigned_pet["pet_name"],
+            "hp": assigned_pet["pet_hp"],
+            "attack": assigned_pet["pet_attack"],
+            "defense": assigned_pet["pet_defense"],
+            "element": assigned_pet["pet_element"],
+            "growth_stage": assigned_pet["growth_stage"],
+            "level": assigned_pet["pet_level"],
+            "trust_level": assigned_pet["pet_trust_level"],
+            "happiness": assigned_pet["pet_happiness"],
+            "learned_skills": assigned_pet["pet_learned_skills"],
+            "gm_all_skills_enabled": assigned_pet["pet_gm_all_skills_enabled"],
+        }
+        pet_combatant = await battles_cog.battle_factory.pet_ext.build_pet_combatant(
             ctx,
             owner,
-            pet_id=int(assigned_pet["pet_id"]),
+            pet_record,
             conn=conn,
         )
         if not pet_combatant:
@@ -2948,10 +2963,10 @@ class Alliance(commands.Cog):
 
         attack_pet_combatant = None
         if attack_pet_selection:
-            attack_pet_combatant = await battles_cog.battle_factory.pet_ext.get_pet_combatant(
+            attack_pet_combatant = await battles_cog.battle_factory.pet_ext.build_pet_combatant(
                 ctx,
                 attack_pet_selection["owner"],
-                pet_id=int(attack_pet_selection["pet"]["id"]),
+                attack_pet_selection["pet"],
             )
             if attack_pet_combatant:
                 self._apply_city_war_scaling(attack_pet_combatant)
