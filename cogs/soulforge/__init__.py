@@ -1509,7 +1509,7 @@ class Soulforge(commands.Cog):
 
         pet_rows = await conn.fetch(
             """
-            SELECT id, alt_name
+            SELECT id, alt_name, daycare_boarding_id
             FROM monster_pets
             WHERE id = ANY($1::int[])
             FOR UPDATE;
@@ -1523,6 +1523,8 @@ class Soulforge(commands.Cog):
             row = rows_by_id.get(pet_id)
             if row is None:
                 continue
+            if row["daycare_boarding_id"] is not None:
+                raise ValueError("You cannot splice a pet that is currently boarded in daycare.")
 
             archive_alias = await self._get_unique_archive_alias(
                 conn,
@@ -3527,6 +3529,14 @@ class Soulforge(commands.Cog):
                 await self.bot.reset_cooldown(ctx)
                 return await ctx.send(f"You don't own a pet with ID {pet2_id}.")
 
+            if pet1_data["daycare_boarding_id"] is not None:
+                await self.bot.reset_cooldown(ctx)
+                return await ctx.send(f"**{pet1_data['name']}** is currently boarded in daycare and cannot be spliced.")
+
+            if pet2_data["daycare_boarding_id"] is not None:
+                await self.bot.reset_cooldown(ctx)
+                return await ctx.send(f"**{pet2_data['name']}** is currently boarded in daycare and cannot be spliced.")
+
             if pet1_data["default_name"] in unspliceable_pets or "[FINAL]" in pet1_data["default_name"]:
                 await self.bot.reset_cooldown(ctx)
                 return await ctx.send(f"**{pet1_data['default_name']}** cannot be spliced due to its mythical nature.")
@@ -4007,7 +4017,10 @@ class Soulforge(commands.Cog):
                 )
 
                 await ctx.send("Splicing might take up to 2 days currently as we await support from the provider. ETA Monday")
-        
+
+        except ValueError as e:
+            await self.bot.reset_cooldown(ctx)
+            await ctx.send(str(e))
         except Exception as e:
             await ctx.send(e)
 
