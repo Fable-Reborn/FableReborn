@@ -3764,7 +3764,91 @@ class Pets(commands.Cog):
             "restore_equipped": restore_equipped,
         }
 
+    async def settle_missing_daycare_boarding(self, conn, boarding, *, reason: str):
+        await conn.execute(
+            """
+            UPDATE pet_daycare_boardings
+            SET settled_xp = 0,
+                settled_trust = 0,
+                settled_hunger_delta = 0,
+                settled_happiness_delta = 0,
+                settled_at = NOW(),
+                collected_at = NOW(),
+                status = 'collected'
+            WHERE id = $1 AND status = 'active';
+            """,
+            boarding["id"],
+        )
+
+        owner_payout = 0
+        if boarding["owner_user_id"] != boarding["customer_user_id"]:
+            owner_payout = max(0, int(boarding["projected_profit"]))
+            if owner_payout > 0:
+                await conn.execute(
+                    'UPDATE profile SET money = money + $1 WHERE "user" = $2;',
+                    owner_payout,
+                    boarding["owner_user_id"],
+                )
+            await self.add_daycare_ledger_entry(
+                conn,
+                boarding["daycare_id"],
+                boarding["id"],
+                "operating_cost",
+                -int(boarding["projected_operating_cost"]),
+                f"{boarding['package_name']} operating cost ({reason})",
+            )
+            await self.add_daycare_ledger_entry(
+                conn,
+                boarding["daycare_id"],
+                boarding["id"],
+                "boarding_revenue",
+                int(boarding["prepaid_amount"]),
+                f"{boarding['package_name']} customer payment ({reason})",
+            )
+            if int(boarding["projected_profit"]) < 0:
+                await self.add_daycare_ledger_entry(
+                    conn,
+                    boarding["daycare_id"],
+                    boarding["id"],
+                    "legacy_loss_guard",
+                    0,
+                    f"Negative projected profit skipped for missing pet boarding: {boarding['package_name']}",
+                )
+        else:
+            await self.add_daycare_ledger_entry(
+                conn,
+                boarding["daycare_id"],
+                boarding["id"],
+                "self_service",
+                -int(boarding["prepaid_amount"]),
+                f"Self-boarding cost for {boarding['package_name']} ({reason})",
+            )
+
+        return {
+            "boarding_id": int(boarding["id"]),
+            "customer_user_id": int(boarding["customer_user_id"]),
+            "owner_user_id": int(boarding["owner_user_id"]),
+            "daycare_id": int(boarding["daycare_id"]),
+            "pet_name": "Missing pet",
+            "package_name": boarding["package_name"],
+            "daycare_name": boarding["daycare_name"],
+            "missing_pet": True,
+            "missing_reason": reason,
+            "owner_payout": owner_payout,
+        }
+
     def format_daycare_settlement_message(self, settlement: dict, auto_return: bool = False) -> str:
+        if settlement.get("missing_pet"):
+            prefix = "📦 Auto-settled" if auto_return else "✅ Settled"
+            message = (
+                f"{prefix} daycare booking #{settlement['boarding_id']} from "
+                f"**{settlement['daycare_name']}**.\n"
+                "The boarded pet is no longer in the owner's collection, so no pet was returned."
+            )
+            if settlement.get("owner_payout", 0) > 0:
+                message += f"\nDaycare owner payout: `${int(settlement['owner_payout']):,}`."
+            return message
+
         prefix = "📦 Auto-returned" if auto_return else "✅ Collected"
         message = (
             f"{prefix} **{settlement['pet_name']}** from **{settlement['daycare_name']}**.\n"
@@ -3815,6 +3899,10 @@ class Pets(commands.Cog):
 
             async with self.bot.pool.acquire() as conn:
                 daycare = await self.get_daycare_by_id(conn, settlement["daycare_id"])
+
+            if settlement.get("missing_pet"):
+                await user.send(self.format_daycare_settlement_message(settlement, auto_return=True))
+                return
 
             if not daycare or not self.has_daycare_reception_upgrade(daycare):
                 await user.send(self.format_daycare_settlement_message(settlement, auto_return=True))
@@ -6348,8 +6436,13 @@ class Pets(commands.Cog):
                     ctx.author.id,
                 )
                 if not pet:
-                    return await ctx.send("❌ That pet could not be found in your collection anymore.")
-                settlement = await self.settle_daycare_boarding(conn, boarding, pet=pet)
+                    settlement = await self.settle_missing_daycare_boarding(
+                        conn,
+                        boarding,
+                        reason="pet missing from collection",
+                    )
+                else:
+                    settlement = await self.settle_daycare_boarding(conn, boarding, pet=pet)
 
         await ctx.send(self.format_daycare_settlement_message(settlement))
 
@@ -8857,9 +8950,13 @@ class Pets(commands.Cog):
                             boarding["customer_user_id"],
                         )
                         if not pet:
-                            continue
-
-                        settlement = await self.settle_daycare_boarding(conn, boarding, pet=pet)
+                            settlement = await self.settle_missing_daycare_boarding(
+                                conn,
+                                boarding,
+                                reason="pet missing from collection",
+                            )
+                        else:
+                            settlement = await self.settle_daycare_boarding(conn, boarding, pet=pet)
 
                 if settlement:
                     await self.send_daycare_auto_return_dm(settlement)
