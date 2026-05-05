@@ -759,6 +759,16 @@ class PatreonCore(commands.Cog):
                 user_id for user_id, level in changed if int(level or 0) < 1
             ]
             if ineligible_owner_ids:
+                ineligible_owner_ids = [
+                    user_id
+                    for user_id in ineligible_owner_ids
+                    if await self.bot.get_effective_donator_tier(
+                        user_id,
+                        sync_profile=True,
+                    )
+                    < 1
+                ]
+            if ineligible_owner_ids:
                 await conn.execute(
                     """
                     UPDATE pet_daycares
