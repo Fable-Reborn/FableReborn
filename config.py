@@ -54,6 +54,16 @@ class DonatorRole:
         self.tier = data.get("tier", "basic")
 
 
+class KofiDonatorRole:
+    __slots__ = {"guild_id", "id", "name", "tier"}
+
+    def __init__(self, data: dict[str, Any]):
+        self.guild_id = data.get("guild_id", None)
+        self.id = data.get("id", 0)
+        self.name = data.get("name", None)
+        self.tier = data.get("tier", "basic")
+
+
 class ExternalSection:
     __slots__ = {
         "patreon_token",
@@ -72,6 +82,7 @@ class ExternalSection:
         "r2_bucket",
         "r2_public_base_url",
         "donator_roles",
+        "kofi_donator_roles",
     }
 
     def __init__(self, data: dict[str, Any]) -> None:
@@ -91,6 +102,9 @@ class ExternalSection:
         self.r2_bucket = data.get("r2_bucket", None)
         self.r2_public_base_url = data.get("r2_public_base_url", None)
         self.donator_roles = [DonatorRole(i) for i in data.get("donator_roles", [])]
+        self.kofi_donator_roles = [
+            KofiDonatorRole(i) for i in data.get("kofi_donator_roles", [])
+        ]
 
 
 class DatabaseSection:

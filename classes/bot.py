@@ -1184,10 +1184,7 @@ class Bot(commands.AutoShardedBot):
 
         legacy_role_mapping = {}
         legacy_tier_names = {
-            "basic": 1,
-            "bronze": 2,
-            "silver": 3,
-            "gold": 4,
+            name: int(rank.value) for name, rank in DonatorRank.__members__.items()
         }
         for role in self.config.external.donator_roles:
             parsed_role_id = self._coerce_positive_int(getattr(role, "id", None))
@@ -1196,6 +1193,39 @@ class Bot(commands.AutoShardedBot):
                 legacy_role_mapping[parsed_role_id] = parsed_tier
         if self.support_server_id and legacy_role_mapping:
             sources.append((self.support_server_id, legacy_role_mapping))
+
+        def resolve_role_id(guild_id, role):
+            parsed_role_id = self._coerce_positive_int(getattr(role, "id", None))
+            if parsed_role_id:
+                return parsed_role_id
+
+            role_name = str(getattr(role, "name", "") or "").strip().casefold()
+            if not role_name:
+                return None
+
+            guild = self.get_guild(guild_id)
+            if not guild:
+                return None
+
+            for guild_role in getattr(guild, "roles", []):
+                if str(getattr(guild_role, "name", "") or "").strip().casefold() == role_name:
+                    return self._coerce_positive_int(getattr(guild_role, "id", None))
+            return None
+
+        kofi_sources = {}
+        for role in getattr(self.config.external, "kofi_donator_roles", []):
+            parsed_tier = legacy_tier_names.get(
+                str(getattr(role, "tier", "")).strip().lower()
+            )
+            guild_id = self._coerce_positive_int(getattr(role, "guild_id", None))
+            if not guild_id:
+                guild_id = self.support_server_id
+            parsed_role_id = resolve_role_id(guild_id, role)
+            if parsed_role_id and parsed_tier and guild_id:
+                kofi_sources.setdefault(guild_id, {})[parsed_role_id] = parsed_tier
+        for guild_id, role_mapping in kofi_sources.items():
+            if role_mapping:
+                sources.append((guild_id, role_mapping))
 
         return sources
 
