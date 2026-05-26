@@ -33,6 +33,22 @@ class PatreonStuff(commands.Cog):
                     self.ROLE_TIER_MAPPING[int(role_id)] = int(tier)
                 except (TypeError, ValueError):
                     continue
+        legacy_tier_names = {
+            "basic": 1,
+            "bronze": 2,
+            "silver": 3,
+            "gold": 4,
+        }
+        external = getattr(self.bot.config, "external", None)
+        kofi_roles = getattr(external, "kofi_donator_roles", []) if external else []
+        for role in kofi_roles or []:
+            try:
+                role_id = int(role.id)
+                tier = legacy_tier_names.get(str(role.tier).strip().lower())
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if tier and tier > self.ROLE_TIER_MAPPING.get(role_id, 0):
+                self.ROLE_TIER_MAPPING[role_id] = tier
 
         # Role to Token Increment mapping for monthly updates
         role_token_updates = patreonstuff_ids.get("role_token_updates", {})
