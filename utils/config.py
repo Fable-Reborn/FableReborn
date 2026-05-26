@@ -100,7 +100,7 @@ class ExternalSection:
         self.r2_public_base_url = data.get("r2_public_base_url", None)
         self.donator_roles = [DonatorRole(i) for i in data.get("donator_roles", [])]
         self.kofi_donator_roles = [
-            KofiDonatorRole(i) for i in data.get("kofi_donator_roles", [])
+            DonatorRole(i) for i in data.get("kofi_donator_roles", [])
         ]
 
 
