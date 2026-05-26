@@ -1098,10 +1098,27 @@ class Bot(commands.AutoShardedBot):
 
         return booster_guild_id, booster_role_id
 
+    _LEGACY_DONATOR_TIER_NAMES = {
+        "basic": 1,
+        "bronze": 2,
+        "silver": 3,
+        "gold": 4,
+    }
+
+    def _iter_config_donator_roles(self):
+        external = getattr(self.config, "external", None)
+        if external is None:
+            return
+        for role in getattr(external, "donator_roles", []) or []:
+            yield role
+        for role in getattr(external, "kofi_donator_roles", []) or []:
+            yield role
+
+    
     def _resolve_donator_rank_from_role_ids(self, member_roles):
         top_donator_rank = None
 
-        for role in self.config.external.donator_roles:
+        for role in self._iter_config_donator_roles():
             try:
                 role_id = int(role.id)
             except (TypeError, ValueError):
@@ -1183,12 +1200,11 @@ class Bot(commands.AutoShardedBot):
                 sources.append((guild_id, role_mapping))
 
         legacy_role_mapping = {}
-        legacy_tier_names = {
-            name: int(rank.value) for name, rank in DonatorRank.__members__.items()
-        }
-        for role in self.config.external.donator_roles:
+        for role in self._iter_config_donator_roles():
             parsed_role_id = self._coerce_positive_int(getattr(role, "id", None))
-            parsed_tier = legacy_tier_names.get(str(getattr(role, "tier", "")).strip().lower())
+            parsed_tier = self._LEGACY_DONATOR_TIER_NAMES.get(
+                str(getattr(role, "tier", "")).strip().lower()
+            )
             if parsed_role_id and parsed_tier:
                 legacy_role_mapping[parsed_role_id] = parsed_tier
         if self.support_server_id and legacy_role_mapping:
