@@ -7,10 +7,23 @@ import random
 from datetime import datetime, timedelta
 from collections import deque
 
+from classes.classes import ALL_CLASSES_TYPES, from_string as class_from_string
 from cogs.shard_communication import user_on_cooldown
 from utils.checks import has_char, is_gm, is_patreon
 from utils.i18n import _
 from utils import misc as rpgtools
+
+
+TANK_EVOLUTION_LEVELS = {
+    "Protector": 1,
+    "Guardian": 2,
+    "Bulwark": 3,
+    "Defender": 4,
+    "Vanguard": 5,
+    "Fortress": 6,
+    "Titan": 7,
+}
+
 
 class IceDragonChallenge(commands.Cog):
     def __init__(self, bot):
@@ -170,6 +183,101 @@ class IceDragonChallenge(commands.Cog):
             "passive_effects": passive_effects,
             "stage": stage_name
         }
+
+    @staticmethod
+    def get_overall_class(classes):
+        """Return the base class lines represented by equipped evolutions."""
+        if not classes:
+            return "Adventurer"
+        if not isinstance(classes, (list, tuple)):
+            classes = [classes]
+
+        roles = []
+        for equipped_class in classes:
+            resolved_class = class_from_string(equipped_class)
+            role_name = (
+                resolved_class.get_class_line_name() if resolved_class else None
+            )
+            if role_name is None:
+                role_name = next(
+                    (
+                        name
+                        for name, class_line in ALL_CLASSES_TYPES.items()
+                        if any(
+                            evolution.name == equipped_class
+                            for evolution in class_line
+                        )
+                    ),
+                    None,
+                )
+            if role_name:
+                label = (
+                    "Santa's Helper"
+                    if role_name == "SantasHelper"
+                    else role_name
+                )
+                if label not in roles:
+                    roles.append(label)
+
+        return " / ".join(roles) if roles else "Adventurer"
+
+    @staticmethod
+    def format_combat_stat(value):
+        return f"{float(value):,.0f}"
+
+    async def build_party_embed(self, ctx, party_members):
+        """Build the live Ice Dragon target and party stat preview."""
+        dragon = await self.calculate_dragon_stats()
+        async with self.bot.pool.acquire() as conn:
+            party_stats = await self.get_party_stats(ctx, party_members, conn)
+
+        embed = discord.Embed(
+            title="❄️ Ice Dragon Hunting Party",
+            description=(
+                f"**{len(party_members)}/4 hunters ready**\n"
+                "Join the party, review the matchup, then launch the battle."
+            ),
+            color=0x87CEEB,
+        )
+        embed.add_field(
+            name=f"🐉 Target | {dragon['name']}",
+            value=(
+                f"**HP** {self.format_combat_stat(dragon['hp'])}  |  "
+                f"**ATK** {self.format_combat_stat(dragon['damage'])}  |  "
+                f"**DEF** {self.format_combat_stat(dragon['armor'])}\n"
+                f"**Stage:** {dragon['stage']}  |  "
+                f"**Passive:** {', '.join(dragon['passives']) or 'None'}"
+            ),
+            inline=False,
+        )
+
+        for index, (player, pet) in enumerate(party_stats, start=1):
+            member = player["user"]
+            leader_marker = " [Leader]" if member.id == ctx.author.id else ""
+            role = self.get_overall_class(player.get("classes"))
+            member_stats = (
+                f"ATK **{self.format_combat_stat(player['damage'])}**  |  "
+                f"DEF **{self.format_combat_stat(player['armor'])}**  |  "
+                f"HP **{self.format_combat_stat(player['max_hp'])}**"
+            )
+            if pet:
+                member_stats += (
+                    f"\n🐾 **{pet['pet_name']}**  |  Lv. {int(pet['level'])}  |  "
+                    f"ATK **{self.format_combat_stat(pet['damage'])}**  |  "
+                    f"DEF **{self.format_combat_stat(pet['armor'])}**  |  "
+                    f"HP **{self.format_combat_stat(pet['max_hp'])}**"
+                )
+            embed.add_field(
+                name=(
+                    f"⚔️ {index}. {member.display_name}{leader_marker}  |  "
+                    f"Lv. {int(player['level'])}  |  {role}"
+                ),
+                value=member_stats,
+                inline=False,
+            )
+
+        embed.set_footer(text="Party formation closes after 60 seconds")
+        return embed
 
     async def check_weekly_reset(self):
         """Check and perform weekly reset if needed"""
@@ -398,9 +506,7 @@ class IceDragonChallenge(commands.Cog):
 
             party_members = [ctx.author]
             self.current_parties[ctx.author.id] = party_members
-            embed = discord.Embed(title="🐉 Dragon Hunting Party", color=0x87CEEB)
-            embed.description = f"Click ✅ to join the hunt! ({len(party_members)}/4 members)\n**Party Members:**"
-            embed.add_field(name="1.", value=ctx.author.display_name, inline=False)
+            embed = await self.build_party_embed(ctx, party_members)
 
             # Define a custom View that accepts the cog instance
             class PartyView(discord.ui.View):
@@ -415,11 +521,10 @@ class IceDragonChallenge(commands.Cog):
                     self.battle_started = False  # new flag
 
                 async def update_embed(self):
-                    member_count = len(self.party_members)
-                    self.embed.description = f"Click ✅ to join the hunt! ({member_count}/4 members)\n**Party Members:**"
-                    self.embed.clear_fields()
-                    for idx, member in enumerate(self.party_members, start=1):
-                        self.embed.add_field(name=f"{idx}.", value=member.display_name, inline=False)
+                    self.embed = await self.cog.build_party_embed(
+                        self.ctx,
+                        self.party_members,
+                    )
                     await self.msg.edit(embed=self.embed, view=self)
 
                 @discord.ui.button(emoji="✅", style=discord.ButtonStyle.success, label="Join")
@@ -430,10 +535,26 @@ class IceDragonChallenge(commands.Cog):
                     if len(self.party_members) >= 4:
                         await interaction.response.send_message("The party is already full!", ephemeral=True)
                         return
+
+                    async with self.cog.bot.pool.acquire() as conn:
+                        has_profile = await conn.fetchval(
+                            'SELECT 1 FROM profile WHERE "user" = $1;',
+                            interaction.user.id,
+                        )
+                    if not has_profile:
+                        await interaction.response.send_message(
+                            "You need a character before joining this party!",
+                            ephemeral=True,
+                        )
+                        return
+
+                    await interaction.response.defer(ephemeral=True)
                     self.party_members.append(interaction.user)
                     await self.update_embed()
-                    await interaction.response.send_message(f"{interaction.user.mention} joined the party!",
-                                                            ephemeral=True)
+                    await interaction.followup.send(
+                        f"{interaction.user.mention} joined the party!",
+                        ephemeral=True,
+                    )
 
                 @discord.ui.button(emoji="❌", style=discord.ButtonStyle.danger, label="Leave")
                 async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -443,10 +564,13 @@ class IceDragonChallenge(commands.Cog):
                     if interaction.user not in self.party_members:
                         await interaction.response.send_message("You're not in the party!", ephemeral=True)
                         return
+                    await interaction.response.defer(ephemeral=True)
                     self.party_members.remove(interaction.user)
                     await self.update_embed()
-                    await interaction.response.send_message(f"{interaction.user.mention} left the party.",
-                                                            ephemeral=True)
+                    await interaction.followup.send(
+                        f"{interaction.user.mention} left the party.",
+                        ephemeral=True,
+                    )
 
                 @discord.ui.button(emoji="⚔️", style=discord.ButtonStyle.primary, label="Start Battle")
                 async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -724,6 +848,8 @@ class IceDragonChallenge(commands.Cog):
 
                     # Get classes for special bonuses
                     classes = result["class"] if result["class"] else []
+                    if not isinstance(classes, (list, tuple)):
+                        classes = [classes]
 
                     # Get luck
                     luck_value = float(result['luck'])
@@ -740,7 +866,7 @@ class IceDragonChallenge(commands.Cog):
                         Luck = min(Luck, 100.0)
 
                     # Get base health and stat HP
-                    base_health = 200.0
+                    base_health = 250.0
                     health = float(result['health']) + base_health
                     stathp = float(result['stathp']) * 50.0
 
@@ -759,7 +885,18 @@ class IceDragonChallenge(commands.Cog):
                     # Get raid stats
                     dmg, deff = await self.bot.get_raidstats(member, conn=conn)
 
-                    total_health = health + level * 15.0 + stathp + float(amulet_bonus)
+                    total_health = health + level * 5.0 + stathp + float(amulet_bonus)
+
+                    tank_evolution = max(
+                        (
+                            TANK_EVOLUTION_LEVELS[class_name]
+                            for class_name in classes
+                            if class_name in TANK_EVOLUTION_LEVELS
+                        ),
+                        default=None,
+                    )
+                    if tank_evolution:
+                        total_health *= 1 + (0.04 * tank_evolution)
 
 
 
@@ -796,6 +933,7 @@ class IceDragonChallenge(commands.Cog):
                             "max_hp": float(pet["hp"]),
                             "armor": float(pet["defense"]),
                             "damage": float(pet["attack"]),
+                            "level": int(pet.get("level", 1) or 1),
                             "luck": 50.0,
                             "element": pet_element,
                             "is_pet": True
@@ -1107,17 +1245,6 @@ class IceDragonChallenge(commands.Cog):
         async with self.bot.pool.acquire() as conn:
             party_stats = await self.get_party_stats(ctx, party_members, conn)
 
-        # Debug: await ctx.send party_stats
-        await ctx.send("Party Stats:")
-        for idx, (player, pet) in enumerate(party_stats, start=1):
-            player_name = player["user"].display_name if not player.get("is_pet", False) else player.get("pet_name",
-                                                                                                         "Unknown Pet")
-            pet_name = pet["pet_name"] if pet else "No Pet"
-            #await ctx.send(f"  Member {idx}: Player: {player_name}, Pet: {pet_name}")
-
-
-
-
         # Ensure uniqueness in party members by converting to dictionaries
         unique_participants = {}
         battle_participants = []
@@ -1136,19 +1263,9 @@ class IceDragonChallenge(commands.Cog):
 
                             # Check for tank class
                             tank_evolution = None
-                            tank_evolution_levels = {
-                                "Protector": 1,
-                                "Guardian": 2,
-                                "Bulwark": 3,
-                                "Defender": 4,
-                                "Vanguard": 5,
-                                "Fortress": 6,
-                                "Titan": 7,
-                            }
-
                             for class_name in classes:
-                                if class_name in tank_evolution_levels:
-                                    level = tank_evolution_levels[class_name]
+                                if class_name in TANK_EVOLUTION_LEVELS:
+                                    level = TANK_EVOLUTION_LEVELS[class_name]
                                     if tank_evolution is None or level > tank_evolution:
                                         tank_evolution = level
 

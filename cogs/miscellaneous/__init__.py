@@ -59,6 +59,27 @@ from utils.checks import ImgurUploadError, has_char, user_is_patron, is_gm
 from utils.i18n import _, locale_doc
 from utils.shell import get_cpu_name
 
+
+DAILY_MILESTONE_REWARDS = {
+    50: ("legendary", 1, 100000),
+    100: ("fortune", 1, 150000),
+    200: ("mystery", 100, 200000),
+    300: ("divine", 1, 300000),
+    400: ("fortune", 3, 400000),
+    500: ("divine", 2, 500000),
+    550: ("fortune", 2, 100000),
+    600: ("divine", 1, 150000),
+    700: ("mystery", 100, 200000),
+    800: ("fortune", 3, 300000),
+    900: ("divine", 4, 400000),
+    1000: ("divine", 4, 500000),
+}
+
+
+class DailyRewardAlreadyClaimed(Exception):
+    pass
+
+
 def load_whitelist():
     with open('whitelist.json', 'r') as file:
         return json.load(file)
@@ -121,6 +142,111 @@ class PaginatorView(discord.ui.View):
 
         self.current_page = (self.current_page + 1) % len(self.pages)
         await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
+
+
+class DailyRewardChoiceView(discord.ui.View):
+    def __init__(self, cog, ctx, streak, rewards, timeout=60):
+        super().__init__(timeout=timeout)
+        self.cog = cog
+        self.ctx = ctx
+        self.streak = streak
+        self.rewards = rewards
+        self.message = None
+        self.claimed = False
+        self.claim_lock = asyncio.Lock()
+
+        for index in range(2):
+            button = discord.ui.Button(
+                label=f"Choose Reward {index + 1}",
+                style=discord.ButtonStyle.primary,
+            )
+            button.callback = partial(self.choose_reward, index=index)
+            self.add_item(button)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.ctx.author.id:
+            return True
+        await interaction.response.send_message(
+            "These daily rewards belong to another player.",
+            ephemeral=True,
+        )
+        return False
+
+    async def choose_reward(self, interaction, index):
+        async with self.claim_lock:
+            if self.claimed:
+                await interaction.response.send_message(
+                    "This daily reward has already been claimed.",
+                    ephemeral=True,
+                )
+                return
+
+            await interaction.response.defer()
+            reward = self.rewards[index]
+            try:
+                await self.cog._claim_daily_reward(
+                    self.ctx,
+                    self.streak,
+                    reward,
+                )
+            except DailyRewardAlreadyClaimed:
+                self.claimed = True
+                for child in self.children:
+                    child.disabled = True
+                await interaction.message.edit(view=self)
+                await interaction.followup.send(
+                    "This daily streak day has already been claimed.",
+                    ephemeral=True,
+                )
+                self.stop()
+                return
+            except Exception as error:
+                print(
+                    f"Could not claim daily reward for "
+                    f"{self.ctx.author.id}: {error}"
+                )
+                await interaction.followup.send(
+                    "Your daily reward could not be claimed. You can try the button again.",
+                    ephemeral=True,
+                )
+                return
+
+            self.claimed = True
+            for child in self.children:
+                child.disabled = True
+            self.children[index].style = discord.ButtonStyle.success
+
+            embed = self.cog._build_daily_result_embed(
+                self.ctx,
+                self.streak,
+                reward,
+            )
+            await interaction.message.edit(embed=embed, view=self)
+            self.stop()
+
+    async def on_timeout(self):
+        if self.claimed:
+            return
+        for child in self.children:
+            child.disabled = True
+        try:
+            await self.cog.bot.reset_cooldown(self.ctx)
+        except Exception as error:
+            print(
+                f"Could not reset expired daily choice for "
+                f"{self.ctx.author.id}: {error}"
+            )
+        if self.message is not None:
+            try:
+                embed = self.cog._build_daily_choice_embed(
+                    self.ctx,
+                    self.streak,
+                    self.rewards,
+                    expired=True,
+                )
+                await self.message.edit(embed=embed, view=self)
+            except (discord.HTTPException, discord.NotFound):
+                pass
 
 
 class Miscellaneous(commands.Cog):
@@ -275,6 +401,276 @@ class Miscellaneous(commands.Cog):
         """Calculate the number of seconds until the next midnight UTC."""
         return int(86400 - (time.time() % 86400))
 
+    async def _ensure_daily_streak_table(self):
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS streaks (
+                    user_id BIGINT PRIMARY KEY,
+                    current_streak INTEGER DEFAULT 0,
+                    highest_days INTEGER DEFAULT 0,
+                    restore_points INTEGER DEFAULT 3,
+                    last_daily TIMESTAMP DEFAULT NOW()
+                );
+                """
+            )
+
+    async def _get_next_daily_streak(self, user_id):
+        redis_streak = await self.bot.redis.execute_command(
+            "GET",
+            f"idle:daily:{user_id}",
+        )
+        if redis_streak is not None:
+            return int(redis_streak) + 1
+
+        async with self.bot.pool.acquire() as conn:
+            user_data = await conn.fetchrow(
+                """
+                SELECT current_streak, last_daily
+                FROM streaks
+                WHERE user_id = $1;
+                """,
+                user_id,
+            )
+
+        if user_data is None:
+            return 1
+
+        last_daily = user_data["last_daily"]
+        if last_daily.tzinfo is None:
+            last_daily = last_daily.replace(tzinfo=datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if (now - last_daily).total_seconds() <= 48 * 60 * 60:
+            return int(user_data["current_streak"]) + 1
+        return 1
+
+    async def _get_daily_money_multiplier(self, ctx):
+        multiplier = 1.0
+        if await user_is_patron(self.bot, ctx.author, "silver"):
+            multiplier *= 1.5
+
+        tier = await self.bot.pool.fetchval(
+            'SELECT tier FROM profile WHERE "user" = $1;',
+            ctx.author.id,
+        )
+        if int(tier or 0) >= 3:
+            multiplier *= 3
+        return multiplier
+
+    def _roll_daily_reward(self, streak, money_multiplier):
+        day = (streak + 9) % 10
+        if random.randint(0, 2) > 0:
+            amount = round((2 ** day * 50) * money_multiplier)
+            return {"kind": "money", "amount": amount}
+
+        rarity_step = round((day + 1) / 2)
+        amount = random.randint(1, 6 - rarity_step)
+        rarities = [
+            "common",
+            "uncommon",
+            "rare",
+            "magic",
+            "legendary",
+            "common",
+            "common",
+            "common",
+        ]
+        rarity = random.choice(
+            [rarities[rarity_step - 3]] * 80
+            + [rarities[rarity_step - 2]] * 19
+            + [rarities[rarity_step - 1]]
+        )
+        return {"kind": "crate", "rarity": rarity, "amount": amount}
+
+    def _daily_reward_text(self, reward):
+        if reward["kind"] == "money":
+            return f"${reward['amount']:,} gold"
+
+        crate_cog = self.bot.get_cog("Crates")
+        emoji = getattr(crate_cog.emotes, reward["rarity"], "📦") if crate_cog else "📦"
+        suffix = "crate" if reward["amount"] == 1 else "crates"
+        crate_text = (
+            f"{reward['amount']:,} {emoji} "
+            f"{reward['rarity'].title()} {suffix}"
+        )
+        if reward["kind"] == "milestone":
+            return f"{crate_text} and ${reward['money']:,} gold"
+        return crate_text
+
+    def _build_daily_choice_embed(self, ctx, streak, rewards, expired=False):
+        description = (
+            "This choice expired without consuming your daily. Run the command again."
+            if expired
+            else "Two rewards were rolled. Choose one to keep."
+        )
+        embed = discord.Embed(
+            title=f"Daily Reward | Day {streak}",
+            description=description,
+            colour=self.bot.config.game.primary_colour,
+        )
+        embed.set_author(
+            name=ctx.author.display_name,
+            icon_url=ctx.author.display_avatar.url,
+        )
+        for index, reward in enumerate(rewards, start=1):
+            embed.add_field(
+                name=f"Reward {index}",
+                value=f"**{self._daily_reward_text(reward)}**",
+                inline=True,
+            )
+        embed.set_footer(text="Only you can choose • Selection closes after 60 seconds")
+        return embed
+
+    def _build_daily_result_embed(self, ctx, streak, reward):
+        verb = "received" if reward["kind"] == "milestone" else "chose"
+        embed = discord.Embed(
+            title="Daily Reward Claimed",
+            description=(
+                f"You {verb} **{self._daily_reward_text(reward)}**.\n"
+                f"Your daily streak is now **{streak} days**."
+            ),
+            colour=discord.Colour.green(),
+        )
+        embed.set_author(
+            name=ctx.author.display_name,
+            icon_url=ctx.author.display_avatar.url,
+        )
+        embed.set_footer(
+            text=f"Tip: {ctx.clean_prefix}vote every 12 hours for another crate chance"
+        )
+        return embed
+
+    async def _claim_daily_reward(self, ctx, streak, reward):
+        async with self.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock($1);",
+                    ctx.author.id,
+                )
+                streak_row = await conn.fetchrow(
+                    """
+                    SELECT
+                        current_streak,
+                        last_daily,
+                        last_daily::date =
+                            (NOW() AT TIME ZONE 'UTC')::date AS claimed_today
+                    FROM streaks
+                    WHERE user_id = $1
+                    FOR UPDATE;
+                    """,
+                    ctx.author.id,
+                )
+                if streak_row is not None:
+                    if streak_row["claimed_today"]:
+                        raise DailyRewardAlreadyClaimed()
+
+                if reward["kind"] == "money":
+                    await conn.execute(
+                        'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                        reward["amount"],
+                        ctx.author.id,
+                    )
+                    await self.bot.log_transaction(
+                        ctx,
+                        from_=1,
+                        to=ctx.author.id,
+                        subject="money",
+                        data={"Gold": reward["amount"], "Source": "daily"},
+                        conn=conn,
+                    )
+                elif reward["kind"] == "crate":
+                    rarity = reward["rarity"]
+                    await conn.execute(
+                        f'UPDATE profile SET "crates_{rarity}"="crates_{rarity}"+$1 '
+                        'WHERE "user"=$2;',
+                        reward["amount"],
+                        ctx.author.id,
+                    )
+                    await self.bot.log_transaction(
+                        ctx,
+                        from_=1,
+                        to=ctx.author.id,
+                        subject="crates",
+                        data={
+                            "Rarity": rarity,
+                            "Amount": reward["amount"],
+                            "Source": "daily",
+                        },
+                        conn=conn,
+                    )
+                else:
+                    rarity = reward["rarity"]
+                    await conn.execute(
+                        f'UPDATE profile SET "crates_{rarity}"="crates_{rarity}"+$1, '
+                        '"money"="money"+$2 WHERE "user"=$3;',
+                        reward["amount"],
+                        reward["money"],
+                        ctx.author.id,
+                    )
+                    await self.bot.log_transaction(
+                        ctx,
+                        from_=1,
+                        to=ctx.author.id,
+                        subject="crates",
+                        data={
+                            "Rarity": rarity,
+                            "Amount": reward["amount"],
+                            "Source": "daily milestone",
+                        },
+                        conn=conn,
+                    )
+                    await self.bot.log_transaction(
+                        ctx,
+                        from_=1,
+                        to=ctx.author.id,
+                        subject="money",
+                        data={
+                            "Gold": reward["money"],
+                            "Source": "daily milestone",
+                        },
+                        conn=conn,
+                    )
+
+                await conn.execute(
+                    """
+                    INSERT INTO streaks (
+                        user_id,
+                        current_streak,
+                        highest_days,
+                        restore_points,
+                        last_daily
+                    )
+                    VALUES ($1, $2, $2, 3, (NOW() AT TIME ZONE 'UTC'))
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        current_streak = EXCLUDED.current_streak,
+                        highest_days = GREATEST(
+                            streaks.highest_days,
+                            EXCLUDED.current_streak
+                        ),
+                        last_daily = (NOW() AT TIME ZONE 'UTC');
+                    """,
+                    ctx.author.id,
+                    streak,
+                )
+
+        try:
+            await self.bot.redis.execute_command(
+                "SET",
+                f"idle:daily:{ctx.author.id}",
+                streak,
+                "EX",
+                48 * 60 * 60,
+            )
+            await self.bot.redis.execute_command(
+                "SET",
+                f"cd:{ctx.author.id}:{ctx.command.qualified_name}",
+                ctx.command.qualified_name,
+                "EX",
+                self.time_until_midnight(),
+            )
+        except Exception as error:
+            print(f"Could not update daily caches for {ctx.author.id}: {error}")
+
 
     # Updated daily command with database streak tracking
     @has_char()
@@ -286,7 +682,8 @@ class Miscellaneous(commands.Cog):
             """Get your daily reward. Depending on your streak, you will gain better rewards.
 
             After ten days, your rewards will reset. Day 11 and day 1 have the same rewards.
-            The rewards will either be money (2/3 chance) or crates (1/3 chance).
+            Two rewards are rolled independently. Each roll has a 2/3 chance for
+            money or a 1/3 chance for crates, and you choose one reward to keep.
 
             Special milestone rewards:
             Day 50: 1 Legendary Crate + 100,000 gold
@@ -304,197 +701,52 @@ class Miscellaneous(commands.Cog):
             (This command has a cooldown until 12am UTC.)"""
         )
 
+        daily_claimed = False
         try:
-            # Create streaks table if it doesn't exist
-            async with self.bot.pool.acquire() as conn:
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS streaks (
-                        user_id BIGINT PRIMARY KEY,
-                        current_streak INTEGER DEFAULT 0,
-                        highest_days INTEGER DEFAULT 0,
-                        restore_points INTEGER DEFAULT 3,
-                        last_daily TIMESTAMP DEFAULT NOW()
-                    );
-                """)
+            await self._ensure_daily_streak_table()
+            streak = await self._get_next_daily_streak(ctx.author.id)
 
-            # First, try to get streak from Redis (this is the primary source)
-            redis_streak = await self.bot.redis.execute_command("GET", f"idle:daily:{ctx.author.id}")
-
-            if redis_streak is not None:
-                # User has active Redis streak, increment it
-                current_streak = int(redis_streak) + 1
-            else:
-                # No Redis streak, check if they have database data
-                async with self.bot.pool.acquire() as conn:
-                    user_data = await conn.fetchrow(
-                        'SELECT current_streak, highest_days, restore_points, last_daily FROM streaks WHERE user_id = $1;',
-                        ctx.author.id
-                    )
-
-                    if user_data is None:
-                        # Brand new user
-                        current_streak = 1
-                    else:
-                        # Check if they can continue from database or if it's been too long
-                        import datetime
-                        last_daily = user_data['last_daily']
-                        now = datetime.datetime.now(datetime.timezone.utc)
-                        time_diff = now - last_daily.replace(tzinfo=datetime.timezone.utc)
-
-                        if time_diff.total_seconds() <= 48 * 60 * 60:  # Within 48 hours
-                            current_streak = user_data['current_streak'] + 1
-                        else:
-                            current_streak = 1  # Reset streak
-
-            # Update both Redis and database
-            await self.bot.redis.execute_command(
-                "SET", f"idle:daily:{ctx.author.id}", current_streak
-            )
-            await self.bot.redis.execute_command(
-                "EXPIRE", f"idle:daily:{ctx.author.id}", 48 * 60 * 60
-            )
-
-            # Update database
-            async with self.bot.pool.acquire() as conn:
-                user_data = await conn.fetchrow(
-                    'SELECT highest_days, restore_points FROM streaks WHERE user_id = $1;',
-                    ctx.author.id
+            if streak in DAILY_MILESTONE_REWARDS:
+                rarity, amount, money = DAILY_MILESTONE_REWARDS[streak]
+                reward = {
+                    "kind": "milestone",
+                    "rarity": rarity,
+                    "amount": amount,
+                    "money": money,
+                }
+                await self._claim_daily_reward(ctx, streak, reward)
+                daily_claimed = True
+                await ctx.send(
+                    embed=self._build_daily_result_embed(ctx, streak, reward)
                 )
+                return
 
-                if user_data is None:
-                    # New user
-                    await conn.execute(
-                        'INSERT INTO streaks (user_id, current_streak, highest_days, restore_points, last_daily) VALUES ($1, $2, $3, $4, NOW());',
-                        ctx.author.id, current_streak, current_streak, 3
-                    )
-                else:
-                    # Update existing user
-                    new_highest = max(current_streak, user_data['highest_days'])
-                    await conn.execute(
-                        'UPDATE streaks SET current_streak = $1, highest_days = $2, last_daily = NOW() WHERE user_id = $3;',
-                        current_streak, new_highest, ctx.author.id
-                    )
-
-            streak = current_streak
-
-            # Handle milestone rewards
-            milestone_rewards = {
-                50: ("legendary", 1, 100000),
-                100: ("fortune", 1, 150000),
-                200: ("mystery", 100, 200000),
-                300: ("divine", 1, 300000),
-                400: ("fortune", 3, 400000),
-                500: ("divine", 2, 500000),
-                550: ("fortune", 2, 100000),
-                600: ("divine", 1, 150000),
-                700: ("mystery", 100, 200000),
-                800: ("fortune", 3, 300000),
-                900: ("divine", 4, 400000),
-                1000: ("divine", 4, 500000),
-            }
-
-            if streak in milestone_rewards:
-                crate_type, crate_amount, bonus_money = milestone_rewards[streak]
-                async with self.bot.pool.acquire() as conn:
-                    # Add crates
-                    await conn.execute(
-                        f'UPDATE profile SET "crates_{crate_type}"="crates_{crate_type}"+$1 WHERE "user"=$2;',
-                        crate_amount,
-                        ctx.author.id,
-                    )
-                    # Add bonus money
-                    await conn.execute(
-                        'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
-                        bonus_money,
-                        ctx.author.id,
-                    )
-                    # Log transactions
-                    await self.bot.log_transaction(
-                        ctx,
-                        from_=1,
-                        to=ctx.author.id,
-                        subject="milestone_crates",
-                        data={"Rarity": crate_type, "Amount": crate_amount},
-                        conn=conn,
-                    )
-                    await self.bot.log_transaction(
-                        ctx,
-                        from_=1,
-                        to=ctx.author.id,
-                        subject="milestone_money",
-                        data={"Gold": bonus_money},
-                        conn=conn,
-                    )
-                txt = f"**{crate_amount}** {getattr(self.bot.cogs['Crates'].emotes, crate_type)} and **${bonus_money}**"
-            else:
-                # Regular daily rewards logic
-                money = 2 ** ((streak + 9) % 10) * 50
-                if random.randint(0, 2) > 0:
-                    money = 2 ** ((streak + 9) % 10) * 50
-                    # Silver = 1.5x
-                    if await user_is_patron(self.bot, ctx.author, "silver"):
-                        money = round(money * 1.5)
-
-                    result = await self.bot.pool.fetchval('SELECT tier FROM profile WHERE "user" = $1;', ctx.author.id)
-
-                    if result >= 3:
-                        money = round(money * 3)
-
-                    async with self.bot.pool.acquire() as conn:
-                        await conn.execute(
-                            'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
-                            money,
-                            ctx.author.id,
-                        )
-                        await self.bot.log_transaction(
-                            ctx,
-                            from_=1,
-                            to=ctx.author.id,
-                            subject="daily",
-                            data={"Gold": money},
-                            conn=conn,
-                        )
-                    txt = f"**${money}**"
-                else:
-                    num = round(((streak + 9) % 10 + 1) / 2)
-                    amt = random.randint(1, 6 - num)
-                    types = [
-                        "common",
-                        "uncommon",
-                        "rare",
-                        "magic",
-                        "legendary",
-                        "common",
-                        "common",
-                        "common",
-                    ]  # Trick for -1
-                    type_ = random.choice(
-                        [types[num - 3]] * 80 + [types[num - 2]] * 19 + [types[num - 1]] * 1
-                    )
-                    async with self.bot.pool.acquire() as conn:
-                        await conn.execute(
-                            f'UPDATE profile SET "crates_{type_}"="crates_{type_}"+$1 WHERE "user"=$2;',
-                            amt,
-                            ctx.author.id,
-                        )
-                        await self.bot.log_transaction(
-                            ctx,
-                            from_=1,
-                            to=ctx.author.id,
-                            subject="crates",
-                            data={"Rarity": type_, "Amount": amt},
-                            conn=conn,
-                        )
-                    txt = f"**{amt}** {getattr(self.bot.cogs['Crates'].emotes, type_)}"
-
-            await ctx.send(
-                _(
-                    "You received your daily {txt}!\nYou are on a streak of **{streak}**"
-                    " days!\n*Tip: `{prefix}vote` every 12 hours to get an up to legendary"
-                    " crate with possibly rare items!*"
-                ).format(txt=txt, streak=streak, prefix=ctx.clean_prefix)
+            money_multiplier = await self._get_daily_money_multiplier(ctx)
+            rewards = [
+                self._roll_daily_reward(streak, money_multiplier),
+                self._roll_daily_reward(streak, money_multiplier),
+            ]
+            view = DailyRewardChoiceView(self, ctx, streak, rewards)
+            view.message = await ctx.send(
+                embed=self._build_daily_choice_embed(ctx, streak, rewards),
+                view=view,
             )
+            try:
+                await self.bot.redis.execute_command(
+                    "EXPIRE",
+                    f"cd:{ctx.author.id}:{ctx.command.qualified_name}",
+                    65,
+                )
+            except Exception as error:
+                print(
+                    f"Could not shorten pending daily cooldown for "
+                    f"{ctx.author.id}: {error}"
+                )
+        except DailyRewardAlreadyClaimed:
+            await ctx.send("This daily streak day has already been claimed.")
         except Exception as e:
+            if not daily_claimed:
+                await self.bot.reset_cooldown(ctx)
             import traceback
             error_message = f"Error occurred: {e}\n"
             error_message += traceback.format_exc()

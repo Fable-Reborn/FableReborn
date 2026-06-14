@@ -136,6 +136,62 @@ class TestPetSkillContracts(unittest.TestCase):
         self.assertEqual(Decimal("150"), damage_low_owner)
         self.assertTrue(any("desperation" in msg.lower() for msg in msgs_low_owner))
 
+    def test_defensive_reflect_skills_accept_float_damage(self):
+        cases = (
+            (
+                "thorn_shield",
+                {"reflect_percent": 0.40},
+                Decimal("40"),
+                "Thorn Shield",
+            ),
+            (
+                "molten_armor",
+                {"reflect_percent": 0.25, "chance": 100},
+                Decimal("25"),
+                "Molten Armor",
+            ),
+        )
+
+        for effect_name, effect_data, reflected, message_text in cases:
+            with self.subTest(effect=effect_name):
+                pet = self.Combatant(
+                    user=self._new_user(30, "Reflect Pet"),
+                    hp=1000,
+                    max_hp=1000,
+                    damage=200,
+                    armor=100,
+                    element="Nature",
+                    is_pet=True,
+                    name="Reflect Pet",
+                )
+                attacker = self.Combatant(
+                    user=self._new_user(31, "Attacker"),
+                    hp=1000,
+                    max_hp=1000,
+                    damage=300,
+                    armor=100,
+                    element="Fire",
+                    is_pet=False,
+                    name="Attacker",
+                )
+                pet.skill_effects = {effect_name: effect_data}
+
+                with patch(
+                    "cogs.battles.extensions.pets.random.randint",
+                    return_value=1,
+                ):
+                    modified_damage, messages = (
+                        self.pet_ext.process_skill_effects_on_damage_taken(
+                            pet,
+                            attacker,
+                            100.0,
+                        )
+                    )
+
+                self.assertEqual(Decimal("100.0"), modified_damage)
+                self.assertEqual(Decimal("1000") - reflected, attacker.hp)
+                self.assertTrue(any(message_text in msg for msg in messages))
+
     def test_lord_of_shadows_uses_owner_luck_and_refreshes_without_stacking(self):
         owner_user = self._new_user(20, "Owner")
         owner = self.Combatant(

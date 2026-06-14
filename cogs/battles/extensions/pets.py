@@ -1292,7 +1292,7 @@ class PetExtension:
         if not hasattr(pet_combatant, 'skill_effects'):
             return damage, []
             
-        modified_damage = Decimal(str(damage))  # Convert to Decimal to handle all operations
+        modified_damage = Decimal(str(damage))
         effects = pet_combatant.skill_effects
         messages = []
         countered_attacker_skill_name = None
@@ -2477,7 +2477,8 @@ class PetExtension:
         if not hasattr(pet_combatant, 'skill_effects'):
             return damage, []
             
-        modified_damage = Decimal(str(damage))  # Convert to Decimal to handle all operations
+        incoming_damage = Decimal(str(damage))
+        modified_damage = incoming_damage
         effects = pet_combatant.skill_effects
         messages = []
         
@@ -2511,7 +2512,7 @@ class PetExtension:
             
         # Molten Armor - reflect damage
         if 'molten_armor' in effects and random.randint(1, 100) <= effects['molten_armor']['chance']:
-            reflect_damage = damage * Decimal(str(effects['molten_armor']['reflect_percent']))
+            reflect_damage = incoming_damage * Decimal(str(effects['molten_armor']['reflect_percent']))
             if hasattr(attacker, 'take_damage'):
                 self._deal_damage(pet_combatant, attacker, reflect_damage)
                 messages.append(f"{pet_combatant.name}'s Molten Armor reflects **{reflect_damage:.2f} damage**!")
@@ -2649,7 +2650,7 @@ class PetExtension:
         # 🌿 NATURE DEFENSIVE SKILLS
         # Thorn Shield - poison reflect
         if 'thorn_shield' in effects:
-            poison_damage = damage * Decimal(str(effects['thorn_shield']['reflect_percent']))
+            poison_damage = incoming_damage * Decimal(str(effects['thorn_shield']['reflect_percent']))
             if hasattr(attacker, 'take_damage'):
                 self._deal_damage(pet_combatant, attacker, poison_damage)
                 setattr(attacker, 'poisoned', 3)  # 3 turns of poison

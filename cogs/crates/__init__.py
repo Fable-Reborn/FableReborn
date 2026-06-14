@@ -52,6 +52,25 @@ from utils.checks import has_char, has_money, is_gm, is_class
 from utils.i18n import _, locale_doc
 
 
+CRATE_ORDER = (
+    "common",
+    "uncommon",
+    "rare",
+    "magic",
+    "legendary",
+    "divine",
+    "mystery",
+    "fortune",
+    "materials",
+)
+
+CRATE_COLUMNS = (
+    ("Standard", ("common", "uncommon", "rare")),
+    ("High Tier", ("magic", "legendary", "divine")),
+    ("Special", ("mystery", "fortune", "materials")),
+)
+
+
 class Crates(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -96,27 +115,33 @@ class Crates(commands.Cog):
             You can receive crates by voting for the bot using `{prefix}vote`, using `{prefix}daily`, and with a small chance from `{prefix}familyevent` if you have children."""
         )
 
+        counts = {
+            rarity: int(ctx.character_data[f"crates_{rarity}"] or 0)
+            for rarity in CRATE_ORDER
+        }
+        total = sum(counts.values())
         embed = discord.Embed(
-            title=_("Your Crates"), color=discord.Color.blurple()
-        ).set_author(name=ctx.disp, icon_url=ctx.author.display_avatar.url)
+            title=_("Crate Vault"),
+            description=_("**{total:,} crates** in your collection").format(
+                total=total
+            ),
+            colour=self.bot.config.game.primary_colour,
+        )
+        embed.set_author(name=ctx.disp, icon_url=ctx.author.display_avatar.url)
 
-        for rarity in ("common", "uncommon", "rare", "magic", "legendary", "mystery", "fortune", "divine", "materials"):
-            amount = ctx.character_data[f"crates_{rarity}"]
-            emote = getattr(self.emotes, rarity)
-
-
-            embed.add_field(
-                name=f"{emote} {rarity.title()}",
-                value=_("{amount} crates").format(amount=amount),
-                inline=False,
-            )
+        for heading, rarities in CRATE_COLUMNS:
+            lines = [
+                f"{getattr(self.emotes, rarity)} {rarity.title()}  "
+                f"**{counts[rarity]:,}**"
+                for rarity in rarities
+            ]
+            embed.add_field(name=heading, value="\n".join(lines), inline=True)
 
         embed.set_footer(
-            text=_("Use {prefix}open [rarity] to open one!").format(
+            text=_("Open crates with {prefix}open <rarity> [amount]").format(
                 prefix=ctx.clean_prefix
             )
         )
-
         await ctx.send(embed=embed)
 
 
