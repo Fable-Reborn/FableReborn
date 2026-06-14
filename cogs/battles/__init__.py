@@ -9659,13 +9659,9 @@ class Battles(commands.Cog):
             )
 
         format_stat = self._format_dragon_party_stat
-        passives = ", ".join(dragon.get("passives", [])) or "None"
         embed = discord.Embed(
             title="❄️ Ice Dragon Hunting Party",
-            description=(
-                f"**{len(party_members)}/4 hunters ready**\n"
-                "Review the matchup, then launch the challenge."
-            ),
+            description="Review the matchup, then launch the challenge.",
             color=0x87CEEB,
         )
         embed.add_field(
@@ -9673,9 +9669,13 @@ class Battles(commands.Cog):
             value=(
                 f"**HP** {format_stat(dragon['hp'])}  |  "
                 f"**ATK** {format_stat(dragon['damage'])}  |  "
-                f"**DEF** {format_stat(dragon['armor'])}\n"
-                f"**Stage:** {dragon['stage']}  |  **Passive:** {passives}"
+                f"**DEF** {format_stat(dragon['armor'])}"
             ),
+            inline=False,
+        )
+        embed.add_field(
+            name=f"⚔️ Hunters | {len(party_members)}/4 Ready",
+            value="Players and their equipped pets",
             inline=False,
         )
 
