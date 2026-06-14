@@ -9583,6 +9583,132 @@ class Battles(commands.Cog):
         )
         
         await ctx.send(embed=embed)
+
+    @staticmethod
+    def _format_dragon_party_stat(value):
+        """Format combat values without mixing float and Decimal arithmetic."""
+        return f"{Decimal(str(value)):,.0f}"
+
+    @staticmethod
+    def _dragon_party_class_label(classes):
+        """Return the base class lines represented by a profile's classes."""
+        if not classes:
+            return "Adventurer"
+        if not isinstance(classes, (list, tuple)):
+            classes = [classes]
+
+        class_lines = []
+        for class_name in classes:
+            resolved_class = class_from_string(class_name)
+            if not resolved_class:
+                continue
+            label = resolved_class.get_class_line_name()
+            if label == "SantasHelper":
+                label = "Santa's Helper"
+            if label not in class_lines:
+                class_lines.append(label)
+
+        return " / ".join(class_lines) if class_lines else "Adventurer"
+
+    async def _build_dragon_party_embed(self, ctx, party_members):
+        """Build the live target and party stat preview for dragon battles."""
+        progress = await self.battle_factory.dragon_ext.get_dragon_stats_from_database(
+            self.bot
+        )
+        dragon = await self.battle_factory.dragon_ext.calculate_dragon_stats(
+            self.bot,
+            progress.get("level", 1),
+        )
+        member_ids = [member.id for member in party_members]
+
+        async with self.bot.pool.acquire() as conn:
+            profile_rows = await conn.fetch(
+                'SELECT "user", xp, class FROM profile WHERE "user" = ANY($1::bigint[]);',
+                member_ids,
+            )
+            pet_rows = await conn.fetch(
+                """
+                SELECT user_id, level
+                FROM monster_pets
+                WHERE user_id = ANY($1::bigint[])
+                  AND equipped = TRUE
+                  AND daycare_boarding_id IS NULL;
+                """,
+                member_ids,
+            )
+
+        profiles = {row["user"]: row for row in profile_rows}
+        pet_levels = {row["user_id"]: int(row["level"] or 1) for row in pet_rows}
+
+        party_stats = []
+        for member in party_members:
+            player_combatant, pet_combatant = await asyncio.gather(
+                self.battle_factory.create_player_combatant(ctx, member, include_pet=True),
+                self.battle_factory.pet_ext.get_pet_combatant(ctx, member),
+            )
+            profile = profiles.get(member.id)
+            party_stats.append(
+                (
+                    member,
+                    player_combatant,
+                    pet_combatant,
+                    rpgtools.xptolevel(profile["xp"]) if profile else 1,
+                    profile["class"] if profile else [],
+                    pet_levels.get(member.id, 1),
+                )
+            )
+
+        format_stat = self._format_dragon_party_stat
+        passives = ", ".join(dragon.get("passives", [])) or "None"
+        embed = discord.Embed(
+            title="❄️ Ice Dragon Hunting Party",
+            description=(
+                f"**{len(party_members)}/4 hunters ready**\n"
+                "Review the matchup, then launch the challenge."
+            ),
+            color=0x87CEEB,
+        )
+        embed.add_field(
+            name=f"🐉 Target | Level {dragon['level']} {dragon['name']}",
+            value=(
+                f"**HP** {format_stat(dragon['hp'])}  |  "
+                f"**ATK** {format_stat(dragon['damage'])}  |  "
+                f"**DEF** {format_stat(dragon['armor'])}\n"
+                f"**Stage:** {dragon['stage']}  |  **Passive:** {passives}"
+            ),
+            inline=False,
+        )
+
+        for index, stats in enumerate(party_stats, start=1):
+            member, player, pet, level, classes, pet_level = stats
+            leader_marker = " [Leader]" if member.id == ctx.author.id else ""
+            value = (
+                f"**ATK** {format_stat(player.damage)}  |  "
+                f"**DEF** {format_stat(player.armor)}  |  "
+                f"**HP** {format_stat(player.max_hp)}"
+            )
+            if pet:
+                value += (
+                    f"\n🐾 **{pet.name}**  |  Lv. {pet_level}  |  "
+                    f"ATK **{format_stat(pet.damage)}**  |  "
+                    f"DEF **{format_stat(pet.armor)}**  |  "
+                    f"HP **{format_stat(pet.max_hp)}**"
+                )
+            else:
+                value += "\n🐾 *No pet equipped*"
+
+            # Full-width fields keep every player visually separated.
+            embed.add_field(
+                name=(
+                    f"⚔️ {index}. {member.display_name}{leader_marker}  |  "
+                    f"Lv. {level}  |  {self._dragon_party_class_label(classes)}"
+                ),
+                value=value,
+                inline=False,
+            )
+
+        embed.set_footer(text="Party formation closes after 120 seconds")
+        return embed
     
     @dragon_challenge.command(name="party", aliases=["p"])
     @has_char()
@@ -9601,9 +9727,10 @@ class Battles(commands.Cog):
                 
             # Create party formation view
             class DragonPartyView(discord.ui.View):
-                def __init__(self, bot):
-                    super().__init__(timeout=120)  # Full 60-second timeout
-                    self.bot = bot
+                def __init__(self, cog):
+                    super().__init__(timeout=120)
+                    self.cog = cog
+                    self.bot = cog.bot
                     self.party_members = [ctx.author]  # Author automatically joins
                     self.is_complete = False
                     self._warning_task = None
@@ -9628,21 +9755,10 @@ class Battles(commands.Cog):
                     return bool(linked)
                     
                 async def update_embed(self):
-                    embed = discord.Embed(
-                        title="Ice Dragon Challenge - Party Formation",
-                        description="Form a party to challenge the Ice Dragon!",
-                        color=discord.Color.blue()
+                    return await self.cog._build_dragon_party_embed(
+                        self.ctx,
+                        self.party_members,
                     )
-                    
-                    # List party members
-                    member_list = "\n".join([f"• {member.mention}" for member in self.party_members])
-                    embed.add_field(
-                        name=f"Party Members ({len(self.party_members)}/4)",
-                        value=member_list or "No members yet",
-                        inline=False
-                    )
-                    
-                    return embed
                     
                 @discord.ui.button(label="Join Party", style=discord.ButtonStyle.primary, emoji="⚔️")
                 async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -9656,11 +9772,13 @@ class Battles(commands.Cog):
                         
                     # Add user to party
                     if len(self.party_members) < 4:
+                        await interaction.response.defer(ephemeral=True)
                         self.party_members.append(interaction.user)
-                        await interaction.response.send_message("You have joined the party!", ephemeral=True)
-                        
-                        # Update the embed
                         await interaction.message.edit(embed=await self.update_embed())
+                        await interaction.followup.send(
+                            "You have joined the party!",
+                            ephemeral=True,
+                        )
                     else:
                         await interaction.response.send_message("The party is already full!", ephemeral=True)
                 
@@ -9675,11 +9793,13 @@ class Battles(commands.Cog):
                         return await interaction.response.send_message("As the party leader, you cannot leave the party!", ephemeral=True)
                         
                     # Remove user from party
+                    await interaction.response.defer(ephemeral=True)
                     self.party_members.remove(interaction.user)
-                    await interaction.response.send_message("You have left the party!", ephemeral=True)
-                    
-                    # Update the embed
                     await interaction.message.edit(embed=await self.update_embed())
+                    await interaction.followup.send(
+                        "You have left the party!",
+                        ephemeral=True,
+                    )
                 
                 @discord.ui.button(label="Start Challenge", style=discord.ButtonStyle.success, emoji="🐉")
                 async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -9741,7 +9861,7 @@ class Battles(commands.Cog):
                     await super().on_error(interaction, error, item)
             
             # Create and send the party view
-            view = DragonPartyView(self.bot)
+            view = DragonPartyView(self)
             message = await self._send_with_retry(
                 ctx,
                 embed=await view.update_embed(),
