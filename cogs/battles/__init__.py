@@ -9683,19 +9683,20 @@ class Battles(commands.Cog):
             member, player, pet, level, classes, pet_level = stats
             leader_marker = " [Leader]" if member.id == ctx.author.id else ""
             value = (
-                f"**ATK** {format_stat(player.damage)}  |  "
+                "**Player Stats**\n"
+                f"> **ATK** {format_stat(player.damage)}  |  "
                 f"**DEF** {format_stat(player.armor)}  |  "
                 f"**HP** {format_stat(player.max_hp)}"
             )
             if pet:
                 value += (
-                    f"\n🐾 **{pet.name}**  |  Lv. {pet_level}  |  "
-                    f"ATK **{format_stat(pet.damage)}**  |  "
-                    f"DEF **{format_stat(pet.armor)}**  |  "
-                    f"HP **{format_stat(pet.max_hp)}**"
+                    f"\n\n🐾 **Equipped Pet · {pet.name} · Lv. {pet_level}**\n"
+                    f"> **ATK** {format_stat(pet.damage)}  |  "
+                    f"**DEF** {format_stat(pet.armor)}  |  "
+                    f"**HP** {format_stat(pet.max_hp)}"
                 )
             else:
-                value += "\n🐾 *No pet equipped*"
+                value += "\n\n🐾 **Equipped Pet**\n> *No pet equipped*"
 
             # Full-width fields keep every player visually separated.
             embed.add_field(
