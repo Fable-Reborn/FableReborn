@@ -3983,7 +3983,8 @@ class PetExtension:
                 owner=user,
                 user_id=owner_user_id,
                 name=mask_runtime_name(ctx.bot, pet["name"]),
-                pet_id=pet["id"]
+                pet_id=pet["id"],
+                display_level=pet_level,
             )
 
             pet_combatant.happiness = happiness

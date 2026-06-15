@@ -36,6 +36,9 @@ class BattleSettings(commands.Cog):
             "jurytower": {},
             "team": {},
             "citywar": {},
+            "dragon": {
+                "image_battle_card": False,
+            },
         }
         
     async def initialize(self):
@@ -181,13 +184,13 @@ class BattleSettings(commands.Cog):
         
         if battle_type:
             # Get specific battle type settings
-            for key in self.default_settings["global"].keys():
+            for key in self._get_setting_keys(battle_type):
                 result[key] = await self.get_setting_async(battle_type, key)
         else:
             # Get all settings
-            for bt in ["global", "pve", "pvp", "raid", "tower", "jurytower", "team"]:
+            for bt in ["global", "pve", "pvp", "raid", "tower", "jurytower", "team", "citywar", "dragon"]:
                 result[bt] = {}
-                for key in self.default_settings["global"].keys():
+                for key in self._get_setting_keys(bt):
                     result[bt][key] = await self.get_setting_async(bt, key)
         
         return result
@@ -197,16 +200,31 @@ class BattleSettings(commands.Cog):
         result = kwargs.copy()
         
         # Apply each setting from the configuration
-        for key in self.default_settings["global"].keys():
+        for key in self._get_setting_keys(battle_type):
             # Only override if not explicitly provided in kwargs
             if key not in kwargs:
                 result[key] = await self.get_setting_async(battle_type, key)
         
         return result
     
-    def get_configurable_settings(self) -> List[str]:
+    def get_configurable_settings(self, battle_type: str = None) -> List[str]:
         """Get a list of all configurable settings"""
-        return list(self.default_settings["global"].keys())
+        if battle_type:
+            return self._get_setting_keys(battle_type)
+
+        keys = []
+        for battle_type in self.default_settings:
+            for key in self._get_setting_keys(battle_type):
+                if key not in keys:
+                    keys.append(key)
+        return keys
+
+    def _get_setting_keys(self, battle_type: str) -> List[str]:
+        keys = list(self.default_settings["global"].keys())
+        for key in self.default_settings.get(battle_type, {}).keys():
+            if key not in keys:
+                keys.append(key)
+        return keys
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)

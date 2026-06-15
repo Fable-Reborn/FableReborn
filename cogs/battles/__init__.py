@@ -9458,7 +9458,9 @@ class Battles(commands.Cog):
             return await ctx.send(f"Invalid battle type. Must be one of: {', '.join(valid_battle_types)}")
         
         # Validate setting
-        valid_settings = self.battle_factory.settings.get_configurable_settings()
+        valid_settings = self.battle_factory.settings.get_configurable_settings(
+            battle_type.lower()
+        )
         if setting not in valid_settings:
             return await ctx.send(f"Invalid setting. Must be one of: {', '.join(valid_settings)}")
         
@@ -10022,7 +10024,6 @@ class Battles(commands.Cog):
                                             suppress_failure=True,
                                         )
                                 
-                                await asyncio.sleep(1)  # 1 second delay between turns for faster battles
                             except Exception as e:
                                 await self._send_with_retry(
                                     ctx,

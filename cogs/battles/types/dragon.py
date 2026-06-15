@@ -1,14 +1,21 @@
 from decimal import Decimal
 import asyncio
+import logging
 import random
 import discord
 from datetime import datetime, timedelta
 from collections import deque
 from decimal import Decimal
+from io import BytesIO
 
 from ..core.battle import Battle
 from ..core.combatant import Combatant
 from ..core.team import Team
+from ..dragon_battle_card import render_dragon_battle_card
+from classes.classes import from_string as class_from_string
+
+
+logger = logging.getLogger(__name__)
 
 class DragonBattle(Battle):
     """Implementation of Ice Dragon Challenge battle"""
@@ -56,6 +63,10 @@ class DragonBattle(Battle):
                 "cheat_death": settings_cog.get_setting("dragon", "cheat_death", default=True),
                 "tripping": settings_cog.get_setting("dragon", "tripping", default=True),
                 "status_effects": settings_cog.get_setting("dragon", "status_effects", default=False),
+                "image_battle_card": kwargs.get(
+                    "image_battle_card",
+                    settings_cog.get_setting("dragon", "image_battle_card", default=False),
+                ),
                 "pets_continue_battle": settings_cog.get_setting("dragon", "pets_continue_battle", default=False)
             }
         else:
@@ -72,6 +83,7 @@ class DragonBattle(Battle):
                 "cheat_death": True,
                 "tripping": True,
                 "status_effects": False,
+                "image_battle_card": kwargs.get("image_battle_card", False),
                 "pets_continue_battle": False
             }
         self.current_turn = 0  # Track turns separately from action numbers
@@ -437,28 +449,28 @@ class DragonBattle(Battle):
         if not current_combatant.is_alive():
             await self.add_to_log(f"{current_combatant.name} is defeated and cannot act!")
             self._decrement_status_effects(current_combatant)
-            await self.update_display()
+            await self.update_display(wait_for_turn_delay=True)
             return True
 
         silenced_message = self.consume_ascension_action_lock(current_combatant)
         if silenced_message:
             await self.add_to_log(silenced_message)
             self._decrement_status_effects(current_combatant)
-            await self.update_display()
+            await self.update_display(wait_for_turn_delay=True)
             return True
         
         # Skip turn if stunned
         if self.is_stunned(current_combatant):
             await self.add_to_log(f"{current_combatant.name} is stunned and cannot act!")
             self._decrement_status_effects(current_combatant)
-            await self.update_display()
+            await self.update_display(wait_for_turn_delay=True)
             return True
 
         # Skip turn if paralyzed by pet electric effects.
         if self.consume_paralyzed_turn(current_combatant):
             await self.add_to_log(f"{current_combatant.name} is paralyzed and cannot act!")
             self._decrement_status_effects(current_combatant)
-            await self.update_display()
+            await self.update_display(wait_for_turn_delay=True)
             return True
 
         # Skip turn if affected by terror panic
@@ -468,7 +480,7 @@ class DragonBattle(Battle):
             if random.random() < chance:
                 await self.add_to_log(f"{current_combatant.name} is overwhelmed by terror and loses their turn!")
                 self._decrement_status_effects(current_combatant)
-                await self.update_display()
+                await self.update_display(wait_for_turn_delay=True)
                 return True
             
         # Process turn based on combatant type
@@ -504,8 +516,7 @@ class DragonBattle(Battle):
         
         self._decrement_status_effects(current_combatant)
         # Update display after turn is processed
-        await self.update_display()
-        await asyncio.sleep(2)  # Delay between turns for readability
+        await self.update_display(wait_for_turn_delay=True)
         
         # Return True to indicate turn was processed successfully
         return True
@@ -1491,6 +1502,133 @@ class DragonBattle(Battle):
                 )
                 player.hp = player.hp * (player.max_hp / old_max_hp)  # Scale current HP too
                 
+    @staticmethod
+    def _battle_card_class_label(classes):
+        if not classes:
+            return "Adventurer"
+        if not isinstance(classes, (list, tuple)):
+            classes = [classes]
+
+        labels = []
+        for class_name in classes:
+            resolved = class_from_string(class_name)
+            if not resolved:
+                continue
+            label = resolved.get_class_line_name()
+            if label == "SantasHelper":
+                label = "Santa's Helper"
+            if label not in labels:
+                labels.append(label)
+        return " / ".join(labels) if labels else "Adventurer"
+
+    def _battle_card_statuses(self, combatant):
+        statuses = []
+        for effect in self._get_effects(combatant):
+            label = effect.get("name") or effect.get("type")
+            if label and label not in statuses:
+                statuses.append(str(label))
+        if self._has_effect(combatant, "possessed") and "Possessed" not in statuses:
+            statuses.append("Possessed")
+        return statuses[:6]
+
+    def _build_battle_card_data(self):
+        pets_by_owner = {}
+        party_players = []
+        for combatant in self.player_team.combatants:
+            if getattr(combatant, "is_summoned", False):
+                continue
+            if getattr(combatant, "is_pet", False):
+                owner_id = self._extract_user_id(getattr(combatant, "owner", None))
+                if owner_id is None:
+                    owner_id = getattr(combatant, "user_id", None)
+                if owner_id is not None:
+                    pets_by_owner[owner_id] = combatant
+                continue
+            party_players.append(combatant)
+
+        players = []
+        for player in party_players[:4]:
+            owner_id = self._extract_user_id(player)
+            pet = pets_by_owner.get(owner_id)
+            players.append(
+                {
+                    "name": player.name,
+                    "level": int(getattr(player, "display_level", 1) or 1),
+                    "class": self._battle_card_class_label(
+                        getattr(player, "display_classes", [])
+                    ),
+                    "hp": player.hp,
+                    "max_hp": player.max_hp,
+                    "attack": player.damage,
+                    "defense": player.armor,
+                    "statuses": self._battle_card_statuses(player),
+                    "pet": (
+                        {
+                            "name": pet.name,
+                            "level": int(getattr(pet, "display_level", 1) or 1),
+                            "hp": pet.hp,
+                            "max_hp": pet.max_hp,
+                            "attack": pet.damage,
+                            "defense": pet.armor,
+                        }
+                        if pet
+                        else None
+                    ),
+                }
+            )
+
+        return {
+            "turn": self.current_turn,
+            "boss": {
+                "name": getattr(self.dragon, "stage", self.dragon.name),
+                "level": self.dragon_level,
+                "hp": self.dragon.hp,
+                "max_hp": self.dragon.max_hp,
+                "attack": self.dragon.damage,
+                "defense": self.dragon.armor,
+                "statuses": self._battle_card_statuses(self.dragon),
+            },
+            "log": [message for _, message in list(self.log)[-3:]],
+            "players": players,
+        }
+
+    async def _publish_battle_card(self):
+        card_data = self._build_battle_card_data()
+        card_buffer = await asyncio.to_thread(render_dragon_battle_card, card_data)
+        filename = "ice_dragon_battle.jpg"
+        card_bytes = card_buffer.getvalue()
+        embed = discord.Embed(color=discord.Color.blue())
+        embed.set_image(url=f"attachment://{filename}")
+        embed.set_footer(text=f"Battle ID: {self.battle_id}")
+
+        if self.battle_message:
+            edit_result = await self.edit_with_retry(
+                self.battle_message,
+                embed=embed,
+                attachments=[discord.File(BytesIO(card_bytes), filename=filename)],
+            )
+            if edit_result not in (None, False):
+                self.battle_message = edit_result
+                return self.battle_message
+            if edit_result is False:
+                return self.battle_message
+            self.battle_message = None
+
+        send_result = await self.send_with_retry(
+            embed=embed,
+            file=discord.File(BytesIO(card_bytes), filename=filename),
+        )
+        if send_result not in (None, False):
+            self.battle_message = send_result
+        return self.battle_message
+
+    async def _publish_embed_fallback(self):
+        embed = await self.create_battle_embed()
+        kwargs = {"embed": embed}
+        if self.battle_message:
+            kwargs["attachments"] = []
+        return await self.publish_battle_message(**kwargs)
+
     async def create_battle_embed(self):
         """Create the battle status embed"""
         # Get current stage name
@@ -1609,10 +1747,24 @@ class DragonBattle(Battle):
         
         return embed
         
-    async def update_display(self):
+    async def update_display(self, wait_for_turn_delay=False):
         """Update the battle display"""
-        embed = await self.create_battle_embed()
-        result = await self.publish_battle_message(embed=embed)
+        async def publish_display():
+            if self.config.get("image_battle_card", False):
+                try:
+                    return await self._publish_battle_card()
+                except Exception:
+                    logger.exception(
+                        "Battle %s failed to render the Ice Dragon image card; using embed",
+                        self.battle_id,
+                    )
+            return await self._publish_embed_fallback()
+
+        display_task = asyncio.create_task(publish_display())
+        if wait_for_turn_delay:
+            result, _ = await asyncio.gather(display_task, asyncio.sleep(2))
+        else:
+            result = await display_task
         return result is not None
             
     async def end_battle(self):

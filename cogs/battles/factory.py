@@ -944,6 +944,8 @@ class BattleFactory:
                 ascension_signature_used=False,
                 ascension_opening_used=False,
                 ascension_survival_used=False,
+                display_level=level,
+                display_classes=classes,
             )
 
     async def create_monster_combatant(self, monster_data, level=1, name=None, mask_name=False):
