@@ -10733,17 +10733,24 @@ class Battles(commands.Cog):
             return
 
         seen_ids = set()
+        unique_users = []
         for user in users:
             user_id = getattr(user, "id", None)
             if user_id is None or user_id in seen_ids:
                 continue
             seen_ids.add(user_id)
+            unique_users.append(user)
+
+        metadata = {"party_size": len(unique_users)}
+        for user in unique_users:
+            user_id = user.id
             try:
                 await quests_cog.process_external_source_completion_for_user(
                     ctx,
                     user,
                     source,
                     candidate_names=candidate_names,
+                    metadata=metadata,
                 )
             except Exception as exc:
                 logger.warning(

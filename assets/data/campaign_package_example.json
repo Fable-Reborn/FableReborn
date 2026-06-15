@@ -1,0 +1,206 @@
+{
+  "schema": "fablereborn.campaign-package",
+  "schema_version": 1,
+  "exported_at": "2026-06-15T00:00:00Z",
+  "campaigns": [
+    {
+      "key": "ashen_road",
+      "title": "The Ashen Road",
+      "description": "Track a vanished caravan and decide who controls the secret it carried.",
+      "start_node": "missing_caravan",
+      "is_active": false,
+      "requirements": [
+        {
+          "type": "level",
+          "operator": ">=",
+          "value": 3,
+          "description": "Reach level 3 before taking the Ashen Road."
+        }
+      ],
+      "nodes": [
+        {
+          "id": "missing_caravan",
+          "type": "quest",
+          "title": "The Missing Caravan",
+          "description": "Search the trade road for signs of the vanished royal supply caravan.",
+          "requirements": [],
+          "quest": {
+            "category": "The Ashen Road",
+            "offer_text": "Three caravans entered the ash pass. None returned.",
+            "turnin_text": "The wheel tracks end beside a royal seal burned black.",
+            "objective": {
+              "source": "adventure",
+              "mode": "progress",
+              "required_count": 3,
+              "target_name": ""
+            },
+            "turnin": { "type": "progress" },
+            "reward": { "type": "money", "amount": 2500 },
+            "requirements": [],
+            "is_active": true
+          },
+          "cutscenes": {
+            "accept": {
+              "title": "The Ashen Road",
+              "pages": [
+                {
+                  "title": "Smoke Without Fire",
+                  "subtitle": "Western Gate",
+                  "text": "The gate captain places a blackened royal seal in your palm. It is still warm.",
+                  "image": ""
+                }
+              ]
+            }
+          },
+          "encounter": { "kind": "none", "party": { "min": 1, "max": 1 }, "settings": {} },
+          "next": [
+            { "label": "Follow the survivors", "target": "roadside_choice", "description": "The trail divides at a ruined shrine.", "conditions": [], "effects": [], "unlocks": [] }
+          ],
+          "effects": [],
+          "unlocks": ["ashen_road_investigator"]
+        },
+        {
+          "id": "roadside_choice",
+          "type": "choice",
+          "title": "The Ruined Shrine",
+          "description": "Prisoners call from the trees while the caravan leader escapes toward the pass.",
+          "requirements": [],
+          "options": [
+            {
+              "label": "Rescue the prisoners",
+              "target": "mercy_path",
+              "description": "Lose the leader's trail, but save those left behind.",
+              "conditions": [],
+              "effects": [ { "type": "reputation", "key": "elysia", "points": 25, "rank_delta": 1 } ],
+              "unlocks": ["prisoners_rescued"]
+            },
+            {
+              "label": "Pursue the leader",
+              "target": "ruthless_path",
+              "description": "Leave the prisoners and catch the one carrying the secret.",
+              "conditions": [],
+              "effects": [ { "type": "reputation", "key": "evil", "points": 25, "rank_delta": 1 } ],
+              "unlocks": ["leader_pursued"]
+            }
+          ],
+          "effects": [],
+          "unlocks": []
+        },
+        {
+          "id": "mercy_path",
+          "type": "quest",
+          "title": "Oath of the Rescued",
+          "description": "Defend the survivors while they cross the pass.",
+          "requirements": [ { "type": "reputation", "key": "elysia", "operator": ">=", "value": 1 } ],
+          "quest": {
+            "category": "The Ashen Road",
+            "objective": { "source": "pve", "mode": "progress", "required_count": 5, "target_name": "" },
+            "turnin": { "type": "progress" },
+            "reward": {
+              "type": "bundle",
+              "rewards": [
+                { "type": "money", "amount": 5000 },
+                { "type": "crate", "rarity": "rare", "amount": 1 }
+              ]
+            },
+            "requirements": [ { "type": "item_equipped", "key": "Sword", "operator": "==", "value": 1 } ],
+            "is_active": true
+          },
+          "encounter": { "kind": "pve", "name": "Pass Ambush", "party": { "min": 1, "max": 1 }, "launch_command": "$pve", "settings": {} },
+          "next": [ { "label": "Face the Ash Warden", "target": "warden", "conditions": [], "effects": [], "unlocks": [] } ],
+          "effects": [],
+          "unlocks": []
+        },
+        {
+          "id": "ruthless_path",
+          "type": "quest",
+          "title": "The Leader's Trail",
+          "description": "Hunt the caravan leader through the upper pass.",
+          "requirements": [ { "type": "reputation", "key": "evil", "operator": ">=", "value": 1 } ],
+          "quest": {
+            "category": "The Ashen Road",
+            "objective": { "source": "battletower", "mode": "progress", "required_count": 1, "target_name": "" },
+            "turnin": { "type": "progress" },
+            "reward": { "type": "money", "amount": 7500 },
+            "requirements": [ { "type": "pet_owned", "key": "Ash Hound", "operator": "==", "value": 1 } ],
+            "is_active": true
+          },
+          "encounter": { "kind": "battle_tower", "name": "Upper Pass", "party": { "min": 1, "max": 1 }, "launch_command": "$battletower", "settings": {} },
+          "next": [ { "label": "Face the Ash Warden", "target": "warden", "conditions": [], "effects": [], "unlocks": [] } ],
+          "effects": [],
+          "unlocks": []
+        },
+        {
+          "id": "warden",
+          "type": "quest",
+          "title": "The Ash Warden",
+          "description": "Form a party and defeat the creature guarding the caravan's final secret.",
+          "requirements": [],
+          "quest": {
+            "category": "The Ashen Road",
+            "objective": { "source": "dragonparty", "mode": "progress", "required_count": 1, "target_name": "" },
+            "turnin": { "type": "progress" },
+            "reward": {
+              "type": "item",
+              "name": "Ashen Oathblade",
+              "item_type": "Sword",
+              "stat": 35,
+              "value": 0,
+              "element": "Fire"
+            },
+            "requirements": [ { "type": "quest_completed", "key": "ashen_road_missing_caravan", "operator": ">=", "value": 1 } ],
+            "is_active": true
+          },
+          "encounter": {
+            "kind": "dragon_party",
+            "name": "Ash Warden",
+            "monster": "Ash Warden",
+            "description": "The current runtime bridges this encounter to the Ice Dragon party lobby.",
+            "party": { "min": 2, "max": 4 },
+            "launch_command": "$dragonchallenge party",
+            "settings": { "allow_pets": true, "element_effects": true }
+          },
+          "next": [ { "label": "Claim your legacy", "target": "ending", "conditions": [], "effects": [], "unlocks": [] } ],
+          "effects": [ { "type": "reputation", "key": "eldoria", "points": 100, "rank_delta": 1 } ],
+          "unlocks": ["ash_warden_defeated"]
+        },
+        {
+          "id": "ending",
+          "type": "ending",
+          "title": "The Road Remembers",
+          "description": "Your choice at the shrine is now part of your character's permanent campaign history.",
+          "requirements": [],
+          "effects": [],
+          "unlocks": ["ashen_road_complete"]
+        }
+      ]
+    }
+  ],
+  "standalone_quests": [],
+  "cutscenes": [],
+  "monsters": [
+    {
+      "key": "ash_warden",
+      "name": "Ash Warden",
+      "tier": 8,
+      "hp": 2500,
+      "attack": 420,
+      "defense": 360,
+      "element": "Fire",
+      "url": "",
+      "tags": ["boss", "campaign", "ashen_road"]
+    },
+    {
+      "key": "ash_hound",
+      "name": "Ash Hound",
+      "tier": 3,
+      "hp": 280,
+      "attack": 190,
+      "defense": 140,
+      "element": "Fire",
+      "url": "",
+      "tags": ["pet", "campaign"]
+    }
+  ],
+  "reference": {}
+}

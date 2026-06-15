@@ -1,3 +1,4 @@
+import io
 import json
 import random
 from datetime import datetime, timedelta
@@ -12,8 +13,18 @@ from discord.ui import Button, Modal, TextInput, View
 
 from classes.enums import DonatorRank
 from classes.items import ItemType
+from classes.badges import Badge
+from cogs.quests.campaign_content import (
+    CampaignPackageError,
+    build_reference_catalog,
+    node_by_id,
+    normalize_key as normalize_campaign_key,
+    quest_record_from_node,
+    validate_package,
+)
 from utils.april_fools import APRIL_FOOLS_GREG_FLAG
 from utils.checks import has_char, is_gm
+from utils import misc as rpgtools
 
 
 @dataclass(frozen=True)
@@ -2242,6 +2253,65 @@ class Quests(commands.Cog):
                 )
                 """
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS campaign_content (
+                    campaign_key TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    start_node_key TEXT NOT NULL,
+                    campaign_json TEXT NOT NULL,
+                    is_active BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_by BIGINT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS player_campaigns (
+                    user_id BIGINT NOT NULL,
+                    campaign_key TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    current_node_key TEXT NOT NULL,
+                    history_json TEXT NOT NULL DEFAULT '[]',
+                    choices_json TEXT NOT NULL DEFAULT '{}',
+                    unlocks_json TEXT NOT NULL DEFAULT '[]',
+                    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    completed_at TIMESTAMPTZ,
+                    PRIMARY KEY (user_id, campaign_key)
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS player_reputation (
+                    user_id BIGINT NOT NULL,
+                    reputation_key TEXT NOT NULL,
+                    points INTEGER NOT NULL DEFAULT 0,
+                    rank INTEGER NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, reputation_key)
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS content_monsters (
+                    monster_key TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    tier INTEGER NOT NULL DEFAULT 1,
+                    hp INTEGER NOT NULL,
+                    attack INTEGER NOT NULL,
+                    defense INTEGER NOT NULL,
+                    element TEXT NOT NULL DEFAULT 'Nature',
+                    url TEXT NOT NULL DEFAULT '',
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
             await self._seed_default_cutscenes(conn)
             await self._attach_default_greg_finale_cutscene(conn)
             await self._remove_legacy_greg_quest_data(conn)
@@ -2507,20 +2577,47 @@ class Quests(commands.Cog):
     async def _get_monster_catalog(self) -> list[dict]:
         if self._monster_cache is not None:
             return self._monster_cache
+        catalog = []
         try:
             with MONSTERS_PATH.open("r", encoding="utf-8") as f:
                 data = json.load(f)
         except OSError:
-            self._monster_cache = []
-            return self._monster_cache
+            data = {}
 
-        catalog = []
         for monsters in data.values():
             if not isinstance(monsters, list):
                 continue
             for monster in monsters:
                 if isinstance(monster, dict) and monster.get("name"):
-                    catalog.append(monster)
+                    catalog.append(dict(monster))
+
+        try:
+            rows = await self.bot.pool.fetch(
+                """
+                SELECT monster_key, name, tier, hp, attack, defense, element, url, tags_json
+                FROM content_monsters
+                ORDER BY tier, name
+                """
+            )
+        except Exception:
+            rows = []
+        known_names = {str(monster.get("name") or "").casefold() for monster in catalog}
+        for row in rows:
+            if str(row["name"]).casefold() in known_names:
+                continue
+            catalog.append(
+                {
+                    "key": row["monster_key"],
+                    "name": row["name"],
+                    "tier": row["tier"],
+                    "hp": row["hp"],
+                    "attack": row["attack"],
+                    "defense": row["defense"],
+                    "element": row["element"],
+                    "url": row["url"],
+                    "tags": self._load_progress(row["tags_json"]),
+                }
+            )
         self._monster_cache = catalog
         return catalog
 
@@ -2532,6 +2629,523 @@ class Quests(commands.Cog):
             if str(monster.get("name", "")).strip().lower() == target:
                 return monster
         return None
+
+    def _campaign_cutscene_payload(self, campaign: dict, node: dict, slot: str) -> tuple[str, dict] | None:
+        payload = (node.get("cutscenes") or {}).get(slot)
+        if not isinstance(payload, dict) or not payload.get("pages"):
+            return None
+        key = normalize_campaign_key(
+            payload.get("key") or f"{campaign['key']}_{node['id']}_{slot}"
+        )
+        return key, {
+            "title": str(payload.get("title") or node.get("title") or "Campaign Scene"),
+            "pages": payload.get("pages") or [],
+        }
+
+    async def _import_standalone_quest(self, conn, quest: dict, created_by: int) -> None:
+        quest_key = normalize_campaign_key(quest.get("quest_key"))
+        if not quest_key:
+            return
+        await conn.execute(
+            """
+            INSERT INTO custom_quests (
+                quest_key, name, category, short_description, offer_text, turnin_text,
+                objective_json, turnin_json, reward_json, access_json,
+                prerequisite_keys_json, accept_cutscene_key, turnin_cutscene_key,
+                repeatable, is_active, created_by, updated_at
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW())
+            ON CONFLICT (quest_key) DO UPDATE SET
+                name=EXCLUDED.name, category=EXCLUDED.category,
+                short_description=EXCLUDED.short_description, offer_text=EXCLUDED.offer_text,
+                turnin_text=EXCLUDED.turnin_text, objective_json=EXCLUDED.objective_json,
+                turnin_json=EXCLUDED.turnin_json, reward_json=EXCLUDED.reward_json,
+                access_json=EXCLUDED.access_json,
+                prerequisite_keys_json=EXCLUDED.prerequisite_keys_json,
+                accept_cutscene_key=EXCLUDED.accept_cutscene_key,
+                turnin_cutscene_key=EXCLUDED.turnin_cutscene_key,
+                repeatable=EXCLUDED.repeatable, is_active=EXCLUDED.is_active,
+                created_by=EXCLUDED.created_by, updated_at=NOW()
+            """,
+            quest_key,
+            str(quest.get("name") or quest_key.replace("_", " ").title()),
+            str(quest.get("category") or "General"),
+            str(quest.get("short_description") or ""),
+            str(quest.get("offer_text") or ""),
+            str(quest.get("turnin_text") or ""),
+            json.dumps(quest.get("objective") or {}, sort_keys=True),
+            json.dumps(quest.get("turnin") or {}, sort_keys=True),
+            json.dumps(quest.get("reward") or {"type": "none"}, sort_keys=True),
+            json.dumps(quest.get("access") or {}, sort_keys=True),
+            json.dumps(quest.get("prerequisites") or []),
+            normalize_campaign_key(quest.get("accept_cutscene_key")) or None,
+            normalize_campaign_key(quest.get("turnin_cutscene_key")) or None,
+            bool(quest.get("repeatable", False)),
+            bool(quest.get("is_active", False)),
+            created_by,
+        )
+
+    async def _import_campaign_package(self, package: dict, *, created_by: int) -> dict:
+        package = validate_package(package)
+        quest_count = 0
+        cutscene_count = 0
+        async with self.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                for cutscene in package.get("cutscenes") or []:
+                    if not isinstance(cutscene, dict):
+                        continue
+                    cutscene_key = normalize_campaign_key(cutscene.get("key"))
+                    pages = cutscene.get("pages") or []
+                    if not cutscene_key or not isinstance(pages, list):
+                        continue
+                    await conn.execute(
+                        """
+                        INSERT INTO quest_cutscenes (cutscene_key, title, pages_json, created_by, updated_at)
+                        VALUES ($1,$2,$3,$4,NOW())
+                        ON CONFLICT (cutscene_key) DO UPDATE SET
+                            title=EXCLUDED.title, pages_json=EXCLUDED.pages_json,
+                            created_by=EXCLUDED.created_by, updated_at=NOW()
+                        """,
+                        cutscene_key,
+                        str(cutscene.get("title") or "Quest Scene"),
+                        json.dumps(pages),
+                        created_by,
+                    )
+                    cutscene_count += 1
+
+                for monster in package.get("monsters") or []:
+                    await conn.execute(
+                        """
+                        INSERT INTO content_monsters (
+                            monster_key, name, tier, hp, attack, defense, element, url, tags_json, updated_at
+                        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+                        ON CONFLICT (monster_key) DO UPDATE SET
+                            name=EXCLUDED.name, tier=EXCLUDED.tier, hp=EXCLUDED.hp,
+                            attack=EXCLUDED.attack, defense=EXCLUDED.defense,
+                            element=EXCLUDED.element, url=EXCLUDED.url,
+                            tags_json=EXCLUDED.tags_json, updated_at=NOW()
+                        """,
+                        monster["key"],
+                        monster["name"],
+                        monster["tier"],
+                        monster["hp"],
+                        monster["attack"],
+                        monster["defense"],
+                        monster["element"],
+                        monster["url"],
+                        json.dumps(monster.get("tags") or []),
+                    )
+
+                for quest in package.get("standalone_quests") or []:
+                    if isinstance(quest, dict):
+                        await self._import_standalone_quest(conn, quest, created_by)
+                        quest_count += 1
+
+                for campaign in package.get("campaigns") or []:
+                    await conn.execute(
+                        """
+                        INSERT INTO campaign_content (
+                            campaign_key, title, description, start_node_key,
+                            campaign_json, is_active, created_by, updated_at
+                        ) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+                        ON CONFLICT (campaign_key) DO UPDATE SET
+                            title=EXCLUDED.title, description=EXCLUDED.description,
+                            start_node_key=EXCLUDED.start_node_key,
+                            campaign_json=EXCLUDED.campaign_json,
+                            is_active=EXCLUDED.is_active, created_by=EXCLUDED.created_by,
+                            updated_at=NOW()
+                        """,
+                        campaign["key"],
+                        campaign["title"],
+                        campaign["description"],
+                        campaign["start_node"],
+                        json.dumps(campaign, sort_keys=True),
+                        campaign["is_active"],
+                        created_by,
+                    )
+                    for node in campaign.get("nodes") or []:
+                        if node.get("type") != "quest":
+                            continue
+                        record = quest_record_from_node(campaign, node)
+                        accept_cutscene = self._campaign_cutscene_payload(campaign, node, "accept")
+                        turnin_cutscene = self._campaign_cutscene_payload(campaign, node, "turnin")
+                        for cutscene in (accept_cutscene, turnin_cutscene):
+                            if not cutscene:
+                                continue
+                            cutscene_key, definition = cutscene
+                            await conn.execute(
+                                """
+                                INSERT INTO quest_cutscenes (cutscene_key, title, pages_json, created_by, updated_at)
+                                VALUES ($1,$2,$3,$4,NOW())
+                                ON CONFLICT (cutscene_key) DO UPDATE SET
+                                    title=EXCLUDED.title, pages_json=EXCLUDED.pages_json,
+                                    created_by=EXCLUDED.created_by, updated_at=NOW()
+                                """,
+                                cutscene_key,
+                                definition["title"],
+                                json.dumps(definition["pages"]),
+                                created_by,
+                            )
+                            cutscene_count += 1
+                        record["accept_cutscene_key"] = accept_cutscene[0] if accept_cutscene else ""
+                        record["turnin_cutscene_key"] = turnin_cutscene[0] if turnin_cutscene else ""
+                        await self._import_standalone_quest(conn, record, created_by)
+                        quest_count += 1
+        self._monster_cache = None
+        return {
+            "campaigns": len(package.get("campaigns") or []),
+            "quests": quest_count,
+            "cutscenes": cutscene_count,
+            "monsters": len(package.get("monsters") or []),
+        }
+
+    async def _build_campaign_export_package(self) -> dict:
+        campaigns = []
+        rows = await self.bot.pool.fetch(
+            "SELECT campaign_json FROM campaign_content ORDER BY campaign_key"
+        )
+        for row in rows:
+            campaign = self._load_progress(row["campaign_json"])
+            if isinstance(campaign, dict):
+                campaigns.append(campaign)
+
+        campaign_quest_keys = {
+            quest_record_from_node(campaign, node)["quest_key"]
+            for campaign in campaigns
+            for node in campaign.get("nodes") or []
+            if node.get("type") == "quest"
+        }
+        standalone_quests = []
+        for custom_def in await self._fetch_custom_quest_definitions(active_only=False):
+            if custom_def["quest_key"] in campaign_quest_keys:
+                continue
+            standalone_quests.append(custom_def)
+
+        cutscenes = []
+        for row in await self.bot.pool.fetch(
+            "SELECT cutscene_key, title, pages_json FROM quest_cutscenes ORDER BY cutscene_key"
+        ):
+            cutscenes.append(
+                {
+                    "key": row["cutscene_key"],
+                    "title": row["title"],
+                    "pages": self._load_progress(row["pages_json"]),
+                }
+            )
+
+        monsters = []
+        seen_names = set()
+        try:
+            with MONSTERS_PATH.open("r", encoding="utf-8") as monster_file:
+                file_monsters = json.load(monster_file)
+        except OSError:
+            file_monsters = {}
+        for tier, entries in file_monsters.items():
+            for monster in entries if isinstance(entries, list) else []:
+                if not isinstance(monster, dict) or not monster.get("name"):
+                    continue
+                payload = dict(monster)
+                payload["key"] = normalize_campaign_key(payload.get("key") or payload["name"])
+                payload["tier"] = int(tier)
+                payload.setdefault("tags", [])
+                monsters.append(payload)
+                seen_names.add(str(payload["name"]).casefold())
+        for row in await self.bot.pool.fetch(
+            "SELECT monster_key, name, tier, hp, attack, defense, element, url, tags_json FROM content_monsters ORDER BY tier, name"
+        ):
+            if str(row["name"]).casefold() in seen_names:
+                continue
+            monsters.append(
+                {
+                    "key": row["monster_key"], "name": row["name"], "tier": row["tier"],
+                    "hp": row["hp"], "attack": row["attack"], "defense": row["defense"],
+                    "element": row["element"], "url": row["url"],
+                    "tags": self._load_progress(row["tags_json"]),
+                }
+            )
+
+        return {
+            "schema": "fablereborn.campaign-package",
+            "schema_version": 1,
+            "exported_at": datetime.utcnow().isoformat() + "Z",
+            "campaigns": campaigns,
+            "standalone_quests": standalone_quests,
+            "cutscenes": cutscenes,
+            "monsters": monsters,
+            "reference": build_reference_catalog(monsters),
+        }
+
+    async def _fetch_campaign_definition(self, campaign_key: str, *, conn=None) -> dict | None:
+        local = conn is None
+        if local:
+            conn = await self.bot.pool.acquire()
+        try:
+            raw = await conn.fetchval(
+                "SELECT campaign_json FROM campaign_content WHERE campaign_key=$1",
+                normalize_campaign_key(campaign_key),
+            )
+            campaign = self._load_progress(raw)
+            return campaign if isinstance(campaign, dict) and campaign else None
+        finally:
+            if local:
+                await self.bot.pool.release(conn)
+
+    def _campaign_quest_key(self, campaign: dict, node: dict) -> str:
+        return quest_record_from_node(campaign, node)["quest_key"]
+
+    async def _apply_campaign_effects(
+        self,
+        user_id: int,
+        campaign_key: str,
+        *,
+        effects: list | None = None,
+        unlocks: list | None = None,
+        conn,
+    ) -> list[str]:
+        messages = []
+        row = await conn.fetchrow(
+            "SELECT unlocks_json FROM player_campaigns WHERE user_id=$1 AND campaign_key=$2 FOR UPDATE",
+            user_id,
+            campaign_key,
+        )
+        current_unlocks = list(self._load_progress(row["unlocks_json"]) if row else [])
+        for unlock in unlocks or []:
+            unlock_key = str(unlock.get("key") if isinstance(unlock, dict) else unlock).strip()
+            if unlock_key and unlock_key not in current_unlocks:
+                current_unlocks.append(unlock_key)
+                messages.append(f"Unlocked **{unlock_key}**")
+
+        for effect in effects or []:
+            if not isinstance(effect, dict):
+                continue
+            effect_type = str(effect.get("type") or "").strip().lower()
+            key = normalize_campaign_key(effect.get("key"))
+            if effect_type == "unlock" and key:
+                if key not in current_unlocks:
+                    current_unlocks.append(key)
+                    messages.append(f"Unlocked **{key}**")
+            elif effect_type == "reputation" and key:
+                points = int(effect.get("points") or 0)
+                rank_delta = int(effect.get("rank_delta") or 0)
+                set_rank = effect.get("set_rank")
+                await conn.execute(
+                    """
+                    INSERT INTO player_reputation (user_id, reputation_key, points, rank, updated_at)
+                    VALUES ($1,$2,$3,$4,NOW())
+                    ON CONFLICT (user_id, reputation_key) DO UPDATE SET
+                        points=player_reputation.points + EXCLUDED.points,
+                        rank=CASE WHEN $5::INTEGER IS NULL
+                            THEN GREATEST(0, player_reputation.rank + EXCLUDED.rank)
+                            ELSE GREATEST(0, $5::INTEGER)
+                        END,
+                        updated_at=NOW()
+                    """,
+                    user_id,
+                    key,
+                    points,
+                    rank_delta,
+                    int(set_rank) if set_rank is not None else None,
+                )
+                messages.append(
+                    f"Reputation **{key}**: {points:+d} points"
+                    + (f", rank {int(set_rank)}" if set_rank is not None else (f", {rank_delta:+d} rank" if rank_delta else ""))
+                )
+
+        await conn.execute(
+            "UPDATE player_campaigns SET unlocks_json=$3, updated_at=NOW() WHERE user_id=$1 AND campaign_key=$2",
+            user_id,
+            campaign_key,
+            json.dumps(current_unlocks),
+        )
+        return messages
+
+    async def _available_campaign_edges(self, user_id: int, edges: list, *, conn) -> list[dict]:
+        available = []
+        for edge in edges or []:
+            allowed, _reason = await self._evaluate_campaign_conditions(
+                user_id,
+                edge.get("conditions") or [],
+                conn=conn,
+            )
+            if allowed:
+                available.append(edge)
+        return available
+
+    def _campaign_choice_embed(self, campaign: dict, node: dict, edges: list[dict]) -> discord.Embed:
+        embed = discord.Embed(
+            title=node.get("title") or campaign.get("title") or "Campaign Choice",
+            description=node.get("description") or "Choose what your character does next.",
+            color=0x7A4B20,
+        )
+        for index, edge in enumerate(edges, start=1):
+            embed.add_field(
+                name=f"{index}. {edge.get('label') or 'Continue'}",
+                value=edge.get("description") or f"Continue to `{edge.get('target')}`.",
+                inline=False,
+            )
+        embed.set_footer(text="Choose with $campaign choose <number>")
+        return embed
+
+    async def _send_campaign_encounter(self, ctx, node: dict) -> None:
+        encounter = node.get("encounter") or {}
+        if not encounter or str(encounter.get("kind") or "none") == "none":
+            return
+        party = encounter.get("party") or {}
+        minimum = max(1, int(party.get("min") or 1))
+        maximum = max(minimum, int(party.get("max") or minimum))
+        embed = discord.Embed(
+            title=f"Encounter: {encounter.get('name') or node.get('title') or 'Campaign Battle'}",
+            description=str(encounter.get("description") or "This objective uses an existing battle mode."),
+            color=0x8B1E1E,
+        )
+        embed.add_field(name="Mode", value=str(encounter.get("kind") or "external_command").replace("_", " ").title())
+        embed.add_field(name="Party", value=f"{minimum}-{maximum} player(s)")
+        if encounter.get("monster"):
+            embed.add_field(name="Enemy", value=str(encounter["monster"]), inline=False)
+        if encounter.get("launch_command"):
+            embed.add_field(name="Begin", value=f"`{encounter['launch_command']}`", inline=False)
+        await ctx.send(embed=embed)
+
+    async def _enter_campaign_node(self, ctx, campaign: dict, node_id: str) -> None:
+        node = node_by_id(campaign, node_id)
+        if not node:
+            await ctx.send("This campaign points to a missing chapter. Ask a GM to validate its JSON.")
+            return
+
+        async with self.bot.pool.acquire() as conn:
+            allowed, reason = await self._evaluate_campaign_conditions(
+                ctx.author.id,
+                node.get("requirements") or [],
+                conn=conn,
+            )
+            status = "active" if node.get("type") == "quest" else "awaiting_choice"
+            await conn.execute(
+                """
+                UPDATE player_campaigns
+                SET current_node_key=$3, status=$4, updated_at=NOW()
+                WHERE user_id=$1 AND campaign_key=$2
+                """,
+                ctx.author.id,
+                campaign["key"],
+                node["id"],
+                status,
+            )
+        if not allowed:
+            await ctx.send(
+                f"**{node.get('title', 'Next Chapter')}** is now your next chapter, but it is locked:\n{reason}"
+            )
+            return
+
+        if node.get("type") == "ending":
+            async with self.bot.pool.acquire() as conn:
+                async with conn.transaction():
+                    messages = await self._apply_campaign_effects(
+                        ctx.author.id,
+                        campaign["key"],
+                        effects=node.get("effects") or [],
+                        unlocks=node.get("unlocks") or [],
+                        conn=conn,
+                    )
+                    await conn.execute(
+                        """
+                        UPDATE player_campaigns
+                        SET status='completed', completed_at=NOW(), updated_at=NOW()
+                        WHERE user_id=$1 AND campaign_key=$2
+                        """,
+                        ctx.author.id,
+                        campaign["key"],
+                    )
+            embed = discord.Embed(
+                title=node.get("title") or f"{campaign['title']} Complete",
+                description=node.get("description") or "Your campaign is complete.",
+                color=0x2F6B3F,
+            )
+            if messages:
+                embed.add_field(name="Consequences", value="\n".join(messages), inline=False)
+            await ctx.send(embed=embed)
+            return
+
+        if node.get("type") == "choice":
+            async with self.bot.pool.acquire() as conn:
+                edges = await self._available_campaign_edges(
+                    ctx.author.id,
+                    node.get("options") or [],
+                    conn=conn,
+                )
+            await ctx.send(embed=self._campaign_choice_embed(campaign, node, edges))
+            return
+
+        quest_key = self._campaign_quest_key(campaign, node)
+        try:
+            accept_data = await self._accept_quest_for_user(ctx.author.id, quest_key)
+        except ValueError as exc:
+            await ctx.send(f"Campaign chapter **{node.get('title')}** is ready: {exc}")
+            return
+        await self._send_quest_accept_messages(ctx, accept_data)
+        await self._send_campaign_encounter(ctx, node)
+
+    async def _advance_campaign_after_quest(self, ctx, custom_def: dict) -> None:
+        access = custom_def.get("access") or {}
+        campaign_key = normalize_campaign_key(access.get("campaign_key"))
+        node_key = normalize_campaign_key(access.get("campaign_node_key"))
+        if not campaign_key or not node_key:
+            return
+        campaign = await self._fetch_campaign_definition(campaign_key)
+        node = node_by_id(campaign or {}, node_key)
+        if not campaign or not node:
+            return
+
+        async with self.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                state = await conn.fetchrow(
+                    """
+                    SELECT status, current_node_key, history_json
+                    FROM player_campaigns
+                    WHERE user_id=$1 AND campaign_key=$2
+                    FOR UPDATE
+                    """,
+                    ctx.author.id,
+                    campaign_key,
+                )
+                if not state or state["current_node_key"] != node_key:
+                    return
+                history = list(self._load_progress(state["history_json"]) or [])
+                if node_key not in history:
+                    history.append(node_key)
+                consequence_messages = await self._apply_campaign_effects(
+                    ctx.author.id,
+                    campaign_key,
+                    effects=node.get("effects") or [],
+                    unlocks=node.get("unlocks") or [],
+                    conn=conn,
+                )
+                edges = await self._available_campaign_edges(
+                    ctx.author.id,
+                    node.get("next") or [],
+                    conn=conn,
+                )
+                await conn.execute(
+                    "UPDATE player_campaigns SET history_json=$3, updated_at=NOW() WHERE user_id=$1 AND campaign_key=$2",
+                    ctx.author.id,
+                    campaign_key,
+                    json.dumps(history),
+                )
+
+        if consequence_messages:
+            await ctx.send("\n".join(consequence_messages))
+        if not edges:
+            await ctx.send("This chapter has no available next path. A GM may need to review its conditions.")
+            return
+        if len(edges) > 1:
+            async with self.bot.pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE player_campaigns SET status='awaiting_choice', updated_at=NOW() WHERE user_id=$1 AND campaign_key=$2",
+                    ctx.author.id,
+                    campaign_key,
+                )
+            await ctx.send(embed=self._campaign_choice_embed(campaign, node, edges))
+            return
+        await self._enter_campaign_node(ctx, campaign, edges[0]["target"])
 
     def _load_custom_quest_definition(self, row) -> dict:
         if not row:
@@ -2601,6 +3215,13 @@ class Quests(commands.Cog):
     def _custom_reward_text(self, custom_def: dict) -> str:
         reward = custom_def.get("reward") or {}
         reward_type = str(reward.get("type") or "").lower()
+        if reward_type == "bundle":
+            parts = [
+                self._custom_reward_text({"reward": bundled_reward})
+                for bundled_reward in reward.get("rewards") or []
+                if isinstance(bundled_reward, dict)
+            ]
+            return " ".join(parts) if parts else "Reward bundle not configured yet."
         if reward_type == "money":
             return f"Receive **${int(reward.get('amount') or 0):,}**."
         if reward_type == "crate":
@@ -2691,6 +3312,170 @@ class Quests(commands.Cog):
         member_roles = [int(role_id) for role_id in member.get("roles", [])]
         return int(booster_role_id) in member_roles
 
+    def _condition_compare(self, actual, operator: str, expected) -> bool:
+        operator = str(operator or ">=").strip().lower()
+        if operator in {"=", "==", "is"}:
+            return str(actual).casefold() == str(expected).casefold()
+        if operator in {"!=", "is_not"}:
+            return str(actual).casefold() != str(expected).casefold()
+        if operator == "contains":
+            return str(expected).casefold() in str(actual).casefold()
+        try:
+            actual_number = float(actual)
+            expected_number = float(expected)
+        except (TypeError, ValueError):
+            return False
+        if operator == ">":
+            return actual_number > expected_number
+        if operator == "<":
+            return actual_number < expected_number
+        if operator == "<=":
+            return actual_number <= expected_number
+        return actual_number >= expected_number
+
+    async def _evaluate_campaign_condition(self, user_id: int, condition: dict, *, conn) -> tuple[bool, str]:
+        condition_type = str(condition.get("type") or "").strip().lower()
+        key = str(condition.get("key") or "").strip()
+        operator = str(condition.get("operator") or ">=").strip()
+        expected = condition.get("value", 1)
+        custom_description = str(condition.get("description") or "").strip()
+
+        profile = None
+        if condition_type in {
+            "level", "class", "god", "race", "money", "guild_member", "badge"
+        }:
+            profile = await conn.fetchrow(
+                'SELECT xp, money, "class", god, race, guild, badges FROM profile WHERE "user"=$1',
+                user_id,
+            )
+            if not profile:
+                return False, "Create a character first."
+
+        passed = False
+        default_text = f"Requirement not met: {condition_type} {key or expected}."
+        if condition_type == "quest_completed":
+            passed = await self.is_quest_completed(user_id, normalize_campaign_key(key), conn=conn)
+            default_text = f"Complete quest **{key}** first."
+        elif condition_type == "campaign_completed":
+            status = await conn.fetchval(
+                "SELECT status FROM player_campaigns WHERE user_id=$1 AND campaign_key=$2",
+                user_id,
+                normalize_campaign_key(key),
+            )
+            passed = status == "completed"
+            default_text = f"Complete campaign **{key}** first."
+        elif condition_type == "campaign_choice":
+            campaign_key, _, choice_key = key.partition(":")
+            choices_raw = await conn.fetchval(
+                "SELECT choices_json FROM player_campaigns WHERE user_id=$1 AND campaign_key=$2",
+                user_id,
+                normalize_campaign_key(campaign_key),
+            )
+            choices = self._load_progress(choices_raw)
+            passed = self._condition_compare(choices.get(choice_key), operator, expected)
+            default_text = f"Your earlier choice in **{campaign_key}** does not open this path."
+        elif condition_type == "reputation":
+            reputation = await conn.fetchrow(
+                "SELECT points, rank FROM player_reputation WHERE user_id=$1 AND reputation_key=$2",
+                user_id,
+                normalize_campaign_key(key),
+            )
+            actual = (reputation or {}).get("rank", 0) if str(condition.get("field") or "rank") == "rank" else (reputation or {}).get("points", 0)
+            passed = self._condition_compare(actual, operator, expected)
+            default_text = f"Reach reputation rank **{expected}** with **{key}**."
+        elif condition_type == "level":
+            actual = int(rpgtools.xptolevel(profile["xp"]))
+            passed = self._condition_compare(actual, operator, expected)
+            default_text = f"Reach level **{expected}**."
+        elif condition_type in {"class", "god", "race"}:
+            actual = profile[condition_type]
+            passed = self._condition_compare(actual, operator, key or expected)
+            default_text = f"Requires {condition_type} **{key or expected}**."
+        elif condition_type == "money":
+            passed = self._condition_compare(profile["money"], operator, expected)
+            default_text = f"Carry at least **${int(expected):,}**."
+        elif condition_type == "guild_member":
+            passed = bool(int(profile["guild"] or 0)) == bool(expected)
+            default_text = "Join a guild first."
+        elif condition_type in {"item_owned", "item_equipped"}:
+            equipped_only = condition_type == "item_equipped" or bool(condition.get("equipped"))
+            passed = bool(
+                await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM allitems ai
+                    JOIN inventory i ON i.item = ai.id
+                    WHERE ai.owner = $1
+                      AND (lower(ai.name) = lower($2) OR lower(ai.type::text) = lower($2))
+                      AND ($3 = FALSE OR i.equipped = TRUE)
+                    LIMIT 1
+                    """,
+                    user_id,
+                    key,
+                    equipped_only,
+                )
+            )
+            action = "Equip" if equipped_only else "Own"
+            default_text = f"{action} the item or weapon type **{key}**."
+        elif condition_type in {"pet_owned", "pet_equipped"}:
+            equipped_only = condition_type == "pet_equipped" or bool(condition.get("equipped"))
+            passed = bool(
+                await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM monster_pets
+                    WHERE user_id = $1
+                      AND (lower(name) = lower($2) OR lower(default_name) = lower($2))
+                      AND ($3 = FALSE OR equipped = TRUE)
+                    LIMIT 1
+                    """,
+                    user_id,
+                    key,
+                    equipped_only,
+                )
+            )
+            action = "Equip" if equipped_only else "Own"
+            default_text = f"{action} the pet **{key}**."
+        elif condition_type == "badge":
+            badge = Badge.from_string(key)
+            if badge and profile["badges"] is not None:
+                passed = bool(Badge.from_db(profile["badges"]) & badge)
+            default_text = f"Earn the **{Badge.display_name_for(key.upper())}** badge."
+        elif condition_type == "unlock":
+            rows = await conn.fetch(
+                "SELECT unlocks_json FROM player_campaigns WHERE user_id=$1",
+                user_id,
+            )
+            unlocks = {
+                str(unlock)
+                for row in rows
+                for unlock in (self._load_progress(row["unlocks_json"]) or [])
+            }
+            passed = key in unlocks
+            default_text = f"Unlock **{key}** first."
+
+        return passed, custom_description or default_text
+
+    async def _evaluate_campaign_conditions(self, user_id: int, conditions: list, *, conn=None) -> tuple[bool, str | None]:
+        local = conn is None
+        if local:
+            conn = await self.bot.pool.acquire()
+        try:
+            for condition in conditions or []:
+                if not isinstance(condition, dict):
+                    return False, "This content has an invalid requirement."
+                passed, failure_text = await self._evaluate_campaign_condition(
+                    user_id,
+                    condition,
+                    conn=conn,
+                )
+                if not passed:
+                    return False, failure_text
+            return True, None
+        finally:
+            if local:
+                await self.bot.pool.release(conn)
+
     async def _user_meets_custom_access(self, user_id: int, custom_def: dict, *, conn=None) -> tuple[bool, str | None]:
         access = custom_def.get("access") or {}
         event_flag = self._normalize_event_flag(access.get("event_flag"))
@@ -2711,6 +3496,27 @@ class Quests(commands.Cog):
         for prereq_key in prerequisites:
             if prereq_key and not await self.is_quest_completed(user_id, str(prereq_key), conn=conn):
                 return False, f"You must complete **{prereq_key}** first."
+        campaign_key = normalize_campaign_key(access.get("campaign_key"))
+        campaign_node_key = normalize_campaign_key(access.get("campaign_node_key"))
+        if campaign_key and campaign_node_key:
+            current_node = await conn.fetchval(
+                """
+                SELECT current_node_key
+                FROM player_campaigns
+                WHERE user_id=$1 AND campaign_key=$2 AND status='active'
+                """,
+                user_id,
+                campaign_key,
+            )
+            if current_node != campaign_node_key:
+                return False, "This quest is not your current campaign chapter."
+        conditions_ok, condition_reason = await self._evaluate_campaign_conditions(
+            user_id,
+            access.get("conditions") or [],
+            conn=conn,
+        )
+        if not conditions_ok:
+            return False, condition_reason
         return True, None
 
     async def _story_quest_visible_to_user(self, user_id: int, quest_def: QuestDef, *, conn=None) -> tuple[bool, str | None]:
@@ -2930,6 +3736,21 @@ class Quests(commands.Cog):
     async def _grant_custom_reward(self, user_id: int, custom_def: dict, *, conn) -> str:
         reward = custom_def.get("reward") or {}
         reward_type = str(reward.get("type") or "").lower()
+        if reward_type == "bundle":
+            granted = []
+            for bundled_reward in reward.get("rewards") or []:
+                if not isinstance(bundled_reward, dict) or str(bundled_reward.get("type") or "").lower() == "bundle":
+                    continue
+                granted.append(
+                    await self._grant_custom_reward(
+                        user_id,
+                        {"reward": bundled_reward},
+                        conn=conn,
+                    )
+                )
+            if not granted:
+                raise ValueError("Configured quest reward bundle is empty.")
+            return ", ".join(granted)
         if reward_type == "money":
             amount = int(reward.get("amount") or 0)
             await conn.execute(
@@ -3835,6 +4656,7 @@ class Quests(commands.Cog):
         source: str,
         *,
         candidate_names: tuple[str | None, ...] = (),
+        metadata: dict | None = None,
     ) -> None:
         notifications: list[tuple[dict, dict, int]] = []
         async with self.bot.pool.acquire() as conn:
@@ -3873,6 +4695,19 @@ class Quests(commands.Cog):
                         *candidate_names,
                     ):
                         continue
+                    access = custom_def.get("access") or {}
+                    campaign_key = normalize_campaign_key(access.get("campaign_key"))
+                    campaign_node_key = normalize_campaign_key(access.get("campaign_node_key"))
+                    if campaign_key and campaign_node_key:
+                        campaign = await self._fetch_campaign_definition(campaign_key, conn=conn)
+                        campaign_node = node_by_id(campaign or {}, campaign_node_key)
+                        encounter = (campaign_node or {}).get("encounter") or {}
+                        party = encounter.get("party") or {}
+                        party_size = int((metadata or {}).get("party_size") or 1)
+                        minimum_party = max(1, int(party.get("min") or 1))
+                        maximum_party = max(minimum_party, int(party.get("max") or minimum_party))
+                        if not minimum_party <= party_size <= maximum_party:
+                            continue
 
                     progress = self._load_progress(row["progress_json"])
                     progress["count"] = int(progress.get("count", 0)) + 1
@@ -3945,12 +4780,14 @@ class Quests(commands.Cog):
         source: str,
         *,
         candidate_names: tuple[str | None, ...] = (),
+        metadata: dict | None = None,
     ) -> bool:
         return await self.process_external_source_completion_for_user(
             ctx,
             getattr(ctx, "author", None),
             source,
             candidate_names=candidate_names,
+            metadata=metadata,
         )
 
     async def process_external_source_completion_for_user(
@@ -3960,6 +4797,7 @@ class Quests(commands.Cog):
         source: str,
         *,
         candidate_names: tuple[str | None, ...] = (),
+        metadata: dict | None = None,
     ) -> bool:
         normalized_source = self._normalize_source(source)
         if normalized_source is None or normalized_source == "none":
@@ -3973,6 +4811,7 @@ class Quests(commands.Cog):
             proxy_ctx,
             normalized_source,
             candidate_names=candidate_names,
+            metadata=metadata,
         )
         return True
 
@@ -4284,11 +5123,192 @@ class Quests(commands.Cog):
             await ctx.send(embed=embed)
             if custom_def.get("turnin_cutscene_key"):
                 await self.play_cutscene(ctx, custom_def["turnin_cutscene_key"])
+            await self._advance_campaign_after_quest(ctx, custom_def)
             if quest_key == "greg_finale":
                 if greg_badge_granted:
                     await ctx.send("**Gregapocalypse Survivor** has been added to your profile.")
                 elif greg_badge_already:
                     await ctx.send("Your Gregapocalypse badge was already on your profile.")
+
+    @commands.group(name="campaign", aliases=["chronicle"], invoke_without_command=True)
+    @has_char()
+    async def campaign(self, ctx):
+        state = await self.bot.pool.fetchrow(
+            """
+            SELECT pc.campaign_key, pc.status, pc.current_node_key, pc.history_json,
+                   cc.title, cc.campaign_json
+            FROM player_campaigns pc
+            JOIN campaign_content cc ON cc.campaign_key = pc.campaign_key
+            WHERE pc.user_id=$1 AND pc.status IN ('active', 'awaiting_choice')
+            ORDER BY pc.updated_at DESC
+            LIMIT 1
+            """,
+            ctx.author.id,
+        )
+        if not state:
+            campaigns = await self.bot.pool.fetch(
+                "SELECT campaign_key, title, description FROM campaign_content WHERE is_active=TRUE ORDER BY title LIMIT 10"
+            )
+            if not campaigns:
+                return await ctx.send("No campaigns are currently available.")
+            embed = discord.Embed(
+                title="Available Campaigns",
+                description="Start one with `$campaign start <key>`.",
+                color=0x5D2E12,
+            )
+            for available in campaigns:
+                embed.add_field(
+                    name=available["title"],
+                    value=f"`{available['campaign_key']}`\n{available['description'] or 'No description.'}",
+                    inline=False,
+                )
+            return await ctx.send(embed=embed)
+
+        campaign = self._load_progress(state["campaign_json"])
+        node = node_by_id(campaign, state["current_node_key"])
+        if not node:
+            return await ctx.send("Your campaign is pointing at a missing node. Please notify a GM.")
+        embed = discord.Embed(
+            title=state["title"],
+            description=node.get("description") or "Your story continues.",
+            color=0x5D2E12,
+        )
+        embed.add_field(name="Current Chapter", value=node.get("title") or node["id"], inline=False)
+        embed.add_field(name="Progress", value=f"{len(self._load_progress(state['history_json']) or [])} chapter(s) completed")
+        if state["status"] == "awaiting_choice":
+            edges = node.get("options") if node.get("type") == "choice" else node.get("next")
+            embed.add_field(
+                name="Decision",
+                value="\n".join(f"{index}. {edge.get('label', 'Continue')}" for index, edge in enumerate(edges or [], 1)),
+                inline=False,
+            )
+            embed.set_footer(text="Choose with $campaign choose <number>")
+        elif node.get("type") == "quest":
+            quest_key = self._campaign_quest_key(campaign, node)
+            embed.add_field(name="Quest", value=f"`$quests` or `$quests turnin {quest_key}`", inline=False)
+            encounter = node.get("encounter") or {}
+            if encounter.get("launch_command"):
+                embed.add_field(name="Encounter", value=f"`{encounter['launch_command']}`", inline=False)
+        else:
+            edges = node.get("options") or node.get("next") or []
+            embed.add_field(
+                name="Decision",
+                value="\n".join(f"{index}. {edge.get('label', 'Continue')}" for index, edge in enumerate(edges, 1)),
+                inline=False,
+            )
+            embed.set_footer(text="Choose with $campaign choose <number>")
+        await ctx.send(embed=embed)
+
+    @campaign.command(name="start", aliases=["begin"])
+    @has_char()
+    async def campaign_start(self, ctx, campaign_key: str):
+        campaign_key = normalize_campaign_key(campaign_key)
+        async with self.bot.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT campaign_json, is_active FROM campaign_content WHERE campaign_key=$1",
+                campaign_key,
+            )
+            if not row or not row["is_active"]:
+                return await ctx.send("That campaign is not currently available.")
+            existing = await conn.fetchrow(
+                "SELECT status FROM player_campaigns WHERE user_id=$1 AND campaign_key=$2",
+                ctx.author.id,
+                campaign_key,
+            )
+            if existing:
+                if existing["status"] == "completed":
+                    return await ctx.send("You have already completed that campaign.")
+                return await ctx.send("That campaign is already in progress. Use `$campaign` to continue it.")
+            campaign = self._load_progress(row["campaign_json"])
+            start_node = node_by_id(campaign, campaign.get("start_node"))
+            if not start_node:
+                return await ctx.send("That campaign has an invalid starting node.")
+            allowed, reason = await self._evaluate_campaign_conditions(
+                ctx.author.id,
+                campaign.get("requirements") or [],
+                conn=conn,
+            )
+            if not allowed:
+                return await ctx.send(reason or "You do not meet this campaign's requirements.")
+            await conn.execute(
+                """
+                INSERT INTO player_campaigns (
+                    user_id, campaign_key, status, current_node_key,
+                    history_json, choices_json, unlocks_json, started_at, updated_at
+                ) VALUES ($1,$2,'active',$3,'[]','{}','[]',NOW(),NOW())
+                """,
+                ctx.author.id,
+                campaign_key,
+                campaign["start_node"],
+            )
+        await ctx.send(f"You began **{campaign['title']}**.")
+        await self._enter_campaign_node(ctx, campaign, campaign["start_node"])
+
+    @campaign.command(name="choose", aliases=["choice"])
+    @has_char()
+    async def campaign_choose(self, ctx, option: int):
+        async with self.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                state = await conn.fetchrow(
+                    """
+                    SELECT pc.campaign_key, pc.current_node_key, pc.choices_json, cc.campaign_json
+                    FROM player_campaigns pc
+                    JOIN campaign_content cc ON cc.campaign_key=pc.campaign_key
+                    WHERE pc.user_id=$1 AND pc.status='awaiting_choice'
+                    ORDER BY pc.updated_at DESC
+                    LIMIT 1
+                    FOR UPDATE OF pc
+                    """,
+                    ctx.author.id,
+                )
+                if not state:
+                    return await ctx.send("You do not currently have a campaign decision waiting.")
+                campaign = self._load_progress(state["campaign_json"])
+                node = node_by_id(campaign, state["current_node_key"])
+                if not node:
+                    return await ctx.send("This campaign choice points to a missing node.")
+                raw_edges = node.get("options") if node.get("type") == "choice" else node.get("next")
+                edges = await self._available_campaign_edges(ctx.author.id, raw_edges or [], conn=conn)
+                if option < 1 or option > len(edges):
+                    return await ctx.send(f"Choose a number from 1 to {len(edges)}.")
+                edge = edges[option - 1]
+                choices = self._load_progress(state["choices_json"])
+                choices[node["id"]] = edge["target"]
+                await conn.execute(
+                    "UPDATE player_campaigns SET choices_json=$3, updated_at=NOW() WHERE user_id=$1 AND campaign_key=$2",
+                    ctx.author.id,
+                    state["campaign_key"],
+                    json.dumps(choices, sort_keys=True),
+                )
+                consequence_messages = await self._apply_campaign_effects(
+                    ctx.author.id,
+                    state["campaign_key"],
+                    effects=edge.get("effects") or [],
+                    unlocks=edge.get("unlocks") or [],
+                    conn=conn,
+                )
+        await ctx.send(f"You chose **{edge.get('label') or 'Continue'}**.")
+        if consequence_messages:
+            await ctx.send("\n".join(consequence_messages))
+        await self._enter_campaign_node(ctx, campaign, edge["target"])
+
+    @campaign.command(name="reputation", aliases=["rep"])
+    @has_char()
+    async def campaign_reputation(self, ctx):
+        rows = await self.bot.pool.fetch(
+            "SELECT reputation_key, points, rank FROM player_reputation WHERE user_id=$1 ORDER BY rank DESC, points DESC, reputation_key",
+            ctx.author.id,
+        )
+        if not rows:
+            return await ctx.send("You have not earned reputation with any faction yet.")
+        embed = discord.Embed(title="Reputation", color=0x5D2E12)
+        for row in rows[:20]:
+            embed.add_field(
+                name=str(row["reputation_key"]).replace("_", " ").title(),
+                value=f"Rank **{row['rank']}** | **{row['points']}** points",
+                inline=True,
+            )
+        await ctx.send(embed=embed)
 
     @quests.command(name="abandon", aliases=["cancel", "drop"])
     @has_char()
@@ -4375,6 +5395,53 @@ class Quests(commands.Cog):
             repeatable = "repeatable" if custom_def["repeatable"] else "one-time"
             lines.append(f"`{custom_def['quest_key']}` - **{custom_def['name']}** ({custom_def['category']}, {state}, {repeatable})")
         await ctx.send("Custom quests:\n" + "\n".join(lines))
+
+    @gmquest.command(name="export", aliases=["download"])
+    async def gmquest_export(self, ctx):
+        package = await self._build_campaign_export_package()
+        payload = json.dumps(package, indent=2, ensure_ascii=True).encode("utf-8")
+        filename = f"fablereborn-content-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.json"
+        await ctx.send(
+            content=(
+                "Import this file into `assets/html/campaign_editor.html`. "
+                "It contains campaigns, standalone quests, cutscenes, monsters, and editor references."
+            ),
+            file=discord.File(io.BytesIO(payload), filename=filename),
+        )
+
+    @gmquest.command(name="import", aliases=["upload"])
+    async def gmquest_import(self, ctx):
+        attachments = list(getattr(ctx.message, "attachments", []) or [])
+        if not attachments:
+            return await ctx.send("Attach a JSON file exported by the campaign editor to `$gmquest import`.")
+        attachment = attachments[0]
+        if not str(attachment.filename).lower().endswith(".json"):
+            return await ctx.send("The attached content package must be a `.json` file.")
+        if int(getattr(attachment, "size", 0) or 0) > 8 * 1024 * 1024:
+            return await ctx.send("That content package is larger than 8 MB.")
+        try:
+            raw = await attachment.read()
+            package = json.loads(raw.decode("utf-8-sig"))
+            summary = await self._import_campaign_package(
+                package,
+                created_by=ctx.author.id,
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return await ctx.send("That attachment is not valid UTF-8 JSON.")
+        except CampaignPackageError as exc:
+            details = "\n".join(f"- {error}" for error in exc.errors[:12])
+            if len(exc.errors) > 12:
+                details += f"\n- ...and {len(exc.errors) - 12} more error(s)."
+            return await ctx.send(f"Import rejected:\n{details}")
+        except Exception as exc:
+            return await ctx.send(f"Import failed before any changes were committed: `{exc}`")
+        await ctx.send(
+            "Content imported successfully:\n"
+            f"- Campaigns: **{summary['campaigns']}**\n"
+            f"- Quests: **{summary['quests']}**\n"
+            f"- Cutscenes: **{summary['cutscenes']}**\n"
+            f"- Custom monsters: **{summary['monsters']}**"
+        )
 
     @gmquest.command(name="create")
     async def gmquest_create(self, ctx, *, data: str):
