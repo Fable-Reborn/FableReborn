@@ -9613,6 +9613,27 @@ class Battles(commands.Cog):
 
     async def _build_dragon_party_payload(self, ctx, party_members):
         """Build the rendered party card and its minimal Discord embed."""
+        try:
+            return await self._build_dragon_party_payload_impl(ctx, party_members)
+        except Exception as exc:
+            logger.exception("Ice Dragon party payload failed")
+            embed = discord.Embed(
+                title="Ice Dragon Party Error",
+                description=(
+                    "The party card could not be loaded. The error was logged; "
+                    "try the command again after it is fixed."
+                ),
+                color=discord.Color.red(),
+            )
+            embed.add_field(
+                name="Error",
+                value=f"`{type(exc).__name__}: {str(exc)[:700]}`",
+                inline=False,
+            )
+            return embed, None
+
+    async def _build_dragon_party_payload_impl(self, ctx, party_members):
+        """Build a party payload, allowing the public wrapper to report failures."""
         progress = await self.battle_factory.dragon_ext.get_dragon_stats_from_database(
             self.bot
         )
@@ -9703,11 +9724,51 @@ class Battles(commands.Cog):
             )
             return embed, None
 
-        filename = "ice_dragon_party.png"
+        filename = "ice_dragon_party.jpg"
         embed = discord.Embed(color=0x87CEEB)
         embed.set_image(url=f"attachment://{filename}")
         embed.set_footer(text="Party formation closes after 120 seconds")
         return embed, discord.File(card_buffer, filename=filename)
+
+    async def _report_dragon_party_error(
+        self,
+        ctx,
+        stage,
+        error,
+        interaction=None,
+    ):
+        """Log a party-menu failure and make it visible to Discord users."""
+        logger.error(
+            "Ice Dragon party failed during %s",
+            stage,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        traceback_text = "".join(
+            traceback.format_exception(type(error), error, error.__traceback__)
+        )
+        header = (
+            f"⚠️ Ice Dragon party error during **{stage}**: "
+            f"`{type(error).__name__}: {str(error)[:350]}`"
+        )
+        traceback_budget = max(0, 1900 - len(header))
+        traceback_tail = traceback_text[-traceback_budget:]
+        message = f"{header}\n```py\n{traceback_tail}\n```"
+
+        if interaction is not None:
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(message, ephemeral=True)
+                else:
+                    await interaction.response.send_message(message, ephemeral=True)
+                return
+            except Exception:
+                logger.exception("Failed to report Ice Dragon interaction error")
+
+        send_callable = getattr(ctx, "_battle_original_send", ctx.send)
+        try:
+            await send_callable(message)
+        except Exception:
+            logger.exception("Failed to send Ice Dragon party error to Discord")
     
     @dragon_challenge.command(name="party", aliases=["p"])
     @has_char()
@@ -9718,11 +9779,16 @@ class Battles(commands.Cog):
         **Aliases**: `p`
         """
         ctx = self._guard_battle_context(ctx)
+        view = None
+        message = None
         try:
             # Check if the user is already in a party
             if any(view.is_complete is False and ctx.author in view.party_members 
                 for view in self.dragon_party_views):
-                return await ctx.send("You are already in a party formation!")
+                return await self._send_with_retry(
+                    ctx,
+                    content="You are already in a party formation!",
+                )
                 
             # Create party formation view
             class DragonPartyView(discord.ui.View):
@@ -9778,7 +9844,11 @@ class Battles(commands.Cog):
                     if len(self.party_members) < 4:
                         await interaction.response.defer(ephemeral=True)
                         self.party_members.append(interaction.user)
-                        await self.refresh_message(interaction.message)
+                        try:
+                            await self.refresh_message(interaction.message)
+                        except Exception:
+                            self.party_members.remove(interaction.user)
+                            raise
                         await interaction.followup.send(
                             "You have joined the party!",
                             ephemeral=True,
@@ -9798,8 +9868,13 @@ class Battles(commands.Cog):
                         
                     # Remove user from party
                     await interaction.response.defer(ephemeral=True)
+                    member_index = self.party_members.index(interaction.user)
                     self.party_members.remove(interaction.user)
-                    await self.refresh_message(interaction.message)
+                    try:
+                        await self.refresh_message(interaction.message)
+                    except Exception:
+                        self.party_members.insert(member_index, interaction.user)
+                        raise
                     await interaction.followup.send(
                         "You have left the party!",
                         ephemeral=True,
@@ -9843,14 +9918,8 @@ class Battles(commands.Cog):
                         )
                         try:
                             await self.ctx.send(embed=warning_embed, delete_after=10)
-                        except Exception as e:
-                            print(f"Error sending warning message: {e}")
-                
-                async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item):
-                    if self._timeout_task:
-                        self._timeout_task.cancel()
-                        self._timeout_task = None
-                    await super().on_error(interaction, error, item)
+                        except Exception:
+                            logger.exception("Failed to send Ice Dragon party warning")
                 
                 def stop(self):
                     # Cancel any pending warning task
@@ -9859,29 +9928,36 @@ class Battles(commands.Cog):
                     super().stop()
                 
                 async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item):
-                    # Cancel warning task on error
                     if hasattr(self, '_warning_task') and self._warning_task:
                         self._warning_task.cancel()
-                    await super().on_error(interaction, error, item)
+                    item_name = getattr(item, "label", None) or type(item).__name__
+                    await self.cog._report_dragon_party_error(
+                        self.ctx,
+                        f"{item_name} button",
+                        error,
+                        interaction=interaction,
+                    )
             
             # Create and send the party view
             view = DragonPartyView(self)
-            party_embed, party_file = await view.build_payload()
-            send_kwargs = {
-                "embed": party_embed,
-                "view": view,
-                "suppress_failure": True,
-            }
-            if party_file:
-                send_kwargs["file"] = party_file
+            self.dragon_party_views.append(view)
             message = await self._send_with_retry(
                 ctx,
-                **send_kwargs,
+                content="❄️ Preparing the Ice Dragon party card...",
             )
-            if message is None:
-                await self.bot.reset_cooldown(ctx)
-                return
-            view.message = message  # Store message reference
+            view.message = message
+
+            party_embed, party_file = await view.build_payload()
+            edit_kwargs = {
+                "content": None,
+                "embed": party_embed,
+                "view": view,
+                "attachments": [party_file] if party_file else [],
+            }
+            await self._edit_message_with_retry(
+                message,
+                **edit_kwargs,
+            )
             # Start the warning timer
             view._warning_task = asyncio.create_task(view.start_warning_timer())
             
@@ -10001,8 +10077,55 @@ class Battles(commands.Cog):
                     suppress_failure=True,
                 )
                 await self.bot.reset_cooldown(ctx)
-        except Exception as e:
-            await self._send_with_retry(ctx, content=str(e), suppress_failure=True)
+        except Exception as exc:
+            try:
+                await self.bot.reset_cooldown(ctx)
+            except Exception:
+                logger.exception("Failed to reset cooldown after Ice Dragon party error")
+            await self._report_dragon_party_error(ctx, "party menu", exc)
+            if message is not None:
+                try:
+                    await message.edit(
+                        content="The Ice Dragon party menu crashed. The error was logged.",
+                        embed=None,
+                        attachments=[],
+                        view=None,
+                    )
+                except Exception:
+                    logger.exception("Failed to replace crashed Ice Dragon party menu")
+        finally:
+            if view in self.dragon_party_views:
+                self.dragon_party_views.remove(view)
+
+    @dragon_party.error
+    async def dragon_party_error(self, ctx, error):
+        """Make failures from checks and cooldown decorators visible."""
+        send_callable = getattr(ctx, "_battle_original_send", ctx.send)
+        try:
+            if isinstance(error, commands.CommandOnCooldown):
+                retry_after = max(0, int(error.retry_after))
+                await send_callable(
+                    f"The Ice Dragon party command is on cooldown. "
+                    f"Try again in {datetime.timedelta(seconds=retry_after)}."
+                )
+                return
+
+            if isinstance(error, commands.CheckFailure):
+                if type(error).__name__ == "NoCharacter":
+                    message = "You need a character before creating an Ice Dragon party."
+                else:
+                    message = str(error) or "You cannot create an Ice Dragon party right now."
+                await send_callable(message)
+                return
+
+            actual_error = getattr(error, "original", error)
+            await self._report_dragon_party_error(
+                ctx,
+                "command checks or invocation",
+                actual_error,
+            )
+        except Exception:
+            logger.exception("Ice Dragon party command error handler failed")
     
     async def _get_ice_dragon_drops(self):
         async with self.bot.pool.acquire() as conn:

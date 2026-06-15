@@ -30,6 +30,16 @@ GOLD = (255, 218, 132, 255)
 DARK = (2, 10, 20, 255)
 
 
+@lru_cache(maxsize=1)
+def _load_template():
+    """Decode the static background once; each render draws on a cheap copy."""
+    if not TEMPLATE_PATH.exists():
+        raise FileNotFoundError(f"Missing Ice Dragon template: {TEMPLATE_PATH}")
+
+    with Image.open(TEMPLATE_PATH) as template:
+        return template.convert("RGB")
+
+
 @lru_cache(maxsize=128)
 def _font(size, display=False):
     if display and DISPLAY_FONT_PATH.exists():
@@ -333,11 +343,7 @@ def _draw_player(draw, player_panel, pet_panel, player, index):
 
 
 def render_dragon_party_card(dragon, party_members):
-    if not TEMPLATE_PATH.exists():
-        raise FileNotFoundError(f"Missing Ice Dragon template: {TEMPLATE_PATH}")
-
-    with Image.open(TEMPLATE_PATH) as template:
-        image = template.convert("RGBA")
+    image = _load_template().copy()
 
     draw = ImageDraw.Draw(image, "RGBA")
     _draw_boss_panel(draw, dragon)
@@ -359,6 +365,13 @@ def render_dragon_party_card(dragon, party_members):
             _draw_open_slot(draw, player_panel, pet_panel, index)
 
     output = BytesIO()
-    image.convert("RGB").save(output, format="PNG", optimize=True)
+    image.save(
+        output,
+        format="JPEG",
+        quality=90,
+        subsampling=0,
+        optimize=False,
+        progressive=False,
+    )
     output.seek(0)
     return output

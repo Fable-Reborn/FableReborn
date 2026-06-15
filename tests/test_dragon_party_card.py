@@ -53,8 +53,26 @@ class TestDragonPartyCard(unittest.TestCase):
         template = Image.open(self.renderer.TEMPLATE_PATH).convert("RGB")
 
         self.assertEqual((1672, 941), rendered.size)
+        self.assertEqual("JPEG", Image.open(rendered_buffer).format)
         self.assertIsNotNone(ImageChops.difference(template, rendered).getbbox())
-        self.assertGreater(len(rendered_buffer.getvalue()), 500_000)
+        self.assertLess(len(rendered_buffer.getvalue()), 1_000_000)
+
+    def test_template_decode_is_cached_between_renders(self):
+        self.renderer._load_template.cache_clear()
+        dragon = {
+            "name": "Polar Vortex",
+            "level": 32,
+            "hp": 43050,
+            "damage": 1189,
+            "armor": 902,
+        }
+
+        self.renderer.render_dragon_party_card(dragon, [])
+        self.renderer.render_dragon_party_card(dragon, [])
+
+        cache_info = self.renderer._load_template.cache_info()
+        self.assertEqual(1, cache_info.misses)
+        self.assertEqual(1, cache_info.hits)
 
     def test_long_text_is_ellipsized_to_the_requested_width(self):
         canvas = Image.new("RGB", (400, 100))
