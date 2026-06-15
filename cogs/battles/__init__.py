@@ -32,6 +32,7 @@ from classes.badges import Badge
 from .core.battle import Battle
 from .core.team import Team
 from .core.combatant import Combatant
+from .dragon_party_card import render_dragon_party_card
 from .types.tower import TowerBattle
 from classes.classes import from_string as class_from_string
 from classes.converters import IntGreaterThan
@@ -9610,8 +9611,8 @@ class Battles(commands.Cog):
 
         return " / ".join(class_lines) if class_lines else "Adventurer"
 
-    async def _build_dragon_party_embed(self, ctx, party_members):
-        """Build the live target and party stat preview for dragon battles."""
+    async def _build_dragon_party_payload(self, ctx, party_members):
+        """Build the rendered party card and its minimal Discord embed."""
         progress = await self.battle_factory.dragon_ext.get_dragon_stats_from_database(
             self.bot
         )
@@ -9658,58 +9659,55 @@ class Battles(commands.Cog):
                 )
             )
 
-        format_stat = self._format_dragon_party_stat
-        embed = discord.Embed(
-            title="❄️ Ice Dragon Hunting Party",
-            description="Review the matchup, then launch the challenge.",
-            color=0x87CEEB,
-        )
-        embed.add_field(
-            name=f"🐉 Target | Level {dragon['level']} {dragon['name']}",
-            value=(
-                f"**HP** {format_stat(dragon['hp'])}  |  "
-                f"**ATK** {format_stat(dragon['damage'])}  |  "
-                f"**DEF** {format_stat(dragon['armor'])}"
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name=f"⚔️ Hunters | {len(party_members)}/4 Ready",
-            value="Players and their equipped pets",
-            inline=False,
-        )
-
-        for index, stats in enumerate(party_stats, start=1):
+        rendered_party = []
+        for stats in party_stats:
             member, player, pet, level, classes, pet_level = stats
-            leader_marker = " [Leader]" if member.id == ctx.author.id else ""
-            value = (
-                "**Player Stats**\n"
-                f"> **ATK** {format_stat(player.damage)}  |  "
-                f"**DEF** {format_stat(player.armor)}  |  "
-                f"**HP** {format_stat(player.max_hp)}"
+            rendered_party.append(
+                {
+                    "name": member.display_name,
+                    "leader": member.id == ctx.author.id,
+                    "level": level,
+                    "class": self._dragon_party_class_label(classes),
+                    "attack": player.damage,
+                    "defense": player.armor,
+                    "hp": player.max_hp,
+                    "pet": (
+                        {
+                            "name": pet.name,
+                            "level": pet_level,
+                            "attack": pet.damage,
+                            "defense": pet.armor,
+                            "hp": pet.max_hp,
+                        }
+                        if pet
+                        else None
+                    ),
+                }
             )
-            if pet:
-                value += (
-                    f"\n\n🐾 **Equipped Pet · {pet.name} · Lv. {pet_level}**\n"
-                    f"> **ATK** {format_stat(pet.damage)}  |  "
-                    f"**DEF** {format_stat(pet.armor)}  |  "
-                    f"**HP** {format_stat(pet.max_hp)}"
-                )
-            else:
-                value += "\n\n🐾 **Equipped Pet**\n> *No pet equipped*"
 
-            # Full-width fields keep every player visually separated.
-            embed.add_field(
-                name=(
-                    f"⚔️ {index}. {member.display_name}{leader_marker}  |  "
-                    f"Lv. {level}  |  {self._dragon_party_class_label(classes)}"
+        try:
+            card_buffer = await asyncio.to_thread(
+                render_dragon_party_card,
+                dragon,
+                rendered_party,
+            )
+        except Exception:
+            logger.exception("Failed to render the Ice Dragon party card")
+            embed = discord.Embed(
+                title="Ice Dragon Hunting Party",
+                description=(
+                    f"Dragon Level {dragon['level']} | "
+                    f"{len(party_members)}/4 hunters ready"
                 ),
-                value=value,
-                inline=False,
+                color=0x87CEEB,
             )
+            return embed, None
 
+        filename = "ice_dragon_party.png"
+        embed = discord.Embed(color=0x87CEEB)
+        embed.set_image(url=f"attachment://{filename}")
         embed.set_footer(text="Party formation closes after 120 seconds")
-        return embed
+        return embed, discord.File(card_buffer, filename=filename)
     
     @dragon_challenge.command(name="party", aliases=["p"])
     @has_char()
@@ -9755,11 +9753,16 @@ class Battles(commands.Cog):
                         )
                     return bool(linked)
                     
-                async def update_embed(self):
-                    return await self.cog._build_dragon_party_embed(
+                async def build_payload(self):
+                    return await self.cog._build_dragon_party_payload(
                         self.ctx,
                         self.party_members,
                     )
+
+                async def refresh_message(self, message):
+                    embed, card_file = await self.build_payload()
+                    attachments = [card_file] if card_file else []
+                    await message.edit(embed=embed, attachments=attachments, view=self)
                     
                 @discord.ui.button(label="Join Party", style=discord.ButtonStyle.primary, emoji="⚔️")
                 async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -9775,7 +9778,7 @@ class Battles(commands.Cog):
                     if len(self.party_members) < 4:
                         await interaction.response.defer(ephemeral=True)
                         self.party_members.append(interaction.user)
-                        await interaction.message.edit(embed=await self.update_embed())
+                        await self.refresh_message(interaction.message)
                         await interaction.followup.send(
                             "You have joined the party!",
                             ephemeral=True,
@@ -9796,7 +9799,7 @@ class Battles(commands.Cog):
                     # Remove user from party
                     await interaction.response.defer(ephemeral=True)
                     self.party_members.remove(interaction.user)
-                    await interaction.message.edit(embed=await self.update_embed())
+                    await self.refresh_message(interaction.message)
                     await interaction.followup.send(
                         "You have left the party!",
                         ephemeral=True,
@@ -9863,11 +9866,17 @@ class Battles(commands.Cog):
             
             # Create and send the party view
             view = DragonPartyView(self)
+            party_embed, party_file = await view.build_payload()
+            send_kwargs = {
+                "embed": party_embed,
+                "view": view,
+                "suppress_failure": True,
+            }
+            if party_file:
+                send_kwargs["file"] = party_file
             message = await self._send_with_retry(
                 ctx,
-                embed=await view.update_embed(),
-                view=view,
-                suppress_failure=True,
+                **send_kwargs,
             )
             if message is None:
                 await self.bot.reset_cooldown(ctx)
@@ -9886,6 +9895,7 @@ class Battles(commands.Cog):
                     content="Party formed! Starting the challenge...",
                     embed=None,
                     view=None,
+                    attachments=[],
                     suppress_failure=True,
                 )
                 
