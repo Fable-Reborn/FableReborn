@@ -2312,9 +2312,55 @@ class Quests(commands.Cog):
                 )
                 """
             )
+            await self._migrate_campaign_tables(conn)
             await self._seed_default_cutscenes(conn)
             await self._attach_default_greg_finale_cutscene(conn)
             await self._remove_legacy_greg_quest_data(conn)
+
+    async def _migrate_campaign_tables(self, conn):
+        """Bring existing campaign tables up to the schema expected by this cog."""
+        migrations = (
+            "ALTER TABLE campaign_content ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE campaign_content ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE campaign_content ADD COLUMN IF NOT EXISTS start_node_key TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE campaign_content ADD COLUMN IF NOT EXISTS campaign_json TEXT NOT NULL DEFAULT '{}'",
+            "ALTER TABLE campaign_content ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE campaign_content ADD COLUMN IF NOT EXISTS created_by BIGINT",
+            "ALTER TABLE campaign_content ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+            "ALTER TABLE player_campaigns ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'",
+            "ALTER TABLE player_campaigns ADD COLUMN IF NOT EXISTS current_node_key TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE player_campaigns ADD COLUMN IF NOT EXISTS history_json TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE player_campaigns ADD COLUMN IF NOT EXISTS choices_json TEXT NOT NULL DEFAULT '{}'",
+            "ALTER TABLE player_campaigns ADD COLUMN IF NOT EXISTS unlocks_json TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE player_campaigns ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+            "ALTER TABLE player_campaigns ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+            "ALTER TABLE player_campaigns ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ",
+            "ALTER TABLE player_reputation ADD COLUMN IF NOT EXISTS points INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE player_reputation ADD COLUMN IF NOT EXISTS rank INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE player_reputation ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+            "ALTER TABLE content_monsters ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE content_monsters ADD COLUMN IF NOT EXISTS tier INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE content_monsters ADD COLUMN IF NOT EXISTS hp INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE content_monsters ADD COLUMN IF NOT EXISTS attack INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE content_monsters ADD COLUMN IF NOT EXISTS defense INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE content_monsters ADD COLUMN IF NOT EXISTS element TEXT NOT NULL DEFAULT 'Nature'",
+            "ALTER TABLE content_monsters ADD COLUMN IF NOT EXISTS url TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE content_monsters ADD COLUMN IF NOT EXISTS tags_json TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE content_monsters ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+        )
+        for statement in migrations:
+            await conn.execute(statement)
+
+        indexes = (
+            "CREATE INDEX IF NOT EXISTS campaign_content_active_idx ON campaign_content (is_active, title)",
+            "CREATE INDEX IF NOT EXISTS player_campaigns_user_status_idx ON player_campaigns (user_id, status, updated_at DESC)",
+            "CREATE INDEX IF NOT EXISTS player_reputation_user_rank_idx ON player_reputation (user_id, rank DESC, points DESC)",
+            "CREATE INDEX IF NOT EXISTS content_monsters_tier_name_idx ON content_monsters (tier, name)",
+            "CREATE INDEX IF NOT EXISTS player_quests_user_status_idx ON player_quests (user_id, status)",
+            "CREATE INDEX IF NOT EXISTS custom_quests_active_category_idx ON custom_quests (is_active, category, quest_key)",
+        )
+        for statement in indexes:
+            await conn.execute(statement)
 
     async def _seed_default_cutscenes(self, conn):
         for cutscene_key, definition in DEFAULT_CUTSCENE_DEFINITIONS.items():
