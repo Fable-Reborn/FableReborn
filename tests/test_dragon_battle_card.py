@@ -4,6 +4,7 @@ import importlib.util
 import time
 import types
 import unittest
+from io import BytesIO
 from pathlib import Path
 
 from PIL import Image, ImageChops
@@ -142,3 +143,107 @@ class TestDragonBattleCard(unittest.TestCase):
         self.assertTrue(result)
         self.assertGreaterEqual(elapsed, 0.09)
         self.assertLess(elapsed, 0.14)
+
+    def test_image_card_publishes_once_per_full_round_and_at_finish(self):
+        should_publish = _load_dragon_method("_should_publish_battle_card", {})
+
+        battle = types.SimpleNamespace(
+            battle_message=object(),
+            finished=False,
+            current_turn=1,
+            _last_image_card_turn=0,
+        )
+        self.assertFalse(should_publish(battle))
+
+        battle.current_turn = 2
+        self.assertTrue(should_publish(battle))
+
+        battle._last_image_card_turn = 2
+        self.assertFalse(should_publish(battle))
+
+        battle.current_turn = 3
+        battle.finished = True
+        self.assertTrue(should_publish(battle))
+
+    def test_mobile_summary_contains_hp_and_latest_log(self):
+        summary_builder = _load_dragon_method("_battle_card_mobile_summary", {})
+        summary = summary_builder(self.battle_data())
+
+        self.assertIn("Turn 55", summary)
+        self.assertIn("Dragon: **43%**", summary)
+        self.assertIn("Lunar 67%", summary)
+        self.assertIn("Frozen Cataclysm", summary)
+
+    def test_new_card_is_sent_before_previous_card_is_deleted(self):
+        real_asyncio = asyncio
+
+        class OldMessage:
+            def __init__(self):
+                self.deleted = False
+
+            async def delete(self):
+                self.deleted = True
+
+        class FakeFile:
+            def __init__(self, fp, filename):
+                self.fp = fp
+                self.filename = filename
+
+        class FakeDiscord:
+            File = FakeFile
+
+            class NotFound(Exception):
+                pass
+
+            class Forbidden(Exception):
+                pass
+
+            class HTTPException(Exception):
+                pass
+
+        async def to_thread(function, *args):
+            return function(*args)
+
+        fake_asyncio = types.SimpleNamespace(to_thread=to_thread)
+        publish = _load_dragon_method(
+            "_publish_battle_card",
+            {
+                "asyncio": fake_asyncio,
+                "render_dragon_battle_card": lambda _data: BytesIO(b"jpeg"),
+                "discord": FakeDiscord,
+                "BytesIO": BytesIO,
+                "logger": types.SimpleNamespace(exception=lambda *args, **kwargs: None),
+            },
+        )
+        old_message = OldMessage()
+        new_message = object()
+
+        class FakeBattle:
+            battle_message = old_message
+            battle_id = "test-battle-id"
+            current_turn = 2
+            _last_image_card_turn = 0
+
+            def _should_publish_battle_card(self):
+                return True
+
+            def _build_battle_card_data(self):
+                return TestDragonBattleCard.battle_data()
+
+            def _battle_card_mobile_summary(self, _data):
+                return "mobile summary"
+
+            async def send_with_retry(self, **kwargs):
+                self.sent_kwargs = kwargs
+                self.old_was_deleted_at_send = old_message.deleted
+                return new_message
+
+        battle = FakeBattle()
+        result = real_asyncio.run(publish(battle))
+
+        self.assertIs(new_message, result)
+        self.assertFalse(battle.old_was_deleted_at_send)
+        self.assertTrue(old_message.deleted)
+        self.assertIn("mobile summary", battle.sent_kwargs["content"])
+        self.assertIn("Battle ID:", battle.sent_kwargs["content"])
+        self.assertNotIn("embed", battle.sent_kwargs)

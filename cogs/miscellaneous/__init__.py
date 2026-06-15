@@ -164,7 +164,12 @@ class DailyRewardChoiceView(discord.ui.View):
             self.add_item(button)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.ctx.author.id:
+        allowed_user_ids = {self.ctx.author.id}
+        alt_invoker_id = getattr(self.ctx, "alt_invoker_id", None)
+        if alt_invoker_id is not None:
+            allowed_user_ids.add(int(alt_invoker_id))
+
+        if interaction.user.id in allowed_user_ids:
             return True
         await interaction.response.send_message(
             "These daily rewards belong to another player.",
@@ -518,7 +523,12 @@ class Miscellaneous(commands.Cog):
                 value=f"**{self._daily_reward_text(reward)}**",
                 inline=True,
             )
-        embed.set_footer(text="Only you can choose • Selection closes after 60 seconds")
+        chooser_text = (
+            "You or your linked main can choose"
+            if getattr(ctx, "alt_invoker_id", None) is not None
+            else "Only you can choose"
+        )
+        embed.set_footer(text=f"{chooser_text} • Selection closes after 60 seconds")
         return embed
 
     def _build_daily_result_embed(self, ctx, streak, reward):

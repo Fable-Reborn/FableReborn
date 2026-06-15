@@ -115,6 +115,7 @@ class DragonBattle(Battle):
         self._tracked_party_combatants = []
         self.dragon_damage_totals = {}
         self._dragon_damage_persisted = False
+        self._last_image_card_turn = None
         for combatant in self.player_team.combatants:
             self._register_tracked_combatant(combatant)
 
@@ -1593,34 +1594,80 @@ class DragonBattle(Battle):
         }
 
     async def _publish_battle_card(self):
+        if not self._should_publish_battle_card():
+            return self.battle_message
+
         card_data = self._build_battle_card_data()
         card_buffer = await asyncio.to_thread(render_dragon_battle_card, card_data)
         filename = "ice_dragon_battle.jpg"
         card_bytes = card_buffer.getvalue()
-        embed = discord.Embed(color=discord.Color.blue())
-        embed.set_image(url=f"attachment://{filename}")
-        embed.set_footer(text=f"Battle ID: {self.battle_id}")
-
-        if self.battle_message:
-            edit_result = await self.edit_with_retry(
-                self.battle_message,
-                embed=embed,
-                attachments=[discord.File(BytesIO(card_bytes), filename=filename)],
-            )
-            if edit_result not in (None, False):
-                self.battle_message = edit_result
-                return self.battle_message
-            if edit_result is False:
-                return self.battle_message
-            self.battle_message = None
+        previous_message = self.battle_message
 
         send_result = await self.send_with_retry(
-            embed=embed,
+            content=(
+                f"{self._battle_card_mobile_summary(card_data)}\n"
+                f"-# Battle ID: {self.battle_id}"
+            ),
             file=discord.File(BytesIO(card_bytes), filename=filename),
         )
         if send_result not in (None, False):
             self.battle_message = send_result
+            self._last_image_card_turn = self.current_turn
+            if previous_message is not None and previous_message is not send_result:
+                try:
+                    await previous_message.delete()
+                except discord.NotFound:
+                    pass
+                except (discord.Forbidden, discord.HTTPException):
+                    logger.exception(
+                        "Battle %s could not delete the previous Ice Dragon card",
+                        self.battle_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Battle %s hit an unexpected error deleting its previous card",
+                        self.battle_id,
+                    )
         return self.battle_message
+
+    def _should_publish_battle_card(self):
+        if self.battle_message is None or self.finished:
+            return True
+        if self.current_turn % 2 != 0:
+            return False
+        return self._last_image_card_turn != self.current_turn
+
+    @staticmethod
+    def _battle_card_mobile_summary(card_data):
+        boss = card_data["boss"]
+        boss_max_hp = float(boss.get("max_hp", 0) or 0)
+        boss_percent = (
+            max(0.0, float(boss.get("hp", 0) or 0)) / boss_max_hp * 100
+            if boss_max_hp > 0
+            else 0.0
+        )
+        party_parts = []
+        for player in card_data.get("players", []):
+            max_hp = float(player.get("max_hp", 0) or 0)
+            percent = (
+                max(0.0, float(player.get("hp", 0) or 0)) / max_hp * 100
+                if max_hp > 0
+                else 0.0
+            )
+            party_parts.append(f"{player['name']} {percent:.0f}%")
+
+        summary = (
+            f"**Ice Dragon Battle | Turn {card_data.get('turn', 0)}**\n"
+            f"Dragon: **{boss_percent:.0f}%**"
+        )
+        if party_parts:
+            summary += f" | Party: {' · '.join(party_parts)}"
+
+        log_entries = card_data.get("log", [])
+        if log_entries:
+            latest = " ".join(str(log_entries[-1]).replace("\n", " ").split())
+            summary += f"\n{latest[:350]}"
+        return summary
 
     async def _publish_embed_fallback(self):
         embed = await self.create_battle_embed()
