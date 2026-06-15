@@ -1,7 +1,9 @@
 import ast
+import asyncio
 import unittest
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 from classes.classes import from_string as class_from_string
 
@@ -44,3 +46,48 @@ class TestDragonPartyPreview(unittest.TestCase):
         self.assertEqual("Tank", class_label(["Protector"]))
         self.assertEqual("Warrior / Mage", class_label(["Grunt", "Juggler"]))
         self.assertEqual("Adventurer", class_label([]))
+
+    def test_concurrent_fight_registrations_are_independent(self):
+        add_fight = _load_method("add_player_to_fight")
+        remove_fight = _load_method("remove_player_from_fight")
+        is_fighting = _load_method("is_player_in_fight")
+        subject = SimpleNamespace(fighting_players={})
+
+        asyncio.run(add_fight(subject, 100, "dragon:leader-a:1"))
+        asyncio.run(add_fight(subject, 100, "dragon:leader-b:2"))
+
+        self.assertFalse(asyncio.run(is_fighting(subject, 100)))
+        self.assertTrue(
+            asyncio.run(is_fighting(subject, 100, "dragon:leader-a:1"))
+        )
+        self.assertTrue(
+            asyncio.run(is_fighting(subject, 100, "dragon:leader-b:2"))
+        )
+
+        asyncio.run(remove_fight(subject, 100, "dragon:leader-a:1"))
+
+        self.assertFalse(
+            asyncio.run(is_fighting(subject, 100, "dragon:leader-a:1"))
+        )
+        self.assertTrue(
+            asyncio.run(is_fighting(subject, 100, "dragon:leader-b:2"))
+        )
+        self.assertFalse(asyncio.run(is_fighting(subject, 100)))
+
+        asyncio.run(remove_fight(subject, 100, "dragon:leader-b:2"))
+        self.assertFalse(asyncio.run(is_fighting(subject, 100)))
+
+    def test_default_cleanup_does_not_remove_dragon_registration(self):
+        add_fight = _load_method("add_player_to_fight")
+        remove_fight = _load_method("remove_player_from_fight")
+        is_fighting = _load_method("is_player_in_fight")
+        subject = SimpleNamespace(fighting_players={})
+
+        asyncio.run(add_fight(subject, 100))
+        asyncio.run(add_fight(subject, 100, "dragon:leader:99"))
+        asyncio.run(remove_fight(subject, 100))
+
+        self.assertFalse(asyncio.run(is_fighting(subject, 100)))
+        self.assertTrue(
+            asyncio.run(is_fighting(subject, 100, "dragon:leader:99"))
+        )

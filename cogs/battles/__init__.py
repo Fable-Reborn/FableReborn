@@ -1622,6 +1622,9 @@ class Battles(commands.Cog):
         self.debug_user_id = battles_ids.get("debug_user_id")
         self.forceleg = False
         self.battle_factory = BattleFactory(bot)
+        # A player can participate in more than one battle when a mode allows it.
+        # Values are battle-scoped registration keys so one battle's cleanup does
+        # not erase another battle's active state.
         self.fighting_players = {}
         
         self.dragon_party_views = []  # Track active dragon party views
@@ -2538,19 +2541,27 @@ class Battles(commands.Cog):
 
 
     
-    async def is_player_in_fight(self, player_id):
-        """Check if the player is in a fight based on the dictionary"""
-        return player_id in self.fighting_players
+    async def is_player_in_fight(self, player_id, fight_id=None):
+        """Check legacy-exclusive state or a specific concurrent battle."""
+        registrations = self.fighting_players.get(int(player_id), set())
+        if fight_id is None:
+            return "default" in registrations
+        return str(fight_id) in registrations
 
-    async def add_player_to_fight(self, player_id):
-        """Add the player to the fight dictionary with a lock"""
-        self.fighting_players[player_id] = asyncio.Lock()
-        await self.fighting_players[player_id].acquire()
+    async def add_player_to_fight(self, player_id, fight_id=None):
+        """Register a player without overwriting their other active battles."""
+        registration = str(fight_id or "default")
+        self.fighting_players.setdefault(int(player_id), set()).add(registration)
+        return registration
 
-    async def remove_player_from_fight(self, player_id):
-        """Release the lock and remove the player from the fight dictionary"""
-        if player_id in self.fighting_players:
-            self.fighting_players[player_id].release()
+    async def remove_player_from_fight(self, player_id, fight_id=None):
+        """Remove only the specified battle registration for a player."""
+        player_id = int(player_id)
+        registrations = self.fighting_players.get(player_id)
+        if not registrations:
+            return
+        registrations.discard(str(fight_id or "default"))
+        if not registrations:
             del self.fighting_players[player_id]
 
     async def check_pve_macro_detection(self, user_id):
@@ -9771,7 +9782,7 @@ class Battles(commands.Cog):
             await send_callable(message)
         except Exception:
             logger.exception("Failed to send Ice Dragon party error to Discord")
-    
+
     @dragon_challenge.command(name="party", aliases=["p"])
     @has_char()
     @user_cooldown(7200)
@@ -9784,14 +9795,6 @@ class Battles(commands.Cog):
         view = None
         message = None
         try:
-            # Check if the user is already in a party
-            if any(view.is_complete is False and ctx.author in view.party_members 
-                for view in self.dragon_party_views):
-                return await self._send_with_retry(
-                    ctx,
-                    content="You are already in a party formation!",
-                )
-                
             # Create party formation view
             class DragonPartyView(discord.ui.View):
                 def __init__(self, cog):
@@ -9968,6 +9971,7 @@ class Battles(commands.Cog):
             
             # Check if party formation was successful
             if view.is_complete:
+                dragon_fight_id = f"dragon:{ctx.author.id}:{message.id}"
                 await self._edit_message_with_retry(
                     message,
                     content="Party formed! Starting the challenge...",
@@ -9979,7 +9983,7 @@ class Battles(commands.Cog):
                 
                 # Add all party members to the fighting players
                 for member in view.party_members:
-                    await self.add_player_to_fight(member.id)
+                    await self.add_player_to_fight(member.id, dragon_fight_id)
                     
                 try:
                     # Create and start the dragon battle
@@ -9995,7 +9999,10 @@ class Battles(commands.Cog):
                         if not success:
                             # Remove players from fighting
                             for member in view.party_members:
-                                await self.remove_player_from_fight(member.id)
+                                await self.remove_player_from_fight(
+                                    member.id,
+                                    dragon_fight_id,
+                                )
                             return await self._send_with_retry(
                                 ctx,
                                 content="Failed to start the dragon challenge!",
@@ -10067,7 +10074,10 @@ class Battles(commands.Cog):
                 finally:
                     # Always remove players from fighting status
                     for member in view.party_members:
-                        await self.remove_player_from_fight(member.id)
+                        await self.remove_player_from_fight(
+                            member.id,
+                            dragon_fight_id,
+                        )
                         
             else:
                 await self._edit_message_with_retry(
