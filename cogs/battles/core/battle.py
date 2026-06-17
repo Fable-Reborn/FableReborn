@@ -2,6 +2,7 @@
 from abc import ABC, abstractmethod
 import asyncio
 import datetime
+from .numbers import scaled_int
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
@@ -1804,12 +1805,14 @@ class Battle(ABC):
 
         from .combatant import Combatant
 
+        echo_hp = scaled_int(getattr(source, "max_hp", 75), hp_scale, minimum=75)
+
         echo = Combatant(
             user=name,
-            hp=max(75, int(round(float(source.max_hp * hp_scale)))),
-            max_hp=max(75, int(round(float(source.max_hp * hp_scale)))),
-            damage=max(25, int(round(float(source.damage * damage_scale)))),
-            armor=max(10, int(round(float(source.armor * armor_scale)))),
+            hp=echo_hp,
+            max_hp=echo_hp,
+            damage=scaled_int(getattr(source, "damage", 25), damage_scale, minimum=25),
+            armor=scaled_int(getattr(source, "armor", 10), armor_scale, minimum=10),
             element=element or getattr(source, "element", "Unknown"),
             luck=85,
             name=name,

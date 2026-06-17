@@ -1,10 +1,32 @@
 # battles/core/combatant.py
 from decimal import Decimal
+from .numbers import to_decimal
 import random
 from typing import List, Dict, Any, Optional, Union
 
 class Combatant:
     """Represents any entity that can fight in a battle"""
+
+    DECIMAL_STAT_FIELDS = {
+        "hp",
+        "max_hp",
+        "damage",
+        "armor",
+        "luck",
+        "shield",
+        "lifesteal_percent",
+        "death_cheat_chance",
+        "damage_reflection",
+        "damage_taken_this_turn",
+        "fireball_charge",
+        "pending_true_damage_bypass_shield",
+        "sky_dodge",
+    }
+
+    def __setattr__(self, key, value):
+        if key in self.DECIMAL_STAT_FIELDS:
+            value = to_decimal(value)
+        super().__setattr__(key, value)
     
     def __init__(self, user, hp, max_hp, damage, armor, element=None, **kwargs):
         self.user = user  # Can be Discord User object or string name for NPCs
