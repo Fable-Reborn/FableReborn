@@ -36,9 +36,33 @@ from utils.misc import nice_join
 FOYER = "Foyer"
 ITEM_FLASHLIGHT = "flashlight"
 ITEM_NOISEMAKER = "noisemaker"
+ITEM_PEPPER_SPRAY = "pepperspray"
 ITEM_LABELS = {
     ITEM_FLASHLIGHT: "Flashlight",
     ITEM_NOISEMAKER: "Noisemaker",
+    ITEM_PEPPER_SPRAY: "Pepper Spray",
+}
+PERK_INSIDER = "insider"
+PERK_LIGHT_SLEEPER = "light_sleeper"
+PERK_QUIET_FEET = "quiet_feet"
+PERK_HANDY = "handy"
+PERK_SCAVENGER = "scavenger"
+PERK_LABELS = {
+    PERK_INSIDER: "Insider",
+    PERK_LIGHT_SLEEPER: "Light Sleeper",
+    PERK_QUIET_FEET: "Quiet Feet",
+    PERK_HANDY: "Handy",
+    PERK_SCAVENGER: "Scavenger",
+}
+PERK_DESCRIPTIONS = {
+    PERK_INSIDER: "You know from the start which two exits will open this game.",
+    PERK_LIGHT_SLEEPER: (
+        "At the end of every round you are warned if the murderer is in a room"
+        " adjacent to yours."
+    ),
+    PERK_QUIET_FEET: "Your movement between rooms makes no noise.",
+    PERK_HANDY: "Your barricades absorb two kill attempts instead of one.",
+    PERK_SCAVENGER: "You start the game with a random item.",
 }
 LOWER_ESCAPE_ROUTES: dict[str, str] = {
     "Kitchen": "Kitchen back door",
@@ -154,6 +178,20 @@ TESTPILLOW_ROOM_COORDS = {
 }
 TESTPILLOW_CANVAS_WIDTH = 1536
 TESTPILLOW_CANVAS_HEIGHT = 1024
+GAME_ROOM_TO_MAP_KEY = {
+    "Foyer": "foyer",
+    "Kitchen": "kitchen",
+    "Study": "study",
+    "Upstairs Hall": "upstairs_hall",
+    "Master Bedroom": "master_bedroom",
+    "Bathroom": "bathroom",
+    "Attic": "attic_stairs",
+    "Basement": "basement",
+}
+MAP_RING_ALIVE = (245, 245, 245, 240)
+MAP_RING_MURDERER = (220, 40, 40, 255)
+MAP_RING_ESCAPED = (60, 200, 90, 255)
+MAP_RING_DEAD = (120, 120, 120, 220)
 PIL_RESAMPLE = (
     Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
 )
@@ -168,6 +206,8 @@ class GuestState:
     escape_route: str | None = None
     hidden_spot: str | None = None
     inventory: list[str] = field(default_factory=list)
+    perk: str | None = None
+    death_room: str | None = None
 
 
 class MurderHouseJoinView(JoinView):
@@ -214,6 +254,12 @@ class MurderHouseGame:
     CUT_POWER_COOLDOWN = 3
     MAX_ESCAPE_GOAL = 8
     SECONDARY_EXIT_DELAY_ROUNDS = 4
+    NOISEMAKER_LINGER_ROUNDS = 1
+    STAGNATION_ROUNDS = 3
+    HOUSE_COLLAPSE_ROUND = 40
+    ESCAPE_REWARD = 10_000
+    KILL_REWARD = 4_000
+    WIPE_BONUS = 12_000
 
     def __init__(
         self,
@@ -240,16 +286,23 @@ class MurderHouseGame:
         self.final_chase_announced = False
         self.guests: dict[int, GuestState] = {}
         self.traps: dict[tuple[str, str], int] = {}
-        self.barricades: dict[str, int] = {}
+        self.barricades: dict[str, dict[str, int]] = {}
+        self.planted_noisemakers: dict[str, int] = {}
+        self.last_round_noise: dict[str, int] = {}
         self.escaped_members: list[discord.abc.User] = []
         self.casualties: list[str] = []
         self.dm_warning_sent: set[int] = set()
+        self.stagnant_rounds = 0
+        self.payouts: dict[int, int] = {}
+        self.map_avatar_cache: dict[int, Image.Image] = {}
+        self.last_round_blackout = False
         self.escape_clue_queue = random.shuffle(
             ESCAPE_CLUE_LINES[: max(self.escape_goal, 4)]
         )
         self.room_stashes = self._build_room_stashes()
         self.game_channel_link = self._build_game_channel_link()
         self._assign_guest_rooms()
+        self._assign_perks()
 
     def _build_game_channel_link(self) -> str:
         channel = getattr(self.ctx, "channel", None)
@@ -274,10 +327,30 @@ class MurderHouseGame:
             room = random.choice(available_rooms)
             self.guests[player.id] = GuestState(member=player, room=room)
 
+    def _assign_perks(self) -> None:
+        perk_pool = random.shuffle(list(PERK_LABELS))
+        for index, state in enumerate(self.guests.values()):
+            state.perk = perk_pool[index % len(perk_pool)]
+            if state.perk == PERK_SCAVENGER:
+                state.inventory.append(
+                    random.choice(
+                        [ITEM_FLASHLIGHT, ITEM_NOISEMAKER, ITEM_PEPPER_SPRAY]
+                    )
+                )
+
+    def _perk_label(self, state: GuestState) -> str:
+        if state.perk is None:
+            return _("None")
+        return _(PERK_LABELS.get(state.perk, state.perk.title()))
+
     def _build_room_stashes(self) -> dict[str, list[str]]:
         clue_count = self._clue_stash_count()
         clue_rooms = set(random.sample(list(HOUSE_MAP), clue_count))
-        filler_pool = [ITEM_FLASHLIGHT] * 2 + [ITEM_NOISEMAKER] * 3
+        filler_pool = (
+            [ITEM_FLASHLIGHT] * 2
+            + [ITEM_NOISEMAKER] * 2
+            + [ITEM_PEPPER_SPRAY] * 2
+        )
         filler_slots = len(HOUSE_MAP) * 2 - clue_count
         filler_pool += ["junk"] * max(0, filler_slots - len(filler_pool))
         filler_pool = random.shuffle(filler_pool)
@@ -534,22 +607,47 @@ class MurderHouseGame:
     async def _send_opening_dms(self) -> None:
         tasks = []
         for state in self.guests.values():
+            perk_lines = [
+                _("Your perk: **{perk}** - {description}").format(
+                    perk=self._perk_label(state),
+                    description=_(PERK_DESCRIPTIONS.get(state.perk or "", "")),
+                )
+            ]
+            if state.perk == PERK_INSIDER:
+                perk_lines.append(
+                    _(
+                        "Insider intel: the exits chosen for this game are the"
+                        " **{primary}** and the **{secondary}**."
+                    ).format(
+                        primary=self._escape_route_label(self.primary_escape_room),
+                        secondary=self._escape_route_label(self.secondary_escape_room),
+                    )
+                )
+            if state.inventory:
+                perk_lines.append(
+                    _("You start with: **{items}**.").format(
+                        items=self._inventory_text(state)
+                    )
+                )
             content = _(
                 "**Murder House**\n"
                 "You are a houseguest trying to survive long enough to escape.\n"
                 "Start room: **{room}**\n"
+                "{perk_info}\n"
                 "Collect **{goal}** escape clues.\n"
                 "There are **4** possible exits in the house: {routes}.\n"
                 "When the final clue is found, one selected exit opens. A second selected exit opens **{delay}** rounds later.\n"
                 "If you become the last houseguest before the clue track is full, **Final Chase** opens both selected exits.\n"
-                "Anyone who reaches an open exit escapes for good.\n"
+                "Anyone who reaches an open exit escapes for good and earns **${reward}**.\n"
                 "Hiding buys time, but it never counts as a win by itself.\n"
                 "Map:\n```{house_map}```"
             ).format(
                 room=state.room,
+                perk_info="\n".join(perk_lines),
                 goal=self.escape_goal,
                 routes=self._escape_routes_text(markdown=True),
                 delay=self.SECONDARY_EXIT_DELAY_ROUNDS,
+                reward=self.ESCAPE_REWARD,
                 house_map=self._house_map_text(),
             )
             tasks.append(self._safe_send_dm(state.member, content))
@@ -559,16 +657,21 @@ class MurderHouseGame:
             "You are the **Murderer**.\n"
             "Start room: **{room}**\n"
             "The houseguests need **{goal}** clues to start opening exits.\n"
-            "There are **4** possible exits: {routes}.\n"
+            "There are **4** possible exits: {routes}. You do not know which two were chosen.\n"
             "One selected exit opens after the final clue, and a second selected exit opens **{delay}** rounds later.\n"
             "If only one houseguest remains before the clue track is full, **Final Chase** opens both selected exits.\n"
+            "Each round you are automatically told the loudest room from the previous round.\n"
+            "Warning: if you end a round inside an open exit room, the whole house hears you there, and the second exit opens sooner.\n"
             "Sweep rooms, check hiding spots, listen for noise, set traps, and kill whoever does not make it out.\n"
+            "You earn **${kill_reward}** per kill and **${wipe_bonus}** extra if nobody escapes alive.\n"
             "Map:\n```{house_map}```"
         ).format(
             room=self.killer_room,
             goal=self.escape_goal,
             routes=self._escape_routes_text(markdown=True),
             delay=self.SECONDARY_EXIT_DELAY_ROUNDS,
+            kill_reward=self.KILL_REWARD,
+            wipe_bonus=self.WIPE_BONUS,
             house_map=self._house_map_text(),
         )
         tasks.append(self._safe_send_dm(self.killer, killer_content))
@@ -581,7 +684,8 @@ class MurderHouseGame:
             "One selected exit opens first, and a second selected exit opens **{delay}** rounds later.\n"
             "The possible exits are {routes}.\n"
             "If only one houseguest remains before the clue track is full, **Final Chase** opens both selected exits.\n"
-            "Anyone who reaches an open exit escapes permanently.\n"
+            "Anyone who reaches an open exit escapes permanently and earns **${escape_reward}**.\n"
+            "Every houseguest has a secret perk — check your DMs.\n"
             "Simply hiding until time runs out does not save the houseguests.\n"
             "Talk in channel. Hidden actions happen in DMs."
         ).format(
@@ -590,6 +694,7 @@ class MurderHouseGame:
             goal=self.escape_goal,
             delay=self.SECONDARY_EXIT_DELAY_ROUNDS,
             routes=self._escape_routes_text(markdown=True),
+            escape_reward=self.ESCAPE_REWARD,
         )
         return (
             discord.Embed(
@@ -670,7 +775,8 @@ class MurderHouseGame:
             survivor_lines.append(f"**{state.member.display_name}** - {status}")
 
         casualty_text = "\n".join(self.casualties[-8:]) if self.casualties else _("None")
-        return (
+        payout_lines = self._payout_lines()
+        embed = (
             discord.Embed(
                 title=_("Murder House - Game Over"),
                 description=description,
@@ -693,13 +799,30 @@ class MurderHouseGame:
             )
             .add_field(name=_("Last Casualties"), value=casualty_text, inline=False)
         )
+        if payout_lines:
+            embed.add_field(
+                name=_("Payouts"),
+                value="\n".join(payout_lines)[:1024],
+                inline=False,
+            )
+            embed.set_footer(
+                text=_("Payouts require a character profile ($create).")
+            )
+        return embed
 
     def _cleanup_expired_traps(self) -> None:
         self.traps = {
             key: expiry for key, expiry in self.traps.items() if expiry >= self.round
         }
         self.barricades = {
-            room: expiry for room, expiry in self.barricades.items() if expiry >= self.round
+            room: data
+            for room, data in self.barricades.items()
+            if data["expires"] >= self.round
+        }
+        self.planted_noisemakers = {
+            room: last_round
+            for room, last_round in self.planted_noisemakers.items()
+            if last_round >= self.round
         }
 
     def _movement_noise(self) -> int:
@@ -757,19 +880,21 @@ class MurderHouseGame:
                     "room": adjacent_room,
                 }
             )
-            options.append(
-                {
-                    "label": _("Peek toward the {room}").format(room=adjacent_room),
-                    "kind": "peek",
-                    "room": adjacent_room,
-                }
-            )
+
+        options.append(
+            {
+                "label": _("Listen at the doors of the {room}").format(
+                    room=current_room
+                ),
+                "kind": "listen",
+            }
+        )
 
         if ITEM_FLASHLIGHT in state.inventory:
             for target_room in [current_room, *HOUSE_MAP[current_room]]:
                 options.append(
                     {
-                        "label": _("Use your flashlight on the {room}").format(
+                        "label": _("Shine your flashlight into the {room}").format(
                             room=target_room
                         ),
                         "kind": "flashlight",
@@ -781,7 +906,7 @@ class MurderHouseGame:
             for target_room in [current_room, *HOUSE_MAP[current_room]]:
                 options.append(
                     {
-                        "label": _("Wind up a noisemaker in the {room}").format(
+                        "label": _("Plant a noisemaker in the {room}").format(
                             room=target_room
                         ),
                         "kind": "noisemaker",
@@ -946,6 +1071,7 @@ class MurderHouseGame:
             "Room: {room}\n"
             "Clues: {found}/{goal}\n"
             "Exits: {exits}\n"
+            "Perk: {perk}\n"
             "Inventory: {inventory}\n"
         ).format(
             round=self.round,
@@ -953,6 +1079,7 @@ class MurderHouseGame:
             found=self.escape_progress,
             goal=self.escape_goal,
             exits=self._compact_escape_status_text(),
+            perk=self._perk_label(state),
             inventory=self._inventory_text(state),
         )
         footer = _(
@@ -972,6 +1099,21 @@ class MurderHouseGame:
         )
         return state.member.id, action
 
+    def _killer_hearing_line(self) -> str:
+        loudest = [
+            (room, score)
+            for room, score in self.last_round_noise.items()
+            if score > 0
+        ]
+        if not loudest:
+            return _("The house was silent last round.")
+        loudest.sort(key=lambda item: item[1], reverse=True)
+        top_score = loudest[0][1]
+        top_rooms = [room for room, score in loudest if score == top_score]
+        return _("Loudest room last round: {rooms}").format(
+            rooms=", ".join(top_rooms)
+        )
+
     async def _prompt_killer_action(self) -> tuple[int, dict]:
         title = _(
             "Murder House - Round {round}\n"
@@ -979,12 +1121,14 @@ class MurderHouseGame:
             "Current room: {room}\n"
             "Alive guests: {count}\n"
             "Exits: {exits}\n"
+            "Hearing: {hearing}\n"
             "Power cooldown: {cooldown}"
         ).format(
             round=self.round,
             room=self.killer_room,
             count=len(self._alive_guest_states()),
             exits=self._compact_escape_status_text(),
+            hearing=self._killer_hearing_line(),
             cooldown=max(0, self.power_cooldown),
         )
         await self._send_back_to_game_link(self.killer)
@@ -1001,16 +1145,41 @@ class MurderHouseGame:
         self,
         state: GuestState,
         *,
+        public_lines: list[str],
         public_text: str,
         private_lines: defaultdict[int, list[str]],
         victim_text: str,
         killer_text: str | None = None,
+        preventable: bool = True,
     ) -> bool:
         if not state.alive or state.escaped:
             return False
+        if preventable and ITEM_PEPPER_SPRAY in state.inventory:
+            state.inventory.remove(ITEM_PEPPER_SPRAY)
+            old_room = state.room
+            state.room = random.choice(HOUSE_MAP[old_room])
+            state.hidden_spot = None
+            public_lines.append(
+                _(
+                    "💨 **{victim}** blasts the murderer with pepper spray in the **{room}** and scrambles away!"
+                ).format(victim=state.member.display_name, room=old_room)
+            )
+            private_lines[state.member.id].append(
+                _(
+                    "You blind the murderer with pepper spray and flee to the **{room}**."
+                ).format(room=state.room)
+            )
+            private_lines[self.killer.id].append(
+                _(
+                    "Pepper spray burns your eyes. **{victim}** slips out of the **{room}**."
+                ).format(victim=state.member.display_name, room=old_room)
+            )
+            return False
         state.alive = False
         state.hidden_spot = None
+        state.death_room = state.room
         self.casualties.append(public_text)
+        public_lines.append(public_text)
         private_lines[state.member.id].append(victim_text)
         if killer_text is not None:
             private_lines[self.killer.id].append(killer_text)
@@ -1072,16 +1241,45 @@ class MurderHouseGame:
         public_lines: list[str],
         private_lines: defaultdict[int, list[str]],
     ) -> bool:
-        if room not in self.barricades:
+        barricade = self.barricades.get(room)
+        if barricade is None:
             return False
-        self.barricades.pop(room, None)
-        public_lines.append(
-            _("A barricade in the **{room}** explodes apart and buys the houseguests a moment.").format(
-                room=room
+        barricade["strength"] -= 1
+        if barricade["strength"] <= 0:
+            self.barricades.pop(room, None)
+            public_lines.append(
+                _("A barricade in the **{room}** explodes apart and buys the houseguests a moment.").format(
+                    room=room
+                )
             )
-        )
+        else:
+            public_lines.append(
+                _("A barricade in the **{room}** groans and splinters, but it holds for now.").format(
+                    room=room
+                )
+            )
         private_lines[self.killer.id].append(
             _("A barricade in the **{room}** eats your kill window.").format(room=room)
+        )
+        return True
+
+    def _reveal_noisemaker_decoy(
+        self,
+        room: str,
+        *,
+        public_lines: list[str],
+        private_lines: defaultdict[int, list[str]],
+    ) -> bool:
+        if room not in self.planted_noisemakers:
+            return False
+        self.planted_noisemakers.pop(room, None)
+        public_lines.append(
+            _(
+                "The murderer tears the **{room}** apart and finds only a chattering noisemaker."
+            ).format(room=room)
+        )
+        private_lines[self.killer.id].append(
+            _("A decoy. Someone baited you into the **{room}**.").format(room=room)
         )
         return True
 
@@ -1109,8 +1307,9 @@ class MurderHouseGame:
                 victim=victim.member,
                 room=room,
             )
-            if self._kill_guest(
+            self._kill_guest(
                 victim,
+                public_lines=public_lines,
                 public_text=public_text,
                 private_lines=private_lines,
                 victim_text=_("You are found in the **{room}** and killed.").format(
@@ -1120,8 +1319,12 @@ class MurderHouseGame:
                     victim=victim.member.display_name,
                     room=room,
                 ),
-            ):
-                public_lines.append(public_text)
+            )
+            return
+
+        if self._reveal_noisemaker_decoy(
+            room, public_lines=public_lines, private_lines=private_lines
+        ) and not hidden:
             return
 
         if hidden:
@@ -1222,8 +1425,9 @@ class MurderHouseGame:
                     room=current_room,
                     spot=spot,
                 )
-                if self._kill_guest(
+                self._kill_guest(
                     victim,
+                    public_lines=public_lines,
                     public_text=public_text,
                     private_lines=private_lines,
                     victim_text=_(
@@ -1236,8 +1440,7 @@ class MurderHouseGame:
                         room=current_room,
                         victim=victim.member.display_name,
                     ),
-                ):
-                    public_lines.append(public_text)
+                )
             else:
                 public_lines.append(
                     _(
@@ -1401,6 +1604,86 @@ class MurderHouseGame:
                 )
             )
 
+    def _apply_exit_camping_penalty(self, public_lines: list[str]) -> None:
+        if self.killer_room not in self._open_escape_rooms():
+            return
+        if not self._alive_guest_states():
+            return
+        public_lines.append(
+            _(
+                "🚪 The murderer is prowling the open **{route}** — the whole house hears it."
+            ).format(route=self._escape_route_label(self.killer_room))
+        )
+        if (
+            not self.secondary_escape_open
+            and self.secondary_escape_unlock_round is not None
+        ):
+            accelerated = max(self.round + 1, self.secondary_escape_unlock_round - 1)
+            if accelerated < self.secondary_escape_unlock_round:
+                self.secondary_escape_unlock_round = accelerated
+                public_lines.append(
+                    _(
+                        "While that exit is guarded, the far latch grinds looser. The **{route}** will open sooner."
+                    ).format(
+                        route=self._escape_route_label(self.secondary_escape_room)
+                    )
+                )
+
+    async def _render_map_file(self, *, reveal_all: bool) -> discord.File | None:
+        cog = self.ctx.bot.get_cog("MurderHouse")
+        if cog is None or not hasattr(cog, "render_live_map"):
+            return None
+        try:
+            buffer = await cog.render_live_map(self, reveal_all=reveal_all)
+        except Exception:
+            # The map is decoration; never let rendering kill the game.
+            return None
+        return discord.File(buffer, filename="murderhouse_map.png")
+
+    async def _award_payouts(self) -> dict[int, int]:
+        payouts: defaultdict[int, int] = defaultdict(int)
+        for state in self.guests.values():
+            if state.escaped:
+                payouts[state.member.id] += self.ESCAPE_REWARD
+        kill_count = sum(1 for state in self.guests.values() if not state.alive)
+        if kill_count:
+            payouts[self.killer.id] += self.KILL_REWARD * kill_count
+        if kill_count and not self.escaped_members and not self._alive_guest_states():
+            payouts[self.killer.id] += self.WIPE_BONUS
+
+        pool = getattr(self.ctx.bot, "pool", None)
+        if pool is None:
+            return dict(payouts)
+        for user_id, amount in payouts.items():
+            try:
+                await pool.execute(
+                    'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                    amount,
+                    user_id,
+                )
+            except Exception:
+                continue
+        return dict(payouts)
+
+    def _payout_lines(self) -> list[str]:
+        lines = []
+        for state in self.guests.values():
+            amount = self.payouts.get(state.member.id, 0)
+            if amount > 0:
+                lines.append(
+                    _("**{player}** — ${amount} (escaped)").format(
+                        player=state.member.display_name, amount=amount
+                    )
+                )
+        killer_amount = self.payouts.get(self.killer.id, 0)
+        if killer_amount > 0:
+            lines.append(
+                _("**{player}** — ${amount} (murderer)").format(
+                    player=self.killer.display_name, amount=killer_amount
+                )
+            )
+        return lines
+
     def _top_noise_line(self, noise_by_room: dict[str, int]) -> str | None:
         loud_rooms = [room for room, score in noise_by_room.items() if score >= 2]
         if not loud_rooms:
@@ -1424,11 +1707,30 @@ class MurderHouseGame:
         self._maybe_open_secondary_escape(public_lines)
         if self._in_final_chase():
             self._start_final_chase(public_lines)
+        if (
+            self.round >= self.HOUSE_COLLAPSE_ROUND
+            and not (self.primary_escape_open and self.secondary_escape_open)
+        ):
+            self.primary_escape_open = True
+            self.secondary_escape_open = True
+            public_lines.append(
+                _(
+                    "🏚️ The house has taken too much. Walls sag, latches shear off — the {primary} and {secondary} are forced open by the collapse."
+                ).format(
+                    primary=f"**{self._escape_route_label(self.primary_escape_room)}**",
+                    secondary=f"**{self._escape_route_label(self.secondary_escape_room)}**",
+                )
+            )
         private_lines: defaultdict[int, list[str]] = defaultdict(list)
         noise_by_room: dict[str, int] = {room: 0 for room in HOUSE_MAP}
+        for device_room in self.planted_noisemakers:
+            noise_by_room[device_room] += 3
         escape_attempt_ids: set[int] = set()
         occupied_hiding_spots: set[tuple[str, str]] = set()
         pending_senses: list[tuple[int, str, bool]] = []
+        alive_before = len(self._alive_guest_states())
+        escaped_before = len(self.escaped_members)
+        clues_before = self.escape_progress
 
         for state in self._alive_guest_states():
             state.hidden_spot = None
@@ -1452,10 +1754,17 @@ class MurderHouseGame:
             kind = action["kind"]
             if kind == "move":
                 state.room = action["room"]
-                noise_by_room[state.room] += self._movement_noise()
-                private_lines[state.member.id].append(
-                    _("You sneak into the **{room}**.").format(room=state.room)
-                )
+                if state.perk == PERK_QUIET_FEET:
+                    private_lines[state.member.id].append(
+                        _(
+                            "You slip into the **{room}** without a sound."
+                        ).format(room=state.room)
+                    )
+                else:
+                    noise_by_room[state.room] += self._movement_noise()
+                    private_lines[state.member.id].append(
+                        _("You sneak into the **{room}**.").format(room=state.room)
+                    )
                 continue
 
             if kind == "hide":
@@ -1469,8 +1778,9 @@ class MurderHouseGame:
                         room=state.room,
                         spot=spot,
                     )
-                    if self._kill_guest(
+                    self._kill_guest(
                         state,
+                        public_lines=public_lines,
                         public_text=public_text,
                         private_lines=private_lines,
                         victim_text=_(
@@ -1479,8 +1789,8 @@ class MurderHouseGame:
                         killer_text=_(
                             "Your trap in the **{room}** claims **{victim}**."
                         ).format(room=state.room, victim=state.member.display_name),
-                    ):
-                        public_lines.append(public_text)
+                        preventable=False,
+                    )
                     continue
 
                 if trap_key in occupied_hiding_spots:
@@ -1509,22 +1819,30 @@ class MurderHouseGame:
                 continue
 
             if kind == "barricade":
-                self.barricades[state.room] = self.round + 1
+                strength = 2 if state.perk == PERK_HANDY else 1
+                self.barricades[state.room] = {
+                    "expires": self.round + 1,
+                    "strength": strength,
+                }
                 noise_by_room[state.room] += 1
                 private_lines[state.member.id].append(
                     _("You drag furniture into place and barricade the **{room}**.").format(
                         room=state.room
                     )
                 )
+                if strength > 1:
+                    private_lines[state.member.id].append(
+                        _("Handy: this barricade will hold through two attacks.")
+                    )
                 public_lines.append(_("Heavy furniture scrapes somewhere in the house."))
                 continue
 
-            if kind == "peek":
-                noise_by_room[state.room] += 1
-                pending_senses.append((state.member.id, action["room"], False))
+            if kind == "listen":
+                for adjacent_room in HOUSE_MAP[state.room]:
+                    pending_senses.append((state.member.id, adjacent_room, False))
                 private_lines[state.member.id].append(
-                    _("You watch the doorway toward the **{room}**.").format(
-                        room=action["room"]
+                    _("You press your ear to the doors of the **{room}**.").format(
+                        room=state.room
                     )
                 )
                 continue
@@ -1541,11 +1859,15 @@ class MurderHouseGame:
 
             if kind == "noisemaker":
                 state.inventory.remove(ITEM_NOISEMAKER)
-                noise_by_room[action["room"]] += 3
+                target_room = action["room"]
+                self.planted_noisemakers[target_room] = (
+                    self.round + self.NOISEMAKER_LINGER_ROUNDS
+                )
+                noise_by_room[target_room] += 3
                 private_lines[state.member.id].append(
-                    _("You plant a noisemaker in the **{room}**.").format(
-                        room=action["room"]
-                    )
+                    _(
+                        "You plant a noisemaker in the **{room}**. It will keep rattling next round."
+                    ).format(room=target_room)
                 )
                 continue
 
@@ -1558,6 +1880,16 @@ class MurderHouseGame:
                     )
                 )
 
+        killer_action = actions[self.killer.id]
+        self._resolve_killer_action(
+            killer_action,
+            public_lines=public_lines,
+            private_lines=private_lines,
+            noise_by_room=noise_by_room,
+        )
+
+        # Senses resolve after the murderer has acted, so peeks and
+        # flashlights report where the murderer actually ended the round.
         for member_id, target_room, strong in pending_senses:
             state = self.guests.get(member_id)
             if state is None or not state.alive or state.escaped:
@@ -1572,13 +1904,15 @@ class MurderHouseGame:
                 )
             )
 
-        killer_action = actions[self.killer.id]
-        self._resolve_killer_action(
-            killer_action,
-            public_lines=public_lines,
-            private_lines=private_lines,
-            noise_by_room=noise_by_room,
-        )
+        for state in self._alive_guest_states():
+            if state.perk != PERK_LIGHT_SLEEPER:
+                continue
+            if self.killer_room in HOUSE_MAP[state.room]:
+                private_lines[state.member.id].append(
+                    _(
+                        "🔉 Light Sleeper: something heavy just settled into the **{room}**."
+                    ).format(room=self.killer_room)
+                )
 
         self._resolve_escape_attempts(
             escape_attempt_ids,
@@ -1586,12 +1920,66 @@ class MurderHouseGame:
             private_lines=private_lines,
         )
 
+        self._apply_exit_camping_penalty(public_lines)
+
+        made_progress = (
+            len(self._alive_guest_states()) != alive_before
+            or len(self.escaped_members) != escaped_before
+            or self.escape_progress != clues_before
+        )
+        if made_progress:
+            self.stagnant_rounds = 0
+        else:
+            self.stagnant_rounds += 1
+            if (
+                self.stagnant_rounds >= self.STAGNATION_ROUNDS
+                and self.escape_progress < self.escape_goal
+            ):
+                self.stagnant_rounds = 0
+                self.escape_progress += 1
+                public_lines.append(
+                    _(
+                        "🕯️ The house grows restless with the standoff and gives up a secret on its own. Escape progress is now **{found}/{goal}**."
+                    ).format(found=self.escape_progress, goal=self.escape_goal)
+                )
+                if self.escape_progress >= self.escape_goal:
+                    self._unlock_primary_escape(public_lines)
+
+        if self.round > self.HOUSE_COLLAPSE_ROUND:
+            collapse_victims = self._alive_guest_states()
+            if collapse_victims:
+                victim = random.choice(collapse_victims)
+                self._kill_guest(
+                    victim,
+                    public_lines=public_lines,
+                    public_text=_(
+                        "🏚️ Part of the ceiling comes down in the **{room}**, crushing **{victim}**."
+                    ).format(
+                        room=victim.room,
+                        victim=victim.member.display_name,
+                    ),
+                    private_lines=private_lines,
+                    victim_text=_(
+                        "The collapsing house claims you before the murderer could."
+                    ),
+                    preventable=False,
+                )
+
         noise_line = self._top_noise_line(noise_by_room)
         if noise_line is not None:
             public_lines.append(noise_line)
 
+        self.last_round_noise = dict(noise_by_room)
+        self.last_round_blackout = current_blackout
+
         await self._send_private_round_summaries(private_lines)
-        await self.ctx.send(embed=self._build_round_embed(public_lines))
+        embed = self._build_round_embed(public_lines)
+        map_file = await self._render_map_file(reveal_all=False)
+        if map_file is not None:
+            embed.set_image(url="attachment://murderhouse_map.png")
+            await self.ctx.send(embed=embed, file=map_file)
+        else:
+            await self.ctx.send(embed=embed)
 
         if current_blackout and self.blackout_rounds > 0:
             self.blackout_rounds -= 1
@@ -1623,7 +2011,14 @@ class MurderHouseGame:
             self.round += 1
             await asyncio.sleep(self.REPORT_DELAY_SECONDS)
 
-        await self.ctx.send(embed=self._build_final_embed())
+        self.payouts = await self._award_payouts()
+        final_embed = self._build_final_embed()
+        map_file = await self._render_map_file(reveal_all=True)
+        if map_file is not None:
+            final_embed.set_image(url="attachment://murderhouse_map.png")
+            await self.ctx.send(embed=final_embed, file=map_file)
+        else:
+            await self.ctx.send(embed=final_embed)
 
 
 class MurderHouse(commands.Cog):
@@ -1772,16 +2167,17 @@ class MurderHouse(commands.Cog):
             )
         return size, positions
 
-    def _style_testpillow_avatar(
+    def _style_map_avatar(
         self,
         avatar: Image.Image,
         *,
         size: int,
-        is_murderer: bool,
-        is_dead: bool,
+        ring_colour: tuple[int, int, int, int] = MAP_RING_ALIVE,
+        ring_scale: int = 16,
+        grayscale: bool = False,
     ) -> Image.Image:
         avatar = ImageOps.fit(avatar.convert("RGBA"), (size, size), method=PIL_RESAMPLE)
-        if is_dead and not is_murderer:
+        if grayscale:
             avatar = ImageOps.grayscale(avatar).convert("RGBA")
             alpha = avatar.getchannel("A").point(lambda value: int(value * 0.58))
             avatar.putalpha(alpha)
@@ -1794,32 +2190,33 @@ class MurderHouse(commands.Cog):
 
         outline = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         outline_draw = ImageDraw.Draw(outline)
-        if is_murderer:
-            red_width = max(3, size // 10)
-            outline_draw.ellipse(
-                (
-                    red_width // 2,
-                    red_width // 2,
-                    size - 1 - red_width // 2,
-                    size - 1 - red_width // 2,
-                ),
-                outline=(220, 40, 40, 255),
-                width=red_width,
-            )
-        else:
-            outline_width = max(2, size // 16)
-            outline_draw.ellipse(
-                (
-                    outline_width // 2,
-                    outline_width // 2,
-                    size - 1 - outline_width // 2,
-                    size - 1 - outline_width // 2,
-                ),
-                outline=(245, 245, 245, 240),
-                width=outline_width,
-            )
+        ring_width = max(2, size // ring_scale)
+        outline_draw.ellipse(
+            (
+                ring_width // 2,
+                ring_width // 2,
+                size - 1 - ring_width // 2,
+                size - 1 - ring_width // 2,
+            ),
+            outline=ring_colour,
+            width=ring_width,
+        )
 
         return Image.alpha_composite(circular, outline)
+
+    def _style_testpillow_avatar(
+        self,
+        avatar: Image.Image,
+        *,
+        size: int,
+        is_murderer: bool,
+        is_dead: bool,
+    ) -> Image.Image:
+        if is_murderer:
+            return self._style_map_avatar(
+                avatar, size=size, ring_colour=MAP_RING_MURDERER, ring_scale=10
+            )
+        return self._style_map_avatar(avatar, size=size, grayscale=is_dead)
 
     async def _render_testpillow_overlay(
         self,
@@ -1861,66 +2258,364 @@ class MurderHouse(commands.Cog):
         output.seek(0)
         return output
 
-    def _build_tutorial_embed(self, ctx) -> discord.Embed:
+    async def _get_cached_map_avatar(
+        self, game: MurderHouseGame, user: discord.abc.User
+    ) -> Image.Image:
+        cached = game.map_avatar_cache.get(user.id)
+        if cached is not None:
+            return cached
+        try:
+            image = await self._fetch_testpillow_avatar(user, size=256)
+        except Exception:
+            image = Image.new("RGBA", (256, 256), (90, 90, 90, 255))
+        game.map_avatar_cache[user.id] = image
+        return image
+
+    def _compose_live_map(
+        self,
+        canvas: Image.Image,
+        entries: list[dict],
+        avatar_map: dict[int, Image.Image],
+        *,
+        dim: bool,
+    ) -> BytesIO:
+        grouped: dict[str, list[dict]] = defaultdict(list)
+        for entry in entries:
+            grouped[entry["room_key"]].append(entry)
+
+        for room_key, room_entries in grouped.items():
+            size, positions = self._testpillow_layout(room_key, len(room_entries))
+            for entry, (x, y) in zip(room_entries, positions):
+                styled = self._style_map_avatar(
+                    avatar_map[entry["user"].id],
+                    size=size,
+                    ring_colour=entry["ring"],
+                    ring_scale=entry["ring_scale"],
+                    grayscale=entry["grayscale"],
+                )
+                canvas.alpha_composite(styled, (x, y))
+
+        if dim:
+            overlay = Image.new("RGBA", canvas.size, (0, 0, 25, 110))
+            canvas = Image.alpha_composite(canvas, overlay)
+
+        output = BytesIO()
+        canvas.save(output, format="PNG")
+        output.seek(0)
+        return output
+
+    async def render_live_map(
+        self, game: MurderHouseGame, *, reveal_all: bool
+    ) -> BytesIO:
+        """Render the spectator map for a running game.
+
+        During normal rounds only public information appears: guests who died
+        (grayed out, in the room where they fell) and guests who escaped
+        (green ring at their exit). With ``reveal_all`` everyone is placed at
+        their final position, including the murderer with a red ring.
+        """
+        entries: list[dict] = []
+        for state in game.guests.values():
+            if not state.alive:
+                room = state.death_room or state.room
+                entries.append(
+                    {
+                        "user": state.member,
+                        "room_key": GAME_ROOM_TO_MAP_KEY.get(room, "foyer"),
+                        "ring": MAP_RING_DEAD,
+                        "ring_scale": 16,
+                        "grayscale": True,
+                    }
+                )
+            elif state.escaped:
+                entries.append(
+                    {
+                        "user": state.member,
+                        "room_key": GAME_ROOM_TO_MAP_KEY.get(state.room, "foyer"),
+                        "ring": MAP_RING_ESCAPED,
+                        "ring_scale": 10,
+                        "grayscale": False,
+                    }
+                )
+            elif reveal_all:
+                entries.append(
+                    {
+                        "user": state.member,
+                        "room_key": GAME_ROOM_TO_MAP_KEY.get(state.room, "foyer"),
+                        "ring": MAP_RING_ALIVE,
+                        "ring_scale": 16,
+                        "grayscale": False,
+                    }
+                )
+        if reveal_all:
+            entries.append(
+                {
+                    "user": game.killer,
+                    "room_key": GAME_ROOM_TO_MAP_KEY.get(game.killer_room, "foyer"),
+                    "ring": MAP_RING_MURDERER,
+                    "ring_scale": 10,
+                    "grayscale": False,
+                }
+            )
+
+        canvas = await self._load_testpillow_background()
+        avatar_map: dict[int, Image.Image] = {}
+        for entry in entries:
+            user = entry["user"]
+            if user.id not in avatar_map:
+                avatar_map[user.id] = await self._get_cached_map_avatar(game, user)
+
+        dim = game.last_round_blackout and not reveal_all
+        return await asyncio.to_thread(
+            self._compose_live_map, canvas, entries, avatar_map, dim=dim
+        )
+
+    def _build_tutorial_overview_embed(self, ctx) -> discord.Embed:
         prefix = ctx.clean_prefix
         return (
             discord.Embed(
-                title=_("Murder House Tutorial"),
+                title=_("Murder House — How To Play (1/3: Overview)"),
                 description=_(
-                    "A fast guide to the mode. One player is the murderer; everyone else is trapped in the house."
+                    "One joined player secretly becomes the **murderer**. Everyone"
+                    " else is a **houseguest** trapped in the house. Houseguests"
+                    " win by escaping; the murderer wins by making sure nobody"
+                    " does. All choices are made privately in DMs, and the"
+                    " channel sees a dramatic public recap plus the house map"
+                    " every round."
                 ),
                 colour=self.bot.config.game.primary_colour,
             )
             .add_field(
-                name=_("Houseguest Goal"),
+                name=_("How a round works"),
                 value=_(
-                    "Find **escape clues**, survive the sweeps, and get out. There are **4** possible exits, but only **2** will open in a game, and anyone who reaches one escapes."
+                    "1. Everyone gets a DM prompt at the same time and picks one action.\n"
+                    "2. Houseguest actions resolve (moving, searching, hiding...).\n"
+                    "3. The murderer's action resolves (sweeps, checks, traps...).\n"
+                    "4. Peeks and flashlights report back — *after* the murderer moved, so the intel is fresh.\n"
+                    "5. Escape attempts resolve.\n"
+                    "6. The channel gets the round recap and updated map."
                 ),
                 inline=False,
             )
             .add_field(
-                name=_("Murderer Goal"),
+                name=_("Exits and clues"),
                 value=_(
-                    "Stop the escapes. Sweep rooms, check specific hiding spots, listen for noise, trap likely hiding places, and kill whoever does not make it out."
+                    "The house has **4** possible exits: {routes}. Only **2** are"
+                    " secretly chosen each game.\n"
+                    "Houseguests must find **{goal_min}-{goal_max}** clues (scales"
+                    " with player count, max 1 clue per room). When the last clue"
+                    " is found, the first chosen exit opens; the second opens"
+                    " **{delay}** rounds later.\n"
+                    "If the murderer lurks in an open exit room, everyone hears"
+                    " it and the second exit opens **sooner**.\n"
+                    "If only one houseguest is left before the clues are done,"
+                    " **Final Chase** throws both chosen exits open.\n"
+                    "The house hates standoffs: after **{stall}** rounds where"
+                    " nobody dies, escapes, or finds a clue, it gives up a clue"
+                    " on its own. At round **{collapse}** the collapse forces"
+                    " both exits open — and after that, the falling house"
+                    " starts crushing whoever is still inside. Nobody waits out"
+                    " the clock."
+                ).format(
+                    routes=nice_join(list(ESCAPE_ROUTES.values())),
+                    goal_min=4,
+                    goal_max=MurderHouseGame.MAX_ESCAPE_GOAL,
+                    delay=MurderHouseGame.SECONDARY_EXIT_DELAY_ROUNDS,
+                    stall=MurderHouseGame.STAGNATION_ROUNDS,
+                    collapse=MurderHouseGame.HOUSE_COLLAPSE_ROUND,
                 ),
                 inline=False,
             )
             .add_field(
-                name=_("Houseguest Basics"),
+                name=_("Rewards"),
                 value=_(
-                    "`Search` finds clues or items.\n"
-                    "`Hide` protects you unless the murderer checks that exact spot.\n"
-                    "`Peek` and `Flashlight` gather information.\n"
-                    "`Barricade` can burn the murderer's next kill window in that room.\n"
-                    "`Escape` only works from open exit rooms.\n"
-                    "Each room holds at most **1** clue.\n"
-                    "The first chosen exit opens when the clue track fills; the second opens **{delay} rounds later**.\n"
-                    "If only one houseguest remains before the clue track fills, **Final Chase** opens both selected exits. Hiding and barricading still work, but searching ends."
-                ).format(delay=MurderHouseGame.SECONDARY_EXIT_DELAY_ROUNDS),
-                inline=False,
-            )
-            .add_field(
-                name=_("Murderer Basics"),
-                value=_(
-                    "`Sweep` kills exposed targets in a room.\n"
-                    "`Check` kills someone in one exact hiding spot.\n"
-                    "`Listen` finds loud rooms, active exits, and the last survivor during Final Chase.\n"
-                    "`Trap` punishes predictable hiding.\n"
-                    "`Cut power` makes the next round harder to read."
+                    "Every houseguest who escapes earns **${escape}**.\n"
+                    "The murderer earns **${kill}** per kill, plus **${wipe}**"
+                    " extra if nobody escapes alive.\n"
+                    "Payouts require a character profile."
+                ).format(
+                    escape=MurderHouseGame.ESCAPE_REWARD,
+                    kill=MurderHouseGame.KILL_REWARD,
+                    wipe=MurderHouseGame.WIPE_BONUS,
                 ),
                 inline=False,
             )
             .add_field(
-                name=_("First-Game Tips"),
+                name=_("Reading the map"),
                 value=_(
-                    "Possible exits: **Kitchen back door**, **Basement bulkhead**, **Attic fire ladder**, **Master bedroom balcony**.\n"
-                    "Houseguests: spread out early, because rooms do not stack clues anymore.\n"
-                    "Pivot fast once the first exit is revealed.\n"
-                    "If you are the last one left before the clues are done, **Final Chase** gives you two open doors while hide and barricade still buy time.\n"
-                    "Anyone who reaches an open exit is out for good.\n"
-                    "Murderer: listen for noisy rooms, trap common spots, and control the live exit while reading the setup for the delayed one.\n"
-                    "Use `{prefix}murderhouse 4` to start a lighter-size test match."
-                ).format(prefix=prefix),
+                    "Grayed-out avatar: died in that room.\n"
+                    "Green ring: escaped through that exit.\n"
+                    "Darkened map: the power is cut (blackout).\n"
+                    "Red ring: the murderer — only revealed on the final map.\n"
+                    "Living houseguests are never shown during the game; their"
+                    " locations stay secret."
+                ),
+                inline=False,
+            )
+            .set_footer(
+                text=_(
+                    "{prefix}murderhouse tutorial survivor / murderer for the full role guides."
+                ).format(prefix=prefix)
+            )
+        )
+
+    def _build_survivor_guide_embed(self, ctx) -> discord.Embed:
+        return (
+            discord.Embed(
+                title=_("Murder House — How To Play (2/3: Houseguests)"),
+                description=_(
+                    "Your goal: stay alive, fill the clue track, and get out"
+                    " through an open exit. Escaping is the only win — hiding"
+                    " until the end of time saves nobody."
+                ),
+                colour=self.bot.config.game.primary_colour,
+            )
+            .add_field(
+                name=_("Your actions"),
+                value=_(
+                    "`Search the room` — draws from the room's stash: a clue, an"
+                    " item, or junk. Each room holds at most **1** clue and runs"
+                    " dry. Loud.\n"
+                    "`Hide in <spot>` — you survive a `Sweep`, but die if the"
+                    " murderer `Checks` your exact spot or trapped it. One guest"
+                    " per spot; hiding lasts one round.\n"
+                    "`Barricade` — absorbs the murderer's next kill attempt in"
+                    " your room. Lasts about two rounds. Slightly loud.\n"
+                    "`Sneak into <room>` — move to a connected room. Makes noise.\n"
+                    "`Listen at the doors` — silent; gives you a rough read on"
+                    " **every** adjacent room at once.\n"
+                    "`Escape` — only in an open exit room. Very loud, but if you"
+                    " make it, you are out for good and paid."
+                ),
+                inline=False,
+            )
+            .add_field(
+                name=_("Items (found by searching)"),
+                value=_(
+                    "**Flashlight** — one use: a perfect read of your room or a"
+                    " neighbour, immune to blackout, and it reports where the"
+                    " murderer actually ended the round.\n"
+                    "**Noisemaker** — plant it in your room or a neighbour: that"
+                    " room rattles loudly **this round and next**. The murderer"
+                    " hears the loudest room automatically every round — bait"
+                    " them, and a sweep that finds only your decoy is a wasted"
+                    " kill window.\n"
+                    "**Pepper Spray** — automatic: the first time the murderer"
+                    " would kill you face to face, you blind them and flee to a"
+                    " neighbouring room instead. Does **not** save you from traps."
+                ),
+                inline=False,
+            )
+            .add_field(
+                name=_("Perks (one each, secret, told in your opening DM)"),
+                value=_(
+                    "**Insider** — you know which two exits will open this game.\n"
+                    "**Light Sleeper** — warned at round end whenever the"
+                    " murderer is in a room adjacent to yours.\n"
+                    "**Quiet Feet** — your movement makes no noise.\n"
+                    "**Handy** — your barricades absorb two attacks.\n"
+                    "**Scavenger** — you start with a random item."
+                ),
+                inline=False,
+            )
+            .add_field(
+                name=_("Noise — what the murderer hears"),
+                value=_(
+                    "Moving, searching, barricading, and escaping all make noise;"
+                    " listening is silent. The murderer is automatically told the"
+                    " **loudest room of the previous round**, and their `Listen`"
+                    " action reveals the top two. Quiet rooms are safe rooms —"
+                    " or noisemaker lies."
+                ),
+                inline=False,
+            )
+            .add_field(
+                name=_("Survivor strategy"),
+                value=_(
+                    "Spread out early — clues never stack in one room.\n"
+                    "Call out cleared rooms and murderer sightings in the channel.\n"
+                    "When the first exit opens, don't sprint into it blindly: if"
+                    " the murderer camps it, the whole house is told, and the"
+                    " second exit opens sooner.\n"
+                    "Last one alive? **Final Chase** opens both exits — hide,"
+                    " barricade, and pick your door."
+                ),
+                inline=False,
+            )
+        )
+
+    def _build_murderer_guide_embed(self, ctx) -> discord.Embed:
+        return (
+            discord.Embed(
+                title=_("Murder House — How To Play (3/3: The Murderer)"),
+                description=_(
+                    "Your goal: nobody leaves this house. You know the layout,"
+                    " you hear everything, and every houseguest action leaves"
+                    " noise behind."
+                ),
+                colour=self.bot.config.game.primary_colour,
+            )
+            .add_field(
+                name=_("Your actions"),
+                value=_(
+                    "`Sweep the room` — kills one exposed houseguest in your"
+                    " room. If everyone is hidden, you get hints about which"
+                    " spots are occupied instead.\n"
+                    "`Check <spot>` — kills whoever hides in that exact spot.\n"
+                    "`Storm into <room>` — move **and** sweep in one action, but"
+                    " the whole house is told where you went.\n"
+                    "`Move quietly` — reposition; the channel only hears vague"
+                    " footsteps.\n"
+                    "`Rig <spot> with a trap` — for two rounds, anyone hiding"
+                    " there dies instantly. Pepper spray cannot save them.\n"
+                    "`Listen` — the two loudest rooms this round, plus activity"
+                    " around open exits. In **Final Chase**, it reveals the last"
+                    " survivor's exact room.\n"
+                    "`Cut the power` — next round is a blackout: houseguest"
+                    " peeks mostly fail. Cooldown: {cooldown} rounds."
+                ).format(cooldown=MurderHouseGame.CUT_POWER_COOLDOWN),
+                inline=False,
+            )
+            .add_field(
+                name=_("What you hear and what stops you"),
+                value=_(
+                    "Every round you are automatically told the **loudest room"
+                    " of the previous round** — moving, searching, and escaping"
+                    " all betray the houseguests.\n"
+                    "Beware **noisemakers**: sweeping an empty room with a decoy"
+                    " wastes your round, and the whole house laughs.\n"
+                    "**Barricades** eat your kill action in that room (sturdy"
+                    " ones survive two hits).\n"
+                    "**Pepper spray** lets a cornered guest slip away once —"
+                    " traps ignore it."
+                ),
+                inline=False,
+            )
+            .add_field(
+                name=_("The exits are your problem"),
+                value=_(
+                    "You are not told which two exits were chosen. Once one"
+                    " opens, guarding it is tempting — but if you **end a round"
+                    " inside an open exit room**, your position is broadcast to"
+                    " everyone and the second exit opens sooner. Patrol, don't"
+                    " camp."
+                ),
+                inline=False,
+            )
+            .add_field(
+                name=_("Murderer strategy"),
+                value=_(
+                    "Early game: follow the noise and punish greedy searchers.\n"
+                    "Trap the obvious hiding spots in rooms you leave behind.\n"
+                    "Cut the power before pushing a crowded floor.\n"
+                    "When an exit opens, strike the round they run for it —"
+                    " escapees are exposed and loud.\n"
+                    "You earn **${kill}** per kill and **${wipe}** more for a"
+                    " full wipe."
+                ).format(
+                    kill=MurderHouseGame.KILL_REWARD,
+                    wipe=MurderHouseGame.WIPE_BONUS,
+                ),
                 inline=False,
             )
         )
@@ -1972,6 +2667,8 @@ class MurderHouse(commands.Cog):
             "One player becomes the murderer. Everyone else searches rooms, hides, and tries to escape.\n"
             "There are **4** possible exits. One opens after the final clue, and another opens **{delay} rounds later**.\n"
             "If only one houseguest remains before the clue track is complete, **Final Chase** opens both selected exits.\n"
+            "💰 Escapees earn **${escape_reward}**. The murderer earns **${kill_reward}** per kill and **${wipe_bonus}** for a full wipe.\n"
+            "🎭 Every houseguest gets a secret perk in their DMs.\n"
             "⏳ Starts in **{timer}**.\n"
             "**Minimum of {min_players} players are required.**\n"
             "👥 Joined ({count}): {players}\n"
@@ -1980,6 +2677,9 @@ class MurderHouse(commands.Cog):
             author=author.mention,
             timer=timer,
             delay=MurderHouseGame.SECONDARY_EXIT_DELAY_ROUNDS,
+            escape_reward=MurderHouseGame.ESCAPE_REWARD,
+            kill_reward=MurderHouseGame.KILL_REWARD,
+            wipe_bonus=MurderHouseGame.WIPE_BONUS,
             min_players=min_players,
             count=len(joined),
             players=joined_text,
@@ -2081,9 +2781,13 @@ class MurderHouse(commands.Cog):
             - You can force a specific joined player to be the murderer.
             - There are 4 possible exits, but only 2 open in a game.
             - The first exit opens after the final clue; the second opens 4 rounds later.
+            - If the murderer camps an open exit, everyone hears it and the second exit opens sooner.
             - If only one houseguest remains before the clues are done, Final Chase opens both selected exits.
+            - Every houseguest gets a secret perk; searching can find a Flashlight, Noisemaker, or Pepper Spray.
+            - Escapees earn money, and the murderer earns money per kill plus a wipe bonus.
             - Hiding out the clock does not count as a win.
-            - The game only ends when everyone inside is either dead or escaped."""
+            - The game only ends when everyone inside is either dead or escaped.
+            - See `{prefix}murderhouse tutorial` for the complete manual."""
         )
         try:
             min_players, forced_killer = await self._parse_murderhouse_setup(
@@ -2192,20 +2896,40 @@ class MurderHouse(commands.Cog):
             self.games.pop(ctx.channel.id, None)
 
     @murderhouse.command(
-        aliases=["guide", "howto"],
+        aliases=["guide", "howto", "rules"],
         brief=_("View how to play Murder House"),
     )
     @locale_doc
-    async def tutorial(self, ctx):
+    async def tutorial(self, ctx, *, role: str | None = None):
         _(
-            """View a lightweight guide to Murder House.
+            """View the complete Murder House manual.
 
             Usage:
-            `{prefix}murderhouse tutorial`
+            `{prefix}murderhouse tutorial` - full manual (overview + both roles)
+            `{prefix}murderhouse tutorial survivor` - the houseguest guide
+            `{prefix}murderhouse tutorial murderer` - the murderer guide
 
-            Shows the core goals, main actions, and quick tips for both houseguests and the murderer."""
+            Covers every action's exact effect, all items and perks, the noise
+            system, exits, Final Chase, and the money rewards."""
         )
-        await ctx.send(embed=self._build_tutorial_embed(ctx))
+        token = (role or "").strip().casefold()
+        survivor_tokens = {"survivor", "survivors", "guest", "guests", "houseguest", "houseguests"}
+        murderer_tokens = {"murderer", "killer"}
+
+        if token in survivor_tokens:
+            return await ctx.send(embed=self._build_survivor_guide_embed(ctx))
+        if token in murderer_tokens:
+            return await ctx.send(embed=self._build_murderer_guide_embed(ctx))
+        if token:
+            return await ctx.send(
+                _(
+                    "Unknown guide `{role}`. Use `survivor`, `murderer`, or no argument for everything."
+                ).format(role=role)
+            )
+
+        await ctx.send(embed=self._build_tutorial_overview_embed(ctx))
+        await ctx.send(embed=self._build_survivor_guide_embed(ctx))
+        await ctx.send(embed=self._build_murderer_guide_embed(ctx))
 
     @murderhouse.command(
         name="pillow",

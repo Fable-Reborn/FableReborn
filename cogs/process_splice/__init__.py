@@ -4008,16 +4008,25 @@ class ProcessSplice(commands.Cog):
                         pet["splice_id"],
                     )
                     
-                    await conn.execute(
+                    legacy_splice_id = await conn.fetchval(
                         """
                         INSERT INTO splice_combinations
                         (pet1_default,pet2_default,result_name,hp,attack,defense,element,url)
                         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                        RETURNING id
                         """,
                         pet["pet1_default"], pet["pet2_default"], pet["name"],
                         pet["hp"], pet["attack"], pet["defense"], pet["element"], pet["url"],
                     )
-                    
+
+                self.bot.dispatch(
+                    "frontier_splice_created",
+                    int(pet["user_id"]),
+                    pet["name"],
+                    int(legacy_splice_id),
+                    int(pet["splice_id"]),
+                    int(new_id),
+                )
                 completed.append((new_id, pet))
 
                 # Update forge/divine
@@ -4209,16 +4218,25 @@ class ProcessSplice(commands.Cog):
                         pet["splice_id"],
                     )
                     
-                    await conn.execute(
+                    legacy_splice_id = await conn.fetchval(
                         """
                         INSERT INTO splice_combinations
                         (pet1_default,pet2_default,result_name,hp,attack,defense,element,url)
                         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                        RETURNING id
                         """,
                         pet["pet1_default"], pet["pet2_default"], pet["name"],
                         pet["hp"], pet["attack"], pet["defense"], pet["element"], pet["url"],
                     )
-                    
+
+                self.bot.dispatch(
+                    "frontier_splice_created",
+                    int(pet["user_id"]),
+                    pet["name"],
+                    int(legacy_splice_id),
+                    int(pet["splice_id"]),
+                    int(new_id),
+                )
                 completed.append((new_id, pet))
                 
                 # Update forge/divine
@@ -4892,15 +4910,25 @@ class ProcessSplice(commands.Cog):
                         "UPDATE splice_requests SET status='completed' WHERE id=$1",
                         pet["splice_id"],
                     )
-                    await conn.execute(
+                    legacy_splice_id = await conn.fetchval(
                         """
                         INSERT INTO splice_combinations
                         (pet1_default,pet2_default,result_name,hp,attack,defense,element,url)
                         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                        RETURNING id
                         """,
                         pet["pet1_default"], pet["pet2_default"], pet["name"],
                         pet["hp"], pet["attack"], pet["defense"], pet["element"], pet["url"],
                     )
+
+                self.bot.dispatch(
+                    "frontier_splice_created",
+                    int(pet["user_id"]),
+                    pet["name"],
+                    int(legacy_splice_id),
+                    int(pet["splice_id"]),
+                    int(new_id),
+                )
                 completed.append((new_id, pet))
 
                 # forge / divine
@@ -5602,11 +5630,12 @@ class ProcessSplice(commands.Cog):
                     )
 
                 # Store the combination for future automatic splices
-                await conn.execute(
+                legacy_splice_id = await conn.fetchval(
                     """
                     INSERT INTO splice_combinations 
                     (pet1_default, pet2_default, result_name, hp, attack, defense, element, url) 
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    RETURNING id
                     """,
                     splice["pet1_default"],
                     splice["pet2_default"],
@@ -5616,6 +5645,15 @@ class ProcessSplice(commands.Cog):
                     defense,
                     element,
                     url
+                )
+
+                self.bot.dispatch(
+                    "frontier_splice_created",
+                    int(splice["user_id"]),
+                    new_name,
+                    int(legacy_splice_id),
+                    int(splice_id),
+                    int(new_pet_id),
                 )
 
                 # Find and process any other pending requests with the same pet combination
@@ -5660,11 +5698,12 @@ class ProcessSplice(commands.Cog):
                     this_baby_defense += pending_defense_iv
 
                     # Create pet for this user
-                    await conn.execute(
+                    pending_pet_id = await conn.fetchval(
                         """
                         INSERT INTO monster_pets 
                         (user_id, name, hp, attack, defense, element, default_name, url, growth_stage, growth_time, "IV") 
                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                        RETURNING id
                         """,
                         pending["user_id"],
                         new_name,
@@ -5683,6 +5722,15 @@ class ProcessSplice(commands.Cog):
                     await conn.execute(
                         "UPDATE splice_requests SET status = 'completed' WHERE id = $1",
                         pending["id"]
+                    )
+
+                    self.bot.dispatch(
+                        "frontier_splice_created",
+                        int(pending["user_id"]),
+                        new_name,
+                        int(legacy_splice_id),
+                        int(pending["id"]),
+                        int(pending_pet_id),
                     )
 
                     # Prepare notification message for pending users
@@ -5727,4 +5775,3 @@ async def setup(bot):
     await bot.add_cog(ProcessSplice(bot))
 
     
-

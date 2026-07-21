@@ -28,6 +28,7 @@ from classes.context import Context
 BADGE_DISPLAY_NAMES = {
     "FAVORED_BY_THE_SEVEN": "Favored by the Seven",
     "GREGAPOCALYPSE_SURVIVOR": "Gregapocalypse Survivor",
+    "RELIC_SOVEREIGN": "Relic Sovereign",
 }
 
 
@@ -45,6 +46,8 @@ class Badge(IntFlag):
     ETERNAL_SOVEREIGN = 1024
     FAVORED_BY_THE_SEVEN = 2048
     GREGAPOCALYPSE_SURVIVOR = 4096
+    LIVING_LEGEND = 8192
+    RELIC_SOVEREIGN = 16384
 
     @classmethod
     def from_string(cls, string: str) -> Badge | None:
@@ -78,6 +81,20 @@ class Badge(IntFlag):
                 contains.append(self.__class__.display_name_for(name))
 
         return contains
+
+    def to_profile_display_items(self, limit: int = 6) -> list[str]:
+        """Return profile badges with earned account capstones shown first."""
+
+        priority = ("RELIC_SOVEREIGN", "LIVING_LEGEND")
+        ordered_names = priority + tuple(
+            name for name in self.__class__.__members__ if name not in priority
+        )
+        contains = [
+            self.__class__.display_name_for(name)
+            for name in ordered_names
+            if bool(self & self.__class__.__members__[name])
+        ]
+        return contains[: max(0, int(limit))]
 
     def to_items_lowercase(self) -> list[str]:
         contains = []

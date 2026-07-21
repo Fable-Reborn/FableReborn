@@ -32,12 +32,25 @@ from classes.badges import Badge
 from .core.battle import Battle
 from .core.team import Team
 from .core.combatant import Combatant
+from .core.numbers import to_decimal
 from .dragon_party_card import render_dragon_party_card
 from .types.tower import TowerBattle
+from .types.omnithrone import ensure_omnithrone_schema
 from classes.classes import from_string as class_from_string
 from classes.converters import IntGreaterThan
+from classes.errors import NoChoice
 from classes.items import ItemType, Hand
 from cogs.shard_communication import user_on_cooldown as user_cooldown
+from cogs.soulforge_frontiers.frontier_pve import (
+    FrontierConfigError,
+    build_frontier_boss_encounter,
+    build_frontier_locations,
+    build_frontier_pool,
+    choose_weighted_monster,
+    get_rotation_state,
+    load_frontier_config,
+    resolve_recipe_generations,
+)
 from utils.april_fools import get_pet_display_name, get_pet_display_url
 from utils.checks import has_char, has_money, is_gm
 from utils.i18n import _, locale_doc
@@ -57,6 +70,12 @@ JURY_BONUS_CACHE_MULTIPLIER = Decimal("0.50")
 JURY_MAJOR_BONUS_CACHE_MULTIPLIER = Decimal("1.00")
 
 logger = logging.getLogger(__name__)
+
+BT_CHALLENGE_MIN_PRESTIGE = 5
+BT_CHALLENGE_PRESTIGE_STEP = Decimal("0.035")
+BT_CHALLENGE_PRESTIGE_CAP = 30
+BT_CHALLENGE_BASE_STAT_STEP = Decimal("0.055")
+BT_CHALLENGE_BASE_STAT_CAP = 30
 
 def _pet_egg_display_name(item):
     return str(
@@ -1404,6 +1423,7 @@ class Battles(commands.Cog):
     DRAGON_COIN_DROP_CHANCE_PERCENT = 10
     DRAGON_COIN_DROP_MIN = 2
     DRAGON_COIN_DROP_MAX = 5
+    MAW_DIVINE_CRATE_DROP_CHANCE = 0.01
     PVE_LEVEL_BRACKET_SIZE = 10
     PVE_MAX_TIER = 10
     PVE_GOD_TIER = 11
@@ -1551,6 +1571,7 @@ class Battles(commands.Cog):
             "unlock_level": 100,
             "god_chance": 0,
             "tier_weights": {12: 100},
+            "campaign_only": True,
         },
     )
     GOD_SHARD_ALIGNMENT_EMOJIS = {
@@ -1635,6 +1656,17 @@ class Battles(commands.Cog):
         
         # Macro detection storage
         self.pve_macro_detection = {}  # {user_id: {"count": int, "timestamp": float}}
+
+        # Frontier locations are a standalone PvE content layer.  A malformed
+        # checked-in roster disables only these locations rather than preventing
+        # the rest of Battles from loading.
+        self.frontier_config = None
+        self.PVE_LOCATIONS = tuple(type(self).PVE_LOCATIONS)
+        try:
+            self.frontier_config = load_frontier_config()
+            self.PVE_LOCATIONS += build_frontier_locations(self.frontier_config)
+        except FrontierConfigError as exc:
+            logger.error("Soulforge Frontiers disabled: %s", exc)
         
         self.load_data_files()
 
@@ -1676,6 +1708,28 @@ class Battles(commands.Cog):
             await conn.execute(
                 "ALTER TABLE battletower ADD COLUMN IF NOT EXISTS freedom_meter INTEGER NOT NULL DEFAULT 0;"
             )
+            await conn.execute(
+                "ALTER TABLE battletower ADD COLUMN IF NOT EXISTS ironman_level INTEGER NOT NULL DEFAULT 0;"
+            )
+            await conn.execute(
+                "ALTER TABLE battletower ADD COLUMN IF NOT EXISTS ironman_best INTEGER NOT NULL DEFAULT 0;"
+            )
+            await conn.execute(
+                "ALTER TABLE battletower ADD COLUMN IF NOT EXISTS ironman_prestige INTEGER NOT NULL DEFAULT 0;"
+            )
+            await conn.execute(
+                "ALTER TABLE battletower ADD COLUMN IF NOT EXISTS bossrush_prestige INTEGER NOT NULL DEFAULT 0;"
+            )
+            # Floor ghosts: community stats shown when entering a tower floor
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS tower_floor_stats (
+                    floor INTEGER PRIMARY KEY,
+                    clears BIGINT NOT NULL DEFAULT 0,
+                    deaths BIGINT NOT NULL DEFAULT 0,
+                    best_seconds INTEGER,
+                    best_holder BIGINT
+                )
+            """)
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS jurytower (
@@ -1788,6 +1842,16 @@ class Battles(commands.Cog):
             )
             await conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS dragon_records (
+                    id INTEGER PRIMARY KEY,
+                    record_level INTEGER NOT NULL DEFAULT 0,
+                    record_holder BIGINT,
+                    achieved_at TIMESTAMP
+                );
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS ice_dragon_presets (
                     id SERIAL PRIMARY KEY,
                     name TEXT NOT NULL UNIQUE,
@@ -1866,6 +1930,7 @@ class Battles(commands.Cog):
                 );
                 """
             )
+            await ensure_omnithrone_schema(conn)
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS pve_preferences (
@@ -1935,6 +2000,10 @@ class Battles(commands.Cog):
                     ("Time Freeze", "move", "Effect: time_stop. Damage: 2000. Chance: 30%", 2000, "time_stop", 0.3),
                     ("Eternal Damnation", "move", "Effect: eternal_curse. Damage: 1500. Chance: 30%", 1500, "eternal_curse", 0.3),
                     ("Apocalypse", "move", "Effect: world_ender. Damage: 1200. Chance: 40%", 1200, "world_ender", 0.4),
+                    ("Abyssal Devour", "move", "Effect: execute. Damage: 1800. Chance: 25%", 1800, "execute", 0.25),
+                    ("Maw of the Void", "move", "Effect: aoe_dot. Damage: 1200. Chance: 35%", 1200, "aoe_dot", 0.35),
+                    ("Frozen Oblivion", "move", "Effect: freeze. Damage: 1400. Chance: 25%", 1400, "freeze", 0.25),
+                    ("Endless Hunger", "move", "Effect: steal_buffs. Damage: 900. Chance: 15%", 900, "steal_buffs", 0.15),
                     ("Ice Armor", "passive", "Reduces all damage by 20%.", None, None, None),
                     ("Corruption", "passive", "Reduces shields/armor by 20%.", None, None, None),
                     ("Void Fear", "passive", "Reduces attack power by 20%.", None, None, None),
@@ -1944,6 +2013,7 @@ class Battles(commands.Cog):
                     ("Eternal Winter", "passive", "Freezes all healing and reduces damage by 40%.", None, None, None),
                     ("Death's Embrace", "passive", "10% chance to instantly kill on any hit.", None, None, None),
                     ("Reality Bender", "passive", "Randomly negates 50% of attacks and reflects damage.", None, None, None),
+                    ("Abyssal Presence", "passive", "Reduces attack and defense by 35%.", None, None, None),
                     ("Puppet Strings", "move", "Effect: possess_player. Damage: 400. Chance: 25%", 400, "possess_player", 0.25),
                     ("Beastmind Override", "move", "Effect: possess_pet. Damage: 600. Chance: 20%", 600, "possess_pet", 0.2),
                     ("Dominion of the Void", "move", "Effect: possess_player_and_pet_permanent. Damage: 1200. Chance: 10%", 1200, "possess_player_and_pet_permanent", 0.1),
@@ -1968,14 +2038,38 @@ class Battles(commands.Cog):
                     ("Corrupted Ice Dragon", 6, 10, 1.15, "Water", ["Frosty Ice Burst", "Minion Army", "Frost Spears"], ["Corruption"]),
                     ("Permafrost", 11, 15, 1.25, "Water", ["Soul Reaver", "Death Note", "Dark Shadows"], ["Void Fear"]),
                     ("Absolute Zero", 16, 20, 1.5, "Water", ["Void Blast", "Soul Crusher", "Armageddon"], ["Aspect of death"]),
-                    ("Void Tyrant", 21, 25, 2.0, "Water", ["Reality Shatter", "Soul Harvest", "Void Storm"], ["Void Corruption", "Soul Devourer"]),
-                    ("Eternal Frost", 26, 30, 3.0, "Water", ["Time Freeze", "Eternal Damnation", "Apocalypse"], ["Eternal Winter", "Death's Embrace", "Reality Bender"]),
+                    ("Void Tyrant", 21, 34, 2.0, "Water", ["Reality Shatter", "Soul Harvest", "Void Storm"], ["Void Corruption", "Soul Devourer"]),
+                    ("The Abyssal Maw", 35, 9999, 2.2, "Water", ["Abyssal Devour", "Maw of the Void", "Frozen Oblivion", "Endless Hunger"], ["Abyssal Presence"]),
                 ]
                 await conn.executemany(
                     "INSERT INTO ice_dragon_stages (name, min_level, max_level, base_multiplier, element, move_names, passive_names) "
                     "VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (name) DO NOTHING",
                     stage_seed,
                 )
+
+            await conn.execute(
+                """
+                INSERT INTO ice_dragon_stages (
+                    name, min_level, max_level, base_multiplier, element, move_names, passive_names, enabled
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
+                ON CONFLICT (name) DO UPDATE SET
+                    min_level = EXCLUDED.min_level,
+                    max_level = EXCLUDED.max_level,
+                    base_multiplier = EXCLUDED.base_multiplier,
+                    element = EXCLUDED.element,
+                    move_names = EXCLUDED.move_names,
+                    passive_names = EXCLUDED.passive_names,
+                    enabled = TRUE;
+                """,
+                "The Abyssal Maw",
+                35,
+                9999,
+                2.2,
+                "Water",
+                ["Abyssal Devour", "Maw of the Void", "Frozen Oblivion", "Endless Hunger"],
+                ["Abyssal Presence"],
+            )
 
             drops_count = await conn.fetchval("SELECT COUNT(*) FROM ice_dragon_drops")
             if drops_count == 0:
@@ -2625,23 +2719,87 @@ class Battles(commands.Cog):
             ((normalized_level - 1) // self.PVE_LEVEL_BRACKET_SIZE) + 1,
         )
 
+    def _get_pve_locations_snapshot(
+        self,
+        *,
+        include_campaign_only: bool = False,
+    ) -> list[dict]:
+        """Return locations with current (not startup-cached) Frontier state."""
+        locations = [dict(location) for location in self.PVE_LOCATIONS]
+        if not include_campaign_only:
+            locations = [
+                location for location in locations if not location.get("campaign_only")
+            ]
+        if not self.frontier_config:
+            return locations
+        try:
+            rotation = get_rotation_state(self.frontier_config)
+        except Exception:
+            return locations
+        for location in locations:
+            if location.get("location_type") != "soulforge_frontier":
+                continue
+            location["frontier_active"] = location.get("id") == rotation.region_id
+            location["frontier_rotation_week"] = rotation.absolute_week
+        return locations
+
     def _get_unlocked_pve_locations(self, player_level: int) -> list[dict]:
         """Return all PvE locations unlocked at the player's current level."""
         normalized_level = max(1, int(player_level))
         return [
             dict(location)
-            for location in self.PVE_LOCATIONS
+            for location in self._get_pve_locations_snapshot()
             if normalized_level >= int(location["unlock_level"])
         ]
 
-    def _get_pve_location_by_id(self, location_id: str | None) -> dict | None:
+    def _get_pve_location_by_id(
+        self,
+        location_id: str | None,
+        *,
+        include_campaign_only: bool = False,
+    ) -> dict | None:
         """Look up a PvE location by id."""
         if not location_id:
             return None
-        for location in self.PVE_LOCATIONS:
+        for location in self._get_pve_locations_snapshot(
+            include_campaign_only=include_campaign_only
+        ):
             if location["id"] == location_id:
                 return dict(location)
         return None
+
+    @staticmethod
+    def _is_omnithrone_campaign_authorized(ctx) -> bool:
+        """Accept only an internal campaign marker, never a player argument."""
+
+        marker = getattr(ctx, "omnithrone_campaign_authorized", None)
+        if marker is True:
+            return True
+        return bool(
+            isinstance(marker, dict)
+            and str(marker.get("campaign_id") or "").strip()
+            and str(marker.get("chapter_id") or "").strip()
+        )
+
+    def prepare_omnithrone_campaign_context(
+        self,
+        ctx,
+        *,
+        campaign_id: str,
+        chapter_id: str,
+    ) -> None:
+        """Arm a context for one campaign-launched Tier-12 PvE invocation."""
+
+        normalized_campaign = str(campaign_id or "").strip()
+        normalized_chapter = str(chapter_id or "").strip()
+        if not normalized_campaign or not normalized_chapter:
+            raise ValueError("campaign_id and chapter_id are required")
+        ctx.omnithrone_campaign_authorized = {
+            "campaign_id": normalized_campaign,
+            "chapter_id": normalized_chapter,
+        }
+        ctx.locationchoice_override = self.OMNITHRONE_SANCTUM_LOCATION_ID
+        ctx.pve_pool_override = "normal"
 
     def _get_pve_tier_rates_for_location(self, location: dict) -> list[tuple[int, float]]:
         """Return exact encounter rates (percent) per tier for a location."""
@@ -2691,17 +2849,18 @@ class Battles(commands.Cog):
         if not normalized:
             return None
 
-        for location in self.PVE_LOCATIONS:
+        locations = self._get_pve_locations_snapshot()
+        for location in locations:
             if normalized == str(location.get("id", "")).lower():
                 return dict(location)
 
-        for location in self.PVE_LOCATIONS:
+        for location in locations:
             if normalized == str(location.get("name", "")).lower():
                 return dict(location)
 
         matches = [
             dict(location)
-            for location in self.PVE_LOCATIONS
+            for location in locations
             if normalized in str(location.get("id", "")).lower()
             or normalized in str(location.get("name", "")).lower()
         ]
@@ -3233,6 +3392,94 @@ class Battles(commands.Cog):
             return default_pool, False
 
         return self._merge_pve_monster_pools(default_pool, splice_pool), True
+
+    @staticmethod
+    def _is_frontier_location(location: dict | None) -> bool:
+        return bool(
+            location
+            and location.get("location_type") == "soulforge_frontier"
+            and location.get("frontier_region_id")
+        )
+
+    async def _get_frontier_build_inputs(self):
+        """Load immutable public baselines plus the current legacy recipe rows."""
+        public_pool = await self._get_public_monsters_by_level()
+        async with self.bot.pool.acquire() as conn:
+            splice_rows = await conn.fetch(
+                """
+                SELECT id, pet1_default, pet2_default, result_name,
+                       hp, attack, defense, element, url, created_at,
+                       frontier_recipe_id
+                FROM splice_combinations
+                ORDER BY id ASC;
+                """
+            )
+        generation_by_recipe_id = resolve_recipe_generations(
+            self._load_base_pve_monster_names(),
+            splice_rows,
+        )
+        return public_pool, splice_rows, generation_by_recipe_id
+
+    async def _get_pve_monster_pool_for_location(
+        self,
+        user_id: int,
+        location: dict | None,
+        force_include_splice: bool | None = None,
+    ) -> tuple[dict[int, list[dict]], bool]:
+        """Build a deterministic Frontier pool, or delegate to normal PvE."""
+        if not self.frontier_config or not self._is_frontier_location(location):
+            return await self._get_pve_monster_pool_for_user(
+                user_id,
+                force_include_splice=force_include_splice,
+            )
+
+        public_pool, splice_rows, generation_map = await self._get_frontier_build_inputs()
+        build = build_frontier_pool(
+            self.frontier_config,
+            location["frontier_region_id"],
+            public_pool,
+            splice_rows,
+            generation_by_recipe_id=generation_map,
+        )
+        if (
+            build.missing_legacy_splice_ids
+            or build.name_mismatches
+            or build.generation_mismatches
+        ):
+            logger.warning(
+                "Frontier roster drift in %s: missing=%s names=%s generations=%s",
+                build.region_id,
+                build.missing_legacy_splice_ids,
+                build.name_mismatches,
+                build.generation_mismatches,
+            )
+        return build.pool, bool(build.included_legacy_splice_ids)
+
+    async def get_frontier_boss_encounter(
+        self,
+        region_id: str,
+        when: datetime.datetime | None = None,
+    ) -> dict | None:
+        """Return the separately gated active Frontier boss encounter."""
+        if not self.frontier_config:
+            return None
+        public_pool, splice_rows, generation_map = await self._get_frontier_build_inputs()
+        monster = build_frontier_boss_encounter(
+            self.frontier_config,
+            region_id,
+            public_pool,
+            splice_rows,
+            when=when,
+            generation_by_recipe_id=generation_map,
+        )
+        if monster is None:
+            return None
+        location = self._get_pve_location_by_id(region_id)
+        monster["pve_location_id"] = region_id
+        monster["pve_location_name"] = (
+            location.get("name", region_id) if location else region_id
+        )
+        return monster
 
     def _roll_pve_tier_for_location(self, location: dict) -> int:
         """
@@ -3963,7 +4210,11 @@ class Battles(commands.Cog):
                             level,
                             prestige,
                             COALESCE(run_key_bits, 0) AS run_key_bits,
-                            COALESCE(freedom_meter, 0) AS freedom_meter
+                            COALESCE(freedom_meter, 0) AS freedom_meter,
+                            COALESCE(ironman_level, 0) AS ironman_level,
+                            COALESCE(ironman_best, 0) AS ironman_best,
+                            COALESCE(ironman_prestige, 0) AS ironman_prestige,
+                            COALESCE(bossrush_prestige, 0) AS bossrush_prestige
                         FROM battletower
                         WHERE id = $1
                         """,
@@ -3977,6 +4228,27 @@ class Battles(commands.Cog):
                     prestige_level = int(progress_row["prestige"] or 0)
                     run_key_bits = int(progress_row["run_key_bits"] or 0)
                     freedom_meter = int(progress_row["freedom_meter"] or 0)
+                    ironman_level = int(progress_row["ironman_level"] or 0)
+                    ironman_best = int(progress_row["ironman_best"] or 0)
+                    ironman_prestige = int(progress_row["ironman_prestige"] or 0)
+                    bossrush_prestige = int(progress_row["bossrush_prestige"] or 0)
+                    prestige_challenges_open = prestige_level >= BT_CHALLENGE_MIN_PRESTIGE
+                    bossrush_used = bossrush_prestige >= prestige_level if prestige_challenges_open else False
+                    ironman_used = ironman_prestige >= prestige_level and ironman_level <= 0 if prestige_challenges_open else False
+                    ironman_active = (
+                        prestige_challenges_open
+                        and ironman_level > 0
+                        and ironman_prestige == prestige_level
+                    )
+                    bossrush_status = (
+                        "used" if bossrush_used else "available"
+                    ) if prestige_challenges_open else "locked"
+                    if not prestige_challenges_open:
+                        ironman_status = "locked"
+                    elif ironman_active:
+                        ironman_status = "active"
+                    else:
+                        ironman_status = "used" if ironman_used else "available"
                     keys_this_run = self._tower_key_count(run_key_bits)
                     hidden_door_ready = (
                         keys_this_run == 3
@@ -4003,11 +4275,29 @@ class Battles(commands.Cog):
                             f"Keys This Run: {keys_this_run}/3\n"
                             f"Hidden Door Resonance: "
                             f"{min(freedom_meter, self.TOWER_FREEDOM_UNLOCK_THRESHOLD)}/{self.TOWER_FREEDOM_UNLOCK_THRESHOLD}\n"
-                            f"Hidden Door Ready: {'✅' if hidden_door_ready else '❌'}"
+                            f"Hidden Door Ready: {'✅' if hidden_door_ready else '❌'}\n"
+                            f"Ironman: {'floor ' + str(ironman_level) if ironman_level else 'no active run'} "
+                            f"(best ascent: {ironman_best}, run prestige: {ironman_prestige or 'none'})\n"
+                            f"Prestige Challenges: "
+                            f"{'open' if prestige_challenges_open else f'locked until prestige {BT_CHALLENGE_MIN_PRESTIGE}'}\n"
+                            f"Boss Rush This Run: {bossrush_status}\n"
+                            f"Ironman This Run: {ironman_status}"
                         ),
                         color=0x0000FF
                     )
                     embed_1.add_field(name="Level Progress", value=generate_level_list(level_names_1), inline=False)
+
+                    # This week's corrupted floors
+                    corrupted_floors = self.get_corrupted_floors()
+                    corrupted_lines = "\n".join(
+                        f"{data['emoji']} Floor {floor} — **{data['name']}**: {data['description']}"
+                        for floor, data in sorted(corrupted_floors.items())
+                    )
+                    embed_1.add_field(
+                        name="⚠️ Corrupted Floors This Week",
+                        value=f"{corrupted_lines}\nCleanse one for a bonus crate + gold!",
+                        inline=False,
+                    )
                     embed_1.set_footer(text="**Rewards are granted every 5 levels**")
 
                     # Send the embeds to the current context (channel)
@@ -4018,6 +4308,47 @@ class Battles(commands.Cog):
 
         except Exception as e:
             await ctx.send(f"An error occurred while accessing the database: {e}")
+
+    @battletower.command(name="records", aliases=["record", "ghosts"])
+    async def battletower_records(self, ctx):
+        """Show global Battle Tower floor records."""
+        try:
+            async with self.bot.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT floor, clears, deaths, best_seconds, best_holder
+                    FROM tower_floor_stats
+                    ORDER BY floor ASC
+                    """
+                )
+            stats = {int(row["floor"]): row for row in rows}
+            lines = []
+            for floor in range(1, 31):
+                row = stats.get(floor)
+                if not row:
+                    lines.append(f"`{floor:>2}` — no attempts recorded")
+                    continue
+                clears = int(row["clears"] or 0)
+                deaths = int(row["deaths"] or 0)
+                attempts = clears + deaths
+                death_rate = (deaths / attempts * 100) if attempts else 0
+                if row["best_seconds"] and row["best_holder"]:
+                    best = f"best **{int(row['best_seconds'])}s** by <@{row['best_holder']}>"
+                else:
+                    best = "no clear record"
+                lines.append(
+                    f"`{floor:>2}` — {best} · {attempts:,} attempts · {death_rate:.0f}% deaths"
+                )
+
+            embed = discord.Embed(
+                title="Battle Tower Floor Records",
+                description="\n".join(lines),
+                color=0x95A5A6,
+            )
+            embed.set_footer(text="Global all-time records per floor.")
+            await ctx.send(embed=embed)
+        except Exception as e:
+            await ctx.send(f"An error occurred while fetching Battle Tower records: {e}")
 
     def _get_other_god_message(self, victory_data, player_god=None):
         """Pick a god message, preferring one that is not the player's god."""
@@ -4045,6 +4376,294 @@ class Battles(commands.Cog):
             ]
 
         return random.choice(filtered_messages) if filtered_messages else None
+
+    # --- Weekly corrupted floors -------------------------------------------------
+    # Each week 3 tower floors are gripped by a corruption that buffs their
+    # enemies; cleansing one grants a bonus crate + gold on top of normal rewards.
+
+    TOWER_CORRUPTIONS = {
+        "vicious": {
+            "name": "Vicious",
+            "emoji": "🗡️",
+            "description": "Enemies deal 30% more damage.",
+            "damage_mult": 1.30,
+            "hp_mult": 1.0,
+        },
+        "stalwart": {
+            "name": "Stalwart",
+            "emoji": "🛡️",
+            "description": "Enemies have 40% more HP.",
+            "damage_mult": 1.0,
+            "hp_mult": 1.40,
+        },
+        "unhallowed": {
+            "name": "Unhallowed",
+            "emoji": "👻",
+            "description": "Enemies deal 20% more damage and have 20% more HP.",
+            "damage_mult": 1.20,
+            "hp_mult": 1.20,
+        },
+    }
+
+    def get_corrupted_floors(self):
+        """This week's corrupted tower floors as {floor: corruption dict}.
+
+        Seeded by ISO week: deterministic across restarts and identical for
+        every player until the week rolls over.
+        """
+        iso = datetime.datetime.utcnow().isocalendar()
+        rng = random.Random(f"bt-corrupted-{iso[0]}-W{iso[1]}")
+        floors = rng.sample(range(1, 31), 3)
+        return {
+            floor: self.TOWER_CORRUPTIONS[rng.choice(sorted(self.TOWER_CORRUPTIONS))]
+            for floor in floors
+        }
+
+    def apply_corruption_to_level_data(self, level_data, corruption):
+        """Return a copy of the floor data with enemy stats scaled up."""
+        scaled = {k: (dict(v) if isinstance(v, dict) else v) for k, v in level_data.items()}
+        hp_multiplier = to_decimal(corruption.get("hp_mult", 1), 1)
+        damage_multiplier = to_decimal(corruption.get("damage_mult", 1), 1)
+        for slot in ("minion1", "minion2", "boss"):
+            enemy = scaled.get(slot)
+            if isinstance(enemy, dict):
+                # Floor 16 can supply Decimal stats from the database while
+                # corruption definitions use floats. Normalize at this data
+                # boundary so mixed numeric sources cannot reach arithmetic.
+                enemy["hp"] = round(to_decimal(enemy.get("hp", 0)) * hp_multiplier)
+                enemy["damage"] = round(
+                    to_decimal(enemy.get("damage", 0)) * damage_multiplier
+                )
+        return scaled
+
+    async def award_corruption_bonus(self, ctx, corruption, emotes):
+        """Bonus loot roll for cleansing a corrupted floor."""
+        crate_options = (
+            self.battle_data.get("chest_options", {})
+            .get("random", {})
+            .get("crate_options", [])
+        )
+        if crate_options:
+            values = [opt["value"] for opt in crate_options]
+            weights = [opt["weight"] for opt in crate_options]
+            crate_type = random.choices(values, weights)[0]
+        else:
+            crate_type = "common"
+        money_bonus = random.randint(10, 50) * 1000
+        money_bonus = int(money_bonus * await self._freebooter_money_multiplier(ctx.author.id))
+        async with self.bot.pool.acquire() as connection:
+            await connection.execute(
+                f'UPDATE profile SET crates_{crate_type} = crates_{crate_type} + 1, money = money + $1 WHERE "user" = $2',
+                money_bonus,
+                ctx.author.id,
+            )
+        emote = (emotes or {}).get(crate_type, "")
+        await self._send_with_retry(
+            ctx,
+            content=(
+                f"{corruption['emoji']} **Corruption cleansed!** The floor's dark essence condenses into "
+                f"a bonus {emote} **{crate_type.capitalize()} Crate** and **${money_bonus:,}**!"
+            ),
+            suppress_failure=True,
+        )
+        # Let other systems (feats, ...) count the cleanse
+        self.bot.dispatch("corrupted_floor_cleansed", ctx)
+
+    async def _freebooter_money_multiplier(self, user_id):
+        """Freebooter spec: bonus money from victories (1.0 when unspecced)."""
+        spec_cog = self.bot.get_cog("Specializations")
+        if not spec_cog:
+            return 1.0
+        try:
+            fx = await spec_cog.get_user_spec_effects(user_id)
+        except Exception:
+            return 1.0
+        eff = fx.get("money_bonus_pct")
+        return 1 + eff["value"] / 100 if eff else 1.0
+
+    @staticmethod
+    def _bt_challenge_mode_label(mode):
+        return "Ironman" if mode == "ironman" else "Boss Rush"
+
+    def _bt_challenge_scale_snapshot(self, player_combatant, pet_combatant):
+        return self.battle_factory._build_jury_scale_snapshot_from_combatants(
+            player_combatant,
+            pet_combatant,
+        )
+
+    async def _bt_challenge_prestige_available(self, ctx, row, mode, active_ironman=False):
+        prestige = int(row["prestige"] or 0) if row else 0
+        mode_label = self._bt_challenge_mode_label(mode)
+        if prestige < BT_CHALLENGE_MIN_PRESTIGE:
+            await ctx.send(
+                f"**{mode_label}** opens at Battle Tower prestige "
+                f"**{BT_CHALLENGE_MIN_PRESTIGE}+**. You are prestige **{prestige}**."
+            )
+            return False
+
+        if mode == "bossrush":
+            used_prestige = int(row["bossrush_prestige"] or 0)
+            if used_prestige >= prestige:
+                await ctx.send(
+                    f"**Boss Rush** has already been attempted for prestige **{prestige}**. "
+                    "Prestige the tower again to reopen it."
+                )
+                return False
+        elif mode == "ironman" and not active_ironman:
+            used_prestige = int(row["ironman_prestige"] or 0)
+            if used_prestige >= prestige:
+                await ctx.send(
+                    f"**Ironman** has already been attempted for prestige **{prestige}**. "
+                    "Prestige the tower again to start another run."
+                )
+                return False
+        return True
+
+    def _bt_challenge_prestige_multiplier(self, prestige):
+        prestige_over = max(0, min(BT_CHALLENGE_PRESTIGE_CAP, int(prestige or 0)) - BT_CHALLENGE_MIN_PRESTIGE)
+        return Decimal("1") + (Decimal(prestige_over) * BT_CHALLENGE_PRESTIGE_STEP)
+
+    def _bt_challenge_base_multiplier(self, prestige):
+        capped = max(0, min(BT_CHALLENGE_BASE_STAT_CAP, int(prestige or 0)))
+        return Decimal("1") + (Decimal(capped) * BT_CHALLENGE_BASE_STAT_STEP)
+
+    def _bt_challenge_reward_multiplier(self, prestige):
+        prestige_over = max(0, int(prestige or 0) - BT_CHALLENGE_MIN_PRESTIGE)
+        return Decimal("1") + (Decimal(prestige_over) * Decimal("0.04"))
+
+    @staticmethod
+    def _bt_challenge_difficulty_prestige(prestige):
+        prestige = max(0, int(prestige or 0))
+        return max(0, prestige - (prestige // 5))
+
+    def _bt_challenge_floor_factor(self, floor, mode):
+        floor = max(1, min(30, int(floor or 1)))
+        progress = Decimal(floor - 1) / Decimal("29")
+        if mode == "bossrush":
+            return Decimal("0.85") + (progress * Decimal("0.15"))
+        return Decimal("0.55") + (progress * Decimal("0.45"))
+
+    def _scale_bt_challenge_enemy_spec(self, spec, floor, slot, prestige, snapshot, mode):
+        scaled = dict(spec)
+
+        floor = max(1, min(30, int(floor or 1)))
+        is_boss = slot == "boss"
+        prestige_multiplier = self._bt_challenge_prestige_multiplier(prestige)
+        base_multiplier = self._bt_challenge_base_multiplier(prestige)
+        floor_factor = self._bt_challenge_floor_factor(floor, mode)
+        if mode == "bossrush":
+            round_budget = Decimal("2.75") if is_boss else Decimal("1.45")
+            hp_pressure = Decimal("0.035") if is_boss else Decimal("0.027")
+            armor_pct = Decimal("0.15") if is_boss else Decimal("0.105")
+        else:
+            round_budget = Decimal("2.25") if is_boss else Decimal("1.15")
+            hp_pressure = Decimal("0.030") if is_boss else Decimal("0.022")
+            armor_pct = Decimal("0.13") if is_boss else Decimal("0.09")
+        round_budget *= prestige_multiplier * floor_factor
+
+        attack_base = Decimal(str((snapshot or {}).get("attack_base", 1) or 1))
+        hp_base = Decimal(str((snapshot or {}).get("hp_base", 1) or 1))
+        defense_base = Decimal(str((snapshot or {}).get("defense_base", 1) or 1))
+
+        base_hp = Decimal(str(spec.get("hp", 100) or 100))
+        base_attack = Decimal(str(spec.get("attack", 20) or 20))
+        base_defense = Decimal(str(spec.get("defense", 10) or 10))
+
+        hp = max(base_hp * base_multiplier, attack_base * round_budget)
+        damage_pressure = (
+            defense_base
+            + (hp_base * hp_pressure * prestige_multiplier * floor_factor)
+        )
+        damage = max(base_attack * base_multiplier, damage_pressure)
+        armor = max(base_defense * base_multiplier, attack_base * armor_pct * prestige_multiplier)
+
+        scaled["hp"] = max(1, int(round(float(hp))))
+        scaled["attack"] = max(1, int(round(float(damage))))
+        scaled["defense"] = max(0, int(round(float(armor))))
+        return scaled
+
+    def _bt_bossrush_rewards(self, prestige):
+        prestige = max(BT_CHALLENGE_MIN_PRESTIGE, int(prestige or BT_CHALLENGE_MIN_PRESTIGE))
+        bonus_tiers = max(0, min(2, (prestige - BT_CHALLENGE_MIN_PRESTIGE) // 10))
+        return {
+            "fortune": 1 + bonus_tiers,
+            "divine": 0,
+            "lp": min(200, 50 + (prestige * 5)),
+            "money_multiplier": self._bt_challenge_reward_multiplier(prestige),
+        }
+
+    def _bt_ironman_rewards(self, prestige):
+        prestige = max(BT_CHALLENGE_MIN_PRESTIGE, int(prestige or BT_CHALLENGE_MIN_PRESTIGE))
+        bonus_tiers = max(0, min(2, (prestige - BT_CHALLENGE_MIN_PRESTIGE) // 10))
+        return {
+            "fortune": bonus_tiers,
+            "divine": 1 + bonus_tiers,
+            "lp": min(450, 150 + (prestige * 10)),
+            "money_multiplier": self._bt_challenge_reward_multiplier(prestige),
+            "milestone_roll_bonus": bonus_tiers,
+        }
+
+    async def show_floor_ghosts(self, ctx, level):
+        """Community 'ghost' stats for a floor, shown before the fight."""
+        try:
+            async with self.bot.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT clears, deaths, best_seconds, best_holder FROM tower_floor_stats WHERE floor = $1",
+                    level,
+                )
+            if not row or (row["clears"] + row["deaths"]) < 5:
+                return  # not enough data for a meaningful ghost
+            total = row["clears"] + row["deaths"]
+            death_rate = row["deaths"] / total * 100
+            text = (
+                f"👻 **Floor {level} ghosts:** {death_rate:.0f}% of {total:,} "
+                "attempts ended in death here."
+            )
+            if row["best_seconds"] and row["best_holder"]:
+                text += f" Fastest clear: **{row['best_seconds']}s** by <@{row['best_holder']}>."
+            await self._send_with_retry(ctx, content=text, suppress_failure=True)
+        except Exception:
+            pass
+
+    async def record_floor_outcome(self, ctx, level, cleared, seconds=None):
+        """Update the community floor stats after a fight."""
+        try:
+            async with self.bot.pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO tower_floor_stats (floor, clears, deaths)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (floor) DO UPDATE
+                    SET clears = tower_floor_stats.clears + EXCLUDED.clears,
+                        deaths = tower_floor_stats.deaths + EXCLUDED.deaths
+                    """,
+                    level,
+                    1 if cleared else 0,
+                    0 if cleared else 1,
+                )
+                if cleared and seconds is not None and seconds > 0:
+                    new_record = await conn.fetchval(
+                        """
+                        UPDATE tower_floor_stats
+                        SET best_seconds = $2, best_holder = $3
+                        WHERE floor = $1 AND (best_seconds IS NULL OR $2 < best_seconds)
+                        RETURNING TRUE
+                        """,
+                        level,
+                        int(seconds),
+                        ctx.author.id,
+                    )
+                    if new_record:
+                        await self._send_with_retry(
+                            ctx,
+                            content=(
+                                f"👻 **New floor record!** {ctx.author.mention} cleared "
+                                f"floor {level} in **{int(seconds)}s**!"
+                            ),
+                            suppress_failure=True,
+                        )
+        except Exception:
+            pass
 
     async def handle_victory(
         self,
@@ -4167,6 +4786,7 @@ class Battles(commands.Cog):
     
     async def handle_prestige_chest_rewards(self, ctx, level, emotes):
         """Handle randomized rewards for prestige players in battle tower."""
+        money_mult = await self._freebooter_money_multiplier(ctx.author.id)
         async with self.bot.pool.acquire() as connection:
             # Generate random rewards for both chests
             left_reward_type = random.choice(['crate', 'money'])
@@ -4216,9 +4836,11 @@ class Battles(commands.Cog):
                     else:
                         await ctx.send(f'You could have gotten **${right_money_amount}** if you chose the right chest.')
                 else:
-                    await ctx.send(f'You open the chest on the left and find **${left_money_amount}**!')
+                    payout = int(left_money_amount * money_mult)
+                    plunder_note = " 💰 *Plunder!*" if payout > left_money_amount else ""
+                    await ctx.send(f'You open the chest on the left and find **${payout:,}**!{plunder_note}')
                     await connection.execute('UPDATE profile SET money = money + $1 WHERE "user" = $2',
-                                            left_money_amount, ctx.author.id)
+                                            payout, ctx.author.id)
                     
                     # Show what they missed
                     if right_reward_type == 'crate':
@@ -4238,9 +4860,11 @@ class Battles(commands.Cog):
                     else:
                         await ctx.send(f'You could have gotten **${left_money_amount}** if you chose the left chest.')
                 else:
-                    await ctx.send(f'You open the chest on the right and find **${right_money_amount}**!')
+                    payout = int(right_money_amount * money_mult)
+                    plunder_note = " 💰 *Plunder!*" if payout > right_money_amount else ""
+                    await ctx.send(f'You open the chest on the right and find **${payout:,}**!{plunder_note}')
                     await connection.execute('UPDATE profile SET money = money + $1 WHERE "user" = $2',
-                                            right_money_amount, ctx.author.id)
+                                            payout, ctx.author.id)
                     
                     # Show what they missed
                     if left_reward_type == 'crate':
@@ -4592,18 +5216,19 @@ class Battles(commands.Cog):
                     confirm = await ctx.confirm(confirm_message)
                     if confirm:
                         async with self.bot.pool.acquire() as connection:
-                            await connection.execute(
-                                'UPDATE battletower SET level = 1, prestige = prestige + 1, run_key_bits = 0 WHERE id = $1',
+                            new_prestige = await connection.fetchval(
+                                'UPDATE battletower SET level = 1, prestige = prestige + 1, run_key_bits = 0 WHERE id = $1 RETURNING prestige',
                                 ctx.author.id)
                         await ctx.send(
                             "You have prestiged. Your level has been reset to 1. The rewards for your next run will be completely randomized.")
+                        self.bot.dispatch("battletower_prestige", ctx, new_prestige)
                         await self.bot.reset_cooldown(ctx)
                         return
                     else:
                         await ctx.send("Prestige canceled.")
                         await self.bot.reset_cooldown(ctx)
                         return
-                except asyncio.TimeoutError:
+                except (asyncio.TimeoutError, NoChoice):
                     await ctx.send("Prestige canceled due to timeout.")
                     await self.bot.reset_cooldown(ctx)
                     return
@@ -4697,6 +5322,24 @@ class Battles(commands.Cog):
                             suppress_failure=True,
                         )
 
+            # Weekly corrupted floor: scale enemies up and flag the bonus reward
+            corruption = self.get_corrupted_floors().get(level)
+            if corruption:
+                level_data = self.apply_corruption_to_level_data(level_data, corruption)
+                corruption_embed = discord.Embed(
+                    title=f"{corruption['emoji']} Corrupted Floor!",
+                    description=(
+                        f"A dark power grips floor {level} this week: **{corruption['name']}** — "
+                        f"{corruption['description']}\nCleanse it for a bonus reward!"
+                    ),
+                    color=0x8B00FF,
+                )
+                await ctx.send(embed=corruption_embed)
+
+            # Floor ghosts: community death rate + fastest clear
+            await self.show_floor_ghosts(ctx, level)
+            fight_started_at = datetime.datetime.utcnow()
+
             # Create and start the battle
             battle = await self.battle_factory.create_battle(
                 "tower",
@@ -4755,12 +5398,21 @@ class Battles(commands.Cog):
                         player_balance=player_balance,
                         player_god=god_value,
                     )
+
+                    # Bonus loot for cleansing a corrupted floor
+                    if corruption:
+                        await self.award_corruption_bonus(ctx, corruption, emotes)
+
+                    # Floor ghosts: record the clear + time
+                    fight_seconds = (datetime.datetime.utcnow() - fight_started_at).total_seconds()
+                    await self.record_floor_outcome(ctx, level, True, fight_seconds)
                 else:
                     await self._send_with_retry(
                         ctx,
                         content=f"**{ctx.author.mention}**, you have been defeated. Better luck next time!",
                         suppress_failure=True,
                     )
+                    await self.record_floor_outcome(ctx, level, False)
             else:
                 # Check if it was a timeout or defeat
                 if battle_timed_out:
@@ -4777,6 +5429,7 @@ class Battles(commands.Cog):
                         content=f"**{ctx.author.mention}**, you have been defeated. Better luck next time!",
                         suppress_failure=True,
                     )
+                    await self.record_floor_outcome(ctx, level, False)
 
             # Remove player from fight tracking
             await self.remove_player_from_fight(ctx.author.id)
@@ -4788,6 +5441,418 @@ class Battles(commands.Cog):
             print(error_message)
             await self.remove_player_from_fight(ctx.author.id)
             await self.bot.reset_cooldown(ctx)
+
+    @has_char()
+    @battletower.command(name="ironman")
+    async def ironman(self, ctx):
+        """Climb the tower in an independent die-once Ironman run."""
+        ctx = self._guard_battle_context(ctx)
+        try:
+            async with self.bot.pool.acquire() as connection:
+                row = await connection.fetchrow(
+                    """
+                    SELECT level, prestige, COALESCE(ironman_level, 0) AS ironman_level,
+                           COALESCE(ironman_best, 0) AS ironman_best,
+                           COALESCE(ironman_prestige, 0) AS ironman_prestige
+                    FROM battletower
+                    WHERE id = $1
+                    """,
+                    ctx.author.id,
+                )
+                if not row:
+                    await self.bot.reset_cooldown(ctx)
+                    return await ctx.send("You have not started Battletower. Use `$battletower start` first.")
+
+            if await self.is_player_in_fight(ctx.author.id):
+                await self.bot.reset_cooldown(ctx)
+                return await ctx.send("You are already in a battle!")
+
+            prestige = int(row["prestige"] or 0)
+            floor = int(row["ironman_level"] or 0)
+            active_run_prestige = int(row["ironman_prestige"] or 0)
+            active_ironman = floor > 0 and active_run_prestige == prestige
+            if floor > 0 and active_run_prestige != prestige:
+                async with self.bot.pool.acquire() as connection:
+                    await connection.execute(
+                        "UPDATE battletower SET ironman_level = 0 WHERE id = $1",
+                        ctx.author.id,
+                    )
+                floor = 0
+                active_ironman = False
+
+            if not await self._bt_challenge_prestige_available(
+                ctx,
+                row,
+                "ironman",
+                active_ironman=active_ironman,
+            ):
+                return
+
+            if floor <= 0:
+                floor = 1
+                async with self.bot.pool.acquire() as connection:
+                    await connection.execute(
+                        """
+                        UPDATE battletower
+                        SET ironman_level = 1,
+                            ironman_prestige = prestige
+                        WHERE id = $1
+                        """,
+                        ctx.author.id,
+                    )
+                await ctx.send(
+                    f"🏔️ **Prestige {prestige} Ironman run started.** "
+                    "Floor 1 awaits; die once and the run is ash."
+                )
+
+            await self.add_player_to_fight(ctx.author.id)
+            carried_hp = {}
+            announced_difficulty = False
+            difficulty_prestige = self._bt_challenge_difficulty_prestige(prestige)
+            while 1 <= floor <= 30:
+                try:
+                    level_data = self.levels[str(floor)]
+                except KeyError:
+                    await self.bot.reset_cooldown(ctx)
+                    return await ctx.send(f"No data found for ironman floor {floor}.")
+
+                corruption = self.get_corrupted_floors().get(floor)
+                if corruption:
+                    level_data = self.apply_corruption_to_level_data(level_data, corruption)
+                    await ctx.send(
+                        f"{corruption['emoji']} Ironman floor {floor} is **{corruption['name']}** this week: "
+                        f"{corruption['description']}"
+                    )
+
+                player_combatant = await self.battle_factory.create_player_combatant(
+                    ctx, ctx.author, include_pet=True
+                )
+                pet_combatant = await self.battle_factory.pet_ext.get_pet_combatant(ctx, ctx.author)
+                if "player" in carried_hp:
+                    player_combatant.hp = max(0, min(player_combatant.max_hp, carried_hp["player"]))
+                if pet_combatant and "pet" in carried_hp:
+                    pet_combatant.hp = max(0, min(pet_combatant.max_hp, carried_hp["pet"]))
+
+                player_team = Team("Player", [player_combatant])
+                if pet_combatant:
+                    player_team.add_combatant(pet_combatant)
+                scale_snapshot = self._bt_challenge_scale_snapshot(player_combatant, pet_combatant)
+
+                enemy_team = Team("Enemy", [])
+                for slot, fallback_name in (("minion1", "Minion"), ("minion2", "Minion"), ("boss", "Boss")):
+                    enemy_data = level_data.get(slot)
+                    if not isinstance(enemy_data, dict):
+                        continue
+                    name = level_data.get(f"{slot}_name", fallback_name)
+                    spec = {
+                        "name": name,
+                        "hp": enemy_data.get("hp", 100),
+                        "attack": enemy_data.get("damage", 20),
+                        "defense": enemy_data.get("armor", 10),
+                        "element": enemy_data.get("element", "Unknown"),
+                    }
+                    spec = self._scale_bt_challenge_enemy_spec(
+                        spec,
+                        floor,
+                        slot,
+                        difficulty_prestige,
+                        scale_snapshot,
+                        "ironman",
+                    )
+                    enemy = await self.battle_factory.create_monster_combatant(spec, name=name)
+                    if slot == "boss":
+                        setattr(enemy, "is_boss", True)
+                    enemy_team.add_combatant(enemy)
+
+                if not announced_difficulty:
+                    await ctx.send(
+                        f"🏔️ **Ironman difficulty:** prestige **{difficulty_prestige}** enemy stats "
+                        f"(current tower prestige **{prestige}**) "
+                        f"(power snapshot ATK {scale_snapshot['attack_base']:,} / "
+                        f"HP {scale_snapshot['hp_base']:,} / DEF {scale_snapshot['defense_base']:,})."
+                    )
+                    announced_difficulty = True
+
+                battle = TowerBattle(ctx, [player_team, enemy_team], level=floor, level_data=level_data, allow_pets=True)
+                battle.config["allow_pets"] = True
+                await battle.start_battle()
+                while not await battle.is_battle_over():
+                    await battle.process_turn()
+                    await asyncio.sleep(1)
+                result = await battle.end_battle()
+                timed_out = hasattr(battle, "battle_timed_out") and battle.battle_timed_out
+                player_alive = any(not c.is_pet and c.is_alive() for c in player_team.combatants)
+                victory = bool(result and result.name == "Player" and player_alive)
+
+                if victory:
+                    if floor == 30:
+                        rewards = self._bt_ironman_rewards(prestige)
+                        async with self.bot.pool.acquire() as connection:
+                            await connection.execute(
+                                """
+                                UPDATE profile
+                                SET crates_divine = crates_divine + $1,
+                                    crates_fortune = crates_fortune + $2
+                                WHERE "user" = $3
+                                """,
+                                rewards["divine"],
+                                rewards["fortune"],
+                                ctx.author.id,
+                            )
+                            await connection.execute(
+                                """
+                                UPDATE battletower
+                                SET ironman_best = GREATEST(ironman_best, 30),
+                                    ironman_level = 0
+                                WHERE id = $1
+                                """,
+                                ctx.author.id,
+                            )
+                        legacy = self.bot.get_cog("Legacy")
+                        if legacy:
+                            await legacy.award_points(ctx.author.id, rewards["lp"])
+                        crate_lines = [f"**{rewards['divine']} Divine Crate(s)**"]
+                        if rewards["fortune"]:
+                            crate_lines.append(f"**{rewards['fortune']} Fortune Crate(s)**")
+                        await ctx.send(
+                            f"🏔️ **PRESTIGE {prestige} IRONMAN ASCENT COMPLETE** — floor 30 falls! "
+                            f"Rewards: **+{rewards['lp']} Legacy Points** and {', '.join(crate_lines)}."
+                        )
+                        self.bot.dispatch("ironman_completion", ctx, floor, True, True)
+                        return
+
+                    reward_lines = []
+                    if floor in {5, 10, 15, 20, 25, 30}:
+                        rewards = self._bt_ironman_rewards(prestige)
+                        rolls = floor // 5 + rewards["milestone_roll_bonus"]
+                        crate_options = self.battle_data["chest_options"]["random"]["crate_options"]
+                        crate_values = [opt["value"] for opt in crate_options]
+                        crate_weights = [opt["weight"] for opt in crate_options]
+                        crates = random.choices(crate_values, weights=crate_weights, k=rolls)
+                        money = int(
+                            floor
+                            * 12000
+                            * float(rewards["money_multiplier"])
+                            * await self._freebooter_money_multiplier(ctx.author.id)
+                        )
+                        async with self.bot.pool.acquire() as connection:
+                            for crate in crates:
+                                await connection.execute(
+                                    f'UPDATE profile SET crates_{crate} = crates_{crate} + 1 WHERE "user" = $1',
+                                    ctx.author.id,
+                                )
+                            await connection.execute(
+                                'UPDATE profile SET money = money + $1 WHERE "user" = $2',
+                                money,
+                                ctx.author.id,
+                            )
+                        reward_lines.append(
+                            f"Milestone reward: {', '.join(crate.capitalize() for crate in crates)} crate(s) and **${money:,}**."
+                        )
+
+                    next_floor = floor + 1
+                    async with self.bot.pool.acquire() as connection:
+                        await connection.execute(
+                            """
+                            UPDATE battletower
+                            SET ironman_level = $2,
+                                ironman_best = GREATEST(ironman_best, $3)
+                            WHERE id = $1
+                            """,
+                            ctx.author.id,
+                            next_floor,
+                            floor,
+                        )
+                    carried_hp = {"player": player_combatant.hp}
+                    if pet_combatant:
+                        carried_hp["pet"] = pet_combatant.hp
+                    await ctx.send(
+                        f"🏔️ Ironman floor **{floor}** cleared. Continuing to floor **{next_floor}**."
+                        + (f"\n{reward_lines[0]}" if reward_lines else "")
+                    )
+                    self.bot.dispatch("ironman_completion", ctx, floor, True, False)
+                    floor = next_floor
+                    await asyncio.sleep(2)
+                    continue
+
+                survived = max(0, floor - 1)
+                async with self.bot.pool.acquire() as connection:
+                    await connection.execute(
+                        """
+                        UPDATE battletower
+                        SET ironman_best = GREATEST(ironman_best, $2),
+                            ironman_level = 0
+                        WHERE id = $1
+                        """,
+                        ctx.author.id,
+                        survived,
+                    )
+                if timed_out:
+                    await ctx.send(
+                        f"🏔️ Ironman timed out on floor **{floor}**. Floors survived: **{survived}**. The run is ash."
+                    )
+                else:
+                    await ctx.send(
+                        f"🏔️ Ironman run ended on floor **{floor}**. Floors survived: **{survived}**. No consolation rewards."
+                    )
+                self.bot.dispatch("ironman_completion", ctx, floor, False, False)
+                return
+        except Exception as e:
+            error_message = f"An error occurred during Ironman: {e}\n{traceback.format_exc()}"
+            await self._send_with_retry(ctx, content=error_message[:1900], suppress_failure=True)
+            await self.bot.reset_cooldown(ctx)
+        finally:
+            await self.remove_player_from_fight(ctx.author.id)
+
+    @has_char()
+    @battletower.command(name="bossrush")
+    async def bossrush(self, ctx):
+        """Face the tower's six milestone bosses once per tower prestige run."""
+        ctx = self._guard_battle_context(ctx)
+        try:
+            async with self.bot.pool.acquire() as connection:
+                row = await connection.fetchrow(
+                    """
+                    SELECT level, prestige, COALESCE(bossrush_prestige, 0) AS bossrush_prestige
+                    FROM battletower
+                    WHERE id = $1
+                    """,
+                    ctx.author.id,
+                )
+            if not row:
+                return await ctx.send("You have not started Battletower. Use `$battletower start` first.")
+
+            prestige = int(row["prestige"] or 0)
+            if not await self._bt_challenge_prestige_available(ctx, row, "bossrush"):
+                return
+
+            if await self.is_player_in_fight(ctx.author.id):
+                return await ctx.send("You are already in a battle!")
+
+            await self.add_player_to_fight(ctx.author.id)
+            async with self.bot.pool.acquire() as connection:
+                await connection.execute(
+                    "UPDATE battletower SET bossrush_prestige = prestige WHERE id = $1",
+                    ctx.author.id,
+                )
+
+            # Assemble the six milestone bosses at their base stats
+            boss_specs = []
+            for floor in (5, 10, 15, 20, 25, 30):
+                floor_data = self.levels.get(str(floor), {})
+                boss_data = floor_data.get("boss", {})
+                boss_specs.append({
+                    "floor": floor,
+                    "name": floor_data.get("boss_name", f"Floor {floor} Boss"),
+                    "hp": boss_data.get("hp", 100),
+                    "attack": boss_data.get("damage", 20),
+                    "defense": boss_data.get("armor", 10),
+                    "element": boss_data.get("element", "Unknown"),
+                })
+
+            player_combatant = await self.battle_factory.create_player_combatant(
+                ctx, ctx.author, include_pet=True
+            )
+            pet_combatant = await self.battle_factory.pet_ext.get_pet_combatant(ctx, ctx.author)
+            player_team = Team("Player", [player_combatant])
+            if pet_combatant:
+                player_team.add_combatant(pet_combatant)
+            scale_snapshot = self._bt_challenge_scale_snapshot(player_combatant, pet_combatant)
+            difficulty_prestige = self._bt_challenge_difficulty_prestige(prestige)
+
+            enemy_team = Team("Enemy", [])
+            for spec in boss_specs:
+                scaled_spec = self._scale_bt_challenge_enemy_spec(
+                    spec,
+                    spec.get("floor", 30),
+                    "boss",
+                    difficulty_prestige,
+                    scale_snapshot,
+                    "bossrush",
+                )
+                boss = await self.battle_factory.create_monster_combatant(scaled_spec, name=scaled_spec["name"])
+                setattr(boss, "is_boss", True)
+                enemy_team.add_combatant(boss)
+
+            lineup = " → ".join(spec["name"] for spec in boss_specs)
+            intro = discord.Embed(
+                title=f"⚔️ PRESTIGE {prestige} BOSS RUSH",
+                description=(
+                    f"No minions. No mercy. Six bosses, one you.\n**{lineup}**\n"
+                    "Fall anywhere along the line and you leave with nothing.\n"
+                    f"Enemy stats use prestige **{difficulty_prestige}** "
+                    f"(current tower prestige **{prestige}**) and your current "
+                    f"ATK {scale_snapshot['attack_base']:,} / HP {scale_snapshot['hp_base']:,} / "
+                    f"DEF {scale_snapshot['defense_base']:,} power snapshot."
+                ),
+                color=0xC0392B,
+            )
+            await ctx.send(embed=intro)
+
+            battle = TowerBattle(ctx, [player_team, enemy_team], level=1, level_data={}, allow_pets=True)
+            battle.config["allow_pets"] = True
+
+            await battle.start_battle()
+            while not await battle.is_battle_over():
+                await battle.process_turn()
+                await asyncio.sleep(1)
+            result = await battle.end_battle()
+            battle_timed_out = hasattr(battle, "battle_timed_out") and battle.battle_timed_out
+
+            player_alive = any(
+                not c.is_pet and c.is_alive() for c in battle.player_team.combatants
+            )
+            if result and result.name == "Player" and (
+                player_alive or battle.config.get("pets_continue_battle", False)
+            ):
+                rewards = self._bt_bossrush_rewards(prestige)
+                money_reward = int(
+                    150000
+                    * float(rewards["money_multiplier"])
+                    * await self._freebooter_money_multiplier(ctx.author.id)
+                )
+                async with self.bot.pool.acquire() as connection:
+                    await connection.execute(
+                        """
+                        UPDATE profile
+                        SET crates_fortune = crates_fortune + $1,
+                            crates_divine = crates_divine + $2,
+                            money = money + $3
+                        WHERE "user" = $4;
+                        """,
+                        rewards["fortune"],
+                        rewards["divine"],
+                        money_reward,
+                        ctx.author.id,
+                    )
+                legacy = self.bot.get_cog("Legacy")
+                if legacy:
+                    await legacy.award_points(ctx.author.id, rewards["lp"])
+                crate_lines = [f"**{rewards['fortune']} Fortune Crate(s)**"]
+                if rewards["divine"]:
+                    crate_lines.append(f"**{rewards['divine']} Divine Crate(s)**")
+                await ctx.send(
+                    f"👑 **PRESTIGE {prestige} BOSS RUSH CLEARED!** "
+                    f"{ctx.author.mention} felled all six milestone bosses!\n"
+                    f"Rewards: {', '.join(crate_lines)}, **${money_reward:,}**, "
+                    f"and **+{rewards['lp']} Legacy Points**!"
+                )
+                self.bot.dispatch("bossrush_completion", ctx, True)
+            elif battle_timed_out:
+                await ctx.send("The Boss Rush timed out. The bosses grow restless...")
+                self.bot.dispatch("bossrush_completion", ctx, False)
+            else:
+                await ctx.send(
+                    f"**{ctx.author.mention}** fell in the Boss Rush. "
+                    "The line of bosses stands unbroken."
+                )
+                self.bot.dispatch("bossrush_completion", ctx, False)
+        except Exception as e:
+            error_message = f"An error occurred during the boss rush: {e}\n{traceback.format_exc()}"
+            await self._send_with_retry(ctx, content=error_message[:1900], suppress_failure=True)
+            await self.bot.reset_cooldown(ctx)
+        finally:
+            await self.remove_player_from_fight(ctx.author.id)
 
     def _get_jury_floor_data(self, floor: int) -> dict | None:
         return self.jury_tower_data.get("floors", {}).get(str(int(floor)))
@@ -5774,6 +6839,13 @@ class Battles(commands.Cog):
             summary.add_field(name="Next Floor", value=f"Proceed to **Floor {floor + 1}**.", inline=False)
 
         await ctx.send(embed=summary)
+        self.bot.dispatch(
+            "jurytower_completion",
+            ctx,
+            True,
+            int(floor),
+            bool(floor_data.get("boss_floor")),
+        )
 
     async def _handle_jury_defeat(self, ctx, floor: int, floor_data: dict):
         async with self.bot.pool.acquire() as connection:
@@ -8049,10 +9121,12 @@ class Battles(commands.Cog):
         player_level = rpgtools.xptolevel(ctx.character_data.get("xp", 0))
         lines = []
 
-        for location in self.PVE_LOCATIONS:
+        for location in self._get_pve_locations_snapshot():
             unlock_level = int(location.get("unlock_level", 1))
             unlocked = player_level >= unlock_level
             status_icon = "✅" if unlocked else "🔒"
+            if location.get("frontier_active"):
+                status_icon = "⚡" if unlocked else "⚡🔒"
 
             rates = self._get_pve_tier_rates_for_location(location)
             if rates:
@@ -8153,11 +9227,19 @@ class Battles(commands.Cog):
             rates_text = "No tier rates configured."
 
         splice_enabled = await self._get_user_pve_splice_toggle(ctx.author.id)
-        pool_text = (
-            "Default + sampled Gen 0 splice monsters (`$pvesplice` is ON)."
-            if splice_enabled
-            else "Default monster pool only (`$pvesplice` is OFF)."
-        )
+        if self._is_frontier_location(location):
+            pool_text = (
+                "Regional wilds plus this week's nine curated splices and two elites. "
+                "The boss is challenged separately with `$frontier boss`."
+                if location.get("frontier_active")
+                else "Regional wilds only. This Frontier is not experiencing the current weekly surge."
+            )
+        else:
+            pool_text = (
+                "Default + sampled Gen 0 splice monsters (`$pvesplice` is ON)."
+                if splice_enabled
+                else "Default monster pool only (`$pvesplice` is OFF)."
+            )
 
         embed = discord.Embed(
             title=f"PvE Info: {location['name']}",
@@ -8247,7 +9329,7 @@ class Battles(commands.Cog):
 
         if not monster_override:
             all_locations = []
-            for location in self.PVE_LOCATIONS:
+            for location in self._get_pve_locations_snapshot():
                 location_entry = dict(location)
                 location_entry["is_locked"] = player_level < int(location_entry["unlock_level"])
                 all_locations.append(location_entry)
@@ -8423,6 +9505,24 @@ class Battles(commands.Cog):
                     )
                 )
 
+            if self._is_frontier_location(selected_location):
+                try:
+                    monsters, frontier_injected = (
+                        await self._get_pve_monster_pool_for_location(
+                            ctx.author.id,
+                            selected_location,
+                            force_include_splice=include_splice_override,
+                        )
+                    )
+                    splice_injected = splice_injected or frontier_injected
+                except Exception:
+                    logger.exception("Failed to build Soulforge Frontier PvE pool")
+                    await ctx.send(
+                        _("This Frontier's creatures could not be loaded. Please contact the admin.")
+                    )
+                    await self.bot.reset_cooldown(ctx)
+                    return
+
         # Send an embed indicating that the player is searching for a monster
         if selected_location:
             searching_description = _(
@@ -8464,7 +9564,11 @@ class Battles(commands.Cog):
                 await self.bot.reset_cooldown(ctx)
                 return
 
-            base_monster = random.choice(monster_pool)
+            base_monster = (
+                choose_weighted_monster(monster_pool)
+                if self._is_frontier_location(selected_location)
+                else random.choice(monster_pool)
+            )
             forced_level = (
                 self.PVE_GOD_ENCOUNTER_LEVEL
                 if levelchoice == self.PVE_GOD_TIER
@@ -8525,6 +9629,12 @@ class Battles(commands.Cog):
                 }
 
         encounter_level = int(monster.get("encounter_level", levelchoice))
+        is_frontier_monster = monster.get("pve_pool") in {
+            "frontier",
+            "frontier_wild",
+        }
+        ctx.frontier_encounter = dict(monster) if is_frontier_monster else None
+        self.bot.dispatch("frontier_sighting", ctx, dict(monster), None)
         selected_location_id = (
             str(selected_location.get("id", "")).lower() if selected_location else ""
         )
@@ -8535,7 +9645,7 @@ class Battles(commands.Cog):
         )
 
         # Update embed with found monster
-        is_splice_pool = monster.get("pve_pool") == "splice"
+        is_splice_pool = monster.get("pve_pool") in {"splice", "frontier"}
         if is_omnithrone_encounter:
             found_description = _(
                 "In **Omnithrone Sanctum**, Level {level} **{monster}** has manifested upon the Final Throne.\n\n"
@@ -8701,7 +9811,7 @@ class Battles(commands.Cog):
                             final_egg_chance += adjusted_ranger_bonus
 
                     # Check for egg drop
-                    if random.random() < final_egg_chance:
+                    if monster.get("egg_eligible", True) and random.random() < final_egg_chance:
                         await self.handle_egg_drop(ctx, monster, levelchoice)
 
             # Dispatch PVE completion event
@@ -8908,13 +10018,14 @@ class Battles(commands.Cog):
             
             # Insert egg into database
             try:
-                await conn.execute(
+                egg_id = await conn.fetchval(
                     """
                     INSERT INTO monster_eggs (
                         user_id, egg_type, hp, attack, defense, element, url, hatch_time,
                         "IV", hp_iv, attack_iv, defense_iv
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    RETURNING id;
                     """,
                     ctx.author.id,
                     monster["name"],
@@ -8932,6 +10043,12 @@ class Battles(commands.Cog):
                 
                 await ctx.send(
                     _(f"{ctx.author.mention}! You found a **{monster['name']} Egg** with an IV of {iv_percentage:.2f}%! It will hatch in 36 hours.")
+                )
+                self.bot.dispatch(
+                    "frontier_egg_obtained",
+                    ctx,
+                    dict(monster),
+                    int(egg_id) if egg_id is not None else None,
                 )
                 
                 # Log high IV eggs
@@ -9197,12 +10314,30 @@ class Battles(commands.Cog):
                     def update_button_states(self):
                         self.reroll_button.disabled = self.rerolls <= 0
                 
+                frontier_pool_cache = {}
+
                 # Function to select monster based on location and tier
                 async def select_monster(location_data, level):
-                    monster_pool = monsters.get(level, [])
+                    location_monsters = monsters
+                    if self._is_frontier_location(location_data):
+                        region_id = str(location_data["frontier_region_id"])
+                        if region_id not in frontier_pool_cache:
+                            frontier_pool_cache[region_id], _ = (
+                                await self._get_pve_monster_pool_for_location(
+                                    ctx.author.id,
+                                    location_data,
+                                )
+                            )
+                        location_monsters = frontier_pool_cache[region_id]
+
+                    monster_pool = location_monsters.get(level, [])
                     if not monster_pool:
                         return None
-                    base_monster = random.choice(monster_pool)
+                    base_monster = (
+                        choose_weighted_monster(monster_pool)
+                        if self._is_frontier_location(location_data)
+                        else random.choice(monster_pool)
+                    )
                     forced_level = (
                         self.PVE_GOD_ENCOUNTER_LEVEL
                         if level == self.PVE_GOD_TIER
@@ -9217,6 +10352,12 @@ class Battles(commands.Cog):
                         scaled_monster["pve_pool"] = base_monster["pve_pool"]
                     scaled_monster["pve_location_id"] = location_data["id"]
                     scaled_monster["pve_location_name"] = location_data["name"]
+                    self.bot.dispatch(
+                        "frontier_sighting",
+                        ctx,
+                        dict(scaled_monster),
+                        None,
+                    )
                     return scaled_monster
                 
                 # Function to create monster info embed
@@ -10146,6 +11287,46 @@ class Battles(commands.Cog):
                 "FROM ice_dragon_drops ORDER BY id ASC"
             )
 
+    async def _check_dragon_world_record(self, ctx, party_members, new_level):
+        """Announce a new all-time dragon level record."""
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS dragon_records (
+                    id INTEGER PRIMARY KEY,
+                    record_level INTEGER NOT NULL DEFAULT 0,
+                    record_holder BIGINT,
+                    achieved_at TIMESTAMP
+                );
+                """
+            )
+            record = await conn.fetchrow(
+                "SELECT record_level FROM dragon_records WHERE id = 1"
+            )
+            old_record = int(record["record_level"] or 0) if record else 0
+            if int(new_level) <= old_record:
+                return
+            await conn.execute(
+                """
+                INSERT INTO dragon_records (id, record_level, record_holder, achieved_at)
+                VALUES (1, $1, $2, $3)
+                ON CONFLICT (id) DO UPDATE SET
+                    record_level = EXCLUDED.record_level,
+                    record_holder = EXCLUDED.record_holder,
+                    achieved_at = EXCLUDED.achieved_at;
+                """,
+                int(new_level),
+                ctx.author.id,
+                datetime.datetime.utcnow(),
+            )
+
+        party_mentions = ", ".join(member.mention for member in party_members)
+        await ctx.send(
+            f"🌌 **WORLD FIRST!** The community has pushed the dragon to level **{new_level}** — "
+            f"a new all-time record! The decisive party: {party_mentions}."
+        )
+        self.bot.dispatch("dragon_world_record", ctx, party_members, int(new_level))
+
     async def _handle_dragon_victory(self, ctx, party_members, stage_id=None):
         """Handle rewards for defeating the dragon"""
         # Get current dragon level
@@ -10155,6 +11336,7 @@ class Battles(commands.Cog):
         
         # Update dragon progress in database
         level_up = False
+        new_level = old_level
         try:
             updated_stats = await self.battle_factory.dragon_ext.update_dragon_progress(
                 self.bot,
@@ -10184,9 +11366,23 @@ class Battles(commands.Cog):
         if level_up:
             embed.add_field(
                 name="Dragon Level Up",
-                value=f"The Dragon has grown stronger and is now Level {old_level + 1}!",
+                value=f"The Dragon has grown stronger and is now Level {new_level}!",
                 inline=False
             )
+            if new_level == 35:
+                embed.add_field(
+                    name="The Abyssal Maw Awakens",
+                    value=(
+                        "The dragon sheds its final skin. From level 35 onward, "
+                        "the Abyssal Maw scales endlessly."
+                    ),
+                    inline=False
+                )
+            if new_level >= 35:
+                try:
+                    await self._check_dragon_world_record(ctx, party_members, new_level)
+                except Exception:
+                    logger.exception("Failed to update Ice Dragon world record")
         else:
             # Show progress information instead
             # Always 40 defeats needed per level
@@ -10202,6 +11398,7 @@ class Battles(commands.Cog):
         # Give rewards to each party member
         reward_text = ""
         weapon_rewards_text = ""
+        maw_crate_rewards_text = ""
         level_bonus = min(0.08, (old_level - 1) * 0.003)  # 0.3% bonus per level, max 8%
         if stage_id is None:
             try:
@@ -10283,6 +11480,16 @@ class Battles(commands.Cog):
                         
                         # Record in reward text
                         reward_text += f"• {member.mention}: {member_money} 💰, {member_xp} XP\n"
+
+                        if (
+                            old_level >= 35
+                            and random.random() < self.MAW_DIVINE_CRATE_DROP_CHANCE
+                        ):
+                            await conn.execute(
+                                'UPDATE profile SET crates_divine = crates_divine + 1 WHERE "user"=$1;',
+                                member.id,
+                            )
+                            maw_crate_rewards_text += f"• {member.mention}: Divine Crate\n"
                         
                         # ICE DRAGON WEAPON REWARDS (DB-driven)
                         try:
@@ -10349,11 +11556,13 @@ class Battles(commands.Cog):
             # Try to continue with embed even if rewards failed
             reward_text = "Error processing rewards."
 
+        stage_name = self._get_dragon_stage_name(old_level)
+
         await self._progress_custom_quest_source(
             ctx,
             party_members,
             "dragonparty",
-            self._get_dragon_stage_name(old_level),
+            stage_name,
             str(stage_id) if stage_id is not None else None,
             str(old_level),
             f"level {old_level}",
@@ -10392,12 +11601,20 @@ class Battles(commands.Cog):
                     value=f"No legendary weapons were found this time. Keep challenging the dragon for a chance at rare ice-themed weapons!\n\n**Drop Rates:**\n• 1H Total: {total_chance_1h:.1%}\n• 2H Total: {total_chance_2h:.1%}",
                     inline=False
                 )
+            if maw_crate_rewards_text:
+                embed.add_field(
+                    name="Abyssal Maw Bonus",
+                    value=maw_crate_rewards_text,
+                    inline=False
+                )
             
             await ctx.send(embed=embed)
         except Exception:
             # Try a simple text message as fallback
             await ctx.send("Victory! The dragon has been defeated and rewards have been distributed.")
             pass
+
+        self.bot.dispatch("icedragon_victory", ctx, party_members, stage_name, old_level)
 
     def _get_dragon_stage_name(self, level: int) -> str:
         """Get the dragon stage name for a given level"""
@@ -10409,12 +11626,10 @@ class Battles(commands.Cog):
             return "Permafrost"
         elif level <= 20:
             return "Absolute Zero"
-        elif level <= 25:
+        elif level <= 34:
             return "Void Tyrant"
-        elif level <= 30:
-            return "Eternal Frost"
         else:
-            return "Eternal Frost"
+            return "The Abyssal Maw"
 
     
     async def _handle_dragon_defeat(self, ctx, party_members):

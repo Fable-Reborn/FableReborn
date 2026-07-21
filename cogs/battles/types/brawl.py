@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import random
+from decimal import Decimal
 
 import discord
 
@@ -93,9 +94,12 @@ class BrawlBattle(Battle):
         hit_roll = random.random() < self.hit_chance
         if hit_roll:
             variance = random.randint(-self.damage_variance, self.damage_variance)
-            raw_damage = max(1, float(attacker.damage) + variance)
-            armor = float(defender.armor)
-            damage = max(10, raw_damage - armor)
+            raw_damage = max(Decimal("1"), Decimal(str(attacker.damage)) + Decimal(variance))
+            raw_damage, warrior_messages = self.prepare_warrior_attack(attacker, raw_damage)
+            armor = Decimal(str(defender.armor))
+            damage = max(Decimal("10"), raw_damage - armor)
+            if self.can_use_warrior_momentum(attacker):
+                attacker.warrior_last_attack_damage = damage
             defender.take_damage(damage)
             attack_line = random.choice(BRAWL_ATTACKS).format(
                 attacker=attacker.display_name,
@@ -103,6 +107,39 @@ class BrawlBattle(Battle):
                 weapon=getattr(attacker, "weapon_name", "weapon"),
             )
             message = f"{attack_line} **{self.format_number(damage)}** damage."
+            if warrior_messages:
+                message += "\n" + "\n".join(warrior_messages)
+            if (
+                self.config.get("class_buffs", True)
+                and not attacker.is_pet
+                and Decimal(str(getattr(attacker, "lifesteal_percent", 0) or 0)) > 0
+            ):
+                drain = Decimal(str(damage)) * Decimal(str(attacker.lifesteal_percent)) / Decimal("100")
+                before = Decimal(str(attacker.hp))
+                attacker.heal(drain)
+                actual_drain = Decimal(str(attacker.hp)) - before
+                if actual_drain > 0:
+                    message += f" Drains **{self.format_number(actual_drain)} HP**."
+
+            class_messages = self.resolve_post_hit_class_effects(attacker, defender)
+            if class_messages:
+                message += "\n" + "\n".join(class_messages)
+
+            if (
+                not defender.is_alive()
+                and self.config.get("class_buffs", True)
+                and self.config.get("cheat_death", True)
+                and not defender.is_pet
+                and Decimal(str(getattr(defender, "death_cheat_chance", 0) or 0)) > 0
+                and not getattr(defender, "has_cheated_death", False)
+                and random.randint(1, 100) <= float(defender.death_cheat_chance)
+            ):
+                defender.hp = self.get_cheat_death_recovery_hp(defender)
+                defender.has_cheated_death = True
+                message += (
+                    f"\n☠️ **{defender.name}** cheats death and returns with "
+                    f"**{self.format_number(defender.hp)} HP**!"
+                )
             if not defender.is_alive():
                 message += f" {random.choice(BRAWL_FINISH).format(defender=defender.display_name)}"
         else:

@@ -30,7 +30,11 @@ except ImportError:
     setproctitle = None
 
 import discord
-import uvloop
+
+try:
+    import uvloop  # uvloop is not available on Windows
+except ImportError:
+    uvloop = None
 
 from classes.bot import Bot
 from classes.logger import file_handler, stream
@@ -86,7 +90,10 @@ if __name__ == "__main__":
     log.addHandler(file_handler(cluster_id))
 
     try:
-        loop = uvloop.new_event_loop()
+        if uvloop is not None:
+            loop = uvloop.new_event_loop()
+        else:
+            loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         runner = loop.run_until_complete(main())
     except KeyboardInterrupt:

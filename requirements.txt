@@ -26,6 +26,6 @@ setuptools==59.6.0
 sly==0.5
 textblob==0.19.0
 tomli==2.2.1
-uvloop==0.21.0
+uvloop==0.21.0; sys_platform != "win32"
 validators==0.34.0
 yarl==1.18.3

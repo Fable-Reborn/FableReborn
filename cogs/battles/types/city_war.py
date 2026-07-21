@@ -281,11 +281,24 @@ class CityWarBattle(Battle):
         if not attackers or not structures or target is None:
             return
 
-        outgoing_damage = max(
-            Decimal("1"),
-            self._sum_damage(attackers) * self._get_structure_assault_modifier(),
-        )
+        assault_modifier = self._get_structure_assault_modifier()
+        outgoing_damage = Decimal("0")
+        warrior_messages = []
+        for attacker in attackers:
+            contribution, messages = self.prepare_warrior_attack(attacker, attacker.damage)
+            contribution *= assault_modifier
+            outgoing_damage += contribution
+            warrior_messages.extend(messages)
+            if self.can_use_warrior_momentum(attacker):
+                attacker.warrior_last_attack_damage = contribution
+        outgoing_damage = max(Decimal("1"), outgoing_damage)
         actual_damage = self.apply_damage(None, target, outgoing_damage)
+        seasonal_messages = list(warrior_messages)
+        for attacker in attackers:
+            seasonal_messages.extend(self._resolve_reaper_attack(attacker, target))
+            seasonal_messages.extend(self._resolve_santa_attack(attacker, target))
+            seasonal_messages.extend(self.resolve_warrior_post_hit(attacker, target))
+        seasonal_messages.extend(self.consume_pending_class_messages(target, *attackers))
         target_hp = max(Decimal("0"), target.hp)
         if target.is_alive():
             await self.add_to_log(
@@ -297,6 +310,8 @@ class CityWarBattle(Battle):
             await self.add_to_log(
                 f"{self.attacking_guild_name} destroys {target.name} in {self.city}."
             )
+        for seasonal_message in seasonal_messages:
+            await self.add_to_log(seasonal_message)
 
         if not self.attacker_team.get_alive_combatants():
             return
@@ -310,6 +325,7 @@ class CityWarBattle(Battle):
             attacker_target,
         )
         actual_damage = self.apply_damage(None, attacker_target, retaliation)
+        pending_messages = self.consume_pending_class_messages(attacker_target)
         target_hp = max(Decimal("0"), attacker_target.hp)
         if attacker_target.is_alive():
             await self.add_to_log(
@@ -321,6 +337,8 @@ class CityWarBattle(Battle):
             await self.add_to_log(
                 f"{attacker_target.name} is defeated by the fortifications in {self.city}."
             )
+        for pending_message in pending_messages:
+            await self.add_to_log(pending_message)
 
     async def _process_guard_round(self):
         return await RaidBattle.process_turn(self)

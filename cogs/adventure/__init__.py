@@ -1916,10 +1916,14 @@ class Adventure(commands.Cog):
                     )
                 )
 
+                iscompleted = True
                 if current_level >= 15:
-                    iscompleted = True
                     self.bot.dispatch("adventure_completion", ctx, iscompleted)
                     self.bot.dispatch("raid_completion", ctx, iscompleted, ctx.author.id)
+                else:
+                    # Endgame listeners intentionally retain their level gate, while
+                    # the Bounty Board counts every genuine completed adventure.
+                    self.bot.dispatch("bounty_adventure_completion", ctx, iscompleted)
 
                 new_level = int(rpgtools.xptolevel(ctx.character_data["xp"] + xp))
 

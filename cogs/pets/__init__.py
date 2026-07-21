@@ -380,6 +380,256 @@ class PetCollectionItemSelect(discord.ui.Select):
         await view.refresh_message(interaction)
 
 
+class PetCollectionOrganizeSelect(discord.ui.Select):
+    def __init__(self, collection_view):
+        self.collection_view = collection_view
+        options = [
+            discord.SelectOption(label="Show All Pets", value="filter:all", emoji="🐾"),
+            discord.SelectOption(label="Equipped Only", value="filter:equipped", emoji="⚔️"),
+            discord.SelectOption(label="Needs Care", value="filter:needs_care", emoji="💚"),
+            discord.SelectOption(label="Unspent Skill Points", value="filter:skill_points", emoji="🎓"),
+            discord.SelectOption(label="In Daycare", value="filter:daycare", emoji="🏡"),
+            discord.SelectOption(label="Sort: Highest Level", value="sort:level", emoji="📈"),
+            discord.SelectOption(label="Sort: Highest IV", value="sort:iv", emoji="✨"),
+            discord.SelectOption(label="Sort: Needs Care First", value="sort:care", emoji="🍖"),
+            discord.SelectOption(label="Sort: Name", value="sort:name", emoji="🔤"),
+        ]
+        super().__init__(placeholder="Filter or sort pets", options=options, row=2)
+
+    async def callback(self, interaction: discord.Interaction):
+        kind, value = self.values[0].split(":", 1)
+        if kind == "filter":
+            self.collection_view.filter_mode = value
+        else:
+            self.collection_view.sort_mode = value
+        self.collection_view.apply_pet_organization()
+        self.collection_view.ensure_valid_state()
+        self.collection_view.rebuild_components()
+        await interaction.response.edit_message(
+            embed=self.collection_view.build_embed(),
+            view=self.collection_view,
+        )
+
+
+class PetRenameModal(discord.ui.Modal):
+    def __init__(self, collection_view, pet, *, alias=False):
+        super().__init__(title="Set Pet Alias" if alias else "Rename Pet")
+        self.collection_view = collection_view
+        self.pet = pet
+        self.alias_mode = alias
+        current = pet.get("alt_name") if alias else pet.get("name")
+        self.name_input = discord.ui.TextInput(
+            label="Alias (use clear to remove)" if alias else "Pet name",
+            default=str(current or ""),
+            min_length=1,
+            max_length=(collection_view.cog.ALIAS_MAX_LENGTH if alias else 50),
+        )
+        self.add_item(self.name_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        value = str(self.name_input.value).strip()
+        command_name = "pets alias" if self.alias_mode else "pets rename"
+        kwargs = (
+            {"pet_ref": str(self.pet["id"]), "alias": value}
+            if self.alias_mode
+            else {"pet_ref": str(self.pet["id"]), "nickname": value}
+        )
+        await interaction.response.defer(ephemeral=True)
+        ok, message = await self.collection_view.cog.invoke_pet_menu_command(
+            self.collection_view.ctx,
+            command_name,
+            **kwargs,
+        )
+        await self.collection_view.refresh_collection_data()
+        await self.collection_view.refresh_view_message()
+        await interaction.followup.send(message, ephemeral=True)
+
+
+class PetCollectionActionSelect(discord.ui.Select):
+    def __init__(self, collection_view):
+        self.collection_view = collection_view
+        if collection_view.category == "pets":
+            options = [
+                discord.SelectOption(label="Care & Training", value="care", emoji="💚"),
+                discord.SelectOption(label="Detailed Status", value="status", emoji="📊"),
+                discord.SelectOption(label="Skill Tree", value="skills", emoji="🎓"),
+                discord.SelectOption(label="Rename", value="rename", emoji="✏️"),
+                discord.SelectOption(label="Set Alias", value="alias", emoji="🏷️"),
+                discord.SelectOption(label="Daycare", value="daycare", emoji="🏡"),
+                discord.SelectOption(label="Use Pet Item", value="use_item", emoji="🧪"),
+                discord.SelectOption(label="Trade Instructions", value="trade", emoji="🔄"),
+                discord.SelectOption(label="Sell Instructions", value="sell", emoji="💰"),
+                discord.SelectOption(label="Release Pet", value="release", emoji="💔"),
+            ]
+        else:
+            options = [
+                discord.SelectOption(label="Trade Instructions", value="trade", emoji="🔄"),
+                discord.SelectOption(label="Sell Instructions", value="sell", emoji="💰"),
+                discord.SelectOption(label="Release Egg", value="release", emoji="💔"),
+            ]
+        super().__init__(placeholder="Actions for the selected pet or egg", options=options, row=4)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.collection_view
+        item = view.get_current_item()
+        if not item:
+            return await interaction.response.send_message("Select a pet or egg first.", ephemeral=True)
+        action = self.values[0]
+        item_id = str(item["id"])
+        if action == "care":
+            care_view = await PetCareView.create(view, item)
+            return await interaction.response.send_message(
+                embed=care_view.build_embed(), view=care_view, ephemeral=True
+            )
+        if action in {"status", "skills", "daycare"}:
+            command_name = {
+                "status": "pets status",
+                "skills": "pets skills",
+                "daycare": "pets daycare",
+            }[action]
+            kwargs = {} if action == "daycare" else {"pet_ref": item_id}
+            await interaction.response.defer(ephemeral=True)
+            ok, message = await view.cog.invoke_pet_menu_command(view.ctx, command_name, **kwargs)
+            return await interaction.followup.send(message, ephemeral=True)
+        if action in {"rename", "alias"}:
+            return await interaction.response.send_modal(
+                PetRenameModal(view, item, alias=action == "alias")
+            )
+        if action == "use_item":
+            command = view.ctx.bot.get_command("inventory")
+            await interaction.response.defer()
+            await view.ctx.invoke(command)
+            return
+        if action == "trade":
+            item_type = "pet" if view.category == "pets" else "egg"
+            return await interaction.response.send_message(
+                f"Use `$pets trade <user> {item_id} <their_id> {item_type} <their_type>` to propose a swap.",
+                ephemeral=True,
+            )
+        if action == "sell":
+            item_type = "pet" if view.category == "pets" else "egg"
+            return await interaction.response.send_message(
+                f"Use `$pets sell <user> {item_id} <price> {item_type}` to offer this {item_type}.",
+                ephemeral=True,
+            )
+        if action == "release":
+            await view.release_button.callback(interaction)
+
+
+class PetCareFoodSelect(discord.ui.Select):
+    def __init__(self, care_view):
+        self.care_view = care_view
+        options = [
+            discord.SelectOption(label="Basic Food", value="basic food", description="$10,000"),
+            discord.SelectOption(label="Premium Food", value="premium food", description="$25,000"),
+            discord.SelectOption(label="Deluxe Food", value="deluxe food", description="$50,000"),
+        ]
+        super().__init__(placeholder="Choose food for Feed", options=options, row=0)
+
+    async def callback(self, interaction):
+        self.care_view.food = self.values[0]
+        await interaction.response.edit_message(embed=self.care_view.build_embed(), view=self.care_view)
+
+
+class PetCareView(discord.ui.View):
+    ACTIONS = {"feed": 3600, "pet": 300, "play": 300, "treat": 600, "train": 1800}
+
+    def __init__(self, collection_view, pet, ttls):
+        super().__init__(timeout=180)
+        self.collection_view = collection_view
+        self.cog = collection_view.cog
+        self.ctx = collection_view.ctx
+        self.pet = pet
+        self.ttls = ttls
+        self.food = "basic food"
+        self.add_item(PetCareFoodSelect(self))
+        self.rebuild_buttons()
+
+    @classmethod
+    async def create(cls, collection_view, pet):
+        ttls = {}
+        for action in cls.ACTIONS:
+            command = collection_view.ctx.bot.get_command(f"pets {action}")
+            keys = [f"cd:{collection_view.author.id}:{command.qualified_name}"] if command else []
+            if command and command.name != command.qualified_name:
+                keys.append(f"cd:{collection_view.author.id}:{command.name}")
+            values = []
+            for key in keys:
+                try:
+                    values.append(int(await collection_view.ctx.bot.redis.execute_command("TTL", key)))
+                except (TypeError, ValueError):
+                    pass
+            ttls[action] = max([ttl for ttl in values if ttl > 0], default=0)
+        return cls(collection_view, pet, ttls)
+
+    @staticmethod
+    def format_ttl(seconds):
+        minutes, seconds = divmod(max(0, int(seconds)), 60)
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours:02}:{minutes:02}:{seconds:02}"
+
+    def rebuild_buttons(self):
+        for child in list(self.children):
+            if isinstance(child, discord.ui.Button):
+                self.remove_item(child)
+        for action in self.ACTIONS:
+            ttl = self.ttls.get(action, 0)
+            label = action.title() if not ttl else f"{action.title()} {self.format_ttl(ttl)}"
+            button = discord.ui.Button(
+                label=label[:80],
+                style=discord.ButtonStyle.success if not ttl else discord.ButtonStyle.secondary,
+                disabled=bool(ttl),
+                row=1,
+            )
+            button.callback = lambda interaction, selected=action: self.run_action(interaction, selected)
+            self.add_item(button)
+        close = discord.ui.Button(label="Close", style=discord.ButtonStyle.danger, row=2)
+        close.callback = self.close
+        self.add_item(close)
+
+    def build_embed(self):
+        lines = []
+        for action in self.ACTIONS:
+            ttl = self.ttls.get(action, 0)
+            lines.append(f"• **{action.title()}:** {'Ready' if not ttl else self.format_ttl(ttl)}")
+        return discord.Embed(
+            title=f"💚 Care for {self.pet['name']}",
+            description=(
+                f"Hunger: **{self.pet.get('hunger', 0)}%** • Happiness: **{self.pet.get('happiness', 0)}%**\n"
+                f"Selected food: **{self.food.title()}**\n\n" + "\n".join(lines)
+            ),
+            color=discord.Color.green(),
+        )
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.collection_view.author.id:
+            await interaction.response.send_message("This care panel is not yours.", ephemeral=True)
+            return False
+        return True
+
+    async def run_action(self, interaction, action):
+        await interaction.response.defer(ephemeral=True)
+        kwargs = (
+            {"pet_id_or_food": str(self.pet["id"]), "food_type": self.food}
+            if action == "feed"
+            else {"pet_ref": str(self.pet["id"])}
+        )
+        ok, message = await self.cog.invoke_pet_menu_command(
+            self.ctx, f"pets {action}", **kwargs
+        )
+        if ok:
+            self.ttls[action] = self.ACTIONS[action]
+        self.rebuild_buttons()
+        await interaction.edit_original_response(embed=self.build_embed(), view=self)
+        await interaction.followup.send(message, ephemeral=True)
+        await self.collection_view.refresh_collection_data()
+        await self.collection_view.refresh_view_message()
+
+    async def close(self, interaction):
+        await interaction.response.edit_message(view=None)
+        self.stop()
+
+
 class PetCollectionView(discord.ui.View):
     PAGE_SIZE = 25
 
@@ -388,6 +638,7 @@ class PetCollectionView(discord.ui.View):
         cog,
         author,
         *,
+        ctx=None,
         pets=None,
         eggs=None,
         boarding_lookup=None,
@@ -396,13 +647,18 @@ class PetCollectionView(discord.ui.View):
         super().__init__(timeout=60)
         self.cog = cog
         self.author = author
-        self.pets = list(pets or [])
+        self.ctx = ctx
+        self.all_pets = list(pets or [])
+        self.pets = list(self.all_pets)
         self.eggs = list(eggs or [])
         self.boarding_lookup = boarding_lookup or {}
         self.category = default_category if default_category in {"pets", "eggs"} else "pets"
         self.indexes = {"pets": 0, "eggs": 0}
         self.page_starts = {"pets": 0, "eggs": 0}
         self.message = None
+        self.filter_mode = "all"
+        self.sort_mode = "level"
+        self.apply_pet_organization()
         self.ensure_valid_state()
         self.rebuild_components()
 
@@ -481,8 +737,34 @@ class PetCollectionView(discord.ui.View):
         return bool(
             pet
             and self.cog.is_pet_equippable(pet)
-            and not bool(pet.get("equipped"))
         )
+
+    def apply_pet_organization(self):
+        pets = list(self.all_pets)
+        if self.filter_mode == "equipped":
+            pets = [pet for pet in pets if pet.get("equipped")]
+        elif self.filter_mode == "needs_care":
+            pets = [
+                pet for pet in pets
+                if int(pet.get("hunger", 100) or 0) < 75
+                or int(pet.get("happiness", 100) or 0) < 75
+            ]
+        elif self.filter_mode == "skill_points":
+            pets = [pet for pet in pets if int(pet.get("skill_points", 0) or 0) > 0]
+        elif self.filter_mode == "daycare":
+            pets = [pet for pet in pets if int(pet["id"]) in self.boarding_lookup]
+
+        if self.sort_mode == "iv":
+            pets.sort(key=lambda pet: (-int(pet.get("IV", 0) or 0), str(pet.get("name", "")).lower()))
+        elif self.sort_mode == "care":
+            pets.sort(key=lambda pet: (min(int(pet.get("hunger", 0) or 0), int(pet.get("happiness", 0) or 0)), str(pet.get("name", "")).lower()))
+        elif self.sort_mode == "name":
+            pets.sort(key=lambda pet: str(pet.get("name", "")).lower())
+        else:
+            pets.sort(key=lambda pet: (-int(pet.get("level", 1) or 1), -int(pet.get("IV", 0) or 0)))
+        self.pets = pets
+        self.indexes["pets"] = 0
+        self.page_starts["pets"] = 0
 
     def rebuild_components(self):
         self.clear_items()
@@ -491,21 +773,29 @@ class PetCollectionView(discord.ui.View):
             self.add_item(PetCollectionCategorySelect(self))
             if self.get_items():
                 self.add_item(PetCollectionItemSelect(self))
+        if self.category == "pets" and self.all_pets:
+            self.add_item(PetCollectionOrganizeSelect(self))
 
         self.prev_page_button.disabled = not self.has_previous_page()
         self.next_page_button.disabled = not self.has_next_page()
-        self.release_button.disabled = self.get_current_item() is None
 
         self.add_item(self.prev_page_button)
         self.add_item(self.next_page_button)
-        self.add_item(self.release_button)
 
         current_pet = self.get_current_item() if self.category == "pets" else None
         self.equip_button.disabled = not self.should_show_equip_button(current_pet)
         if self.should_show_equip_button(current_pet):
+            self.equip_button.label = "Unequip" if current_pet.get("equipped") else "Equip"
+            self.equip_button.style = (
+                discord.ButtonStyle.secondary
+                if current_pet.get("equipped")
+                else discord.ButtonStyle.success
+            )
             self.add_item(self.equip_button)
 
         self.add_item(self.close_button)
+        if self.get_current_item():
+            self.add_item(PetCollectionActionSelect(self))
 
     def build_empty_embed(self):
         if not self.pets and not self.eggs:
@@ -542,15 +832,25 @@ class PetCollectionView(discord.ui.View):
             embed = self.cog.build_egg_browser_embed(item, index, len(items))
             footer = f"Eggs {index + 1}/{len(items)}"
 
-        footer += f" | {self.get_page_label()} | Use the dropdowns and buttons below"
+        if self.category == "pets":
+            footer += f" | Filter: {self.filter_mode.replace('_', ' ').title()} | Sort: {self.sort_mode.title()}"
+        footer += f" | {self.get_page_label()} | Use the controls below"
         embed.set_footer(text=footer)
         return embed
 
     async def refresh_collection_data(self):
         pets, eggs, boarding_lookup = await self.cog.fetch_pet_collection_browser_data(self.author.id)
-        self.pets = pets
+        selected_pet = self.get_current_item() if self.category == "pets" else None
+        selected_pet_id = int(selected_pet["id"]) if selected_pet else None
+        self.all_pets = pets
         self.eggs = eggs
         self.boarding_lookup = boarding_lookup
+        self.apply_pet_organization()
+        if selected_pet_id:
+            for index, pet in enumerate(self.pets):
+                if int(pet["id"]) == selected_pet_id:
+                    self.set_current_index(index)
+                    break
         self.ensure_valid_state()
 
     async def refresh_view_message(self):
@@ -576,7 +876,7 @@ class PetCollectionView(discord.ui.View):
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass
 
-    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary, row=3)
     async def prev_page_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.author.id:
             return await interaction.response.send_message("This collection is not yours.", ephemeral=True)
@@ -587,7 +887,7 @@ class PetCollectionView(discord.ui.View):
         self.indexes[self.category] = new_start
         await self.refresh_message(interaction)
 
-    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, row=3)
     async def next_page_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.author.id:
             return await interaction.response.send_message("This collection is not yours.", ephemeral=True)
@@ -601,7 +901,7 @@ class PetCollectionView(discord.ui.View):
         self.indexes[self.category] = self.page_starts[self.category]
         await self.refresh_message(interaction)
 
-    @discord.ui.button(label="Release", style=discord.ButtonStyle.danger, row=2)
+    @discord.ui.button(label="Release", style=discord.ButtonStyle.danger, row=3)
     async def release_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.author.id:
             return await interaction.response.send_message("This collection is not yours.", ephemeral=True)
@@ -686,7 +986,7 @@ class PetCollectionView(discord.ui.View):
         confirm_view.add_item(cancel_button)
         await confirmation_message.edit(view=confirm_view)
 
-    @discord.ui.button(label="Equip", style=discord.ButtonStyle.success, row=2)
+    @discord.ui.button(label="Equip", style=discord.ButtonStyle.success, row=3)
     async def equip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.author.id:
             return await interaction.response.send_message("This collection is not yours.", ephemeral=True)
@@ -696,6 +996,16 @@ class PetCollectionView(discord.ui.View):
             return await interaction.response.send_message("Select a pet first.", ephemeral=True)
 
         await interaction.response.defer(ephemeral=True)
+        if pet.get("equipped"):
+            await self.cog.bot.pool.execute(
+                "UPDATE monster_pets SET equipped=FALSE WHERE id=$1 AND user_id=$2;",
+                int(pet["id"]),
+                self.author.id,
+            )
+            await self.refresh_collection_data()
+            await self.refresh_view_message()
+            await interaction.followup.send(f"Unequipped **{pet['name']}**.", ephemeral=True)
+            return
         equipped_pet, error = await self.cog.equip_pet_by_id(self.author.id, int(pet["id"]))
         await self.refresh_collection_data()
         await self.refresh_view_message()
@@ -709,13 +1019,19 @@ class PetCollectionView(discord.ui.View):
             ephemeral=True,
         )
 
-    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, row=2)
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, row=3)
     async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.author.id:
             return await interaction.response.send_message("This collection is not yours.", ephemeral=True)
 
         await interaction.message.delete()
         self.stop()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message("This collection is not yours.", ephemeral=True)
+            return False
+        return True
 
 
 class DaycarePackageScheduleModal(Modal, title="Set Daycare Schedule"):
@@ -5425,6 +5741,30 @@ class Pets(commands.Cog):
 
             return results
 
+    async def invoke_pet_menu_command(self, ctx, command_name: str, **kwargs):
+        """Run a pet subcommand from a component while preserving its checks and cooldown."""
+        command = self.bot.get_command(command_name)
+        if command is None:
+            return False, f"`{command_name}` is unavailable right now."
+        previous_command = ctx.command
+        ctx.command = command
+        try:
+            try:
+                allowed = await command.can_run(ctx)
+            except commands.CommandOnCooldown as exc:
+                seconds = max(1, int(exc.retry_after))
+                return False, f"That action is ready again in {seconds} second(s)."
+            except commands.CheckFailure as exc:
+                return False, str(exc).strip() or "You cannot use that action right now."
+            if not allowed:
+                return False, "You cannot use that action right now."
+            await command.callback(self, ctx, **kwargs)
+            return True, "The action was completed in this channel."
+        except Exception as exc:
+            return False, f"That action could not be completed: {exc}"
+        finally:
+            ctx.command = previous_command
+
     # Command to use the paginator
     @commands.group(invoke_without_command=True)
     async def pets(self, ctx):
@@ -5444,6 +5784,7 @@ class Pets(commands.Cog):
             view = PetCollectionView(
                 self,
                 ctx.author,
+                ctx=ctx,
                 pets=pets,
                 eggs=eggs,
                 boarding_lookup=boarding_lookup,
@@ -7617,6 +7958,7 @@ class Pets(commands.Cog):
         view = PetCollectionView(
             self,
             ctx.author,
+            ctx=ctx,
             pets=pets,
             eggs=eggs,
             boarding_lookup=boarding_lookup,
@@ -9143,9 +9485,10 @@ class Pets(commands.Cog):
                 """
                 INSERT INTO monster_pets (
                     user_id, name, default_name, hp, attack, defense, element, url,
-                    growth_stage, growth_index, growth_time, "IV"
+                    growth_stage, growth_index, growth_time, "IV",
+                    frontier_species_id
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                 RETURNING id;
                 """,
                 egg["user_id"],
@@ -9160,8 +9503,19 @@ class Pets(commands.Cog):
                 1,
                 growth_time,
                 iv_value,
+                egg["frontier_species_id"],
             )
 
+        self.bot.dispatch(
+            "frontier_pet_hatched",
+            int(egg["user_id"]),
+            int(pet_id),
+            (
+                int(egg["frontier_species_id"])
+                if egg["frontier_species_id"] is not None
+                else None
+            ),
+        )
         return {
             "egg": egg,
             "pet_id": pet_id,

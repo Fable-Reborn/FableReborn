@@ -20,6 +20,7 @@ from collections import Counter, namedtuple
 
 import discord
 import random
+import time
 import uuid
 
 from discord.ext import commands
@@ -69,6 +70,185 @@ CRATE_COLUMNS = (
     ("High Tier", ("magic", "legendary", "divine")),
     ("Special", ("mystery", "fortune", "materials")),
 )
+
+
+class CrateRaritySelect(discord.ui.Select):
+    def __init__(self, vault: "CrateVaultView"):
+        options = [
+            discord.SelectOption(
+                label=f"{rarity.title()} — {vault.counts.get(rarity, 0):,}",
+                value=rarity,
+                emoji=getattr(vault.cog.emotes, rarity),
+                default=rarity == vault.rarity,
+            )
+            for rarity in CRATE_ORDER
+        ]
+        super().__init__(placeholder="Choose a crate rarity", options=options, row=0)
+        self.vault = vault
+
+    async def callback(self, interaction):
+        self.vault.rarity = self.values[0]
+        self.vault.amount = min(max(1, self.vault.amount), max(1, self.vault.counts.get(self.vault.rarity, 0)))
+        self.vault.rebuild_components()
+        await interaction.response.edit_message(embed=self.vault.build_embed(), view=self.vault)
+
+
+class CrateAmountSelect(discord.ui.Select):
+    def __init__(self, vault: "CrateVaultView"):
+        owned = int(vault.counts.get(vault.rarity, 0))
+        values = [1, 5, 10, 25, min(100, owned)]
+        options = []
+        seen = set()
+        for amount in values:
+            if amount <= 0 or amount in seen:
+                continue
+            seen.add(amount)
+            options.append(
+                discord.SelectOption(
+                    label="All (up to 100)" if amount == min(100, owned) and owned > 25 else f"Open {amount}",
+                    value=str(amount),
+                    default=amount == vault.amount,
+                )
+            )
+        if not options:
+            options = [discord.SelectOption(label="No crates available", value="0")]
+        super().__init__(placeholder="Choose how many to open", options=options, disabled=owned <= 0, row=1)
+        self.vault = vault
+
+    async def callback(self, interaction):
+        self.vault.amount = int(self.values[0])
+        self.vault.rebuild_components()
+        await interaction.response.edit_message(embed=self.vault.build_embed(), view=self.vault)
+
+
+class CrateAmountModal(discord.ui.Modal, title="Open Crates"):
+    amount = discord.ui.TextInput(label="Amount (1-100)", default="1", max_length=3)
+
+    def __init__(self, vault: "CrateVaultView"):
+        super().__init__()
+        self.vault = vault
+
+    async def on_submit(self, interaction):
+        try:
+            amount = int(str(self.amount.value))
+        except ValueError:
+            return await interaction.response.send_message("Amount must be a whole number.", ephemeral=True)
+        if amount < 1 or amount > 100:
+            return await interaction.response.send_message("Choose an amount from 1 to 100.", ephemeral=True)
+        self.vault.amount = amount
+        await self.vault.open_selected(interaction)
+
+
+class CrateVaultView(discord.ui.View):
+    def __init__(self, cog, ctx, counts):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.ctx = ctx
+        self.counts = dict(counts)
+        self.rarity = next((rarity for rarity in CRATE_ORDER if self.counts.get(rarity, 0) > 0), "common")
+        self.amount = 1
+        self.message = None
+        self.rebuild_components()
+
+    async def refresh_counts(self):
+        columns = ", ".join(f'"crates_{rarity}"' for rarity in CRATE_ORDER)
+        row = await self.cog.bot.pool.fetchrow(
+            f'SELECT {columns} FROM profile WHERE "user"=$1;', self.ctx.author.id
+        )
+        if row:
+            self.counts = {rarity: int(row[f"crates_{rarity}"] or 0) for rarity in CRATE_ORDER}
+
+    def build_embed(self, notice=None):
+        total = sum(self.counts.values())
+        description = f"**{total:,} crates** in your collection"
+        if notice:
+            description = f"✅ {notice}\n\n{description}"
+        embed = discord.Embed(title="📦 Crate Vault", description=description, color=self.cog.bot.config.game.primary_colour)
+        for heading, rarities in CRATE_COLUMNS:
+            lines = []
+            for rarity in rarities:
+                marker = "▶" if rarity == self.rarity else "•"
+                lines.append(f"{marker} {getattr(self.cog.emotes, rarity)} {rarity.title()} **{self.counts.get(rarity, 0):,}**")
+            embed.add_field(name=heading, value="\n".join(lines), inline=True)
+        embed.add_field(
+            name="Ready to Open",
+            value=f"**{self.amount}× {self.rarity.title()}** crate(s)",
+            inline=False,
+        )
+        embed.set_footer(text="Select rarity and amount, then Open Selected. Maximum 100 at once.")
+        return embed
+
+    def rebuild_components(self):
+        self.clear_items()
+        self.add_item(CrateRaritySelect(self))
+        self.add_item(CrateAmountSelect(self))
+        open_button = discord.ui.Button(
+            label="Open Selected",
+            style=discord.ButtonStyle.success,
+            disabled=self.counts.get(self.rarity, 0) < self.amount,
+            row=2,
+        )
+        open_button.callback = self.open_selected
+        self.add_item(open_button)
+        custom = discord.ui.Button(label="Custom Amount", style=discord.ButtonStyle.primary, row=2)
+        custom.callback = self.custom_amount
+        self.add_item(custom)
+        refresh = discord.ui.Button(label="Refresh", style=discord.ButtonStyle.secondary, row=2)
+        refresh.callback = self.refresh
+        self.add_item(refresh)
+        close = discord.ui.Button(label="Close", style=discord.ButtonStyle.danger, row=2)
+        close.callback = self.close
+        self.add_item(close)
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("This crate vault is not yours.", ephemeral=True)
+            return False
+        return True
+
+    async def open_selected(self, interaction):
+        owned = int(self.counts.get(self.rarity, 0))
+        if self.amount < 1 or self.amount > owned:
+            return await interaction.response.send_message("You do not own that many selected crates.", ephemeral=True)
+        await interaction.response.defer()
+        command = self.cog._open
+        previous = self.ctx.command
+        self.ctx.command = command
+        try:
+            try:
+                allowed = await command.can_run(self.ctx)
+            except commands.CheckFailure as exc:
+                return await interaction.followup.send(
+                    str(exc).strip() or "You cannot open crates right now.", ephemeral=True
+                )
+            if not allowed:
+                return await interaction.followup.send("You cannot open crates right now.", ephemeral=True)
+            bucket = command._buckets.get_bucket(self.ctx.message, time.time())
+            retry_after = bucket.update_rate_limit(time.time()) if bucket else None
+            if retry_after:
+                return await interaction.followup.send(
+                    f"Wait {retry_after:.1f} seconds before opening more crates.", ephemeral=True
+                )
+            await command.callback(self.cog, self.ctx, self.rarity, str(self.amount))
+        finally:
+            self.ctx.command = previous
+        await self.refresh_counts()
+        self.amount = min(max(1, self.amount), max(1, self.counts.get(self.rarity, 0)))
+        self.rebuild_components()
+        if interaction.message:
+            await interaction.message.edit(embed=self.build_embed("Vault refreshed after opening."), view=self)
+
+    async def custom_amount(self, interaction):
+        await interaction.response.send_modal(CrateAmountModal(self))
+
+    async def refresh(self, interaction):
+        await self.refresh_counts()
+        self.rebuild_components()
+        await interaction.response.edit_message(embed=self.build_embed("Counts refreshed."), view=self)
+
+    async def close(self, interaction):
+        await interaction.response.edit_message(view=None)
+        self.stop()
 
 
 class Crates(commands.Cog):
@@ -142,7 +322,8 @@ class Crates(commands.Cog):
                 prefix=ctx.clean_prefix
             )
         )
-        await ctx.send(embed=embed)
+        view = CrateVaultView(self, ctx, counts)
+        view.message = await ctx.send(embed=view.build_embed(), view=view)
 
 
     @commands.cooldown(1, 10, commands.BucketType.user)
@@ -222,12 +403,16 @@ class Crates(commands.Cog):
                 )
 
             async with self.bot.pool.acquire() as conn:
-                await conn.execute(
+                remaining = await conn.fetchval(
                     f'UPDATE profile SET "crates_{rarity}"="crates_{rarity}"-$1 WHERE'
-                    ' "user"=$2;',
+                    f' "user"=$2 AND "crates_{rarity}">=$1 RETURNING "crates_{rarity}";',
                     amount,
                     ctx.author.id,
                 )
+                if remaining is None:
+                    return await ctx.send(
+                        _("Your crate balance changed. Refresh the vault and try again.")
+                    )
 
                 if rarity == "mystery":
                     crates = {
@@ -913,12 +1098,24 @@ class Crates(commands.Cog):
                 await ctx.send(f"{gift_user.mention} has received a gift recently!")
                 return await self.bot.reset_cooldown(ctx)
 
-            # Set the value in Redis with a TTL of 24 hours (86400 seconds)
-            await self.bot.redis.setex(unique_key, 600, 'Gift')
+            # Match the command's six-hour cadence so recipients cannot be
+            # repeatedly targeted by several Helpers in the same window.
+            await self.bot.redis.setex(unique_key, 21600, 'Gift')
 
             rarities = ["common"] * 390 + ["uncommon"] * 310 + ["rare"] * 290 + ["magic"] * 40 + ["legendary"] + [
                 "mystery"] * 100 + ["fortune"] * 10
-            rarity1 = random.choice(rarities)
+            rarity_rank = {
+                "common": 0,
+                "uncommon": 1,
+                "rare": 2,
+                "magic": 3,
+                "mystery": 4,
+                "fortune": 5,
+                "legendary": 6,
+            }
+            roll_count = 1 + int(grade >= 3) + int(grade >= 6)
+            gift_rolls = [random.choice(rarities) for _ in range(roll_count)]
+            rarity1 = max(gift_rolls, key=rarity_rank.__getitem__)
 
             async with self.bot.pool.acquire() as conn:
                 await conn.execute(

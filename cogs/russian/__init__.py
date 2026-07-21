@@ -1966,6 +1966,363 @@ class RRSettings:
     brawl_on_misfire: bool = False
 
 
+RR_SETTINGS_SECTIONS = {
+    "Lobby": ["join_timeout", "min_players", "max_players", "allow_start_early"],
+    "Speed": [
+        "fast_mode",
+        "turn_timeout",
+        "drama_multiplier",
+        "show_status",
+        "announce_round",
+        "silent_rounds",
+    ],
+    "Gameplay": [
+        "spin_mode",
+        "sudden_death_after",
+        "sudden_death_bullets",
+        "mercy_chance",
+    ],
+    "Finale": ["allow_last_shot", "brawl_on_misfire", "duel_mode"],
+    "Double Down": ["allow_double_down", "allow_pass_on_double_down"],
+    "Flavor": ["allow_taunts", "theme", "victory_recap"],
+    "Chaos": ["chaos_events", "chaos_chance"],
+}
+
+RR_SETTINGS_LIMITS = {
+    "join_timeout": (30, 600),
+    "min_players": (2, 20),
+    "max_players": (0, 50),
+    "turn_timeout": (5, 60),
+    "sudden_death_after": (0, 50),
+    "sudden_death_bullets": (1, 5),
+    "mercy_chance": (0.0, 0.5),
+    "chaos_chance": (0.0, 0.5),
+    "drama_multiplier": (0.2, 3.0),
+}
+
+RR_SETTINGS_CHOICES = {
+    "spin_mode": ["fixed", "spin_each_pull", "spin_each_turn"],
+    "theme": [
+        "dark", "noir", "western", "wasteland", "mafia", "medieval", "arcade",
+        "greek", "norse", "farmer", "sarcastic_farmer", "horror", "detective",
+        "pirate", "mixed",
+    ],
+}
+
+RR_SETTINGS_PRESETS = {
+    "classic": {
+        "fast_mode": False,
+        "show_status": False,
+        "announce_round": True,
+        "spin_mode": "fixed",
+        "allow_double_down": False,
+        "chaos_events": False,
+        "silent_rounds": False,
+        "drama_multiplier": 1.0,
+    },
+    "quick": {
+        "fast_mode": True,
+        "show_status": False,
+        "announce_round": False,
+        "turn_timeout": 8,
+        "silent_rounds": True,
+        "drama_multiplier": 0.35,
+    },
+    "cinematic": {
+        "fast_mode": False,
+        "show_status": True,
+        "announce_round": True,
+        "allow_taunts": True,
+        "victory_recap": True,
+        "silent_rounds": False,
+        "drama_multiplier": 1.5,
+    },
+    "chaos": {
+        "allow_double_down": True,
+        "allow_pass_on_double_down": True,
+        "chaos_events": True,
+        "chaos_chance": 0.3,
+        "spin_mode": "spin_each_turn",
+        "allow_taunts": True,
+        "victory_recap": True,
+    },
+}
+
+
+def _rr_pretty_key(key: str) -> str:
+    return key.replace("_", " ").title()
+
+
+class RRSettingValueModal(discord.ui.Modal):
+    def __init__(self, panel: "RRSettingsPanelView", setting_key: str):
+        super().__init__(title=f"Edit {_rr_pretty_key(setting_key)}")
+        self.panel = panel
+        self.setting_key = setting_key
+        current = getattr(panel.settings, setting_key)
+        limits = RR_SETTINGS_LIMITS.get(setting_key)
+        label = "New value"
+        if limits:
+            label = f"Value ({limits[0]} to {limits[1]})"
+        self.value_input = discord.ui.TextInput(
+            label=label[:45],
+            default=str(current),
+            required=True,
+            max_length=20,
+        )
+        self.add_item(self.value_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        ok, message = await self.panel.cog.apply_rr_setting_value(
+            self.panel.author_id,
+            self.setting_key,
+            str(self.value_input.value),
+        )
+        if ok:
+            self.panel.reload_settings()
+            self.panel.rebuild_components()
+            await interaction.response.edit_message(
+                embed=self.panel.build_embed(notice=message),
+                view=self.panel,
+            )
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+
+
+class RRSettingsCategorySelect(discord.ui.Select):
+    def __init__(self, panel: "RRSettingsPanelView"):
+        options = [
+            discord.SelectOption(
+                label=category,
+                value=category,
+                default=category == panel.category,
+            )
+            for category in RR_SETTINGS_SECTIONS
+        ]
+        super().__init__(placeholder="Choose a settings category", options=options, row=0)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        self.panel.category = self.values[0]
+        self.panel.setting_key = RR_SETTINGS_SECTIONS[self.panel.category][0]
+        self.panel.rebuild_components()
+        await interaction.response.edit_message(embed=self.panel.build_embed(), view=self.panel)
+
+
+class RRSettingsSettingSelect(discord.ui.Select):
+    def __init__(self, panel: "RRSettingsPanelView"):
+        descriptions = panel.cog.setting_descriptions()
+        options = [
+            discord.SelectOption(
+                label=_rr_pretty_key(key),
+                value=key,
+                description=descriptions.get(key, "")[:100],
+                default=key == panel.setting_key,
+            )
+            for key in RR_SETTINGS_SECTIONS[panel.category]
+        ]
+        super().__init__(placeholder="Choose a setting", options=options, row=1)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        self.panel.setting_key = self.values[0]
+        self.panel.rebuild_components()
+        await interaction.response.edit_message(embed=self.panel.build_embed(), view=self.panel)
+
+
+class RRSettingsChoiceSelect(discord.ui.Select):
+    def __init__(self, panel: "RRSettingsPanelView"):
+        key = panel.setting_key
+        current = str(getattr(panel.settings, key))
+        options = [
+            discord.SelectOption(
+                label=_rr_pretty_key(value),
+                value=value,
+                default=value == current,
+            )
+            for value in RR_SETTINGS_CHOICES[key]
+        ]
+        super().__init__(placeholder=f"Set {_rr_pretty_key(key)}", options=options, row=2)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        ok, message = await self.panel.cog.apply_rr_setting_value(
+            self.panel.author_id,
+            self.panel.setting_key,
+            self.values[0],
+        )
+        if not ok:
+            return await interaction.response.send_message(message, ephemeral=True)
+        self.panel.reload_settings()
+        self.panel.rebuild_components()
+        await interaction.response.edit_message(
+            embed=self.panel.build_embed(notice=message),
+            view=self.panel,
+        )
+
+
+class RRSettingsPresetSelect(discord.ui.Select):
+    def __init__(self, panel: "RRSettingsPanelView"):
+        options = [
+            discord.SelectOption(label="Classic", value="classic", description="Traditional roulette pacing."),
+            discord.SelectOption(label="Quick", value="quick", description="Minimal delays and narration."),
+            discord.SelectOption(label="Cinematic", value="cinematic", description="Status, flavor, and recap enabled."),
+            discord.SelectOption(label="Chaos", value="chaos", description="Double downs, spins, and chaos events."),
+        ]
+        super().__init__(placeholder="Apply a settings preset", options=options, row=3)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        preset_name = self.values[0]
+        settings = self.panel.cog.get_user_settings(self.panel.author_id)
+        for key, value in RR_SETTINGS_PRESETS[preset_name].items():
+            setattr(settings, key, value)
+        await self.panel.cog.set_user_settings(self.panel.author_id, settings)
+        self.panel.reload_settings()
+        self.panel.rebuild_components()
+        await interaction.response.edit_message(
+            embed=self.panel.build_embed(notice=f"Applied the **{preset_name.title()}** preset."),
+            view=self.panel,
+        )
+
+
+class RRSettingsPanelView(discord.ui.View):
+    def __init__(self, cog: "Russian", author_id: int):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.author_id = int(author_id)
+        self.category = next(iter(RR_SETTINGS_SECTIONS))
+        self.setting_key = RR_SETTINGS_SECTIONS[self.category][0]
+        self.settings = cog.get_user_settings(author_id)
+        self.message = None
+        self.rebuild_components()
+
+    def reload_settings(self):
+        self.settings = self.cog.get_user_settings(self.author_id)
+
+    def rebuild_components(self):
+        self.clear_items()
+        self.add_item(RRSettingsCategorySelect(self))
+        self.add_item(RRSettingsSettingSelect(self))
+        value = getattr(self.settings, self.setting_key)
+        if isinstance(value, bool):
+            toggle = discord.ui.Button(
+                label="Disable" if value else "Enable",
+                style=discord.ButtonStyle.danger if value else discord.ButtonStyle.success,
+                row=2,
+            )
+            toggle.callback = self.toggle_setting
+            self.add_item(toggle)
+        elif self.setting_key in RR_SETTINGS_CHOICES:
+            self.add_item(RRSettingsChoiceSelect(self))
+        else:
+            edit = discord.ui.Button(label="Edit Value", style=discord.ButtonStyle.primary, row=2)
+            edit.callback = self.edit_setting
+            self.add_item(edit)
+
+        reset = discord.ui.Button(label="Reset Setting", style=discord.ButtonStyle.secondary, row=4)
+        reset.callback = self.reset_setting
+        self.add_item(reset)
+        reset_all = discord.ui.Button(label="Reset All", style=discord.ButtonStyle.danger, row=4)
+        reset_all.callback = self.reset_all
+        self.add_item(reset_all)
+        self.add_item(RRSettingsPresetSelect(self))
+        close = discord.ui.Button(label="Close", style=discord.ButtonStyle.secondary, row=4)
+        close.callback = self.close_panel
+        self.add_item(close)
+
+    def build_embed(self, *, notice: str | None = None) -> discord.Embed:
+        descriptions = self.cog.setting_descriptions()
+        lines = []
+        for key in RR_SETTINGS_SECTIONS[self.category]:
+            marker = "▶" if key == self.setting_key else "•"
+            lines.append(f"{marker} **{_rr_pretty_key(key)}:** `{getattr(self.settings, key)}`")
+        description = "\n".join(lines)
+        if notice:
+            description = f"✅ {notice}\n\n{description}"
+        embed = discord.Embed(
+            title=f"Russian Roulette Settings — {self.category}",
+            description=description,
+            color=discord.Color.blue(),
+        )
+        embed.add_field(
+            name=_rr_pretty_key(self.setting_key),
+            value=descriptions.get(self.setting_key, "No description available."),
+            inline=False,
+        )
+        limits = RR_SETTINGS_LIMITS.get(self.setting_key)
+        if limits:
+            embed.add_field(name="Allowed Range", value=f"`{limits[0]}` to `{limits[1]}`", inline=True)
+        embed.set_footer(text="Changes save immediately. Existing text commands still work.")
+        return embed
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("This settings panel is not yours.", ephemeral=True)
+            return False
+        return True
+
+    async def toggle_setting(self, interaction: discord.Interaction):
+        value = not bool(getattr(self.settings, self.setting_key))
+        ok, message = await self.cog.apply_rr_setting_value(
+            self.author_id, self.setting_key, str(value)
+        )
+        if not ok:
+            return await interaction.response.send_message(message, ephemeral=True)
+        self.reload_settings()
+        self.rebuild_components()
+        await interaction.response.edit_message(embed=self.build_embed(notice=message), view=self)
+
+    async def edit_setting(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(RRSettingValueModal(self, self.setting_key))
+
+    async def reset_setting(self, interaction: discord.Interaction):
+        default_value = getattr(RRSettings(), self.setting_key)
+        settings = self.cog.get_user_settings(self.author_id)
+        setattr(settings, self.setting_key, default_value)
+        await self.cog.set_user_settings(self.author_id, settings)
+        self.reload_settings()
+        self.rebuild_components()
+        await interaction.response.edit_message(
+            embed=self.build_embed(notice=f"Reset {_rr_pretty_key(self.setting_key)}."),
+            view=self,
+        )
+
+    async def reset_all(self, interaction: discord.Interaction):
+        await self.cog.set_user_settings(self.author_id, RRSettings())
+        self.reload_settings()
+        self.rebuild_components()
+        await interaction.response.edit_message(
+            embed=self.build_embed(notice="Reset all roulette settings."),
+            view=self,
+        )
+
+    async def close_panel(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(content="Roulette settings closed.", embed=None, view=None)
+        self.stop()
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            with contextlib.suppress(discord.HTTPException, discord.NotFound):
+                await self.message.edit(view=self)
+
+
+class RRSettingsLaunchView(discord.ui.View):
+    def __init__(self, cog: "Russian", author_id: int):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.author_id = int(author_id)
+
+    @discord.ui.button(label="Open Settings", style=discord.ButtonStyle.primary, emoji="⚙️")
+    async def open_settings(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("This settings menu is not yours.", ephemeral=True)
+        panel = RRSettingsPanelView(self.cog, self.author_id)
+        await interaction.response.send_message(embed=panel.build_embed(), view=panel, ephemeral=True)
+        panel.message = await interaction.original_response()
+
+
 class Game:
     def __init__(self, host_id: int, settings: RRSettings, bet: int):
         self.host_id = host_id
@@ -2615,6 +2972,108 @@ class Russian(commands.Cog):
             return "dark"
         return theme
 
+    async def apply_rr_setting_value(
+        self,
+        user_id: int,
+        setting: str,
+        value: str,
+    ) -> tuple[bool, str]:
+        """Validate and persist one roulette setting for commands and UI panels."""
+        key_map = {
+            "join_timeout": "join_timeout",
+            "min_players": "min_players",
+            "max_players": "max_players",
+            "fast_mode": "fast_mode",
+            "show_status": "show_status",
+            "announce_round": "announce_round",
+            "round_announce": "announce_round",
+            "round_announcement": "announce_round",
+            "spin_mode": "spin_mode",
+            "spin": "spin_mode",
+            "spin_each_turn": "spin_mode",
+            "spin_each_pull": "spin_mode",
+            "spin_pull": "spin_mode",
+            "double_down": "allow_double_down",
+            "allow_double_down": "allow_double_down",
+            "pass_on_double_down": "allow_pass_on_double_down",
+            "allow_pass_on_double_down": "allow_pass_on_double_down",
+            "taunts": "allow_taunts",
+            "allow_taunts": "allow_taunts",
+            "theme": "theme",
+            "host_theme": "theme",
+            "victory_recap": "victory_recap",
+            "summary": "victory_recap",
+            "allow_summary": "victory_recap",
+            "start_early": "allow_start_early",
+            "allow_start_early": "allow_start_early",
+            "turn_timeout": "turn_timeout",
+            "sudden_death_after": "sudden_death_after",
+            "sudden_death_bullets": "sudden_death_bullets",
+            "mercy_chance": "mercy_chance",
+            "silent_rounds": "silent_rounds",
+            "drama_multiplier": "drama_multiplier",
+            "chaos_events": "chaos_events",
+            "chaos_chance": "chaos_chance",
+            "duel_mode": "duel_mode",
+            "allow_last_shot": "allow_last_shot",
+            "last_shot": "allow_last_shot",
+            "shoot_last": "allow_last_shot",
+            "shoot_other": "allow_last_shot",
+            "shoot_other_player": "allow_last_shot",
+            "brawl_on_misfire": "brawl_on_misfire",
+            "bar_brawl": "brawl_on_misfire",
+            "brawl": "brawl_on_misfire",
+            "brawl_on_empty": "brawl_on_misfire",
+        }
+        key = str(setting).strip().lower()
+        if key not in key_map:
+            return False, "Unknown setting. Open `rrsettings` to view the available options."
+
+        attr = key_map[key]
+        settings = self.get_user_settings(user_id)
+        current_value = getattr(settings, attr)
+
+        if isinstance(current_value, bool):
+            parsed = self.parse_bool(value)
+            if parsed is None:
+                return False, "That setting expects true/false."
+        elif attr in {"join_timeout", "min_players", "max_players", "turn_timeout", "sudden_death_after", "sudden_death_bullets"}:
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                return False, "That setting expects a whole number."
+            minimum, maximum = RR_SETTINGS_LIMITS[attr]
+            parsed = max(int(minimum), min(int(maximum), parsed))
+            if attr == "max_players" and parsed == 1:
+                parsed = 2
+        elif attr in {"mercy_chance", "drama_multiplier", "chaos_chance"}:
+            parsed = self.parse_float(value)
+            if parsed is None:
+                return False, "That setting expects a decimal number."
+            minimum, maximum = RR_SETTINGS_LIMITS[attr]
+            parsed = max(float(minimum), min(float(maximum), parsed))
+        elif attr == "spin_mode":
+            parsed = self.normalize_spin_mode(value)
+            if parsed is None:
+                return False, "Spin mode must be fixed, spin_each_pull, or spin_each_turn."
+        elif attr == "theme":
+            raw_theme = value.strip().lower()
+            aliases = {"gallows", "sarcasticfarmer", "sarcastic-farmer"}
+            if raw_theme not in THEME_TAUNTS and raw_theme not in aliases:
+                return False, "Choose a theme from the dropdown in the settings panel."
+            parsed = self.normalize_theme(raw_theme)
+        else:
+            return False, "Unsupported setting type."
+
+        setattr(settings, attr, parsed)
+        if settings.max_players and settings.min_players > settings.max_players:
+            if attr == "min_players":
+                settings.max_players = settings.min_players
+            else:
+                settings.min_players = settings.max_players
+        await self.set_user_settings(user_id, settings)
+        return True, f"Updated `{attr}` to `{getattr(settings, attr)}`."
+
     def next_cycled_message(self, category: str, theme: str, pool: list[str], fallback: str) -> str:
         if not pool:
             return fallback
@@ -3118,33 +3577,7 @@ class Russian(commands.Cog):
             embed = discord.Embed(title="Russian Roulette Settings", color=discord.Color.blue())
             descriptions = self.setting_descriptions()
 
-            sections = [
-                ("Lobby", ["join_timeout", "min_players", "max_players", "allow_start_early"]),
-                (
-                    "Speed",
-                    [
-                        "fast_mode",
-                        "turn_timeout",
-                        "drama_multiplier",
-                        "show_status",
-                        "announce_round",
-                        "silent_rounds",
-                    ],
-                ),
-                (
-                    "Gameplay",
-                    [
-                        "spin_mode",
-                        "sudden_death_after",
-                        "sudden_death_bullets",
-                        "mercy_chance",
-                    ],
-                ),
-                ("Finale", ["allow_last_shot", "brawl_on_misfire", "duel_mode"]),
-                ("Double Down", ["allow_double_down", "allow_pass_on_double_down"]),
-                ("Flavor", ["allow_taunts", "theme", "victory_recap"]),
-                ("Chaos", ["chaos_events", "chaos_chance"]),
-            ]
+            sections = list(RR_SETTINGS_SECTIONS.items())
 
             def shorten(text: str, limit: int = 120) -> str:
                 if len(text) <= limit:
@@ -3185,8 +3618,11 @@ class Russian(commands.Cog):
                 add_section_fields(title, keys)
                 if idx < len(sections) - 1:
                     embed.add_field(name="\u200b", value="\u200b\n\u200b", inline=False)
-            embed.set_footer(text="Use rrsettings <setting> <value> to change.")
-            return await ctx.send(embed=embed)
+            embed.set_footer(text="Use Open Settings below, or rrsettings <setting> <value>.")
+            return await ctx.send(
+                embed=embed,
+                view=RRSettingsLaunchView(self, ctx.author.id),
+            )
 
         if value is None:
             return await ctx.send("Usage: rrsettings <setting> <value>")
@@ -3369,12 +3805,16 @@ class Russian(commands.Cog):
                     remaining = self._lobby_seconds_left(game)
                     if remaining <= 0:
                         break
-                    try:
-                        await asyncio.wait_for(view.wait(), timeout=min(5, remaining))
-                    except asyncio.TimeoutError:
-                        await self.update_lobby_message(game)
-                        continue
-                    break
+                    # Poll on a short interval to refresh the countdown and pick
+                    # up a "Start Early" press. Do NOT wrap view.wait() in
+                    # asyncio.wait_for: on timeout it cancels the view's shared
+                    # internal "stopped" future, which makes is_finished() return
+                    # True and closes the lobby after the first interval (the
+                    # "lobby ignores its timer" bug).
+                    await asyncio.sleep(min(5, remaining))
+                    if view.is_finished():
+                        break
+                    await self.update_lobby_message(game)
                 game.lobby_open = False
                 game.lobby_ends_at = None
                 view.stop()

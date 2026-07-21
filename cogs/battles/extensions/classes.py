@@ -1,28 +1,52 @@
 # battles/extensions/classes.py
+from decimal import Decimal
+
+from ..core.numbers import to_decimal
+from classes.warrior import WARRIOR_EVOLUTION_LEVELS
 
 class ClassBuffExtension:
     """Extension for class-based buffs"""
     
     # Classes with death-cheating abilities
     death_cheat_classes = {
-        "Deathshroud": 20,
-        "Soul Warden": 30,
-        "Reaper": 40,
-        "Phantom Scythe": 50,
-        "Soul Snatcher": 60,
-        "Deathbringer": 70,
-        "Grim Reaper": 80,
+        "Deathshroud": 10,
+        "Soul Warden": 15,
+        "Reaper": 20,
+        "Phantom Scythe": 25,
+        "Soul Snatcher": 30,
+        "Deathbringer": 35,
+        "Grim Reaper": 40,
     }
     
     # Classes with lifesteal abilities
     lifesteal_classes = {
-        "Little Helper": 7,
-        "Gift Gatherer": 14,
-        "Holiday Aide": 21,
-        "Joyful Jester": 28,
-        "Yuletide Guardian": 35,
-        "Festive Enforcer": 40,
-        "Festive Champion": 60,
+        "Little Helper": 5,
+        "Gift Gatherer": 7,
+        "Holiday Aide": 10,
+        "Joyful Jester": 12,
+        "Yuletide Guardian": 15,
+        "Festive Enforcer": 18,
+        "Festive Champion": 20,
+    }
+
+    reaper_evolution_levels = {
+        "Deathshroud": 1,
+        "Soul Warden": 2,
+        "Reaper": 3,
+        "Phantom Scythe": 4,
+        "Soul Snatcher": 5,
+        "Deathbringer": 6,
+        "Grim Reaper": 7,
+    }
+
+    santa_evolution_levels = {
+        "Little Helper": 1,
+        "Gift Gatherer": 2,
+        "Holiday Aide": 3,
+        "Joyful Jester": 4,
+        "Yuletide Guardian": 5,
+        "Festive Enforcer": 6,
+        "Festive Champion": 7,
     }
     
     # Mage evolution levels for fireball spell
@@ -46,6 +70,8 @@ class ClassBuffExtension:
         "Fortress": 6,
         "Titan": 7,
     }
+
+    warrior_evolution_levels = WARRIOR_EVOLUTION_LEVELS
 
     # Paladin evolution levels for faith-based smites
     paladin_evolution_levels = {
@@ -89,6 +115,28 @@ class ClassBuffExtension:
         "Champion": 5,
         "Vindicator": 6,
         "Paragon": 7,
+    }
+
+    # Bard evolution levels for party songs
+    bard_evolution_levels = {
+        "Busker": 1,
+        "Minstrel": 2,
+        "Skald": 3,
+        "Troubadour": 4,
+        "Songweaver": 5,
+        "Virtuoso": 6,
+        "Maestro": 7,
+    }
+
+    # Beastmaster evolution levels for pet-bond scaling
+    beastmaster_evolution_levels = {
+        "Wrangler": 1,
+        "Beast Kin": 2,
+        "Packmate": 3,
+        "Wildcaller": 4,
+        "Alphabond": 5,
+        "Feralheart": 6,
+        "Beastlord": 7,
     }
     
     # Mage fireball damage multipliers
@@ -318,12 +366,17 @@ class ClassBuffExtension:
             "death_cheat_chance": 0,
             "lifesteal_percent": 0,
             "mage_evolution": None,
+            "warrior_evolution": None,
             "tank_evolution": None,
             "paladin_evolution": None,
             "raider_evolution": None,
             "ritualist_evolution": None,
             "paragon_evolution": None,
             "ranger_evolution": None,
+            "bard_evolution": None,
+            "beastmaster_evolution": None,
+            "reaper_evolution": None,
+            "santa_evolution": None,
         }
         
         if not classes:
@@ -342,12 +395,27 @@ class ClassBuffExtension:
             # Lifesteal
             if class_name in self.lifesteal_classes:
                 buffs["lifesteal_percent"] = max(buffs["lifesteal_percent"], self.lifesteal_classes[class_name])
+
+            if class_name in self.reaper_evolution_levels:
+                level = self.reaper_evolution_levels[class_name]
+                if buffs["reaper_evolution"] is None or level > buffs["reaper_evolution"]:
+                    buffs["reaper_evolution"] = level
+
+            if class_name in self.santa_evolution_levels:
+                level = self.santa_evolution_levels[class_name]
+                if buffs["santa_evolution"] is None or level > buffs["santa_evolution"]:
+                    buffs["santa_evolution"] = level
             
             # Mage evolution
             if class_name in self.mage_evolution_levels:
                 level = self.mage_evolution_levels[class_name]
                 if buffs["mage_evolution"] is None or level > buffs["mage_evolution"]:
                     buffs["mage_evolution"] = level
+
+            if class_name in self.warrior_evolution_levels:
+                level = self.warrior_evolution_levels[class_name]
+                if buffs["warrior_evolution"] is None or level > buffs["warrior_evolution"]:
+                    buffs["warrior_evolution"] = level
             
             # Tank evolution
             if class_name in self.tank_evolution_levels:
@@ -384,21 +452,35 @@ class ClassBuffExtension:
                 level = list(self.ranger_egg_bonuses.keys()).index(class_name) + 1
                 if buffs["ranger_evolution"] is None or level > buffs["ranger_evolution"]:
                     buffs["ranger_evolution"] = level
-        
+
+            # Bard evolution
+            if class_name in self.bard_evolution_levels:
+                level = self.bard_evolution_levels[class_name]
+                if buffs["bard_evolution"] is None or level > buffs["bard_evolution"]:
+                    buffs["bard_evolution"] = level
+
+            # Beastmaster evolution
+            if class_name in self.beastmaster_evolution_levels:
+                level = self.beastmaster_evolution_levels[class_name]
+                if buffs["beastmaster_evolution"] is None or level > buffs["beastmaster_evolution"]:
+                    buffs["beastmaster_evolution"] = level
+
         return buffs
-        
+
     def apply_tank_buffs(self, total_health, tank_evolution, has_shield):
         """Apply tank class buffs to health and calculate reflection"""
-        damage_reflection = 0.0
-        
+        total_health = to_decimal(total_health)
+        tank_evolution = to_decimal(tank_evolution)
+        damage_reflection = Decimal("0")
+
         if tank_evolution and has_shield:
             # Health bonus: +4% per evolution level
-            health_multiplier = 1 + (0.04 * tank_evolution)
+            health_multiplier = Decimal("1") + (Decimal("0.04") * tank_evolution)
             total_health *= health_multiplier
-            damage_reflection = 0.03 * tank_evolution
+            damage_reflection = Decimal("0.03") * tank_evolution
         elif tank_evolution:
             # Smaller health bonus without shield
-            health_multiplier = 1 + (0.01 * tank_evolution)
+            health_multiplier = Decimal("1") + (Decimal("0.01") * tank_evolution)
             total_health *= health_multiplier
-            
+
         return total_health, damage_reflection

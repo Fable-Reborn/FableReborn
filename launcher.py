@@ -34,7 +34,11 @@ from typing import Iterable
 
 import aiohttp
 import orjson
-import uvloop
+
+try:
+    import uvloop  # uvloop is not available on Windows
+except ImportError:
+    uvloop = None
 
 from redis import asyncio as aioredis
 
@@ -108,7 +112,7 @@ class Instance:
         self.instance_count = instance_count
         self.name = name
         self.command = (
-            f'{sys.executable} -OO {Path.cwd() / BOT_FILE} "{shard_list}" {shard_count}'
+            f'"{sys.executable}" -OO "{Path.cwd() / BOT_FILE}" "{shard_list}" {shard_count}'
             f" {self.id} {self.instance_count} {self.name}"
         )
         self._process: asyncio.subprocess.Process | None = None
@@ -294,8 +298,8 @@ class Main:
 
 if __name__ == "__main__":
     try:
-        import uvloop
-        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())  # Use uvloop as the event loop
+        if uvloop is not None:
+            asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())  # Use uvloop as the event loop
         asyncio.run(Main().launch())
     except KeyboardInterrupt:
         pass

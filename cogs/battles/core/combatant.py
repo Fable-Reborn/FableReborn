@@ -1,6 +1,7 @@
 # battles/core/combatant.py
 from decimal import Decimal
 from .numbers import to_decimal
+from classes.warrior import warrior_damage_reduction_pct
 import random
 from typing import List, Dict, Any, Optional, Union
 
@@ -21,6 +22,11 @@ class Combatant:
         "fireball_charge",
         "pending_true_damage_bypass_shield",
         "sky_dodge",
+        "bloodpact_reservoir",
+        "bloodpact_cap_percent",
+        "bloodpact_bank_percent",
+        "soul_ward",
+        "soul_ward_cap",
     }
 
     def __setattr__(self, key, value):
@@ -61,11 +67,16 @@ class Combatant:
         self.lifesteal_percent = Decimal(str(kwargs.get("lifesteal_percent", 0)))
         self.death_cheat_chance = Decimal(str(kwargs.get("death_cheat_chance", 0)))
         self.mage_evolution = kwargs.get("mage_evolution", None)
+        self.warrior_evolution = kwargs.get("warrior_evolution", None)
         self.tank_evolution = kwargs.get("tank_evolution", None)
         self.paladin_evolution = kwargs.get("paladin_evolution", None)
         self.raider_evolution = kwargs.get("raider_evolution", None)
         self.ritualist_evolution = kwargs.get("ritualist_evolution", None)
         self.paragon_evolution = kwargs.get("paragon_evolution", None)
+        self.bard_evolution = kwargs.get("bard_evolution", None)
+        self.beastmaster_evolution = kwargs.get("beastmaster_evolution", None)
+        self.reaper_evolution = kwargs.get("reaper_evolution", None)
+        self.santa_evolution = kwargs.get("santa_evolution", None)
         self.damage_reflection = Decimal(str(kwargs.get("damage_reflection", 0)))
         self.has_shield = kwargs.get("has_shield", False)
         self.has_cheated_death = False
@@ -102,6 +113,11 @@ class Combatant:
         """Apply damage to the combatant, accounting for shields and immortality"""
         damage = Decimal(str(amount))
 
+        death_shroud_hits = int(getattr(self, "reaper_death_shroud_hits", 0) or 0)
+        if death_shroud_hits > 0 and damage > 0:
+            damage *= Decimal("0.50")
+            self.reaper_death_shroud_hits = death_shroud_hits - 1
+
         if int(getattr(self, 'divine_invincibility', 0) or 0) > 0:
             return self.hp
 
@@ -123,6 +139,34 @@ class Combatant:
                 setattr(self, 'damage_inverted', damage_inverted - 1)
             return self.hp
 
+        brace_stacks = int(getattr(self, "warrior_brace_stacks", 0) or 0)
+        battle = getattr(self, "battle", None)
+        class_buffs_enabled = (
+            battle is None
+            or not isinstance(getattr(battle, "config", None), dict)
+            or battle.config.get("class_buffs", True)
+        )
+        warrior_reduction = warrior_damage_reduction_pct(
+            getattr(self, "spec_effects", None) if class_buffs_enabled else None,
+            getattr(self, "warrior_momentum", 0),
+            brace_stacks,
+        )
+        if warrior_reduction > 0 and damage > 0:
+            damage *= Decimal("1") - warrior_reduction / Decimal("100")
+            reduction_text = format(warrior_reduction, "f")
+            if "." in reduction_text:
+                reduction_text = reduction_text.rstrip("0").rstrip(".")
+            pending = getattr(self, "pending_class_messages", None)
+            if not isinstance(pending, list):
+                pending = []
+                self.pending_class_messages = pending
+            pending.append(
+                f"🪖 **{self.name}**'s Combat Discipline reduces the blow by "
+                f"**{reduction_text}%**."
+            )
+        if brace_stacks > 0 and class_buffs_enabled:
+            self.warrior_brace_stacks = 0
+
         # Consume pending true damage (from effects like Shadow Strike) first.
         pending_true_damage = Decimal('0')
         if hasattr(self, 'pending_true_damage_bypass_shield'):
@@ -143,20 +187,35 @@ class Combatant:
         if hasattr(self, 'ignore_shield_this_hit'):
             delattr(self, 'ignore_shield_this_hit')
 
+        # Soulbinder overhealing forms a separate ward before ordinary shields.
+        if not bypass_shield and damage > 0:
+            soul_ward = Decimal(str(getattr(self, "soul_ward", 0) or 0))
+            if soul_ward > 0:
+                ward_absorbed = min(soul_ward, damage)
+                self.soul_ward = soul_ward - ward_absorbed
+                damage -= ward_absorbed
+
         # Check if combatant has shield attribute.
+        shield_absorbed = Decimal('0')
         if not bypass_shield and hasattr(self, 'shield') and self.shield > 0:
             # Shield absorbs damage first
-            absorbed = min(self.shield, damage)
-            self.shield -= absorbed
-            damage -= absorbed
-            
+            shield_absorbed = min(self.shield, damage)
+            self.shield -= shield_absorbed
+            damage -= shield_absorbed
+
             # If shield went negative (shouldn't happen), reset to 0
             if self.shield < 0:
                 self.shield = Decimal('0')
-        
+
         # Apply remaining damage to HP.
+        hp_before = self.hp
         if damage > 0:
             self._apply_hp_damage(damage)
+
+        # Bloodweaver (Blood Pact): bank a share of the damage actually taken.
+        taken = shield_absorbed + (hp_before - self.hp)
+        if taken > 0:
+            self._bloodpact_bank(taken)
 
         return self.hp
 
@@ -165,8 +224,48 @@ class Combatant:
         self.hp -= damage
         if self.hp <= 0 and getattr(self, 'water_immortality', False):
             self.hp = Decimal('1')
-        elif self.hp < 0:
+            return
+        # Bloodweaver: a lethal blow shatters the pact instead of killing you.
+        if self.hp <= 0 and self._bloodpact_try_save():
+            return
+        battle = getattr(self, "battle", None)
+        if self.hp <= 0 and battle is not None:
+            seasonal_save = getattr(battle, "try_seasonal_death_save", None)
+            if callable(seasonal_save) and seasonal_save(self):
+                return
+        if self.hp < 0:
             self.hp = Decimal('0')
+
+    def _bloodpact_bank(self, damage_taken):
+        """Bloodweaver: store a share of damage taken in the Blood Reservoir,
+        capped at a percent of max HP. No-op for non-Bloodweavers."""
+        bank_pct = Decimal(str(getattr(self, 'bloodpact_bank_percent', 0) or 0))
+        if bank_pct <= 0 or getattr(self, 'bloodpact_used', False):
+            return
+        cap = self.max_hp * Decimal(str(getattr(self, 'bloodpact_cap_percent', 0) or 0)) / Decimal('100')
+        if cap <= 0:
+            return
+        reservoir = Decimal(str(getattr(self, 'bloodpact_reservoir', 0) or 0))
+        if reservoir >= cap:
+            return
+        self.bloodpact_reservoir = min(cap, reservoir + Decimal(str(damage_taken)) * bank_pct / Decimal('100'))
+
+    def _bloodpact_try_save(self):
+        """Bloodweaver: once per battle, a lethal blow leaves you at 1 HP and the
+        reservoir empties into you as healing. Returns True if it fired."""
+        if Decimal(str(getattr(self, 'bloodpact_bank_percent', 0) or 0)) <= 0:
+            return False
+        if getattr(self, 'bloodpact_used', False):
+            return False
+        self.bloodpact_used = True
+        reservoir = Decimal(str(getattr(self, 'bloodpact_reservoir', 0) or 0))
+        self.bloodpact_reservoir = Decimal('0')
+        self.hp = Decimal('1')
+        if reservoir > 0:
+            self.heal(reservoir)  # caps at max_hp
+        # Flag for the battle loop to surface a message where it can.
+        self.bloodpact_triggered = True
+        return True
     
     def heal(self, amount):
         """Heal the combatant by the specified amount"""

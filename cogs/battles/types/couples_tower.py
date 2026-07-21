@@ -1171,8 +1171,12 @@ class CouplesTowerBattle(TowerBattle):
                 blocked_damage > 0 and
                 not ignore_reflection_this_hit):
                 reflected_damage = blocked_damage * Decimal(str(reflection_value))
-                current_combatant.take_damage(reflected_damage)
-                message += f" **{target.name}** reflects **{self.format_number(reflected_damage)} HP** damage back!"
+                reflected_damage, plate_message = self.apply_reflection_plate(target, reflected_damage, reflection_value)
+                if reflected_damage > 0:
+                    current_combatant.take_damage(reflected_damage)
+                    message += f" **{target.name}** reflects **{self.format_number(reflected_damage)} HP** damage back!"
+                if plate_message:
+                    message += f" {plate_message}"
             
             message = self._apply_paladin_smite_to_message(current_combatant, target, message)
 
@@ -1188,9 +1192,12 @@ class CouplesTowerBattle(TowerBattle):
                     
                     cheat_roll = random.randint(1, 100)
                     if cheat_roll <= target.death_cheat_chance:
-                        target.hp = Decimal('75')
+                        target.hp = self.get_cheat_death_recovery_hp(target)
                         target.has_cheated_death = True
-                        message += f"\n{target.name} cheats death and survives with **75 HP**!"
+                        message += (
+                            f"\n{target.name} cheats death and survives with "
+                            f"**{self.format_number(target.hp)} HP**!"
+                        )
                     else:
                         message += f" {target.name} has been defeated!"
                 else:
@@ -1446,8 +1453,12 @@ class CouplesTowerBattle(TowerBattle):
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
                 reflected = reflection_base * Decimal(str(reflection_value))
-                current_combatant.take_damage(reflected)
-                message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                reflected, plate_message = self.apply_reflection_plate(target, reflected, reflection_value)
+                if reflected > 0:
+                    current_combatant.take_damage(reflected)
+                    message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                if plate_message:
+                    message += f"\n{plate_message}"
                 
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
@@ -1466,9 +1477,12 @@ class CouplesTowerBattle(TowerBattle):
                     
                     cheat_roll = random.randint(1, 100)
                     if cheat_roll <= target.death_cheat_chance:
-                        target.hp = Decimal('75')
+                        target.hp = self.get_cheat_death_recovery_hp(target)
                         target.has_cheated_death = True
-                        message += f"\n{target.name} cheats death and survives with **75 HP**!"
+                        message += (
+                            f"\n{target.name} cheats death and survives with "
+                            f"**{self.format_number(target.hp)} HP**!"
+                        )
                     else:
                         message += f" {target.name} has been defeated!"
                 else:
@@ -1732,8 +1746,12 @@ class CouplesTowerBattle(TowerBattle):
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
                 reflected = reflection_base * Decimal(str(reflection_value))
-                current_combatant.take_damage(reflected)
-                message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                reflected, plate_message = self.apply_reflection_plate(target, reflected, reflection_value)
+                if reflected > 0:
+                    current_combatant.take_damage(reflected)
+                    message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                if plate_message:
+                    message += f"\n{plate_message}"
                 
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
@@ -1752,9 +1770,12 @@ class CouplesTowerBattle(TowerBattle):
                     
                     cheat_roll = random.randint(1, 100)
                     if cheat_roll <= target.death_cheat_chance:
-                        target.hp = Decimal('75')
+                        target.hp = self.get_cheat_death_recovery_hp(target)
                         target.has_cheated_death = True
-                        message += f"\n{target.name} cheats death and survives with **75 HP**!"
+                        message += (
+                            f"\n{target.name} cheats death and survives with "
+                            f"**{self.format_number(target.hp)} HP**!"
+                        )
                     else:
                         message += f" {target.name} has been defeated!"
                 else:
@@ -2006,8 +2027,12 @@ class CouplesTowerBattle(TowerBattle):
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
                 reflected = reflection_base * Decimal(str(reflection_value))
-                current_combatant.take_damage(reflected)
-                message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                reflected, plate_message = self.apply_reflection_plate(target, reflected, reflection_value)
+                if reflected > 0:
+                    current_combatant.take_damage(reflected)
+                    message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                if plate_message:
+                    message += f"\n{plate_message}"
                 
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
@@ -2026,9 +2051,12 @@ class CouplesTowerBattle(TowerBattle):
                     
                     cheat_roll = random.randint(1, 100)
                     if cheat_roll <= target.death_cheat_chance:
-                        target.hp = Decimal('75')
+                        target.hp = self.get_cheat_death_recovery_hp(target)
                         target.has_cheated_death = True
-                        message += f"\n{target.name} cheats death and survives with **75 HP**!"
+                        message += (
+                            f"\n{target.name} cheats death and survives with "
+                            f"**{self.format_number(target.hp)} HP**!"
+                        )
                     else:
                         message += f" {target.name} has been defeated!"
                 else:
@@ -2452,8 +2480,12 @@ class CouplesTowerBattle(TowerBattle):
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
                 reflected = reflection_base * Decimal(str(reflection_value))
-                current_combatant.take_damage(reflected)
-                message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                reflected, plate_message = self.apply_reflection_plate(target, reflected, reflection_value)
+                if reflected > 0:
+                    current_combatant.take_damage(reflected)
+                    message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                if plate_message:
+                    message += f"\n{plate_message}"
                 
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
@@ -2472,9 +2504,12 @@ class CouplesTowerBattle(TowerBattle):
                     
                     cheat_roll = random.randint(1, 100)
                     if cheat_roll <= target.death_cheat_chance:
-                        target.hp = Decimal('75')
+                        target.hp = self.get_cheat_death_recovery_hp(target)
                         target.has_cheated_death = True
-                        message += f"\n{target.name} cheats death and survives with **75 HP**!"
+                        message += (
+                            f"\n{target.name} cheats death and survives with "
+                            f"**{self.format_number(target.hp)} HP**!"
+                        )
                     else:
                         message += f" {target.name} has been defeated!"
                 else:
@@ -2719,8 +2754,12 @@ class CouplesTowerBattle(TowerBattle):
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
                 reflected = reflection_base * Decimal(str(reflection_value))
-                current_combatant.take_damage(reflected)
-                message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                reflected, plate_message = self.apply_reflection_plate(target, reflected, reflection_value)
+                if reflected > 0:
+                    current_combatant.take_damage(reflected)
+                    message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                if plate_message:
+                    message += f"\n{plate_message}"
                 
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
@@ -2739,9 +2778,12 @@ class CouplesTowerBattle(TowerBattle):
                     
                     cheat_roll = random.randint(1, 100)
                     if cheat_roll <= target.death_cheat_chance:
-                        target.hp = Decimal('75')
+                        target.hp = self.get_cheat_death_recovery_hp(target)
                         target.has_cheated_death = True
-                        message += f"\n{target.name} cheats death and survives with **75 HP**!"
+                        message += (
+                            f"\n{target.name} cheats death and survives with "
+                            f"**{self.format_number(target.hp)} HP**!"
+                        )
                     else:
                         message += f" {target.name} has been defeated!"
                 else:
@@ -3001,8 +3043,12 @@ class CouplesTowerBattle(TowerBattle):
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
                 reflected = reflection_base * Decimal(str(reflection_value))
-                current_combatant.take_damage(reflected)
-                message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                reflected, plate_message = self.apply_reflection_plate(target, reflected, reflection_value)
+                if reflected > 0:
+                    current_combatant.take_damage(reflected)
+                    message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                if plate_message:
+                    message += f"\n{plate_message}"
                 
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
@@ -3021,9 +3067,12 @@ class CouplesTowerBattle(TowerBattle):
                     
                     cheat_roll = random.randint(1, 100)
                     if cheat_roll <= target.death_cheat_chance:
-                        target.hp = Decimal('75')
+                        target.hp = self.get_cheat_death_recovery_hp(target)
                         target.has_cheated_death = True
-                        message += f"\n{target.name} cheats death and survives with **75 HP**!"
+                        message += (
+                            f"\n{target.name} cheats death and survives with "
+                            f"**{self.format_number(target.hp)} HP**!"
+                        )
                     else:
                         message += f" {target.name} has been defeated!"
                 else:
@@ -3287,8 +3336,12 @@ class CouplesTowerBattle(TowerBattle):
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
                 reflected = reflection_base * Decimal(str(reflection_value))
-                current_combatant.take_damage(reflected)
-                message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                reflected, plate_message = self.apply_reflection_plate(target, reflected, reflection_value)
+                if reflected > 0:
+                    current_combatant.take_damage(reflected)
+                    message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                if plate_message:
+                    message += f"\n{plate_message}"
                 
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
@@ -3307,9 +3360,12 @@ class CouplesTowerBattle(TowerBattle):
                     
                     cheat_roll = random.randint(1, 100)
                     if cheat_roll <= target.death_cheat_chance:
-                        target.hp = Decimal('75')
+                        target.hp = self.get_cheat_death_recovery_hp(target)
                         target.has_cheated_death = True
-                        message += f"\n{target.name} cheats death and survives with **75 HP**!"
+                        message += (
+                            f"\n{target.name} cheats death and survives with "
+                            f"**{self.format_number(target.hp)} HP**!"
+                        )
                     else:
                         message += f" {target.name} has been defeated!"
                 else:
@@ -3597,8 +3653,12 @@ class CouplesTowerBattle(TowerBattle):
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
                 reflected = reflection_base * Decimal(str(reflection_value))
-                current_combatant.take_damage(reflected)
-                message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                reflected, plate_message = self.apply_reflection_plate(target, reflected, reflection_value)
+                if reflected > 0:
+                    current_combatant.take_damage(reflected)
+                    message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                if plate_message:
+                    message += f"\n{plate_message}"
                 
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
@@ -3617,9 +3677,12 @@ class CouplesTowerBattle(TowerBattle):
                     
                     cheat_roll = random.randint(1, 100)
                     if cheat_roll <= target.death_cheat_chance:
-                        target.hp = Decimal('75')
+                        target.hp = self.get_cheat_death_recovery_hp(target)
                         target.has_cheated_death = True
-                        message += f"\n{target.name} cheats death and survives with **75 HP**!"
+                        message += (
+                            f"\n{target.name} cheats death and survives with "
+                            f"**{self.format_number(target.hp)} HP**!"
+                        )
                     else:
                         message += f" {target.name} has been defeated!"
                 else:
@@ -3881,8 +3944,12 @@ class CouplesTowerBattle(TowerBattle):
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
                 reflected = reflection_base * Decimal(str(reflection_value))
-                current_combatant.take_damage(reflected)
-                message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                reflected, plate_message = self.apply_reflection_plate(target, reflected, reflection_value)
+                if reflected > 0:
+                    current_combatant.take_damage(reflected)
+                    message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                if plate_message:
+                    message += f"\n{plate_message}"
                 
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
@@ -3901,9 +3968,12 @@ class CouplesTowerBattle(TowerBattle):
                     
                     cheat_roll = random.randint(1, 100)
                     if cheat_roll <= target.death_cheat_chance:
-                        target.hp = Decimal('75')
+                        target.hp = self.get_cheat_death_recovery_hp(target)
                         target.has_cheated_death = True
-                        message += f"\n{target.name} cheats death and survives with **75 HP**!"
+                        message += (
+                            f"\n{target.name} cheats death and survives with "
+                            f"**{self.format_number(target.hp)} HP**!"
+                        )
                     else:
                         message += f" {target.name} has been defeated!"
                 else:
@@ -4165,8 +4235,12 @@ class CouplesTowerBattle(TowerBattle):
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
                 reflected = reflection_base * Decimal(str(reflection_value))
-                current_combatant.take_damage(reflected)
-                message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                reflected, plate_message = self.apply_reflection_plate(target, reflected, reflection_value)
+                if reflected > 0:
+                    current_combatant.take_damage(reflected)
+                    message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                if plate_message:
+                    message += f"\n{plate_message}"
                 
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
@@ -4185,9 +4259,12 @@ class CouplesTowerBattle(TowerBattle):
                     
                     cheat_roll = random.randint(1, 100)
                     if cheat_roll <= target.death_cheat_chance:
-                        target.hp = Decimal('75')
+                        target.hp = self.get_cheat_death_recovery_hp(target)
                         target.has_cheated_death = True
-                        message += f"\n{target.name} cheats death and survives with **75 HP**!"
+                        message += (
+                            f"\n{target.name} cheats death and survives with "
+                            f"**{self.format_number(target.hp)} HP**!"
+                        )
                     else:
                         message += f" {target.name} has been defeated!"
                 else:
@@ -4465,8 +4542,12 @@ class CouplesTowerBattle(TowerBattle):
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
                 reflected = reflection_base * Decimal(str(reflection_value))
-                current_combatant.take_damage(reflected)
-                message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                reflected, plate_message = self.apply_reflection_plate(target, reflected, reflection_value)
+                if reflected > 0:
+                    current_combatant.take_damage(reflected)
+                    message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                if plate_message:
+                    message += f"\n{plate_message}"
                 
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
@@ -4485,9 +4566,12 @@ class CouplesTowerBattle(TowerBattle):
                     
                     cheat_roll = random.randint(1, 100)
                     if cheat_roll <= target.death_cheat_chance:
-                        target.hp = Decimal('75')
+                        target.hp = self.get_cheat_death_recovery_hp(target)
                         target.has_cheated_death = True
-                        message += f"\n{target.name} cheats death and survives with **75 HP**!"
+                        message += (
+                            f"\n{target.name} cheats death and survives with "
+                            f"**{self.format_number(target.hp)} HP**!"
+                        )
                     else:
                         message += f" {target.name} has been defeated!"
                 else:
@@ -4832,15 +4916,21 @@ class CouplesTowerBattle(TowerBattle):
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
                 reflected = reflection_base * Decimal(str(reflection_value))
+                reflected, plate_message = self.apply_reflection_plate(target, reflected, reflection_value)
                 
                 # Store reflected damage for pain application
                 reflected_damage = float(reflected)
-                current_combatant.take_damage(reflected)
+                if reflected > 0:
+                    current_combatant.take_damage(reflected)
                 
                 # *** LEVEL 26 PAIN ACCUMULATION FOR REFLECTED DAMAGE ***
-                await self.apply_pain_bonuses(current_combatant, reflected_damage)
+                if reflected_damage > 0:
+                    await self.apply_pain_bonuses(current_combatant, reflected_damage)
                 
-                message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                if reflected > 0:
+                    message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                if plate_message:
+                    message += f"\n{plate_message}"
                 
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
@@ -4859,9 +4949,12 @@ class CouplesTowerBattle(TowerBattle):
                     
                     cheat_roll = random.randint(1, 100)
                     if cheat_roll <= target.death_cheat_chance:
-                        target.hp = Decimal('75')
+                        target.hp = self.get_cheat_death_recovery_hp(target)
                         target.has_cheated_death = True
-                        message += f"\n{target.name} cheats death and survives with **75 HP**!"
+                        message += (
+                            f"\n{target.name} cheats death and survives with "
+                            f"**{self.format_number(target.hp)} HP**!"
+                        )
                     else:
                         message += f" {target.name} has been defeated!"
                 else:
@@ -5706,8 +5799,12 @@ class CouplesTowerBattle(TowerBattle):
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
                 reflected = reflection_base * Decimal(str(reflection_value))
-                current_combatant.take_damage(reflected)
-                message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                reflected, plate_message = self.apply_reflection_plate(target, reflected, reflection_value)
+                if reflected > 0:
+                    current_combatant.take_damage(reflected)
+                    message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                if plate_message:
+                    message += f"\n{plate_message}"
                 
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
@@ -5726,9 +5823,12 @@ class CouplesTowerBattle(TowerBattle):
                     
                     cheat_roll = random.randint(1, 100)
                     if cheat_roll <= target.death_cheat_chance:
-                        target.hp = Decimal('75')
+                        target.hp = self.get_cheat_death_recovery_hp(target)
                         target.has_cheated_death = True
-                        message += f"\n{target.name} cheats death and survives with **75 HP**!"
+                        message += (
+                            f"\n{target.name} cheats death and survives with "
+                            f"**{self.format_number(target.hp)} HP**!"
+                        )
                     else:
                         message += f" {target.name} has been defeated!"
                 else:
@@ -6824,5 +6924,3 @@ class CouplesTowerBattle(TowerBattle):
         embed.set_footer(text=f"Battle ID: {self.battle_id}")
         
         return embed
-
-

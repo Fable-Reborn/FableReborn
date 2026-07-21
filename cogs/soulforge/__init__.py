@@ -3618,6 +3618,8 @@ class Soulforge(commands.Cog):
                     """
                     SELECT * FROM splice_combinations 
                     WHERE (pet1_default = $1 AND pet2_default = $2) OR (pet1_default = $2 AND pet2_default = $1)
+                    ORDER BY id ASC
+                    LIMIT 1
                     """,
                     pet1_data["default_name"], pet2_data["default_name"]
                 )
@@ -3894,8 +3896,16 @@ class Soulforge(commands.Cog):
                         growth_time,
                         total_iv_points
                     )
-                    
-                
+
+                self.bot.dispatch(
+                    "frontier_splice_created",
+                    ctx,
+                    new_pet_name,
+                    int(existing_splice["id"]),
+                    None,
+                    int(new_pet_id),
+                )
+
                 # Send success message
                 await ctx.author.send(f"You have successfully spliced your pets into a {new_pet_name}! Check your pets with `$pets`. Your forge's condition is now at {new_condition}% and divine scrutiny is at {new_divine_attention}%.")
                 

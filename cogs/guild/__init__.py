@@ -123,6 +123,122 @@ class GuildAdventureJoinView(View):
             )
 
 
+class GuildValueModal(discord.ui.Modal):
+    def __init__(self, dashboard: "GuildDashboardView", action: str):
+        titles = {"invest": "Deposit to Guild Bank", "adventure": "Start Guild Adventure"}
+        super().__init__(title=titles[action])
+        self.dashboard = dashboard
+        self.action = action
+        self.value = discord.ui.TextInput(
+            label="Amount" if action == "invest" else "Join timer in seconds",
+            default="1000" if action == "invest" else "600",
+            max_length=12,
+        )
+        self.add_item(self.value)
+
+    async def on_submit(self, interaction):
+        try:
+            value = int(str(self.value.value))
+        except ValueError:
+            return await interaction.response.send_message("Value must be a whole number.", ephemeral=True)
+        if value <= 0 or (self.action == "adventure" and value > 3600):
+            return await interaction.response.send_message(
+                "Use a positive amount; adventure timers may be at most 3,600 seconds.",
+                ephemeral=True,
+            )
+        command_name = "guild invest" if self.action == "invest" else "guild adventure"
+        kwargs = {"amount": str(value)} if self.action == "invest" else {"timer": value}
+        await interaction.response.defer()
+        ok, message = await self.dashboard.invoke(command_name, **kwargs)
+        await interaction.followup.send(message, ephemeral=True)
+
+
+class GuildDashboardView(discord.ui.View):
+    def __init__(self, cog, ctx):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.ctx = ctx
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("This guild dashboard is not yours.", ephemeral=True)
+            return False
+        return True
+
+    async def invoke(self, command_name, **kwargs):
+        command = self.ctx.bot.get_command(command_name)
+        if command is None:
+            return False, f"`{command_name}` is unavailable."
+        previous = self.ctx.command
+        self.ctx.command = command
+        try:
+            try:
+                allowed = await command.can_run(self.ctx)
+            except commands.CheckFailure as exc:
+                return False, str(exc).strip() or "You do not have permission for that guild action."
+            if not allowed:
+                return False, "You do not have permission for that guild action."
+            await command.callback(self.cog, self.ctx, **kwargs)
+            return True, "Guild action opened in this channel."
+        except Exception as exc:
+            return False, f"Guild action failed: {exc}"
+        finally:
+            self.ctx.command = previous
+
+    async def run(self, interaction, command_name, **kwargs):
+        await interaction.response.defer(ephemeral=True)
+        ok, message = await self.invoke(command_name, **kwargs)
+        await interaction.followup.send(message, ephemeral=True)
+
+    @discord.ui.button(label="Members", style=discord.ButtonStyle.primary, row=0)
+    async def members(self, interaction, button):
+        await self.run(interaction, "guild members")
+
+    @discord.ui.button(label="Richest", style=discord.ButtonStyle.primary, row=0)
+    async def richest(self, interaction, button):
+        await self.run(interaction, "guild richest")
+
+    @discord.ui.button(label="Best XP", style=discord.ButtonStyle.primary, row=0)
+    async def best(self, interaction, button):
+        await self.run(interaction, "guild best")
+
+    @discord.ui.button(label="Deposit", style=discord.ButtonStyle.success, row=0)
+    async def deposit(self, interaction, button):
+        await interaction.response.send_modal(GuildValueModal(self, "invest"))
+
+    @discord.ui.button(label="Adventure Status", style=discord.ButtonStyle.secondary, row=1)
+    async def status(self, interaction, button):
+        await self.run(interaction, "guild status")
+
+    @discord.ui.button(label="Start Adventure", style=discord.ButtonStyle.success, row=1)
+    async def adventure(self, interaction, button):
+        await interaction.response.send_modal(GuildValueModal(self, "adventure"))
+
+    @discord.ui.button(label="Timers", style=discord.ButtonStyle.secondary, row=1)
+    async def timers(self, interaction, button):
+        await self.run(interaction, "guild timers")
+
+    @discord.ui.button(label="City Alerts", style=discord.ButtonStyle.secondary, row=1)
+    async def alerts(self, interaction, button):
+        await self.run(interaction, "guild cityalerts")
+
+    @discord.ui.button(label="Management Help", style=discord.ButtonStyle.secondary, row=2)
+    async def management(self, interaction, button):
+        await interaction.response.send_message(
+            "**Guild management shortcuts**\n"
+            "`guild invite @user` • `guild promote @user` • `guild demote @user` • `guild kick @user`\n"
+            "`guild pay <amount> @user` • `guild distribute ...` • `guild upgrade`\n"
+            "`guild rename <name>` • `guild description <text>` • `guild icon <url>`\n"
+            "`guild cityalerts set` • `guild cityalerts role @role`",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, row=2)
+    async def close(self, interaction, button):
+        await interaction.response.edit_message(view=None)
+        self.stop()
+
+
 class Guild(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -752,7 +868,9 @@ class Guild(commands.Cog):
         embed.set_footer(text=_("Guild ID: {id}").format(id=guild["id"]))
         if guild["badge"]:
             embed.set_image(url=guild["badge"])
-        await ctx.send(embed=embed)
+        own_guild_id = ctx.character_data.get("guild") if getattr(ctx, "character_data", None) else None
+        view = GuildDashboardView(self, ctx) if own_guild_id and int(own_guild_id) == int(guild["id"]) else None
+        await ctx.send(embed=embed, view=view)
 
     @guild.command(brief=_("Show a specific guild"))
     @locale_doc
@@ -1835,36 +1953,49 @@ class Guild(commands.Cog):
             return await ctx.send(
                 _("For me? I'm flattered, but I can't accept this...")
             )
+        error = None
         async with self.bot.pool.acquire() as conn:
-            guild = await conn.fetchrow(
-                'SELECT * FROM guild WHERE "id"=$1;', ctx.character_data["guild"]
-            )
-            if city_name := await self._guild_city_under_attack(guild["id"], conn=conn):
-                return await ctx.send(
-                    _("Your city **{city}** is under attack, so guild bank withdrawals are disabled right now.").format(
-                        city=city_name
-                    )
+            async with conn.transaction():
+                # Lock the guild row so concurrent withdrawals cannot each read the
+                # same balance and all pass the affordability check.
+                guild = await conn.fetchrow(
+                    'SELECT * FROM guild WHERE "id"=$1 FOR UPDATE;',
+                    ctx.character_data["guild"],
                 )
-            if guild["money"] < amount:
-                return await ctx.send(_("Your guild is too poor."))
-            await conn.execute(
-                'UPDATE guild SET "money"="money"-$1 WHERE "id"=$2;',
-                amount,
-                guild["id"],
-            )
-            await conn.execute(
-                'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
-                amount,
-                member.id,
-            )
-            await self.bot.log_transaction(
-                ctx,
-                from_=0,
-                to=member,
-                subject="guild pay",
-                data={"Gold": amount},
-                conn=conn,
-            )
+                if city_name := await self._guild_city_under_attack(
+                    guild["id"], conn=conn
+                ):
+                    error = _(
+                        "Your city **{city}** is under attack, so guild bank withdrawals are disabled right now."
+                    ).format(city=city_name)
+                elif guild["money"] < amount:
+                    error = _("Your guild is too poor.")
+                else:
+                    # Conditional debit: only succeeds if the funds are still there.
+                    debited = await conn.fetchval(
+                        'UPDATE guild SET "money"="money"-$1 WHERE "id"=$2 AND'
+                        ' "money">=$1 RETURNING "money";',
+                        amount,
+                        guild["id"],
+                    )
+                    if debited is None:
+                        error = _("Your guild is too poor.")
+                    else:
+                        await conn.execute(
+                            'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                            amount,
+                            member.id,
+                        )
+                        await self.bot.log_transaction(
+                            ctx,
+                            from_=0,
+                            to=member,
+                            subject="guild pay",
+                            data={"Gold": amount},
+                            conn=conn,
+                        )
+        if error:
+            return await ctx.send(error)
         if guild["channel"]:
             with suppress(discord.Forbidden, discord.HTTPException):
                 with handle_message_parameters(
@@ -1915,28 +2046,38 @@ class Guild(commands.Cog):
             amounts[for_each * member[1]].append(member[0].id)
         # a bit ugly, but we get a dict {amount: [list of players]}
 
+        error = None
         async with self.bot.pool.acquire() as conn:
-            guild = await conn.fetchrow(
-                'SELECT * FROM guild WHERE "id"=$1;', ctx.character_data["guild"]
-            )
-            if city_name := await self._guild_city_under_attack(guild["id"], conn=conn):
-                return await ctx.send(
-                    _("Your city **{city}** is under attack, so guild bank withdrawals are disabled right now.").format(
-                        city=city_name
-                    )
+            async with conn.transaction():
+                guild = await conn.fetchrow(
+                    'SELECT * FROM guild WHERE "id"=$1 FOR UPDATE;',
+                    ctx.character_data["guild"],
                 )
-            if guild["money"] < amount:
-                return await ctx.send(_("Your guild is too poor."))
-
-            await conn.execute(
-                'UPDATE guild SET "money"="money"-$1 WHERE "id"=$2;',
-                amount,
-                ctx.character_data["guild"],
-            )
-            await conn.executemany(
-                'UPDATE profile SET "money"="money"+$1 WHERE "user"=ANY($2);',
-                amounts.items(),
-            )
+                if city_name := await self._guild_city_under_attack(
+                    guild["id"], conn=conn
+                ):
+                    error = _(
+                        "Your city **{city}** is under attack, so guild bank withdrawals are disabled right now."
+                    ).format(city=city_name)
+                elif guild["money"] < amount:
+                    error = _("Your guild is too poor.")
+                else:
+                    debited = await conn.fetchval(
+                        'UPDATE guild SET "money"="money"-$1 WHERE "id"=$2 AND'
+                        ' "money">=$1 RETURNING "money";',
+                        amount,
+                        ctx.character_data["guild"],
+                    )
+                    if debited is None:
+                        error = _("Your guild is too poor.")
+                    else:
+                        await conn.executemany(
+                            'UPDATE profile SET "money"="money"+$1 WHERE'
+                            ' "user"=ANY($2);',
+                            amounts.items(),
+                        )
+        if error:
+            return await ctx.send(error)
 
         nice_members = rpgtools.nice_join([str(member) for member in members])
         if guild["channel"]:

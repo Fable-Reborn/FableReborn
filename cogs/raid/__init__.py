@@ -36,6 +36,12 @@ from discord.ui import Button, View
 from classes.classes import Raider
 from classes.classes import from_string as class_from_string
 from classes.converters import IntGreaterThan
+from classes.warrior import (
+    WARRIOR_EVOLUTION_LEVELS,
+    WARRIOR_MOMENTUM_CAP,
+    resolve_warrior_attack,
+    warrior_damage_reduction_pct,
+)
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils import random
 from utils.checks import AlreadyRaiding, has_char, is_gm, is_god
@@ -529,6 +535,432 @@ class Raid(commands.Cog):
     def getfinaldmg(self, damage: Decimal, defense):
         return v if (v := damage - defense) > 0 else 0
 
+    async def _apply_raid_spec_stats(self, user_id, dmg, deff):
+        """Stat-time class specialization effects for raid joins.
+
+        Raid combat is pooled, so runtime specs are approximated as stat-time
+        pressure. Boss-only effects always qualify because raid targets are bosses.
+        """
+        spec_cog = self.bot.get_cog("Specializations")
+        if not spec_cog:
+            return dmg, deff, {}
+        try:
+            fx = await spec_cog.get_user_spec_effects(user_id)
+        except Exception:
+            return dmg, deff, {}
+        if "boss_damage_pct" in fx:
+            dmg = Decimal(str(dmg)) * Decimal(str(1 + fx["boss_damage_pct"]["value"] / 100))
+        if "perfect_form_pct" in fx:
+            dmg = Decimal(str(dmg)) * Decimal(str(1 + fx["perfect_form_pct"]["value"] / 100))
+        if "arcane_ramp_pct" in fx:
+            # Pooled raids can't ramp per hit; approximate Overload with the
+            # average of a full 0→max ramp (half of the max-stack bonus).
+            eff = fx["arcane_ramp_pct"]
+            avg_bonus = Decimal(str(eff["value"])) * Decimal(str(eff.get("max_stacks", 5))) / Decimal("200")
+            dmg = Decimal(str(dmg)) * (Decimal("1") + avg_bonus)
+        if "doom_circle_pct" in fx:
+            # Maleficar detonates every few hits; fold the expected damage part
+            # into raid damage without trying to model boss max-HP caps.
+            eff = fx["doom_circle_pct"]
+            threshold = Decimal(str(eff.get("threshold", 3) or 3))
+            dmg = Decimal(str(dmg)) * (
+                Decimal("1") + Decimal(str(eff["value"])) / Decimal("100") / threshold
+            )
+        if "bloodpact_reservoir_pct" in fx:
+            # Pooled raids have no per-hit death-save; fold Bloodweaver into a
+            # modest armor bump (~half the reservoir cap) as a survivability nod.
+            eff = fx["bloodpact_reservoir_pct"]
+            deff = Decimal(str(deff)) * (Decimal("1") + Decimal(str(eff["value"])) / Decimal("200"))
+        if "unbroken_will_pct" in fx:
+            eff = fx["unbroken_will_pct"]
+            shield_value = Decimal(str(eff.get("shield_value", eff["value"])))
+            deff = Decimal(str(deff)) * (Decimal("1") + shield_value / Decimal("200"))
+        if "soulkeeper_store_pct" in fx:
+            eff = fx["soulkeeper_store_pct"]
+            deff = Decimal(str(deff)) * (
+                Decimal("1") + Decimal(str(eff["value"])) / Decimal("250")
+            )
+        return dmg, deff, fx
+
+    REAPER_EVOLUTION_LEVELS = {
+        "Deathshroud": 1, "Soul Warden": 2, "Reaper": 3,
+        "Phantom Scythe": 4, "Soul Snatcher": 5,
+        "Deathbringer": 6, "Grim Reaper": 7,
+    }
+    SANTA_EVOLUTION_LEVELS = {
+        "Little Helper": 1, "Gift Gatherer": 2, "Holiday Aide": 3,
+        "Joyful Jester": 4, "Yuletide Guardian": 5,
+        "Festive Enforcer": 6, "Festive Champion": 7,
+    }
+    POOLED_SANTA_LIFESTEAL = {1: 5, 2: 7, 3: 10, 4: 12, 5: 15, 6: 18, 7: 20}
+    POOLED_REAPER_DEATH_CHANCE = {1: 10, 2: 15, 3: 20, 4: 25, 5: 30, 6: 35, 7: 40}
+
+    @staticmethod
+    def _pooled_class_grade(classes, mapping):
+        raw_classes = classes if isinstance(classes, list) else [classes]
+        return max((mapping.get(str(class_name), 0) for class_name in raw_classes or []), default=0)
+
+    def _pooled_seasonal_state(self, classes, spec_effects, max_hp):
+        reaper_level = self._pooled_class_grade(classes, self.REAPER_EVOLUTION_LEVELS)
+        santa_level = self._pooled_class_grade(classes, self.SANTA_EVOLUTION_LEVELS)
+        warrior_level = self._pooled_class_grade(classes, WARRIOR_EVOLUTION_LEVELS)
+        return {
+            "max_hp": float(max_hp),
+            "spec_effects": spec_effects or {},
+            "reaper_evolution": reaper_level,
+            "santa_evolution": santa_level,
+            "warrior_evolution": warrior_level,
+            "warrior_momentum": 0,
+            "reaper_souls": 0,
+            "reaper_avatar_hits": 0,
+            "santa_cheer": 0,
+            "santa_gifts_opened": 0,
+            "gift_shield": 0.0,
+            "soul_ward": 0.0,
+        }
+
+    @staticmethod
+    def _pooled_name(raid_key):
+        user, participant_type = raid_key
+        return user.mention if participant_type == "user" else str(user)
+
+    def _pooled_heal_with_ward(self, data, amount, effect=None):
+        amount = max(0.0, float(amount or 0))
+        before = float(data.get("hp", 0) or 0)
+        max_hp = max(1.0, float(data.get("max_hp", before) or before))
+        data["hp"] = min(max_hp, before + amount)
+        healed = max(0.0, float(data["hp"]) - before)
+        overflow = max(0.0, amount - healed)
+        ward = 0.0
+        if effect and overflow > 0:
+            cap = max_hp * float(effect.get("ward_value", 0)) / 100
+            current = float(data.get("soul_ward", 0) or 0)
+            ward = max(0.0, min(overflow, cap - current))
+            data["soul_ward"] = current + ward
+            data["soul_ward_cap"] = cap
+        return healed, ward
+
+    def _pooled_apply_incoming_seasonal(self, data, damage):
+        messages = []
+        damage = max(0.0, float(damage or 0))
+        shroud_hits = int(data.get("reaper_death_shroud_hits", 0) or 0)
+        if shroud_hits > 0:
+            damage *= 0.5
+            data["reaper_death_shroud_hits"] = shroud_hits - 1
+            messages.append("☠️ Death Shroud halves the blow!")
+
+        effects = data.get("spec_effects") or {}
+        brace_stacks = int(data.get("warrior_brace_stacks", 0) or 0)
+        warrior_reduction = warrior_damage_reduction_pct(
+            effects,
+            data.get("warrior_momentum", 0),
+            brace_stacks,
+        )
+        if warrior_reduction > 0:
+            damage = float(
+                Decimal(str(damage))
+                * (Decimal("1") - warrior_reduction / Decimal("100"))
+            )
+            messages.append(
+                f"🪖 Combat Discipline reduces the blow by **{warrior_reduction}%**!"
+            )
+        if brace_stacks > 0:
+            data["warrior_brace_stacks"] = 0
+
+        weakness_hits = int(self.boss.get("krampus_weakness_hits", 0) or 0) if self.boss else 0
+        if weakness_hits > 0:
+            damage *= 1 - float(self.boss.get("krampus_weakness_pct", 0) or 0)
+            self.boss["krampus_weakness_hits"] = weakness_hits - 1
+            if self.boss["krampus_weakness_hits"] <= 0:
+                self.boss["krampus_weakness_pct"] = 0.0
+                messages.append("⛓️ Krampus's chains release the raid boss.")
+
+        for shield_key, label in (("soul_ward", "Soul Ward"), ("gift_shield", "Starlight shield")):
+            shield = float(data.get(shield_key, 0) or 0)
+            if shield <= 0 or damage <= 0:
+                continue
+            absorbed = min(shield, damage)
+            data[shield_key] = shield - absorbed
+            damage -= absorbed
+            messages.append(f"🛡️ {label} absorbs **{absorbed:,.0f}HP**!")
+        return damage, messages
+
+    def _pooled_try_seasonal_save(self, target_key, data):
+        if float(data.get("hp", 0) or 0) > 0:
+            return None
+        reaper_level = int(data.get("reaper_evolution", 0) or 0)
+        if reaper_level and not data.get("reaper_death_used"):
+            avatar = int(data.get("reaper_avatar_hits", 0) or 0) > 0
+            if avatar or random.randint(1, 100) <= self.POOLED_REAPER_DEATH_CHANCE[reaper_level]:
+                data["reaper_death_used"] = True
+                data["reaper_avatar_hits"] = 0
+                data["reaper_souls"] = 0
+                data["reaper_death_shroud_hits"] = 1
+                data["hp"] = max(1.0, float(data["max_hp"]) * (0.12 + 0.025 * reaper_level))
+                source = "Avatar of Death" if avatar else "Undying Loyalty"
+                return f"☠️ {self._pooled_name(target_key)} invokes {source} and returns with **{data['hp']:,.0f}HP**!"
+
+        if any(raid_data.get("winterlight_team_miracle_used") for raid_data in self.raid.values()):
+            return None
+        candidates = []
+        for raid_key, ally_data in self.raid.items():
+            if raid_key[1] != "user" or float(ally_data.get("hp", 0) or 0) <= 0:
+                continue
+            miracle = (ally_data.get("spec_effects") or {}).get("christmas_miracle_pct")
+            if miracle:
+                candidates.append((float(miracle["value"]), raid_key, ally_data, miracle))
+        target_miracle = (data.get("spec_effects") or {}).get("christmas_miracle_pct")
+        if target_miracle:
+            candidates.append((float(target_miracle["value"]), target_key, data, target_miracle))
+        if not candidates:
+            return None
+        _value, owner_key, owner_data, miracle = max(candidates, key=lambda item: item[0])
+        for raid_data in self.raid.values():
+            raid_data["winterlight_team_miracle_used"] = True
+        owner_data["winterlight_miracle_used"] = True
+        data["hp"] = max(1.0, float(data["max_hp"]) * float(miracle["value"]) / 100)
+        shield = float(data["max_hp"]) * float(miracle.get("miracle_shield_value", 0)) / 100
+        data["gift_shield"] = float(data.get("gift_shield", 0) or 0) + shield
+        return (
+            f"🕊️ {self._pooled_name(owner_key)} invokes **Christmas Miracle**! "
+            f"{self._pooled_name(target_key)} returns with **{data['hp']:,.0f}HP** and a **{shield:,.0f}HP** shield!"
+        )
+
+    def _apply_pooled_seasonal_round(self):
+        bonus_damage = 0.0
+        messages = []
+        living_users = [
+            (raid_key, data)
+            for raid_key, data in self.raid.items()
+            if raid_key[1] == "user" and float(data.get("hp", 0) or 0) > 0
+        ]
+        for raid_key, data in living_users:
+            name = self._pooled_name(raid_key)
+            base_damage = float(data.get("damage", 0) or 0)
+            effects = data.get("spec_effects") or {}
+            warrior_level = int(data.get("warrior_evolution", 0) or 0)
+            if warrior_level:
+                roll = randomm.random() if "warrior_relentless_pct" in effects else None
+                warrior_state = resolve_warrior_attack(
+                    warrior_level,
+                    data.get("warrior_momentum", 0),
+                    effects,
+                    roll=roll,
+                )
+                data["warrior_momentum"] = int(warrior_state["next_momentum"])
+                if warrior_state.get("brace_stacks"):
+                    data["warrior_brace_stacks"] = int(warrior_state["brace_stacks"])
+                warrior_bonus = base_damage * float(
+                    Decimal(str(warrior_state["multiplier"])) - Decimal("1")
+                )
+                bonus_damage += warrior_bonus
+                if warrior_state["crushing_blow"]:
+                    messages.append(
+                        f"⚔️ {name} unleashes **Crushing Blow** for "
+                        f"**{base_damage + warrior_bonus:,.0f}HP**!"
+                    )
+                elif warrior_state["extra_stack"]:
+                    messages.append(
+                        f"⚔️ {name}'s Relentless Assault reaches "
+                        f"**{data['warrior_momentum']}/{WARRIOR_MOMENTUM_CAP} Momentum**."
+                    )
+            reaper_level = int(data.get("reaper_evolution", 0) or 0)
+            avatar_hits = int(data.get("reaper_avatar_hits", 0) or 0)
+            if reaper_level and avatar_hits > 0:
+                damage_pct = {1: 15, 2: 18, 3: 21, 4: 24, 5: 28, 6: 31, 7: 35}[reaper_level]
+                avatar_damage = base_damage * damage_pct / 100
+                bonus_damage += avatar_damage
+                drain_pct = {1: 8, 2: 10, 3: 12, 4: 14, 5: 16, 6: 18, 7: 20}[reaper_level]
+                healed, _ward = self._pooled_heal_with_ward(
+                    data, base_damage * drain_pct / 100, effects.get("soul_ward_lifesteal_pct")
+                )
+                data["reaper_avatar_hits"] = avatar_hits - 1
+                messages.append(f"☠️ {name}'s Avatar reaps **{avatar_damage:,.0f}HP** and drains **{healed:,.0f}HP**.")
+
+            verdict = effects.get("death_verdict_pct")
+            if (
+                verdict
+                and not data.get("death_verdict_used")
+                and float(self.boss.get("hp", 0) or 0) / max(1.0, float(self.boss.get("initial_hp", 1) or 1))
+                <= float(verdict.get("threshold", 0.20))
+            ):
+                verdict_damage = base_damage * float(verdict["value"]) / 100
+                verdict_damage += min(
+                    float(self.boss.get("initial_hp", 0) or 0) * float(verdict.get("hp_value", 0)) / 100,
+                    base_damage * float(verdict.get("hp_damage_cap", 1.0)),
+                )
+                bonus_damage += verdict_damage
+                data["death_verdict_used"] = True
+                messages.append(f"⚰️ **DEATH'S VERDICT!** {name} condemns the boss for **{verdict_damage:,.0f}HP**!")
+
+            soulbinder = effects.get("soul_ward_lifesteal_pct")
+            if soulbinder:
+                healed, ward = self._pooled_heal_with_ward(
+                    data, base_damage * float(soulbinder["value"]) / 100, soulbinder
+                )
+                if healed > 0 or ward > 0:
+                    messages.append(f"🌑 {name} restores **{healed:,.0f}HP** and binds **{ward:,.0f}HP** into Soul Ward.")
+
+            if reaper_level and avatar_hits <= 0:
+                souls = min(5, int(data.get("reaper_souls", 0) or 0) + 1)
+                data["reaper_souls"] = souls
+                if souls >= 5:
+                    data["reaper_souls"] = 0
+                    data["reaper_avatar_hits"] = 3
+                    messages.append(f"☠️ {name} becomes the **AVATAR OF DEATH**!")
+
+            santa_level = int(data.get("santa_evolution", 0) or 0)
+            krampus = effects.get("naughty_chain_pct")
+            if santa_level and krampus:
+                stacks = int(data.get("krampus_naughty_stacks", 0) or 0) + 1
+                threshold = int(krampus.get("stacks", 3))
+                if stacks >= threshold:
+                    data["krampus_naughty_stacks"] = 0
+                    chain_damage = base_damage * float(krampus["value"]) / 100
+                    bonus_damage += chain_damage
+                    data["santa_force_crimson"] = True
+                    self.boss["krampus_weakness_pct"] = max(
+                        float(self.boss.get("krampus_weakness_pct", 0) or 0),
+                        float(krampus.get("reduction_value", 0)) / 100,
+                    )
+                    self.boss["krampus_weakness_hits"] = max(
+                        int(self.boss.get("krampus_weakness_hits", 0) or 0),
+                        int(krampus.get("duration", 2)),
+                    )
+                    messages.append(f"⛓️ Krampus chains the boss for **{chain_damage:,.0f}HP**!")
+                else:
+                    data["krampus_naughty_stacks"] = stacks
+
+            if santa_level:
+                healed, _ward = self._pooled_heal_with_ward(
+                    data, base_damage * self.POOLED_SANTA_LIFESTEAL[santa_level] / 100
+                )
+                cheer = int(data.get("santa_cheer", 0) or 0) + 1
+                if cheer < 3:
+                    data["santa_cheer"] = cheer
+                else:
+                    data["santa_cheer"] = 0
+                    opened = int(data.get("santa_gifts_opened", 0) or 0) + 1
+                    data["santa_gifts_opened"] = opened
+                    golden = opened % 3 == 0
+                    winterlight = effects.get("christmas_miracle_pct")
+                    support_mult = float(winterlight.get("gift_multiplier", 1.0)) if winterlight else 1.0
+                    golden_mult = 1.5 if golden else 1.0
+                    if golden:
+                        gifts = ["crimson", "evergreen", "starlight"]
+                        data["santa_force_crimson"] = False
+                        messages.append(f"🌟 **GOLDEN GIFT!** {name} unleashes every wonder!")
+                    elif data.pop("santa_force_crimson", False):
+                        gifts = ["crimson"]
+                    elif winterlight and any(float(ally["hp"]) < float(ally["max_hp"]) for _key, ally in living_users):
+                        gifts = [random.choice(["evergreen"] * 5 + ["starlight"] * 3 + ["crimson"] * 2)]
+                    else:
+                        gifts = [random.choice(["crimson", "evergreen", "starlight"])]
+                    if "crimson" in gifts:
+                        crimson_pct = {1: 15, 2: 20, 3: 25, 4: 28, 5: 30, 6: 33, 7: 35}[santa_level]
+                        gift_damage = base_damage * crimson_pct / 100 * golden_mult
+                        bonus_damage += gift_damage
+                        messages.append(f"🎁 Crimson Present bursts for **{gift_damage:,.0f}HP**!")
+                    if living_users and "evergreen" in gifts:
+                        recipient_key, recipient = min(
+                            living_users,
+                            key=lambda item: float(item[1]["hp"]) / max(1.0, float(item[1]["max_hp"])),
+                        )
+                        heal_pct = {1: 2.5, 2: 3, 3: 3.5, 4: 4, 5: 4.5, 6: 5.2, 7: 6}[santa_level]
+                        before = float(recipient["hp"])
+                        recipient["hp"] = min(
+                            float(recipient["max_hp"]),
+                            before + float(recipient["max_hp"]) * heal_pct / 100 * support_mult * golden_mult,
+                        )
+                        messages.append(f"🎁 Evergreen Present restores **{float(recipient['hp']) - before:,.0f}HP** to {self._pooled_name(recipient_key)}!")
+                    if "starlight" in gifts:
+                        total_shield = 0.0
+                        shield_pct = {1: 1.5, 2: 2, 3: 2.4, 4: 2.8, 5: 3.2, 6: 3.6, 7: 4}[santa_level]
+                        for _ally_key, ally in living_users:
+                            cap = float(ally["max_hp"]) * 0.25
+                            current = float(ally.get("gift_shield", 0) or 0)
+                            gain = min(
+                                float(ally["max_hp"]) * shield_pct / 100 * support_mult * golden_mult,
+                                max(0.0, cap - current),
+                            )
+                            ally["gift_shield"] = current + gain
+                            total_shield += gain
+                        messages.append(f"🎁 Starlight Present wraps the raid in **{total_shield:,.0f}HP** of shields!")
+                if healed > 0:
+                    messages.append(f"🍬 {name}'s Peppermint Drain restores **{healed:,.0f}HP**.")
+
+        return bonus_damage, messages
+
+    def _init_raid_mvp(self):
+        return {
+            user.id: {"dealt": 0.0, "taken": 0.0}
+            for (user, participant_type), data in self.raid.items()
+            if participant_type == "user" and not getattr(user, "bot", False)
+        }
+
+    def _credit_raid_mvp_taken(self, raid_mvp, target, participant_type, amount):
+        if participant_type != "user" or getattr(target, "bot", False):
+            return
+        entry = raid_mvp.get(target.id)
+        if entry is not None:
+            entry["taken"] += max(0.0, float(amount or 0))
+
+    def _credit_raid_mvp_dealt(self, raid_mvp):
+        for (user, participant_type), data in self.raid.items():
+            if participant_type != "user" or getattr(user, "bot", False):
+                continue
+            entry = raid_mvp.get(user.id)
+            if entry is not None and float(data.get("hp", 0) or 0) > 0:
+                entry["dealt"] += float(data.get("damage", 0) or 0)
+
+    async def _post_raid_mvp(self, channel, raid_mvp, success):
+        try:
+            if not channel or not raid_mvp:
+                return
+            top_dealt_id, top_dealt = max(
+                raid_mvp.items(),
+                key=lambda item: item[1]["dealt"],
+            )
+            top_taken_id, top_taken = max(
+                raid_mvp.items(),
+                key=lambda item: item[1]["taken"],
+            )
+            survivor_count = sum(
+                1
+                for (user, participant_type), data in self.raid.items()
+                if participant_type == "user"
+                and not getattr(user, "bot", False)
+                and float(data.get("hp", 0) or 0) > 0
+            )
+            embed = discord.Embed(title="Raid MVPs", color=0xFF5C00)
+            embed.add_field(
+                name="🥇 Top Damage",
+                value=f"<@{top_dealt_id}> — **{top_dealt['dealt']:,.0f}**",
+                inline=False,
+            )
+            embed.add_field(
+                name="🛡️ Bulwark of the Raid",
+                value=f"<@{top_taken_id}> — **{top_taken['taken']:,.0f}**",
+                inline=False,
+            )
+            embed.add_field(name="🍀 Survivors", value=str(survivor_count), inline=False)
+            await channel.send(embed=embed)
+            if success:
+                legacy = self.bot.get_cog("Legacy")
+                if legacy:
+                    await legacy.award_points(top_dealt_id, 10)
+                    await legacy.award_points(top_taken_id, 10)
+                favorwar = self.bot.get_cog("FavorWar")
+                if favorwar:
+                    await favorwar.award_favor(
+                        [top_dealt_id, top_taken_id],
+                        5,
+                        channel,
+                        "Raid MVPs!",
+                    )
+        except Exception:
+            pass
+
     async def set_raid_timer(self):
         await self.bot.redis.execute_command(
             "SET",
@@ -883,13 +1315,19 @@ class Raid(commands.Cog):
                         raidhp = profile["health"] + 200 + (level * 15) + stathp
                     else:
                         raidhp = raid_hp
-                    self.raid[(u, "user")] = {"hp": raidhp, "armor": deff, "damage": dmg}
+                    dmg, deff, spec_effects = await self._apply_raid_spec_stats(u.id, dmg, deff)
+                    participant = {"hp": raidhp, "armor": deff, "damage": dmg}
+                    participant.update(
+                        self._pooled_seasonal_state(profile["class"], spec_effects, raidhp)
+                    )
+                    self.raid[(u, "user")] = participant
 
             all_participant_ids = [
                 user.id for (user, participant_type) in self.raid.keys()
                 if participant_type == "user" and not user.bot
             ]
             raiders_joined = len(self.raid)  # Replace with your actual channel IDs
+            raid_mvp = self._init_raid_mvp()
 
             # Final message with gathered data
             for channel_id in channels_ids:
@@ -907,7 +1345,25 @@ class Raid(commands.Cog):
                 (target, participant_type) = random.choice(list(self.raid.keys()))
                 dmg = random.randint(self.boss["min_dmg"], self.boss["max_dmg"])
                 finaldmg = self.getfinaldmg(dmg, self.raid[(target, participant_type)]["armor"])
+                seasonal_def_msgs = []
+                if participant_type == "user":
+                    finaldmg, seasonal_def_msgs = self._pooled_apply_incoming_seasonal(
+                        self.raid[(target, participant_type)], finaldmg
+                    )
+                before_hp = float(self.raid[(target, participant_type)]["hp"])
                 self.raid[(target, participant_type)]["hp"] -= finaldmg
+                if participant_type == "user" and self.raid[(target, participant_type)]["hp"] <= 0:
+                    seasonal_save = self._pooled_try_seasonal_save(
+                        (target, participant_type), self.raid[(target, participant_type)]
+                    )
+                    if seasonal_save:
+                        seasonal_def_msgs.append(seasonal_save)
+                self._credit_raid_mvp_taken(
+                    raid_mvp,
+                    target,
+                    participant_type,
+                    min(before_hp, float(finaldmg)),
+                )
 
                 em = discord.Embed(title="Ragnarok attacked!", colour=0xFFB900)
 
@@ -956,6 +1412,12 @@ class Raid(commands.Cog):
                             em.add_field(name="Effective Damage", value=finaldmg)
                             del self.raid[(target, participant_type)]
 
+                if seasonal_def_msgs:
+                    em.add_field(
+                        name="Seasonal Powers",
+                        value="\n".join(seasonal_def_msgs)[-1000:],
+                        inline=False,
+                    )
                 if participant_type == "user":
                     em.set_author(name=str(target), icon_url=target.display_avatar.url)
                 else:  # For bots
@@ -966,13 +1428,21 @@ class Raid(commands.Cog):
                     if current_channel:
                         await current_channel.send(embed=em)
 
-                dmg_to_take = sum(i["damage"] for i in self.raid.values())
+                self._credit_raid_mvp_dealt(raid_mvp)
+                seasonal_bonus, seasonal_attack_msgs = self._apply_pooled_seasonal_round()
+                dmg_to_take = sum(float(i["damage"]) for i in self.raid.values()) + float(seasonal_bonus)
                 self.boss["hp"] -= dmg_to_take
                 await asyncio.sleep(4)
 
                 em = discord.Embed(title="The raid attacked Ragnarok!", colour=0xFF5C00)
                 em.set_thumbnail(url=f"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_attackdragon.webp")
                 em.add_field(name="Damage", value=dmg_to_take)
+                if seasonal_attack_msgs:
+                    em.add_field(
+                        name="Seasonal Powers",
+                        value="\n".join(seasonal_attack_msgs)[-1000:],
+                        inline=False,
+                    )
 
                 if self.boss["hp"] > 0:
                     em.add_field(name="HP left", value=self.boss["hp"])
@@ -1287,6 +1757,20 @@ class Raid(commands.Cog):
                 random_user_id = random.choice(users)
                 success = True
                 self.bot.dispatch("raid_completion", mock_ctx, success, random_user_id)
+
+            raid_success = not (self.boss["hp"] > 1)
+            await self._post_raid_mvp(raid_channel or channel, raid_mvp, raid_success)
+
+            # Favor War: everyone who joined earns favor for their god (wins pay extra)
+            try:
+                self.bot.dispatch(
+                    "raid_favor",
+                    mock_ctx,
+                    [u.id for u in self.joined],
+                    raid_success,
+                )
+            except Exception:
+                pass
             
             await asyncio.sleep(30)
             
@@ -1526,13 +2010,19 @@ class Raid(commands.Cog):
                         raidhp = profile["health"] + 200 + (level * 15) + stathp
                     else:
                         raidhp = raid_hp
-                    self.raid[(u, "user")] = {"hp": raidhp, "armor": deff, "damage": dmg}
+                    dmg, deff, spec_effects = await self._apply_raid_spec_stats(u.id, dmg, deff)
+                    participant = {"hp": raidhp, "armor": deff, "damage": dmg}
+                    participant.update(
+                        self._pooled_seasonal_state(profile["class"], spec_effects, raidhp)
+                    )
+                    self.raid[(u, "user")] = participant
 
             all_participant_ids = [
                 user.id for (user, participant_type) in self.raid.keys()
                 if participant_type == "user" and not user.bot
             ]
             raiders_joined = len(self.raid)  # Replace with your actual channel IDs
+            raid_mvp = self._init_raid_mvp()
 
             # Final message with gathered data
             for channel_id in channels_ids:
@@ -1550,7 +2040,25 @@ class Raid(commands.Cog):
                 (target, participant_type) = random.choice(list(self.raid.keys()))
                 dmg = random.randint(self.boss["min_dmg"], self.boss["max_dmg"])
                 finaldmg = self.getfinaldmg(dmg, self.raid[(target, participant_type)]["armor"])
+                seasonal_def_msgs = []
+                if participant_type == "user":
+                    finaldmg, seasonal_def_msgs = self._pooled_apply_incoming_seasonal(
+                        self.raid[(target, participant_type)], finaldmg
+                    )
+                before_hp = float(self.raid[(target, participant_type)]["hp"])
                 self.raid[(target, participant_type)]["hp"] -= finaldmg
+                if participant_type == "user" and self.raid[(target, participant_type)]["hp"] <= 0:
+                    seasonal_save = self._pooled_try_seasonal_save(
+                        (target, participant_type), self.raid[(target, participant_type)]
+                    )
+                    if seasonal_save:
+                        seasonal_def_msgs.append(seasonal_save)
+                self._credit_raid_mvp_taken(
+                    raid_mvp,
+                    target,
+                    participant_type,
+                    min(before_hp, float(finaldmg)),
+                )
 
                 em = discord.Embed(title="Ragnarok attacked!", colour=0xFFB900)
 
@@ -1603,6 +2111,12 @@ class Raid(commands.Cog):
                             del self.raid[(target, participant_type)]
 
 
+                if seasonal_def_msgs:
+                    em.add_field(
+                        name="Seasonal Powers",
+                        value="\n".join(seasonal_def_msgs)[-1000:],
+                        inline=False,
+                    )
                 if participant_type == "user":
                     em.set_author(name=str(target), icon_url=target.display_avatar.url)
                 else:  # For bots
@@ -1615,13 +2129,21 @@ class Raid(commands.Cog):
                         await channel.send(embed=em)
 
 
-                dmg_to_take = sum(i["damage"] for i in self.raid.values())
+                self._credit_raid_mvp_dealt(raid_mvp)
+                seasonal_bonus, seasonal_attack_msgs = self._apply_pooled_seasonal_round()
+                dmg_to_take = sum(float(i["damage"]) for i in self.raid.values()) + float(seasonal_bonus)
                 self.boss["hp"] -= dmg_to_take
                 await asyncio.sleep(4)
 
                 em = discord.Embed(title="The raid attacked Ragnarok!", colour=0xFF5C00)
                 em.set_thumbnail(url=f"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_attackdragon.webp")
                 em.add_field(name="Damage", value=dmg_to_take)
+                if seasonal_attack_msgs:
+                    em.add_field(
+                        name="Seasonal Powers",
+                        value="\n".join(seasonal_attack_msgs)[-1000:],
+                        inline=False,
+                    )
 
                 if self.boss["hp"] > 0:
                     em.add_field(name="HP left", value=self.boss["hp"])
@@ -1928,6 +2450,20 @@ class Raid(commands.Cog):
                 success = True
                 self.bot.dispatch("raid_completion", ctx, success, random_user_id)
                 # Now you can use random_user_id for whatever you need
+
+            raid_success = not (self.boss["hp"] > 1)
+            await self._post_raid_mvp(ctx.channel, raid_mvp, raid_success)
+
+            # Favor War: everyone who joined earns favor for their god (wins pay extra)
+            try:
+                self.bot.dispatch(
+                    "raid_favor",
+                    ctx,
+                    [u.id for u in self.joined],
+                    raid_success,
+                )
+            except Exception:
+                pass
             
             await asyncio.sleep(30)
             await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=self.deny_sending)
@@ -4963,5 +5499,3 @@ async def setup(bot):
     if designated_shard_id in bot.shard_ids:
         await bot.add_cog(Raid(bot))
         print(f"Raid loaded on shard {designated_shard_id}")
-
-

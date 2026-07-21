@@ -9,6 +9,7 @@ from .core.battle import Battle
 from .core.combatant import Combatant
 from .core.team import Team
 from .types.pve import PvEBattle
+from .types.omnithrone import OmnithroneSealBattle
 from .types.pvp import PvPBattle
 from .types.raid import RaidBattle
 from .types.tower import TowerBattle
@@ -372,6 +373,15 @@ class BattleFactory:
         if monster_override:
             monster_data = monster_override
             monster_level = levelchoice_override or 1
+
+        # Tier 12 is a dedicated, pet-enabled sealing encounter.  This override
+        # is deliberately scoped here so ordinary PvE and the Tier-11 gods keep
+        # their configured pet behavior.
+        is_omnithrone_encounter = int(
+            monster_level or (monster_data or {}).get("pve_tier") or 0
+        ) == PvEBattle.GOD_OF_GODS_TIER
+        if is_omnithrone_encounter:
+            allow_pets = True
         
         # Create player combatant - only include_pet when allow_pets is true
         player_combatant = await self.create_player_combatant(ctx, player, include_pet=allow_pets)
@@ -427,19 +437,6 @@ class BattleFactory:
         if pet_combatant and allow_pets:
             player_team.add_combatant(pet_combatant)
 
-        if int(monster_level or 0) == PvEBattle.GOD_OF_GODS_TIER:
-            for god_name in ("Elysia", "Sepulchure", "Drakath"):
-                god_data = self._get_monster_data_by_name(ctx, god_name)
-                if not god_data:
-                    continue
-                god_combatant = await self.create_monster_combatant(
-                    god_data,
-                    level=self.PVE_GOD_TIER,
-                    name=god_name,
-                )
-                god_combatant.is_omnithrone_ally = True
-                player_team.add_combatant(god_combatant)
-            
         monster_team = Team("Monster", [monster_combatant])
         
         # Create and return the battle
@@ -448,7 +445,16 @@ class BattleFactory:
             del kwargs_copy['monster_level']
         if 'macro_penalty_level' in kwargs_copy:
             del kwargs_copy['macro_penalty_level']
-        return PvEBattle(ctx, [player_team, monster_team], monster_level=monster_level, macro_penalty_level=macro_penalty_level, **kwargs_copy)
+        battle_class = (
+            OmnithroneSealBattle if is_omnithrone_encounter else PvEBattle
+        )
+        return battle_class(
+            ctx,
+            [player_team, monster_team],
+            monster_level=monster_level,
+            macro_penalty_level=macro_penalty_level,
+            **kwargs_copy,
+        )
     
     async def create_raid_battle(self, ctx, **kwargs):
         """Create a raid battle with player and pet vs enemy and pet"""
@@ -540,7 +546,7 @@ class BattleFactory:
         pet_combatant = None
         if allow_pets:
             pet_combatant = await self.pet_ext.get_pet_combatant(ctx, player)
-        
+
         # Apply prestige multipliers if any
         async with ctx.bot.pool.acquire() as conn:
             prestige_level = await conn.fetchval('SELECT prestige FROM battletower WHERE id = $1', player.id) or 0
@@ -563,7 +569,9 @@ class BattleFactory:
             },
             mask_name=True,
         )
-        
+        # Dragonheart spec keys off this flag
+        setattr(boss, "is_boss", True)
+
         # For level 16, don't apply prestige multipliers to minions since they use real player stats
         minion_prestige_multiplier = 1 if level == 16 else prestige_multiplier
         minion_prestige_hp_multiplier = 1 if level == 16 else prestige_hp_multiplier
@@ -724,6 +732,30 @@ class BattleFactory:
                     pet_combatant = await self.pet_ext.get_pet_combatant(ctx, member)
                     if pet_combatant:
                         player_combatants.append(pet_combatant)
+
+        class_buffs_enabled = kwargs.get(
+            "class_buffs",
+            self.settings.get_setting("dragon", "class_buffs", default=True),
+        )
+        if class_buffs_enabled:
+            best_bard = None
+            best_bard_grade = 0
+            for combatant in player_combatants:
+                if getattr(combatant, "is_pet", False):
+                    continue
+                bard_grade = int(getattr(combatant, "bard_evolution", 0) or 0)
+                if bard_grade > best_bard_grade:
+                    best_bard = combatant
+                    best_bard_grade = bard_grade
+
+            if best_bard_grade:
+                bard_bonus_pct = Decimal("1.7") * Decimal(best_bard_grade)
+                bard_multiplier = Decimal("1") + (bard_bonus_pct / Decimal("100"))
+                for combatant in player_combatants:
+                    if not getattr(combatant, "is_pet", False):
+                        combatant.damage = Decimal(str(combatant.damage)) * bard_multiplier
+                kwargs["bard_song_owner_name"] = getattr(best_bard, "name", "A Bard")
+                kwargs["bard_song_bonus_pct"] = bard_bonus_pct
         
         player_team = Team("Players", player_combatants)
         
@@ -875,14 +907,11 @@ class BattleFactory:
             health = result['health'] + base_health
             stathp = result['stathp'] * 50
             total_health = health + (level * 15) + stathp
-            print(f"[DEBUG] Pre-Amulet Health for {player.display_name}: {total_health}")
 
             # Add equipped amulet HP
             amulet = await conn.fetchrow('SELECT hp FROM amulets WHERE user_id=$1 AND equipped=true', player.id)
             if amulet:
-                print(f"[DEBUG] Amulet HP Bonus for {player.display_name}: {amulet['hp']}")
                 total_health += amulet['hp']
-            print(f"[DEBUG] Final Health for {player.display_name}: {total_health}")
             
             # Get damage and armor
             dmg, deff = await ctx.bot.get_raidstats(player, conn=conn)
@@ -916,7 +945,32 @@ class BattleFactory:
             # Apply tank buffs if applicable
             tank_evolution = buffs.get("tank_evolution")
             total_health, damage_reflection = self.class_ext.apply_tank_buffs(total_health, tank_evolution, has_shield)
-            
+
+            # Class specialization effects (level-50 system).
+            # Creation-time effects fold into base stats here; runtime effects
+            # ride along as spec_effects for the battle-type hooks.
+            spec_effects = {}
+            spec_cog = ctx.bot.get_cog("Specializations")
+            if spec_cog:
+                try:
+                    spec_effects = await spec_cog.get_user_spec_effects(player.id, conn=conn)
+                except Exception:
+                    spec_effects = {}
+
+            lifesteal_percent = buffs.get("lifesteal_percent", 0)
+            if "reflect_pct" in spec_effects:  # Juggernaut (additive with tank reflection)
+                damage_reflection = float(damage_reflection) + spec_effects["reflect_pct"]["value"] / 100
+            if "dual_stat_pct" in spec_effects:  # Exemplar
+                dual_mult = 1 + spec_effects["dual_stat_pct"]["value"] / 100
+                dmg = float(dmg) * dual_mult
+                deff = float(deff) * dual_mult
+            bloodpact_cap_percent = 0
+            bloodpact_bank_percent = 0
+            if "bloodpact_reservoir_pct" in spec_effects:  # Bloodweaver
+                bp = spec_effects["bloodpact_reservoir_pct"]
+                bloodpact_cap_percent = bp["value"]
+                bloodpact_bank_percent = bp.get("bank_pct", 25)
+
             # Create the combatant
             return Combatant(
                 user=player,
@@ -929,15 +983,25 @@ class BattleFactory:
                 defense_element=defense_element,
                 dual_attack_elements=dual_attack_elements,
                 luck=luck,
-                lifesteal_percent=buffs.get("lifesteal_percent", 0),
+                spec_effects=spec_effects,
+                lifesteal_percent=lifesteal_percent,
                 death_cheat_chance=buffs.get("death_cheat_chance", 0),
                 mage_evolution=buffs.get("mage_evolution"),
+                warrior_evolution=buffs.get("warrior_evolution"),
                 tank_evolution=tank_evolution,
                 paladin_evolution=buffs.get("paladin_evolution"),
                 raider_evolution=buffs.get("raider_evolution"),
                 ritualist_evolution=buffs.get("ritualist_evolution"),
                 paragon_evolution=buffs.get("paragon_evolution"),
+                bard_evolution=buffs.get("bard_evolution"),
+                beastmaster_evolution=buffs.get("beastmaster_evolution"),
+                reaper_evolution=buffs.get("reaper_evolution"),
+                santa_evolution=buffs.get("santa_evolution"),
                 damage_reflection=damage_reflection,
+                bloodpact_cap_percent=bloodpact_cap_percent,
+                bloodpact_bank_percent=bloodpact_bank_percent,
+                bloodpact_reservoir=0,
+                bloodpact_used=False,
                 has_shield=has_shield,
                 ascension_mantle=ascension_mantle,
                 ascension_enabled=ascension_enabled,

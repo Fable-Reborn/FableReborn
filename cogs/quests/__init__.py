@@ -1,5 +1,6 @@
 import io
 import json
+import logging
 import random
 from datetime import datetime, timedelta
 from dataclasses import dataclass
@@ -16,15 +17,35 @@ from classes.items import ItemType
 from classes.badges import Badge
 from cogs.quests.campaign_content import (
     CampaignPackageError,
+    builtin_install_decision,
     build_reference_catalog,
     node_by_id,
+    normalize_endgame_event,
     normalize_key as normalize_campaign_key,
+    normalize_system_unlock_key,
     quest_record_from_node,
+    validate_builtin_package,
     validate_package,
 )
 from utils.april_fools import APRIL_FOOLS_GREG_FLAG
 from utils.checks import has_char, is_gm
 from utils import misc as rpgtools
+
+
+logger = logging.getLogger(__name__)
+
+
+class _AsyncContextValue:
+    """Use an existing value where an async context manager is expected."""
+
+    def __init__(self, value=None):
+        self.value = value
+
+    async def __aenter__(self):
+        return self.value
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
 
 
 @dataclass(frozen=True)
@@ -215,6 +236,7 @@ KEY_ITEM_DEFINITIONS = {
 }
 
 MONSTERS_PATH = Path("monsters.json")
+BUILTIN_CAMPAIGN_DIR = Path(__file__).resolve().parent / "data" / "builtin_campaigns"
 CUSTOM_QUEST_SOURCES = {
     "none",
     "pve",
@@ -225,6 +247,10 @@ CUSTOM_QUEST_SOURCES = {
     "raidbattle",
     "jurytower",
     "scripted",
+    "frontier_boss",
+    "divine_victory",
+    "omnithrone_phase",
+    "omnithrone_completion",
 }
 CUSTOM_QUEST_SOURCE_ALIASES = {
     "none": "none",
@@ -256,6 +282,15 @@ CUSTOM_QUEST_SOURCE_ALIASES = {
     "jurttower": "jurytower",
     "jurt tower": "jurytower",
     "scripted": "scripted",
+    "frontier boss": "frontier_boss",
+    "frontier boss clear": "frontier_boss",
+    "frontier_boss": "frontier_boss",
+    "divine victory": "divine_victory",
+    "divine_victory": "divine_victory",
+    "omnithrone phase": "omnithrone_phase",
+    "omnithrone_phase": "omnithrone_phase",
+    "omnithrone completion": "omnithrone_completion",
+    "omnithrone_completion": "omnithrone_completion",
 }
 CUSTOM_QUEST_SOURCE_LABELS = {
     "none": "anywhere",
@@ -267,9 +302,13 @@ CUSTOM_QUEST_SOURCE_LABELS = {
     "raidbattle": "Raid Battle",
     "jurytower": "Jury Tower",
     "scripted": "Scripted Encounter",
+    "frontier_boss": "Frontier Boss",
+    "divine_victory": "Tier 11 Divine Victory",
+    "omnithrone_phase": "Omnithrone Phase",
+    "omnithrone_completion": "Omnithrone Completion",
 }
-CUSTOM_QUEST_SOURCE_HELP = "none, pve, adventure, battletower, dragonparty, cbt, raidbattle, jurytower, scripted"
-CUSTOM_QUEST_REAL_SOURCE_HELP = "pve, adventure, battletower, dragonparty, cbt, raidbattle, jurytower, scripted"
+CUSTOM_QUEST_SOURCE_HELP = "none, pve, adventure, battletower, dragonparty, cbt, raidbattle, jurytower, scripted, frontier_boss, divine_victory, omnithrone_phase, omnithrone_completion"
+CUSTOM_QUEST_REAL_SOURCE_HELP = "pve, adventure, battletower, dragonparty, cbt, raidbattle, jurytower, scripted, frontier_boss, divine_victory, omnithrone_phase, omnithrone_completion"
 CUSTOM_QUEST_MODES = {"progress", "key_item"}
 CUSTOM_QUEST_TURNIN_TYPES = {"progress", "key_item", "crate", "egg", "money"}
 CUSTOM_QUEST_REWARD_TYPES = {"money", "crate", "item", "egg", "none"}
@@ -2163,6 +2202,7 @@ class Quests(commands.Cog):
 
     async def cog_load(self):
         await self._init_tables()
+        #await self.install_builtin_campaign_packages() -- Future implementation for now I have not included this in this Fable Build.
 
     async def _init_tables(self):
         async with self.bot.pool.acquire() as conn:
@@ -2286,6 +2326,41 @@ class Quests(commands.Cog):
             )
             await conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS player_system_unlocks (
+                    user_id BIGINT NOT NULL,
+                    unlock_key TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'system',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    unlocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, unlock_key)
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS quest_objective_events (
+                    user_id BIGINT NOT NULL,
+                    source TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, source, event_id)
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS campaign_builtin_packages (
+                    package_key TEXT PRIMARY KEY,
+                    content_version INTEGER NOT NULL CHECK (content_version >= 1),
+                    source_file TEXT NOT NULL,
+                    installed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS player_reputation (
                     user_id BIGINT NOT NULL,
                     reputation_key TEXT NOT NULL,
@@ -2358,6 +2433,8 @@ class Quests(commands.Cog):
             "CREATE INDEX IF NOT EXISTS content_monsters_tier_name_idx ON content_monsters (tier, name)",
             "CREATE INDEX IF NOT EXISTS player_quests_user_status_idx ON player_quests (user_id, status)",
             "CREATE INDEX IF NOT EXISTS custom_quests_active_category_idx ON custom_quests (is_active, category, quest_key)",
+            "CREATE INDEX IF NOT EXISTS player_system_unlocks_user_idx ON player_system_unlocks (user_id, unlocked_at)",
+            "CREATE INDEX IF NOT EXISTS quest_objective_events_user_idx ON quest_objective_events (user_id, occurred_at DESC)",
         )
         for statement in indexes:
             await conn.execute(statement)
@@ -2731,12 +2808,15 @@ class Quests(commands.Cog):
             created_by,
         )
 
-    async def _import_campaign_package(self, package: dict, *, created_by: int) -> dict:
+    async def _import_campaign_package(self, package: dict, *, created_by: int, conn=None) -> dict:
         package = validate_package(package)
         quest_count = 0
         cutscene_count = 0
-        async with self.bot.pool.acquire() as conn:
-            async with conn.transaction():
+        owns_connection = conn is None
+        connection_context = self.bot.pool.acquire() if owns_connection else _AsyncContextValue(conn)
+        async with connection_context as conn:
+            transaction_context = conn.transaction() if owns_connection else _AsyncContextValue()
+            async with transaction_context:
                 for cutscene in package.get("cutscenes") or []:
                     if not isinstance(cutscene, dict):
                         continue

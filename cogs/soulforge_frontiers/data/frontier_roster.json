@@ -1,0 +1,573 @@
+{
+  "schema_version": 1,
+  "rotation": {
+    "anchor_monday_utc": "2026-07-13T00:00:00Z",
+    "region_order": [
+      "floodroot_basin",
+      "stormbreak_reach",
+      "dawnscar_expanse",
+      "fractured_verge"
+    ]
+  },
+  "regions": [
+    {
+      "id": "floodroot_basin",
+      "name": "Floodroot Basin",
+      "unlock_level": 1,
+      "tier_weights": {
+        "1": 55,
+        "2": 30,
+        "3": 15
+      },
+      "elements": [
+        "Water",
+        "Nature"
+      ],
+      "emoji": "🌊",
+      "accent_color": "#2F8F83",
+      "environment_image_url": "",
+      "showcase_image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_2c3c8ac4-9a8f-4ff1-be63-d5dd7b3be91d.png",
+      "description": "A drowned woodland where living roots dam the tides and young splice lineages first surface."
+    },
+    {
+      "id": "stormbreak_reach",
+      "name": "Stormbreak Reach",
+      "unlock_level": 20,
+      "tier_weights": {
+        "3": 45,
+        "4": 35,
+        "5": 20
+      },
+      "elements": [
+        "Wind",
+        "Electric"
+      ],
+      "emoji": "🌩️",
+      "accent_color": "#4C7DD9",
+      "environment_image_url": "",
+      "showcase_image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_dd938bc1-238f-40f6-8bc1-0b503bb83844.png",
+      "description": "Knife-edged highlands where permanent gales carry charged creatures between shattered peaks."
+    },
+    {
+      "id": "dawnscar_expanse",
+      "name": "Dawnscar Expanse",
+      "unlock_level": 40,
+      "tier_weights": {
+        "5": 40,
+        "6": 35,
+        "7": 25
+      },
+      "elements": [
+        "Fire",
+        "Light"
+      ],
+      "emoji": "🌅",
+      "accent_color": "#E07A2D",
+      "environment_image_url": "",
+      "showcase_image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_4fc31d25-138e-474f-a05c-c3abeece36d2.png",
+      "description": "A glassed desert split by a radiant fault, inhabited by flameborn and celestial splices."
+    },
+    {
+      "id": "fractured_verge",
+      "name": "The Fractured Verge",
+      "unlock_level": 60,
+      "tier_weights": {
+        "7": 35,
+        "8": 30,
+        "9": 25,
+        "10": 10
+      },
+      "elements": [
+        "Dark",
+        "Corrupted"
+      ],
+      "emoji": "🌀",
+      "accent_color": "#7042A8",
+      "environment_image_url": "",
+      "showcase_image_url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_ChatGPT_Image_Mar_18_2026_08_29_16_PM.png",
+      "description": "A broken boundary of reality where deep-generation lineages and unstable forms gather."
+    }
+  ],
+  "entries": [
+    {
+      "legacy_splice_id": 153,
+      "expected_name": "Plasma Dolphin",
+      "region_id": "floodroot_basin",
+      "role": "regular",
+      "tier": 1,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 487,
+      "expected_name": "Shadowbark",
+      "region_id": "floodroot_basin",
+      "role": "regular",
+      "tier": 1,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 598,
+      "expected_name": "Rootvenom",
+      "region_id": "floodroot_basin",
+      "role": "regular",
+      "tier": 1,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 665,
+      "expected_name": "Luminoxis",
+      "region_id": "floodroot_basin",
+      "role": "regular",
+      "tier": 2,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 894,
+      "expected_name": "Calderyx",
+      "region_id": "floodroot_basin",
+      "role": "regular",
+      "tier": 2,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 936,
+      "expected_name": "Asterpharos",
+      "region_id": "floodroot_basin",
+      "role": "regular",
+      "tier": 2,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 1124,
+      "expected_name": "Lachrynthos",
+      "region_id": "floodroot_basin",
+      "role": "regular",
+      "tier": 3,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 1226,
+      "expected_name": "Virelux Nemethis",
+      "region_id": "floodroot_basin",
+      "role": "regular",
+      "tier": 3,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 1401,
+      "expected_name": "Syridion",
+      "region_id": "floodroot_basin",
+      "role": "regular",
+      "tier": 3,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 1238,
+      "expected_name": "Aurivoros",
+      "region_id": "floodroot_basin",
+      "role": "elite",
+      "tier": 2,
+      "expected_generation": 1,
+      "egg_eligible": false,
+      "weight": 15
+    },
+    {
+      "legacy_splice_id": 1248,
+      "expected_name": "Miastriel",
+      "region_id": "floodroot_basin",
+      "role": "elite",
+      "tier": 3,
+      "expected_generation": 2,
+      "egg_eligible": false,
+      "weight": 15
+    },
+    {
+      "legacy_splice_id": 1372,
+      "expected_name": "Noctridium [FINAL]",
+      "region_id": "floodroot_basin",
+      "role": "boss",
+      "tier": 3,
+      "expected_generation": 7,
+      "egg_eligible": false,
+      "weight": 1
+    },
+    {
+      "legacy_splice_id": 467,
+      "expected_name": "Shadowwing Specter",
+      "region_id": "stormbreak_reach",
+      "role": "regular",
+      "tier": 3,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 747,
+      "expected_name": "Oculith",
+      "region_id": "stormbreak_reach",
+      "role": "regular",
+      "tier": 3,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 900,
+      "expected_name": "Cryogant",
+      "region_id": "stormbreak_reach",
+      "role": "regular",
+      "tier": 3,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 935,
+      "expected_name": "Obelyon",
+      "region_id": "stormbreak_reach",
+      "role": "regular",
+      "tier": 4,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 1224,
+      "expected_name": "Abysmuth",
+      "region_id": "stormbreak_reach",
+      "role": "regular",
+      "tier": 4,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 606,
+      "expected_name": "Embermaw Vortex",
+      "region_id": "stormbreak_reach",
+      "role": "regular",
+      "tier": 4,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 760,
+      "expected_name": "Hexamour",
+      "region_id": "stormbreak_reach",
+      "role": "regular",
+      "tier": 5,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 827,
+      "expected_name": "Bileglyph",
+      "region_id": "stormbreak_reach",
+      "role": "regular",
+      "tier": 5,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 1431,
+      "expected_name": "Nullichor",
+      "region_id": "stormbreak_reach",
+      "role": "regular",
+      "tier": 5,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 1313,
+      "expected_name": "Frostwing Beast",
+      "region_id": "stormbreak_reach",
+      "role": "elite",
+      "tier": 4,
+      "expected_generation": 1,
+      "egg_eligible": false,
+      "weight": 15
+    },
+    {
+      "legacy_splice_id": 1336,
+      "expected_name": "Starforge Warden",
+      "region_id": "stormbreak_reach",
+      "role": "elite",
+      "tier": 5,
+      "expected_generation": 2,
+      "egg_eligible": false,
+      "weight": 15
+    },
+    {
+      "legacy_splice_id": 1417,
+      "expected_name": "The Void [FINAL]",
+      "region_id": "stormbreak_reach",
+      "role": "boss",
+      "tier": 5,
+      "expected_generation": 5,
+      "egg_eligible": false,
+      "weight": 1
+    },
+    {
+      "legacy_splice_id": 475,
+      "expected_name": "Flamecharger",
+      "region_id": "dawnscar_expanse",
+      "role": "regular",
+      "tier": 5,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 631,
+      "expected_name": "Pyraxis",
+      "region_id": "dawnscar_expanse",
+      "role": "regular",
+      "tier": 5,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 697,
+      "expected_name": "Embergrin",
+      "region_id": "dawnscar_expanse",
+      "role": "regular",
+      "tier": 5,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 774,
+      "expected_name": "Azurith",
+      "region_id": "dawnscar_expanse",
+      "role": "regular",
+      "tier": 6,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 1302,
+      "expected_name": "Ashen Oracle",
+      "region_id": "dawnscar_expanse",
+      "role": "regular",
+      "tier": 6,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 441,
+      "expected_name": "Eclipse Arbiter",
+      "region_id": "dawnscar_expanse",
+      "role": "regular",
+      "tier": 6,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 523,
+      "expected_name": "Seraphim Mask",
+      "region_id": "dawnscar_expanse",
+      "role": "regular",
+      "tier": 7,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 806,
+      "expected_name": "Cerulethos",
+      "region_id": "dawnscar_expanse",
+      "role": "regular",
+      "tier": 7,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 1286,
+      "expected_name": "Moonwing Stag",
+      "region_id": "dawnscar_expanse",
+      "role": "regular",
+      "tier": 7,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 1293,
+      "expected_name": "Solar Pegasus",
+      "region_id": "dawnscar_expanse",
+      "role": "elite",
+      "tier": 6,
+      "expected_generation": 1,
+      "egg_eligible": false,
+      "weight": 15
+    },
+    {
+      "legacy_splice_id": 1307,
+      "expected_name": "Starflare Spirit [SPECIAL]",
+      "region_id": "dawnscar_expanse",
+      "role": "elite",
+      "tier": 7,
+      "expected_generation": 2,
+      "egg_eligible": false,
+      "weight": 15
+    },
+    {
+      "legacy_splice_id": 1384,
+      "expected_name": "Pyraclysm [FINAL]",
+      "region_id": "dawnscar_expanse",
+      "role": "boss",
+      "tier": 7,
+      "expected_generation": 0,
+      "egg_eligible": false,
+      "weight": 1
+    },
+    {
+      "legacy_splice_id": 460,
+      "expected_name": "Abyssal Warden",
+      "region_id": "fractured_verge",
+      "role": "regular",
+      "tier": 7,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 592,
+      "expected_name": "Obsidian Vex",
+      "region_id": "fractured_verge",
+      "role": "regular",
+      "tier": 7,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 663,
+      "expected_name": "Obsidian Revenant",
+      "region_id": "fractured_verge",
+      "role": "regular",
+      "tier": 7,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 728,
+      "expected_name": "Umbraquartz",
+      "region_id": "fractured_verge",
+      "role": "regular",
+      "tier": 8,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 754,
+      "expected_name": "Noctilira",
+      "region_id": "fractured_verge",
+      "role": "regular",
+      "tier": 8,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 769,
+      "expected_name": "Nebulithrax",
+      "region_id": "fractured_verge",
+      "role": "regular",
+      "tier": 8,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 800,
+      "expected_name": "Virdictus",
+      "region_id": "fractured_verge",
+      "role": "regular",
+      "tier": 9,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 914,
+      "expected_name": "Stygialux",
+      "region_id": "fractured_verge",
+      "role": "regular",
+      "tier": 9,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 1096,
+      "expected_name": "Nethercryst",
+      "region_id": "fractured_verge",
+      "role": "regular",
+      "tier": 10,
+      "expected_generation": 0,
+      "egg_eligible": true,
+      "weight": 10
+    },
+    {
+      "legacy_splice_id": 154,
+      "expected_name": "Rift Bringer",
+      "region_id": "fractured_verge",
+      "role": "elite",
+      "tier": 8,
+      "expected_generation": 2,
+      "egg_eligible": false,
+      "weight": 15
+    },
+    {
+      "legacy_splice_id": 287,
+      "expected_name": "Rift",
+      "region_id": "fractured_verge",
+      "role": "elite",
+      "tier": 9,
+      "expected_generation": 3,
+      "egg_eligible": false,
+      "weight": 15
+    },
+    {
+      "legacy_splice_id": 1079,
+      "expected_name": "Asterophylax [FINAL]",
+      "region_id": "fractured_verge",
+      "role": "boss",
+      "tier": 10,
+      "expected_generation": 9,
+      "egg_eligible": false,
+      "weight": 1
+    }
+  ]
+}

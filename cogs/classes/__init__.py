@@ -19,6 +19,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import asyncio
 from copy import copy
 from decimal import Decimal
+from pathlib import Path
 
 import discord
 
@@ -33,6 +34,8 @@ from classes.ascension import (
 )
 from classes.classes import (
     ALL_CLASSES_TYPES,
+    Bard,
+    Beastmaster,
     Mage,
     Paragon,
     Raider,
@@ -53,7 +56,27 @@ from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils import misc as rpgtools
 from utils import random
 from utils.checks import has_char, has_money, is_class, update_pet, user_is_patron, is_gm
+from utils.image_choice import ImageChoice, ImageChoiceView, find_image_path
 from utils.i18n import _, locale_doc
+
+
+CLASS_IMAGE_DIR = Path(__file__).resolve().parents[2] / "assets" / "classes" / "ClassesNew"
+CLASS_LEGACY_IMAGE_DIR = Path(__file__).resolve().parents[2] / "assets" / "classes"
+CLASS_IMAGE_FILENAMES = {
+    "SantasHelper": "Santa's Helper",
+}
+
+
+def _class_image_path(class_name: str) -> Path | None:
+    filename = CLASS_IMAGE_FILENAMES.get(class_name, class_name)
+    image_path = find_image_path(CLASS_IMAGE_DIR, filename)
+    if image_path is None and class_name == "Warrior":
+        image_path = find_image_path(CLASS_LEGACY_IMAGE_DIR, "grunt")
+    return image_path
+
+
+def _legacy_class_image_path(class_name: str) -> Path | None:
+    return find_image_path(CLASS_LEGACY_IMAGE_DIR, class_name.lower().replace(" ", "_"))
 
 
 class Classes(commands.Cog):
@@ -265,15 +288,17 @@ class Classes(commands.Cog):
         _(
             """Change or select your primary or secondary class.
 
-            - Warriors gain added defense (awaiting update)
+            - Warriors build Momentum with successful attacks and spend it on Crushing Blow.
             - Thieves gain access to `{prefix}steal`
             - Mages gain added damage and build arcane charge in battle, gaining shields until they unleash a fireball.
             - Rangers gain access to a pet which can hunt for gear items
             - Raiders build Raid Mark in battle; every third hit detonates the mark for bonus damage.
             - Paladins can bless a user to gain additional XP in adventures and build Faith in battle to unleash Divine Smite with Holy Shield.
-            - Reapers have a change to cheat death and survive a fatal hit in raid battles. (Seasonal)
-            - Santas Helper can gift users a present and have a life steal effect in raid battles (Seasonal)
+            - Reapers harvest Souls, transform into the Avatar of Death, and can return from a fatal blow. (Seasonal)
+            - Santa's Helpers build Cheer, open combat Presents, and unleash Golden Gifts for the party. (Seasonal)
             - Ritualists gain additional favor from sacrificing items, are twice as likely to receive loot from adventures, and weave Doom Sigils in battle
+            - Bards empower the whole party — mending refrains in the Battle Tower and war-songs that raise everyone's damage in the Ice Dragon Challenge
+            - Beastmasters forge a Pack Bond, greatly strengthening their equipped pet everywhere it fights beside them
             - Paragons gain added damage *and* defense and use Adaptive Mastery in battle; the class is only available to donators
 
             The second class unlocks at level 12. Selecting a class the first time is free (No Class -> Class), but changing it later will cost $5,000 (Class -> another Class)
@@ -281,22 +306,53 @@ class Classes(commands.Cog):
             (This command has a cooldown of 24 hours)"""
         )
         if rpgtools.xptolevel(ctx.character_data["xp"]) >= 12:
+
+            def slot_label(slot_name, class_name):
+                if class_from_string(class_name) is None:
+                    return _("{slot} — empty").format(slot=slot_name)
+                # Some evolution names exist in several lines (e.g. "Vanguard" is
+                # both Tank and Warrior), so list every line that matches.
+                lines = [
+                    get_name(class_type)
+                    for class_type in ALL_CLASSES_TYPES.values()
+                    if class_name.replace(" ", "") in class_type.__members__
+                ]
+                return _("{slot} — {evolution} ({line})").format(
+                    slot=slot_name,
+                    evolution=class_name,
+                    line="/".join(lines) if lines else _("Unknown"),
+                )
+
+            current_classes = ctx.character_data["class"]
             val = await self.bot.paginator.Choose(
                 title=_("Select class to change"),
-                entries=[_("Primary Class"), _("Secondary Class")],
+                entries=[
+                    slot_label(_("Primary Class"), current_classes[0]),
+                    slot_label(_("Secondary Class"), current_classes[1]),
+                ],
                 return_index=True,
             ).paginate(ctx)
         else:
             val = 0
         embeds = [
-            #discord.Embed(
-                #title=_("Warrior"),
-                #description=_(
-                #    "The Warrior class. Charge into battle with additional defense!\n+1"
-               #     " defense per evolution."
-              #  ),
-            #    color=self.bot.config.game.primary_colour,
-           # ),
+            discord.Embed(
+                title=_("Warrior"),
+                description=_(
+                    "A relentless weapon master who grows stronger as the fight continues.\n\n"
+                    "**Battle Trait - Battle Momentum:**\n"
+                    "- Every successful normal attack builds **1 Momentum**, up to 4.\n"
+                    "- Existing Momentum increases the next attack's damage. At maximum evolution, "
+                    "each stack grants +3.8% damage (up to +15.2%).\n"
+                    "- Attacking at 4 Momentum consumes it to unleash **Crushing Blow**, dealing "
+                    "+53% damage at maximum evolution and cleaving nearby enemies for 35% of the hit.\n"
+                    "- Momentum carries between targets but resets after battle.\n\n"
+                    "**Favored Weapon:** Sword (+5 damage).\n\n"
+                    "At level 50 and final evolution, specialize into **Warlord** to build Momentum "
+                    "faster and empower Crushing Blow, or **Sentinel** to turn Momentum into "
+                    "damage reduction."
+                ),
+                color=self.bot.config.game.primary_colour,
+            ),
             discord.Embed(
                 title=_("Paladin"),
                 description=_(
@@ -304,7 +360,8 @@ class Classes(commands.Cog):
                     "The Paladin is a devout warrior, wielding a Hammer and dedicated to upholding justice and safeguarding the innocent. "
                     "With an unwavering commitment to righteousness, they possess the unique ability to bestow blessings upon their allies, "
                     "granting them a temporary boost in XP gain. In battle, successful hits build Faith; every third hit unleashes "
-                    "Divine Smite and grants Holy Shield. (unlocks `$bless`)"
+                    "Divine Smite and grants Holy Shield. (unlocks `$bless`)\n\n"
+                    "**Favored Weapon:** Hammer (+5 damage)."
                 ).format(prefix=ctx.clean_prefix),
                 color=self.bot.config.game.primary_colour
             ),
@@ -314,7 +371,8 @@ class Classes(commands.Cog):
                     # xgettext: no-python-format
                     "The sneaky money stealer...\nGet access to `{prefix}steal` to"
                     " steal 10% of a random player's money, if successful.\n+8% success"
-                    " chance per evolution."
+                    " chance per evolution.\n\n"
+                    "**Favored Weapon:** Dagger or Knife (+5 damage)."
                 ).format(prefix=ctx.clean_prefix),
                 color=self.bot.config.game.primary_colour,
             ),
@@ -323,7 +381,8 @@ class Classes(commands.Cog):
                 description=_(
                     "Utilise powerful magic for stronger attacks.\n+1 damage per"
                     " evolution. Normal battle hits build arcane charge and Arcane Shield"
-                    " until a fireball is unleashed for a massive damage boost."
+                    " until a fireball is unleashed for a massive damage boost.\n\n"
+                    "**Favored Weapon:** Wand (+5 damage)."
                 ),
                 color=self.bot.config.game.primary_colour,
             ),
@@ -333,7 +392,8 @@ class Classes(commands.Cog):
                     "Steeped in the mysteries of the wilderness, Rangers are adept trackers and loyal companions to their pets.\n"
                     "They excel at uncovering rare resources and preparing for impending threats.\n"
                     "Unlocks `{prefix}scout` to survey upcoming challenges to adjust your PVE engagements for strategic advantages. (1-4 rerolls)\n"
-                    "You also have increased chances of finding eggs! (Up to 25% bonus)"
+                    "You also have increased chances of finding eggs! (Up to 25% bonus)\n\n"
+                    "**Favored Weapon:** Bow (+10 damage)."
                 ).format(prefix=ctx.clean_prefix),
                 colour=self.bot.config.game.primary_colour,
             ),
@@ -345,7 +405,8 @@ class Classes(commands.Cog):
                     "**Battle Trait:**\n"
                     "- Successful hits place **Raid Mark** on the target.\n"
                     "- Every third mark detonates for bonus damage that scales with your attack and the target's vitality.\n"
-                    "- Best used in longer boss fights where you can stay on one target."
+                    "- Best used in longer boss fights where you can stay on one target.\n\n"
+                    "**Favored Weapon:** Axe (+5 damage)."
                 ),
                 colour=self.bot.config.game.primary_colour,
             ),
@@ -359,7 +420,49 @@ class Classes(commands.Cog):
                     " get loot from adventures.\n\nIn battle, Ritualists weave **Doom"
                     " Sigils** onto enemies. When the sigils align, they erupt in a"
                     " curse burst, cling for follow-up Doom Echo strikes, and grant"
-                    " **Favor Ward** when a doomed foe falls."
+                    " **Favor Ward** when a doomed foe falls.\n\n"
+                    "**Favored Weapon:** Wand (+5 damage)."
+                ),
+                colour=self.bot.config.game.primary_colour,
+            ),
+            discord.Embed(
+                title=_("Bard"),
+                description=_(
+                    # xgettext: no-python-format
+                    "A voice that turns a party into an army. Weak alone, invaluable together — "
+                    "the Bard is the realm's only dedicated support class, and the most-invited "
+                    "player in any hunting party.\n\n"
+                    "**Battle Trait — Bardic Refrain:**\n"
+                    "- In the Battle Tower, your song mends the whole party at the end of your "
+                    "turn, restoring 0.5% max HP per evolution (up to 3.5%).\n"
+                    "- In the Ice Dragon Challenge, your war-song sharpens every party member's "
+                    "blade: +1.7% damage per evolution (up to +11.9%). Only the strongest "
+                    "Bard's song carries.\n\n"
+                    "**Favored Weapon:** Dagger or Knife (+5 damage).\n"
+                    "**Per Evolution:** +0.5% party healing and +1.7% party damage.\n\n"
+                    "At level 50, specialize into **Warchanter** (open every battle with a "
+                    "party-wide Battle Hymn) or **Lifesinger** (a stronger restorative chorus "
+                    "every round)."
+                ),
+                colour=self.bot.config.game.primary_colour,
+            ),
+            discord.Embed(
+                title=_("Beastmaster"),
+                description=_(
+                    # xgettext: no-python-format
+                    "The bond between beast and master, sharpened into a weapon. Where others "
+                    "collect pets, the Beastmaster forges them into equals.\n\n"
+                    "**Battle Trait — Pack Bond:**\n"
+                    "- Your equipped pet gains +3% to **all** stats (HP, attack, defense) per "
+                    "evolution — up to +21% at maximum evolution.\n"
+                    "- The bond holds everywhere your pet fights beside you: the Battle Tower "
+                    "and the Ice Dragon Challenge.\n\n"
+                    "**Favored Weapon:** Spear (+5 damage).\n"
+                    "**Per Evolution:** +3% pet stats.\n\n"
+                    "At level 50, specialize into **Packleader** (your pet gains a focused "
+                    "+2% to +8% stat edge) or **Denfather** (your den shelters the "
+                    "whole party, reducing damage taken).\n\n"
+                    "🔒 *Requires an equipped pet to shine.*"
                 ),
                 colour=self.bot.config.game.primary_colour,
             ),
@@ -370,7 +473,8 @@ class Classes(commands.Cog):
                     " up.\n+1 damage and defense per evolution.\n\nIn battle,"
                     " **Adaptive Mastery** studies the opponent and answers with"
                     " extra damage against armored foes, barriers against dangerous"
-                    " attackers, or a balanced mix against even matchups."
+                    " attackers, or a balanced mix against even matchups.\n\n"
+                    "**Favored Weapon:** Spear (+5 damage)."
                 ),
                 color=self.bot.config.game.primary_colour,
             ),
@@ -381,16 +485,17 @@ class Classes(commands.Cog):
                     "Wielding a formidable shield, the Tank can raise a protective barrier that absorbs incoming damage, significantly enhancing their armor and safeguarding allies.\n\n"
                     "**Enhancements per Evolution:**\n"
                     "• **+10 Shield Proficiency** – Mastery over shields increases armor effectiveness, allowing you to absorb more damage.\n"
-                    "• **+5% Health** – Greater resilience ensures you can withstand prolonged battles. - Evolves\n"
-                    "• **+5% Damage Reflection** – Your shield not only protects but also retaliates, reflecting a portion of the damage back to attackers. - Evolves\n"
+                    "• **+4% Health with a shield** – Greater resilience ensures you can withstand prolonged battles. - Evolves\n"
+                    "• **+3% Damage Reflection with a shield** – Reflected damage drains a reflective plate with durability equal to your reflection % of max HP each battle. - Evolves\n"
                     "• **60% Target Priority** – In Ice Dragon Challenge, your defensive prowess draws more attention, making you more likely to be targeted.\n\n"
+                    "**Favored Weapon:** Shield (+7 armor).\n\n"
                     "🔒 *Requires a shield to function.*"
                 ).format(prefix=ctx.clean_prefix),
                 colour=self.bot.config.game.primary_colour,
             )
 
         ]
-        choices = [Tank, Paladin, Thief, Mage, Ranger, Raider, Ritualist, Paragon]
+        choices = [Tank, Warrior, Paladin, Thief, Mage, Ranger, Raider, Ritualist, Bard, Beastmaster, Paragon]
         async with self.bot.pool.acquire() as conn:
             profile_data = await conn.fetchrow(
                 'SELECT spookyclass, chrissy2023, easter2025, tier FROM profile WHERE "user"=$1;', ctx.author.id
@@ -403,8 +508,13 @@ class Classes(commands.Cog):
                     discord.Embed(
                         title=_("Reaper"),
                         description=_(
-                            "Embrace the grim power of the Reaper, absorbing the souls of the departed to grow stronger.\n\n"
-                            "unlocks `Undying Loyalty` (cheat death in raid & raid battles) ability"
+                            "Harvest a Soul with every successful attack and two when an enemy falls. At five Souls, "
+                            "become the **Avatar of Death** for three attacks, gaining bonus damage and life drain. "
+                            "A fatal blow during Avatar consumes it to guarantee **Undying Loyalty**, returning you "
+                            "under Death Shroud. Outside Avatar, evolution grants a smaller chance to cheat death.\n\n"
+                            "At level 50, choose **Harbinger** for Death's Verdict executions or **Soulbinder** to "
+                            "turn overhealing into Soul Ward.\n\n"
+                            "**Favored Weapon:** Scythe (+10 damage)."
                         ),
                         color=self.bot.config.game.primary_colour,
                     )
@@ -417,12 +527,14 @@ class Classes(commands.Cog):
                     discord.Embed(
                         title=_("SantasHelper"),
                         description=_(
-                            "Spread joy and aid allies with a festive touch. Evolve into a formidable Yuletide Guardian, "
-                            "safeguarding the holiday spirit.\n\n"
-                            "Unlocks `$gift` - Once per 6 hours, gift a player a random crate (Increased changes of higher rarities)\n\n"
-                            "Unlocks `Peppermint Vitality Drain` - Infuse your weapon with the essence of enchanted "
-                            "peppermints, allowing your attacks to steal a portion of the enemy's life force. Each "
-                            "successful strike replenishes your health, providing sustain during battles."
+                            "Gather Cheer with every successful attack. Every third hit opens a **Combat Present**: "
+                            "Crimson deals bonus damage, Evergreen heals the weakest ally, and Starlight shields the "
+                            "party. Every third opened present becomes a **Golden Gift** and unleashes all three.\n\n"
+                            "Peppermint Drain restores 5-20% of damage dealt as you evolve. Unlocks `$gift` once per "
+                            "six hours; higher evolutions roll more presents and keep the rarest.\n\n"
+                            "At level 50, choose **Krampus** for Chains of the Naughty or **Winterlight** for a "
+                            "once-per-battle Christmas Miracle.\n\n"
+                            "**Favored Weapon:** Mace (+5 damage)."
                         ),
                         color=self.bot.config.game.primary_colour,
                     )
@@ -457,13 +569,35 @@ class Classes(commands.Cog):
                 choices.remove(line)
             except ValueError:
                 pass
-        idx = await self.bot.paginator.ChoosePaginator(
-            extras=embeds,
-            placeholder=_("Choose a class"),
-            choices=[line.__name__ for line in choices],
-            return_index=True,
-        ).paginate(ctx)
-        profession = choices[idx]
+        class_cards = []
+        for line in choices:
+            class_name = get_name(line)
+            title = _(class_name)
+            embed = next((e for e in embeds if e.title == title), None)
+            if embed is None:
+                continue
+            summary = (embed.description or "").replace("\n", " ").strip()
+            class_cards.append(
+                ImageChoice(
+                    label=title,
+                    description=summary[:100],
+                    embed=embed,
+                    image_path=_class_image_path(class_name),
+                    value=line,
+                )
+            )
+        if not class_cards:
+            await self.bot.reset_cooldown(ctx)
+            return await ctx.send(_("No available classes to choose."))
+
+        profession = await ImageChoiceView(
+            ctx,
+            class_cards,
+            placeholder=_("Preview a class"),
+        ).prompt()
+        if profession is None:
+            await self.bot.reset_cooldown(ctx)
+            return await ctx.send(_("Class selection cancelled."))
         profession_ = get_first_evolution(profession).class_name()
         new_classes = copy(ctx.character_data["class"])
         new_classes[val] = profession_
@@ -551,13 +685,14 @@ class Classes(commands.Cog):
             return await ctx.send("You haven't got a class yet.")
         for class_ in classes:
             if class_ != "No Class":
-                try:
-                    await ctx.send(
-                        file=discord.File(
-                            f"assets/classes/{class_.lower().replace(' ', '_')}.png"
-                        )
-                    )
-                except FileNotFoundError:
+                game_class = class_from_string(class_)
+                image_path = None
+                if game_class:
+                    image_path = _class_image_path(get_name(game_class.get_class_line()))
+                image_path = image_path or _legacy_class_image_path(class_)
+                if image_path:
+                    await ctx.send(file=discord.File(str(image_path)))
+                else:
                     await ctx.send(
                         _(
                             "The image for your class **{class_}** hasn't been added"

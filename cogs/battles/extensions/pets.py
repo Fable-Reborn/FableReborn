@@ -8,6 +8,15 @@ from utils.april_fools import get_greg_hidden_pet_effects, mask_runtime_name
 
 class PetExtension:
     """Extension for pet integration in battles"""
+    BEASTMASTER_EVOLUTION_LEVELS = {
+        "Wrangler": 1,
+        "Beast Kin": 2,
+        "Packmate": 3,
+        "Wildcaller": 4,
+        "Alphabond": 5,
+        "Feralheart": 6,
+        "Beastlord": 7,
+    }
     PET_MAX_LEVEL = 100
     PET_LEVEL_STAT_BONUS = 0.01
     PASSIVE_ALLY_HEAL_CAP = Decimal('0.12')
@@ -3968,6 +3977,32 @@ class PetExtension:
             final_hp = base_hp + bonus_hp
             final_armor = base_armor + bonus_armor
             final_damage = base_damage + bonus_damage
+
+            pet_stat_pct = 0.0
+            spec_cog = ctx.bot.get_cog("Specializations")
+            if spec_cog:
+                try:
+                    spec_effects = await spec_cog.get_user_spec_effects(owner_user_id, conn=conn)
+                    pack_bond = spec_effects.get("pet_stat_pct")
+                    if pack_bond:
+                        pet_stat_pct += float(pack_bond["value"])
+                except Exception:
+                    pass
+            if owner_stats:
+                classes = owner_stats["class"] if isinstance(owner_stats["class"], list) else [owner_stats["class"]]
+                beastmaster_grade = 0
+                for class_name in classes or []:
+                    beastmaster_grade = max(
+                        beastmaster_grade,
+                        self.BEASTMASTER_EVOLUTION_LEVELS.get(class_name, 0),
+                    )
+                if beastmaster_grade:
+                    pet_stat_pct += 3.0 * beastmaster_grade
+            if pet_stat_pct:
+                pet_multiplier = 1.0 + pet_stat_pct / 100.0
+                final_hp *= pet_multiplier
+                final_armor *= pet_multiplier
+                final_damage *= pet_multiplier
 
             happiness = pet.get('happiness', 50)
 

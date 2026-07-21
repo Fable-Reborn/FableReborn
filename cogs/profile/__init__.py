@@ -19,6 +19,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import asyncio
 import math
 import re
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 import json
 from pathlib import Path
@@ -37,6 +38,7 @@ from classes.bot import Bot
 from classes.classes import from_string as class_from_string
 from classes.context import Context
 from classes.converters import IntFromTo, MemberWithCharacter, UserWithCharacter
+from classes.endgame import apply_item_progression_bonus, soulbound_level_from_xp
 from classes.items import ALL_ITEM_TYPES, ItemType
 from cogs.adventure import ADVENTURE_NAMES
 from cogs.help import chunks
@@ -56,19 +58,238 @@ JURY_COSMETIC_TITLE = "Favored by the Seven"
 import discord
 from discord.ext import commands
 
+
+class ArmoryFilterModal(discord.ui.Modal, title="Filter Armory"):
+    item_type = discord.ui.TextInput(
+        label="Item type",
+        default="All",
+        placeholder="All, 1h, 2h, Sword, Shield...",
+        max_length=30,
+    )
+    lowest = discord.ui.TextInput(label="Minimum total stat", default="0", max_length=4)
+    highest = discord.ui.TextInput(label="Maximum total stat", default="201", max_length=4)
+
+    def __init__(self, armory_view: "ArmoryPaginatorView"):
+        super().__init__()
+        self.armory_view = armory_view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            low = int(str(self.lowest.value))
+            high = int(str(self.highest.value))
+        except ValueError:
+            return await interaction.response.send_message("Stat limits must be whole numbers.", ephemeral=True)
+        if low < 0 or high < low or high > 201:
+            return await interaction.response.send_message(
+                "Use a range between 0 and 201, with maximum at least minimum.", ephemeral=True
+            )
+        command = self.armory_view.ctx.bot.get_command("armory")
+        await interaction.response.defer()
+        await self.armory_view.ctx.invoke(
+            command,
+            itemtype=str(self.item_type.value).strip() or "All",
+            lowest=low,
+            highest=high,
+        )
+
+
+class ArmoryMarketModal(discord.ui.Modal, title="List Item on Market"):
+    price = discord.ui.TextInput(label="Listing price", placeholder="1 to 100000000", max_length=9)
+
+    def __init__(self, armory_view: "ArmoryPaginatorView", item_id: int):
+        super().__init__()
+        self.armory_view = armory_view
+        self.item_id = item_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            price = int(str(self.price.value))
+        except ValueError:
+            return await interaction.response.send_message("Price must be a whole number.", ephemeral=True)
+        if price < 1 or price > 100_000_000:
+            return await interaction.response.send_message("Price must be from 1 to 100,000,000.", ephemeral=True)
+        command = self.armory_view.ctx.bot.get_command("sell")
+        await interaction.response.defer()
+        await self.armory_view.ctx.invoke(command, itemid=self.item_id, price=price)
+
+
+class ArmoryItemSelect(discord.ui.Select):
+    def __init__(self, armory_view: "ArmoryPaginatorView"):
+        items = armory_view.pages[armory_view.current_page]
+        options = []
+        for item in items:
+            status = []
+            if item.get("equipped"):
+                status.append("Equipped")
+            if item.get("locked"):
+                status.append("Locked")
+            stat = float(item.get("damage", 0) or 0) + float(item.get("armor", 0) or 0)
+            options.append(
+                discord.SelectOption(
+                    label=f"{item['name']} (ID {item['id']})"[:100],
+                    value=str(item["id"]),
+                    description=f"{item.get('type', 'Item')} • Stat {stat:g}" + (f" • {', '.join(status)}" if status else ""),
+                    default=int(item["id"]) == armory_view.selected_item_id,
+                )
+            )
+        super().__init__(placeholder="Select an item for actions", options=options, row=2)
+        self.armory_view = armory_view
+
+    async def callback(self, interaction):
+        self.armory_view.selected_item_id = int(self.values[0])
+        self.armory_view.sync_dynamic_components()
+        await interaction.response.edit_message(
+            embed=self.armory_view.embeds[self.armory_view.current_page],
+            view=self.armory_view,
+        )
+
+
+class ArmoryActionSelect(discord.ui.Select):
+    def __init__(self, armory_view: "ArmoryPaginatorView"):
+        item = armory_view.selected_item()
+        equipped = bool(item and item.get("equipped"))
+        locked = bool(item and item.get("locked"))
+        options = [
+            discord.SelectOption(label="Unequip" if equipped else "Equip", value="unequip" if equipped else "equip", emoji="⚔️"),
+            discord.SelectOption(label="Unlock" if locked else "Lock", value="unlock" if locked else "lock", emoji="🔒"),
+            discord.SelectOption(label="Compare with Equipped", value="compare", emoji="📊"),
+            discord.SelectOption(label="Sell to Merchant", value="merchant", emoji="💰"),
+            discord.SelectOption(label="List on Player Market", value="market", emoji="🏷️"),
+        ]
+        super().__init__(
+            placeholder="Choose an action for the selected item",
+            options=options,
+            disabled=item is None,
+            row=3,
+        )
+        self.armory_view = armory_view
+
+    async def callback(self, interaction):
+        view = self.armory_view
+        item = view.selected_item()
+        if item is None:
+            return await interaction.response.send_message("Select an item first.", ephemeral=True)
+        action = self.values[0]
+        item_id = int(item["id"])
+        if action == "market":
+            return await interaction.response.send_modal(ArmoryMarketModal(view, item_id))
+        if action == "compare":
+            async with view.ctx.bot.pool.acquire() as conn:
+                equipped = await conn.fetchrow(
+                    """
+                    SELECT ai.*, i.equipped, i.locked
+                    FROM allitems ai JOIN inventory i ON i.item=ai.id
+                    WHERE ai.owner=$1 AND i.equipped=TRUE AND ai.id<>$2
+                    ORDER BY (ai.damage+ai.armor) DESC LIMIT 1;
+                    """,
+                    view.ctx.author.id,
+                    item_id,
+                )
+            selected_stat = float(item.get("damage", 0) or 0) + float(item.get("armor", 0) or 0)
+            embed = discord.Embed(title=f"Compare: {item['name']}", color=discord.Color.blurple())
+            embed.add_field(
+                name="Selected",
+                value=f"Damage {item.get('damage', 0)}\nArmor {item.get('armor', 0)}\nTotal {selected_stat:g}",
+            )
+            if equipped:
+                equipped_stat = float(equipped.get("damage", 0) or 0) + float(equipped.get("armor", 0) or 0)
+                embed.add_field(
+                    name=f"Equipped: {equipped['name']}",
+                    value=f"Damage {equipped.get('damage', 0)}\nArmor {equipped.get('armor', 0)}\nTotal {equipped_stat:g}\nDifference {selected_stat - equipped_stat:+g}",
+                )
+            else:
+                embed.add_field(name="Equipped", value="No other equipped item was found.")
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        command_name = {
+            "equip": "equip",
+            "unequip": "unequip",
+            "lock": "weaponlock",
+            "unlock": "weaponunlock",
+            "merchant": "merchant",
+        }[action]
+        command = view.ctx.bot.get_command(command_name)
+        await interaction.response.defer()
+        if action == "merchant":
+            ok, message = await view.invoke_command(command, item_id)
+        else:
+            ok, message = await view.invoke_command(command, itemid=item_id)
+        if not ok:
+            await interaction.followup.send(message, ephemeral=True)
+
+
+class ArmorySortSelect(discord.ui.Select):
+    def __init__(self, armory_view: "ArmoryPaginatorView"):
+        options = [
+            discord.SelectOption(label="Strongest First", value="strength", default=armory_view.sort_mode == "strength"),
+            discord.SelectOption(label="Highest Value", value="value", default=armory_view.sort_mode == "value"),
+            discord.SelectOption(label="Name", value="name", default=armory_view.sort_mode == "name"),
+            discord.SelectOption(label="Newest ID", value="newest", default=armory_view.sort_mode == "newest"),
+        ]
+        super().__init__(placeholder="Sort armory", options=options, row=4)
+        self.armory_view = armory_view
+
+    async def callback(self, interaction):
+        self.armory_view.apply_sort(self.values[0])
+        self.armory_view.sync_dynamic_components()
+        await interaction.response.edit_message(
+            embed=self.armory_view.embeds[self.armory_view.current_page],
+            view=self.armory_view,
+        )
+
+
 class ArmoryPaginatorView(discord.ui.View):
     def __init__(
         self,
         ctx: commands.Context,
+        cog,
         pages: list[list[dict]],
         embeds: list[discord.Embed],
         timeout: float = 180.0
     ):
         super().__init__(timeout=timeout)
         self.ctx = ctx
+        self.cog = cog
         self.pages = pages  # Each element is a list of items for that page
         self.embeds = embeds
         self.current_page = 0
+        self.selected_item_id = int(pages[0][0]["id"]) if pages and pages[0] else None
+        self.sort_mode = "strength"
+        self.message = None
+        self.sync_dynamic_components()
+
+    def selected_item(self):
+        for item in self.pages[self.current_page]:
+            if int(item["id"]) == self.selected_item_id:
+                return item
+        return None
+
+    def sync_dynamic_components(self):
+        for child in list(self.children):
+            if isinstance(child, (ArmoryItemSelect, ArmoryActionSelect, ArmorySortSelect)):
+                self.remove_item(child)
+        if self.pages and self.pages[self.current_page]:
+            if self.selected_item() is None:
+                self.selected_item_id = int(self.pages[self.current_page][0]["id"])
+            self.add_item(ArmoryItemSelect(self))
+            self.add_item(ArmoryActionSelect(self))
+            self.add_item(ArmorySortSelect(self))
+
+    def apply_sort(self, mode):
+        items = [item for page in self.pages for item in page]
+        self.sort_mode = mode
+        if mode == "value":
+            items.sort(key=lambda item: (-int(item.get("value", 0) or 0), -int(item["id"])))
+        elif mode == "name":
+            items.sort(key=lambda item: (str(item.get("name", "")).lower(), -int(item["id"])))
+        elif mode == "newest":
+            items.sort(key=lambda item: -int(item["id"]))
+        else:
+            items.sort(key=lambda item: (-(float(item.get("damage", 0) or 0) + float(item.get("armor", 0) or 0)), -int(item["id"])))
+        self.pages = list(chunks(items, 5))
+        self.embeds = [self.cog.invembed(self.ctx, page, index, len(self.pages) - 1) for index, page in enumerate(self.pages)]
+        self.current_page = 0
+        self.selected_item_id = int(self.pages[0][0]["id"]) if self.pages and self.pages[0] else None
 
     def _is_allowed_user(self, user_id: int) -> bool:
         allowed_user_ids = {int(self.ctx.author.id)}
@@ -77,9 +298,28 @@ class ArmoryPaginatorView(discord.ui.View):
             allowed_user_ids.add(int(alt_invoker_id))
         return int(user_id) in allowed_user_ids
 
+    async def invoke_command(self, command, *args, **kwargs):
+        previous = self.ctx.command
+        self.ctx.command = command
+        try:
+            try:
+                allowed = await command.can_run(self.ctx)
+            except commands.CommandOnCooldown as exc:
+                return False, f"That action is ready again in {max(1, int(exc.retry_after))} second(s)."
+            except commands.CheckFailure as exc:
+                return False, str(exc).strip() or "You cannot use that action right now."
+            if not allowed:
+                return False, "You cannot use that action right now."
+            await command.callback(command.cog, self.ctx, *args, **kwargs)
+            return True, "Action completed in this channel."
+        except Exception as exc:
+            return False, f"Action failed: {exc}"
+        finally:
+            self.ctx.command = previous
+
     async def start(self):
         """Send the initial embed and attach this view to it."""
-        await self.ctx.send(embed=self.embeds[self.current_page], view=self)
+        self.message = await self.ctx.send(embed=self.embeds[self.current_page], view=self)
 
     @discord.ui.button(label="First", style=discord.ButtonStyle.blurple)
     async def go_first(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -88,6 +328,8 @@ class ArmoryPaginatorView(discord.ui.View):
             await interaction.response.send_message("Only the command author can use this button.", ephemeral=True)
             return
         self.current_page = 0
+        self.selected_item_id = int(self.pages[0][0]["id"])
+        self.sync_dynamic_components()
         await interaction.response.edit_message(
             embed=self.embeds[self.current_page], view=self
         )
@@ -100,6 +342,8 @@ class ArmoryPaginatorView(discord.ui.View):
             return
         if self.current_page > 0:
             self.current_page -= 1
+            self.selected_item_id = int(self.pages[self.current_page][0]["id"])
+            self.sync_dynamic_components()
             await interaction.response.edit_message(
                 embed=self.embeds[self.current_page], view=self
             )
@@ -127,6 +371,8 @@ class ArmoryPaginatorView(discord.ui.View):
             return
         if self.current_page < len(self.embeds) - 1:
             self.current_page += 1
+            self.selected_item_id = int(self.pages[self.current_page][0]["id"])
+            self.sync_dynamic_components()
             await interaction.response.edit_message(
                 embed=self.embeds[self.current_page], view=self
             )
@@ -142,6 +388,8 @@ class ArmoryPaginatorView(discord.ui.View):
             await interaction.response.send_message("Only the command author can use this button.", ephemeral=True)
             return
         self.current_page = len(self.embeds) - 1
+        self.selected_item_id = int(self.pages[self.current_page][0]["id"])
+        self.sync_dynamic_components()
         await interaction.response.edit_message(
             embed=self.embeds[self.current_page], view=self
         )
@@ -159,11 +407,21 @@ class ArmoryPaginatorView(discord.ui.View):
         item_ids = [str(item["id"]) for item in current_items]
         joined_ids = ", ".join(item_ids)
 
-        # Send the IDs to the channel (you could also do ephemeral, but user specifically asked for ctx.send)
-        await self.ctx.send(f"{joined_ids}")
+        await interaction.response.send_message(joined_ids, ephemeral=True)
 
-        # Acknowledge the button so there's no "interaction failed" message
+    @discord.ui.button(label="Filters", style=discord.ButtonStyle.secondary, row=1)
+    async def filters_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ArmoryFilterModal(self))
+
+    @discord.ui.button(label="Inventory", style=discord.ButtonStyle.secondary, row=1)
+    async def inventory_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
+        await self.ctx.invoke(self.ctx.bot.get_command("inventory"))
+
+    @discord.ui.button(label="Loadouts", style=discord.ButtonStyle.secondary, row=1)
+    async def loadouts_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        await self.ctx.invoke(self.ctx.bot.get_command("preset"))
 
 
 class InventoryCategorySelect(discord.ui.Select):
@@ -240,6 +498,51 @@ class InventoryEntrySelect(discord.ui.Select):
         )
 
 
+class InventoryTargetConsumeModal(discord.ui.Modal):
+    def __init__(self, inventory_view: "InventoryCategoryView", entry: dict):
+        super().__init__(title=f"Use {entry['name']}"[:45])
+        self.inventory_view = inventory_view
+        self.entry = entry
+        target_kind = "weapon" if entry["consume_key"] == "weapelement" else "pet"
+        self.target_input = discord.ui.TextInput(
+            label=f"{target_kind.title()} ID",
+            placeholder=f"Enter the {target_kind} ID",
+            max_length=20,
+        )
+        self.add_item(self.target_input)
+        self.element_input = None
+        if entry["consume_key"] in {"petelement", "weapelement"}:
+            self.element_input = discord.ui.TextInput(
+                label="New element",
+                placeholder="Example: fire",
+                max_length=30,
+            )
+            self.add_item(self.element_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        target = str(self.target_input.value).strip()
+        if not target.isdigit():
+            return await interaction.response.send_message("The target ID must be a number.", ephemeral=True)
+        extra = str(self.element_input.value).strip() if self.element_input else None
+        await interaction.response.defer(ephemeral=True)
+        ok, message = await self.inventory_view.cog._invoke_consume_from_inventory(
+            self.inventory_view.ctx,
+            str(self.entry["consume_key"]),
+            target,
+            extra,
+        )
+        await self.inventory_view.reload_categories()
+        self.inventory_view._restore_selected_entry(self.entry["entry_key"])
+        self.inventory_view.sync_controls()
+        if interaction.message:
+            await interaction.message.edit(
+                embed=self.inventory_view.build_embed(),
+                view=self.inventory_view,
+            )
+        if message:
+            await interaction.followup.send(message, ephemeral=True)
+
+
 class InventoryCategoryView(discord.ui.View):
     def __init__(self, ctx: commands.Context, cog: "Profile", categories: list[dict], timeout: float = 180.0):
         super().__init__(timeout=timeout)
@@ -299,12 +602,19 @@ class InventoryCategoryView(discord.ui.View):
         selected_entry = self.selected_entry()
         if self.detail_mode and selected_entry and selected_entry["kind"] == "amulet":
             equip_button = discord.ui.Button(
-                label="Equip",
-                style=discord.ButtonStyle.green,
+                label="Unequip" if selected_entry.get("equipped") else "Equip",
+                style=(
+                    discord.ButtonStyle.secondary
+                    if selected_entry.get("equipped")
+                    else discord.ButtonStyle.green
+                ),
                 row=3,
-                disabled=bool(selected_entry.get("equipped")),
             )
-            equip_button.callback = self.equip_selected_amulet
+            equip_button.callback = (
+                self.unequip_selected_amulet
+                if selected_entry.get("equipped")
+                else self.equip_selected_amulet
+            )
             self.add_item(equip_button)
             recycle_button = discord.ui.Button(
                 label="Recycle",
@@ -331,6 +641,16 @@ class InventoryCategoryView(discord.ui.View):
         )
         refresh_button.callback = self.refresh_inventory
         self.add_item(refresh_button)
+
+        armory_button = discord.ui.Button(label="Armory", style=discord.ButtonStyle.primary, row=4)
+        armory_button.callback = self.open_armory
+        self.add_item(armory_button)
+        loadouts_button = discord.ui.Button(label="Loadouts", style=discord.ButtonStyle.primary, row=4)
+        loadouts_button.callback = self.open_loadouts
+        self.add_item(loadouts_button)
+        close_button = discord.ui.Button(label="Close", style=discord.ButtonStyle.danger, row=4)
+        close_button.callback = self.close_inventory
+        self.add_item(close_button)
 
     def selected_category(self) -> dict | None:
         for category in self.categories:
@@ -566,6 +886,22 @@ class InventoryCategoryView(discord.ui.View):
             await interaction.message.edit(embed=self.build_embed(), view=self)
         await interaction.followup.send(message, ephemeral=True)
 
+    async def unequip_selected_amulet(self, interaction: discord.Interaction):
+        entry = self.selected_entry()
+        if not entry or entry["kind"] != "amulet":
+            return await interaction.response.send_message("Select an amulet first.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        message = await self.cog._unequip_inventory_amulet(
+            self.ctx.author.id,
+            int(entry["amulet_id"]),
+        )
+        await self.reload_categories()
+        self._restore_selected_entry(entry["entry_key"])
+        self.sync_controls()
+        if interaction.message:
+            await interaction.message.edit(embed=self.build_embed(), view=self)
+        await interaction.followup.send(message, ephemeral=True)
+
     async def recycle_selected_amulet(self, interaction: discord.Interaction):
         entry = self.selected_entry()
         if not entry or entry["kind"] != "amulet":
@@ -593,6 +929,8 @@ class InventoryCategoryView(discord.ui.View):
             return await interaction.response.send_message("Select a potion first.", ephemeral=True)
         if not entry.get("button_enabled"):
             return await interaction.response.send_message(entry.get("button_note") or "This potion cannot be consumed from here.", ephemeral=True)
+        if entry.get("requires_target"):
+            return await interaction.response.send_modal(InventoryTargetConsumeModal(self, entry))
         await interaction.response.defer(ephemeral=True)
         ok, message = await self.cog._invoke_consume_from_inventory(self.ctx, str(entry["consume_key"]))
         await self.reload_categories()
@@ -603,6 +941,24 @@ class InventoryCategoryView(discord.ui.View):
         if message:
             await interaction.followup.send(message, ephemeral=True)
 
+    async def open_armory(self, interaction: discord.Interaction):
+        command = self.ctx.bot.get_command("armory")
+        if command is None:
+            return await interaction.response.send_message("The armory is unavailable.", ephemeral=True)
+        await interaction.response.defer()
+        await self.ctx.invoke(command)
+
+    async def open_loadouts(self, interaction: discord.Interaction):
+        command = self.ctx.bot.get_command("preset")
+        if command is None:
+            return await interaction.response.send_message("Loadouts are unavailable.", ephemeral=True)
+        await interaction.response.defer()
+        await self.ctx.invoke(command)
+
+    async def close_inventory(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(view=None)
+        self.stop()
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if not self._is_allowed_user(interaction.user.id):
             await interaction.response.send_message(
@@ -611,6 +967,538 @@ class InventoryCategoryView(discord.ui.View):
             )
             return False
         return True
+
+
+class PlayerSettingsView(discord.ui.View):
+    """One place for the user preferences that were previously separate commands."""
+
+    def __init__(self, ctx, profile_cog, *, profile_old, hp_bar_style, pve_splices, pve_default):
+        super().__init__(timeout=300)
+        self.ctx = ctx
+        self.profile_cog = profile_cog
+        self.author_id = int(ctx.author.id)
+        self.profile_old = bool(profile_old)
+        self.hp_bar_style = str(hp_bar_style or "normal")
+        self.pve_splices = bool(pve_splices)
+        self.pve_default = pve_default
+        self.message = None
+        self.sync_buttons()
+
+    @classmethod
+    async def create(cls, ctx, profile_cog):
+        battles = ctx.bot.get_cog("Battles")
+        async with ctx.bot.pool.acquire() as conn:
+            profile_old = await conn.fetchval(
+                'SELECT profilestyle FROM profile WHERE "user"=$1;', ctx.author.id
+            )
+        if battles:
+            hp_bar_style = await battles._get_user_hp_bar_style(ctx.author.id)
+            pve_splices = await battles._get_user_pve_splice_toggle(ctx.author.id)
+            default_id = await battles._get_user_pve_default_location_id(ctx.author.id)
+            default_location = battles._get_pve_location_by_id(default_id) if default_id else None
+            pve_default = default_location["name"] if default_location else None
+        else:
+            hp_bar_style = "normal"
+            pve_splices = False
+            pve_default = None
+        return cls(
+            ctx,
+            profile_cog,
+            profile_old=profile_old,
+            hp_bar_style=hp_bar_style,
+            pve_splices=pve_splices,
+            pve_default=pve_default,
+        )
+
+    def sync_buttons(self):
+        self.profile_style_button.label = "Profile: Old" if self.profile_old else "Profile: New"
+        self.battle_bars_button.label = f"HP Bars: {self.hp_bar_style.replace('_', ' ').title()}"
+        self.pve_splices_button.label = f"PvE Splices: {'On' if self.pve_splices else 'Off'}"
+
+    def build_embed(self, notice: str | None = None):
+        description = "Change your account preferences below. Changes save immediately."
+        if notice:
+            description = f"✅ {notice}\n\n{description}"
+        embed = discord.Embed(
+            title="⚙️ Player Settings",
+            description=description,
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(
+            name="Profile",
+            value=(
+                f"Display style: **{'Old' if self.profile_old else 'New'}**\n"
+                "Use **Profile Layout** for element positioning."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Battles & PvE",
+            value=(
+                f"HP bars: **{self.hp_bar_style.replace('_', ' ').title()}**\n"
+                f"Splice monsters: **{'On' if self.pve_splices else 'Off'}**\n"
+                f"Default location: **{self.pve_default or 'None'}**"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Game Menus",
+            value="Open roulette settings or the PvE location picker from this panel.",
+            inline=False,
+        )
+        embed.set_footer(text="Existing profilepref, battlebars, pvesplice, and pvedefault commands still work.")
+        return embed
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("This settings panel is not yours.", ephemeral=True)
+            return False
+        return True
+
+    async def refresh_message(self, interaction, notice=None):
+        self.sync_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(notice), view=self)
+
+    @discord.ui.button(label="Profile: New", style=discord.ButtonStyle.primary, row=0)
+    async def profile_style_button(self, interaction, button):
+        self.profile_old = not self.profile_old
+        await self.ctx.bot.pool.execute(
+            'UPDATE profile SET profilestyle=$1 WHERE "user"=$2;',
+            self.profile_old,
+            self.author_id,
+        )
+        await self.refresh_message(interaction, "Profile display style updated.")
+
+    @discord.ui.button(label="HP Bars", style=discord.ButtonStyle.primary, row=0)
+    async def battle_bars_button(self, interaction, button):
+        battles = self.ctx.bot.get_cog("Battles")
+        if not battles:
+            return await interaction.response.send_message("Battle settings are unavailable.", ephemeral=True)
+        cycle = ["normal", "colorful", "team"]
+        index = cycle.index(self.hp_bar_style) if self.hp_bar_style in cycle else 0
+        self.hp_bar_style = cycle[(index + 1) % len(cycle)]
+        await battles._set_user_hp_bar_style(self.author_id, self.hp_bar_style)
+        await self.refresh_message(interaction, "Battle HP-bar style updated.")
+
+    @discord.ui.button(label="PvE Splices", style=discord.ButtonStyle.primary, row=0)
+    async def pve_splices_button(self, interaction, button):
+        battles = self.ctx.bot.get_cog("Battles")
+        if not battles:
+            return await interaction.response.send_message("PvE settings are unavailable.", ephemeral=True)
+        self.pve_splices = not self.pve_splices
+        await battles._set_user_pve_splice_toggle(self.author_id, self.pve_splices)
+        await self.refresh_message(interaction, "PvE splice pool preference updated.")
+
+    @discord.ui.button(label="Choose PvE Default", style=discord.ButtonStyle.secondary, row=1)
+    async def pve_default_button(self, interaction, button):
+        battles = self.ctx.bot.get_cog("Battles")
+        command = self.ctx.bot.get_command("pvedefault")
+        if not battles or not command:
+            return await interaction.response.send_message("PvE location settings are unavailable.", ephemeral=True)
+        await interaction.response.defer()
+        await self.ctx.invoke(command)
+
+    @discord.ui.button(label="Roulette Settings", style=discord.ButtonStyle.secondary, row=1)
+    async def roulette_button(self, interaction, button):
+        command = self.ctx.bot.get_command("rrsettings")
+        if not command:
+            return await interaction.response.send_message("Roulette settings are unavailable.", ephemeral=True)
+        await interaction.response.defer()
+        await self.ctx.invoke(command)
+
+    @discord.ui.button(label="Profile Layout", style=discord.ButtonStyle.secondary, row=1)
+    async def profile_layout_button(self, interaction, button):
+        command = self.ctx.bot.get_command("profilecustom")
+        if not command:
+            return await interaction.response.send_message("Profile customization is unavailable.", ephemeral=True)
+        await interaction.response.defer()
+        await self.ctx.invoke(command)
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, row=2)
+    async def close_button(self, interaction, button):
+        await interaction.response.edit_message(view=None)
+        self.stop()
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+
+class StatPointConfirmView(discord.ui.View):
+    def __init__(self, parent: "StatPointsView", stat_key: str, amount: int):
+        super().__init__(timeout=60)
+        self.parent = parent
+        self.stat_key = stat_key
+        self.amount = amount
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.parent.author_id:
+            await interaction.response.send_message("This allocation is not yours.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Confirm Allocation", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction, button):
+        ok, message, snapshot = await self.parent.cog._allocate_stat_points(
+            self.parent.author_id,
+            self.stat_key,
+            self.amount,
+        )
+        if ok and snapshot:
+            self.parent.snapshot = snapshot
+            if self.parent.message:
+                await self.parent.message.edit(embed=self.parent.build_embed(), view=self.parent)
+        await interaction.response.edit_message(content=message, embed=None, view=None)
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction, button):
+        await interaction.response.edit_message(content="Allocation cancelled.", embed=None, view=None)
+        self.stop()
+
+
+class StatPointAllocationModal(discord.ui.Modal):
+    def __init__(self, parent: "StatPointsView", stat_key: str):
+        super().__init__(title=f"Allocate {stat_key.title()} Points")
+        self.parent = parent
+        self.stat_key = stat_key
+        self.amount = discord.ui.TextInput(
+            label=f"Amount (available: {parent.snapshot['statpoints']})",
+            default="1",
+            max_length=8,
+        )
+        self.add_item(self.amount)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            amount = int(str(self.amount.value))
+        except ValueError:
+            return await interaction.response.send_message("Amount must be a whole number.", ephemeral=True)
+        available = int(self.parent.snapshot["statpoints"])
+        if amount <= 0 or amount > available:
+            return await interaction.response.send_message(
+                f"Choose an amount from 1 to {available}.", ephemeral=True
+            )
+        column = {"attack": "statatk", "defense": "statdef", "health": "stathp"}[self.stat_key]
+        current = int(self.parent.snapshot[column])
+        embed = discord.Embed(
+            title="Confirm Stat Allocation",
+            description=f"Allocate **{amount}** point(s) to **{self.stat_key.title()}**?",
+            color=discord.Color.gold(),
+        )
+        embed.add_field(name="Before", value=f"{self.stat_key.title()}: {current}\nUnused: {available}")
+        embed.add_field(name="After", value=f"{self.stat_key.title()}: {current + amount}\nUnused: {available - amount}")
+        await interaction.response.send_message(
+            embed=embed,
+            view=StatPointConfirmView(self.parent, self.stat_key, amount),
+            ephemeral=True,
+        )
+
+
+class StatPointsView(discord.ui.View):
+    def __init__(self, cog: "Profile", ctx, snapshot):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.ctx = ctx
+        self.author_id = int(ctx.author.id)
+        self.snapshot = dict(snapshot)
+        self.message = None
+
+    def build_embed(self):
+        embed = discord.Embed(
+            title="📊 Stat Point Allocation",
+            description=f"You have **{int(self.snapshot['statpoints'])}** unused stat point(s).",
+            color=discord.Color.blue(),
+        )
+        embed.add_field(name="Attack", value=str(int(self.snapshot["statatk"])), inline=True)
+        embed.add_field(name="Defense", value=str(int(self.snapshot["statdef"])), inline=True)
+        embed.add_field(name="Health", value=str(int(self.snapshot["stathp"])), inline=True)
+        embed.add_field(
+            name="Per Point",
+            value="Attack: **+0.1** • Defense: **+0.1** • Health: **+50**",
+            inline=False,
+        )
+        embed.set_footer(text="Choose a stat, enter an amount, then review the before/after preview.")
+        return embed
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("This stat panel is not yours.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Allocate Attack", style=discord.ButtonStyle.danger)
+    async def attack(self, interaction, button):
+        await interaction.response.send_modal(StatPointAllocationModal(self, "attack"))
+
+    @discord.ui.button(label="Allocate Defense", style=discord.ButtonStyle.primary)
+    async def defense(self, interaction, button):
+        await interaction.response.send_modal(StatPointAllocationModal(self, "defense"))
+
+    @discord.ui.button(label="Allocate Health", style=discord.ButtonStyle.success)
+    async def health(self, interaction, button):
+        await interaction.response.send_modal(StatPointAllocationModal(self, "health"))
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.secondary)
+    async def close(self, interaction, button):
+        await interaction.response.edit_message(view=None)
+        self.stop()
+
+
+class PresetSelect(discord.ui.Select):
+    def __init__(self, manager: "PresetManagerView"):
+        options = [
+            discord.SelectOption(
+                label=str(row["preset_id"])[:100],
+                value=str(row["preset_id"]),
+                description=manager.describe_row(row)[:100],
+                default=str(row["preset_id"]) == manager.selected_id,
+            )
+            for row in manager.rows[:25]
+        ]
+        super().__init__(
+            placeholder="Choose a saved loadout",
+            options=options or [discord.SelectOption(label="No loadouts saved", value="__none__")],
+            disabled=not options,
+            row=0,
+        )
+        self.manager = manager
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "__none__":
+            return await interaction.response.defer()
+        self.manager.selected_id = self.values[0]
+        self.manager.rebuild_components()
+        await interaction.response.edit_message(embed=self.manager.build_embed(), view=self.manager)
+
+
+class PresetNameModal(discord.ui.Modal):
+    def __init__(self, manager: "PresetManagerView", *, action: str, mode: str = "items"):
+        title = "Rename Loadout" if action == "rename" else "Save Current Loadout"
+        super().__init__(title=title)
+        self.manager = manager
+        self.action = action
+        self.mode = mode
+        self.name_input = discord.ui.TextInput(
+            label="Loadout name",
+            default=manager.selected_id if action == "rename" and manager.selected_id else None,
+            placeholder="Example: raid_build",
+            min_length=1,
+            max_length=30,
+        )
+        self.add_item(self.name_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        name = str(self.name_input.value).strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+            return await interaction.response.send_message(
+                "Use only letters, numbers, `_`, or `-` in loadout names.",
+                ephemeral=True,
+            )
+        await interaction.response.defer()
+        if self.action == "rename":
+            old_name = self.manager.selected_id
+            if not old_name:
+                return await interaction.followup.send("Select a loadout first.", ephemeral=True)
+            async with self.manager.cog.bot.pool.acquire() as conn:
+                exists = await conn.fetchval(
+                    "SELECT 1 FROM presets WHERE user_id=$1 AND preset_id=$2;",
+                    self.manager.author_id,
+                    name,
+                )
+                if exists and name != old_name:
+                    return await interaction.followup.send("A loadout with that name already exists.", ephemeral=True)
+                await conn.execute(
+                    "UPDATE presets SET preset_id=$1 WHERE user_id=$2 AND preset_id=$3;",
+                    name,
+                    self.manager.author_id,
+                    old_name,
+                )
+            self.manager.selected_id = name
+            await interaction.followup.send(f"Renamed **{old_name}** to **{name}**.", ephemeral=True)
+        else:
+            await self.manager.ctx.invoke(
+                self.manager.cog.preset_create,
+                preset_id=name,
+                mode=self.mode,
+            )
+            self.manager.selected_id = name
+        await self.manager.reload()
+        self.manager.rebuild_components()
+        if interaction.message:
+            await interaction.message.edit(embed=self.manager.build_embed(), view=self.manager)
+
+
+class PresetDeleteConfirmView(discord.ui.View):
+    def __init__(self, manager: "PresetManagerView", preset_id: str):
+        super().__init__(timeout=45)
+        self.manager = manager
+        self.preset_id = preset_id
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.manager.author_id:
+            await interaction.response.send_message("This confirmation is not yours.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Delete Loadout", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction, button):
+        await interaction.response.defer()
+        await self.manager.ctx.invoke(self.manager.cog.preset_delete, preset_id=self.preset_id)
+        if self.manager.selected_id == self.preset_id:
+            self.manager.selected_id = None
+        await self.manager.reload()
+        self.manager.rebuild_components()
+        if self.manager.message:
+            await self.manager.message.edit(embed=self.manager.build_embed(), view=self.manager)
+        await interaction.edit_original_response(content=f"Deleted **{self.preset_id}**.", view=None)
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction, button):
+        await interaction.response.edit_message(content="Deletion cancelled.", view=None)
+        self.stop()
+
+
+class PresetManagerView(discord.ui.View):
+    def __init__(self, cog: "Profile", ctx, rows):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.ctx = ctx
+        self.author_id = int(ctx.author.id)
+        self.rows = list(rows)
+        self.selected_id = str(self.rows[0]["preset_id"]) if self.rows else None
+        self.message = None
+        self.rebuild_components()
+
+    @classmethod
+    async def create(cls, cog, ctx):
+        async with cog.bot.pool.acquire() as conn:
+            await cog.sanitize_presets_for_user(ctx.author.id, conn=conn)
+            rows = await conn.fetch(
+                "SELECT preset_id, item_ids FROM presets WHERE user_id=$1 ORDER BY preset_id;",
+                ctx.author.id,
+            )
+        return cls(cog, ctx, rows)
+
+    async def reload(self):
+        async with self.cog.bot.pool.acquire() as conn:
+            await self.cog.sanitize_presets_for_user(self.author_id, conn=conn)
+            self.rows = list(await conn.fetch(
+                "SELECT preset_id, item_ids FROM presets WHERE user_id=$1 ORDER BY preset_id;",
+                self.author_id,
+            ))
+        ids = {str(row["preset_id"]) for row in self.rows}
+        if self.selected_id not in ids:
+            self.selected_id = str(self.rows[0]["preset_id"]) if self.rows else None
+
+    def selected_row(self):
+        return next((row for row in self.rows if str(row["preset_id"]) == self.selected_id), None)
+
+    def describe_row(self, row):
+        item_ids, has_amulet, amulet_id = self.cog._split_preset_saved_ids(row["item_ids"] or [])
+        amulet = "no amulet state"
+        if has_amulet:
+            amulet = f"amulet {amulet_id}" if amulet_id else "amulet unequipped"
+        return f"{len(item_ids)} gear item(s) • {amulet}"
+
+    def build_embed(self):
+        embed = discord.Embed(
+            title="🧰 Loadout Manager",
+            description="Save and apply up to five gear loadouts without typing item IDs.",
+            color=discord.Color.blurple(),
+        )
+        if not self.rows:
+            embed.add_field(name="No Loadouts", value="Use **Save Gear** or **Save Gear + Amulet** below.", inline=False)
+        else:
+            lines = []
+            for row in self.rows:
+                marker = "▶" if str(row["preset_id"]) == self.selected_id else "•"
+                lines.append(f"{marker} **{row['preset_id']}** — {self.describe_row(row)}")
+            embed.add_field(name=f"Saved ({len(self.rows)}/5)", value="\n".join(lines), inline=False)
+        selected = self.selected_row()
+        if selected:
+            item_ids, has_amulet, amulet_id = self.cog._split_preset_saved_ids(selected["item_ids"] or [])
+            embed.add_field(
+                name=f"Selected: {selected['preset_id']}",
+                value=(
+                    f"Gear IDs: {', '.join(map(str, item_ids)) if item_ids else 'none'}\n"
+                    f"Amulet: {amulet_id if has_amulet and amulet_id else ('unequipped' if has_amulet else 'not saved')}"
+                )[:1024],
+                inline=False,
+            )
+        embed.set_footer(text="Applying Gear + Amulet only changes amulet state if that state was saved.")
+        return embed
+
+    def rebuild_components(self):
+        self.clear_items()
+        self.add_item(PresetSelect(self))
+        has_selected = self.selected_row() is not None
+        for label, style, callback, disabled, row in [
+            ("Apply Gear", discord.ButtonStyle.success, self.apply_items, not has_selected, 1),
+            ("Apply Gear + Amulet", discord.ButtonStyle.success, self.apply_all, not has_selected, 1),
+            ("Save Gear", discord.ButtonStyle.primary, self.save_items, False, 2),
+            ("Save Gear + Amulet", discord.ButtonStyle.primary, self.save_all, False, 2),
+            ("Rename", discord.ButtonStyle.secondary, self.rename, not has_selected, 2),
+            ("Delete", discord.ButtonStyle.danger, self.delete, not has_selected, 2),
+            ("Refresh", discord.ButtonStyle.secondary, self.refresh, False, 3),
+            ("Close", discord.ButtonStyle.secondary, self.close, False, 3),
+        ]:
+            button = discord.ui.Button(label=label, style=style, disabled=disabled, row=row)
+            button.callback = callback
+            self.add_item(button)
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("This loadout manager is not yours.", ephemeral=True)
+            return False
+        return True
+
+    async def _apply(self, interaction, mode):
+        if not self.selected_id:
+            return await interaction.response.send_message("Select a loadout first.", ephemeral=True)
+        await interaction.response.defer()
+        await self.ctx.invoke(self.cog.preset_use, preset_id=self.selected_id, mode=mode)
+        await self.reload()
+        self.rebuild_components()
+        if interaction.message:
+            await interaction.message.edit(embed=self.build_embed(), view=self)
+
+    async def apply_items(self, interaction):
+        await self._apply(interaction, "items")
+
+    async def apply_all(self, interaction):
+        await self._apply(interaction, "all")
+
+    async def save_items(self, interaction):
+        await interaction.response.send_modal(PresetNameModal(self, action="save", mode="items"))
+
+    async def save_all(self, interaction):
+        await interaction.response.send_modal(PresetNameModal(self, action="save", mode="all"))
+
+    async def rename(self, interaction):
+        await interaction.response.send_modal(PresetNameModal(self, action="rename"))
+
+    async def delete(self, interaction):
+        await interaction.response.send_message(
+            f"Delete loadout **{self.selected_id}**?",
+            view=PresetDeleteConfirmView(self, self.selected_id),
+            ephemeral=True,
+        )
+
+    async def refresh(self, interaction):
+        await self.reload()
+        self.rebuild_components()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def close(self, interaction):
+        await interaction.response.edit_message(view=None)
+        self.stop()
 
 
 class Profile(commands.Cog):
@@ -658,6 +1546,140 @@ class Profile(commands.Cog):
             return float(value)
         except (TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _decimal_or_zero(value) -> Decimal:
+        try:
+            return Decimal(str(value or 0))
+        except Exception:
+            return Decimal("0")
+
+    @classmethod
+    def _format_stat_value(cls, value) -> str:
+        number = cls._decimal_or_zero(value)
+        if number == number.to_integral_value():
+            return f"{int(number):,}"
+        rounded = number.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+        return f"{float(rounded):,.1f}"
+
+    @classmethod
+    def _rounded_stat_int(cls, value) -> int:
+        return int(
+            cls._decimal_or_zero(value).quantize(
+                Decimal("1"),
+                rounding=ROUND_HALF_UP,
+            )
+        )
+
+    @classmethod
+    def _effective_item_damage(cls, item) -> Decimal:
+        if not item:
+            return Decimal("0")
+        return cls._decimal_or_zero(item.get("effective_damage", item.get("damage", 0)))
+
+    @classmethod
+    def _effective_item_armor(cls, item) -> Decimal:
+        if not item:
+            return Decimal("0")
+        return cls._decimal_or_zero(item.get("effective_armor", item.get("armor", 0)))
+
+    @classmethod
+    def _effective_item_primary_stat(cls, item) -> Decimal:
+        damage = cls._effective_item_damage(item)
+        armor = cls._effective_item_armor(item)
+        return damage if damage > 0 else armor
+
+    def _profile_item_tuple(self, item):
+        if not item:
+            return None
+        return (
+            item.get("type"),
+            item.get("name"),
+            self._format_stat_value(self._effective_item_primary_stat(item)),
+        )
+
+    async def _apply_item_progression_to_items(
+        self,
+        user_id: int,
+        items,
+        *,
+        conn=None,
+    ) -> list[dict]:
+        item_rows = [dict(item) for item in (items or [])]
+        item_ids = [
+            int(item["id"])
+            for item in item_rows
+            if item.get("id") is not None
+        ]
+        if not item_ids:
+            return item_rows
+
+        local = conn is None
+        if local:
+            conn = await self.bot.pool.acquire()
+        try:
+            star_map: dict[int, int] = {}
+            soulbound_item_id: int | None = None
+            soulbound_level = 0
+
+            star_table_exists = await conn.fetchval(
+                "SELECT to_regclass('public.starforged_items') IS NOT NULL;"
+            )
+            if star_table_exists:
+                star_rows = await conn.fetch(
+                    """
+                    SELECT item_id, stars
+                    FROM starforged_items
+                    WHERE item_id = ANY($1)
+                    """,
+                    item_ids,
+                )
+                star_map = {
+                    int(row["item_id"]): int(row["stars"] or 0)
+                    for row in star_rows
+                }
+
+            soulbound_table_exists = await conn.fetchval(
+                "SELECT to_regclass('public.soulbound') IS NOT NULL;"
+            )
+            if soulbound_table_exists:
+                soulbound_row = await conn.fetchrow(
+                    """
+                    SELECT item_id, xp
+                    FROM soulbound
+                    WHERE user_id = $1 AND item_id = ANY($2)
+                    """,
+                    int(user_id),
+                    item_ids,
+                )
+                if soulbound_row:
+                    soulbound_item_id = int(soulbound_row["item_id"])
+                    soulbound_level = soulbound_level_from_xp(soulbound_row["xp"])
+
+            for item in item_rows:
+                item_id = int(item.get("id") or 0)
+                item_soulbound_level = (
+                    soulbound_level if item_id == soulbound_item_id else 0
+                )
+                effective_damage, effective_armor, bonus_pct = apply_item_progression_bonus(
+                    item.get("damage", 0),
+                    item.get("armor", 0),
+                    stars=star_map.get(item_id, 0),
+                    soulbound_level=item_soulbound_level,
+                )
+                item["base_damage"] = item.get("damage", 0)
+                item["base_armor"] = item.get("armor", 0)
+                item["effective_damage"] = effective_damage
+                item["effective_armor"] = effective_armor
+                item["progression_bonus_pct"] = bonus_pct
+                item["starforge_stars"] = star_map.get(item_id, 0)
+                item["soulbound_level"] = item_soulbound_level
+            return item_rows
+        except Exception:
+            return item_rows
+        finally:
+            if local:
+                await self.bot.pool.release(conn)
 
     @staticmethod
     def _compact_number(value: int) -> str:
@@ -1006,8 +2028,8 @@ class Profile(commands.Cog):
         luck_raw = float(profile.get("luck") or 0.3)
         luck_percent = 20.0 if luck_raw <= 0.3 else ((luck_raw - 0.3) / 1.2) * 80 + 20
         luck_percent = round(max(0.0, min(100.0, luck_percent)), 2)
-        damage_total = sum(self._safe_int(i.get("damage"), 0) for i in items)
-        armor_total = sum(self._safe_int(i.get("armor"), 0) for i in items)
+        damage_total = sum(self._effective_item_damage(i) for i in items)
+        armor_total = sum(self._effective_item_armor(i) for i in items)
         raid_attack_value = max(0, int(round(self._safe_float(raid_attack, float(damage_total)))))
         raid_defense_value = max(0, int(round(self._safe_float(raid_defense, float(armor_total)))))
         total_health_value = max(
@@ -1038,6 +2060,10 @@ class Profile(commands.Cog):
         class_list = profile.get("class") or []
         if not isinstance(class_list, list):
             class_list = [str(class_list)]
+        # A declared specialization replaces the class name at final evolution
+        spec_cog = self.bot.get_cog("Specializations")
+        if spec_cog:
+            class_list = await spec_cog.get_spec_display_classes(user.id, class_list)
         classes = " / ".join([str(c) for c in class_list if c]) or "No Class"
         god_name = str(profile.get("god") or "No God")
         ascension = get_ascension_mantle(profile.get("ascension_mantle"))
@@ -1063,7 +2089,7 @@ class Profile(commands.Cog):
         draw.text((80, 436), clip(race_name, tiny_font, 286), font=tiny_font, fill=colors["muted"])
         badge_value = self._badge_from_db_value(profile.get("badges"))
         if badge_value:
-            badge_lines = badge_value.to_display_items()[:6]
+            badge_lines = badge_value.to_profile_display_items(limit=6)
         else:
             badge_lines = ["No badges yet"]
         draw.text((80, 506), "Relics and Badges", font=label_font, fill=colors["border"])
@@ -1510,7 +2536,7 @@ class Profile(commands.Cog):
             if item:
                 name = clip(str(item.get("name", "Unknown")), value_font, max(120, width_px - 28))
                 kind = clip(str(item.get("type", "Unknown")), tiny_font, max(80, width_px - 170))
-                power_val = self._safe_int(item.get("damage"), 0) + self._safe_int(item.get("armor"), 0)
+                power_val = self._format_stat_value(self._effective_item_primary_stat(item))
                 draw.text((x + 14, y + 44), name, font=value_font, fill=colors["text"])
                 draw.text((x + 14, y + 76), f"{kind} | Power {power_val}", font=tiny_font, fill=colors["muted"])
             else:
@@ -1937,7 +2963,7 @@ class Profile(commands.Cog):
             import traceback
             error_message = f"Error occurred: {e}\n"
             error_message += traceback.format_exc()
-            await ctx.send(error_message)
+            await ctx.send("That item could not be used right now. Please try again shortly.")
             print(error_message)
 
     @is_gm()
@@ -1956,8 +2982,18 @@ class Profile(commands.Cog):
             await ctx.send(f"Your ID `{user_id}` does not exist in the second database.")
 
 
+    @checks.has_char()
+    @commands.command(name="playersettings", aliases=["preferences", "prefs"])
+    async def player_settings_command(self, ctx):
+        """Open a central panel for profile, battle, PvE, and minigame preferences."""
+        view = await PlayerSettingsView.create(ctx, self)
+        view.message = await ctx.send(embed=view.build_embed(), view=view)
+
     @commands.command(name="profilepref")
-    async def profilepref_command(self, ctx, preference: int):
+    async def profilepref_command(self, ctx, preference: Optional[int] = None):
+        if preference is None:
+            command = self.bot.get_command("playersettings")
+            return await ctx.invoke(command)
         if preference == 1:
             new_profilestyle = False
             new_profilestyleText = "the new format"
@@ -2040,6 +3076,11 @@ class Profile(commands.Cog):
                         )
 
                     items = await self.bot.get_equipped_items_for(targetid, conn=conn)
+                    items = await self._apply_item_progression_to_items(
+                        targetid,
+                        items,
+                        conn=conn,
+                    )
                     mission = await self.bot.get_adventure(targetid)
                     synced_badges = await self._sync_auto_profile_badges(
                         user_id=targetid,
@@ -2103,17 +3144,25 @@ class Profile(commands.Cog):
                 positions = ProfileCustomization.get_positions_for_user(custom_positions)
 
 
+                # A declared specialization replaces the class name at final evolution
+                display_classes = profile["class"]
+                spec_cog = self.bot.get_cog("Specializations")
+                if spec_cog:
+                    display_classes = await spec_cog.get_spec_display_classes(
+                        targetid, profile["class"]
+                    )
+
                 # CASCADE: Prepare and debug the dictionary for Okapi JSON payload
                 payload_for_okapi = {
                     "name": profile['name'],
                     "color": color,
                     "image": profile["background"],
                     "race": profile['race'],
-                    "classes": profile['class'],        # From user's snippet for line 552 json
+                    "classes": display_classes,        # spec names at final evolution
                     "profession": "None",
                     "class_icons": icons,           # From user's snippet
-                    "left_hand_item": (left_hand['type'], left_hand['name'], str(int(left_hand['damage'] if left_hand['damage'] > 0 else left_hand['armor'] if left_hand['armor'] > 0 else 0))) if left_hand else None,
-                    "right_hand_item": (right_hand['type'], right_hand['name'], str(int(right_hand['damage'] if right_hand['damage'] > 0 else right_hand['armor'] if right_hand['armor'] > 0 else 0))) if right_hand else None,
+                    "left_hand_item": self._profile_item_tuple(left_hand),
+                    "right_hand_item": self._profile_item_tuple(right_hand),
                     "level": f"{rpgtools.xptolevel(profile['xp'])}",
                     "guild_rank": guild_rank,
                     "guild_name": profile["guild_name"], # From user's snippet
@@ -2196,6 +3245,7 @@ class Profile(commands.Cog):
                     0,
                     160,
                 )
+                ret = await self._apply_item_progression_to_items(targetid, ret)
 
                 # Assuming you have 'name', 'damage', 'armor', and 'type' columns in 'allitems' table
                 equipped_items = [row for row in ret if row['equipped']]
@@ -2220,6 +3270,11 @@ class Profile(commands.Cog):
                         )
 
                     items = await self.bot.get_equipped_items_for(targetid, conn=conn)
+                    items = await self._apply_item_progression_to_items(
+                        targetid,
+                        items,
+                        conn=conn,
+                    )
                     mission = await self.bot.get_adventure(targetid)
                     await self._sync_auto_profile_badges(
                         user_id=targetid,
@@ -2231,8 +3286,14 @@ class Profile(commands.Cog):
                 # Apply race bonuses
                 race = profile["race"].lower()  # Assuming the race is stored in lowercase in the database
 
-                damage_total = item1["damage"] + item2["damage"]
-                armor_total = item1["armor"] + item2["armor"]
+                damage_total = (
+                    self._effective_item_damage(item1)
+                    + self._effective_item_damage(item2)
+                )
+                armor_total = (
+                    self._effective_item_armor(item1)
+                    + self._effective_item_armor(item2)
+                )
                 item1_name = item1["name"]
                 item2_name = item2["name"]
                 item1_type = item1["type"]
@@ -2383,8 +3444,8 @@ class Profile(commands.Cog):
                             "race": profile['race'],
                             "classes": classes_str_list,
                             "profession": "None",
-                            "damage": f"{damage_total}",
-                            "defense": f"{armor_total}",
+                            "damage": self._format_stat_value(damage_total),
+                            "defense": self._format_stat_value(armor_total),
                             "swordName": f"{item1_name}",
                             "shieldName": f"{item2_name}",
                             "level": f"{rpgtools.xptolevel(profile['xp'])}",
@@ -2810,6 +3871,7 @@ class Profile(commands.Cog):
         # Get extra data (ranks, equipment, profile, etc.)
         rank_money, rank_xp = await self.bot.get_ranks_for(target_user)
         items = await self.bot.get_equipped_items_for(target_user)
+        items = await self._apply_item_progression_to_items(target_user.id, items)
 
         async with self.bot.pool.acquire() as conn:
             p_data = await conn.fetchrow(
@@ -2896,12 +3958,12 @@ class Profile(commands.Cog):
 
         # Build equipment strings.
         right_hand_str = (
-            f"{right_hand['name']} - {right_hand['damage'] + right_hand['armor']}"
+            f"{right_hand['name']} - {self._format_stat_value(self._effective_item_primary_stat(right_hand))}"
             if right_hand
             else _("None Equipped")
         )
         left_hand_str = (
-            f"{left_hand['name']} - {left_hand['damage'] + left_hand['armor']}"
+            f"{left_hand['name']} - {self._format_stat_value(self._effective_item_primary_stat(left_hand))}"
             if left_hand
             else _("None Equipped")
         )
@@ -2913,13 +3975,21 @@ class Profile(commands.Cog):
         )
         embed.set_thumbnail(url=target_user.display_avatar.url)
 
+        # A declared specialization replaces the class name at final evolution
+        class_display = p_data.get("class", [])
+        spec_cog = self.bot.get_cog("Specializations")
+        if spec_cog:
+            class_display = await spec_cog.get_spec_display_classes(
+                target_user.id, class_display
+            )
+
         # General Information field.
         general_info = (
             f"**Money:** ${p_data['money']}\n"
             f"**Level:** {level}\n"
             f"**Pet:** {pet}\n"
             f"**Marriage:** {marriage_display}\n"
-            f"**Class:** {' / '.join(p_data.get('class', [])) or 'N/A'}\n"
+            f"**Class:** {' / '.join(class_display) or 'N/A'}\n"
             f"**Ascension:** {ascension_title}\n"
             f"{court_title_line}"
             f"**Race:** {p_data['race']}\n"
@@ -2964,6 +4034,7 @@ class Profile(commands.Cog):
 
         rank_money, rank_xp = await self.bot.get_ranks_for(user)
         items = await self.bot.get_equipped_items_for(user)
+        items = await self._apply_item_progression_to_items(user.id, items)
 
         async with self.bot.pool.acquire() as conn:
             profile_data = await conn.fetchrow(
@@ -3189,11 +4260,27 @@ class Profile(commands.Cog):
             # Check if the weapon is locked and add "(locked)" if true
             locked_status = " (locked)" if weapon.get('locked', False) else ""
 
-            statstr = (
-                _("Damage: `{damage}`").format(damage=weapon["damage"])
-                if weapon["type"] != "Shield"
-                else _("Armor: `{armor}`").format(armor=weapon["armor"])
+            progression_bonus = self._decimal_or_zero(
+                weapon.get("progression_bonus_pct")
             )
+            progression_text = (
+                f" (+{float(progression_bonus * 100):.1f}% progression)"
+                if progression_bonus > 0
+                else ""
+            )
+            statstr = (
+                _("Damage: `{damage}`").format(
+                    damage=self._format_stat_value(
+                        self._effective_item_damage(weapon)
+                    )
+                )
+                if weapon["type"] != "Shield"
+                else _("Armor: `{armor}`").format(
+                    armor=self._format_stat_value(
+                        self._effective_item_armor(weapon)
+                    )
+                )
+            ) + progression_text
             signature = (
                 _("\nSignature: *{signature}*").format(signature=y)
                 if (y := weapon["signature"])
@@ -3476,7 +4563,13 @@ class Profile(commands.Cog):
                     "quantity": quantity,
                     "consume_key": definition["consume_key"],
                     "usage_command": definition["usage_command"],
-                    "button_enabled": definition["button_enabled"],
+                    "button_enabled": (
+                        definition["button_enabled"]
+                        or definition["consume_key"]
+                        in {"petage", "petspeed", "petxp", "petelement", "weapelement"}
+                    ),
+                    "requires_target": definition["consume_key"]
+                    in {"petage", "petspeed", "petxp", "petelement", "weapelement"},
                     "action_text": definition["action_text"],
                     "button_note": definition["button_note"],
                 }
@@ -3670,6 +4763,24 @@ class Profile(commands.Cog):
             )
             return " ".join(message_parts)
 
+    async def _unequip_inventory_amulet(self, user_id: int, amulet_id: int) -> str:
+        async with self.bot.pool.acquire() as conn:
+            amulet = await conn.fetchrow(
+                "SELECT * FROM amulets WHERE id=$1 AND user_id=$2;",
+                amulet_id,
+                user_id,
+            )
+            if not amulet:
+                return "You don't own this amulet."
+            if not amulet["equipped"]:
+                return "This amulet is already stored."
+            await conn.execute(
+                "UPDATE amulets SET equipped=FALSE WHERE id=$1 AND user_id=$2;",
+                amulet_id,
+                user_id,
+            )
+        return f"Unequipped your Tier {int(amulet['tier'])} {str(amulet['type']).upper()} amulet."
+
     async def _recycle_inventory_amulet(self, user_id: int, amulet_id: int) -> tuple[bool, str]:
         cooldown_key = "inventory_amulet_recycle"
         cooldown_ttl = await self.bot.redis.execute_command(
@@ -3751,7 +4862,13 @@ class Profile(commands.Cog):
             f"Recycled your Tier {int(amulet['tier'])} {str(amulet['type']).upper()} amulet and refunded {refund_text}.",
         )
 
-    async def _invoke_consume_from_inventory(self, ctx, consume_key: str) -> tuple[bool, str | None]:
+    async def _invoke_consume_from_inventory(
+        self,
+        ctx,
+        consume_key: str,
+        target: str | None = None,
+        extra: str | None = None,
+    ) -> tuple[bool, str | None]:
         consume_command = self.bot.get_command("consume")
         if consume_command is None:
             return False, "The consume command is unavailable right now."
@@ -3770,7 +4887,7 @@ class Profile(commands.Cog):
             if not allowed:
                 return False, "You cannot use that potion right now."
 
-            await consume_command.callback(self, ctx, consume_key, None)
+            await consume_command.callback(self, ctx, consume_key, target, extra=extra)
         finally:
             ctx.command = original_command
 
@@ -3796,7 +4913,7 @@ class Profile(commands.Cog):
             import traceback
             error_message = f"Error occurred: {e}\n"
             error_message += traceback.format_exc()
-            await ctx.send(error_message)
+            await ctx.send("Inventory could not be loaded right now. Please try again shortly.")
             print(error_message)
 
     def lootembed(self, ctx, ret, currentpage, maxpage):
@@ -3816,6 +4933,34 @@ class Profile(commands.Cog):
             )
 
         return result
+
+    async def _allocate_stat_points(self, user_id: int, stat_key: str, amount: int):
+        columns = {"attack": "statatk", "defense": "statdef", "health": "stathp"}
+        column = columns.get(stat_key)
+        if column is None or amount <= 0:
+            return False, "Invalid stat allocation.", None
+        async with self.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    'SELECT statpoints, statatk, statdef, stathp FROM profile WHERE "user"=$1 FOR UPDATE;',
+                    user_id,
+                )
+                if not row:
+                    return False, "Character data could not be found.", None
+                if int(row["statpoints"]) < amount:
+                    return False, "You no longer have enough unused stat points.", dict(row)
+                snapshot = await conn.fetchrow(
+                    f'UPDATE profile SET statpoints=statpoints-$1, "{column}"="{column}"+$1 '
+                    'WHERE "user"=$2 RETURNING statpoints, statatk, statdef, stathp;',
+                    amount,
+                    user_id,
+                )
+        return (
+            True,
+            f"Allocated {amount} point(s) to {stat_key.title()}. You have {int(snapshot['statpoints'])} remaining.",
+            dict(snapshot),
+        )
+
     @checks.has_char()
     @commands.command(aliases=["sp"], brief=_("Show your gear items"))
     @locale_doc
@@ -3833,25 +4978,8 @@ class Profile(commands.Cog):
         def_ = player_data["statdef"]
         hp = player_data["stathp"]
 
-        # Creating a clean and structured embed
-        embed = Embed(title="Stat Points", description="Overview of your stat points and how to redeem them.",
-                      color=0x3498db)
-        embed.add_field(name="Your Stat Points", value=f"You currently have **{points}** unused stat points.",
-                        inline=False)
-        embed.add_field(name="How to Redeem", value="Redeem your stat points using the commands below:", inline=False)
-        embed.add_field(name="Commands",
-                        value="`$spr <type> <amount>` or `$statpointredeem <type> <amount>`\n- Types: `health/hp`, `defense/def`, `attack/atk`\n- Example: `$spr atk 5`",
-                        inline=False)
-        embed.add_field(name="Bonuses",
-                        value="Raider bonuses:\n- **Attack**: `+0.1`\n- **Defense**: `+0.1`\n- **Health**: `+50`",
-                        inline=False)
-        embed.add_field(name="Stat Allocation",
-                        value=f"**Attack**: {atk}\n**Defense**: {def_}\n**Health**: {hp}",
-                        inline=False)
-        embed.set_footer(text="Ensure you have sufficient stat points before redeeming.")
-
-        # Send the embed
-        await ctx.send(embed=embed)
+        view = StatPointsView(self, ctx, player_data)
+        view.message = await ctx.send(embed=view.build_embed(), view=view)
 
     @checks.has_char()
     @user_cooldown(120)
@@ -4012,6 +5140,8 @@ class Profile(commands.Cog):
         if not ret:
             return await ctx.send(_("Your inventory is empty."))
 
+        ret = await self._apply_item_progression_to_items(ctx.author.id, ret)
+
         # Split all items into pages of 5
         allitems = list(chunks(ret, 5))
         maxpage = len(allitems) - 1
@@ -4023,7 +5153,7 @@ class Profile(commands.Cog):
             embeds.append(page_embed)
 
         # Pass both raw item pages AND the embeds to our custom paginator
-        view = ArmoryPaginatorView(ctx=ctx, pages=allitems, embeds=embeds)
+        view = ArmoryPaginatorView(ctx=ctx, cog=self, pages=allitems, embeds=embeds)
         await view.start()
 
     def lootembed(self, ctx, ret, currentpage, maxpage):
@@ -4293,10 +5423,8 @@ class Profile(commands.Cog):
           $preset list
           $preset delete <preset_name>
         """
-        await ctx.send(
-            "Use `$preset create|use|list|delete`.\n"
-            "`items` = gear only, `all` = gear + amulet."
-        )
+        view = await PresetManagerView.create(self, ctx)
+        view.message = await ctx.send(embed=view.build_embed(), view=view)
 
     @preset_cmd.command(name="create")
     async def preset_create(self, ctx, preset_id: str, mode: str = "items"):

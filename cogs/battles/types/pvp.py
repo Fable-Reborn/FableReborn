@@ -6,6 +6,10 @@ import discord
 import datetime
 
 from ..core.battle import Battle
+from classes.warrior import (
+    warrior_average_damage_multiplier,
+    warrior_average_reduction_pct,
+)
 
 class PvPBattle(Battle):
     """Player vs Player battle implementation"""
@@ -63,8 +67,27 @@ class PvPBattle(Battle):
         self.simple = self.config["simple"]
         if self.simple:
             # Simple battle uses classic battle math
-            self.player1_stats = sum(kwargs.get("player1_stats", [0, 0])) + random.randint(1, 7)
-            self.player2_stats = sum(kwargs.get("player2_stats", [0, 0])) + random.randint(1, 7)
+            self.player1_stats = self._simple_stat_total(
+                self.player1,
+                kwargs.get("player1_stats", [0, 0]),
+            ) + random.randint(1, 7)
+            self.player2_stats = self._simple_stat_total(
+                self.player2,
+                kwargs.get("player2_stats", [0, 0]),
+            ) + random.randint(1, 7)
+
+    def _simple_stat_total(self, combatant, stats):
+        """Represent turn-based Warrior pressure in classic one-roll PvP."""
+        values = list(stats or [0, 0])
+        damage = Decimal(str(values[0] if values else 0))
+        armor = Decimal(str(values[1] if len(values) > 1 else 0))
+        if self.config.get("class_buffs", True):
+            grade = int(getattr(combatant, "warrior_evolution", 0) or 0)
+            effects = getattr(combatant, "spec_effects", None) or {}
+            damage *= warrior_average_damage_multiplier(grade, effects)
+            reduction = warrior_average_reduction_pct(effects)
+            armor *= Decimal("1") + reduction / Decimal("100")
+        return damage + armor
     
     async def start_battle(self):
         """Start the battle"""

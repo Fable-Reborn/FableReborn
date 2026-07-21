@@ -40,9 +40,27 @@ from redis import asyncio as aioredis
 
 from classes.badges import Badge
 from classes.bucket_cooldown import Cooldown, CooldownMapping
-from classes.classes import Mage, Paragon, Raider, Ranger, Ritualist, Thief, Warrior, Paladin, Reaper, Tank
+from classes.classes import (
+    Bard,
+    Beastmaster,
+    Mage,
+    Paladin,
+    Paragon,
+    Raider,
+    Ranger,
+    Reaper,
+    Ritualist,
+    SantasHelper,
+    Tank,
+    Thief,
+    Warrior,
+)
 from classes.classes import from_string as class_from_string
 from classes.context import Context
+from classes.endgame import (
+    apply_item_progression_bonus,
+    soulbound_level_from_xp,
+)
 from classes.enums import DonatorRank
 from classes.exceptions import GlobalCooldown
 from classes.http import ProxiedClientSession
@@ -1344,6 +1362,59 @@ class Bot(commands.AutoShardedBot):
             row = await conn.fetchrow('SELECT * FROM profile WHERE "user"=$1;', user)
             classes, race = row["class"], row["race"]
 
+        def item_field(raw_item, key, default=None):
+            try:
+                return raw_item[key]
+            except (KeyError, IndexError, TypeError):
+                return default
+
+        item_ids = [
+            int(item_field(item, "id"))
+            for item in items
+            if item_field(item, "id") is not None
+        ]
+        star_map: dict[int, int] = {}
+        soulbound_item_id: int | None = None
+        soulbound_level = 0
+        if item_ids:
+            try:
+                star_table_exists = await conn.fetchval(
+                    "SELECT to_regclass('public.starforged_items') IS NOT NULL;"
+                )
+                if star_table_exists:
+                    star_rows = await conn.fetch(
+                        """
+                        SELECT item_id, stars
+                        FROM starforged_items
+                        WHERE item_id = ANY($1)
+                        """,
+                        item_ids,
+                    )
+                    star_map = {
+                        int(row["item_id"]): int(row["stars"] or 0)
+                        for row in star_rows
+                    }
+                soulbound_table_exists = await conn.fetchval(
+                    "SELECT to_regclass('public.soulbound') IS NOT NULL;"
+                )
+                if soulbound_table_exists:
+                    soulbound_row = await conn.fetchrow(
+                        """
+                        SELECT item_id, xp
+                        FROM soulbound
+                        WHERE user_id = $1 AND item_id = ANY($2)
+                        """,
+                        user,
+                        item_ids,
+                    )
+                    if soulbound_row:
+                        soulbound_item_id = int(soulbound_row["item_id"])
+                        soulbound_level = soulbound_level_from_xp(soulbound_row["xp"])
+            except Exception:
+                star_map = {}
+                soulbound_item_id = None
+                soulbound_level = 0
+
         if local:
             await self.pool.release(conn)
 
@@ -1359,18 +1430,31 @@ class Bot(commands.AutoShardedBot):
         is_paladin = any(c.in_class_line(Paladin) for c in classes)
         is_reaper = any(c.in_class_line(Reaper) for c in classes)
         is_tank = any(c.in_class_line(Tank) for c in classes)
+        is_bard = any(c.in_class_line(Bard) for c in classes)
+        is_beastmaster = any(c.in_class_line(Beastmaster) for c in classes)
+        is_santas_helper = any(c.in_class_line(SantasHelper) for c in classes)
         is_caster = any(
             c.in_class_line(Mage) or c.in_class_line(Ritualist) for c in classes
         )
 
         for item in items:
-            damage += item["damage"]
-            armor += item["armor"]
+            item_id = int(item_field(item, "id")) if item_field(item, "id") is not None else 0
+            item_soulbound_level = soulbound_level if item_id == soulbound_item_id else 0
+            item_damage, item_armor, _bonus_pct = apply_item_progression_bonus(
+                item_field(item, "damage", 0),
+                item_field(item, "armor", 0),
+                stars=star_map.get(item_id, 0),
+                soulbound_level=item_soulbound_level,
+            )
+            damage += item_damage
+            armor += item_armor
 
             type_ = ItemType.from_string(item["type"])
-            if type_ == ItemType.Spear and is_paragon:
+            if type_ == ItemType.Spear and (is_paragon or is_beastmaster):
                 damage += 5
-            elif (type_ == ItemType.Dagger or type_ == ItemType.Knife) and is_thief:
+            elif (type_ == ItemType.Dagger or type_ == ItemType.Knife) and (
+                is_thief or is_bard
+            ):
                 damage += 5
             elif type_ == ItemType.Sword and is_warrior:
                 damage += 5
@@ -1384,6 +1468,8 @@ class Bot(commands.AutoShardedBot):
                 damage += 5
             elif type_ == ItemType.Scythe and is_reaper:
                 damage += 10
+            elif type_ == ItemType.Mace and is_santas_helper:
+                damage += 5
             elif type_ == ItemType.Shield and is_tank:
                 armor += 7
 

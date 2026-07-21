@@ -72,6 +72,42 @@ ELEMENT_NAMES = {
 }
 
 
+class CoordinateModal(discord.ui.Modal):
+    def __init__(self, customization_view: "ElementSelectView", element_key: str, x: int, y: int):
+        super().__init__(title=f"Position {ELEMENT_NAMES[element_key]}"[:45])
+        self.customization_view = customization_view
+        self.element_key = element_key
+        self.x_input = None
+        if element_key != "badges":
+            self.x_input = discord.ui.TextInput(label="X coordinate (0-800)", default=str(x), max_length=4)
+            self.add_item(self.x_input)
+        self.y_input = discord.ui.TextInput(label="Y coordinate (0-533)", default=str(y), max_length=4)
+        self.add_item(self.y_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            x = int(str(self.x_input.value)) if self.x_input else None
+            y = int(str(self.y_input.value))
+        except ValueError:
+            return await interaction.response.send_message("Coordinates must be whole numbers.", ephemeral=True)
+        if y < 0 or y > 533 or (x is not None and (x < 0 or x > 800)):
+            return await interaction.response.send_message(
+                "Coordinates must remain inside the 800×533 profile canvas.", ephemeral=True
+            )
+        updates = {"badges_y": y} if self.element_key == "badges" else {
+            f"{self.element_key}_x": x,
+            f"{self.element_key}_y": y,
+        }
+        await self.customization_view.update_position(updates)
+        await interaction.response.edit_message(
+            embed=await self.customization_view.build_embed(
+                notice=f"Saved {ELEMENT_NAMES[self.element_key]} at "
+                + (f"X {x}, Y {y}." if x is not None else f"Y {y}."),
+            ),
+            view=self.customization_view,
+        )
+
+
 class ElementSelectView(discord.ui.View):
     def __init__(self, ctx: Context):
         super().__init__(timeout=300)
@@ -90,41 +126,107 @@ class ElementSelectView(discord.ui.View):
             await interaction.response.send_message("Only the command author can use this.", ephemeral=True)
             return
         
-        # Defer the interaction to give us more time for database queries
-        await interaction.response.defer()
-        
         try:
             self.selected_element = select.values[0]
-            element_name = ELEMENT_NAMES[self.selected_element]
-            
-            # Get current positions
-            current_pos = await self.get_current_position(self.selected_element)
-            
-            embed = discord.Embed(
-                title=f"Customize {element_name}",
-                description=f"Current position: **{current_pos}**\n\n"
-                           f"Reply with new coordinates in format: `x y`\n"
-                           f"Example: `150 200`\n\n"
-                           f"Or reply with `default` to reset to default position.",
-                color=0x7289DA
-            )
-            
-            # Use followup since we deferred the interaction
-            await interaction.followup.send(embed=embed)
-            
-            # Wait for user input
-            def check(message):
-                return (message.author.id == self.ctx.author.id and 
-                       message.channel.id == self.ctx.channel.id)
-            
-            try:
-                msg = await self.ctx.bot.wait_for('message', check=check, timeout=60.0)
-                await self.process_coordinates(msg.content.strip(), element_name)
-            except asyncio.TimeoutError:
-                await self.ctx.send("⏰ Timed out waiting for coordinates.")
-            
+            x, y = await self.get_current_coordinates(self.selected_element)
+            await interaction.response.send_modal(CoordinateModal(self, self.selected_element, x, y))
         except Exception as e:
-            await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("This customization panel is not yours.", ephemeral=True)
+            return False
+        return True
+
+    async def _load_positions(self):
+        async with self.ctx.bot.pool.acquire() as conn:
+            raw = await conn.fetchval(
+                'SELECT custom_positions FROM profile WHERE "user"=$1;',
+                self.ctx.author.id,
+            )
+        return json.loads(raw) if raw else {}
+
+    async def get_current_coordinates(self, element_key):
+        positions = await self._load_positions()
+        if element_key == "badges":
+            return 0, int(positions.get("badges_y", DEFAULT_POSITIONS["badges_y"]))
+        return (
+            int(positions.get(f"{element_key}_x", DEFAULT_POSITIONS.get(f"{element_key}_x", 0))),
+            int(positions.get(f"{element_key}_y", DEFAULT_POSITIONS.get(f"{element_key}_y", 0))),
+        )
+
+    async def build_embed(self, notice=None):
+        description = "Select an element to edit it in a validated coordinate form."
+        if notice:
+            description = f"✅ {notice}\n\n{description}"
+        embed = discord.Embed(title="🎨 Profile Layout Editor", description=description, color=0x7289DA)
+        if self.selected_element:
+            x, y = await self.get_current_coordinates(self.selected_element)
+            value = f"Y: **{y}**" if self.selected_element == "badges" else f"X: **{x}** • Y: **{y}**"
+            embed.add_field(name=ELEMENT_NAMES[self.selected_element], value=value, inline=False)
+        embed.add_field(
+            name="Controls",
+            value="The arrow buttons nudge the selected element by 5 pixels. Preview renders your profile in the channel.",
+            inline=False,
+        )
+        return embed
+
+    async def nudge(self, interaction, dx, dy):
+        if not self.selected_element:
+            return await interaction.response.send_message("Select an element first.", ephemeral=True)
+        x, y = await self.get_current_coordinates(self.selected_element)
+        x = max(0, min(800, x + dx))
+        y = max(0, min(533, y + dy))
+        updates = {"badges_y": y} if self.selected_element == "badges" else {
+            f"{self.selected_element}_x": x,
+            f"{self.selected_element}_y": y,
+        }
+        await self.update_position(updates)
+        await interaction.response.edit_message(embed=await self.build_embed(notice="Position nudged."), view=self)
+
+    @discord.ui.button(label="←", style=discord.ButtonStyle.secondary, row=1)
+    async def left(self, interaction, button):
+        await self.nudge(interaction, -5, 0)
+
+    @discord.ui.button(label="↑", style=discord.ButtonStyle.secondary, row=1)
+    async def up(self, interaction, button):
+        await self.nudge(interaction, 0, -5)
+
+    @discord.ui.button(label="↓", style=discord.ButtonStyle.secondary, row=1)
+    async def down(self, interaction, button):
+        await self.nudge(interaction, 0, 5)
+
+    @discord.ui.button(label="→", style=discord.ButtonStyle.secondary, row=1)
+    async def right(self, interaction, button):
+        await self.nudge(interaction, 5, 0)
+
+    @discord.ui.button(label="Reset Element", style=discord.ButtonStyle.secondary, row=2)
+    async def reset_element_button(self, interaction, button):
+        if not self.selected_element:
+            return await interaction.response.send_message("Select an element first.", ephemeral=True)
+        await self.reset_to_default()
+        await interaction.response.edit_message(embed=await self.build_embed(notice="Element reset to default."), view=self)
+
+    @discord.ui.button(label="Preview Profile", style=discord.ButtonStyle.primary, row=2)
+    async def preview_button(self, interaction, button):
+        command = self.ctx.bot.get_command("profile")
+        await interaction.response.defer()
+        await self.ctx.invoke(command)
+
+    @discord.ui.button(label="Reset All", style=discord.ButtonStyle.danger, row=2)
+    async def reset_all_button(self, interaction, button):
+        command = self.ctx.bot.get_command("profilereset")
+        await interaction.response.defer()
+        await self.ctx.invoke(command)
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.secondary, row=2)
+    async def close_button(self, interaction, button):
+        await interaction.response.edit_message(view=None)
+        self.stop()
     
     async def get_current_position(self, element_key: str) -> str:
         """Get current position for an element"""
@@ -250,15 +352,8 @@ class ProfileCustomization(commands.Cog):
         if not profile:
             return await ctx.send(_("You don't have a character yet! Use `{prefix}create` first.").format(prefix=ctx.prefix))
         
-        embed = discord.Embed(
-            title="🎨 Profile Customization",
-            description="Select an element to customize its position on your profile image.\n\n"
-                       "You can move icons and text anywhere on your 800x533 profile canvas.",
-            color=0x7289DA
-        )
-        
         view = ElementSelectView(ctx)
-        await ctx.send(embed=embed, view=view)
+        await ctx.send(embed=await view.build_embed(), view=view)
 
     @commands.command(name="profilereset")
     @locale_doc

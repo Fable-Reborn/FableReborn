@@ -41,6 +41,260 @@ from utils.checks import has_char, has_money, is_gm
 from utils.i18n import _, locale_doc
 
 
+class MarketFilterModal(discord.ui.Modal, title="Filter Player Market"):
+    item_type = discord.ui.TextInput(label="Item type", default="All", max_length=30)
+    minimum_stat = discord.ui.TextInput(label="Minimum damage or armor", default="0", max_length=6)
+    maximum_price = discord.ui.TextInput(label="Maximum price", default="1000000000", max_length=12)
+
+    def __init__(self, market_view: "MarketBrowserView"):
+        super().__init__()
+        self.market_view = market_view
+
+    async def on_submit(self, interaction):
+        try:
+            minimum = float(str(self.minimum_stat.value))
+            maximum = int(str(self.maximum_price.value))
+        except ValueError:
+            return await interaction.response.send_message("Stat and price filters must be numeric.", ephemeral=True)
+        if minimum < 0 or maximum < 0:
+            return await interaction.response.send_message("Filters cannot be negative.", ephemeral=True)
+        await interaction.response.defer()
+        await self.market_view.ctx.invoke(
+            self.market_view.cog.shop,
+            itemtype=str(self.item_type.value).strip() or "All",
+            minstat=minimum,
+            highestprice=maximum,
+        )
+
+
+class MarketItemSelect(discord.ui.Select):
+    def __init__(self, market_view: "MarketBrowserView"):
+        page_items = market_view.page_items()
+        options = [
+            discord.SelectOption(
+                label=f"{item['name']} — ${int(item['price']):,}"[:100],
+                value=str(index + market_view.page_start),
+                description=f"{item['type']} • DMG {item['damage']} • ARM {item['armor']} • ID {item['item']}"[:100],
+                default=(index + market_view.page_start) == market_view.index,
+            )
+            for index, item in enumerate(page_items)
+        ]
+        super().__init__(placeholder="Choose a market item", options=options, row=0)
+        self.market_view = market_view
+
+    async def callback(self, interaction):
+        self.market_view.index = int(self.values[0])
+        self.market_view.rebuild_components()
+        await interaction.response.edit_message(embed=self.market_view.build_embed(), view=self.market_view)
+
+
+class MarketSortSelect(discord.ui.Select):
+    def __init__(self, market_view: "MarketBrowserView"):
+        options = [
+            discord.SelectOption(label="Lowest Price", value="price", default=market_view.sort_mode == "price"),
+            discord.SelectOption(label="Highest Stat", value="stat", default=market_view.sort_mode == "stat"),
+            discord.SelectOption(label="Best Stat per Gold", value="efficiency", default=market_view.sort_mode == "efficiency"),
+            discord.SelectOption(label="Newest Listing", value="newest", default=market_view.sort_mode == "newest"),
+        ]
+        super().__init__(placeholder="Sort market results", options=options, row=1)
+        self.market_view = market_view
+
+    async def callback(self, interaction):
+        self.market_view.apply_sort(self.values[0])
+        self.market_view.rebuild_components()
+        await interaction.response.edit_message(embed=self.market_view.build_embed(), view=self.market_view)
+
+
+class MarketBuyConfirmView(discord.ui.View):
+    def __init__(self, market_view: "MarketBrowserView", item):
+        super().__init__(timeout=45)
+        self.market_view = market_view
+        self.item = item
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.market_view.ctx.author.id:
+            await interaction.response.send_message("This purchase is not yours.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Confirm Purchase", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction, button):
+        await interaction.response.defer()
+        ok, message = await self.market_view.invoke_command(
+            self.market_view.cog.buy,
+            itemid=int(self.item["item"]),
+        )
+        still_listed = await self.market_view.cog.bot.pool.fetchval(
+            "SELECT 1 FROM market WHERE item=$1;", int(self.item["item"])
+        )
+        if not still_listed:
+            self.market_view.items = [
+                item for item in self.market_view.items if int(item["item"]) != int(self.item["item"])
+            ]
+            self.market_view.index = min(self.market_view.index, max(0, len(self.market_view.items) - 1))
+            if self.market_view.items and self.market_view.message:
+                self.market_view.rebuild_components()
+                await self.market_view.message.edit(embed=self.market_view.build_embed(), view=self.market_view)
+        await interaction.edit_original_response(
+            content=("Purchase processed. Check the channel for the result." if ok else message),
+            embed=None,
+            view=None,
+        )
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction, button):
+        await interaction.response.edit_message(content="Purchase cancelled.", embed=None, view=None)
+        self.stop()
+
+
+class MarketBrowserView(discord.ui.View):
+    PAGE_SIZE = 25
+
+    def __init__(self, cog, ctx, items):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.ctx = ctx
+        self.items = [dict(item) for item in items]
+        self.index = 0
+        self.sort_mode = "price"
+        self.page_start = 0
+        self.message = None
+        self.apply_sort("price")
+        self.rebuild_components()
+
+    def current_item(self):
+        return self.items[self.index] if self.items else None
+
+    def page_items(self):
+        self.page_start = (self.index // self.PAGE_SIZE) * self.PAGE_SIZE
+        return self.items[self.page_start:self.page_start + self.PAGE_SIZE]
+
+    def apply_sort(self, mode):
+        self.sort_mode = mode
+        if mode == "stat":
+            self.items.sort(key=lambda item: (-(float(item["damage"]) + float(item["armor"])), int(item["price"])))
+        elif mode == "efficiency":
+            self.items.sort(key=lambda item: -(float(item["damage"] + item["armor"]) / max(1, int(item["price"]))))
+        elif mode == "newest":
+            self.items.sort(key=lambda item: -int(item.get("id", item["item"])))
+        else:
+            self.items.sort(key=lambda item: (int(item["price"]), -(float(item["damage"]) + float(item["armor"]))))
+        self.index = 0
+
+    def build_embed(self):
+        item = self.current_item()
+        if not item:
+            return discord.Embed(title="Player Market", description="No listings remain.", color=discord.Color.blurple())
+        tax = round(int(item["price"]) * 0.05)
+        total = int(item["price"]) + tax
+        money = int(self.ctx.character_data.get("money", 0) or 0)
+        embed = discord.Embed(
+            title=f"🏪 {item['name']}",
+            description=f"Listing **{self.index + 1}/{len(self.items)}** • Item ID `{item['item']}`",
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(name="Type", value=str(item["type"]), inline=True)
+        embed.add_field(name="Damage", value=str(item["damage"]), inline=True)
+        embed.add_field(name="Armor", value=str(item["armor"]), inline=True)
+        embed.add_field(name="Price", value=f"${int(item['price']):,}", inline=True)
+        embed.add_field(name="Tax", value=f"${tax:,}", inline=True)
+        embed.add_field(name="Total", value=f"${total:,}", inline=True)
+        embed.add_field(
+            name="Money Preview",
+            value=f"Current: **${money:,}**\nAfter purchase: **${money - total:,}**",
+            inline=False,
+        )
+        embed.set_footer(text=f"Sorted by {self.sort_mode}. Filters open a new result set.")
+        return embed
+
+    def rebuild_components(self):
+        self.clear_items()
+        if self.items:
+            self.add_item(MarketItemSelect(self))
+            self.add_item(MarketSortSelect(self))
+        for label, style, callback, disabled in [
+            ("Previous", discord.ButtonStyle.secondary, self.previous, self.index <= 0),
+            ("Next", discord.ButtonStyle.secondary, self.next, self.index >= len(self.items) - 1),
+            ("Filters", discord.ButtonStyle.primary, self.filters, False),
+            ("Compare", discord.ButtonStyle.primary, self.compare, not self.items),
+            ("Buy", discord.ButtonStyle.success, self.buy_selected, not self.items),
+            ("Close", discord.ButtonStyle.danger, self.close, False),
+        ]:
+            button = discord.ui.Button(label=label, style=style, disabled=disabled, row=2 if label in {"Previous", "Next"} else 3)
+            button.callback = callback
+            self.add_item(button)
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("This market browser is not yours.", ephemeral=True)
+            return False
+        return True
+
+    async def invoke_command(self, command, *args, **kwargs):
+        previous = self.ctx.command
+        self.ctx.command = command
+        try:
+            try:
+                allowed = await command.can_run(self.ctx)
+            except commands.CommandOnCooldown as exc:
+                return False, f"That action is ready again in {max(1, int(exc.retry_after))} second(s)."
+            except commands.CheckFailure as exc:
+                return False, str(exc).strip() or "You cannot use that market action."
+            if not allowed:
+                return False, "You cannot use that market action."
+            await command.callback(command.cog, self.ctx, *args, **kwargs)
+            return True, "Market action completed."
+        except Exception as exc:
+            return False, f"Market action failed: {exc}"
+        finally:
+            self.ctx.command = previous
+
+    async def previous(self, interaction):
+        self.index = max(0, self.index - 1)
+        self.rebuild_components()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def next(self, interaction):
+        self.index = min(len(self.items) - 1, self.index + 1)
+        self.rebuild_components()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def filters(self, interaction):
+        await interaction.response.send_modal(MarketFilterModal(self))
+
+    async def compare(self, interaction):
+        item = self.current_item()
+        equipped = await self.cog.bot.pool.fetchrow(
+            """
+            SELECT ai.* FROM allitems ai JOIN inventory i ON i.item=ai.id
+            WHERE ai.owner=$1 AND i.equipped=TRUE
+            ORDER BY (ai.damage+ai.armor) DESC LIMIT 1;
+            """,
+            self.ctx.author.id,
+        )
+        stat = float(item["damage"]) + float(item["armor"])
+        text = f"Selected total stat: **{stat:g}**"
+        if equipped:
+            equipped_stat = float(equipped["damage"]) + float(equipped["armor"])
+            text += f"\nEquipped **{equipped['name']}**: **{equipped_stat:g}**\nDifference: **{stat - equipped_stat:+g}**"
+        await interaction.response.send_message(text, ephemeral=True)
+
+    async def buy_selected(self, interaction):
+        item = self.current_item()
+        tax = round(int(item["price"]) * 0.05)
+        embed = discord.Embed(
+            title="Confirm Market Purchase",
+            description=f"Buy **{item['name']}** for **${int(item['price']) + tax:,}** including tax?",
+            color=discord.Color.gold(),
+        )
+        await interaction.response.send_message(embed=embed, view=MarketBuyConfirmView(self, item), ephemeral=True)
+
+    async def close(self, interaction):
+        await interaction.response.edit_message(view=None)
+        self.stop()
+
+
 class Trading(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -624,16 +878,17 @@ class Trading(commands.Cog):
                 tax = 0
             else:
                 tax = round(price * 0.05)
-            if ctx.character_data["money"] < tax:
-                return await ctx.send(
-                    _("You cannot afford the tax of 5% (${amount}).").format(amount=tax)
-                )
             if tax:
-                await conn.execute(
-                    'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
+                deducted = await conn.fetchval(
+                    'UPDATE profile SET "money"="money"-$1 '
+                    'WHERE "user"=$2 AND "money">=$1 RETURNING "money";',
                     tax,
                     ctx.author.id,
                 )
+                if deducted is None:
+                    return await ctx.send(
+                        _("You cannot afford the tax of 5% (${amount}).").format(amount=tax)
+                    )
                 await self.bot.log_transaction(
                     ctx,
                     from_=ctx.author.id,
@@ -677,81 +932,97 @@ class Trading(commands.Cog):
             Buying your own items is impossible. You can find the item's ID in `{prefix}shop`."""
         )
         async with self.bot.pool.acquire() as conn:
-            item = await conn.fetchrow(
-                'SELECT *, m."id" AS "offer" FROM market m JOIN allitems ai ON'
-                ' (m."item"=ai."id") WHERE ai."id"=$1;',
-                itemid,
-            )
-            if not item:
-                await ctx.send(
-                    _("There is no item in the shop with the ID: {itemid}").format(
-                        itemid=itemid
-                    )
+            async with conn.transaction():
+                # Lock the market listing so two concurrent buyers (or a
+                # buy racing a remove) cannot both proceed on the same offer.
+                item = await conn.fetchrow(
+                    'SELECT *, m."id" AS "offer" FROM market m JOIN allitems ai ON'
+                    ' (m."item"=ai."id") WHERE ai."id"=$1 FOR UPDATE OF m;',
+                    itemid,
                 )
-                return False
-            if item["owner"] == ctx.author.id:
-                await ctx.send(_("You may not buy your own items."))
-                return False
-            if await self.bot.get_city_buildings(ctx.character_data["guild"]):
-                tax = 0
-            else:
-                tax = round(item["price"] * 0.05)
-            if ctx.character_data["money"] < item["price"] + tax:
-                await ctx.send(_("You're too poor to buy this item."))
-                return False
-            await conn.execute(
-                "DELETE FROM market m USING allitems ai WHERE m.item=ai.id AND ai.id=$1"
-                " RETURNING *;",
-                itemid,
-            )
-            await conn.execute(
-                "UPDATE allitems SET owner=$1 WHERE id=$2;",
-                ctx.author.id,
-                item["id"],
-            )
-            await conn.execute(
-                'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
-                item["price"],
-                item["owner"],
-            )
-            await conn.execute(
-                'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
-                item["price"] + tax,
-                ctx.author.id,
-            )
-            await conn.execute(
-                "INSERT INTO inventory (item, equipped) VALUES ($1, $2);",
-                item["id"],
-                False,
-            )
-            if tax:
+                if not item:
+                    await ctx.send(
+                        _("There is no item in the shop with the ID: {itemid}").format(
+                            itemid=itemid
+                        )
+                    )
+                    return False
+                if item["owner"] == ctx.author.id:
+                    await ctx.send(_("You may not buy your own items."))
+                    return False
+                if await self.bot.get_city_buildings(ctx.character_data["guild"]):
+                    tax = 0
+                else:
+                    tax = round(item["price"] * 0.05)
+                # Fresh, locked read of the buyer's balance; the cached value can
+                # be stale under concurrent buys and allow overspending.
+                buyer_money = await conn.fetchval(
+                    'SELECT money FROM profile WHERE "user"=$1 FOR UPDATE;',
+                    ctx.author.id,
+                )
+                if buyer_money is None or buyer_money < item["price"] + tax:
+                    await ctx.send(_("You're too poor to buy this item."))
+                    return False
+                # Authoritatively remove the listing; if it is already gone the
+                # sale is aborted instead of duplicating the item.
+                removed = await conn.fetchrow(
+                    "DELETE FROM market m USING allitems ai WHERE m.item=ai.id AND"
+                    " ai.id=$1 RETURNING m.id;",
+                    itemid,
+                )
+                if removed is None:
+                    await ctx.send(_("This item is no longer available."))
+                    return False
+                await conn.execute(
+                    "UPDATE allitems SET owner=$1 WHERE id=$2;",
+                    ctx.author.id,
+                    item["id"],
+                )
+                await conn.execute(
+                    'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                    item["price"],
+                    item["owner"],
+                )
+                await conn.execute(
+                    'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
+                    item["price"] + tax,
+                    ctx.author.id,
+                )
+                await conn.execute(
+                    "INSERT INTO inventory (item, equipped) VALUES ($1, $2);",
+                    item["id"],
+                    False,
+                )
+                if tax:
+                    await self.bot.log_transaction(
+                        ctx,
+                        from_=ctx.author.id,
+                        to=2,
+                        subject="shop buy - bot give",
+                        data={"Gold": item["price"] + tax},
+                        conn=conn,
+                    )
                 await self.bot.log_transaction(
                     ctx,
                     from_=ctx.author.id,
-                    to=2,
-                    subject="shop buy - bot give",
-                    data={"Gold": item["price"] + tax},
+                    to=item["owner"],
+                    subject="shop buy",
+                    data={"Gold": item["price"]},
                     conn=conn,
                 )
-            await self.bot.log_transaction(
-                ctx,
-                from_=ctx.author.id,
-                to=item["owner"],
-                subject="shop buy",
-                data={"Gold": item["price"]},
-                conn=conn,
-            )
-            await self.bot.log_transaction(
-                ctx,
-                from_=item["owner"],
-                to=ctx.author,
-                subject="shop",
-                data=item,
-                conn=conn,
-            )
-            profile_cog = self.bot.get_cog("Profile")
-            if profile_cog is not None:
-                await profile_cog.sanitize_presets_for_user(item["owner"], conn=conn)
+                await self.bot.log_transaction(
+                    ctx,
+                    from_=item["owner"],
+                    to=ctx.author,
+                    subject="shop",
+                    data=item,
+                    conn=conn,
+                )
+                profile_cog = self.bot.get_cog("Profile")
+                if profile_cog is not None:
+                    await profile_cog.sanitize_presets_for_user(
+                        item["owner"], conn=conn
+                    )
         await ctx.send(
             _(
                 "Successfully bought item `{id}`. Use `{prefix}inventory` to view your"
@@ -849,30 +1120,41 @@ class Trading(commands.Cog):
             You can check your items on the shop with `{prefix}pending`. Paid tax money will not be returned."""
         )
         async with self.bot.pool.acquire() as conn:
-            item = await conn.fetchrow(
-                "SELECT * FROM market m JOIN allitems ai ON (m.item=ai.id) WHERE"
-                " ai.id=$1 AND ai.owner=$2;",
-                itemid,
-                ctx.author.id,
-            )
-            if not item:
-                return await ctx.send(
-                    _(
-                        "You don't have an item of yours in the shop with the ID"
-                        " `{itemid}`."
-                    ).format(itemid=itemid)
+            async with conn.transaction():
+                item = await conn.fetchrow(
+                    "SELECT * FROM market m JOIN allitems ai ON (m.item=ai.id) WHERE"
+                    " ai.id=$1 AND ai.owner=$2 FOR UPDATE OF m;",
+                    itemid,
+                    ctx.author.id,
                 )
-            await conn.execute(
-                "DELETE FROM market m USING allitems ai WHERE m.item=ai.id AND ai.id=$1"
-                " AND ai.owner=$2;",
-                itemid,
-                ctx.author.id,
-            )
-            await conn.execute(
-                "INSERT INTO inventory (item, equipped) VALUES ($1, $2);",
-                itemid,
-                False,
-            )
+                if not item:
+                    return await ctx.send(
+                        _(
+                            "You don't have an item of yours in the shop with the ID"
+                            " `{itemid}`."
+                        ).format(itemid=itemid)
+                    )
+                # Only return the item to the inventory if this call is the one
+                # that actually removed the listing (prevents a buy+remove race
+                # from creating a duplicate inventory row).
+                removed = await conn.fetchrow(
+                    "DELETE FROM market m USING allitems ai WHERE m.item=ai.id AND"
+                    " ai.id=$1 AND ai.owner=$2 RETURNING m.id;",
+                    itemid,
+                    ctx.author.id,
+                )
+                if removed is None:
+                    return await ctx.send(
+                        _(
+                            "You don't have an item of yours in the shop with the ID"
+                            " `{itemid}`."
+                        ).format(itemid=itemid)
+                    )
+                await conn.execute(
+                    "INSERT INTO inventory (item, equipped) VALUES ($1, $2);",
+                    itemid,
+                    False,
+                )
         await ctx.send(
             _(
                 "Successfully removed item `{itemid}` from the shop and put it in your"
@@ -1038,35 +1320,8 @@ class Trading(commands.Cog):
         if not items:
             return await ctx.send(_("No results."))
 
-        entries = [
-            (
-                discord.Embed(
-                    title=_("Fable Shop"),
-                    description=_("Use `{prefix}buy {item}` to buy this.").format(
-                        prefix=ctx.clean_prefix, item=item["item"]
-                    ),
-                    colour=discord.Colour.blurple(),
-                )
-                .add_field(name=_("Name"), value=item["name"])
-                .add_field(name=_("Type"), value=item["type"])
-                .add_field(name=_("Damage"), value=item["damage"])
-                .add_field(name=_("Armor"), value=item["armor"])
-                .add_field(name=_("Value"), value=f"${item['value']}")
-                .add_field(
-                    name=_("Price"),
-                    value=f"${item['price']} (+${round(item['price'] * 0.05)} (5%) tax)",
-                )
-                .set_footer(
-                    text=_("Item {num} of {total}").format(
-                        num=idx + 1, total=len(items)
-                    )
-                ),
-                item["item"],
-            )
-            for idx, item in enumerate(items)
-        ]
-
-        await self.bot.paginator.ShopPaginator(entries=entries).paginate(ctx)
+        view = MarketBrowserView(self, ctx, items)
+        view.message = await ctx.send(embed=view.build_embed(), view=view)
 
     @has_char()
     @user_cooldown(180)
@@ -1249,12 +1504,34 @@ class Trading(commands.Cog):
                         timeout=6,
                 ):
                     return await ctx.send(_("Cancelled."))
-            if buildings := await self.bot.get_city_buildings(
-                    ctx.character_data["guild"]
-            ):
-                value = int(value * (1 + buildings["trade_building"] / 2))
+            buildings = await self.bot.get_city_buildings(
+                ctx.character_data["guild"]
+            )
             async with conn.transaction():
-                await self.bot.delete_items([i["id"] for i in allitems], conn=conn)
+                # Re-select the items WITH A LOCK inside the transaction and
+                # compute the payout from the rows we actually delete. This stops
+                # concurrent invocations from being paid multiple times for the
+                # same item (the previous code paid `value` unconditionally,
+                # regardless of whether the delete removed anything).
+                locked = await conn.fetch(
+                    "SELECT ai.id, ai.value FROM inventory i JOIN allitems ai ON"
+                    " (i.item=ai.id) WHERE ai.id=ANY($1) AND ai.owner=$2"
+                    " FOR UPDATE OF ai;",
+                    itemids,
+                    ctx.author.id,
+                )
+                if not locked:
+                    await self.bot.reset_cooldown(ctx)
+                    return await ctx.send(
+                        _("You don't own any items with the IDs: {itemids}").format(
+                            itemids=", ".join([str(itemid) for itemid in itemids])
+                        )
+                    )
+                amount = len(locked)
+                value = sum(i["value"] for i in locked)
+                if buildings:
+                    value = int(value * (1 + buildings["trade_building"] / 2))
+                await self.bot.delete_items([i["id"] for i in locked], conn=conn)
                 await conn.execute(
                     'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
                     value,

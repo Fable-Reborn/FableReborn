@@ -7,12 +7,14 @@ import datetime
 
 from ..core.battle import Battle
 from ..core.team import Team
+from ..extensions.specs import SpecExtension
 
 class TowerBattle(Battle):
     """Battle tower battle implementation"""
-    
+
     def __init__(self, ctx, teams, **kwargs):
         super().__init__(ctx, teams, **kwargs)
+        self.spec_ext = SpecExtension()
         self.level = kwargs.get("level", 1)
         self.level_data = kwargs.get("level_data", {})
         self.current_turn = 0
@@ -111,6 +113,11 @@ class TowerBattle(Battle):
         await self.add_to_log(intro_message, force_new_action=True)
         for opening_message in await self.trigger_ascension_openings():
             await self.add_to_log(opening_message, force_new_action=True)
+
+        # Spec hook: opening party effects (Bulwark shields, Warchanter damage)
+        if self.config.get("class_buffs", True):
+            for opening_message in self.spec_ext.battle_start_effects(self.player_team):
+                await self.add_to_log(opening_message, force_new_action=True)
         
         # Create and send initial embed
         embed = await self.create_battle_embed()
@@ -280,6 +287,22 @@ class TowerBattle(Battle):
                 )
                 ignore_reflection_this_hit = True
 
+                fireball_spec_messages = []
+                if self.config.get("class_buffs", True):
+                    damage, fireball_spec_messages = self.spec_ext.modify_outgoing_damage(
+                        current_combatant,
+                        target,
+                        damage,
+                        include_overload=False,
+                    )
+
+                # Overload: the Fireball detonates any banked Arcane charges.
+                overload_messages = []
+                if self.config.get("class_buffs", True):
+                    damage, overload_messages = self.spec_ext.consume_overload_fireball(
+                        current_combatant, damage
+                    )
+
                 damage, guard_messages, guard_source = self.apply_pet_owner_guard(
                     current_combatant,
                     target,
@@ -287,6 +310,18 @@ class TowerBattle(Battle):
                 )
                 target.take_damage(damage)
                 message = f"{current_combatant.name} casts Fireball! {target.name} takes **{self.format_number(damage)} HP** damage."
+                if fireball_spec_messages:
+                    message += "\n" + "\n".join(fireball_spec_messages)
+                if overload_messages:
+                    message += "\n" + "\n".join(overload_messages)
+                if self.config.get("class_buffs", True):
+                    spec_after_messages = self.spec_ext.after_attack_damage(
+                        current_combatant,
+                        target,
+                        self,
+                    )
+                    if spec_after_messages:
+                        message += "\n" + "\n".join(spec_after_messages)
                 if guard_messages:
                     message += "\n" + "\n".join(guard_messages)
                 used_fireball = True
@@ -296,6 +331,14 @@ class TowerBattle(Battle):
                 
                 # Start with base damage
                 raw_damage = current_combatant.damage
+
+                # Spec hook A: attacker-side bonuses (may set one-hit flags on target)
+                spec_attack_messages = []
+                if self.config.get("class_buffs", True):
+                    raw_damage, spec_attack_messages = self.spec_ext.modify_outgoing_damage(
+                        current_combatant, target, raw_damage
+                    )
+
                 outcome = self.resolve_pet_attack_outcome(
                     current_combatant,
                     target,
@@ -315,8 +358,40 @@ class TowerBattle(Battle):
                     target,
                     damage,
                 )
+
+                # Spec hook B: defender-side avoidance and mitigation
+                spec_defense_messages = []
+                if self.config.get("class_buffs", True):
+                    damage, spec_defense_messages = self.spec_ext.modify_incoming_damage(
+                        current_combatant,
+                        target,
+                        damage,
+                        self.get_team_for_combatant(target),
+                    )
+
                 target.take_damage(damage)
                 message = f"{current_combatant.name} attacks! {target.name} takes **{self.format_number(damage)} HP** damage."
+                if getattr(target, "bloodpact_triggered", False):
+                    target.bloodpact_triggered = False
+                    message += f"\n🩸 **{target.name}**'s Blood Pact shatters — they cling to life!"
+                if spec_attack_messages:
+                    message += "\n" + "\n".join(spec_attack_messages)
+                if spec_defense_messages:
+                    message += "\n" + "\n".join(spec_defense_messages)
+
+                # Spec hook D: on-damage triggers (Second Wind)
+                if self.config.get("class_buffs", True):
+                    spec_after_messages = self.spec_ext.after_attack_damage(
+                        current_combatant,
+                        target,
+                        self,
+                    )
+                    if spec_after_messages:
+                        message += "\n" + "\n".join(spec_after_messages)
+                    spec_trigger_messages = self.spec_ext.post_damage_triggers(target)
+                    if spec_trigger_messages:
+                        message += "\n" + "\n".join(spec_trigger_messages)
+
                 if guard_messages:
                     message += "\n" + "\n".join(guard_messages)
 
@@ -429,8 +504,12 @@ class TowerBattle(Battle):
                 # Calculate reflection as percentage of raw damage, capped at defender's armor
                 reflection_base = min(raw_damage, target.armor)
                 reflected = reflection_base * Decimal(str(reflection_value))
-                current_combatant.take_damage(reflected)
-                message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                reflected, plate_message = self.apply_reflection_plate(target, reflected, reflection_value)
+                if reflected > 0:
+                    current_combatant.take_damage(reflected)
+                    message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                if plate_message:
+                    message += f"\n{plate_message}"
                 
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
@@ -503,11 +582,32 @@ class TowerBattle(Battle):
         if current_combatant.is_pet and current_combatant.is_alive():
             for turn_msg in self.process_pet_turn_effects(current_combatant):
                 await self.add_to_log(turn_msg, force_new_action=True)
-        
+
+        # Spec hook E: turn-end party heal (Winterlight's Gift of Cheer)
+        if (
+            self.config.get("class_buffs", True)
+            and current_combatant in self.player_team.combatants
+        ):
+            for heal_msg in self.spec_ext.turn_end_party_heal(current_combatant, self.player_team):
+                await self.add_to_log(heal_msg, force_new_action=True)
+            bard_grade = getattr(current_combatant, "bard_evolution", None)
+            if bard_grade and not getattr(current_combatant, "is_pet", False) and current_combatant.is_alive():
+                healed_any = False
+                heal_pct = Decimal(str(0.005 * int(bard_grade)))
+                for member in self.player_team.combatants:
+                    if member.is_alive() and member.hp < member.max_hp:
+                        member.heal(Decimal(str(member.max_hp)) * heal_pct)
+                        healed_any = True
+                if healed_any:
+                    await self.add_to_log(
+                        f"🎶 **{current_combatant.name}**'s bardic refrain restores the party!",
+                        force_new_action=True,
+                    )
+
         # Update the battle display
         await self.update_display()
         await asyncio.sleep(1)
-        
+
         return True
     
     async def create_battle_embed(self):
@@ -551,6 +651,18 @@ class TowerBattle(Battle):
             if combatant.damage_reflection > 0:
                 reflection_percent = float(combatant.damage_reflection) * 100
                 field_value += f"\nDamage Reflection: {reflection_percent:.1f}%"
+                if self._uses_reflection_plate(combatant):
+                    plate_max = Decimal(str(getattr(combatant, "reflection_plate_max", 0) or 0))
+                    if plate_max <= 0:
+                        plate_max = Decimal(str(combatant.max_hp)) * Decimal(str(combatant.damage_reflection))
+                    plate_left = Decimal(str(getattr(combatant, "reflection_plate", plate_max) or 0))
+                    if getattr(combatant, "reflection_plate_broken", False):
+                        field_value += "\nReflect Plate: broken"
+                    else:
+                        field_value += (
+                            f"\nReflect Plate: {self.format_number(plate_left)}/"
+                            f"{self.format_number(plate_max)}"
+                        )
                 
             embed.add_field(name=field_name, value=field_value, inline=False)
         
@@ -684,4 +796,3 @@ class TowerBattle(Battle):
             return True
                 
         return False
-

@@ -8,6 +8,100 @@ import random
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 
 
+class AmuletTierSelect(ui.Select):
+    def __init__(self, menu: "AmuletTypeView"):
+        self.menu = menu
+        options = []
+        for tier in range(1, 11):
+            required_level = menu.cog.TIER_LEVELS.get(tier, 999)
+            recipe = menu.cog.AMULET_RECIPES.get(menu.current_type, {}).get(tier, {})
+            if not recipe:
+                continue
+            missing = sum(
+                max(0, int(amount) - int(menu.resources.get(resource, 0)))
+                for resource, amount in recipe.items()
+            )
+            if menu.player_level < required_level:
+                description = f"Locked until level {required_level}"
+                emoji = "🔒"
+            elif missing:
+                description = f"Missing {missing} total materials"
+                emoji = "🟡"
+            else:
+                description = "Ready to craft"
+                emoji = "✅"
+            options.append(
+                discord.SelectOption(
+                    label=f"Tier {tier}",
+                    value=str(tier),
+                    description=description[:100],
+                    emoji=emoji,
+                    default=tier == menu.selected_tier,
+                )
+            )
+        super().__init__(placeholder="Choose an amulet tier", options=options, row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.menu.selected_tier = int(self.values[0])
+        self.menu.current_page = (self.menu.selected_tier - 1) // self.menu.tiers_per_page
+        self.menu.rebuild_dynamic_components()
+        await interaction.response.edit_message(embed=self.menu.create_tier_embed(), view=self.menu)
+
+
+class AmuletSellModal(ui.Modal, title="Sell Crafting Materials"):
+    resource = ui.TextInput(
+        label="Resource name",
+        placeholder="Example: fire gems",
+        max_length=80,
+    )
+    amount = ui.TextInput(label="Amount", placeholder="Example: 5", max_length=8)
+
+    def __init__(self, menu: "AmuletTypeView"):
+        super().__init__()
+        self.menu = menu
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            parsed_amount = int(str(self.amount.value))
+        except ValueError:
+            return await interaction.response.send_message("Amount must be a whole number.", ephemeral=True)
+        if parsed_amount <= 0:
+            return await interaction.response.send_message("Amount must be greater than zero.", ephemeral=True)
+        command = self.menu.ctx.bot.get_command("amulet sell")
+        if command is None:
+            return await interaction.response.send_message("Material selling is unavailable.", ephemeral=True)
+        await interaction.response.defer()
+        previous = self.menu.ctx.command
+        self.menu.ctx.command = command
+        try:
+            try:
+                allowed = await command.can_run(self.menu.ctx)
+            except commands.CommandOnCooldown as exc:
+                return await interaction.followup.send(
+                    f"Material selling is ready again in {max(1, int(exc.retry_after))} second(s).",
+                    ephemeral=True,
+                )
+            except commands.CheckFailure as exc:
+                return await interaction.followup.send(
+                    str(exc).strip() or "You cannot sell materials right now.",
+                    ephemeral=True,
+                )
+            if not allowed:
+                return await interaction.followup.send("You cannot sell materials right now.", ephemeral=True)
+            await command.callback(
+                command.cog,
+                self.menu.ctx,
+                str(self.resource.value),
+                str(parsed_amount),
+            )
+        finally:
+            self.menu.ctx.command = previous
+        self.menu.resources = await self.menu.cog.get_player_resources(self.menu.ctx.author.id)
+        self.menu.rebuild_dynamic_components()
+        if interaction.message:
+            await interaction.message.edit(embed=self.menu.create_tier_embed(), view=self.menu)
+
+
 class AmuletTypeView(ui.View):
     """Interactive view for selecting amulet types and viewing recipes"""
     
@@ -19,8 +113,15 @@ class AmuletTypeView(ui.View):
         self.max_tier = max_tier
         self.resources = resources
         self.current_type = None
+        self.selected_tier = None
         self.current_page = 0
         self.tiers_per_page = 3
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("This amulet menu is not yours.", ephemeral=True)
+            return False
+        return True
         
     @ui.select(
         placeholder="Choose an amulet type to view recipes...",
@@ -37,10 +138,21 @@ class AmuletTypeView(ui.View):
             return
             
         self.current_type = select.values[0]
-        self.current_page = 0  # Reset to first page
+        ready_tiers = []
+        unlocked_tiers = []
+        for tier in range(1, 11):
+            required_level = self.cog.TIER_LEVELS.get(tier, 999)
+            if self.player_level < required_level:
+                continue
+            unlocked_tiers.append(tier)
+            recipe = self.cog.AMULET_RECIPES.get(self.current_type, {}).get(tier, {})
+            if recipe and all(self.resources.get(resource, 0) >= amount for resource, amount in recipe.items()):
+                ready_tiers.append(tier)
+        self.selected_tier = max(ready_tiers or unlocked_tiers or [1])
+        self.current_page = (self.selected_tier - 1) // self.tiers_per_page
         
         # Update the view with pagination buttons
-        self.update_pagination_buttons()
+        self.rebuild_dynamic_components()
         
         embed = self.create_tier_embed()
         await interaction.response.edit_message(embed=embed, view=self)
@@ -91,8 +203,9 @@ class AmuletTypeView(ui.View):
             
             recipe_text = "\n".join(recipe_items)
             
+            selected_marker = "▶ " if tier == self.selected_tier else ""
             tier_info = (
-                f"**Tier {tier}** (Level {required_level}+)\n"
+                f"{selected_marker}**Tier {tier}** (Level {required_level}+)\n"
                 f"*HP+{stats['health']}, ATK+{stats['attack']}, DEF+{stats['defense']}*\n"
                 f"{recipe_text}"
             )
@@ -148,8 +261,30 @@ class AmuletTypeView(ui.View):
         # Update button states
         self.previous_page.disabled = (self.current_page <= 0)
         self.next_page.disabled = (self.current_page >= total_pages - 1)
+        can_craft = self.can_craft_selected()
+        self.craft_button.disabled = not can_craft
+        self.craft_equip_button.disabled = not can_craft
+
+    def can_craft_selected(self):
+        if not self.current_type or not self.selected_tier:
+            return False
+        required_level = self.cog.TIER_LEVELS.get(self.selected_tier, 999)
+        recipe = self.cog.AMULET_RECIPES.get(self.current_type, {}).get(self.selected_tier, {})
+        return bool(
+            recipe
+            and self.player_level >= required_level
+            and all(self.resources.get(resource, 0) >= amount for resource, amount in recipe.items())
+        )
+
+    def rebuild_dynamic_components(self):
+        for child in list(self.children):
+            if isinstance(child, AmuletTierSelect):
+                self.remove_item(child)
+        if self.current_type:
+            self.add_item(AmuletTierSelect(self))
+        self.update_pagination_buttons()
     
-    @ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray, disabled=True, row=1)
+    @ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray, disabled=True, row=2)
     async def previous_page(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user != self.ctx.author:
             await interaction.response.send_message("Only the command user can interact with this menu!", ephemeral=True)
@@ -157,13 +292,13 @@ class AmuletTypeView(ui.View):
         
         if self.current_page > 0:
             self.current_page -= 1
-            self.update_pagination_buttons()
+            self.rebuild_dynamic_components()
             embed = self.create_tier_embed()
             await interaction.response.edit_message(embed=embed, view=self)
         else:
             await interaction.response.defer()
     
-    @ui.button(label="Next ▶️", style=discord.ButtonStyle.gray, disabled=True, row=1)
+    @ui.button(label="Next ▶️", style=discord.ButtonStyle.gray, disabled=True, row=2)
     async def next_page(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user != self.ctx.author:
             await interaction.response.send_message("Only the command user can interact with this menu!", ephemeral=True)
@@ -174,13 +309,76 @@ class AmuletTypeView(ui.View):
         
         if self.current_page < total_pages - 1:
             self.current_page += 1
-            self.update_pagination_buttons()
+            self.rebuild_dynamic_components()
             embed = self.create_tier_embed()
             await interaction.response.edit_message(embed=embed, view=self)
         else:
             await interaction.response.defer()
     
-    @ui.button(label="❌ Close", style=discord.ButtonStyle.red, row=1)
+    async def craft_selected(self, interaction: discord.Interaction, *, equip: bool):
+        if not self.can_craft_selected():
+            return await interaction.response.send_message(
+                "That amulet is locked or you no longer have the required materials.",
+                ephemeral=True,
+            )
+        await interaction.response.defer(ephemeral=True)
+        before_id = await self.cog.bot.pool.fetchval(
+            "SELECT COALESCE(MAX(id), 0) FROM amulets WHERE user_id=$1;",
+            self.ctx.author.id,
+        )
+        await self.ctx.invoke(
+            self.cog.craft_amulet,
+            type_=self.current_type,
+            tier=int(self.selected_tier),
+        )
+        crafted = await self.cog.bot.pool.fetchrow(
+            "SELECT * FROM amulets WHERE user_id=$1 AND id>$2 ORDER BY id DESC LIMIT 1;",
+            self.ctx.author.id,
+            int(before_id or 0),
+        )
+        if equip and crafted:
+            async with self.cog.bot.pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute("UPDATE amulets SET equipped=FALSE WHERE user_id=$1;", self.ctx.author.id)
+                    await conn.execute(
+                        "UPDATE amulets SET equipped=TRUE WHERE id=$1 AND user_id=$2;",
+                        crafted["id"],
+                        self.ctx.author.id,
+                    )
+            await interaction.followup.send(
+                f"Equipped your new Tier {crafted['tier']} {str(crafted['type']).title()} amulet.",
+                ephemeral=True,
+            )
+        self.resources = await self.cog.get_player_resources(self.ctx.author.id)
+        self.rebuild_dynamic_components()
+        if interaction.message:
+            await interaction.message.edit(embed=self.create_tier_embed(), view=self)
+
+    @ui.button(label="Craft", style=discord.ButtonStyle.green, disabled=True, row=3)
+    async def craft_button(self, interaction: discord.Interaction, button: ui.Button):
+        await self.craft_selected(interaction, equip=False)
+
+    @ui.button(label="Craft & Equip", style=discord.ButtonStyle.green, disabled=True, row=3)
+    async def craft_equip_button(self, interaction: discord.Interaction, button: ui.Button):
+        await self.craft_selected(interaction, equip=True)
+
+    @ui.button(label="Resources", style=discord.ButtonStyle.blurple, row=4)
+    async def resources_button(self, interaction: discord.Interaction, button: ui.Button):
+        command = self.ctx.bot.get_command("amulet resources")
+        await interaction.response.defer()
+        await self.ctx.invoke(command)
+
+    @ui.button(label="My Amulets", style=discord.ButtonStyle.blurple, row=4)
+    async def owned_button(self, interaction: discord.Interaction, button: ui.Button):
+        command = self.ctx.bot.get_command("inventory")
+        await interaction.response.defer()
+        await self.ctx.invoke(command)
+
+    @ui.button(label="Sell Materials", style=discord.ButtonStyle.secondary, row=4)
+    async def sell_button(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(AmuletSellModal(self))
+
+    @ui.button(label="❌ Close", style=discord.ButtonStyle.red, row=4)
     async def close_button(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user != self.ctx.author:
             await interaction.response.send_message("Only the command user can close this menu!", ephemeral=True)
@@ -671,7 +869,7 @@ class AmuletCrafting(commands.Cog):
     @has_char()
     async def amulet(self, ctx):
         """Base command for amulet system"""
-        await ctx.send("Available commands: `available`, `craft`, `equip`, `unequip`, `recipe`, `resources`, `help`, `sell`")
+        await ctx.invoke(self.view_available)
 
     @amulet.command(name="available")
     @has_char()
@@ -888,6 +1086,13 @@ class AmuletCrafting(commands.Cog):
                     """INSERT INTO amulets (user_id, type, tier, hp, attack, defense)
                     VALUES ($1, $2, $3, $4, $5, $6);""",
                     ctx.author.id, type_, tier, health, attack, defense
+                )
+
+                self.bot.dispatch(
+                    "amulet_crafted",
+                    ctx,
+                    type_,
+                    int(tier),
                 )
 
                 emoji_map = {

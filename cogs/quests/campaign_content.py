@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import re
+from collections.abc import Mapping
 from datetime import datetime, timezone
 
 
@@ -21,6 +22,10 @@ OBJECTIVE_SOURCES = {
     "raidbattle",
     "jurytower",
     "scripted",
+    "frontier_boss",
+    "divine_victory",
+    "omnithrone_phase",
+    "omnithrone_completion",
 }
 OBJECTIVE_MODES = {"progress", "key_item"}
 REWARD_TYPES = {"none", "money", "crate", "item", "egg", "bundle"}
@@ -42,6 +47,10 @@ CONDITION_TYPES = {
     "pet_equipped",
     "badge",
     "unlock",
+    "system_unlock",
+    "god_pet_lock",
+    "ascension_mantle",
+    "frontier_boss_regions",
 }
 ENCOUNTER_KINDS = {
     "none",
@@ -52,6 +61,14 @@ ENCOUNTER_KINDS = {
     "jury_tower",
     "external_command",
 }
+
+ENDGAME_EVENT_TYPES = {
+    "frontier_boss_clear",
+    "divine_victory",
+    "omnithrone_phase",
+    "omnithrone_completion",
+}
+DIVINE_GODS = ("Elysia", "Sepulchure", "Drakath")
 
 
 class CampaignPackageError(ValueError):
@@ -65,6 +82,164 @@ class CampaignPackageError(ValueError):
 def normalize_key(value: object) -> str:
     cleaned = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower())
     return cleaned.strip("_")
+
+
+def normalize_system_unlock_key(value: object) -> str:
+    """Return the canonical storage form for durable, cross-system unlocks."""
+    return normalize_key(value)
+
+
+def _required_event_text(payload: Mapping, key: str) -> str:
+    value = str(payload.get(key) or "").strip()
+    if not value:
+        raise ValueError(f"Endgame event payload needs `{key}`.")
+    return value
+
+
+def _positive_event_int(payload: Mapping, key: str, default: int = 1) -> int:
+    raw = payload.get(key, default)
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Endgame event payload `{key}` must be a positive number.") from exc
+
+
+def normalize_endgame_event(event_type: object, payload: object) -> dict:
+    """Validate an endgame dispatch and derive its quest/unlock projection.
+
+    The returned ``event_id`` is stable and is used to make quest progress
+    idempotent. Callers should dispatch only after the underlying battle or
+    phase transaction has committed.
+    """
+    event_key = normalize_key(event_type)
+    if event_key not in ENDGAME_EVENT_TYPES:
+        raise ValueError(f"Unsupported endgame event `{event_key or event_type}`.")
+    if not isinstance(payload, Mapping):
+        raise ValueError("Endgame event payload must be an object.")
+
+    party_size = _positive_event_int(payload, "party_size", 1)
+    if event_key == "frontier_boss_clear":
+        battle_id = _required_event_text(payload, "battle_id")
+        region_id = normalize_key(_required_event_text(payload, "region_id"))
+        boss_name = _required_event_text(payload, "boss_name")
+        absolute_week = payload.get("absolute_week")
+        return {
+            "event_type": event_key,
+            "source": "frontier_boss",
+            "candidate_names": (boss_name, region_id, "frontier_boss"),
+            "metadata": {
+                "event_id": f"frontier_boss:{battle_id}",
+                "battle_id": battle_id,
+                "region_id": region_id,
+                "target_key": region_id,
+                "absolute_week": absolute_week,
+                "party_size": party_size,
+            },
+            "unlock_keys": (f"frontier_boss_{region_id}",),
+        }
+
+    if event_key == "divine_victory":
+        battle_id = _required_event_text(payload, "battle_id")
+        requested_god = _required_event_text(payload, "god_name")
+        god_name = next(
+            (name for name in DIVINE_GODS if name.casefold() == requested_god.casefold()),
+            None,
+        )
+        if god_name is None:
+            raise ValueError("Divine victory must name Elysia, Sepulchure, or Drakath.")
+        tier = _positive_event_int(payload, "tier", 11)
+        if tier != 11:
+            raise ValueError("Divine victory events only accept Tier 11 encounters.")
+        god_key = normalize_key(god_name)
+        return {
+            "event_type": event_key,
+            "source": "divine_victory",
+            "candidate_names": (god_name, god_key, "tier_11"),
+            "metadata": {
+                "event_id": f"divine_victory:{battle_id}",
+                "battle_id": battle_id,
+                "god_name": god_name,
+                "target_key": god_key,
+                "tier": 11,
+                "party_size": party_size,
+            },
+            "unlock_keys": (f"divine_victory_{god_key}",),
+        }
+
+    attempt_id = _required_event_text(payload, "attempt_id")
+    if event_key == "omnithrone_phase":
+        phase_key = normalize_key(_required_event_text(payload, "phase_key"))
+        phase_number = _positive_event_int(payload, "phase_number")
+        return {
+            "event_type": event_key,
+            "source": "omnithrone_phase",
+            "candidate_names": (phase_key, f"phase_{phase_number}", "omnithrone"),
+            "metadata": {
+                "event_id": f"omnithrone:{attempt_id}:phase:{phase_key}",
+                "attempt_id": attempt_id,
+                "phase_key": phase_key,
+                "phase_number": phase_number,
+                "target_key": phase_key,
+                "party_size": party_size,
+            },
+            "unlock_keys": (f"omnithrone_phase_{phase_key}",),
+        }
+
+    outcome = normalize_key(_required_event_text(payload, "outcome"))
+    if outcome != "sealed":
+        raise ValueError("Omnithrone completion must record the `sealed` outcome.")
+    return {
+        "event_type": event_key,
+        "source": "omnithrone_completion",
+        "candidate_names": ("sealed", "complete", "omnithrone"),
+        "metadata": {
+            "event_id": f"omnithrone:{attempt_id}:completion",
+            "attempt_id": attempt_id,
+            "outcome": "sealed",
+            "target_key": "sealed",
+            "party_size": party_size,
+        },
+        "unlock_keys": ("omnithrone_sealed",),
+    }
+
+
+def validate_builtin_package(raw: object) -> dict:
+    """Validate a bundled package using the monotonic version contract.
+
+    Bundled JSON must include a stable ``package_key`` and a positive integer
+    ``content_version``. A running bot installs a package once, skips the same
+    or an older version, and installs a higher version as an explicit content
+    migration. This lets GMs edit installed content safely between releases.
+    """
+    package = validate_package(raw)
+    errors: list[str] = []
+    package_key = normalize_key(package.get("package_key"))
+    if not package_key:
+        errors.append("Bundled campaign packages need a stable `package_key`.")
+    try:
+        content_version = int(package.get("content_version"))
+    except (TypeError, ValueError):
+        content_version = 0
+    if content_version < 1:
+        errors.append("Bundled campaign packages need `content_version` >= 1.")
+    if errors:
+        raise CampaignPackageError(errors)
+    package["package_key"] = package_key
+    package["content_version"] = content_version
+    return package
+
+
+def builtin_install_decision(
+    installed_version: int | None,
+    bundled_version: int,
+    *,
+    has_unmanaged_conflicts: bool = False,
+) -> str:
+    """Return ``install``, ``upgrade``, ``skip``, or ``conflict``."""
+    bundled_version = int(bundled_version)
+    if installed_version is None:
+        return "conflict" if has_unmanaged_conflicts else "install"
+    return "upgrade" if bundled_version > int(installed_version) else "skip"
 
 
 def _as_dict(value: object) -> dict:
@@ -121,6 +296,14 @@ def build_reference_catalog(monsters: list[dict]) -> dict:
             "battle_settings": (
                 "Stored with the campaign now and reserved for a generic campaign "
                 "battle runner."
+            ),
+            "builtin_versioning": (
+                "Files in cogs/quests/data/builtin_campaigns need package_key and "
+                "content_version >= 1. Equal or older versions are skipped; only a "
+                "higher content_version replaces an installed package."
+            ),
+            "distinct_objectives": (
+                "Set objective.distinct_targets=true to count each event target once."
             ),
         },
     }
@@ -393,7 +576,12 @@ def _validate_conditions(raw: object, owner: str, errors: list[str]) -> None:
         condition_type = str(condition.get("type") or "").lower()
         if condition_type not in CONDITION_TYPES:
             errors.append(f"{owner} has unsupported condition `{condition_type}`.")
-        if condition_type not in {"level", "money", "guild_member"} and not str(
+        if condition_type not in {
+            "level",
+            "money",
+            "guild_member",
+            "frontier_boss_regions",
+        } and not str(
             condition.get("key") or ""
         ).strip():
             errors.append(f"{owner} condition `{condition_type}` needs a key.")

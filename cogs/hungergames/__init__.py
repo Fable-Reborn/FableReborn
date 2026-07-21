@@ -17,7 +17,10 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import asyncio
+import logging
+import time
 import traceback
+from io import BytesIO
 
 import discord
 
@@ -32,6 +35,16 @@ from utils.i18n import _, locale_doc
 from utils.joins import JoinView
 from utils.misc import nice_join
 
+from .regions_renderer import (
+    render_district_victor_card,
+    render_fallen_card,
+    render_region_board,
+    render_victor_card,
+)
+
+
+logger = logging.getLogger(__name__)
+
 
 class GameBase:
     ALLIANCE_LOCK_ROUNDS = 3
@@ -43,6 +56,7 @@ class GameBase:
     def __init__(self, ctx, players: list):
         self.ctx = ctx
         self.players = list(players)
+        self.starting_player_count = len(self.players)
         self.round = 1
         self.cast = []
         self.member_by_id = {p.id: p for p in self.players}
@@ -659,6 +673,26 @@ class GameBase:
             return _("None")
         return ", ".join(f"#{district}" for district in districts)
 
+    async def _render_fallen_tribute_card(
+        self,
+        *,
+        victim: discord.Member,
+        killer: discord.Member | None,
+        cause: str,
+        fallen_index: int,
+        fallen_total: int,
+    ):
+        """Optional visual hook implemented by the region game modes."""
+        return None
+
+    async def _render_winner_card(self, winner: discord.Member):
+        """Optional visual hook implemented by the region game modes."""
+        return None
+
+    async def _render_district_winner_card(self, winners: list[discord.Member]):
+        """Optional visual hook for the last two surviving district partners."""
+        return None
+
     async def _send_round_report(
         self,
         round_lines: list[str],
@@ -733,7 +767,6 @@ class GameBase:
                     ),
                     color=discord.Color.dark_red(),
                 )
-                tribute_embed.set_thumbnail(url=victim.display_avatar.url)
                 tribute_embed.set_footer(
                     text=_("Round {round} • Tribute {idx}/{total}").format(
                         round=self.round,
@@ -741,9 +774,23 @@ class GameBase:
                         total=total_fallen,
                     )
                 )
-                await self.ctx.send(
-                    embed=tribute_embed
+                fallen_card = await self._render_fallen_tribute_card(
+                    victim=victim,
+                    killer=killer if isinstance(killer, discord.Member) else None,
+                    cause=cause,
+                    fallen_index=idx,
+                    fallen_total=total_fallen,
                 )
+                if fallen_card is not None:
+                    filename = f"hg_fallen_{victim.id}.png"
+                    tribute_embed.set_image(url=f"attachment://{filename}")
+                    await self.ctx.send(
+                        embed=tribute_embed,
+                        file=discord.File(fallen_card, filename=filename),
+                    )
+                else:
+                    tribute_embed.set_thumbnail(url=victim.display_avatar.url)
+                    await self.ctx.send(embed=tribute_embed)
                 if idx < total_fallen:
                     await asyncio.sleep(self.REPORT_TRIBUTE_DELAY_SECONDS)
         else:
@@ -907,9 +954,14 @@ class GameBase:
             await self.get_inputs()
             await asyncio.sleep(2)
 
+        winner_for_card: discord.Member | None = None
+        district_winners_for_card: list[discord.Member] | None = None
+        winning_team_id: int | None = None
         if len(self.players) > 1 and self._single_team_left():
             team_id = self.team_by_player_id.get(self.players[0].id)
             winners = list(self.players)
+            district_winners_for_card = winners
+            winning_team_id = team_id
             embed = discord.Embed(
                 title=_("Hunger Games Results"),
                 color=discord.Color.blurple(),
@@ -923,6 +975,7 @@ class GameBase:
             embed.set_thumbnail(url=winners[0].display_avatar.url)
         elif len(self.players) == 1:
             winner = self.players[0]
+            winner_for_card = winner
             embed = discord.Embed(
                 title=_("Hunger Games Results"),
                 color=discord.Color.green(),
@@ -956,7 +1009,24 @@ class GameBase:
                 value="\n".join(leaderboard),
                 inline=False,
             )
-        await self.ctx.send(embed=embed)
+        winner_card = None
+        filename = None
+        if winner_for_card is not None:
+            winner_card = await self._render_winner_card(winner_for_card)
+            filename = f"hg_victor_{winner_for_card.id}.png"
+        elif district_winners_for_card is not None:
+            winner_card = await self._render_district_winner_card(
+                district_winners_for_card
+            )
+            filename = f"hg_victors_district_{winning_team_id}.png"
+        if winner_card is not None and filename is not None:
+            embed.set_image(url=f"attachment://{filename}")
+            await self.ctx.send(
+                embed=embed,
+                file=discord.File(winner_card, filename=filename),
+            )
+        else:
+            await self.ctx.send(embed=embed)
 
 
 class RegionGame(GameBase):
@@ -993,6 +1063,146 @@ class RegionGame(GameBase):
         self.no_kill_rounds = 0
         self._assign_initial_regions()
 
+    def _region_board_events(self, region: str) -> list[dict[str, str]]:
+        """Build the zero-to-three event timeline shown inside one region."""
+        events: list[dict[str, str]] = []
+        drop_strength = max(0, int(self.region_drops.get(region, 0)))
+        if drop_strength:
+            label = "SPONSOR DROP"
+            if drop_strength > 1:
+                label = f"SPONSOR DROP ×{drop_strength}"
+            events.append(
+                {"kind": "drop", "label": label, "timing": "AVAILABLE"}
+            )
+
+        if region in self.active_mutt_regions:
+            events.append(
+                {"kind": "mutts", "label": "MUTT ATTACK", "timing": "ACTIVE"}
+            )
+        elif region in self.next_mutt_regions:
+            events.append(
+                {"kind": "mutts", "label": "MUTTS GATHERING", "timing": "NEXT"}
+            )
+
+        if region in self.active_toxic_regions:
+            events.append(
+                {"kind": "toxic", "label": "TOXIC FOG", "timing": "ACTIVE"}
+            )
+        elif region in self.next_toxic_regions:
+            events.append(
+                {"kind": "toxic", "label": "TOXIC FOG", "timing": "NEXT"}
+            )
+        return events
+
+    def _region_board_snapshot(self) -> tuple[dict[str, int], dict[str, list[dict[str, str]]]]:
+        counts = {
+            region: len(self._players_in_region(region))
+            for region in self.REGIONS
+        }
+        events = {
+            region: self._region_board_events(region)
+            for region in self.REGIONS
+        }
+        return counts, events
+
+    async def _render_region_board_buffer(
+        self,
+        current_region: str | None = None,
+        ally_region: str | None = None,
+    ):
+        counts, events = self._region_board_snapshot()
+        return await asyncio.to_thread(
+            render_region_board,
+            round_number=self.round,
+            alive=len(self.players),
+            region_counts=counts,
+            events_by_region=events,
+            adjacency=self.REGION_ADJACENCY,
+            current_region=current_region,
+            ally_region=ally_region,
+        )
+
+    async def _avatar_bytes(self, member: discord.Member) -> bytes | None:
+        try:
+            return await member.display_avatar.read()
+        except (discord.HTTPException, OSError):
+            return None
+
+    async def _render_fallen_tribute_card(
+        self,
+        *,
+        victim: discord.Member,
+        killer: discord.Member | None,
+        cause: str,
+        fallen_index: int,
+        fallen_total: int,
+    ):
+        try:
+            avatar_bytes = await self._avatar_bytes(victim)
+            return await asyncio.to_thread(
+                render_fallen_card,
+                victim_name=victim.display_name,
+                district=self._district_name(victim),
+                cause=cause,
+                killer_name=(
+                    killer.display_name
+                    if isinstance(killer, discord.Member)
+                    else str(_("the arena"))
+                ),
+                region=self.player_region.get(victim.id, "The Arena"),
+                round_number=self.round,
+                alive=len(self.players),
+                fallen_index=fallen_index,
+                fallen_total=fallen_total,
+                avatar_bytes=avatar_bytes,
+            )
+        except Exception:
+            logger.exception("Failed to render HG Regions fallen tribute card")
+            return None
+
+    async def _render_winner_card(self, winner: discord.Member):
+        try:
+            avatar_bytes = await self._avatar_bytes(winner)
+            return await asyncio.to_thread(
+                render_victor_card,
+                winner_name=winner.display_name,
+                district=self._district_name(winner),
+                eliminations=self.kills.get(winner.id, 0),
+                gear=self._weapon_name(self.gear_score.get(winner.id, 0)),
+                outlasted=max(0, self.starting_player_count - 1),
+                rounds_survived=max(1, self.round - 1),
+                started=self.starting_player_count,
+                avatar_bytes=avatar_bytes,
+            )
+        except Exception:
+            logger.exception("Failed to render HG Regions victor card")
+            return None
+
+    async def _render_district_winner_card(self, winners: list[discord.Member]):
+        try:
+            avatar_bytes = await asyncio.gather(
+                *(self._avatar_bytes(winner) for winner in winners)
+            )
+            winner_data = [
+                {
+                    "name": winner.display_name,
+                    "eliminations": self.kills.get(winner.id, 0),
+                    "gear": self._weapon_name(self.gear_score.get(winner.id, 0)),
+                    "avatar_bytes": avatar,
+                }
+                for winner, avatar in zip(winners, avatar_bytes)
+            ]
+            return await asyncio.to_thread(
+                render_district_victor_card,
+                winners=winner_data,
+                district=self._district_name(winners[0]),
+                outlasted=max(0, self.starting_player_count - len(winners)),
+                rounds_survived=max(1, self.round - 1),
+            )
+        except Exception:
+            logger.exception("Failed to render HG Regions district victor card")
+            return None
+
     def _assign_initial_regions(self) -> None:
         pool = list(self.REGIONS)
         for player in self.players:
@@ -1006,6 +1216,13 @@ class RegionGame(GameBase):
         if player.id not in self.player_region:
             self.player_region[player.id] = random.choice(list(self.REGIONS))
         return self.player_region[player.id]
+
+    def _living_ally(self, player: discord.Member) -> discord.Member | None:
+        for ally_id in self.allies_by_player_id.get(player.id, set()):
+            ally = self.member_by_id.get(ally_id)
+            if ally is not None and ally in self.players:
+                return ally
+        return None
 
     def _players_in_region(
         self, region: str, *, killed_this_round: set | None = None
@@ -1200,16 +1417,37 @@ class RegionGame(GameBase):
         embed.add_field(name=_("Mutt Warning Next"), value=next_mutts, inline=False)
         embed.set_footer(
             text=_(
-                "Move between connected regions, loot drops, and survive the advancing fog."
+                "Move between connected regions, loot drops, and react to active"
+                " or prewarned arena events."
             )
         )
-        await self.ctx.send(embed=embed)
-        await self._send_region_brief_dms(embed)
+        await self._send_region_board(embed)
 
-    async def _send_region_brief_dms(self, embed: discord.Embed) -> None:
+    async def _send_region_board(self, embed: discord.Embed) -> None:
+        public_board_bytes: bytes | None = None
+        try:
+            board = await self._render_region_board_buffer()
+            public_board_bytes = board.getvalue()
+            filename = f"hg_regions_round_{self.round}.png"
+            embed.set_image(url=f"attachment://{filename}")
+            await self.ctx.send(
+                embed=embed,
+                file=discord.File(BytesIO(public_board_bytes), filename=filename),
+            )
+        except Exception:
+            logger.exception("Failed to render the public HG Regions board")
+            await self.ctx.send(embed=embed)
+        await self._send_region_brief_dms(embed, public_board_bytes)
+
+    async def _send_region_brief_dms(
+        self,
+        public_embed: discord.Embed,
+        public_board_bytes: bytes | None,
+    ) -> None:
         cog = self.ctx.bot.get_cog("HungerGames")
         if cog is None or not hasattr(cog, "region_board_dm_enabled"):
             return
+        personal_boards: dict[tuple[str, str | None], bytes] = {}
         for player in list(self.players):
             try:
                 enabled = await cog.region_board_dm_enabled(player.id)
@@ -1217,10 +1455,78 @@ class RegionGame(GameBase):
                 enabled = True
             if not enabled:
                 continue
+            current_region = self._region_for(player)
+            ally = self._living_ally(player)
+            ally_region = self._region_for(ally) if ally is not None else None
             try:
-                await player.send(embed=embed)
+                board_key = (current_region, ally_region)
+                board_bytes = personal_boards.get(board_key)
+                if board_bytes is None:
+                    board = await self._render_region_board_buffer(
+                        current_region,
+                        ally_region,
+                    )
+                    board_bytes = board.getvalue()
+                    personal_boards[board_key] = board_bytes
+                filename = (
+                    "hg_regions_personal_"
+                    f"{current_region.lower().replace(' ', '_')}.png"
+                )
+                description = _(
+                    "Current region: **{region}**\nLegal moves: {moves}"
+                ).format(
+                    region=current_region,
+                    moves=", ".join(
+                        self.REGION_ADJACENCY.get(current_region, ())
+                    ),
+                )
+                if ally is not None and ally_region is not None:
+                    description += _(
+                        "\nDistrict ally: **{ally}** in **{region}**"
+                    ).format(
+                        ally=ally.display_name,
+                        region=ally_region,
+                    )
+                else:
+                    description += _("\nDistrict ally: **No surviving ally**")
+                personal_embed = discord.Embed(
+                    title=_("Your Arena Map - Round {round}").format(
+                        round=self.round
+                    ),
+                    description=description,
+                    color=discord.Color.dark_gold(),
+                )
+                personal_embed.set_image(url=f"attachment://{filename}")
+                personal_embed.set_footer(
+                    text=_(
+                        "Your location, district ally, and legal routes are highlighted."
+                    )
+                )
+                await player.send(
+                    embed=personal_embed,
+                    file=discord.File(BytesIO(board_bytes), filename=filename),
+                )
             except (discord.Forbidden, discord.HTTPException):
                 continue
+            except Exception:
+                logger.exception(
+                    "Failed to render a personal HG Regions board for %s",
+                    player.id,
+                )
+                try:
+                    if public_board_bytes is not None:
+                        filename = f"hg_regions_round_{self.round}.png"
+                        await player.send(
+                            embed=public_embed,
+                            file=discord.File(
+                                BytesIO(public_board_bytes),
+                                filename=filename,
+                            ),
+                        )
+                    else:
+                        await player.send(embed=public_embed)
+                except (discord.Forbidden, discord.HTTPException):
+                    continue
 
     def _build_action_choices(
         self,
@@ -3596,6 +3902,28 @@ class RegionIdeasGame(RegionGame):
             return _("Unknown hazard")
         return _(self.HAZARD_LABELS.get(hazard_key, hazard_key))
 
+    def _region_board_events(self, region: str) -> list[dict[str, str]]:
+        events = super()._region_board_events(region)
+        active_hazard = self.active_region_hazards.get(region)
+        next_hazard = self.next_region_hazards.get(region)
+        if active_hazard:
+            events.append(
+                {
+                    "kind": active_hazard,
+                    "label": str(self._hazard_display(active_hazard)),
+                    "timing": "ACTIVE",
+                }
+            )
+        elif next_hazard:
+            events.append(
+                {
+                    "kind": next_hazard,
+                    "label": str(self._hazard_display(next_hazard)),
+                    "timing": "NEXT",
+                }
+            )
+        return events
+
     def _mark_kill(
         self,
         killer: discord.Member | None,
@@ -3956,8 +4284,7 @@ class RegionIdeasGame(RegionGame):
                 "Scout adjacent regions, manage noise, and complete sponsor contracts."
             )
         )
-        await self.ctx.send(embed=embed)
-        await self._send_region_brief_dms(embed)
+        await self._send_region_board(embed)
 
     def _build_action_choices(
         self,
@@ -5166,6 +5493,314 @@ class HungerGames(commands.Cog):
         await self._set_region_board_dm_enabled(ctx.author.id, enabled)
         status = _("enabled") if enabled else _("disabled")
         await ctx.send(_("Region board DMs are now **{status}**.").format(status=status))
+
+    @commands.command(
+        aliases=["hgpillows", "hgpillowbench"],
+        brief=_("Benchmark HG Regions Pillow rendering"),
+        hidden=True,
+    )
+    @is_gm()
+    @locale_doc
+    async def hgpillowtest(self, ctx, runs: int = 1):
+        _(
+            """GM-only HG Regions Pillow rendering benchmark
+
+            Generates the public arena, all six personal route maps, three fallen
+            tribute cards, the solo victor card, and the district co-victor card.
+            Reports render time for every image and the full batch.
+
+            Usage:
+            - `{prefix}hgpillowtest`
+            - `{prefix}hgpillowtest 3`
+
+            Runs must be between 1 and 5."""
+        )
+        if runs < 1 or runs > 5:
+            return await ctx.send(_("Runs must be between 1 and 5."))
+
+        progress = await ctx.send(
+            _("Rendering the complete HG Regions Pillow test batch…")
+        )
+
+        async def read_avatar(member) -> bytes | None:
+            if member is None:
+                return None
+            try:
+                return await member.display_avatar.read()
+            except (discord.HTTPException, OSError, AttributeError):
+                return None
+
+        secondary_member = (
+            getattr(ctx.guild, "me", None)
+            if ctx.guild is not None
+            else getattr(self.bot, "user", None)
+        )
+        primary_avatar, secondary_avatar = await asyncio.gather(
+            read_avatar(ctx.author),
+            read_avatar(secondary_member),
+        )
+        primary_name = getattr(ctx.author, "display_name", "ArenaVictor")
+        secondary_name = getattr(
+            secondary_member,
+            "display_name",
+            "DistrictPartner",
+        )
+
+        counts = {
+            "Cornucopia": 3,
+            "Forest Ridge": 0,
+            "Riverbank": 2,
+            "Stone Quarry": 2,
+            "Underground Tunnels": 1,
+            "Ruined Mill": 1,
+        }
+        events = {region: [] for region in RegionGame.REGIONS}
+        events.update(
+            {
+                "Cornucopia": [
+                    {
+                        "kind": "drop",
+                        "label": "Sponsor Drop ×2",
+                        "timing": "Available",
+                    },
+                    {
+                        "kind": "mutts",
+                        "label": "Mutts Gathering",
+                        "timing": "Next",
+                    },
+                    {
+                        "kind": "toxic",
+                        "label": "Toxic Fog",
+                        "timing": "Next",
+                    },
+                ],
+                "Forest Ridge": [
+                    {
+                        "kind": "toxic",
+                        "label": "Toxic Fog",
+                        "timing": "Active",
+                    }
+                ],
+                "Riverbank": [
+                    {
+                        "kind": "drop",
+                        "label": "Sponsor Drop",
+                        "timing": "Available",
+                    },
+                    {
+                        "kind": "mutts",
+                        "label": "Mutt Attack",
+                        "timing": "Active",
+                    },
+                ],
+            }
+        )
+
+        board_kwargs = {
+            "round_number": 4,
+            "alive": 9,
+            "region_counts": counts,
+            "events_by_region": events,
+            "adjacency": RegionGame.REGION_ADJACENCY,
+        }
+        cases = [
+            (
+                "Public arena board",
+                "hg_test_public_arena.png",
+                render_region_board,
+                board_kwargs,
+            )
+        ]
+        for region in RegionGame.REGIONS:
+            slug = region.casefold().replace(" ", "_")
+            cases.append(
+                (
+                    f"Personal map · {region}",
+                    f"hg_test_personal_{slug}.png",
+                    render_region_board,
+                    {
+                        **board_kwargs,
+                        "current_region": region,
+                        "ally_region": "Riverbank",
+                    },
+                )
+            )
+
+        fallen_samples = (
+            (
+                primary_name,
+                "District 4",
+                "was overwhelmed while escaping the advancing toxic fog",
+                "The Arena",
+                "Forest Ridge",
+                primary_avatar,
+            ),
+            (
+                secondary_name,
+                "District 9",
+                "lost a desperate duel over a sponsor drop",
+                primary_name,
+                "Cornucopia",
+                secondary_avatar,
+            ),
+            (
+                "Rook",
+                "District 2",
+                "was cornered by mutts near the tunnel entrance",
+                "The Arena",
+                "Underground Tunnels",
+                None,
+            ),
+        )
+        for index, sample in enumerate(fallen_samples, start=1):
+            victim, district, cause, killer, region, avatar = sample
+            cases.append(
+                (
+                    f"Fallen tribute {index}/3",
+                    f"hg_test_fallen_{index}_of_3.png",
+                    render_fallen_card,
+                    {
+                        "victim_name": victim,
+                        "district": district,
+                        "cause": cause,
+                        "killer_name": killer,
+                        "region": region,
+                        "round_number": 4,
+                        "alive": 9,
+                        "fallen_index": index,
+                        "fallen_total": 3,
+                        "avatar_bytes": avatar,
+                    },
+                )
+            )
+
+        cases.extend(
+            (
+                (
+                    "Solo victor",
+                    "hg_test_solo_victor.png",
+                    render_victor_card,
+                    {
+                        "winner_name": primary_name,
+                        "district": "District 7",
+                        "eliminations": 4,
+                        "gear": "Carbon Steel Axe",
+                        "outlasted": 11,
+                        "rounds_survived": 7,
+                        "started": 12,
+                        "avatar_bytes": primary_avatar,
+                    },
+                ),
+                (
+                    "District co-victors",
+                    "hg_test_district_victors.png",
+                    render_district_victor_card,
+                    {
+                        "winners": (
+                            {
+                                "name": primary_name,
+                                "eliminations": 4,
+                                "gear": "Carbon Steel Axe",
+                                "avatar_bytes": primary_avatar,
+                            },
+                            {
+                                "name": secondary_name,
+                                "eliminations": 2,
+                                "gear": "Sponsor Bow",
+                                "avatar_bytes": secondary_avatar,
+                            },
+                        ),
+                        "district": "District 7",
+                        "outlasted": 10,
+                        "rounds_survived": 7,
+                    },
+                ),
+            )
+        )
+
+        artifacts = []
+        batch_started = time.perf_counter()
+        try:
+            for label, filename, renderer, kwargs in cases:
+                durations = []
+                rendered_bytes = b""
+                for run_index in range(runs):
+                    render_started = time.perf_counter()
+                    output = await asyncio.to_thread(renderer, **kwargs)
+                    durations.append((time.perf_counter() - render_started) * 1000)
+                    rendered_bytes = output.getvalue()
+                    output.close()
+                artifacts.append(
+                    {
+                        "label": label,
+                        "filename": filename,
+                        "bytes": rendered_bytes,
+                        "average_ms": sum(durations) / len(durations),
+                        "minimum_ms": min(durations),
+                        "maximum_ms": max(durations),
+                    }
+                )
+        except Exception as exc:
+            await progress.edit(content=_("HG Pillow benchmark failed."))
+            await self._send_traceback(ctx, exc)
+            return
+        total_ms = (time.perf_counter() - batch_started) * 1000
+
+        report = discord.Embed(
+            title=_("HG Regions Pillow Benchmark"),
+            color=discord.Color.gold(),
+            description=_(
+                "Generated **{count} image variants** × **{runs} run(s)**.\n"
+                "Total render wall time: **{total:.1f} ms**\n"
+                "Average complete set: **{per_set:.1f} ms**"
+            ).format(
+                count=len(artifacts),
+                runs=runs,
+                total=total_ms,
+                per_set=total_ms / runs,
+            ),
+        )
+        for artifact in artifacts:
+            if runs == 1:
+                timing = f"{artifact['average_ms']:.1f} ms"
+            else:
+                timing = (
+                    f"avg {artifact['average_ms']:.1f} ms · "
+                    f"min {artifact['minimum_ms']:.1f} · "
+                    f"max {artifact['maximum_ms']:.1f}"
+                )
+            report.add_field(
+                name=artifact["label"],
+                value=f"`{timing}` · {len(artifact['bytes']) / 1024:.1f} KiB",
+                inline=False,
+            )
+        report.set_footer(
+            text=_(
+                "Sequential production-style renders; avatar download and Discord upload time excluded."
+            )
+        )
+        await progress.edit(content=_("HG Pillow benchmark complete."))
+        await ctx.send(embed=report)
+
+        attachment_limit = 10
+        for start in range(0, len(artifacts), attachment_limit):
+            batch = artifacts[start : start + attachment_limit]
+            files = [
+                discord.File(
+                    BytesIO(artifact["bytes"]),
+                    filename=artifact["filename"],
+                )
+                for artifact in batch
+            ]
+            part = start // attachment_limit + 1
+            parts = (len(artifacts) + attachment_limit - 1) // attachment_limit
+            await ctx.send(
+                _("Generated Pillow previews ({part}/{parts})").format(
+                    part=part,
+                    parts=parts,
+                ),
+                files=files,
+            )
 
     @commands.command(
         aliases=["hgregionshelp", "hgregionhelp", "hgrules"],

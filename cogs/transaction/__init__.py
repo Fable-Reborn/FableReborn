@@ -45,14 +45,122 @@ def has_transaction():
     return commands.check(predicate)
 
 
+class TradeOfferEditModal(discord.ui.Modal):
+    def __init__(self, decision_view: "TradeDecisionView", component: str):
+        super().__init__(title=f"Edit Trade {component.title()}")
+        self.decision_view = decision_view
+        self.component = component
+        if component == "items":
+            self.value = discord.ui.TextInput(
+                label="Item IDs",
+                placeholder="Comma-separated IDs; leave blank to clear",
+                required=False,
+                max_length=400,
+                style=discord.TextStyle.paragraph,
+            )
+            self.add_item(self.value)
+        elif component == "money":
+            self.value = discord.ui.TextInput(label="Total money offered", default="0", max_length=15)
+            self.add_item(self.value)
+        else:
+            labels = {
+                "crates": ("Crate rarity", "common"),
+                "resources": ("Resource name", "dragon scales"),
+                "consumables": ("Consumable type", "pet_age_potion"),
+            }
+            label, placeholder = labels[component]
+            self.name_input = discord.ui.TextInput(label=label, placeholder=placeholder, max_length=80)
+            self.amount_input = discord.ui.TextInput(
+                label="Total amount offered (0 removes)",
+                default="0",
+                max_length=12,
+            )
+            self.add_item(self.name_input)
+            self.add_item(self.amount_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        participant_id = self.decision_view.resolve_participant_id(interaction.user.id)
+        if participant_id is None:
+            return await interaction.response.send_message("You are not part of this trade.", ephemeral=True)
+        payload = {}
+        if self.component == "items":
+            payload["item_ids"] = [
+                part.strip()
+                for part in str(self.value.value).replace(" ", ",").split(",")
+                if part.strip()
+            ]
+        elif self.component == "money":
+            payload["amount"] = str(self.value.value).strip()
+        else:
+            payload["name"] = str(self.name_input.value).strip()
+            payload["amount"] = str(self.amount_input.value).strip()
+        await interaction.response.defer(ephemeral=True)
+        ok, message = await self.decision_view.cog.update_trade_offer_component(
+            self.decision_view.trans,
+            participant_id,
+            self.component,
+            **payload,
+        )
+        if ok:
+            self.decision_view.accepted_participants.clear()
+            await self.decision_view.refresh_offer_content(
+                footer_message=_("✏️ Offer changed; both participants must review and accept again.")
+            )
+        await interaction.followup.send(message, ephemeral=True)
+
+
+class TradeOfferEditorView(discord.ui.View):
+    def __init__(self, decision_view: "TradeDecisionView"):
+        super().__init__(timeout=180)
+        self.decision_view = decision_view
+
+    async def interaction_check(self, interaction):
+        if self.decision_view.resolve_participant_id(interaction.user.id) is None:
+            await interaction.response.send_message("You are not part of this trade.", ephemeral=True)
+            return False
+        return True
+
+    async def open_modal(self, interaction, component):
+        await interaction.response.send_modal(TradeOfferEditModal(self.decision_view, component))
+
+    @discord.ui.button(label="Money", style=discord.ButtonStyle.primary)
+    async def money(self, interaction, button):
+        await self.open_modal(interaction, "money")
+
+    @discord.ui.button(label="Gear", style=discord.ButtonStyle.primary)
+    async def items(self, interaction, button):
+        await self.open_modal(interaction, "items")
+
+    @discord.ui.button(label="Crates", style=discord.ButtonStyle.primary)
+    async def crates(self, interaction, button):
+        await self.open_modal(interaction, "crates")
+
+    @discord.ui.button(label="Resources", style=discord.ButtonStyle.primary)
+    async def resources(self, interaction, button):
+        await self.open_modal(interaction, "resources")
+
+    @discord.ui.button(label="Consumables", style=discord.ButtonStyle.primary)
+    async def consumables(self, interaction, button):
+        await self.open_modal(interaction, "consumables")
+
+    @discord.ui.button(label="Close Editor", style=discord.ButtonStyle.secondary, row=1)
+    async def close(self, interaction, button):
+        await interaction.response.edit_message(content="Offer editor closed.", view=None)
+        self.stop()
+
+
 class TradeDecisionView(discord.ui.View):
     def __init__(
         self,
+        cog,
+        ctx,
         trans: dict,
         participant_actor_ids: dict[int, set[int]],
         timeout: float = 120.0,
     ):
         super().__init__(timeout=timeout)
+        self.cog = cog
+        self.ctx = ctx
         self.trans = trans
         self.participant_actor_ids = participant_actor_ids
         self.accepted_participants: set[int] = set()
@@ -66,6 +174,10 @@ class TradeDecisionView(discord.ui.View):
         }
         base = trans.get("base")
         self.base_content = base.content if base and base.content else ""
+
+    async def refresh_offer_content(self, footer_message: str | None = None):
+        self.base_content = self.cog.build_trade_content(self.trans, self.ctx.clean_prefix)
+        await self._update_message(footer_message=footer_message)
 
     def _matching_participant_ids(self, user_id: int) -> list[int]:
         normalized_user_id = int(user_id)
@@ -231,6 +343,35 @@ class TradeDecisionView(discord.ui.View):
         )
         self.stop()
 
+    @discord.ui.button(label="Edit My Offer", style=discord.ButtonStyle.primary, emoji="✏️")
+    async def edit_offer(self, interaction: discord.Interaction, button: discord.ui.Button):
+        participant_id = self.resolve_participant_id(interaction.user.id)
+        participant = next(
+            (user for user in self.trans.get("content", {}) if int(user.id) == participant_id),
+            None,
+        )
+        offer = self.trans["content"].get(participant, {}) if participant else {}
+        summary = self.cog.format_single_trade_offer(participant, offer) if participant else "Offer unavailable."
+        await interaction.response.send_message(
+            content=summary[:1900],
+            view=TradeOfferEditorView(self),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Clear My Offer", style=discord.ButtonStyle.secondary, emoji="🧹")
+    async def clear_offer(self, interaction: discord.Interaction, button: discord.ui.Button):
+        participant_id = self.resolve_participant_id(interaction.user.id)
+        ok, message = await self.cog.clear_trade_offer(self.trans, participant_id)
+        if ok:
+            self.accepted_participants.clear()
+            await interaction.response.defer(ephemeral=True)
+            await self.refresh_offer_content(
+                footer_message=_("🧹 Offer cleared; both participants must review again.")
+            )
+            await interaction.followup.send(message, ephemeral=True)
+            return
+        await interaction.response.send_message(message, ephemeral=True)
+
     async def on_timeout(self):
         if self.result is not None:
             return
@@ -281,6 +422,175 @@ class Transaction(commands.Cog):
             "pet_element_scroll, splice_final_potion, weapon_element_scroll"
         )
 
+    @staticmethod
+    def _trade_participant(trans: dict, participant_id: int):
+        return next(
+            (user for user in trans.get("content", {}) if int(user.id) == int(participant_id)),
+            None,
+        )
+
+    def format_single_trade_offer(self, user, offer: dict) -> str:
+        if user is None:
+            return "Offer unavailable."
+        lines = [f"**{user.display_name}'s offer**"]
+        if offer.get("money"):
+            lines.append(f"• Money: **${int(offer['money']):,}**")
+        for rarity, amount in offer.get("crates", {}).items():
+            if amount:
+                lines.append(f"• {rarity.title()} crates: **{int(amount)}**")
+        for item in offer.get("items", []):
+            lines.append(f"• {item['name']} (ID {item['id']}, stat {item['damage'] + item['armor']})")
+        for resource, amount in offer.get("resources", {}).items():
+            if amount:
+                lines.append(f"• {resource.replace('_', ' ').title()}: **{int(amount)}**")
+        for consumable, amount in offer.get("consumables", {}).items():
+            if amount:
+                lines.append(f"• {consumable.replace('_', ' ').title()}: **{int(amount)}**")
+        if len(lines) == 1:
+            lines.append("• Nothing offered")
+        return "\n".join(lines)
+
+    def build_trade_content(self, trans: dict, prefix: str) -> str:
+        blocks = [
+            self.format_single_trade_offer(user, offer)
+            for user, offer in trans.get("content", {}).items()
+        ]
+        blocks.append(
+            "Use **Edit My Offer** to add, replace, or remove money, gear, crates, "
+            "resources, and consumables. Existing `trade add/set/remove` commands still work."
+        )
+        return "\n\n".join(blocks)[:1500]
+
+    async def clear_trade_offer(self, trans: dict, participant_id: int):
+        participant = self._trade_participant(trans, participant_id)
+        if participant is None:
+            return False, "You are not part of this trade."
+        offer = trans["content"][participant]
+        offer["money"] = 0
+        offer["items"] = []
+        offer["crates"].clear()
+        offer["resources"].clear()
+        offer.setdefault("consumables", defaultdict(lambda: 0)).clear()
+        return True, "Your offer was cleared."
+
+    async def update_trade_offer_component(
+        self,
+        trans: dict,
+        participant_id: int,
+        component: str,
+        *,
+        amount: str | None = None,
+        name: str | None = None,
+        item_ids: list[str] | None = None,
+    ):
+        participant = self._trade_participant(trans, participant_id)
+        if participant is None:
+            return False, "You are not part of this trade."
+        offer = trans["content"][participant]
+
+        if component == "items":
+            parsed_ids = []
+            for raw_id in item_ids or []:
+                if not str(raw_id).isdigit():
+                    return False, f"`{raw_id}` is not a valid item ID."
+                parsed_ids.append(int(raw_id))
+            parsed_ids = list(dict.fromkeys(parsed_ids))[:25]
+            if not parsed_ids:
+                offer["items"] = []
+                return True, "Removed all gear from your offer."
+            rows = await self.bot.pool.fetch(
+                """
+                SELECT ai.*, i.equipped, i.locked
+                FROM allitems ai JOIN inventory i ON i.item=ai.id
+                WHERE ai.owner=$1 AND ai.id=ANY($2::bigint[]);
+                """,
+                participant_id,
+                parsed_ids,
+            )
+            found_ids = {int(row["id"]) for row in rows}
+            missing = [item_id for item_id in parsed_ids if item_id not in found_ids]
+            if missing:
+                return False, f"You do not own inventory item(s): {', '.join(map(str, missing))}."
+            if any(row.get("equipped") for row in rows):
+                return False, "Unequip gear before adding it to a trade."
+            offer["items"] = [dict(row) for row in rows]
+            return True, f"Set your gear offer to {len(rows)} item(s)."
+
+        try:
+            parsed_amount = int(str(amount))
+        except (TypeError, ValueError):
+            return False, "Amount must be a whole number."
+        if parsed_amount < 0:
+            return False, "Amount cannot be negative."
+
+        if component == "money":
+            owned = await self.bot.pool.fetchval('SELECT money FROM profile WHERE "user"=$1;', participant_id)
+            if parsed_amount > int(owned or 0):
+                return False, "You do not have that much money."
+            offer["money"] = parsed_amount
+            return True, f"Set your money offer to ${parsed_amount:,}."
+
+        normalized_name = str(name or "").strip().lower().replace(" ", "_")
+        if component == "crates":
+            valid = {"common", "uncommon", "rare", "magic", "legendary", "mystery", "fortune", "divine", "materials"}
+            if normalized_name not in valid:
+                return False, "Unknown crate rarity."
+            owned = await self.bot.pool.fetchval(
+                f'SELECT "crates_{normalized_name}" FROM profile WHERE "user"=$1;',
+                participant_id,
+            )
+            if parsed_amount > int(owned or 0):
+                return False, f"You do not have {parsed_amount} {normalized_name} crates."
+            offer["crates"][normalized_name] = parsed_amount
+            return True, f"Set {normalized_name} crates to {parsed_amount}."
+
+        if component == "resources":
+            amulet_cog = self.bot.get_cog("AmuletCrafting")
+            if amulet_cog:
+                normalized_name = amulet_cog.normalize_resource_name(normalized_name)
+                if normalized_name not in amulet_cog.ALL_RESOURCES:
+                    return False, "Unknown crafting resource."
+                if parsed_amount == 0:
+                    offer["resources"][normalized_name] = 0
+                    return True, f"Removed {normalized_name.replace('_', ' ')} from your offer."
+                receiver = next(
+                    (user for user in trans.get("content", {}) if int(user.id) != int(participant_id)),
+                    None,
+                )
+                if receiver is not None:
+                    receiver_level = await self.get_player_level(receiver.id)
+                    available = amulet_cog.get_available_resources_for_level(receiver_level)
+                    if normalized_name not in available:
+                        required_level = amulet_cog.get_minimum_level_for_resource(normalized_name)
+                        return False, (
+                            f"{receiver.display_name} cannot receive that resource until level "
+                            f"{required_level}."
+                        )
+            owned = await self.bot.pool.fetchval(
+                "SELECT amount FROM crafting_resources WHERE user_id=$1 AND resource_type=$2;",
+                participant_id,
+                normalized_name,
+            )
+            if parsed_amount > int(owned or 0):
+                return False, f"You only own {int(owned or 0)} of that resource."
+            offer["resources"][normalized_name] = parsed_amount
+            return True, f"Set {normalized_name.replace('_', ' ')} to {parsed_amount}."
+
+        if component == "consumables":
+            if not self._is_valid_consumable_type(normalized_name):
+                return False, f"Unknown consumable. Valid types: {self._valid_consumable_type_display()}."
+            owned = await self.bot.pool.fetchval(
+                "SELECT quantity FROM user_consumables WHERE user_id=$1 AND consumable_type=$2;",
+                participant_id,
+                normalized_name,
+            )
+            if parsed_amount > int(owned or 0):
+                return False, f"You only own {int(owned or 0)} of that consumable."
+            offer.setdefault("consumables", defaultdict(lambda: 0))[normalized_name] = parsed_amount
+            return True, f"Set {normalized_name.replace('_', ' ')} to {parsed_amount}."
+
+        return False, "Unknown trade component."
+
     def get_transaction(self, user, return_id=False):
         id_ = str(user.id)
         if not (key := discord.utils.find(lambda x: id_ in x, self.transactions)):
@@ -323,51 +633,7 @@ class Transaction(commands.Cog):
 
     async def update(self, ctx):
         id_ = self.get_transaction(ctx.author, return_id=True)
-        content = "\n\n".join(
-            [
-                _(
-                    """\
-> {user} gives:
-{money}{crates}{items}{resources}{consumables}"""
-                ).format(
-                    user=user.mention,
-                    money=f"- **${m}**\n" if (m := cont["money"]) else "",
-                    crates="".join(
-                        [
-                            f"- **{i}** {getattr(self.bot.cogs['Crates'].emotes, j)}\n"
-                            for j, i in cont["crates"].items()
-                        ]
-                    ),
-                    items="".join(
-                        [
-                            f"- {i['name']} ({i['type']}, {i['damage'] + i['armor']})\n"
-                            for i in cont["items"]
-                        ]
-                    ),
-                    resources="".join(
-                        [
-                            f"- **{amount}x** {resource.replace('_', ' ').title()}\n"
-                            for resource, amount in cont["resources"].items()
-                        ]
-                    ),
-                    consumables="".join(
-                        [
-                            f"- **{amount}x** {ctype.replace('_', ' ').title()} (Premium)\n"
-                            for ctype, amount in cont.get("consumables", {}).items() if amount > 0
-                        ]
-                    ),
-                )
-                for user, cont in self.transactions[id_]["content"].items()
-            ]
-        )
-        content = (
-            content
-            + "\n\n"
-            + _(
-                "Use `{prefix}trade [add/set/remove] [money/crates/item/resources/consumable]"
-                " [amount/itemid/resource_name/consumable_type] [crate rarity]`"
-            ).format(prefix=ctx.clean_prefix)
-        )
+        content = self.build_trade_content(self.transactions[id_], ctx.clean_prefix)
         if (base := self.transactions[id_]["base"]) is not None:
             await base.delete()
         self.transactions[id_]["base"] = await ctx.send(content)
@@ -399,6 +665,8 @@ class Transaction(commands.Cog):
             )
 
         view = TradeDecisionView(
+            cog=self,
+            ctx=trans["ctx"],
             trans=trans,
             participant_actor_ids=participant_actor_ids,
             timeout=120.0,
@@ -767,6 +1035,7 @@ class Transaction(commands.Cog):
             },
             "base": None,
             "task": None,
+            "ctx": ctx,
             "participant_actor_ids": participant_actor_ids,
         }
         await self.update(ctx)
@@ -1511,4 +1780,3 @@ class Transaction(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(Transaction(bot))
-

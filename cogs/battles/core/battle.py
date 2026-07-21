@@ -32,6 +32,11 @@ import discord
 from discord.ext import commands
 
 from classes.ascension import get_ascension_mantle
+from classes.warrior import (
+    WARRIOR_MOMENTUM_CAP,
+    WARRIOR_SPLASH_RATIO,
+    resolve_warrior_attack,
+)
 
 # Import the status effect registry
 from .status_effect import StatusEffectRegistry
@@ -100,6 +105,7 @@ class Battle(ABC):
         self.max_duration = kwargs.get("max_duration", datetime.timedelta(minutes=5))
         self.winner = None
         self.battle_message = None
+        self._winterlight_miracle_used_teams = set()
         
         # Generate unique battle ID for replay system
         self.battle_id = str(uuid.uuid4())
@@ -456,7 +462,9 @@ class Battle(ABC):
         if style == self.HP_BAR_STYLE_NORMAL:
             safe_length = max(1, int(length or 20))
             filled_length = int(safe_length * ratio)
-            return ("█" * filled_length) + ("░" * (safe_length - filled_length))
+            bar = ("█" * filled_length) + ("░" * (safe_length - filled_length))
+            status = self.format_class_resource_status(combatant)
+            return f"{bar}\n{status}" if status else bar
 
         safe_length = max(3, int(length or 10))
         if friendly is None and combatant is not None:
@@ -497,7 +505,9 @@ class Battle(ABC):
             else:
                 tiles.append(self.HP_BAR_EMPTY_MIDDLE)
 
-        return "".join(tiles)
+        bar = "".join(tiles)
+        status = self.format_class_resource_status(combatant)
+        return f"{bar}\n{status}" if status else bar
         
     def format_number(self, number):
         """Format a number to 2 decimal places for display in battle messages"""
@@ -528,6 +538,51 @@ class Battle(ABC):
             self.record_damage_event(source, target, actual_damage)
 
         return actual_damage
+
+    def _uses_reflection_plate(self, defender):
+        if defender is None or getattr(defender, "is_pet", False):
+            return False
+        user = getattr(defender, "user", None)
+        return getattr(user, "id", None) is not None
+
+    def apply_reflection_plate(self, defender, reflected_damage, reflection_value):
+        """Limit player reflection by a one-battle durability plate.
+
+        Plate size matches the reflection percentage: 11% reflection creates a
+        plate worth 11% of max HP. Reflected damage drains the plate; once empty,
+        that player cannot reflect again until a fresh combatant is created.
+        """
+        reflected_damage = Decimal(str(reflected_damage))
+        reflection_value = Decimal(str(reflection_value))
+        if reflected_damage <= 0 or reflection_value <= 0:
+            return Decimal("0"), None
+        if not self._uses_reflection_plate(defender):
+            return reflected_damage, None
+        if getattr(defender, "reflection_plate_broken", False):
+            return Decimal("0"), None
+
+        max_hp = Decimal(str(getattr(defender, "max_hp", 0) or 0))
+        plate_max = Decimal(str(getattr(defender, "reflection_plate_max", 0) or 0))
+        if plate_max <= 0:
+            plate_max = max_hp * reflection_value
+            defender.reflection_plate_max = plate_max
+            defender.reflection_plate = plate_max
+
+        plate = Decimal(str(getattr(defender, "reflection_plate", plate_max) or 0))
+        if plate <= 0:
+            defender.reflection_plate = Decimal("0")
+            defender.reflection_plate_broken = True
+            return Decimal("0"), None
+
+        actual_reflected = min(reflected_damage, plate)
+        remaining = max(Decimal("0"), plate - actual_reflected)
+        defender.reflection_plate = remaining
+        if remaining <= 0:
+            defender.reflection_plate_broken = True
+            return actual_reflected, (
+                f"{defender.name}'s reflective plate breaks; reflection is disabled for this battle!"
+            )
+        return actual_reflected, None
 
     def resolve_attack_element(self, attacker):
         """Resolve outgoing element for an attack action."""
@@ -584,6 +639,93 @@ class Battle(ABC):
             and getattr(combatant, "mage_evolution", None)
         )
 
+    def can_use_warrior_momentum(self, combatant):
+        return bool(
+            self.config.get("class_buffs", True)
+            and combatant is not None
+            and not getattr(combatant, "is_pet", False)
+            and int(getattr(combatant, "warrior_evolution", 0) or 0) > 0
+        )
+
+    def prepare_warrior_attack(self, combatant, raw_damage):
+        """Apply Momentum to one successful normal attack before armor."""
+        raw_damage = Decimal(str(raw_damage))
+        if not self.can_use_warrior_momentum(combatant):
+            return raw_damage, []
+
+        effects = self._class_spec_effects(combatant)
+        roll = random.random() if "warrior_relentless_pct" in effects else None
+        state = resolve_warrior_attack(
+            int(getattr(combatant, "warrior_evolution", 0) or 0),
+            int(getattr(combatant, "warrior_momentum", 0) or 0),
+            effects,
+            roll=roll,
+        )
+        combatant.warrior_momentum = int(state["next_momentum"])
+        combatant.warrior_attack_state = state
+        if int(state.get("brace_stacks", 0) or 0) > 0:
+            combatant.warrior_brace_stacks = int(state["brace_stacks"])
+
+        damage = raw_damage * Decimal(str(state["multiplier"]))
+        if state["crushing_blow"]:
+            bonus = Decimal(str(state["bonus_pct"]))
+            return damage, [
+                f"⚔️ **{combatant.name}** unleashes **Crushing Blow** for "
+                f"**+{self.format_number(bonus)}%** damage!"
+            ]
+        if state["extra_stack"]:
+            return damage, [
+                f"⚔️ **{combatant.name}**'s Relentless Assault gains an extra Momentum "
+                f"(**{combatant.warrior_momentum}/{WARRIOR_MOMENTUM_CAP}**)!"
+            ]
+        return damage, [
+            f"⚔️ **{combatant.name}** builds Momentum "
+            f"(**{combatant.warrior_momentum}/{WARRIOR_MOMENTUM_CAP}**)."
+        ]
+
+    def resolve_warrior_post_hit(self, combatant, target):
+        state = getattr(combatant, "warrior_attack_state", None)
+        if not isinstance(state, dict):
+            return []
+
+        messages = []
+        if state.get("crushing_blow"):
+            last_damage = Decimal(str(getattr(combatant, "warrior_last_attack_damage", 0) or 0))
+            _target_index, target_team = self._combatant_team(target)
+            splash_total = Decimal("0")
+            splash_targets = 0
+            if target_team is not None and last_damage > 0:
+                splash_damage = last_damage * WARRIOR_SPLASH_RATIO
+                for enemy in getattr(target_team, "combatants", []):
+                    if enemy is target or not getattr(enemy, "is_alive", lambda: False)():
+                        continue
+                    splash_total += self.apply_damage(combatant, enemy, splash_damage)
+                    splash_targets += 1
+            if splash_targets:
+                messages.append(
+                    f"⚔️ Crushing Blow cleaves **{splash_targets}** nearby foe"
+                    f"{'s' if splash_targets != 1 else ''} for "
+                    f"**{self.format_number(splash_total)} HP** total!"
+                )
+
+            effects = self._class_spec_effects(combatant)
+            if (
+                "warrior_relentless_pct" in effects
+                and target is not None
+                and not getattr(target, "is_alive", lambda: True)()
+            ):
+                combatant.warrior_momentum = 2
+                messages.append(
+                    f"⚔️ **{combatant.name}** carries the assault forward with "
+                    f"**2/{WARRIOR_MOMENTUM_CAP} Momentum**!"
+                )
+
+        if hasattr(combatant, "warrior_attack_state"):
+            delattr(combatant, "warrior_attack_state")
+        if hasattr(combatant, "warrior_last_attack_damage"):
+            delattr(combatant, "warrior_last_attack_damage")
+        return messages
+
     def can_use_paladin_smite(self, combatant):
         return bool(
             self.config.get("class_buffs", True)
@@ -615,6 +757,375 @@ class Battle(ABC):
             and not getattr(combatant, "is_pet", False)
             and getattr(combatant, "paragon_evolution", None)
         )
+
+    @staticmethod
+    def _class_spec_effects(combatant):
+        effects = getattr(combatant, "spec_effects", None)
+        return effects if isinstance(effects, dict) else {}
+
+    def _combatant_team(self, combatant):
+        if combatant is None:
+            return None, None
+        team_index = getattr(combatant, "_battle_team_index", None)
+        if isinstance(team_index, int) and 0 <= team_index < len(self.teams):
+            return team_index, self.teams[team_index]
+        for index, team in enumerate(self.teams):
+            if combatant in getattr(team, "combatants", []):
+                setattr(combatant, "_battle_team_index", index)
+                return index, team
+        return None, None
+
+    @staticmethod
+    def _queue_class_message(combatant, message):
+        if combatant is None or not message:
+            return
+        pending = getattr(combatant, "pending_class_messages", None)
+        if not isinstance(pending, list):
+            pending = []
+            combatant.pending_class_messages = pending
+        pending.append(str(message))
+
+    @staticmethod
+    def consume_pending_class_messages(*combatants):
+        messages = []
+        for combatant in combatants:
+            pending = getattr(combatant, "pending_class_messages", None)
+            if not isinstance(pending, list) or not pending:
+                continue
+            messages.extend(str(message) for message in pending if message)
+            pending.clear()
+        return messages
+
+    def format_class_resource_status(self, combatant):
+        if combatant is None or getattr(combatant, "is_pet", False):
+            return ""
+
+        lines = []
+        if int(getattr(combatant, "reaper_evolution", 0) or 0) > 0:
+            avatar_hits = int(getattr(combatant, "reaper_avatar_hits", 0) or 0)
+            if avatar_hits > 0:
+                lines.append(f"☠️ Avatar of Death: {avatar_hits}/3")
+            else:
+                souls = int(getattr(combatant, "reaper_souls", 0) or 0)
+                lines.append(f"☠️ Souls: {souls}/5")
+
+            effects = self._class_spec_effects(combatant)
+            ward_fx = effects.get("soul_ward_lifesteal_pct")
+            if ward_fx:
+                ward = Decimal(str(getattr(combatant, "soul_ward", 0) or 0))
+                cap = Decimal(str(getattr(combatant, "soul_ward_cap", 0) or 0))
+                if cap <= 0:
+                    cap = (
+                        Decimal(str(getattr(combatant, "max_hp", 0) or 0))
+                        * Decimal(str(ward_fx.get("ward_value", 0)))
+                        / Decimal("100")
+                    )
+                lines.append(
+                    f"🌑 Soul Ward: {self.format_number(ward)}/{self.format_number(cap)}"
+                )
+
+        if int(getattr(combatant, "santa_evolution", 0) or 0) > 0:
+            cheer = int(getattr(combatant, "santa_cheer", 0) or 0)
+            gifts = int(getattr(combatant, "santa_gifts_opened", 0) or 0)
+            lines.append(f"🎁 Cheer: {cheer}/3 · Golden Gift: {gifts % 3}/3")
+            if "christmas_miracle_pct" in self._class_spec_effects(combatant):
+                state = "Spent" if getattr(combatant, "winterlight_miracle_used", False) else "Ready"
+                lines.append(f"🕊️ Christmas Miracle: {state}")
+
+        if int(getattr(combatant, "warrior_evolution", 0) or 0) > 0:
+            momentum = int(getattr(combatant, "warrior_momentum", 0) or 0)
+            state = "Crushing Blow ready" if momentum >= WARRIOR_MOMENTUM_CAP else f"{momentum}/{WARRIOR_MOMENTUM_CAP}"
+            lines.append(f"⚔️ Momentum: {state}")
+
+        return "\n".join(lines)
+
+    def try_seasonal_death_save(self, target):
+        """Resolve deterministic seasonal saves from Combatant's lethal path."""
+        if (
+            not self.config.get("class_buffs", True)
+            or target is None
+        ):
+            return False
+
+        avatar_hits = int(getattr(target, "reaper_avatar_hits", 0) or 0)
+        if (
+            int(getattr(target, "reaper_evolution", 0) or 0) > 0
+            and not getattr(target, "is_pet", False)
+            and avatar_hits > 0
+            and not getattr(target, "has_cheated_death", False)
+        ):
+            target.hp = self.get_cheat_death_recovery_hp(target)
+            target.reaper_avatar_hits = 0
+            target.reaper_souls = 0
+            target.reaper_death_shroud_hits = 1
+            target.has_cheated_death = True
+            cheat_death_used = getattr(self, "cheat_death_used", None)
+            if isinstance(cheat_death_used, set):
+                cheat_death_used.add(target)
+            self._queue_class_message(
+                target,
+                f"☠️ **{target.name}** consumes the Avatar of Death, returns with "
+                f"**{self.format_number(target.hp)} HP**, and enters Death Shroud!",
+            )
+            return True
+
+        team_index, team = self._combatant_team(target)
+        if team is None or team_index in self._winterlight_miracle_used_teams:
+            return False
+
+        miracle_candidates = []
+        for member in getattr(team, "combatants", []):
+            if getattr(member, "is_pet", False):
+                continue
+            effect = self._class_spec_effects(member).get("christmas_miracle_pct")
+            if not effect or (member is not target and not member.is_alive()):
+                continue
+            miracle_candidates.append((float(effect["value"]), member, effect))
+
+        if not miracle_candidates:
+            return False
+
+        _value, owner, effect = max(miracle_candidates, key=lambda item: item[0])
+        self._winterlight_miracle_used_teams.add(team_index)
+        owner.winterlight_miracle_used = True
+        target.hp = max(
+            Decimal("1"),
+            Decimal(str(target.max_hp)) * Decimal(str(effect["value"])) / Decimal("100"),
+        )
+        shield_pct = Decimal(str(effect.get("miracle_shield_value", 0)))
+        shield_gain = Decimal(str(target.max_hp)) * shield_pct / Decimal("100")
+        target.shield = Decimal(str(getattr(target, "shield", 0) or 0)) + shield_gain
+        self._queue_class_message(
+            target,
+            f"🕊️ **{owner.name}** invokes **Christmas Miracle**! **{target.name}** "
+            f"returns with **{self.format_number(target.hp)} HP** and a "
+            f"**{self.format_number(shield_gain)} HP** shield!",
+        )
+        return True
+
+    def _heal_with_soul_ward(self, combatant, amount, effect=None):
+        amount = max(Decimal("0"), Decimal(str(amount or 0)))
+        if amount <= 0:
+            return Decimal("0"), Decimal("0")
+        before = Decimal(str(combatant.hp))
+        combatant.heal(amount)
+        healed = max(Decimal("0"), Decimal(str(combatant.hp)) - before)
+        overflow = max(Decimal("0"), amount - healed)
+        ward_gain = Decimal("0")
+        if effect and overflow > 0:
+            cap = Decimal(str(combatant.max_hp)) * Decimal(str(effect.get("ward_value", 0))) / Decimal("100")
+            current = Decimal(str(getattr(combatant, "soul_ward", 0) or 0))
+            ward_gain = max(Decimal("0"), min(overflow, cap - current))
+            combatant.soul_ward_cap = cap
+            combatant.soul_ward = current + ward_gain
+        return healed, ward_gain
+
+    def _apply_krampus_weakness(self, target, reduction_pct, duration):
+        if target is None or not target.is_alive():
+            return
+        new_pct = max(Decimal("0"), min(Decimal("0.50"), Decimal(str(reduction_pct)) / Decimal("100")))
+        current_pct = Decimal(str(getattr(target, "krampus_weakness_pct", 0) or 0))
+        if new_pct > current_pct:
+            base_damage = Decimal(str(target.damage))
+            if current_pct > 0 and current_pct < 1:
+                base_damage /= Decimal("1") - current_pct
+            target.damage = base_damage * (Decimal("1") - new_pct)
+            target.krampus_weakness_pct = new_pct
+        target.krampus_weakness_hits = max(
+            int(getattr(target, "krampus_weakness_hits", 0) or 0),
+            int(duration),
+        )
+
+    @staticmethod
+    def _tick_krampus_weakness(attacker):
+        hits = int(getattr(attacker, "krampus_weakness_hits", 0) or 0)
+        pct = Decimal(str(getattr(attacker, "krampus_weakness_pct", 0) or 0))
+        if hits <= 0 or pct <= 0:
+            return None
+        hits -= 1
+        attacker.krampus_weakness_hits = hits
+        if hits > 0:
+            return None
+        if pct < 1:
+            attacker.damage = Decimal(str(attacker.damage)) / (Decimal("1") - pct)
+        attacker.krampus_weakness_pct = Decimal("0")
+        return f"⛓️ Krampus's chains release **{attacker.name}**."
+
+    def _resolve_reaper_attack(self, attacker, defender):
+        if not self.config.get("class_buffs", True):
+            return []
+        level = int(getattr(attacker, "reaper_evolution", 0) or 0)
+        if level <= 0 or getattr(attacker, "is_pet", False):
+            return []
+
+        messages = []
+        effects = self._class_spec_effects(attacker)
+        avatar_hits = int(getattr(attacker, "reaper_avatar_hits", 0) or 0)
+        was_avatar = avatar_hits > 0
+
+        if was_avatar and defender is not None and defender.is_alive():
+            damage_pct = {1: 15, 2: 18, 3: 21, 4: 24, 5: 28, 6: 31, 7: 35}[level]
+            bonus = Decimal(str(attacker.damage)) * Decimal(damage_pct) / Decimal("100")
+            actual = self.apply_damage(attacker, defender, bonus)
+            drain_pct = {1: 8, 2: 10, 3: 12, 4: 14, 5: 16, 6: 18, 7: 20}[level]
+            healed, _ward = self._heal_with_soul_ward(
+                attacker,
+                Decimal(str(attacker.damage)) * Decimal(drain_pct) / Decimal("100"),
+                effects.get("soul_ward_lifesteal_pct"),
+            )
+            messages.append(
+                f"☠️ **{attacker.name}**, Avatar of Death, reaps **{defender.name}** "
+                f"for **{self.format_number(actual)} HP** and drains "
+                f"**{self.format_number(healed)} HP**!"
+            )
+
+        verdict = effects.get("death_verdict_pct")
+        if verdict and defender is not None and defender.is_alive() and defender.max_hp > 0:
+            hp_ratio = Decimal(str(defender.hp)) / Decimal(str(defender.max_hp))
+            used = getattr(attacker, "death_verdict_targets", None)
+            if not isinstance(used, set):
+                used = set()
+                attacker.death_verdict_targets = used
+            marker = self.get_runtime_combatant_marker(defender)
+            if hp_ratio <= Decimal(str(verdict.get("threshold", 0.20))) and marker not in used:
+                used.add(marker)
+                weapon_damage = Decimal(str(attacker.damage)) * Decimal(str(verdict["value"])) / Decimal("100")
+                vitality = Decimal(str(defender.max_hp)) * Decimal(str(verdict.get("hp_value", 0))) / Decimal("100")
+                vitality_cap = Decimal(str(attacker.damage)) * Decimal(str(verdict.get("hp_damage_cap", 1.0)))
+                actual = self.apply_damage(attacker, defender, weapon_damage + min(vitality, vitality_cap))
+                messages.append(
+                    f"⚰️ **DEATH'S VERDICT!** **{attacker.name}** condemns **{defender.name}** "
+                    f"for **{self.format_number(actual)} HP**!"
+                )
+
+        soulbinder = effects.get("soul_ward_lifesteal_pct")
+        if soulbinder:
+            amount = Decimal(str(attacker.damage)) * Decimal(str(soulbinder["value"])) / Decimal("100")
+            healed, ward_gain = self._heal_with_soul_ward(attacker, amount, soulbinder)
+            if healed > 0 or ward_gain > 0:
+                text = f"🌑 Dominion of Souls restores **{self.format_number(healed)} HP**"
+                if ward_gain > 0:
+                    text += f" and binds **{self.format_number(ward_gain)} HP** into Soul Ward"
+                messages.append(text + ".")
+
+        if was_avatar:
+            attacker.reaper_avatar_hits = max(0, avatar_hits - 1)
+            if attacker.reaper_avatar_hits == 0:
+                messages.append(f"☠️ **{attacker.name}**'s Avatar of Death fades.")
+        else:
+            gained = 1 + (1 if defender is not None and not defender.is_alive() else 0)
+            souls = min(5, int(getattr(attacker, "reaper_souls", 0) or 0) + gained)
+            attacker.reaper_souls = souls
+            if souls >= 5:
+                attacker.reaper_souls = 0
+                attacker.reaper_avatar_hits = 3
+                messages.append(
+                    f"☠️ **{attacker.name}** harvests five souls and becomes the "
+                    f"**AVATAR OF DEATH** for three attacks!"
+                )
+            else:
+                messages.append(f"☠️ **{attacker.name}** harvests souls (**{souls}/5**).")
+
+        return messages
+
+    def _resolve_santa_attack(self, attacker, defender):
+        if not self.config.get("class_buffs", True):
+            return []
+        level = int(getattr(attacker, "santa_evolution", 0) or 0)
+        if level <= 0 or getattr(attacker, "is_pet", False):
+            return []
+
+        messages = []
+        effects = self._class_spec_effects(attacker)
+        krampus = effects.get("naughty_chain_pct")
+        if krampus and defender is not None:
+            bucket = getattr(attacker, "krampus_naughty_stacks", None)
+            if not isinstance(bucket, dict):
+                bucket = {}
+                attacker.krampus_naughty_stacks = bucket
+            marker = self.get_runtime_combatant_marker(defender)
+            stacks = int(bucket.get(marker, 0) or 0) + 1
+            threshold = int(krampus.get("stacks", 3))
+            if stacks >= threshold:
+                bucket[marker] = 0
+                bonus = Decimal(str(attacker.damage)) * Decimal(str(krampus["value"])) / Decimal("100")
+                actual = self.apply_damage(attacker, defender, bonus) if defender.is_alive() else Decimal("0")
+                self._apply_krampus_weakness(
+                    defender,
+                    krampus.get("reduction_value", 0),
+                    krampus.get("duration", 2),
+                )
+                attacker.santa_force_crimson = True
+                messages.append(
+                    f"⛓️ **CHAINS OF THE NAUGHTY!** Krampus punishes **{defender.name}** "
+                    f"for **{self.format_number(actual)} HP** and weakens its next attacks!"
+                )
+            else:
+                bucket[marker] = stacks
+                messages.append(f"😈 **{defender.name}** joins the Naughty List (**{stacks}/{threshold}**).")
+
+        cheer = int(getattr(attacker, "santa_cheer", 0) or 0) + 1
+        if cheer < 3:
+            attacker.santa_cheer = cheer
+            messages.append(f"🎁 **{attacker.name}** gathers Cheer (**{cheer}/3**).")
+            return messages
+
+        attacker.santa_cheer = 0
+        opened = int(getattr(attacker, "santa_gifts_opened", 0) or 0) + 1
+        attacker.santa_gifts_opened = opened
+        golden = opened % 3 == 0
+        team_index, team = self._combatant_team(attacker)
+        allies = [member for member in getattr(team, "combatants", [attacker]) if member.is_alive()]
+        if not allies:
+            allies = [attacker]
+
+        crimson_pct = {1: 15, 2: 20, 3: 25, 4: 28, 5: 30, 6: 33, 7: 35}[level]
+        heal_pct = {1: 2.5, 2: 3, 3: 3.5, 4: 4, 5: 4.5, 6: 5.2, 7: 6}[level]
+        shield_pct = {1: 1.5, 2: 2, 3: 2.4, 4: 2.8, 5: 3.2, 6: 3.6, 7: 4}[level]
+        winterlight = effects.get("christmas_miracle_pct")
+        support_mult = Decimal(str(winterlight.get("gift_multiplier", 1.0))) if winterlight else Decimal("1")
+        golden_mult = Decimal("1.5") if golden else Decimal("1")
+
+        if golden:
+            gift_types = ["crimson", "evergreen", "starlight"]
+            attacker.santa_force_crimson = False
+        elif getattr(attacker, "santa_force_crimson", False):
+            gift_types = ["crimson"]
+            attacker.santa_force_crimson = False
+        elif winterlight and any(member.hp < member.max_hp for member in allies):
+            gift_types = [random.choice(["evergreen"] * 5 + ["starlight"] * 3 + ["crimson"] * 2)]
+        else:
+            gift_types = [random.choice(["crimson", "evergreen", "starlight"])]
+
+        if golden:
+            messages.append(f"🌟 **GOLDEN GIFT!** **{attacker.name}** unleashes every wonder at once!")
+
+        if "crimson" in gift_types:
+            bonus = Decimal(str(attacker.damage)) * Decimal(str(crimson_pct)) / Decimal("100") * golden_mult
+            actual = self.apply_damage(attacker, defender, bonus) if defender is not None and defender.is_alive() else Decimal("0")
+            messages.append(f"🎁 Crimson Present bursts for **{self.format_number(actual)} HP**!")
+
+        if "evergreen" in gift_types:
+            recipient = min(allies, key=lambda member: Decimal(str(member.hp)) / max(Decimal("1"), Decimal(str(member.max_hp))))
+            before = Decimal(str(recipient.hp))
+            amount = Decimal(str(recipient.max_hp)) * Decimal(str(heal_pct)) / Decimal("100") * support_mult * golden_mult
+            recipient.heal(amount)
+            actual = Decimal(str(recipient.hp)) - before
+            messages.append(
+                f"🎁 Evergreen Present restores **{self.format_number(actual)} HP** to **{recipient.name}**!"
+            )
+
+        if "starlight" in gift_types:
+            total_shield = Decimal("0")
+            for ally in allies:
+                amount = Decimal(str(ally.max_hp)) * Decimal(str(shield_pct)) / Decimal("100") * support_mult * golden_mult
+                cap = Decimal(str(ally.max_hp)) * Decimal("0.25")
+                total_shield += self.apply_capped_shield(ally, amount, cap)
+            messages.append(
+                f"🎁 Starlight Present wraps the party in **{self.format_number(total_shield)} HP** of shields!"
+            )
+
+        return messages
 
     @staticmethod
     def get_runtime_combatant_marker(combatant):
@@ -1418,7 +1929,7 @@ class Battle(ABC):
         return None
 
     def resolve_post_hit_class_effects(self, combatant, target):
-        messages = []
+        messages = self.consume_pending_class_messages(target, combatant)
 
         for resolver, formatter in (
             (self.advance_raider_mark, self.format_raider_mark_message),
@@ -1430,6 +1941,14 @@ class Battle(ABC):
             message = formatter(state)
             if message:
                 messages.append(message)
+
+        messages.extend(self._resolve_reaper_attack(combatant, target))
+        messages.extend(self._resolve_santa_attack(combatant, target))
+        messages.extend(self.resolve_warrior_post_hit(combatant, target))
+        weakness_message = self._tick_krampus_weakness(combatant)
+        if weakness_message:
+            messages.append(weakness_message)
+        messages.extend(self.consume_pending_class_messages(target, combatant))
 
         return messages
 
@@ -1456,6 +1975,10 @@ class Battle(ABC):
         max_hp = Decimal(str(getattr(combatant, "max_hp", 0) or 0))
         if max_hp <= 0:
             return Decimal("75")
+        reaper_level = int(getattr(combatant, "reaper_evolution", 0) or 0)
+        if reaper_level > 0:
+            recovery_ratio = Decimal("0.12") + Decimal("0.025") * Decimal(reaper_level)
+            return min(max_hp, max(Decimal("1"), max_hp * recovery_ratio))
         return min(max_hp, max(Decimal("75"), max_hp * Decimal("0.50")))
 
     def get_turn_priority(self, combatant):
@@ -1528,6 +2051,10 @@ class Battle(ABC):
         # 2) Add per-hit variance.
         raw_damage += damage_variance
 
+        # Warrior Momentum applies to successful normal attacks before armor.
+        raw_damage, warrior_messages = self.prepare_warrior_attack(attacker, raw_damage)
+        skill_messages.extend(warrior_messages)
+
         # 3) Pet attack skill effects.
         if pet_ext and getattr(attacker, "is_pet", False):
             raw_damage, skill_messages = pet_ext.process_skill_effects_on_attack(attacker, defender, raw_damage)
@@ -1577,6 +2104,8 @@ class Battle(ABC):
         # 7) Track damage dealt for pet lifesteal and per-turn effects.
         if getattr(attacker, "is_pet", False):
             setattr(attacker, "last_damage_dealt", final_damage)
+        elif self.can_use_warrior_momentum(attacker):
+            setattr(attacker, "warrior_last_attack_damage", Decimal(str(final_damage)))
 
         return PetAttackOutcome(
             final_damage=Decimal(str(final_damage)),
