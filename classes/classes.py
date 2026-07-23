@@ -154,6 +154,26 @@ class Reaper(GameClass):
     GrimReaper = 6
 
 
+class Bard(GameClass):
+    Busker = 0
+    Minstrel = 1
+    Skald = 2
+    Troubadour = 3
+    Songweaver = 4
+    Virtuoso = 5
+    Maestro = 6
+
+
+class Beastmaster(GameClass):
+    Wrangler = 0
+    BeastKin = 1
+    Packmate = 2
+    Wildcaller = 3
+    Alphabond = 4
+    Feralheart = 5
+    Beastlord = 6
+
+
 def get_class_evolves(class_: type[GameClass]) -> list[GameClass]:
     return list(class_.__members__.values())
 
@@ -169,6 +189,8 @@ ALL_CLASSES = {
                   + list(Ritualist.__members__.values())
                   + list(Paladin.__members__.values())
                   + list(Reaper.__members__.values())
+                  + list(Bard.__members__.values())
+                  + list(Beastmaster.__members__.values())
                   + list(SantasHelper.__members__.values())
                   + list(Tank.__members__.values())
 }
@@ -183,6 +205,8 @@ ALL_CLASSES_TYPES = {
     "Warrior": Warrior,
     "Paladin": Paladin,
     "Reaper": Reaper,
+    "Bard": Bard,
+    "Beastmaster": Beastmaster,
     "SantasHelper": SantasHelper,
     "Tank": Tank,
 }
