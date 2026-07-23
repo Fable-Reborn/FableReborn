@@ -411,6 +411,7 @@ class RitualRoleTakeoverView(View):
 
 class Raid(commands.Cog):
     """Raids are only available in the support server. Use the support command for an invite link."""
+    RAGNAROK_TRACEBACK_CHANNEL_ID = 1404785376924799068
     DRAGON_COIN_DROP_CHANCE_PERCENT = 10
     DRAGON_COIN_DROP_MIN = 2
     DRAGON_COIN_DROP_MAX = 5
@@ -1130,6 +1131,7 @@ class Raid(commands.Cog):
     async def auto_spawn_raid(self, channel, hp, rarity="magic", raid_hp=17776):
         """Auto-spawn a raid without decorator checks."""
         try:
+            raid_timer_set = False
             if rarity not in ["magic", "legendary", "rare", "uncommon", "common", "mystery", "fortune", "divine", "materials"]:
                 raise ValueError("Invalid rarity specified.")
             channeldebug = self.bot.get_channel(self.debug_channel_id)
@@ -1140,6 +1142,7 @@ class Raid(commands.Cog):
             guild = channel.guild
             
             await self.set_raid_timer()
+            raid_timer_set = True
             survival_used = set()
 
             self.boss = {"hp": hp, "initial_hp": hp, "min_dmg": 50, "max_dmg": 1500}
@@ -1814,15 +1817,50 @@ class Raid(commands.Cog):
             self.raidactive = False
             self.boss = None
         except Exception as e:
-            import traceback
-            current_channel = self.bot.get_channel(self.debug_channel_id)
-            error_message = f"Error in auto_spawn_raid: {e}\n"
-            error_message += traceback.format_exc()
-            if current_channel:
-                await current_channel.send(error_message)
+            error_message = (
+                f"Automatic Ragnarok raid failed with {type(e).__name__}: {e}\n\n"
+                f"{traceback.format_exc()}"
+            ).replace("```", "'''")
+            traceback_channel = self.bot.get_channel(
+                self.RAGNAROK_TRACEBACK_CHANNEL_ID
+            )
+            if traceback_channel is None:
+                try:
+                    traceback_channel = await self.bot.fetch_channel(
+                        self.RAGNAROK_TRACEBACK_CHANNEL_ID
+                    )
+                except Exception:
+                    traceback_channel = self.bot.get_channel(self.debug_channel_id) or channel
+            if traceback_channel:
+                for start in range(0, len(error_message), 1900):
+                    try:
+                        await traceback_channel.send(
+                            f"```py\n{error_message[start:start + 1900]}\n```"
+                        )
+                    except Exception:
+                        break
             print(error_message)
-            if current_channel:
-                await current_channel.send(f"Error in auto raid: {e}")
+            if channel and getattr(channel, "id", None) != getattr(
+                traceback_channel, "id", None
+            ):
+                try:
+                    await channel.send(
+                        f"Automatic Ragnarok raid failed: {type(e).__name__}: {e}. "
+                        f"The traceback was sent to <#{self.RAGNAROK_TRACEBACK_CHANNEL_ID}>."
+                    )
+                except Exception:
+                    pass
+
+            if raid_timer_set:
+                try:
+                    await self.clear_raid_timer()
+                except Exception as cleanup_error:
+                    print(f"Failed to clear the automatic raid timer: {cleanup_error}")
+            self.raid.clear()
+            self.joined = []
+            self.raid_preparation = False
+            self.raidactive = False
+            self.boss = None
 
 
 
@@ -2497,10 +2535,12 @@ class Raid(commands.Cog):
             self.raid_preparation = False
             self.boss = None
         except Exception as e:
-            import traceback
-            error_message = f"Error occurred: {e}\n"
-            error_message += traceback.format_exc()
-            await ctx.send(error_message)
+            error_message = (
+                f"Ragnarok raid failed with {type(e).__name__}: {e}\n\n"
+                f"{traceback.format_exc()}"
+            ).replace("```", "'''")
+            for start in range(0, len(error_message), 1900):
+                await ctx.send(f"```py\n{error_message[start:start + 1900]}\n```")
             print(error_message)
 
     async def get_random_user_info(self, ctx):
