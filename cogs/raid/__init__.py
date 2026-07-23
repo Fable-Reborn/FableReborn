@@ -534,6 +534,19 @@ class Raid(commands.Cog):
         self.auto_raid_check.cancel()
 
     @staticmethod
+    def _round_raid_number(value):
+        """Return a float rounded to Ragnarok's two-decimal precision."""
+        return float(
+            Decimal(str(value or 0)).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+        )
+
+    @staticmethod
+    def _format_raid_number(value):
+        return f"{Raid._round_raid_number(value):,.2f}"
+
+    @staticmethod
     def _normalize_raid_combatant(data):
         """Keep pooled raid combat values on one numeric type.
 
@@ -543,12 +556,14 @@ class Raid(commands.Cog):
         """
         for stat in ("hp", "armor", "damage", "max_hp"):
             if stat in data:
-                data[stat] = float(data[stat] or 0)
+                data[stat] = Raid._round_raid_number(data[stat])
         return data
 
     @staticmethod
     def getfinaldmg(damage, defense):
-        return max(0.0, float(damage or 0) - float(defense or 0))
+        return Raid._round_raid_number(
+            max(0.0, float(damage or 0) - float(defense or 0))
+        )
 
     async def _apply_raid_spec_stats(self, user_id, dmg, deff):
         """Stat-time class specialization effects for raid joins.
@@ -620,7 +635,7 @@ class Raid(commands.Cog):
         santa_level = self._pooled_class_grade(classes, self.SANTA_EVOLUTION_LEVELS)
         warrior_level = self._pooled_class_grade(classes, WARRIOR_EVOLUTION_LEVELS)
         return {
-            "max_hp": float(max_hp),
+            "max_hp": self._round_raid_number(max_hp),
             "spec_effects": spec_effects or {},
             "reaper_evolution": reaper_level,
             "santa_evolution": santa_level,
@@ -640,24 +655,30 @@ class Raid(commands.Cog):
         return user.mention if participant_type == "user" else str(user)
 
     def _pooled_heal_with_ward(self, data, amount, effect=None):
-        amount = max(0.0, float(amount or 0))
-        before = float(data.get("hp", 0) or 0)
-        max_hp = max(1.0, float(data.get("max_hp", before) or before))
-        data["hp"] = min(max_hp, before + amount)
-        healed = max(0.0, float(data["hp"]) - before)
-        overflow = max(0.0, amount - healed)
+        amount = self._round_raid_number(max(0.0, float(amount or 0)))
+        before = self._round_raid_number(data.get("hp", 0))
+        max_hp = self._round_raid_number(
+            max(1.0, float(data.get("max_hp", before) or before))
+        )
+        data["hp"] = self._round_raid_number(min(max_hp, before + amount))
+        healed = self._round_raid_number(max(0.0, data["hp"] - before))
+        overflow = self._round_raid_number(max(0.0, amount - healed))
         ward = 0.0
         if effect and overflow > 0:
-            cap = max_hp * float(effect.get("ward_value", 0)) / 100
-            current = float(data.get("soul_ward", 0) or 0)
-            ward = max(0.0, min(overflow, cap - current))
-            data["soul_ward"] = current + ward
+            cap = self._round_raid_number(
+                max_hp * float(effect.get("ward_value", 0)) / 100
+            )
+            current = self._round_raid_number(data.get("soul_ward", 0))
+            ward = self._round_raid_number(
+                max(0.0, min(overflow, cap - current))
+            )
+            data["soul_ward"] = self._round_raid_number(current + ward)
             data["soul_ward_cap"] = cap
         return healed, ward
 
     def _pooled_apply_incoming_seasonal(self, data, damage):
         messages = []
-        damage = max(0.0, float(damage or 0))
+        damage = self._round_raid_number(max(0.0, float(damage or 0)))
         shroud_hits = int(data.get("reaper_death_shroud_hits", 0) or 0)
         if shroud_hits > 0:
             damage *= 0.5
@@ -691,14 +712,14 @@ class Raid(commands.Cog):
                 messages.append("⛓️ Krampus's chains release the raid boss.")
 
         for shield_key, label in (("soul_ward", "Soul Ward"), ("gift_shield", "Starlight shield")):
-            shield = float(data.get(shield_key, 0) or 0)
+            shield = self._round_raid_number(data.get(shield_key, 0))
             if shield <= 0 or damage <= 0:
                 continue
-            absorbed = min(shield, damage)
-            data[shield_key] = shield - absorbed
-            damage -= absorbed
-            messages.append(f"🛡️ {label} absorbs **{absorbed:,.0f}HP**!")
-        return damage, messages
+            absorbed = self._round_raid_number(min(shield, damage))
+            data[shield_key] = self._round_raid_number(shield - absorbed)
+            damage = self._round_raid_number(damage - absorbed)
+            messages.append(f"🛡️ {label} absorbs **{absorbed:,.2f}HP**!")
+        return self._round_raid_number(damage), messages
 
     def _pooled_try_seasonal_save(self, target_key, data):
         if float(data.get("hp", 0) or 0) > 0:
@@ -711,9 +732,11 @@ class Raid(commands.Cog):
                 data["reaper_avatar_hits"] = 0
                 data["reaper_souls"] = 0
                 data["reaper_death_shroud_hits"] = 1
-                data["hp"] = max(1.0, float(data["max_hp"]) * (0.12 + 0.025 * reaper_level))
+                data["hp"] = self._round_raid_number(
+                    max(1.0, float(data["max_hp"]) * (0.12 + 0.025 * reaper_level))
+                )
                 source = "Avatar of Death" if avatar else "Undying Loyalty"
-                return f"☠️ {self._pooled_name(target_key)} invokes {source} and returns with **{data['hp']:,.0f}HP**!"
+                return f"☠️ {self._pooled_name(target_key)} invokes {source} and returns with **{data['hp']:,.2f}HP**!"
 
         if any(raid_data.get("winterlight_team_miracle_used") for raid_data in self.raid.values()):
             return None
@@ -733,12 +756,18 @@ class Raid(commands.Cog):
         for raid_data in self.raid.values():
             raid_data["winterlight_team_miracle_used"] = True
         owner_data["winterlight_miracle_used"] = True
-        data["hp"] = max(1.0, float(data["max_hp"]) * float(miracle["value"]) / 100)
-        shield = float(data["max_hp"]) * float(miracle.get("miracle_shield_value", 0)) / 100
-        data["gift_shield"] = float(data.get("gift_shield", 0) or 0) + shield
+        data["hp"] = self._round_raid_number(
+            max(1.0, float(data["max_hp"]) * float(miracle["value"]) / 100)
+        )
+        shield = self._round_raid_number(
+            float(data["max_hp"]) * float(miracle.get("miracle_shield_value", 0)) / 100
+        )
+        data["gift_shield"] = self._round_raid_number(
+            float(data.get("gift_shield", 0) or 0) + shield
+        )
         return (
             f"🕊️ {self._pooled_name(owner_key)} invokes **Christmas Miracle**! "
-            f"{self._pooled_name(target_key)} returns with **{data['hp']:,.0f}HP** and a **{shield:,.0f}HP** shield!"
+            f"{self._pooled_name(target_key)} returns with **{data['hp']:,.2f}HP** and a **{shield:,.2f}HP** shield!"
         )
 
     def _apply_pooled_seasonal_round(self):
@@ -751,7 +780,7 @@ class Raid(commands.Cog):
         ]
         for raid_key, data in living_users:
             name = self._pooled_name(raid_key)
-            base_damage = float(data.get("damage", 0) or 0)
+            base_damage = self._round_raid_number(data.get("damage", 0))
             effects = data.get("spec_effects") or {}
             warrior_level = int(data.get("warrior_evolution", 0) or 0)
             if warrior_level:
@@ -765,14 +794,16 @@ class Raid(commands.Cog):
                 data["warrior_momentum"] = int(warrior_state["next_momentum"])
                 if warrior_state.get("brace_stacks"):
                     data["warrior_brace_stacks"] = int(warrior_state["brace_stacks"])
-                warrior_bonus = base_damage * float(
-                    Decimal(str(warrior_state["multiplier"])) - Decimal("1")
+                warrior_bonus = self._round_raid_number(
+                    base_damage * float(
+                        Decimal(str(warrior_state["multiplier"])) - Decimal("1")
+                    )
                 )
-                bonus_damage += warrior_bonus
+                bonus_damage = self._round_raid_number(bonus_damage + warrior_bonus)
                 if warrior_state["crushing_blow"]:
                     messages.append(
                         f"⚔️ {name} unleashes **Crushing Blow** for "
-                        f"**{base_damage + warrior_bonus:,.0f}HP**!"
+                        f"**{self._round_raid_number(base_damage + warrior_bonus):,.2f}HP**!"
                     )
                 elif warrior_state["extra_stack"]:
                     messages.append(
@@ -783,14 +814,14 @@ class Raid(commands.Cog):
             avatar_hits = int(data.get("reaper_avatar_hits", 0) or 0)
             if reaper_level and avatar_hits > 0:
                 damage_pct = {1: 15, 2: 18, 3: 21, 4: 24, 5: 28, 6: 31, 7: 35}[reaper_level]
-                avatar_damage = base_damage * damage_pct / 100
-                bonus_damage += avatar_damage
+                avatar_damage = self._round_raid_number(base_damage * damage_pct / 100)
+                bonus_damage = self._round_raid_number(bonus_damage + avatar_damage)
                 drain_pct = {1: 8, 2: 10, 3: 12, 4: 14, 5: 16, 6: 18, 7: 20}[reaper_level]
                 healed, _ward = self._pooled_heal_with_ward(
                     data, base_damage * drain_pct / 100, effects.get("soul_ward_lifesteal_pct")
                 )
                 data["reaper_avatar_hits"] = avatar_hits - 1
-                messages.append(f"☠️ {name}'s Avatar reaps **{avatar_damage:,.0f}HP** and drains **{healed:,.0f}HP**.")
+                messages.append(f"☠️ {name}'s Avatar reaps **{avatar_damage:,.2f}HP** and drains **{healed:,.2f}HP**.")
 
             verdict = effects.get("death_verdict_pct")
             if (
@@ -799,14 +830,18 @@ class Raid(commands.Cog):
                 and float(self.boss.get("hp", 0) or 0) / max(1.0, float(self.boss.get("initial_hp", 1) or 1))
                 <= float(verdict.get("threshold", 0.20))
             ):
-                verdict_damage = base_damage * float(verdict["value"]) / 100
-                verdict_damage += min(
-                    float(self.boss.get("initial_hp", 0) or 0) * float(verdict.get("hp_value", 0)) / 100,
-                    base_damage * float(verdict.get("hp_damage_cap", 1.0)),
+                verdict_damage = self._round_raid_number(
+                    base_damage * float(verdict["value"]) / 100
                 )
-                bonus_damage += verdict_damage
+                verdict_damage = self._round_raid_number(
+                    verdict_damage + min(
+                        float(self.boss.get("initial_hp", 0) or 0) * float(verdict.get("hp_value", 0)) / 100,
+                        base_damage * float(verdict.get("hp_damage_cap", 1.0)),
+                    )
+                )
+                bonus_damage = self._round_raid_number(bonus_damage + verdict_damage)
                 data["death_verdict_used"] = True
-                messages.append(f"⚰️ **DEATH'S VERDICT!** {name} condemns the boss for **{verdict_damage:,.0f}HP**!")
+                messages.append(f"⚰️ **DEATH'S VERDICT!** {name} condemns the boss for **{verdict_damage:,.2f}HP**!")
 
             soulbinder = effects.get("soul_ward_lifesteal_pct")
             if soulbinder:
@@ -814,7 +849,7 @@ class Raid(commands.Cog):
                     data, base_damage * float(soulbinder["value"]) / 100, soulbinder
                 )
                 if healed > 0 or ward > 0:
-                    messages.append(f"🌑 {name} restores **{healed:,.0f}HP** and binds **{ward:,.0f}HP** into Soul Ward.")
+                    messages.append(f"🌑 {name} restores **{healed:,.2f}HP** and binds **{ward:,.2f}HP** into Soul Ward.")
 
             if reaper_level and avatar_hits <= 0:
                 souls = min(5, int(data.get("reaper_souls", 0) or 0) + 1)
@@ -831,8 +866,10 @@ class Raid(commands.Cog):
                 threshold = int(krampus.get("stacks", 3))
                 if stacks >= threshold:
                     data["krampus_naughty_stacks"] = 0
-                    chain_damage = base_damage * float(krampus["value"]) / 100
-                    bonus_damage += chain_damage
+                    chain_damage = self._round_raid_number(
+                        base_damage * float(krampus["value"]) / 100
+                    )
+                    bonus_damage = self._round_raid_number(bonus_damage + chain_damage)
                     data["santa_force_crimson"] = True
                     self.boss["krampus_weakness_pct"] = max(
                         float(self.boss.get("krampus_weakness_pct", 0) or 0),
@@ -842,7 +879,7 @@ class Raid(commands.Cog):
                         int(self.boss.get("krampus_weakness_hits", 0) or 0),
                         int(krampus.get("duration", 2)),
                     )
-                    messages.append(f"⛓️ Krampus chains the boss for **{chain_damage:,.0f}HP**!")
+                    messages.append(f"⛓️ Krampus chains the boss for **{chain_damage:,.2f}HP**!")
                 else:
                     data["krampus_naughty_stacks"] = stacks
 
@@ -873,9 +910,11 @@ class Raid(commands.Cog):
                         gifts = [random.choice(["crimson", "evergreen", "starlight"])]
                     if "crimson" in gifts:
                         crimson_pct = {1: 15, 2: 20, 3: 25, 4: 28, 5: 30, 6: 33, 7: 35}[santa_level]
-                        gift_damage = base_damage * crimson_pct / 100 * golden_mult
-                        bonus_damage += gift_damage
-                        messages.append(f"🎁 Crimson Present bursts for **{gift_damage:,.0f}HP**!")
+                        gift_damage = self._round_raid_number(
+                            base_damage * crimson_pct / 100 * golden_mult
+                        )
+                        bonus_damage = self._round_raid_number(bonus_damage + gift_damage)
+                        messages.append(f"🎁 Crimson Present bursts for **{gift_damage:,.2f}HP**!")
                     if living_users and "evergreen" in gifts:
                         recipient_key, recipient = min(
                             living_users,
@@ -883,28 +922,33 @@ class Raid(commands.Cog):
                         )
                         heal_pct = {1: 2.5, 2: 3, 3: 3.5, 4: 4, 5: 4.5, 6: 5.2, 7: 6}[santa_level]
                         before = float(recipient["hp"])
-                        recipient["hp"] = min(
-                            float(recipient["max_hp"]),
-                            before + float(recipient["max_hp"]) * heal_pct / 100 * support_mult * golden_mult,
+                        recipient["hp"] = self._round_raid_number(
+                            min(
+                                float(recipient["max_hp"]),
+                                before + float(recipient["max_hp"]) * heal_pct / 100 * support_mult * golden_mult,
+                            )
                         )
-                        messages.append(f"🎁 Evergreen Present restores **{float(recipient['hp']) - before:,.0f}HP** to {self._pooled_name(recipient_key)}!")
+                        restored = self._round_raid_number(float(recipient["hp"]) - before)
+                        messages.append(f"🎁 Evergreen Present restores **{restored:,.2f}HP** to {self._pooled_name(recipient_key)}!")
                     if "starlight" in gifts:
                         total_shield = 0.0
                         shield_pct = {1: 1.5, 2: 2, 3: 2.4, 4: 2.8, 5: 3.2, 6: 3.6, 7: 4}[santa_level]
                         for _ally_key, ally in living_users:
-                            cap = float(ally["max_hp"]) * 0.25
-                            current = float(ally.get("gift_shield", 0) or 0)
-                            gain = min(
-                                float(ally["max_hp"]) * shield_pct / 100 * support_mult * golden_mult,
-                                max(0.0, cap - current),
+                            cap = self._round_raid_number(float(ally["max_hp"]) * 0.25)
+                            current = self._round_raid_number(ally.get("gift_shield", 0))
+                            gain = self._round_raid_number(
+                                min(
+                                    float(ally["max_hp"]) * shield_pct / 100 * support_mult * golden_mult,
+                                    max(0.0, cap - current),
+                                )
                             )
-                            ally["gift_shield"] = current + gain
-                            total_shield += gain
-                        messages.append(f"🎁 Starlight Present wraps the raid in **{total_shield:,.0f}HP** of shields!")
+                            ally["gift_shield"] = self._round_raid_number(current + gain)
+                            total_shield = self._round_raid_number(total_shield + gain)
+                        messages.append(f"🎁 Starlight Present wraps the raid in **{total_shield:,.2f}HP** of shields!")
                 if healed > 0:
-                    messages.append(f"🍬 {name}'s Peppermint Drain restores **{healed:,.0f}HP**.")
+                    messages.append(f"🍬 {name}'s Peppermint Drain restores **{healed:,.2f}HP**.")
 
-        return bonus_damage, messages
+        return self._round_raid_number(bonus_damage), messages
 
     def _init_raid_mvp(self):
         return {
@@ -918,7 +962,9 @@ class Raid(commands.Cog):
             return
         entry = raid_mvp.get(target.id)
         if entry is not None:
-            entry["taken"] += max(0.0, float(amount or 0))
+            entry["taken"] = self._round_raid_number(
+                entry["taken"] + max(0.0, float(amount or 0))
+            )
 
     def _credit_raid_mvp_dealt(self, raid_mvp):
         for (user, participant_type), data in self.raid.items():
@@ -926,7 +972,9 @@ class Raid(commands.Cog):
                 continue
             entry = raid_mvp.get(user.id)
             if entry is not None and float(data.get("hp", 0) or 0) > 0:
-                entry["dealt"] += float(data.get("damage", 0) or 0)
+                entry["dealt"] = self._round_raid_number(
+                    entry["dealt"] + float(data.get("damage", 0) or 0)
+                )
 
     async def _post_raid_mvp(self, channel, raid_mvp, success):
         try:
@@ -950,12 +998,12 @@ class Raid(commands.Cog):
             embed = discord.Embed(title="Raid MVPs", color=0xFF5C00)
             embed.add_field(
                 name="🥇 Top Damage",
-                value=f"<@{top_dealt_id}> — **{top_dealt['dealt']:,.0f}**",
+                value=f"<@{top_dealt_id}> — **{top_dealt['dealt']:,.2f}**",
                 inline=False,
             )
             embed.add_field(
                 name="🛡️ Bulwark of the Raid",
-                value=f"<@{top_taken_id}> — **{top_taken['taken']:,.0f}**",
+                value=f"<@{top_taken_id}> — **{top_taken['taken']:,.2f}**",
                 inline=False,
             )
             embed.add_field(name="🍀 Survivors", value=str(survivor_count), inline=False)
@@ -1159,7 +1207,8 @@ class Raid(commands.Cog):
             raid_timer_set = True
             survival_used = set()
 
-            self.boss = {"hp": hp, "initial_hp": hp, "min_dmg": 50, "max_dmg": 1500}
+            raid_boss_hp = self._round_raid_number(hp)
+            self.boss = {"hp": raid_boss_hp, "initial_hp": raid_boss_hp, "min_dmg": 50, "max_dmg": 1500}
             self.joined = []
 
             # Create embed
@@ -1167,7 +1216,7 @@ class Raid(commands.Cog):
             em = discord.Embed(
                 title="Ragnarok Spawned",
                 description=(
-                    f"This boss has {self.boss['hp']:,.0f} HP and has high-end loot!\nThe"
+                    f"This boss has {self.boss['hp']:,.2f} HP and has high-end loot!\nThe"
                     " Ragnarok will be vulnerable in 15 Minutes!"
                     f" Raiders HP: {'Standard' if raid_hp == 17776 else raid_hp}"
                 ),
@@ -1371,8 +1420,13 @@ class Raid(commands.Cog):
                         target_data, finaldmg
                     )
                 before_hp = target_data["hp"]
-                target_data["hp"] -= finaldmg
-                theoretical_damage = finaldmg + target_data["armor"]
+                finaldmg = self._round_raid_number(finaldmg)
+                target_data["hp"] = self._round_raid_number(
+                    target_data["hp"] - finaldmg
+                )
+                theoretical_damage = self._round_raid_number(
+                    finaldmg + target_data["armor"]
+                )
                 if participant_type == "user" and target_data["hp"] <= 0:
                     seasonal_save = self._pooled_try_seasonal_save(
                         (target, participant_type), target_data
@@ -1389,12 +1443,12 @@ class Raid(commands.Cog):
                 em = discord.Embed(title="Ragnarok attacked!", colour=0xFFB900)
 
                 if target_data["hp"] > 0:  # If target is still alive
-                    description = f"{target.mention if participant_type == 'user' else target} now has {target_data['hp']} HP!"
+                    description = f"{target.mention if participant_type == 'user' else target} now has {target_data['hp']:,.2f} HP!"
                     em.description = description
                     em.add_field(name="Theoretical Damage",
-                                value=theoretical_damage)
-                    em.add_field(name="Shield", value=target_data["armor"])
-                    em.add_field(name="Effective Damage", value=finaldmg)
+                                value=f"{theoretical_damage:,.2f}")
+                    em.add_field(name="Shield", value=f"{target_data['armor']:,.2f}")
+                    em.add_field(name="Effective Damage", value=f"{finaldmg:,.2f}")
                 else:  # If target has died
                     # Check if target is a Raider and hasn't used their survival
                     if target_data["hp"] <= 0:  # Changed from else to explicit check
@@ -1417,10 +1471,10 @@ class Raid(commands.Cog):
                                         description = f"💫 {target.mention}'s Raider instincts allowed them to survive with 1 HP!"
                                         em.description = description
                                         em.add_field(name="Theoretical Damage",
-                                                    value=theoretical_damage)
+                                                    value=f"{theoretical_damage:,.2f}")
                                         em.add_field(name="Shield",
-                                                    value=target_data["armor"])
-                                        em.add_field(name="Effective Damage", value=finaldmg)
+                                                    value=f"{target_data['armor']:,.2f}")
+                                        em.add_field(name="Effective Damage", value=f"{finaldmg:,.2f}")
                                         survived = True  # Set the flag
 
                         # Only handle death if they didn't survive
@@ -1428,9 +1482,9 @@ class Raid(commands.Cog):
                             description = f"{target.mention if participant_type == 'user' else target} died!"
                             em.description = description
                             em.add_field(name="Theoretical Damage",
-                                        value=theoretical_damage)
-                            em.add_field(name="Shield", value=target_data["armor"])
-                            em.add_field(name="Effective Damage", value=finaldmg)
+                                        value=f"{theoretical_damage:,.2f}")
+                            em.add_field(name="Shield", value=f"{target_data['armor']:,.2f}")
+                            em.add_field(name="Effective Damage", value=f"{finaldmg:,.2f}")
                             del self.raid[(target, participant_type)]
 
                 if seasonal_def_msgs:
@@ -1451,13 +1505,17 @@ class Raid(commands.Cog):
 
                 self._credit_raid_mvp_dealt(raid_mvp)
                 seasonal_bonus, seasonal_attack_msgs = self._apply_pooled_seasonal_round()
-                dmg_to_take = sum(float(i["damage"]) for i in self.raid.values()) + float(seasonal_bonus)
-                self.boss["hp"] -= dmg_to_take
+                dmg_to_take = self._round_raid_number(
+                    sum(float(i["damage"]) for i in self.raid.values()) + float(seasonal_bonus)
+                )
+                self.boss["hp"] = self._round_raid_number(
+                    self.boss["hp"] - dmg_to_take
+                )
                 await asyncio.sleep(4)
 
                 em = discord.Embed(title="The raid attacked Ragnarok!", colour=0xFF5C00)
                 em.set_thumbnail(url=f"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_attackdragon.webp")
-                em.add_field(name="Damage", value=dmg_to_take)
+                em.add_field(name="Damage", value=f"{dmg_to_take:,.2f}")
                 if seasonal_attack_msgs:
                     em.add_field(
                         name="Seasonal Powers",
@@ -1466,7 +1524,7 @@ class Raid(commands.Cog):
                     )
 
                 if self.boss["hp"] > 0:
-                    em.add_field(name="HP left", value=self.boss["hp"])
+                    em.add_field(name="HP left", value=f"{self.boss['hp']:,.2f}")
                 else:
                     em.add_field(name="HP left", value="Dead!")
                 for channel_id in channels_ids:
@@ -1494,12 +1552,12 @@ class Raid(commands.Cog):
 
                 summary_text = (
                     "Emoji_here The raid was all wiped! Ragnarok had"
-                    f" **{self.boss['hp']:,.3f}** health remaining. Better luck next time."
+                    f" **{self.boss['hp']:,.2f}** health remaining. Better luck next time."
                 )
                 try:
                     summary = (
                         "**Raid result:**\n"
-                        f"Emoji_here Health: **{self.boss['initial_hp']:,.0f}**\n"
+                        f"Emoji_here Health: **{self.boss['initial_hp']:,.2f}**\n"
                         f"{summary_text}\n"
                         f"Emoji_here Raiders joined: **{raiders_joined}**"
                     )
@@ -1771,7 +1829,7 @@ class Raid(commands.Cog):
                             "The raid did not manage to kill Ragnarok within an hour... He disappeared!")
                         await m.add_reaction("\U0001F1EB")
                         summary = (
-                            f"The raid did not manage to kill Ragnarok within an hour... He disappeared with **{self.boss['hp']:,.0f}** health remaining."
+                            f"The raid did not manage to kill Ragnarok within an hour... He disappeared with **{self.boss['hp']:,.2f}** health remaining."
                         )
 
             if 'users' in locals() and users:  # Check if users list exists and is not empty
@@ -1813,7 +1871,7 @@ class Raid(commands.Cog):
             if self.boss["hp"] < 1 and self.bot.config.bot.is_beta:
                 summary = (
                     "**Raid result:**\n"
-                    f"Emoji_here Health: **{self.boss['initial_hp']:,.0f}**\n"
+                    f"Emoji_here Health: **{self.boss['initial_hp']:,.2f}**\n"
                     f"{summary_text}\n"
                     f"Emoji_here Raiders joined: **{raiders_joined}**"
                 )
@@ -1898,7 +1956,8 @@ class Raid(commands.Cog):
             await self.set_raid_timer()
             survival_used = set()
 
-            self.boss = {"hp": hp, "initial_hp": hp, "min_dmg": 50, "max_dmg": 1500}
+            raid_boss_hp = self._round_raid_number(hp)
+            self.boss = {"hp": raid_boss_hp, "initial_hp": raid_boss_hp, "min_dmg": 50, "max_dmg": 1500}
             self.joined = []
 
             # await ctx.channel.set_permissions(
@@ -1910,7 +1969,7 @@ class Raid(commands.Cog):
             em = discord.Embed(
                 title="Ragnarok Spawned",
                 description=(
-                    f"This boss has {self.boss['hp']:,.0f} HP and has high-end loot!\nThe"
+                    f"This boss has {self.boss['hp']:,.2f} HP and has high-end loot!\nThe"
                     " Ragnarok will be vulnerable in 15 Minutes!"
                     f" Raiders HP: {'Standard' if raid_hp == 17776 else raid_hp}"
                 ),
@@ -2105,8 +2164,13 @@ class Raid(commands.Cog):
                         target_data, finaldmg
                     )
                 before_hp = target_data["hp"]
-                target_data["hp"] -= finaldmg
-                theoretical_damage = finaldmg + target_data["armor"]
+                finaldmg = self._round_raid_number(finaldmg)
+                target_data["hp"] = self._round_raid_number(
+                    target_data["hp"] - finaldmg
+                )
+                theoretical_damage = self._round_raid_number(
+                    finaldmg + target_data["armor"]
+                )
                 if participant_type == "user" and target_data["hp"] <= 0:
                     seasonal_save = self._pooled_try_seasonal_save(
                         (target, participant_type), target_data
@@ -2123,12 +2187,12 @@ class Raid(commands.Cog):
                 em = discord.Embed(title="Ragnarok attacked!", colour=0xFFB900)
 
                 if target_data["hp"] > 0:  # If target is still alive
-                    description = f"{target.mention if participant_type == 'user' else target} now has {target_data['hp']} HP!"
+                    description = f"{target.mention if participant_type == 'user' else target} now has {target_data['hp']:,.2f} HP!"
                     em.description = description
                     em.add_field(name="Theoretical Damage",
-                                 value=theoretical_damage)
-                    em.add_field(name="Shield", value=target_data["armor"])
-                    em.add_field(name="Effective Damage", value=finaldmg)
+                                 value=f"{theoretical_damage:,.2f}")
+                    em.add_field(name="Shield", value=f"{target_data['armor']:,.2f}")
+                    em.add_field(name="Effective Damage", value=f"{finaldmg:,.2f}")
                 else:  # If target has died
                     # Check if target is a Raider and hasn't used their survival
                     if target_data["hp"] <= 0:  # Changed from else to explicit check
@@ -2151,10 +2215,10 @@ class Raid(commands.Cog):
                                         description = f"💫 {target.mention}'s Raider instincts allowed them to survive with 1 HP!"
                                         em.description = description
                                         em.add_field(name="Theoretical Damage",
-                                                     value=theoretical_damage)
+                                                     value=f"{theoretical_damage:,.2f}")
                                         em.add_field(name="Shield",
-                                                     value=target_data["armor"])
-                                        em.add_field(name="Effective Damage", value=finaldmg)
+                                                     value=f"{target_data['armor']:,.2f}")
+                                        em.add_field(name="Effective Damage", value=f"{finaldmg:,.2f}")
                                         survived = True  # Set the flag
 
 
@@ -2165,9 +2229,9 @@ class Raid(commands.Cog):
                             description = f"{target.mention if participant_type == 'user' else target} died!"
                             em.description = description
                             em.add_field(name="Theoretical Damage",
-                                         value=theoretical_damage)
-                            em.add_field(name="Shield", value=target_data["armor"])
-                            em.add_field(name="Effective Damage", value=finaldmg)
+                                         value=f"{theoretical_damage:,.2f}")
+                            em.add_field(name="Shield", value=f"{target_data['armor']:,.2f}")
+                            em.add_field(name="Effective Damage", value=f"{finaldmg:,.2f}")
                             del self.raid[(target, participant_type)]
 
 
@@ -2191,13 +2255,17 @@ class Raid(commands.Cog):
 
                 self._credit_raid_mvp_dealt(raid_mvp)
                 seasonal_bonus, seasonal_attack_msgs = self._apply_pooled_seasonal_round()
-                dmg_to_take = sum(float(i["damage"]) for i in self.raid.values()) + float(seasonal_bonus)
-                self.boss["hp"] -= dmg_to_take
+                dmg_to_take = self._round_raid_number(
+                    sum(float(i["damage"]) for i in self.raid.values()) + float(seasonal_bonus)
+                )
+                self.boss["hp"] = self._round_raid_number(
+                    self.boss["hp"] - dmg_to_take
+                )
                 await asyncio.sleep(4)
 
                 em = discord.Embed(title="The raid attacked Ragnarok!", colour=0xFF5C00)
                 em.set_thumbnail(url=f"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_attackdragon.webp")
-                em.add_field(name="Damage", value=dmg_to_take)
+                em.add_field(name="Damage", value=f"{dmg_to_take:,.2f}")
                 if seasonal_attack_msgs:
                     em.add_field(
                         name="Seasonal Powers",
@@ -2206,7 +2274,7 @@ class Raid(commands.Cog):
                     )
 
                 if self.boss["hp"] > 0:
-                    em.add_field(name="HP left", value=self.boss["hp"])
+                    em.add_field(name="HP left", value=f"{self.boss['hp']:,.2f}")
                 else:
                     em.add_field(name="HP left", value="Dead!")
                 for channel_id in channels_ids:
@@ -2224,12 +2292,12 @@ class Raid(commands.Cog):
 
                 summary_text = (
                     "Emoji_here The raid was all wiped! Ragnarok had"
-                    f" **{self.boss['hp']:,.3f}** health remaining. Better luck next time."
+                    f" **{self.boss['hp']:,.2f}** health remaining. Better luck next time."
                 )
                 try:
                     summary = (
                         "**Raid result:**\n"
-                        f"Emoji_here Health: **{self.boss['initial_hp']:,.0f}**\n"
+                        f"Emoji_here Health: **{self.boss['initial_hp']:,.2f}**\n"
                         f"{summary_text}\n"
                         f"Emoji_here Raiders joined: **{raiders_joined}**"
                     )
@@ -2502,7 +2570,7 @@ class Raid(commands.Cog):
                             "The raid did not manage to kill Ragnarok within an hour... He disappeared!")
                         await m.add_reaction("\U0001F1EB")
                         summary = (
-                            "The raid did not manage to kill Ragnarok within an hour... He disappeared with **{self.boss['hp']:,.3f}** health remaining."
+                            f"The raid did not manage to kill Ragnarok within an hour... He disappeared with **{self.boss['hp']:,.2f}** health remaining."
                         )
 
             if users:  # Check if the list is not empty
@@ -2538,7 +2606,7 @@ class Raid(commands.Cog):
                 if self.bot.config.bot.is_beta:
                     summary = (
                         "**Raid result:**\n"
-                        f"Emoji_here Health: **{self.boss['initial_hp']:,.0f}**\n"
+                        f"Emoji_here Health: **{self.boss['initial_hp']:,.2f}**\n"
                         f"{summary_text}\n"
                         f"Emoji_here Raiders joined: **{raiders_joined}**"
                     )
