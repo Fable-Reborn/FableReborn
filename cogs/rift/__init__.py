@@ -332,20 +332,24 @@ class Rift(commands.Cog):
     async def cog_load(self):
         await self.ensure_tables()
 
-    async def _top_rows(self, week, difficulty="normal", limit=5):
-        await self.ensure_tables()
+    @staticmethod
+    def _difficulty_label(difficulty):
         difficulty_key = normalize_rift_difficulty(difficulty) or "normal"
+        return RIFT_DIFFICULTIES[difficulty_key]["label"]
+
+    async def _top_rows(self, week, limit=5):
+        await self.ensure_tables()
         async with self.bot.pool.acquire() as conn:
             return await conn.fetch(
                 """
-                SELECT user_id, rooms_cleared, score
+                SELECT user_id, rooms_cleared, score, difficulty
                 FROM rift_runs
-                WHERE week = $1 AND difficulty = $2 AND score > 0
-                ORDER BY score DESC, rooms_cleared DESC, hp_pct DESC, seconds ASC
-                LIMIT $3
+                WHERE week = $1 AND score > 0
+                ORDER BY score DESC, rooms_cleared DESC, hp_pct DESC,
+                         seconds ASC, user_id ASC
+                LIMIT $2
                 """,
                 week,
-                difficulty_key,
                 limit,
             )
 
@@ -359,7 +363,9 @@ class Rift(commands.Cog):
         if not rows:
             return "No scored runs yet."
         return "\n".join(
-            f"**#{idx}** <@{row['user_id']}> — {row['rooms_cleared']}/7 rooms, **{row['score']:,}**"
+            f"**#{idx}** <@{row['user_id']}> — "
+            f"**{self._difficulty_label(row['difficulty'])}** · "
+            f"{row['rooms_cleared']}/7 rooms · **{row['score']:,}**"
             for idx, row in enumerate(rows, start=1)
         )
 
@@ -390,7 +396,7 @@ class Rift(commands.Cog):
                 week,
                 ctx.author.id,
             )
-        top_rows = await self._top_rows(week, difficulty="normal", limit=5)
+        top_rows = await self._top_rows(week, limit=5)
 
         attempt_text = "Unused"
         if own_row:
@@ -409,7 +415,7 @@ class Rift(commands.Cog):
         embed.add_field(name="Rooms", value=self._format_rooms(rift_data), inline=False)
         embed.add_field(name="Difficulty", value=self._format_difficulties(), inline=False)
         embed.add_field(name="Your Attempt", value=attempt_text, inline=False)
-        embed.add_field(name="Top 5 Normal This Week", value=self._format_top(top_rows), inline=False)
+        embed.add_field(name="Top 5 This Week", value=self._format_top(top_rows), inline=False)
         embed.add_field(
             name="Next Rift",
             value=format_duration((reset - datetime.utcnow()).total_seconds()),
@@ -418,52 +424,62 @@ class Rift(commands.Cog):
         await ctx.send(embed=embed)
 
     @rift.command(name="top")
-    async def rift_top(self, ctx, difficulty: str = "normal"):
-        """Show the weekly Rift leaderboard."""
+    async def rift_top(self, ctx):
+        """Show the combined weekly Rift leaderboard."""
         await self.ensure_tables()
-        difficulty_key = normalize_rift_difficulty(difficulty)
-        if not difficulty_key:
-            valid = "|".join(RIFT_DIFFICULTIES.keys())
-            return await ctx.send(f"Usage: `$rift top [{valid}]`")
-        difficulty_label = RIFT_DIFFICULTIES[difficulty_key]["label"]
         week = current_rift_week()
         async with self.bot.pool.acquire() as conn:
-            rows = await conn.fetch(
+            ranked_rows = await conn.fetch(
                 """
-                SELECT user_id, rooms_cleared, score, hp_pct, seconds, difficulty
-                FROM rift_runs
-                WHERE week = $1 AND difficulty = $2 AND score > 0
-                ORDER BY score DESC, rooms_cleared DESC, hp_pct DESC, seconds ASC
-                LIMIT 10
-                """,
-                week,
-                difficulty_key,
-            )
-            caller = await conn.fetchrow(
-                """
-                SELECT user_id, rooms_cleared, score, hp_pct, seconds, difficulty
-                FROM rift_runs
-                WHERE week = $1 AND user_id = $2 AND difficulty = $3
+                WITH ranked AS (
+                    SELECT user_id, rooms_cleared, score, hp_pct, seconds,
+                           difficulty,
+                           ROW_NUMBER() OVER (
+                               ORDER BY score DESC, rooms_cleared DESC,
+                                        hp_pct DESC, seconds ASC, user_id ASC
+                           ) AS position
+                    FROM rift_runs
+                    WHERE week = $1 AND score > 0
+                )
+                SELECT user_id, rooms_cleared, score, hp_pct, seconds,
+                       difficulty, position
+                FROM ranked
+                WHERE position <= 10 OR user_id = $2
+                ORDER BY position ASC
                 """,
                 week,
                 ctx.author.id,
-                difficulty_key,
             )
 
+        rows = [row for row in ranked_rows if int(row["position"]) <= 10]
+        caller = next(
+            (
+                row
+                for row in ranked_rows
+                if int(row["user_id"]) == ctx.author.id
+            ),
+            None,
+        )
         lines = [
-            f"**#{idx}** <@{row['user_id']}> — {row['rooms_cleared']}/7 rooms, **{row['score']:,}**"
-            for idx, row in enumerate(rows, start=1)
+            f"**#{int(row['position'])}** <@{row['user_id']}> — "
+            f"**{self._difficulty_label(row['difficulty'])}** · "
+            f"{row['rooms_cleared']}/7 rooms · **{row['score']:,}**"
+            for row in rows
         ]
-        top_ids = {int(row["user_id"]) for row in rows}
-        if caller and int(caller["user_id"]) not in top_ids:
-            lines.append(
-                f"\nYour run: {caller['rooms_cleared']}/7 rooms, **{caller['score']:,}**"
-            )
         embed = discord.Embed(
-            title=f"{difficulty_label} Rift Leaderboard - {week}",
+            title=f"Weekly Rift Leaderboard - {week}",
             description="\n".join(lines) if lines else "No scored runs yet.",
             color=0x5B2C6F,
         )
+        if caller and int(caller["position"]) > 10:
+            embed.set_footer(
+                text=(
+                    f"Your position: #{int(caller['position'])} · "
+                    f"{self._difficulty_label(caller['difficulty'])} · "
+                    f"{caller['rooms_cleared']}/7 rooms · "
+                    f"Score {caller['score']:,}"
+                )
+            )
         await ctx.send(embed=embed)
 
     def _difficulty_picker_embed(self):
