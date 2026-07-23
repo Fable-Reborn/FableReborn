@@ -533,8 +533,22 @@ class Raid(commands.Cog):
 
         self.auto_raid_check.cancel()
 
-    def getfinaldmg(self, damage: Decimal, defense):
-        return v if (v := damage - defense) > 0 else 0
+    @staticmethod
+    def _normalize_raid_combatant(data):
+        """Keep pooled raid combat values on one numeric type.
+
+        Database raid stats and AI reinforcements can be ``Decimal`` values,
+        while seasonal effects intentionally return ``float`` values.  Mixing
+        the two makes otherwise harmless HP and display arithmetic fail.
+        """
+        for stat in ("hp", "armor", "damage", "max_hp"):
+            if stat in data:
+                data[stat] = float(data[stat] or 0)
+        return data
+
+    @staticmethod
+    def getfinaldmg(damage, defense):
+        return max(0.0, float(damage or 0) - float(defense or 0))
 
     async def _apply_raid_spec_stats(self, user_id, dmg, deff):
         """Stat-time class specialization effects for raid joins.
@@ -1323,7 +1337,7 @@ class Raid(commands.Cog):
                     participant.update(
                         self._pooled_seasonal_state(profile["class"], spec_effects, raidhp)
                     )
-                    self.raid[(u, "user")] = participant
+                    self.raid[(u, "user")] = self._normalize_raid_combatant(participant)
 
             all_participant_ids = [
                 user.id for (user, participant_type) in self.raid.keys()
@@ -1346,18 +1360,22 @@ class Raid(commands.Cog):
                     and datetime.datetime.utcnow() < start + datetime.timedelta(minutes=60)
             ):
                 (target, participant_type) = random.choice(list(self.raid.keys()))
+                target_data = self._normalize_raid_combatant(
+                    self.raid[(target, participant_type)]
+                )
                 dmg = random.randint(self.boss["min_dmg"], self.boss["max_dmg"])
-                finaldmg = self.getfinaldmg(dmg, self.raid[(target, participant_type)]["armor"])
+                finaldmg = self.getfinaldmg(dmg, target_data["armor"])
                 seasonal_def_msgs = []
                 if participant_type == "user":
                     finaldmg, seasonal_def_msgs = self._pooled_apply_incoming_seasonal(
-                        self.raid[(target, participant_type)], finaldmg
+                        target_data, finaldmg
                     )
-                before_hp = float(self.raid[(target, participant_type)]["hp"])
-                self.raid[(target, participant_type)]["hp"] -= finaldmg
-                if participant_type == "user" and self.raid[(target, participant_type)]["hp"] <= 0:
+                before_hp = target_data["hp"]
+                target_data["hp"] -= finaldmg
+                theoretical_damage = finaldmg + target_data["armor"]
+                if participant_type == "user" and target_data["hp"] <= 0:
                     seasonal_save = self._pooled_try_seasonal_save(
-                        (target, participant_type), self.raid[(target, participant_type)]
+                        (target, participant_type), target_data
                     )
                     if seasonal_save:
                         seasonal_def_msgs.append(seasonal_save)
@@ -1370,16 +1388,16 @@ class Raid(commands.Cog):
 
                 em = discord.Embed(title="Ragnarok attacked!", colour=0xFFB900)
 
-                if self.raid[(target, participant_type)]["hp"] > 0:  # If target is still alive
-                    description = f"{target.mention if participant_type == 'user' else target} now has {self.raid[(target, participant_type)]['hp']} HP!"
+                if target_data["hp"] > 0:  # If target is still alive
+                    description = f"{target.mention if participant_type == 'user' else target} now has {target_data['hp']} HP!"
                     em.description = description
                     em.add_field(name="Theoretical Damage",
-                                value=finaldmg + self.raid[(target, participant_type)]["armor"])
-                    em.add_field(name="Shield", value=self.raid[(target, participant_type)]["armor"])
+                                value=theoretical_damage)
+                    em.add_field(name="Shield", value=target_data["armor"])
                     em.add_field(name="Effective Damage", value=finaldmg)
                 else:  # If target has died
                     # Check if target is a Raider and hasn't used their survival
-                    if self.raid[(target, participant_type)]["hp"] <= 0:  # Changed from else to explicit check
+                    if target_data["hp"] <= 0:  # Changed from else to explicit check
                         # Check if target is a Raider and hasn't used their survival
                         survived = False  # Add this flag
                         if participant_type == "user" and target.id not in survival_used:
@@ -1394,14 +1412,14 @@ class Raid(commands.Cog):
                                     is_raider = bool(set(profile['class']) & raider_classes)
 
                                     if is_raider:
-                                        self.raid[(target, participant_type)]["hp"] = 1
+                                        target_data["hp"] = 1.0
                                         survival_used.add(target.id)
                                         description = f"💫 {target.mention}'s Raider instincts allowed them to survive with 1 HP!"
                                         em.description = description
                                         em.add_field(name="Theoretical Damage",
-                                                    value=finaldmg + self.raid[(target, participant_type)]["armor"])
+                                                    value=theoretical_damage)
                                         em.add_field(name="Shield",
-                                                    value=self.raid[(target, participant_type)]["armor"])
+                                                    value=target_data["armor"])
                                         em.add_field(name="Effective Damage", value=finaldmg)
                                         survived = True  # Set the flag
 
@@ -1410,8 +1428,8 @@ class Raid(commands.Cog):
                             description = f"{target.mention if participant_type == 'user' else target} died!"
                             em.description = description
                             em.add_field(name="Theoretical Damage",
-                                        value=finaldmg + self.raid[(target, participant_type)]["armor"])
-                            em.add_field(name="Shield", value=self.raid[(target, participant_type)]["armor"])
+                                        value=theoretical_damage)
+                            em.add_field(name="Shield", value=target_data["armor"])
                             em.add_field(name="Effective Damage", value=finaldmg)
                             del self.raid[(target, participant_type)]
 
@@ -2053,7 +2071,7 @@ class Raid(commands.Cog):
                     participant.update(
                         self._pooled_seasonal_state(profile["class"], spec_effects, raidhp)
                     )
-                    self.raid[(u, "user")] = participant
+                    self.raid[(u, "user")] = self._normalize_raid_combatant(participant)
 
             all_participant_ids = [
                 user.id for (user, participant_type) in self.raid.keys()
@@ -2076,18 +2094,22 @@ class Raid(commands.Cog):
                     and datetime.datetime.utcnow() < start + datetime.timedelta(minutes=60)
             ):
                 (target, participant_type) = random.choice(list(self.raid.keys()))
+                target_data = self._normalize_raid_combatant(
+                    self.raid[(target, participant_type)]
+                )
                 dmg = random.randint(self.boss["min_dmg"], self.boss["max_dmg"])
-                finaldmg = self.getfinaldmg(dmg, self.raid[(target, participant_type)]["armor"])
+                finaldmg = self.getfinaldmg(dmg, target_data["armor"])
                 seasonal_def_msgs = []
                 if participant_type == "user":
                     finaldmg, seasonal_def_msgs = self._pooled_apply_incoming_seasonal(
-                        self.raid[(target, participant_type)], finaldmg
+                        target_data, finaldmg
                     )
-                before_hp = float(self.raid[(target, participant_type)]["hp"])
-                self.raid[(target, participant_type)]["hp"] -= finaldmg
-                if participant_type == "user" and self.raid[(target, participant_type)]["hp"] <= 0:
+                before_hp = target_data["hp"]
+                target_data["hp"] -= finaldmg
+                theoretical_damage = finaldmg + target_data["armor"]
+                if participant_type == "user" and target_data["hp"] <= 0:
                     seasonal_save = self._pooled_try_seasonal_save(
-                        (target, participant_type), self.raid[(target, participant_type)]
+                        (target, participant_type), target_data
                     )
                     if seasonal_save:
                         seasonal_def_msgs.append(seasonal_save)
@@ -2100,16 +2122,16 @@ class Raid(commands.Cog):
 
                 em = discord.Embed(title="Ragnarok attacked!", colour=0xFFB900)
 
-                if self.raid[(target, participant_type)]["hp"] > 0:  # If target is still alive
-                    description = f"{target.mention if participant_type == 'user' else target} now has {self.raid[(target, participant_type)]['hp']} HP!"
+                if target_data["hp"] > 0:  # If target is still alive
+                    description = f"{target.mention if participant_type == 'user' else target} now has {target_data['hp']} HP!"
                     em.description = description
                     em.add_field(name="Theoretical Damage",
-                                 value=finaldmg + self.raid[(target, participant_type)]["armor"])
-                    em.add_field(name="Shield", value=self.raid[(target, participant_type)]["armor"])
+                                 value=theoretical_damage)
+                    em.add_field(name="Shield", value=target_data["armor"])
                     em.add_field(name="Effective Damage", value=finaldmg)
                 else:  # If target has died
                     # Check if target is a Raider and hasn't used their survival
-                    if self.raid[(target, participant_type)]["hp"] <= 0:  # Changed from else to explicit check
+                    if target_data["hp"] <= 0:  # Changed from else to explicit check
                         # Check if target is a Raider and hasn't used their survival
                         survived = False  # Add this flag
                         if participant_type == "user" and target.id not in survival_used:
@@ -2124,14 +2146,14 @@ class Raid(commands.Cog):
                                     is_raider = bool(set(profile['class']) & raider_classes)
 
                                     if is_raider:
-                                        self.raid[(target, participant_type)]["hp"] = 1
+                                        target_data["hp"] = 1.0
                                         survival_used.add(target.id)
                                         description = f"💫 {target.mention}'s Raider instincts allowed them to survive with 1 HP!"
                                         em.description = description
                                         em.add_field(name="Theoretical Damage",
-                                                     value=finaldmg + self.raid[(target, participant_type)]["armor"])
+                                                     value=theoretical_damage)
                                         em.add_field(name="Shield",
-                                                     value=self.raid[(target, participant_type)]["armor"])
+                                                     value=target_data["armor"])
                                         em.add_field(name="Effective Damage", value=finaldmg)
                                         survived = True  # Set the flag
 
@@ -2143,8 +2165,8 @@ class Raid(commands.Cog):
                             description = f"{target.mention if participant_type == 'user' else target} died!"
                             em.description = description
                             em.add_field(name="Theoretical Damage",
-                                         value=finaldmg + self.raid[(target, participant_type)]["armor"])
-                            em.add_field(name="Shield", value=self.raid[(target, participant_type)]["armor"])
+                                         value=theoretical_damage)
+                            em.add_field(name="Shield", value=target_data["armor"])
                             em.add_field(name="Effective Damage", value=finaldmg)
                             del self.raid[(target, participant_type)]
 
@@ -2585,7 +2607,7 @@ class Raid(commands.Cog):
                 # Construct the bot player entry and add it to the raid dictionary
 
                 bot_entry = (user_info["display_name"], "bot")
-                self.raid[bot_entry] = {
+                self.raid[bot_entry] = self._normalize_raid_combatant({
                     "user": user_info["user_id"],
                     "hp": Decimal(str(round(randomm.uniform(50.0, 400.0), 2))).quantize(Decimal("0.00"),
                                                                                         rounding=ROUND_HALF_UP),
@@ -2593,7 +2615,7 @@ class Raid(commands.Cog):
                                                                                            rounding=ROUND_HALF_UP),
                     "damage": Decimal(str(round(randomm.uniform(100.0, 250.0), 2))).quantize(Decimal("0.00"),
                                                                                              rounding=ROUND_HALF_UP),
-                }
+                })
             # Construct the summary for reinforcements
             reinforcement_summary = ', '.join([f"{count} {bot}" for bot, count in bot_counts.items()])
 
