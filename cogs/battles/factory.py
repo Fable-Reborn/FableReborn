@@ -1081,8 +1081,14 @@ class BattleFactory:
                 monsters = {}
                 for level_str, monster_list in monsters_data.items():
                     monster_level = int(level_str)
-                    # Only keep monsters where ispublic is True (defaulting to True if key is missing)
-                    public_monsters = [monster for monster in monster_list if monster.get("ispublic", True)]
+                    # The fallback is a normal PvE pool, so Frontier exclusives
+                    # remain available only through the Frontier builder.
+                    public_monsters = [
+                        monster
+                        for monster in monster_list
+                        if monster.get("ispublic", True)
+                        and not monster.get("frontier_only", False)
+                    ]
                     monsters[monster_level] = public_monsters
 
             # Return a random monster of the appropriate level

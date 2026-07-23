@@ -14,8 +14,9 @@ from utils import misc as rpgtools
 
 MASTERY_UNLOCK_LEVEL = 40
 MASTERY_UNLOCK_POINTS = 100
-ICE_DRAGON_MASTERY_DAILY_CAP = 25
+GAUNTLET_ICE_DRAGON_MASTERY_DAILY_CAP = 25
 MASTERY_TIMEZONE = "Australia/Sydney"
+DAILY_CAPPED_MASTERY_SOURCES = frozenset({"gauntlet", "ice_dragon"})
 
 MASTERY_AWARDS = {
     "adventure": 1,
@@ -35,7 +36,7 @@ IRONMAN_MASTERY_FLOORS = frozenset({5, 10, 15, 20, 25})
 _TABLES_READY = False
 _TABLE_LOCK = asyncio.Lock()
 _GRANDFATHER_MARKER = "class_mastery_grandfather_v1"
-_ICE_DRAGON_CAP_MARKER = "class_mastery_ice_dragon_cap_v1"
+_CAP_COUNTER_RESET_MARKER = "class_mastery_ice_dragon_cap_v1"
 
 
 def class_lines_from_names(class_names: Iterable[str] | None) -> dict[str, int]:
@@ -115,11 +116,11 @@ async def ensure_mastery_tables(bot) -> None:
                     ON CONFLICT (key) DO NOTHING
                     RETURNING TRUE
                     """,
-                    _ICE_DRAGON_CAP_MARKER,
+                    _CAP_COUNTER_RESET_MARKER,
                 )
                 if should_reset_daily_points:
                     # This counter used to include every repeatable source. Reset it
-                    # once so old activity cannot consume the new Ice Dragon cap.
+                    # once so old activity cannot consume the restricted-source cap.
                     await conn.execute(
                         f"""
                         UPDATE class_mastery
@@ -182,7 +183,7 @@ async def ensure_mastery_tables(bot) -> None:
 
 
 async def get_class_mastery(bot, user_id: int, *, conn=None) -> dict:
-    """Return equipped lines and today's Ice Dragon cap usage."""
+    """Return equipped lines and today's Gauntlet/Ice Dragon cap usage."""
     await ensure_mastery_tables(bot)
     if conn is None:
         async with bot.pool.acquire() as acquired:
@@ -241,8 +242,8 @@ async def award_class_mastery(
 ) -> list[dict]:
     """Award mastery to both equipped Grade 7 lines.
 
-    Only Ice Dragon awards respect the Sydney-day cap. Every other source is
-    uncapped. Results contain only lines that actually received points.
+    Gauntlet and Ice Dragon awards share the Sydney-day cap. Every other source
+    is uncapped. Results contain only lines that actually received points.
     """
     requested = max(0, int(points))
     if requested <= 0:
@@ -291,7 +292,9 @@ async def award_class_mastery(
                 return []
 
         results = []
-        counts_toward_daily_cap = str(source).strip().casefold() == "ice_dragon"
+        counts_toward_daily_cap = (
+            str(source).strip().casefold() in DAILY_CAPPED_MASTERY_SOURCES
+        )
         for line in eligible_lines:
             await conn.execute(
                 """
@@ -328,7 +331,7 @@ async def award_class_mastery(
             if counts_toward_daily_cap:
                 allowed = min(
                     allowed,
-                    max(0, ICE_DRAGON_MASTERY_DAILY_CAP - daily),
+                    max(0, GAUNTLET_ICE_DRAGON_MASTERY_DAILY_CAP - daily),
                 )
 
             if allowed <= 0:

@@ -2977,8 +2977,12 @@ class Battles(commands.Cog):
             "ispublic": True,
         }
 
-    async def _get_public_monsters_by_level(self) -> dict[int, list[dict]]:
-        """Load public monster pools, resolving tier-12 combat data from DB."""
+    async def _get_public_monsters_by_level(
+        self,
+        *,
+        include_frontier_only: bool = False,
+    ) -> dict[int, list[dict]]:
+        """Load public pools while keeping Frontier exclusives out of normal PvE."""
         if not self.monsters_data:
             with open("monsters.json", "r") as f:
                 self.monsters_data = json.load(f)
@@ -3000,6 +3004,10 @@ class Battles(commands.Cog):
                 dict(monster)
                 for monster in monster_list
                 if monster.get("ispublic", True)
+                and (
+                    include_frontier_only
+                    or not monster.get("frontier_only", False)
+                )
             ]
             monsters[level] = public_monsters
 
@@ -3429,7 +3437,9 @@ class Battles(commands.Cog):
 
     async def _get_frontier_build_inputs(self):
         """Load immutable public baselines plus the current legacy recipe rows."""
-        public_pool = await self._get_public_monsters_by_level()
+        public_pool = await self._get_public_monsters_by_level(
+            include_frontier_only=True
+        )
         async with self.bot.pool.acquire() as conn:
             splice_rows = await conn.fetch(
                 """

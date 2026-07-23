@@ -191,12 +191,14 @@
         },
         {
             "name": "Bloomback Tortoise",
-            "hp": 220,
-            "attack": 90,
-            "defense": 115,
+            "hp": 365,
+            "attack": 149,
+            "defense": 191,
             "element": "Nature",
             "url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_5485852d-dbd6-42f6-b052-33f534b0397e.png",
-            "ispublic": true
+            "ispublic": true,
+            "frontier_only": true,
+            "frontier_region_id": "floodroot_basin"
         }
     ],
     "2": [
@@ -564,30 +566,36 @@
         },
         {
             "name": "Galecrest Lynx",
-            "hp": 235,
-            "attack": 230,
-            "defense": 195,
+            "hp": 390,
+            "attack": 382,
+            "defense": 324,
             "element": "Wind",
             "url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_c658dee7-7f66-4c39-919f-6384c583b454.png",
-            "ispublic": true
+            "ispublic": true,
+            "frontier_only": true,
+            "frontier_region_id": "stormbreak_reach"
         },
         {
             "name": "Voltscale Pangolin",
-            "hp": 230,
-            "attack": 225,
-            "defense": 215,
+            "hp": 382,
+            "attack": 374,
+            "defense": 357,
             "element": "Electric",
             "url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_57f2b0c7-ebae-4c2e-aae4-b7d2a759ebb3.png",
-            "ispublic": true
+            "ispublic": true,
+            "frontier_only": true,
+            "frontier_region_id": "stormbreak_reach"
         },
         {
             "name": "Tidereef Kelpie",
-            "hp": 260,
-            "attack": 220,
-            "defense": 230,
+            "hp": 432,
+            "attack": 365,
+            "defense": 382,
             "element": "Water",
             "url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_2c3c8ac4-9a8f-4ff1-be63-d5dd7b3be91d.png",
-            "ispublic": true
+            "ispublic": true,
+            "frontier_only": true,
+            "frontier_region_id": "floodroot_basin"
         }
     ],
     "4": [
@@ -973,30 +981,36 @@
         },
         {
             "name": "Cloudray",
-            "hp": 430,
-            "attack": 410,
-            "defense": 370,
+            "hp": 714,
+            "attack": 681,
+            "defense": 614,
             "element": "Wind",
             "url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_dd938bc1-238f-40f6-8bc1-0b503bb83844.png",
-            "ispublic": true
+            "ispublic": true,
+            "frontier_only": true,
+            "frontier_region_id": "stormbreak_reach"
         },
         {
             "name": "Arcglass Mantis",
-            "hp": 390,
-            "attack": 445,
-            "defense": 345,
+            "hp": 647,
+            "attack": 739,
+            "defense": 573,
             "element": "Electric",
             "url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_c834af79-d663-4d37-a91b-78a8c293c4d4.png",
-            "ispublic": true
+            "ispublic": true,
+            "frontier_only": true,
+            "frontier_region_id": "stormbreak_reach"
         },
         {
             "name": "Cinderhorn Ram",
-            "hp": 420,
-            "attack": 420,
-            "defense": 360,
+            "hp": 697,
+            "attack": 697,
+            "defense": 598,
             "element": "Fire",
             "url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_d86453e5-2478-4899-82b5-b8883e765681.png",
-            "ispublic": true
+            "ispublic": true,
+            "frontier_only": true,
+            "frontier_region_id": "dawnscar_expanse"
         }
     ],
     "6": [
@@ -1364,12 +1378,25 @@
         },
         {
             "name": "Dawnveil Moth",
-            "hp": 590,
-            "attack": 600,
-            "defense": 580,
+            "hp": 979,
+            "attack": 996,
+            "defense": 963,
             "element": "Light",
             "url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_4fc31d25-138e-474f-a05c-c3abeece36d2.png",
-            "ispublic": true
+            "ispublic": true,
+            "frontier_only": true,
+            "frontier_region_id": "dawnscar_expanse"
+        },
+        {
+            "name": "Gloamspine Jackal",
+            "hp": 996,
+            "attack": 988,
+            "defense": 921,
+            "element": "Dark",
+            "url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_gloamspine_jackal.png",
+            "ispublic": true,
+            "frontier_only": true,
+            "frontier_region_id": "fractured_verge"
         }
     ],
     "8": [
@@ -1417,6 +1444,17 @@
             "element": "Dark",
             "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_IMG_7340.png",
             "ispublic": false
+        },
+        {
+            "name": "Riftmolt Scarab",
+            "hp": 1494,
+            "attack": 1013,
+            "defense": 1195,
+            "element": "Corrupted",
+            "url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_riftmolt_scarab.png",
+            "ispublic": true,
+            "frontier_only": true,
+            "frontier_region_id": "fractured_verge"
         }
     ],
     "9": [
@@ -1455,6 +1493,17 @@
             "element": "Light",
             "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_IMG_9031.png",
             "ispublic": false
+        },
+        {
+            "name": "Umbracrown Basilisk",
+            "hp": 1311,
+            "attack": 1353,
+            "defense": 1287,
+            "element": "Dark",
+            "url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_umbracrown_basilisk.png",
+            "ispublic": true,
+            "frontier_only": true,
+            "frontier_region_id": "fractured_verge"
         }
     ],
     "10": [
@@ -1565,6 +1614,17 @@
             "element": "Dark",
             "url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_ChatGPT_Image_Mar_18_2026_08_29_16_PM.png",
             "ispublic": true
+        },
+        {
+            "name": "Nullstar Behemoth",
+            "hp": 1992,
+            "attack": 1411,
+            "defense": 1577,
+            "element": "Corrupted",
+            "url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_nullstar_behemoth.png",
+            "ispublic": true,
+            "frontier_only": true,
+            "frontier_region_id": "fractured_verge"
         }
     ],
     "11": [

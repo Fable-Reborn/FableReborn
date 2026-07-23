@@ -651,6 +651,10 @@ def _wild_pool_for_region(
             for row in rows
             if bool(_row_value(row, "ispublic", True))
             and _canonical_element(_row_value(row, "element")).casefold() in elements
+            and (
+                not _row_value(row, "frontier_only", False)
+                or str(_row_value(row, "frontier_region_id") or "") == region_id
+            )
         ]
         pool[tier] = []
         for row in regional_rows:

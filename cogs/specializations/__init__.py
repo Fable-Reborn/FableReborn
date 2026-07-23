@@ -14,7 +14,7 @@ import discord
 from discord.ext import commands
 
 from classes.class_mastery import (
-    ICE_DRAGON_MASTERY_DAILY_CAP,
+    GAUNTLET_ICE_DRAGON_MASTERY_DAILY_CAP,
     IRONMAN_MASTERY_FLOORS,
     MASTERY_AWARDS,
     MASTERY_UNLOCK_POINTS,
@@ -463,8 +463,9 @@ class Specializations(commands.Cog):
             value_lines = [
                 f"**Mastery:** {self._bar(points, MASTERY_UNLOCK_POINTS, 14)}  "
                 f"**{points} / {MASTERY_UNLOCK_POINTS}**",
-                f"**Today:** {daily_points} / {ICE_DRAGON_MASTERY_DAILY_CAP} "
-                "Ice Dragon points",
+                f"**Today:** {daily_points} / "
+                f"{GAUNTLET_ICE_DRAGON_MASTERY_DAILY_CAP} "
+                "Gauntlet + Ice Dragon points",
             ]
             for key in options:
                 marker = "✓" if picked == key else "·"
@@ -492,7 +493,7 @@ class Specializations(commands.Cog):
 
         embed.set_footer(
             text=(
-                "Mastery is permanent per class line · Ice Dragon cap resets "
+                "Mastery is permanent per class line · restricted-source cap resets "
                 "in Australia/Sydney"
             )
         )
@@ -534,7 +535,8 @@ class Specializations(commands.Cog):
                     f"{self._bar(points, MASTERY_UNLOCK_POINTS, 14)}  "
                     f"**{points} / {MASTERY_UNLOCK_POINTS}**\n"
                     f"Today: **{int(row['daily_points'])} / "
-                    f"{ICE_DRAGON_MASTERY_DAILY_CAP}** Ice Dragon points\n"
+                    f"{GAUNTLET_ICE_DRAGON_MASTERY_DAILY_CAP}** "
+                    "Gauntlet + Ice Dragon points\n"
                     + " · ".join(unlock_bits)
                 ),
                 inline=False,
@@ -554,8 +556,9 @@ class Specializations(commands.Cog):
         )
         embed.set_footer(
             text=(
-                f"Ice Dragon cap: {ICE_DRAGON_MASTERY_DAILY_CAP} points per "
-                "Sydney day · all other mastery sources are uncapped"
+                "Gauntlet + Ice Dragon share a "
+                f"{GAUNTLET_ICE_DRAGON_MASTERY_DAILY_CAP}-point Sydney-day cap "
+                "· all other mastery sources are uncapped"
             )
         )
         await ctx.send(embed=embed)

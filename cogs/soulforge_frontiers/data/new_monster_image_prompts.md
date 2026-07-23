@@ -1,8 +1,8 @@
 # Soulforge Frontiers: New Wild Monster Image Prompts
 
-These eight monsters were activated on 2026-07-16 after their final artwork was delivered and reviewed. This file remains the visual source of truth for replacements and future variants. Keep every design original; do not imitate or reference an existing franchise, artist, game, or copyrighted character.
+The first eight monsters were activated on 2026-07-16, and the four Fractured Verge monsters were activated on 2026-07-24 after their final artwork was delivered and reviewed. This file remains the visual source of truth for replacements and future variants. Keep every design original; do not imitate or reference an existing franchise, artist, game, or copyrighted character.
 
-## Shared direction for all eight images
+## Shared direction for all twelve images
 
 Use this block at the end of every individual prompt:
 
@@ -90,12 +90,52 @@ Prompt:
 
 Append the shared direction block.
 
+## 9. Gloamspine Jackal — Dark
+
+Filename suggestion: `gloamspine_jackal.png`
+
+Prompt:
+
+> Design the Gloamspine Jackal, a lean supernatural jackal adapted to hunting along broken dimensional boundaries. Give it long athletic legs, a narrow alert face, large swept-back ears, and a deep charcoal coat fading into muted violet around the paws. A ridge of naturally grown black-glass quills runs from its shoulders to the base of its tail, catching faint purple highlights without appearing metallic or mechanical. Its eyes glow pale lavender, while thin ribbons of shadow trail from its feet and long curved tail. Pose it stalking forward with its head low and one paw raised. It should feel intelligent, swift, physical, and dangerous—not undead, demonic, armored, or skeletal.
+
+Append the shared direction block.
+
+## 10. Riftmolt Scarab — Corrupted
+
+Filename suggestion: `riftmolt_scarab.png`
+
+Prompt:
+
+> Design the Riftmolt Scarab, a massive organic scarab altered by prolonged exposure to a dimensional fracture. Give it a broad low body, six powerful insect legs, heavy hooked feet, and overlapping shell plates of dark blue-black chitin. The outer shell is split by controlled glowing fissures of magenta and cold cyan, revealing a translucent violet membrane beneath rather than flesh or machinery. Its horn curves forward like a natural crescent pick, and its small eyes glow from beneath a reinforced brow. Add a restrained distortion around the shell edges, as though its outline is slightly displaced in space. Pose it braced defensively with its front legs spread. It must remain unmistakably insectoid, organic, heavy, and cohesive—not robotic or made from floating disconnected pieces.
+
+Append the shared direction block.
+
+## 11. Umbracrown Basilisk — Dark
+
+Filename suggestion: `umbracrown_basilisk.png`
+
+Prompt:
+
+> Design the Umbracrown Basilisk, a long-bodied predatory reptile that rules the lightless shelves of the Fractured Verge. Give it six sturdy clawed legs, a low serpentine torso, a wedge-shaped head, and a long muscular tail ending in a dark translucent fin. Its scales are matte midnight blue and black, with subtle silver-violet scales along the throat and joints. A natural crown of six swept-back obsidian horns frames its head without resembling a manufactured crown. Its eyes are bright silver with narrow black pupils, and a faint veil of darkness gathers beneath its jaw. Pose it twisting toward the viewer with its front claws planted and tail curving behind it, making the entire anatomy readable. It should appear regal, calculating, ancient, and biologically plausible—not a conventional dragon, cobra, undead creature, or armored humanoid.
+
+Append the shared direction block.
+
+## 12. Nullstar Behemoth — Corrupted
+
+Filename suggestion: `nullstar_behemoth.png`
+
+Prompt:
+
+> Design the Nullstar Behemoth, an immense four-legged creature born where a dying star collapsed through the boundary of reality. Give it a hulking quadrupedal body with enormous forequarters, shorter powerful hind legs, a broad blunt head, and two heavy backward-curving tusks. Its hide is black with an oil-slick violet sheen, protected by thick natural mantle plates across the shoulders and spine. In the center of its chest is a contained circular void surrounded by cracked luminous tissue, glowing deep violet, magenta, and a narrow rim of icy cyan. The void must appear integrated into its anatomy rather than like a portal placed over the image. Small fragments of light bend inward around its chest and tusks. Pose it advancing with one forefoot raised and its head lowered, emphasizing overwhelming weight and stability. It should feel like a rare endgame animal rather than a humanoid boss, machine, demon, or conventional dragon.
+
+Append the shared direction block.
+
 ## Delivery checklist
 
 For each finished image:
 
 1. Keep the suggested filename or clearly state which monster it belongs to.
-2. Supply the original 1024 x 1024 PNG rather than a screenshot or compressed preview.
+2. Supply the original square PNG at 1024 x 1024 or larger rather than a screenshot or compressed preview.
 3. Verify that no anatomy touches the canvas edge.
 4. Verify that there is no text, logo, signature, or watermark.
 5. If transparency is unavailable, leave the background perfectly flat and untextured.

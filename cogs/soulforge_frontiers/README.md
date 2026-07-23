@@ -166,15 +166,19 @@ unlinked pets, eggs, or splice rows. These figures are a dated verification
 snapshot, not hard-coded runtime limits; subsequent content and player-created
 splices can increase them. Activating the eight new base monsters raised the
 development catalog to 1,591 species while retaining all 1,435 recipes and zero
-unlinked legacy rows.
+unlinked legacy rows. The four Fractured Verge additions bring the equivalent
+checked-in catalog seed to 1,595 species; production counts are reported by the
+catalog synchronisation at startup.
 
-## Eight new base monsters: live
+## Twelve new base monsters: live
 
-[`data/new_monsters_staging.json`](data/new_monsters_staging.json) contains eight
-new regional splice roots and their activation record. Their reviewed artwork
-was delivered and activated on 2026-07-16. All eight now have public runtime
-records in `monsters.json`, appear as permanent regional wild encounters, can
-drop eggs, and can serve as Generation 0 Soulforge parents.
+[`data/new_monsters_staging.json`](data/new_monsters_staging.json) contains twelve
+new regional splice roots and their activation record. The first eight were
+delivered and activated on 2026-07-16; four Fractured Verge roots followed on
+2026-07-24. All twelve have public Frontier-only runtime records in
+`monsters.json`, appear as permanent wild encounters exclusively in their
+assigned region, can drop eggs, and can serve as Generation 0 Soulforge parents.
+They are excluded from every ordinary PvE location.
 
 | Monster | Region | Tier | Element | Suggested asset |
 | --- | --- | ---: | --- | --- |
@@ -186,19 +190,29 @@ drop eggs, and can serve as Generation 0 Soulforge parents.
 | Arcglass Mantis | Stormbreak Reach | 5 | Electric | `arcglass_mantis.png` |
 | Cinderhorn Ram | Dawnscar Expanse | 5 | Fire | `cinderhorn_ram.png` |
 | Dawnveil Moth | Dawnscar Expanse | 7 | Light | `dawnveil_moth.png` |
+| Gloamspine Jackal | The Fractured Verge | 7 | Dark | `gloamspine_jackal.png` |
+| Riftmolt Scarab | The Fractured Verge | 8 | Corrupted | `riftmolt_scarab.png` |
+| Umbracrown Basilisk | The Fractured Verge | 9 | Dark | `umbracrown_basilisk.png` |
+| Nullstar Behemoth | The Fractured Verge | 10 | Corrupted | `nullstar_behemoth.png` |
 
-The complete shared art direction and eight individual prompts are in
+On 2026-07-24, all twelve new wilds received a 66% increase to HP, attack, and
+defense. Runtime and staging values are 166% of their approved baselines, rounded
+to the nearest integer.
+
+The complete shared art direction and twelve individual prompts are in
 [`data/new_monster_image_prompts.md`](data/new_monster_image_prompts.md). The
 prompt file is retained as the visual reference for future replacements or
 variants.
 
 ### Safe artwork activation checklist
 
-This checklist was completed for all eight monsters on 2026-07-16 and is kept
-as the repeatable procedure for future artwork additions or replacements.
+This checklist was completed for the first eight monsters on 2026-07-16 and the
+four Fractured Verge monsters on 2026-07-24. It is kept as the repeatable
+procedure for future artwork additions or replacements.
 
 1. Generate each monster separately from its named prompt. Supply the original
-   1024x1024 PNG, preferably with transparency, and keep the suggested filename.
+   square PNG at 1024x1024 or larger, preferably with transparency, and keep the
+   suggested filename.
 2. Review the full-resolution image and a Discord-embed-size preview. Confirm
    an original design, one complete creature, readable silhouette, no cropped
    anatomy, no extra creature, and no text, logo, signature, or watermark.
@@ -210,9 +224,9 @@ as the repeatable procedure for future artwork additions or replacements.
    staging file and its records disabled/private during review.
 6. Revalidate every staged assignment against the roster: the `region_id` must
    exist, its `element` must belong to that region, and its `tier` must be one
-   of that region's configured tier keys. This matters because runtime regional
-   wild selection is derived from element plus tier, not from the staging-only
-   `region_id` field.
+   of that region's configured tier keys. Runtime selection enforces tier,
+   element, and the explicit `frontier_region_id`; an exclusive assigned to a
+   different region must never enter the pool.
 7. Check names case-insensitively against every existing `monsters.json` wild
    and intended splice name. Do not activate a collision until its stable
    catalog identity and compatibility consequences are reviewed.
@@ -227,14 +241,16 @@ as the repeatable procedure for future artwork additions or replacements.
      "defense": 100,
      "element": "Element",
      "url": "https://durable.example/monster.png",
-     "ispublic": true
+     "ispublic": true,
+     "frontier_only": true,
+     "frontier_region_id": "region_id"
    }
    ```
 
-   Do not copy `content_id`, `enabled`, `region_id`, design notes, or field notes
-   into the runtime object. Do not pre-seed these monsters into `monsters.json`
-   as private placeholders: their first catalog import should be the reviewed,
-   public record.
+   Translate staging `region_id` into runtime `frontier_region_id`. Do not copy
+   `content_id`, `enabled`, design notes, or field notes into the runtime object.
+   Do not pre-seed these monsters into `monsters.json` as private placeholders:
+   their first catalog import should be the reviewed, public Frontier-only record.
 9. Parse both JSON files and run the validation suite before starting the bot:
 
    ```text
@@ -250,8 +266,8 @@ as the repeatable procedure for future artwork additions or replacements.
     rebuilt; then reload `cogs.soulforge_frontiers`.
 11. Smoke-test `$pvelocations`, `$pveinfo <region id>`, `$frontier`, the Bestiary,
     and a development-account encounter in each affected tier. Confirm there
-    are no roster-drift warnings and that the new wild is recorded under the
-    intended stable species.
+    are no roster-drift warnings, the new wild is recorded under the intended
+    stable species, and no Frontier-only wild appears in an ordinary PvE zone.
 
 ## Operational rollout
 
