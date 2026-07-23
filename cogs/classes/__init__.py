@@ -347,7 +347,7 @@ class Classes(commands.Cog):
                     "+53% damage at maximum evolution and cleaving nearby enemies for 35% of the hit.\n"
                     "- Momentum carries between targets but resets after battle.\n\n"
                     "**Favored Weapon:** Sword (+5 damage).\n\n"
-                    "At level 50 and final evolution, specialize into **Warlord** to build Momentum "
+                    "After final evolution and mastering this class line, specialize into **Warlord** to build Momentum "
                     "faster and empower Crushing Blow, or **Sentinel** to turn Momentum into "
                     "damage reduction."
                 ),
@@ -440,7 +440,7 @@ class Classes(commands.Cog):
                     "Bard's song carries.\n\n"
                     "**Favored Weapon:** Dagger or Knife (+5 damage).\n"
                     "**Per Evolution:** +0.5% party healing and +1.7% party damage.\n\n"
-                    "At level 50, specialize into **Warchanter** (open every battle with a "
+                    "After final evolution and mastering this class line, specialize into **Warchanter** (open every battle with a "
                     "party-wide Battle Hymn) or **Lifesinger** (a stronger restorative chorus "
                     "every round)."
                 ),
@@ -459,7 +459,7 @@ class Classes(commands.Cog):
                     "and the Ice Dragon Challenge.\n\n"
                     "**Favored Weapon:** Spear (+5 damage).\n"
                     "**Per Evolution:** +3% pet stats.\n\n"
-                    "At level 50, specialize into **Packleader** (your pet gains a focused "
+                    "After final evolution and mastering this class line, specialize into **Packleader** (your pet gains a focused "
                     "+2% to +8% stat edge) or **Denfather** (your den shelters the "
                     "whole party, reducing damage taken).\n\n"
                     "🔒 *Requires an equipped pet to shine.*"
@@ -512,7 +512,7 @@ class Classes(commands.Cog):
                             "become the **Avatar of Death** for three attacks, gaining bonus damage and life drain. "
                             "A fatal blow during Avatar consumes it to guarantee **Undying Loyalty**, returning you "
                             "under Death Shroud. Outside Avatar, evolution grants a smaller chance to cheat death.\n\n"
-                            "At level 50, choose **Harbinger** for Death's Verdict executions or **Soulbinder** to "
+                            "After final evolution and mastering this class line, choose **Harbinger** for Death's Verdict executions or **Soulbinder** to "
                             "turn overhealing into Soul Ward.\n\n"
                             "**Favored Weapon:** Scythe (+10 damage)."
                         ),
@@ -532,7 +532,7 @@ class Classes(commands.Cog):
                             "party. Every third opened present becomes a **Golden Gift** and unleashes all three.\n\n"
                             "Peppermint Drain restores 5-20% of damage dealt as you evolve. Unlocks `$gift` once per "
                             "six hours; higher evolutions roll more presents and keep the rarest.\n\n"
-                            "At level 50, choose **Krampus** for Chains of the Naughty or **Winterlight** for a "
+                            "After final evolution and mastering this class line, choose **Krampus** for Chains of the Naughty or **Winterlight** for a "
                             "once-per-battle Christmas Miracle.\n\n"
                             "**Favored Weapon:** Mace (+5 damage)."
                         ),

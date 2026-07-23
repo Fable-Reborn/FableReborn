@@ -251,6 +251,7 @@ class Specializations(commands.Cog):
     def _build_spec_choice_embed(
         self,
         key: str,
+        level: int,
         grade: int,
         picked_key: str | None,
         mastery_points: int,
@@ -283,30 +284,53 @@ class Specializations(commands.Cog):
                 f"This line is already **{SPECS[picked_key]['name']}**. "
                 f"Use `$spec reset {spec_data['line']}` before changing."
             )
+        elif not specialization_is_unlocked(
+            level=level,
+            grade=grade,
+            points=mastery_points,
+        ):
+            requirements = []
+            if level < SPEC_UNLOCK_LEVEL:
+                requirements.append(f"level {SPEC_UNLOCK_LEVEL}")
+            if grade < 7:
+                requirements.append("final evolution")
+            if mastery_points < MASTERY_UNLOCK_POINTS:
+                requirements.append(
+                    f"{MASTERY_UNLOCK_POINTS} {spec_data['line']} Mastery"
+                )
+            status = (
+                "Available to preview. Declaration is locked until: "
+                + ", ".join(requirements)
+                + "."
+            )
         else:
             status = "Available to declare."
         embed.add_field(name="Status", value=status, inline=False)
-        embed.set_footer(text="Dropdown changes preview · Select declares this specialization")
+        embed.set_footer(
+            text="Browse freely · Select declares only after all requirements are met"
+        )
         return embed
 
     async def _prompt_spec_choice(self, ctx, lines, chosen, level, mastery_lines):
         spec_cards = []
         for line, grade in lines.items():
             points = int(mastery_lines.get(line, {}).get("points", 0))
-            if not specialization_is_unlocked(
-                level=level,
-                grade=grade,
-                points=points,
-            ):
-                continue
             for key in specs_for_line(line):
                 spec_data = SPECS[key]
+                ready = specialization_is_unlocked(
+                    level=level,
+                    grade=grade,
+                    points=points,
+                )
                 spec_cards.append(
                     ImageChoice(
                         label=f"{spec_data['name']} ({line})",
-                        description=f"{line} · Grade {grade} · {spec_data.get('kind', 'path')}",
+                        description=(
+                            f"{line} · {'Ready' if ready else f'{points}/{MASTERY_UNLOCK_POINTS} mastery'}"
+                        ),
                         embed=self._build_spec_choice_embed(
                             key,
+                            level,
                             grade,
                             chosen.get(line),
                             points,
@@ -712,7 +736,7 @@ class Specializations(commands.Cog):
     @commands.group(invoke_without_command=True, aliases=["specialization", "specs"])
     @has_char()
     async def spec(self, ctx):
-        """Choose a specialization for one of your class lines."""
+        """Browse or choose a specialization for one of your class lines."""
         await self._run_spec_choose(ctx)
 
     @spec.command(name="list", aliases=["overview", "info"])
@@ -728,15 +752,11 @@ class Specializations(commands.Cog):
         await self._send_mastery_status(ctx)
 
     async def _run_spec_choose(self, ctx, *, spec_name: str = None):
-        """Choose a specialization for one of your class lines."""
+        """Browse specializations and declare an unlocked path."""
         await self.ensure_tables()
         lines, level = await self.get_player_lines(ctx.author.id)
         if not lines:
             return await ctx.send("You don't have a class yet! Pick one with `$class` first.")
-        if level < SPEC_UNLOCK_LEVEL:
-            return await ctx.send(
-                f"Specializations unlock at level **{SPEC_UNLOCK_LEVEL}** — you are level **{level}**."
-            )
 
         mastery = await get_class_mastery(self.bot, ctx.author.id)
         mastery_lines = mastery["lines"]
@@ -749,25 +769,9 @@ class Specializations(commands.Cog):
         chosen = {r["class_line"]: r["spec_key"] for r in rows}
 
         if spec_name is None:
-            if not any(
-                specialization_is_unlocked(
-                    level=level,
-                    grade=grade,
-                    points=int(mastery_lines.get(line, {}).get("points", 0)),
-                )
-                and specs_for_line(line)
-                for line, grade in lines.items()
-            ):
-                progress = ", ".join(
-                    f"{line} {int(mastery_lines.get(line, {}).get('points', 0))}/"
-                    f"{MASTERY_UNLOCK_POINTS}"
-                    for line in lines
-                )
+            if not any(specs_for_line(line) for line in lines):
                 return await ctx.send(
-                    "No specialization paths are ready yet. Each path requires "
-                    f"**Grade 7** and **{MASTERY_UNLOCK_POINTS} Class Mastery**. "
-                    f"Current mastery: **{progress or 'none'}**. Use `$spec mastery` "
-                    "for earning details."
+                    "None of your current class lines have specialization paths."
                 )
             key = await self._prompt_spec_choice(
                 ctx,
