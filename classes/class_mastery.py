@@ -14,7 +14,7 @@ from utils import misc as rpgtools
 
 MASTERY_UNLOCK_LEVEL = 40
 MASTERY_UNLOCK_POINTS = 100
-MASTERY_DAILY_CAP = 12
+ICE_DRAGON_MASTERY_DAILY_CAP = 25
 MASTERY_TIMEZONE = "Australia/Sydney"
 
 MASTERY_AWARDS = {
@@ -35,6 +35,7 @@ IRONMAN_MASTERY_FLOORS = frozenset({5, 10, 15, 20, 25})
 _TABLES_READY = False
 _TABLE_LOCK = asyncio.Lock()
 _GRANDFATHER_MARKER = "class_mastery_grandfather_v1"
+_ICE_DRAGON_CAP_MARKER = "class_mastery_ice_dragon_cap_v1"
 
 
 def class_lines_from_names(class_names: Iterable[str] | None) -> dict[str, int]:
@@ -104,9 +105,31 @@ async def ensure_mastery_tables(bot) -> None:
                 """
             )
 
-            # This transaction makes the one-time migration safe across shards. If
-            # seeding fails, the marker rolls back so the next startup can retry.
+            # This transaction makes the one-time migrations safe across shards. If
+            # either fails, its marker rolls back so the next startup can retry.
             async with conn.transaction():
+                should_reset_daily_points = await conn.fetchval(
+                    """
+                    INSERT INTO class_mastery_meta (key)
+                    VALUES ($1)
+                    ON CONFLICT (key) DO NOTHING
+                    RETURNING TRUE
+                    """,
+                    _ICE_DRAGON_CAP_MARKER,
+                )
+                if should_reset_daily_points:
+                    # This counter used to include every repeatable source. Reset it
+                    # once so old activity cannot consume the new Ice Dragon cap.
+                    await conn.execute(
+                        f"""
+                        UPDATE class_mastery
+                        SET daily_points = 0,
+                            daily_date = ((CURRENT_TIMESTAMP AT TIME ZONE '{MASTERY_TIMEZONE}')::date),
+                            updated_at = NOW()
+                        WHERE daily_points <> 0
+                        """
+                    )
+
                 should_seed = await conn.fetchval(
                     """
                     INSERT INTO class_mastery_meta (key)
@@ -159,7 +182,7 @@ async def ensure_mastery_tables(bot) -> None:
 
 
 async def get_class_mastery(bot, user_id: int, *, conn=None) -> dict:
-    """Return equipped and previously trained lines with today's cap usage."""
+    """Return equipped lines and today's Ice Dragon cap usage."""
     await ensure_mastery_tables(bot)
     if conn is None:
         async with bot.pool.acquire() as acquired:
@@ -213,14 +236,13 @@ async def award_class_mastery(
     points: int,
     *,
     source: str,
-    counts_toward_daily_cap: bool = True,
     event_key: str | None = None,
     conn=None,
 ) -> list[dict]:
     """Award mastery to both equipped Grade 7 lines.
 
-    Repeatable sources respect the Sydney-day cap. Weekly/scheduled sources can
-    opt out. Results contain only lines that actually received points.
+    Only Ice Dragon awards respect the Sydney-day cap. Every other source is
+    uncapped. Results contain only lines that actually received points.
     """
     requested = max(0, int(points))
     if requested <= 0:
@@ -234,7 +256,6 @@ async def award_class_mastery(
                 user_id,
                 requested,
                 source=source,
-                counts_toward_daily_cap=counts_toward_daily_cap,
                 event_key=event_key,
                 conn=acquired,
             )
@@ -270,6 +291,7 @@ async def award_class_mastery(
                 return []
 
         results = []
+        counts_toward_daily_cap = str(source).strip().casefold() == "ice_dragon"
         for line in eligible_lines:
             await conn.execute(
                 """
@@ -304,7 +326,10 @@ async def award_class_mastery(
 
             allowed = min(requested, MASTERY_UNLOCK_POINTS - current)
             if counts_toward_daily_cap:
-                allowed = min(allowed, max(0, MASTERY_DAILY_CAP - daily))
+                allowed = min(
+                    allowed,
+                    max(0, ICE_DRAGON_MASTERY_DAILY_CAP - daily),
+                )
 
             if allowed <= 0:
                 if not row["is_today"]:

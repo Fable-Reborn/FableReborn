@@ -77,6 +77,21 @@ BT_CHALLENGE_PRESTIGE_CAP = 30
 BT_CHALLENGE_BASE_STAT_STEP = Decimal("0.055")
 BT_CHALLENGE_BASE_STAT_CAP = 30
 
+
+def _pve_location_marker(
+    location: dict,
+    *,
+    locked: bool = False,
+    current: bool = False,
+    unlocked_icon: str = "🟢",
+) -> str:
+    """Return a status marker and flag the active Frontier with a surge."""
+    marker = "⭐" if current else ("🔒" if locked else unlocked_icon)
+    if location.get("frontier_active"):
+        marker += "⚡"
+    return marker
+
+
 def _pet_egg_display_name(item):
     return str(
         item.get("display_name")
@@ -965,7 +980,8 @@ class PVELocationSelect(Select):
             except (TypeError, ValueError):
                 god_text = f"{god_chance}%"
             desc = f"Lv {location['unlock_level']}+ | {tier_band} | God {god_text}"
-            label = f"🔒 {location['name']}" if is_locked else f"🟢 {location['name']}"
+            marker = _pve_location_marker(location, locked=is_locked)
+            label = f"{marker} {location['name']}"
             options.append(
                 discord.SelectOption(
                     label=label,
@@ -1124,9 +1140,10 @@ class ScoutLocationChoiceSelect(Select):
             except (TypeError, ValueError):
                 god_text = f"{god_chance}%"
             desc = f"Lv {location['unlock_level']}+ | {tier_band} | God {god_text}"
+            marker = _pve_location_marker(location)
             options.append(
                 discord.SelectOption(
-                    label=location["name"][:100],
+                    label=f"{marker} {location['name']}"[:100],
                     value=location["id"],
                     description=desc[:100],
                 )
@@ -1275,7 +1292,7 @@ class PveDefaultLocationSelect(Select):
         for location in locations:
             location_id = str(location["id"]).lower()
             is_current = location_id == self.current_default_id
-            label_prefix = "⭐ " if is_current else "🟢 "
+            marker = _pve_location_marker(location, current=is_current)
             tier_keys = sorted(
                 int(tier) for tier in (location.get("tier_weights", {}) or {}).keys()
             )
@@ -1290,7 +1307,7 @@ class PveDefaultLocationSelect(Select):
             desc = f"Lv {location['unlock_level']}+ | {tier_band}"
             options.append(
                 discord.SelectOption(
-                    label=f"{label_prefix}{location['name']}"[:100],
+                    label=f"{marker} {location['name']}"[:100],
                     value=location_id,
                     description=desc[:100],
                 )
@@ -2735,13 +2752,22 @@ class Battles(commands.Cog):
         try:
             rotation = get_rotation_state(self.frontier_config)
         except Exception:
-            return locations
+            return [
+                location
+                for location in locations
+                if location.get("location_type") != "soulforge_frontier"
+            ]
+        visible_locations = []
         for location in locations:
             if location.get("location_type") != "soulforge_frontier":
+                visible_locations.append(location)
                 continue
-            location["frontier_active"] = location.get("id") == rotation.region_id
+            if location.get("id") != rotation.region_id:
+                continue
+            location["frontier_active"] = True
             location["frontier_rotation_week"] = rotation.absolute_week
-        return locations
+            visible_locations.append(location)
+        return visible_locations
 
     def _get_unlocked_pve_locations(self, player_level: int) -> list[dict]:
         """Return all PvE locations unlocked at the player's current level."""
@@ -9124,9 +9150,11 @@ class Battles(commands.Cog):
         for location in self._get_pve_locations_snapshot():
             unlock_level = int(location.get("unlock_level", 1))
             unlocked = player_level >= unlock_level
-            status_icon = "✅" if unlocked else "🔒"
-            if location.get("frontier_active"):
-                status_icon = "⚡" if unlocked else "⚡🔒"
+            status_icon = _pve_location_marker(
+                location,
+                locked=not unlocked,
+                unlocked_icon="✅",
+            )
 
             rates = self._get_pve_tier_rates_for_location(location)
             if rates:
@@ -9193,7 +9221,9 @@ class Battles(commands.Cog):
         player_level = rpgtools.xptolevel(ctx.character_data.get("xp", 0))
         query = str(location_query or "").strip()
         if not query:
-            location_list = ", ".join(f"`{loc['id']}`" for loc in self.PVE_LOCATIONS)
+            location_list = ", ".join(
+                f"`{loc['id']}`" for loc in self._get_pve_locations_snapshot()
+            )
             await ctx.send(
                 "Usage: `$pveinfo <location name or id>`\n"
                 f"Available ids: {location_list}"
@@ -9400,9 +9430,19 @@ class Battles(commands.Cog):
             locked_blocks = []
             for location in all_locations:
                 if location.get("is_locked"):
-                    locked_blocks.append(build_location_block(location, "🔒"))
+                    locked_blocks.append(
+                        build_location_block(
+                            location,
+                            _pve_location_marker(location, locked=True),
+                        )
+                    )
                 else:
-                    unlocked_blocks.append(build_location_block(location, "🟢"))
+                    unlocked_blocks.append(
+                        build_location_block(
+                            location,
+                            _pve_location_marker(location),
+                        )
+                    )
 
             location_embed = discord.Embed(
                 title=_("Choose a PvE Location"),

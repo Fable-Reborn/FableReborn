@@ -63,8 +63,9 @@ and concurrent claim attempts cannot grant it twice.
 | `$frontier milestones` | Permanent splice discovery, creation, lineage, generation, and weekly boss-clear milestones. Alias: `achievements`. |
 
 The existing `$pvelocations`, `$pveinfo`, `$pve`, and `$scout` commands expose
-the regions and their encounter pools. The active region has a surge marker in
-the location list.
+the current region and its encounter pool. Inactive Frontier regions are omitted
+from the standard PvE location lists, and the active region has a `⚡` surge
+marker beside its normal unlocked or locked status.
 
 ## Four-week rotation
 

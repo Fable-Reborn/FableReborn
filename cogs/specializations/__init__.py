@@ -14,9 +14,9 @@ import discord
 from discord.ext import commands
 
 from classes.class_mastery import (
+    ICE_DRAGON_MASTERY_DAILY_CAP,
     IRONMAN_MASTERY_FLOORS,
     MASTERY_AWARDS,
-    MASTERY_DAILY_CAP,
     MASTERY_UNLOCK_POINTS,
     award_class_mastery,
     ensure_mastery_tables,
@@ -463,7 +463,8 @@ class Specializations(commands.Cog):
             value_lines = [
                 f"**Mastery:** {self._bar(points, MASTERY_UNLOCK_POINTS, 14)}  "
                 f"**{points} / {MASTERY_UNLOCK_POINTS}**",
-                f"**Today:** {daily_points} / {MASTERY_DAILY_CAP} repeatable points",
+                f"**Today:** {daily_points} / {ICE_DRAGON_MASTERY_DAILY_CAP} "
+                "Ice Dragon points",
             ]
             for key in options:
                 marker = "✓" if picked == key else "·"
@@ -491,7 +492,7 @@ class Specializations(commands.Cog):
 
         embed.set_footer(
             text=(
-                "Mastery is permanent per class line · repeatable cap resets daily "
+                "Mastery is permanent per class line · Ice Dragon cap resets "
                 "in Australia/Sydney"
             )
         )
@@ -532,8 +533,8 @@ class Specializations(commands.Cog):
                 value=(
                     f"{self._bar(points, MASTERY_UNLOCK_POINTS, 14)}  "
                     f"**{points} / {MASTERY_UNLOCK_POINTS}**\n"
-                    f"Today: **{int(row['daily_points'])} / {MASTERY_DAILY_CAP}** "
-                    "repeatable points\n"
+                    f"Today: **{int(row['daily_points'])} / "
+                    f"{ICE_DRAGON_MASTERY_DAILY_CAP}** Ice Dragon points\n"
                     + " · ".join(unlock_bits)
                 ),
                 inline=False,
@@ -553,8 +554,8 @@ class Specializations(commands.Cog):
         )
         embed.set_footer(
             text=(
-                f"Repeatable cap: {MASTERY_DAILY_CAP} per Sydney day · "
-                "Rift and scheduled raid points ignore the cap"
+                f"Ice Dragon cap: {ICE_DRAGON_MASTERY_DAILY_CAP} points per "
+                "Sydney day · all other mastery sources are uncapped"
             )
         )
         await ctx.send(embed=embed)
@@ -565,7 +566,6 @@ class Specializations(commands.Cog):
         points,
         *,
         source,
-        counts_toward_daily_cap=True,
     ):
         for user_id in dict.fromkeys(int(value) for value in user_ids):
             try:
@@ -574,7 +574,6 @@ class Specializations(commands.Cog):
                     user_id,
                     points,
                     source=source,
-                    counts_toward_daily_cap=counts_toward_daily_cap,
                 )
             except Exception:
                 logger.exception(
@@ -672,7 +671,6 @@ class Specializations(commands.Cog):
                 participant_ids,
                 MASTERY_AWARDS["scheduled_raid"],
                 source="scheduled_raid",
-                counts_toward_daily_cap=False,
             )
 
     @commands.Cog.listener()
@@ -690,7 +688,6 @@ class Specializations(commands.Cog):
                 [ctx.author.id],
                 points,
                 source="rift",
-                counts_toward_daily_cap=False,
             )
 
     @commands.Cog.listener()
