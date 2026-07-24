@@ -43,7 +43,7 @@ def soulbound_bonus_pct_for_level(level: int) -> Decimal:
 
 
 STARFORGE_MAX_STARS = 10
-STARFORGE_STAT_PCT_PER_STAR = Decimal("0.005")
+STARFORGE_STAT_PCT_PER_STAR = Decimal("0.04")
 STARFORGE_STAR_SUFFIX_RE = re.compile(r"\s+★\d{1,2}$")
 STARFORGE_ONE_HAND_MAX_STAT = 100
 STARFORGE_TWO_HAND_MAX_STAT = 200
