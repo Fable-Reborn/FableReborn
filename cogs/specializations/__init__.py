@@ -53,6 +53,161 @@ def _spec_image_path(spec_key: str) -> Path | None:
     return find_image_path(SPEC_IMAGE_DIR, spec["name"])
 
 
+SPEC_CATALOG_GRADE = 7
+SPEC_CLASS_LINES = tuple(dict.fromkeys(spec["line"] for spec in SPECS.values()))
+
+
+class SpecCatalogClassSelect(discord.ui.Select):
+    def __init__(self, catalog: "SpecCatalogView"):
+        self.catalog = catalog
+        options = []
+        for line in SPEC_CLASS_LINES:
+            spec_names = " · ".join(
+                spec["name"] for spec in specs_for_line(line).values()
+            )
+            options.append(
+                discord.SelectOption(
+                    label=line,
+                    value=line,
+                    description=spec_names[:100],
+                    default=line == catalog.class_line,
+                )
+            )
+        super().__init__(
+            placeholder="Choose a class",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.catalog.show_page(
+            interaction,
+            class_line=self.values[0],
+            spec_index=0,
+        )
+
+
+class SpecCatalogView(discord.ui.View):
+    def __init__(self, ctx, cog: "Specializations", *, timeout=180):
+        super().__init__(timeout=timeout)
+        self.ctx = ctx
+        self.cog = cog
+        self.class_line = SPEC_CLASS_LINES[0]
+        self.spec_index = 0
+        self.message = None
+        self.allowed_user_ids = {int(ctx.author.id)}
+        alt_invoker_id = getattr(ctx, "alt_invoker_id", None)
+        if alt_invoker_id is not None:
+            self.allowed_user_ids.add(int(alt_invoker_id))
+        self.class_select = SpecCatalogClassSelect(self)
+        self.add_item(self.class_select)
+        self._sync_components()
+
+    def _spec_keys(self):
+        return list(specs_for_line(self.class_line))
+
+    def _sync_components(self):
+        spec_keys = self._spec_keys()
+        self.spec_index = min(max(0, self.spec_index), len(spec_keys) - 1)
+        self.previous.disabled = self.spec_index == 0
+        self.next.disabled = self.spec_index >= len(spec_keys) - 1
+        self.page_number.label = f"{self.spec_index + 1} / {len(spec_keys)}"
+        self.class_select.placeholder = f"Class: {self.class_line}"
+        for option in self.class_select.options:
+            option.default = option.value == self.class_line
+
+    def _current_payload(self):
+        self._sync_components()
+        spec_keys = self._spec_keys()
+        key = spec_keys[self.spec_index]
+        spec = SPECS[key]
+        embed = self.cog._build_spec_choice_embed(
+            key,
+            SPEC_UNLOCK_LEVEL,
+            SPEC_CATALOG_GRADE,
+            None,
+            MASTERY_UNLOCK_POINTS,
+            catalog=True,
+        )
+        footer = embed.footer.text
+        page = f"{self.class_line} · Spec {self.spec_index + 1}/{len(spec_keys)}"
+        embed.set_footer(text=f"{footer} · {page}" if footer else page)
+        return embed_with_image(embed, _spec_image_path(key), label=spec["name"])
+
+    async def start(self):
+        embed, files = self._current_payload()
+        kwargs = {"embed": embed, "view": self}
+        if files:
+            kwargs["file"] = files[0]
+        self.message = await self.ctx.send(**kwargs)
+        return self.message
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if int(interaction.user.id) in self.allowed_user_ids:
+            return True
+        await interaction.response.send_message(
+            "This specialization catalog was opened by another player.",
+            ephemeral=True,
+        )
+        return False
+
+    async def show_page(
+        self,
+        interaction: discord.Interaction,
+        *,
+        class_line=None,
+        spec_index=None,
+    ):
+        if class_line in SPEC_CLASS_LINES:
+            self.class_line = class_line
+        if spec_index is not None:
+            self.spec_index = int(spec_index)
+        embed, files = self._current_payload()
+        await interaction.response.edit_message(
+            embed=embed,
+            attachments=files,
+            view=self,
+        )
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except (discord.HTTPException, discord.NotFound, discord.Forbidden):
+                pass
+
+    @discord.ui.button(
+        label="Previous",
+        emoji="◀",
+        style=discord.ButtonStyle.secondary,
+        row=1,
+    )
+    async def previous(self, interaction: discord.Interaction, _button):
+        await self.show_page(interaction, spec_index=self.spec_index - 1)
+
+    @discord.ui.button(
+        label="1 / 2",
+        style=discord.ButtonStyle.secondary,
+        disabled=True,
+        row=1,
+    )
+    async def page_number(self, interaction: discord.Interaction, _button):
+        return None
+
+    @discord.ui.button(
+        label="Next",
+        emoji="▶",
+        style=discord.ButtonStyle.primary,
+        row=1,
+    )
+    async def next(self, interaction: discord.Interaction, _button):
+        await self.show_page(interaction, spec_index=self.spec_index + 1)
+
+
 class Specializations(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -255,6 +410,8 @@ class Specializations(commands.Cog):
         grade: int,
         picked_key: str | None,
         mastery_points: int,
+        *,
+        catalog: bool = False,
     ):
         spec_data = SPECS[key]
         embed = discord.Embed(
@@ -274,10 +431,19 @@ class Specializations(commands.Cog):
         )
         embed.add_field(
             name="Class Mastery",
-            value=f"{mastery_points} / {MASTERY_UNLOCK_POINTS}",
+            value=(
+                f"{MASTERY_UNLOCK_POINTS} required"
+                if catalog
+                else f"{mastery_points} / {MASTERY_UNLOCK_POINTS}"
+            ),
             inline=True,
         )
-        if picked_key == key:
+        if catalog:
+            status = (
+                f"Catalog preview at Grade {grade}. Use `$spec choose` to declare "
+                "a path after meeting its requirements."
+            )
+        elif picked_key == key:
             status = "Already chosen for this class line."
         elif picked_key:
             status = (
@@ -307,7 +473,11 @@ class Specializations(commands.Cog):
             status = "Available to declare."
         embed.add_field(name="Status", value=status, inline=False)
         embed.set_footer(
-            text="Browse freely · Select declares only after all requirements are met"
+            text=(
+                "All effects shown at final evolution"
+                if catalog
+                else "Browse freely · Select declares only after all requirements are met"
+            )
         )
         return embed
 
@@ -750,6 +920,11 @@ class Specializations(commands.Cog):
     async def spec_mastery(self, ctx):
         """View class mastery progress and all earning sources."""
         await self._send_mastery_status(ctx)
+
+    @spec.command(name="all", aliases=["catalog", "browse"])
+    async def spec_all(self, ctx):
+        """Browse every class specialization."""
+        await SpecCatalogView(ctx, self).start()
 
     async def _run_spec_choose(self, ctx, *, spec_name: str = None):
         """Browse specializations and declare an unlocked path."""
