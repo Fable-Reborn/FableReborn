@@ -11028,17 +11028,23 @@ class Battles(commands.Cog):
                     
                 @discord.ui.button(label="Join Party", style=discord.ButtonStyle.primary, emoji="⚔️")
                 async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+                    # Acknowledge before any database work so Discord's interaction
+                    # token does not expire while waiting for a pooled connection.
+                    await interaction.response.defer(ephemeral=True)
+
                     # Check if user has a character
                     if not await self.bot.pool.fetchrow('SELECT 1 FROM profile WHERE "user"=$1', interaction.user.id):
-                        return await interaction.response.send_message("You don't have a character to join the party!", ephemeral=True)
-                        
+                        return await interaction.followup.send(
+                            "You don't have a character to join the party!",
+                            ephemeral=True,
+                        )
+
                     # Check if user is already in the party
                     if interaction.user in self.party_members:
-                        return await interaction.response.send_message("You are already in the party!", ephemeral=True)
-                        
+                        return await interaction.followup.send("You are already in the party!", ephemeral=True)
+
                     # Add user to party
                     if len(self.party_members) < 4:
-                        await interaction.response.defer(ephemeral=True)
                         self.party_members.append(interaction.user)
                         try:
                             await self.refresh_message(interaction.message)
@@ -11050,20 +11056,24 @@ class Battles(commands.Cog):
                             ephemeral=True,
                         )
                     else:
-                        await interaction.response.send_message("The party is already full!", ephemeral=True)
-                
+                        await interaction.followup.send("The party is already full!", ephemeral=True)
+
                 @discord.ui.button(label="Leave Party", style=discord.ButtonStyle.danger, emoji="🚪")
                 async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
+                    await interaction.response.defer(ephemeral=True)
+
                     # Check if user is in the party
                     if interaction.user not in self.party_members:
-                        return await interaction.response.send_message("You are not in the party!", ephemeral=True)
-                        
+                        return await interaction.followup.send("You are not in the party!", ephemeral=True)
+
                     # Don't allow the party leader to leave
                     if interaction.user == ctx.author:
-                        return await interaction.response.send_message("As the party leader, you cannot leave the party!", ephemeral=True)
-                        
+                        return await interaction.followup.send(
+                            "As the party leader, you cannot leave the party!",
+                            ephemeral=True,
+                        )
+
                     # Remove user from party
-                    await interaction.response.defer(ephemeral=True)
                     member_index = self.party_members.index(interaction.user)
                     self.party_members.remove(interaction.user)
                     try:
@@ -11075,23 +11085,25 @@ class Battles(commands.Cog):
                         "You have left the party!",
                         ephemeral=True,
                     )
-                
+
                 @discord.ui.button(label="Start Challenge", style=discord.ButtonStyle.success, emoji="🐉")
                 async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
+                    await interaction.response.defer()
+
                     # Only the party leader can start the challenge
                     if not await self._is_linked_to_leader(interaction.user.id):
-                        return await interaction.response.send_message(
+                        return await interaction.followup.send(
                             "Only the party leader (or their linked main/alt) can start the challenge!",
                             ephemeral=True,
                         )
-                        
+
                     # At least one member needed to start
                     if not self.party_members:
-                        return await interaction.response.send_message("You need at least one member to start the challenge!", ephemeral=True)
-                    
-                    # Acknowledge the interaction
-                    await interaction.response.defer()
-                    
+                        return await interaction.followup.send(
+                            "You need at least one member to start the challenge!",
+                            ephemeral=True,
+                        )
+
                     # Mark as complete to start the challenge
                     self.is_complete = True
                     self.stop()
