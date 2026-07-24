@@ -4657,7 +4657,12 @@ class Battles(commands.Cog):
             )
             if row["best_seconds"] and row["best_holder"]:
                 text += f" Fastest clear: **{row['best_seconds']}s** by <@{row['best_holder']}>."
-            await self._send_with_retry(ctx, content=text, suppress_failure=True)
+            await self._send_with_retry(
+                ctx,
+                content=text,
+                allowed_mentions=discord.AllowedMentions.none(),
+                suppress_failure=True,
+            )
         except Exception:
             pass
 
