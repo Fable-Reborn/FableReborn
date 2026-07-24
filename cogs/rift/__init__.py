@@ -611,6 +611,7 @@ class Rift(commands.Cog):
                 [player_team, enemy_team],
                 level=1,
                 level_data={},
+                max_duration=timedelta(minutes=10),
                 allow_pets=True,
                 hp_bar_style=hp_bar_style,
                 emoji_hp_bars=hp_bar_style != TowerBattle.HP_BAR_STYLE_NORMAL,
