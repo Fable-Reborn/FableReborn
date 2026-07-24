@@ -617,6 +617,14 @@ class PvEBattle(Battle):
             # Save final battle state to database for replay
             await self.save_battle_to_database()
             return None
+
+        # Re-publish the authoritative final combat state before any result or
+        # reward message.  The decisive turn already updates the live embed,
+        # but very short fights can otherwise leave Discord clients displaying
+        # the opening frame (Action #0) while the separately sent victory
+        # message arrives.  This second awaited edit makes the lethal action,
+        # defeated HP bar, and final class/pet effects visible first.
+        await self.update_display()
         
         # Determine winner
         if all(not c.is_alive() for c in self.player_team.combatants):
