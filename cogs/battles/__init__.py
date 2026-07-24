@@ -4656,7 +4656,24 @@ class Battles(commands.Cog):
                 "attempts ended in death here."
             )
             if row["best_seconds"] and row["best_holder"]:
-                text += f" Fastest clear: **{row['best_seconds']}s** by <@{row['best_holder']}>."
+                holder_id = int(row["best_holder"])
+                guild = getattr(ctx, "guild", None)
+                holder = guild.get_member(holder_id) if guild else None
+                if holder is None:
+                    holder = self.bot.get_user(holder_id)
+
+                holder_name = (
+                    getattr(holder, "display_name", None)
+                    or getattr(holder, "name", None)
+                    or f"User {holder_id}"
+                )
+                holder_name = discord.utils.escape_mentions(
+                    discord.utils.escape_markdown(str(holder_name))
+                )
+                text += (
+                    f" Fastest clear: **{row['best_seconds']}s** "
+                    f"by **{holder_name}**."
+                )
             await self._send_with_retry(
                 ctx,
                 content=text,
