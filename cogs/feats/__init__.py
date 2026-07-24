@@ -1251,8 +1251,10 @@ class Feats(commands.Cog):
                 await self.award_feat(int(attacker_id), "gauntlet_breaker", ctx.channel)
                 await self.add_progress(int(attacker_id), "gauntlet_breaks", 1, ctx.channel)
             else:
-                await self.award_feat(int(defender_id), "gauntlet_wall", ctx.channel)
-                await self.add_progress(int(defender_id), "gauntlet_holds", 1, ctx.channel)
+                # Offline Gauntlet defenders still earn their feats and progress,
+                # but never receive an unsolicited channel ping.
+                await self.award_feat(int(defender_id), "gauntlet_wall", None)
+                await self.add_progress(int(defender_id), "gauntlet_holds", 1, None)
         except Exception:
             logger.exception("Feat tracking failed for Gauntlet completion")
 

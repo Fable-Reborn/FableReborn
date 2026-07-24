@@ -20,6 +20,16 @@ class Gauntlet(commands.Cog):
         self._table_lock = asyncio.Lock()
         self._element_ext = ElementExtension()
 
+    @staticmethod
+    def _safe_defender_name(user, user_id):
+        """Return a readable Gauntlet name that can never create a mention."""
+        display_name = getattr(user, "display_name", None)
+        if not display_name:
+            display_name = getattr(user, "name", None)
+        return discord.utils.escape_mentions(
+            str(display_name or f"Defender {int(user_id)}")
+        )
+
     async def ensure_tables(self):
         if self._tables_ready:
             return
@@ -410,7 +420,7 @@ class Gauntlet(commands.Cog):
                     await self.bot.reset_cooldown(ctx)
                     return await ctx.send("That player has no gauntlet defense set.")
                 defender_id = member.id
-                defender_name = member.display_name
+                defender_name = self._safe_defender_name(member, defender_id)
             else:
                 defender_row = await conn.fetchrow(
                     """
@@ -427,7 +437,12 @@ class Gauntlet(commands.Cog):
                     await self.bot.reset_cooldown(ctx)
                     return await ctx.send("No gauntlet defenses are available to attack.")
                 defender_id = int(defender_row["user_id"])
-                defender_name = f"<@{defender_id}>"
+                defender_user = None
+                if ctx.guild:
+                    defender_user = ctx.guild.get_member(defender_id)
+                if defender_user is None:
+                    defender_user = self.bot.get_user(defender_id)
+                defender_name = self._safe_defender_name(defender_user, defender_id)
 
         await battles.add_player_to_fight(ctx.author.id)
         try:
@@ -512,7 +527,12 @@ class Gauntlet(commands.Cog):
                         defender_id,
                     )
                     await ctx.send(
-                        f"⚔️ {ctx.author.mention} breached {defender_name}'s gauntlet (+{gain} rating)!"
+                        f"⚔️ {ctx.author.mention} breached {defender_name}'s gauntlet (+{gain} rating)!",
+                        allowed_mentions=discord.AllowedMentions(
+                            everyone=False,
+                            roles=False,
+                            users=[ctx.author],
+                        ),
                     )
                     self.bot.dispatch(
                         "gauntlet_completion",
@@ -533,7 +553,12 @@ class Gauntlet(commands.Cog):
                         defender_id,
                     )
                     await ctx.send(
-                        f"🛡️ {defender_name}'s gauntlet held against {ctx.author.mention} (+3 rating)!"
+                        f"🛡️ {defender_name}'s gauntlet held against {ctx.author.mention} (+3 rating)!",
+                        allowed_mentions=discord.AllowedMentions(
+                            everyone=False,
+                            roles=False,
+                            users=[ctx.author],
+                        ),
                     )
                     self.bot.dispatch(
                         "gauntlet_completion",

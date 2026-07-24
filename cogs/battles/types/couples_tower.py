@@ -2,6 +2,7 @@
 import discord
 import random
 import asyncio
+import datetime
 from decimal import Decimal
 
 from .tower import TowerBattle
@@ -12,6 +13,11 @@ class CouplesTowerBattle(TowerBattle):
     """
     def __init__(self, ctx, teams, **kwargs):
         try:
+            # Couples floors have two players, extra mechanics, and often more
+            # combatants than regular Tower floors. Give the floor battle ten
+            # minutes instead of the inherited five-minute default.
+            kwargs.setdefault("max_duration", datetime.timedelta(minutes=10))
+
             # Special handling for Level 30 which has no enemies
             level = kwargs.get("level", 1)
             if level == 30:
@@ -112,23 +118,164 @@ class CouplesTowerBattle(TowerBattle):
             raw_damage = Decimal(str(getattr(attacker, "damage", 0) or 0))
             raw_damage += Decimal(str(random.randint(int(min_variance), int(max_variance))))
             raw_damage -= Decimal(str(getattr(target, "armor", 0) or 0))
-            return max(
+            damage = max(
                 raw_damage * self.get_mage_fireball_damage_multiplier(attacker),
                 minimum_damage,
             )
+        else:
+            damage = self.calculate_mage_fireball_damage(
+                attacker,
+                target,
+                damage_variance=damage_variance,
+                minimum_damage=minimum_damage,
+            )
 
-        return self.calculate_mage_fireball_damage(
+        if self.config.get("class_buffs", True):
+            damage, spec_messages = self.spec_ext.modify_outgoing_damage(
+                attacker,
+                target,
+                damage,
+                include_overload=False,
+            )
+            damage, overload_messages = self.spec_ext.consume_overload_fireball(
+                attacker,
+                damage,
+            )
+            for spec_message in [*spec_messages, *overload_messages]:
+                self._queue_class_message(attacker, spec_message)
+
+        return Decimal(str(damage))
+
+    def _resolve_couples_attack_outcome(
+        self,
+        attacker,
+        defender,
+        raw_damage,
+        *,
+        apply_element_mod=True,
+        damage_variance=0,
+        minimum_damage=Decimal("10"),
+    ):
+        """Run the canonical attack resolver with class specialization hooks."""
+        spec_attack_messages = []
+        if self.config.get("class_buffs", True):
+            raw_damage, spec_attack_messages = self.spec_ext.modify_outgoing_damage(
+                attacker,
+                defender,
+                raw_damage,
+            )
+
+        outcome = super().resolve_pet_attack_outcome(
             attacker,
-            target,
+            defender,
+            raw_damage,
+            apply_element_mod=apply_element_mod,
             damage_variance=damage_variance,
             minimum_damage=minimum_damage,
         )
+        if spec_attack_messages:
+            outcome.skill_messages = [*spec_attack_messages, *outcome.skill_messages]
+
+        if self.config.get("class_buffs", True):
+            outcome.final_damage, spec_defense_messages = self.spec_ext.modify_incoming_damage(
+                attacker,
+                defender,
+                outcome.final_damage,
+                self.get_team_for_combatant(defender),
+            )
+            outcome.final_damage = Decimal(str(outcome.final_damage))
+            if spec_defense_messages:
+                outcome.defender_messages.extend(spec_defense_messages)
+
+        return outcome
 
     def _append_mage_charge_message(self, message, charge_state):
         charge_message = self.format_mage_charge_message(charge_state)
         if not charge_message:
             return message
         return f"{message}\n{charge_message}" if message else charge_message
+
+    def _append_couples_legacy_class_passives(
+        self,
+        attacker,
+        target,
+        damage,
+        message,
+        *,
+        blocked_damage=Decimal("0"),
+        ignore_reflection=False,
+    ):
+        """Apply class passives omitted by the smallest copied floor handlers."""
+        if (
+            self.config.get("class_buffs", True)
+            and not getattr(attacker, "is_pet", False)
+            and Decimal(str(getattr(attacker, "lifesteal_percent", 0) or 0)) > 0
+        ):
+            lifesteal_amount = (
+                Decimal(str(damage))
+                * Decimal(str(attacker.lifesteal_percent))
+                / Decimal("100")
+            )
+            attacker.heal(lifesteal_amount)
+            message += f" Lifesteals: **{self.format_number(lifesteal_amount)} HP**"
+
+        reflection_value = Decimal(str(getattr(target, "damage_reflection", 0) or 0))
+        if (
+            self.config.get("class_buffs", True)
+            and not getattr(target, "is_pet", False)
+            and int(getattr(target, "tank_evolution", 0) or 0) > 0
+        ):
+            tank_reflection = Decimal("0.03") * Decimal(int(target.tank_evolution))
+            reflection_value = max(reflection_value, tank_reflection)
+
+        blocked_damage = Decimal(str(blocked_damage or 0))
+        if (
+            self.config.get("reflection_damage", True)
+            and reflection_value > 0
+            and blocked_damage > 0
+            and not ignore_reflection
+        ):
+            reflected = blocked_damage * reflection_value
+            reflected, plate_message = self.apply_reflection_plate(
+                target,
+                reflected,
+                reflection_value,
+            )
+            if reflected > 0:
+                attacker.take_damage(reflected)
+                message += (
+                    f"\n{target.name}'s armor reflects "
+                    f"**{self.format_number(reflected)} HP** damage back!"
+                )
+            if plate_message:
+                message += f"\n{plate_message}"
+            if not attacker.is_alive():
+                message += f" {attacker.name} has been defeated by reflected damage!"
+
+        return message
+
+    def _append_couples_cheat_death(self, target, message):
+        """Restore the normal Tower cheat-death class passive on custom floors."""
+        if target.is_alive():
+            return message
+        if not (
+            self.config.get("class_buffs", True)
+            and self.config.get("cheat_death", True)
+            and not getattr(target, "is_pet", False)
+            and target in self.player_team.combatants
+            and Decimal(str(getattr(target, "death_cheat_chance", 0) or 0)) > 0
+            and not getattr(target, "has_cheated_death", False)
+        ):
+            return message
+
+        if random.randint(1, 100) <= float(target.death_cheat_chance):
+            target.hp = self.get_cheat_death_recovery_hp(target)
+            target.has_cheated_death = True
+            message += (
+                f"\n{target.name} cheats death and survives with "
+                f"**{self.format_number(target.hp)} HP**!"
+            )
+        return message
 
     def _append_visible_shield(self, field_value, combatant):
         shield_value = Decimal(str(getattr(combatant, "shield", 0) or 0))
@@ -190,6 +337,31 @@ class CouplesTowerBattle(TowerBattle):
 
     def _apply_paladin_smite_to_message(self, attacker, target, message):
         class_messages = self.resolve_post_hit_class_effects(attacker, target)
+        if self.config.get("class_buffs", True):
+            class_messages.extend(
+                self.spec_ext.after_attack_damage(attacker, target, self)
+            )
+            class_messages.extend(self.spec_ext.post_damage_triggers(target))
+
+            # The copied Couples Tower turn loops do not reach TowerBattle's
+            # normal turn-end class hooks. Keep party-healing specializations
+            # and Bard's refrain active after a successful attack here.
+            if attacker in self.player_team.combatants:
+                class_messages.extend(
+                    self.spec_ext.turn_end_party_heal(attacker, self.player_team)
+                )
+                bard_grade = int(getattr(attacker, "bard_evolution", 0) or 0)
+                if bard_grade and not getattr(attacker, "is_pet", False) and attacker.is_alive():
+                    healed_any = False
+                    heal_pct = Decimal("0.005") * Decimal(bard_grade)
+                    for member in self.player_team.combatants:
+                        if member.is_alive() and member.hp < member.max_hp:
+                            member.heal(Decimal(str(member.max_hp)) * heal_pct)
+                            healed_any = True
+                    if healed_any:
+                        class_messages.append(
+                            f"🎶 **{attacker.name}**'s bardic refrain restores the party!"
+                        )
         if not class_messages:
             return message
         class_text = "\n".join(class_messages)
@@ -480,7 +652,7 @@ class CouplesTowerBattle(TowerBattle):
         # Get current combatant
         if not self.turn_order:
             self.update_turn_order()
-            
+
         current_combatant = self.turn_order[self.current_turn % len(self.turn_order)]
         self.current_turn += 1
         
@@ -555,8 +727,11 @@ class CouplesTowerBattle(TowerBattle):
             
         if hit_success:
             mage_charge_state = self.advance_mage_fireball_charge(attacker)
+            blocked_damage = Decimal("0")
+            ignore_reflection = False
 
             if mage_charge_state and mage_charge_state["fireball_ready"]:
+                ignore_reflection = True
                 final_damage = self._calculate_couples_mage_fireball_damage(
                     attacker,
                     target,
@@ -568,7 +743,7 @@ class CouplesTowerBattle(TowerBattle):
                 )
             else:
                 damage_variance = random.randint(0, 50) if attacker.is_pet else random.randint(0, 100)
-                outcome = self.resolve_pet_attack_outcome(
+                outcome = self._resolve_couples_attack_outcome(
                     attacker,
                     target,
                     attacker.damage,
@@ -577,6 +752,10 @@ class CouplesTowerBattle(TowerBattle):
                     minimum_damage=Decimal("10"),
                 )
                 final_damage = outcome.final_damage
+                blocked_damage = outcome.blocked_damage
+                ignore_reflection = bool(
+                    outcome.metadata.get("ignore_reflection_this_hit", False)
+                )
                 target.take_damage(final_damage)
                 message = (
                     f"{attacker.name} attacks! {target.name} takes "
@@ -586,9 +765,18 @@ class CouplesTowerBattle(TowerBattle):
                     message += "\n" + "\n".join(outcome.skill_messages)
                 if outcome.defender_messages:
                     message += "\n" + "\n".join(outcome.defender_messages)
-                message = self._append_mage_charge_message(message, mage_charge_state)
 
+            message = self._append_mage_charge_message(message, mage_charge_state)
+            message = self._append_couples_legacy_class_passives(
+                attacker,
+                target,
+                final_damage,
+                message,
+                blocked_damage=blocked_damage,
+                ignore_reflection=ignore_reflection,
+            )
             message = self._apply_paladin_smite_to_message(attacker, target, message)
+            message = self._append_couples_cheat_death(target, message)
             
             # Check if split target is defeated
             if not target.is_alive():
@@ -1108,7 +1296,7 @@ class CouplesTowerBattle(TowerBattle):
                 raw_damage += Decimal(damage_variance)
                 
 
-                outcome = self.resolve_pet_attack_outcome(
+                outcome = self._resolve_couples_attack_outcome(
                     current_combatant,
                     target,
                     raw_damage,
@@ -1387,7 +1575,7 @@ class CouplesTowerBattle(TowerBattle):
                 raw_damage += Decimal(damage_variance)
                 
 
-                outcome = self.resolve_pet_attack_outcome(
+                outcome = self._resolve_couples_attack_outcome(
                     current_combatant,
                     target,
                     raw_damage,
@@ -1685,7 +1873,7 @@ class CouplesTowerBattle(TowerBattle):
                 raw_damage += Decimal(damage_variance)
                 
 
-                outcome = self.resolve_pet_attack_outcome(
+                outcome = self._resolve_couples_attack_outcome(
                     current_combatant,
                     target,
                     raw_damage,
@@ -1965,7 +2153,7 @@ class CouplesTowerBattle(TowerBattle):
                 raw_damage += Decimal(damage_variance)
                 
 
-                outcome = self.resolve_pet_attack_outcome(
+                outcome = self._resolve_couples_attack_outcome(
                     current_combatant,
                     target,
                     raw_damage,
@@ -2135,14 +2323,15 @@ class CouplesTowerBattle(TowerBattle):
             self.update_turn_order()
             
         current_combatant = self.turn_order[self.current_turn % len(self.turn_order)]
-        self.current_turn += 1
         
         # Skip dead combatants
         if not current_combatant.is_alive():
+            self.current_turn += 1
             return True
             
         # Level 12: Freeze check - but Frost Giants are immune to cold
         if "Frost Giant" not in current_combatant.name and random.random() < 0.20:  # Back to 20% and immune giants
+            self.current_turn += 1
             await self.add_to_log(f"🧊 **FROZEN!** {current_combatant.name} is too cold to act this turn!", force_new_action=True)
             await self.update_display()
             await asyncio.sleep(await self.get_turn_delay())
@@ -2278,7 +2467,7 @@ class CouplesTowerBattle(TowerBattle):
         # Get current combatant
         if not self.turn_order:
             self.update_turn_order()
-            
+
         current_combatant = self.turn_order[self.current_turn % len(self.turn_order)]
         self.current_turn += 1
         
@@ -2405,7 +2594,7 @@ class CouplesTowerBattle(TowerBattle):
                 raw_damage += Decimal(damage_variance)
                 
 
-                outcome = self.resolve_pet_attack_outcome(
+                outcome = self._resolve_couples_attack_outcome(
                     current_combatant,
                     target,
                     raw_damage,
@@ -2691,7 +2880,7 @@ class CouplesTowerBattle(TowerBattle):
                 raw_damage += Decimal(damage_variance)
                 
 
-                outcome = self.resolve_pet_attack_outcome(
+                outcome = self._resolve_couples_attack_outcome(
                     current_combatant,
                     target,
                     raw_damage,
@@ -2970,7 +3159,7 @@ class CouplesTowerBattle(TowerBattle):
                 raw_damage += Decimal(damage_variance)
                 
 
-                outcome = self.resolve_pet_attack_outcome(
+                outcome = self._resolve_couples_attack_outcome(
                     current_combatant,
                     target,
                     raw_damage,
@@ -3268,7 +3457,7 @@ class CouplesTowerBattle(TowerBattle):
                 raw_damage += Decimal(damage_variance)
                 
 
-                outcome = self.resolve_pet_attack_outcome(
+                outcome = self._resolve_couples_attack_outcome(
                     current_combatant,
                     target,
                     raw_damage,
@@ -3582,7 +3771,7 @@ class CouplesTowerBattle(TowerBattle):
                 raw_damage += Decimal(damage_variance)
                 
 
-                outcome = self.resolve_pet_attack_outcome(
+                outcome = self._resolve_couples_attack_outcome(
                     current_combatant,
                     target,
                     raw_damage,
@@ -3881,7 +4070,7 @@ class CouplesTowerBattle(TowerBattle):
                 raw_damage += Decimal(damage_variance)
                 
 
-                outcome = self.resolve_pet_attack_outcome(
+                outcome = self._resolve_couples_attack_outcome(
                     current_combatant,
                     target,
                     raw_damage,
@@ -4172,7 +4361,7 @@ class CouplesTowerBattle(TowerBattle):
                 raw_damage += Decimal(damage_variance)
                 
 
-                outcome = self.resolve_pet_attack_outcome(
+                outcome = self._resolve_couples_attack_outcome(
                     current_combatant,
                     target,
                     raw_damage,
@@ -4474,7 +4663,7 @@ class CouplesTowerBattle(TowerBattle):
                 raw_damage += Decimal(damage_variance)
                 
 
-                outcome = self.resolve_pet_attack_outcome(
+                outcome = self._resolve_couples_attack_outcome(
                     current_combatant,
                     target,
                     raw_damage,
@@ -4698,15 +4887,16 @@ class CouplesTowerBattle(TowerBattle):
             self.update_turn_order()
             
         current_combatant = self.turn_order[self.current_turn % len(self.turn_order)]
-        self.current_turn += 1
         
         # Skip dead combatants
         if not current_combatant.is_alive():
+            self.current_turn += 1
             return True
         
         # Level 25: Fear paralysis check - 30% chance to be too terrified to act
         # Fear Incarnate is immune to fear effects (it embodies fear itself)
         if "Fear Incarnate" not in current_combatant.name and random.random() < 0.30:
+            self.current_turn += 1
             await self.add_to_log(f"😨 **PARALYZED BY FEAR!** {current_combatant.name} cowers in terror and cannot act!", force_new_action=True)
             await self.update_display()
             await asyncio.sleep(await self.get_turn_delay())
@@ -4849,7 +5039,7 @@ class CouplesTowerBattle(TowerBattle):
                 raw_damage += Decimal(damage_variance)
                 
 
-                outcome = self.resolve_pet_attack_outcome(
+                outcome = self._resolve_couples_attack_outcome(
                     current_combatant,
                     target,
                     raw_damage,
@@ -5066,17 +5256,6 @@ class CouplesTowerBattle(TowerBattle):
         if await self.is_battle_over():
             return False
             
-        # Get current combatant
-        if not self.turn_order:
-            self.update_turn_order()
-            
-        current_combatant = self.turn_order[self.current_turn % len(self.turn_order)]
-        self.current_turn += 1
-        
-        # Skip dead combatants
-        if not current_combatant.is_alive():
-            return True
-            
         # Level 28: Check for growth opportunities at start of turn
         await self.check_growth_opportunities()
         
@@ -5099,29 +5278,31 @@ class CouplesTowerBattle(TowerBattle):
         # Level 28: Find next combatant that can act
         max_attempts = len(self.turn_order)  # Prevent infinite loop
         attempts = 0
+        current_combatant = None
         
         while attempts < max_attempts:
-            current_combatant = self.turn_order[self.current_turn % len(self.turn_order)]
+            candidate = self.turn_order[self.current_turn % len(self.turn_order)]
             self.current_turn += 1
             attempts += 1
             
             # Skip dead combatants
-            if not current_combatant.is_alive():
+            if not candidate.is_alive():
                 continue
                 
             # Level 28: Check if player attacking final enemy when not vulnerable
-            if (current_combatant in self.player_team.combatants and not self.final_enemy_vulnerable):
+            if (candidate in self.player_team.combatants and not self.final_enemy_vulnerable):
                 # Check if this is the final enemy
                 if self.current_opponent_index == len(self.enemy_team.combatants) - 1:
-                    await self.add_to_log(f"🛡️ **SEALED BY COMPLACENCY!** {current_combatant.name} cannot harm the final enemy until your garden blooms with {self.growth_required - self.growth_points} more flowers!", force_new_action=True)
+                    await self.add_to_log(f"🛡️ **SEALED BY COMPLACENCY!** {candidate.name} cannot harm the final enemy until your garden blooms with {self.growth_required - self.growth_points} more flowers!", force_new_action=True)
                     await self.update_display()
                     await asyncio.sleep(await self.get_turn_delay())
                     continue  # Skip this player and try next combatant
-            
+
             # Found a combatant that can act
+            current_combatant = candidate
             break
         
-        if attempts >= max_attempts:
+        if current_combatant is None:
             # All combatants were skipped - this shouldn't happen normally
             return True
             
@@ -5181,16 +5362,47 @@ class CouplesTowerBattle(TowerBattle):
             
         # Initialize message variable
         message = ""
-            
+
         if hit_success:
-            # Attack hits - process damage with protective shielding
-            damage_variance = random.randint(0, 50) if current_combatant.is_pet else random.randint(0, 100)
-            
-            # Start with base damage
-            raw_damage = current_combatant.damage + Decimal(damage_variance)
-            
-            # Apply armor
-            damage = max(raw_damage - target.armor, Decimal('10'))  # Minimum 10 damage
+            # Attack hits - retain the floor's protective shielding after the
+            # normal Mage, specialization, Warrior and pet damage pipeline.
+            mage_charge_state = self.advance_mage_fireball_charge(current_combatant)
+            skill_messages = []
+            defender_messages = []
+            blocked_damage = Decimal("0")
+            ignore_reflection = False
+            used_fireball = bool(
+                mage_charge_state and mage_charge_state["fireball_ready"]
+            )
+            if used_fireball:
+                ignore_reflection = True
+                damage = self._calculate_couples_mage_fireball_damage(
+                    current_combatant,
+                    target,
+                    damage_variance=100,
+                    minimum_damage=Decimal("10"),
+                )
+            else:
+                damage_variance = (
+                    random.randint(0, 50)
+                    if current_combatant.is_pet
+                    else random.randint(0, 100)
+                )
+                outcome = self._resolve_couples_attack_outcome(
+                    current_combatant,
+                    target,
+                    current_combatant.damage,
+                    apply_element_mod=self.config["element_effects"],
+                    damage_variance=damage_variance,
+                    minimum_damage=Decimal("10"),
+                )
+                damage = outcome.final_damage
+                skill_messages = outcome.skill_messages
+                defender_messages = outcome.defender_messages
+                blocked_damage = outcome.blocked_damage
+                ignore_reflection = bool(
+                    outcome.metadata.get("ignore_reflection_this_hit", False)
+                )
             
             # Level 28: Apply protective shielding if target is a partner being attacked
             shielding_occurred = False
@@ -5221,7 +5433,8 @@ class CouplesTowerBattle(TowerBattle):
                             # Award growth point
                             self.growth_points += 1
                             
-                            message = f"🛡️ **PROTECTIVE GROWTH!** {shielding_partner.name} shields {target.name} from {current_combatant.name}'s attack! {shielding_partner.name} takes **{self.format_number(shield_damage)} HP** damage, {target.name} takes **{self.format_number(target_damage)} HP** damage."
+                            attack_name = "Fireball" if used_fireball else "attack"
+                            message = f"🛡️ **PROTECTIVE GROWTH!** {shielding_partner.name} shields {target.name} from {current_combatant.name}'s {attack_name}! {shielding_partner.name} takes **{self.format_number(shield_damage)} HP** damage, {target.name} takes **{self.format_number(target_damage)} HP** damage."
                             
                             # Check for growth completion
                             if self.growth_points >= self.growth_required and not self.final_enemy_vulnerable:
@@ -5233,9 +5446,28 @@ class CouplesTowerBattle(TowerBattle):
             # If no shielding occurred, apply normal damage
             if not shielding_occurred:
                 target.take_damage(damage)
-                message = f"{current_combatant.name} attacks! {target.name} takes **{self.format_number(damage)} HP** damage."
+                if used_fireball:
+                    message = f"{current_combatant.name} casts Fireball! {target.name} takes **{self.format_number(damage)} HP** damage."
+                else:
+                    message = f"{current_combatant.name} attacks! {target.name} takes **{self.format_number(damage)} HP** damage."
+
+            message = self._append_mage_charge_message(message, mage_charge_state)
+            if skill_messages:
+                message += "\n" + "\n".join(skill_messages)
+            if defender_messages:
+                message += "\n" + "\n".join(defender_messages)
+
+            message = self._append_couples_legacy_class_passives(
+                current_combatant,
+                target,
+                damage,
+                message,
+                blocked_damage=blocked_damage,
+                ignore_reflection=ignore_reflection,
+            )
             
             message = self._apply_paladin_smite_to_message(current_combatant, target, message)
+            message = self._append_couples_cheat_death(target, message)
 
             # Check if target is defeated
             if not target.is_alive():
@@ -5424,21 +5656,64 @@ class CouplesTowerBattle(TowerBattle):
             
         # Initialize message variable
         message = ""
-            
-        if hit_success:
-            # Attack hits - calculate damage
-            damage_variance = random.randint(0, 50) if attacker.is_pet else random.randint(0, 100)
-            
-            # Start with base damage
-            raw_damage = attacker.damage + Decimal(damage_variance)
-            
-            # Apply armor
-            damage = max(raw_damage - target.armor, Decimal('10'))  # Minimum 10 damage
-            
-            target.take_damage(damage)
-            message = f"{attacker.name} attacks! {target.name} takes **{self.format_number(damage)} HP** damage."
 
+        if hit_success:
+            mage_charge_state = self.advance_mage_fireball_charge(attacker)
+            skill_messages = []
+            defender_messages = []
+            blocked_damage = Decimal("0")
+            ignore_reflection = False
+            used_fireball = bool(
+                mage_charge_state and mage_charge_state["fireball_ready"]
+            )
+            if used_fireball:
+                ignore_reflection = True
+                damage = self._calculate_couples_mage_fireball_damage(
+                    attacker,
+                    target,
+                    damage_variance=100,
+                    minimum_damage=Decimal("10"),
+                )
+            else:
+                damage_variance = random.randint(0, 50) if attacker.is_pet else random.randint(0, 100)
+                outcome = self._resolve_couples_attack_outcome(
+                    attacker,
+                    target,
+                    attacker.damage,
+                    apply_element_mod=self.config["element_effects"],
+                    damage_variance=damage_variance,
+                    minimum_damage=Decimal("10"),
+                )
+                damage = outcome.final_damage
+                skill_messages = outcome.skill_messages
+                defender_messages = outcome.defender_messages
+                blocked_damage = outcome.blocked_damage
+                ignore_reflection = bool(
+                    outcome.metadata.get("ignore_reflection_this_hit", False)
+                )
+
+            target.take_damage(damage)
+            if used_fireball:
+                message = f"{attacker.name} casts Fireball! {target.name} takes **{self.format_number(damage)} HP** damage."
+            else:
+                message = f"{attacker.name} attacks! {target.name} takes **{self.format_number(damage)} HP** damage."
+
+            message = self._append_mage_charge_message(message, mage_charge_state)
+            if skill_messages:
+                message += "\n" + "\n".join(skill_messages)
+            if defender_messages:
+                message += "\n" + "\n".join(defender_messages)
+
+            message = self._append_couples_legacy_class_passives(
+                attacker,
+                target,
+                damage,
+                message,
+                blocked_damage=blocked_damage,
+                ignore_reflection=ignore_reflection,
+            )
             message = self._apply_paladin_smite_to_message(attacker, target, message)
+            message = self._append_couples_cheat_death(target, message)
             
             # Check if spirit target is defeated
             if not target.is_alive():
@@ -5522,17 +5797,41 @@ class CouplesTowerBattle(TowerBattle):
             
         # Initialize message variable
         message = ""
-            
+
         if hit_success:
-            # Attack hits
-            damage_variance = random.randint(0, 100)
-            
-            # Start with base damage
-            raw_damage = current_combatant.damage + Decimal(damage_variance)
-            
-            # Apply armor
-            damage = max(raw_damage - target.armor, Decimal('10'))  # Minimum 10 damage
-            
+            mage_charge_state = self.advance_mage_fireball_charge(current_combatant)
+            skill_messages = []
+            defender_messages = []
+            blocked_damage = Decimal("0")
+            ignore_reflection = False
+            used_fireball = bool(
+                mage_charge_state and mage_charge_state["fireball_ready"]
+            )
+            if used_fireball:
+                ignore_reflection = True
+                damage = self._calculate_couples_mage_fireball_damage(
+                    current_combatant,
+                    target,
+                    damage_variance=100,
+                    minimum_damage=Decimal("10"),
+                )
+            else:
+                outcome = self._resolve_couples_attack_outcome(
+                    current_combatant,
+                    target,
+                    current_combatant.damage,
+                    apply_element_mod=self.config["element_effects"],
+                    damage_variance=random.randint(0, 100),
+                    minimum_damage=Decimal("10"),
+                )
+                damage = outcome.final_damage
+                skill_messages = outcome.skill_messages
+                defender_messages = outcome.defender_messages
+                blocked_damage = outcome.blocked_damage
+                ignore_reflection = bool(
+                    outcome.metadata.get("ignore_reflection_this_hit", False)
+                )
+
             target.take_damage(damage)
             
             # Show possession-themed attack message
@@ -5544,9 +5843,27 @@ class CouplesTowerBattle(TowerBattle):
                 f"👹 **POSSESSED FURY!** {current_combatant.name} fights against their own actions!"
             ]
             
-            message = f"{random.choice(possession_attacks)} {target.name} takes **{self.format_number(damage)} HP** damage."
-            
+            attack_text = random.choice(possession_attacks)
+            if used_fireball:
+                attack_text += f" {current_combatant.name}'s Fireball erupts through the possession!"
+            message = f"{attack_text} {target.name} takes **{self.format_number(damage)} HP** damage."
+
+            message = self._append_mage_charge_message(message, mage_charge_state)
+            if skill_messages:
+                message += "\n" + "\n".join(skill_messages)
+            if defender_messages:
+                message += "\n" + "\n".join(defender_messages)
+
+            message = self._append_couples_legacy_class_passives(
+                current_combatant,
+                target,
+                damage,
+                message,
+                blocked_damage=blocked_damage,
+                ignore_reflection=ignore_reflection,
+            )
             message = self._apply_paladin_smite_to_message(current_combatant, target, message)
+            message = self._append_couples_cheat_death(target, message)
 
             # Check if target is defeated
             if not target.is_alive():
@@ -5739,7 +6056,7 @@ class CouplesTowerBattle(TowerBattle):
                 raw_damage += Decimal(chaos_variance)
                 
 
-                outcome = self.resolve_pet_attack_outcome(
+                outcome = self._resolve_couples_attack_outcome(
                     current_combatant,
                     target,
                     raw_damage,
