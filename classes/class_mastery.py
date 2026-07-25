@@ -99,6 +99,12 @@ async def ensure_mastery_tables(bot) -> None:
                     PRIMARY KEY (user_id, event_key)
                 );
 
+                CREATE TABLE IF NOT EXISTS class_mastery_free_claims (
+                    user_id BIGINT PRIMARY KEY,
+                    class_line TEXT NOT NULL,
+                    claimed_at TIMESTAMP NOT NULL DEFAULT NOW()
+                );
+
                 CREATE TABLE IF NOT EXISTS class_mastery_meta (
                     key TEXT PRIMARY KEY,
                     created_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -229,6 +235,129 @@ async def get_class_mastery(bot, user_id: int, *, conn=None) -> dict:
             ),
         }
     return {"level": level, "lines": lines}
+
+
+async def get_free_mastery_claim(bot, user_id: int, *, conn=None) -> dict | None:
+    """Return the player's one-time free mastery claim, if it was used."""
+    await ensure_mastery_tables(bot)
+    if conn is None:
+        async with bot.pool.acquire() as acquired:
+            return await get_free_mastery_claim(bot, user_id, conn=acquired)
+
+    row = await conn.fetchrow(
+        """
+        SELECT class_line, claimed_at
+        FROM class_mastery_free_claims
+        WHERE user_id = $1
+        """,
+        int(user_id),
+    )
+    if not row:
+        return None
+    return {
+        "class_line": str(row["class_line"]),
+        "claimed_at": row["claimed_at"],
+    }
+
+
+async def claim_free_class_mastery(
+    bot,
+    user_id: int,
+    class_line: str,
+    *,
+    conn=None,
+) -> dict:
+    """Set one class line to full mastery, once per player.
+
+    The mastery row is locked before the claim is recorded. This keeps an
+    already-mastered line from consuming the gift and makes concurrent button
+    presses safe across shards.
+    """
+    line = str(class_line).strip()
+    if not line:
+        raise ValueError("class_line must not be empty")
+
+    await ensure_mastery_tables(bot)
+    if conn is None:
+        async with bot.pool.acquire() as acquired:
+            return await claim_free_class_mastery(
+                bot,
+                user_id,
+                line,
+                conn=acquired,
+            )
+
+    user_id = int(user_id)
+    async with conn.transaction():
+        await conn.execute(
+            """
+            INSERT INTO class_mastery (user_id, class_line)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id, class_line) DO NOTHING
+            """,
+            user_id,
+            line,
+        )
+        mastery_row = await conn.fetchrow(
+            """
+            SELECT points
+            FROM class_mastery
+            WHERE user_id = $1 AND class_line = $2
+            FOR UPDATE
+            """,
+            user_id,
+            line,
+        )
+        previous_points = int(mastery_row["points"] or 0)
+        if previous_points >= MASTERY_UNLOCK_POINTS:
+            return {
+                "status": "already_mastered",
+                "class_line": line,
+                "points": previous_points,
+            }
+
+        inserted_line = await conn.fetchval(
+            """
+            INSERT INTO class_mastery_free_claims (user_id, class_line)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id) DO NOTHING
+            RETURNING class_line
+            """,
+            user_id,
+            line,
+        )
+        if inserted_line is None:
+            claimed_line = await conn.fetchval(
+                """
+                SELECT class_line
+                FROM class_mastery_free_claims
+                WHERE user_id = $1
+                """,
+                user_id,
+            )
+            return {
+                "status": "already_claimed",
+                "class_line": str(claimed_line),
+                "points": previous_points,
+            }
+
+        await conn.execute(
+            """
+            UPDATE class_mastery
+            SET points = $3,
+                updated_at = NOW()
+            WHERE user_id = $1 AND class_line = $2
+            """,
+            user_id,
+            line,
+            MASTERY_UNLOCK_POINTS,
+        )
+        return {
+            "status": "claimed",
+            "class_line": line,
+            "previous_points": previous_points,
+            "points": MASTERY_UNLOCK_POINTS,
+        }
 
 
 async def award_class_mastery(

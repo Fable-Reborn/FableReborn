@@ -281,7 +281,7 @@ class Classes(commands.Cog):
         )
 
     @has_char()
-    @user_cooldown(86400)
+    @user_cooldown(3600)
     @commands.command(name="class", brief=_("Choose or change your class(es)"))
     @locale_doc
     async def _class(self, ctx):
@@ -303,7 +303,7 @@ class Classes(commands.Cog):
 
             The second class unlocks at level 12. Selecting a class the first time is free (No Class -> Class), but changing it later will cost $5,000 (Class -> another Class)
 
-            (This command has a cooldown of 24 hours)"""
+            (This command has a cooldown of 1 hour)"""
         )
         if rpgtools.xptolevel(ctx.character_data["xp"]) >= 12:
 

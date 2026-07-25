@@ -19,7 +19,9 @@ from classes.class_mastery import (
     MASTERY_AWARDS,
     MASTERY_UNLOCK_POINTS,
     award_class_mastery,
+    claim_free_class_mastery,
     ensure_mastery_tables,
+    get_free_mastery_claim,
     get_class_mastery,
     rift_mastery_points,
     specialization_is_unlocked,
@@ -90,10 +92,22 @@ class SpecCatalogClassSelect(discord.ui.Select):
 
 
 class SpecCatalogView(discord.ui.View):
-    def __init__(self, ctx, cog: "Specializations", *, timeout=180):
+    def __init__(
+        self,
+        ctx,
+        cog: "Specializations",
+        *,
+        claim_mode=False,
+        mastery_lines=None,
+        claimed_line=None,
+        timeout=180,
+    ):
         super().__init__(timeout=timeout)
         self.ctx = ctx
         self.cog = cog
+        self.claim_mode = bool(claim_mode)
+        self.mastery_lines = dict(mastery_lines or {})
+        self.claimed_line = claimed_line
         self.class_line = SPEC_CLASS_LINES[0]
         self.spec_index = 0
         self.message = None
@@ -103,6 +117,8 @@ class SpecCatalogView(discord.ui.View):
             self.allowed_user_ids.add(int(alt_invoker_id))
         self.class_select = SpecCatalogClassSelect(self)
         self.add_item(self.class_select)
+        if not self.claim_mode:
+            self.remove_item(self.claim_mastery)
         self._sync_components()
 
     def _spec_keys(self):
@@ -117,6 +133,14 @@ class SpecCatalogView(discord.ui.View):
         self.class_select.placeholder = f"Class: {self.class_line}"
         for option in self.class_select.options:
             option.default = option.value == self.class_line
+        if self.claim_mode:
+            points = int(
+                self.mastery_lines.get(self.class_line, {}).get("points", 0)
+            )
+            self.claim_mastery.label = f"Claim {self.class_line} Mastery"
+            self.claim_mastery.disabled = bool(
+                self.claimed_line or points >= MASTERY_UNLOCK_POINTS
+            )
 
     def _current_payload(self):
         self._sync_components()
@@ -131,6 +155,31 @@ class SpecCatalogView(discord.ui.View):
             MASTERY_UNLOCK_POINTS,
             catalog=True,
         )
+        if self.claim_mode:
+            points = int(
+                self.mastery_lines.get(self.class_line, {}).get("points", 0)
+            )
+            if self.claimed_line:
+                claim_status = (
+                    f"Your one-time gift was claimed for **{self.claimed_line}**."
+                )
+            elif points >= MASTERY_UNLOCK_POINTS:
+                claim_status = (
+                    f"**{self.class_line} is already mastered ({points}/"
+                    f"{MASTERY_UNLOCK_POINTS})**, so the gift cannot be used on it. "
+                    "Choose another class."
+                )
+            else:
+                claim_status = (
+                    f"Claiming sets **{self.class_line} Mastery** from **{points}** to "
+                    f"**{MASTERY_UNLOCK_POINTS}**. This permanent gift can be used "
+                    "for one class line only."
+                )
+            embed.add_field(
+                name="One-time free mastery",
+                value=claim_status,
+                inline=False,
+            )
         footer = embed.footer.text
         page = f"{self.class_line} · Spec {self.spec_index + 1}/{len(spec_keys)}"
         embed.set_footer(text=f"{footer} · {page}" if footer else page)
@@ -206,6 +255,124 @@ class SpecCatalogView(discord.ui.View):
     )
     async def next(self, interaction: discord.Interaction, _button):
         await self.show_page(interaction, spec_index=self.spec_index + 1)
+
+    @discord.ui.button(
+        label="Claim 100 Mastery",
+        emoji="🎁",
+        style=discord.ButtonStyle.success,
+        row=2,
+    )
+    async def claim_mastery(self, interaction: discord.Interaction, _button):
+        points = int(
+            self.mastery_lines.get(self.class_line, {}).get("points", 0)
+        )
+        if self.claimed_line:
+            return await interaction.response.send_message(
+                f"Your free mastery was already used on **{self.claimed_line}**.",
+                ephemeral=True,
+            )
+        if points >= MASTERY_UNLOCK_POINTS:
+            return await interaction.response.send_message(
+                f"**{self.class_line}** is already mastered. Choose another class.",
+                ephemeral=True,
+            )
+        await interaction.response.send_message(
+            f"Use your one-time gift on **{self.class_line}**, setting it to "
+            f"**{MASTERY_UNLOCK_POINTS} Mastery**? This cannot be moved or undone.",
+            view=FreeMasteryConfirmView(self, self.class_line),
+            ephemeral=True,
+        )
+
+
+class FreeMasteryConfirmView(discord.ui.View):
+    def __init__(self, catalog: SpecCatalogView, class_line: str):
+        super().__init__(timeout=60)
+        self.catalog = catalog
+        self.class_line = class_line
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if int(interaction.user.id) in self.catalog.allowed_user_ids:
+            return True
+        await interaction.response.send_message(
+            "This mastery claim belongs to another player.",
+            ephemeral=True,
+        )
+        return False
+
+    async def _refresh_catalog(self):
+        if self.catalog.message is None:
+            return
+        embed, files = self.catalog._current_payload()
+        try:
+            await self.catalog.message.edit(embed=embed, view=self.catalog)
+        except (discord.HTTPException, discord.NotFound, discord.Forbidden):
+            pass
+        finally:
+            for file in files:
+                file.close()
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, _button):
+        if self.class_line not in SPEC_CLASS_LINES:
+            return await interaction.response.edit_message(
+                content="That class line is no longer available.",
+                view=None,
+            )
+        try:
+            result = await claim_free_class_mastery(
+                self.catalog.cog.bot,
+                interaction.user.id,
+                self.class_line,
+            )
+        except Exception:
+            logger.exception(
+                "Free class mastery claim failed for user %s, line %s",
+                interaction.user.id,
+                self.class_line,
+            )
+            return await interaction.response.edit_message(
+                content="The mastery gift could not be claimed right now. Please try again.",
+                view=None,
+            )
+
+        status = result["status"]
+        if status == "claimed":
+            self.catalog.claimed_line = self.class_line
+            self.catalog.mastery_lines.setdefault(self.class_line, {})[
+                "points"
+            ] = MASTERY_UNLOCK_POINTS
+            content = (
+                f"🎁 **{self.class_line} Mastery is now "
+                f"{MASTERY_UNLOCK_POINTS}/{MASTERY_UNLOCK_POINTS}.** Your one-time "
+                "gift has been used; all other class lines progress normally."
+            )
+        elif status == "already_mastered":
+            self.catalog.mastery_lines.setdefault(self.class_line, {})[
+                "points"
+            ] = int(result["points"])
+            content = (
+                f"**{self.class_line}** is already mastered, so your gift was not "
+                "used. Close this notice and choose another class."
+            )
+        else:
+            self.catalog.claimed_line = result["class_line"]
+            content = (
+                f"Your one-time mastery gift was already used on "
+                f"**{result['class_line']}**."
+            )
+
+        self.catalog._sync_components()
+        await interaction.response.edit_message(content=content, view=None)
+        await self._refresh_catalog()
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, _button):
+        await interaction.response.edit_message(
+            content="Mastery claim cancelled. Your gift is still available.",
+            view=None,
+        )
+        self.stop()
 
 
 class Specializations(commands.Cog):
@@ -700,12 +867,20 @@ class Specializations(commands.Cog):
             return await ctx.send("You don't have a class yet! Pick one with `$class` first.")
 
         level = int(mastery["level"])
+        free_claim = await get_free_mastery_claim(self.bot, ctx.author.id)
+        if free_claim:
+            gift_status = (
+                f"One-time gift: claimed for **{free_claim['class_line']}**."
+            )
+        else:
+            gift_status = "One-time gift available: choose a line with `$spec claim`."
         embed = discord.Embed(
             title="Class Mastery",
             description=(
                 f"Specializations require **level {SPEC_UNLOCK_LEVEL}**, **Grade 7**, "
                 f"and **{MASTERY_UNLOCK_POINTS} mastery points** in that class line.\n"
-                "Points are permanent and both equipped Grade 7 lines earn them."
+                "Points are permanent and both equipped Grade 7 lines earn them.\n"
+                + gift_status
             ),
             color=0x8E44AD,
         )
@@ -925,6 +1100,38 @@ class Specializations(commands.Cog):
     async def spec_all(self, ctx):
         """Browse every class specialization."""
         await SpecCatalogView(ctx, self).start()
+
+    @spec.command(name="claim", aliases=["free", "gift"])
+    @has_char()
+    async def spec_claim(self, ctx):
+        """Claim 100 mastery for one class line, once per player."""
+        await self.ensure_tables()
+        existing_claim = await get_free_mastery_claim(self.bot, ctx.author.id)
+        if existing_claim:
+            return await ctx.send(
+                f"You already used your one-time mastery gift on "
+                f"**{existing_claim['class_line']}**. Other class lines must be "
+                "mastered through normal play. Browse their paths with `$spec all`."
+            )
+
+        mastery = await get_class_mastery(self.bot, ctx.author.id)
+        mastery_lines = mastery["lines"]
+        if all(
+            int(mastery_lines.get(line, {}).get("points", 0))
+            >= MASTERY_UNLOCK_POINTS
+            for line in SPEC_CLASS_LINES
+        ):
+            return await ctx.send(
+                "Every specialization class line is already mastered, so there is "
+                "no eligible class for this gift."
+            )
+
+        await SpecCatalogView(
+            ctx,
+            self,
+            claim_mode=True,
+            mastery_lines=mastery_lines,
+        ).start()
 
     async def _run_spec_choose(self, ctx, *, spec_name: str = None):
         """Browse specializations and declare an unlocked path."""
