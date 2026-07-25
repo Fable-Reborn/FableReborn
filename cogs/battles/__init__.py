@@ -10695,11 +10695,13 @@ class Battles(commands.Cog):
         if pet_combatant is not None:
             player_team.add_combatant(pet_combatant)
         dummy_team = Team("Training Dummy", [dummy_combatant])
+        hp_bar_style = await self._get_user_hp_bar_style(ctx.author.id)
         battle = TrainingDummyBattle(
             ctx,
             [player_team, dummy_team],
             pets_enabled=pets_enabled,
             monster_level=1,
+            hp_bar_style=hp_bar_style,
         )
 
         if not await self.try_add_player_to_exclusive_fight(ctx.author.id):

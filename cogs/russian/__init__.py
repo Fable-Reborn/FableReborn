@@ -715,6 +715,883 @@ PIRATE_PRE_TURN_TAUNTS = [
     "Sail the seven seas or sink in six shots. Your choice.",
 ]
 
+# Extra comedy packs use one compact schema so every selectable theme ships
+# with complete turn, round, survival, death, and winner narration.
+ADDITIONAL_THEME_MESSAGES: dict[str, dict[str, list[str]]] = {
+    "corporate": {
+        "taunt": [
+            "Please remain calm. HR has classified the loaded chamber as an opportunity for growth.",
+            "The cylinder spins with the confidence of a manager who has never done the actual job.",
+            "Your life is now a key deliverable with no allocated budget.",
+            "The gun would like to circle back and put a pin in your continued employment.",
+            "This meeting could have been an email. The funeral cannot.",
+            "Legal reminds everyone that screaming constitutes acceptance of the terms.",
+        ],
+        "round_start": [
+            "New quarter, same chamber, reduced headcount.",
+            "The all-hands meeting begins. Attendance may decline sharply.",
+            "Management has reloaded the performance-improvement revolver.",
+            "Another round of restructuring is now chambered.",
+            "Please take your seats; layoffs will be conducted ballistically.",
+            "The cylinder spins as leadership explores involuntary offboarding.",
+        ],
+        "survival": [
+            "{player} survives and is expected back at their desk by nine.",
+            "HR congratulates {player} on meeting the minimum pulse requirement.",
+            "{player} remains employed, pending another lethal performance review.",
+            "The chamber clicks. {player}'s leave request is still denied.",
+            "{player} survives; management calls this proof the system works.",
+            "{player} retains their position and all associated trauma.",
+        ],
+        "death": [
+            "{victim} has been permanently offboarded. Their access badge stopped working first.",
+            "{victim}'s position has been eliminated, along with the position holder.",
+            "HR regrets to announce {victim} has pursued an opportunity outside the living.",
+            "{victim} failed the performance review with terminal efficiency.",
+            "The company thanks {victim} for their years of service and three minutes of notice.",
+            "{victim} achieved perfect work-life balance by having neither.",
+        ],
+        "winner": [
+            "{winner} is the sole remaining employee and therefore acting CEO.",
+            "Congratulations, {winner}. Your prize is everyone else's workload.",
+            "{winner} survived the restructure. Shareholders are cautiously erect.",
+            "The company promotes {winner} and freezes their salary.",
+            "{winner} wins. HR calls the body count a successful efficiency drive.",
+            "{winner} receives a certificate, a lanyard, and six new trauma responses.",
+        ],
+    },
+    "reaper_office": {
+        "taunt": [
+            "Death has your file open and is making disappointed little noises.",
+            "The Reaper is on lunch, but the gun agreed to cover the desk.",
+            "Your mortality ticket has been escalated to someone with a scythe.",
+            "Death says this appointment should only take the rest of your life.",
+            "The afterlife is understaffed, so please die in an orderly fashion.",
+            "The Reaper sharpened the scythe, then remembered this department has a revolver.",
+        ],
+        "round_start": [
+            "The Department of Inevitable Outcomes opens another case.",
+            "Death clocks in. The chamber clocks someone out.",
+            "A fresh round begins under fluorescent lights in the afterlife.",
+            "The Reaper calls the next appointment and spins the cylinder.",
+            "Another mortality audit begins. Receipts will not be required.",
+            "The dead queue politely while the living make terrible decisions.",
+        ],
+        "survival": [
+            "The Reaper stamps RETURN TO SENDER on {player}.",
+            "{player}'s death appointment was cancelled due to clerical incompetence.",
+            "Death checks the wrong box. {player} lives.",
+            "{player} survives because the Reaper's printer jammed.",
+            "The chamber clicks. {player}'s case has been placed back in the pending tray.",
+            "{player} is not dead, merely pre-approved.",
+        ],
+        "death": [
+            "The Reaper finds {victim}'s file and mutters, 'There you fucking are.'",
+            "{victim}'s mortality ticket has been resolved and permanently closed.",
+            "Death welcomes {victim} with the enthusiasm of a clerk five minutes from home time.",
+            "{victim} is processed, stamped, and forwarded to whichever basement handles idiots.",
+            "The chamber fires. {victim}'s out-of-office reply activates forever.",
+            "{victim} dies at level {level}. Death rounds that down to zero.",
+        ],
+        "winner": [
+            "{winner} survives the audit. Death has scheduled a follow-up.",
+            "The Reaper loses {winner}'s paperwork and pretends this was intentional.",
+            "{winner} wins and receives a complimentary extension on mortality.",
+            "Death closes the office. {winner} is tomorrow's problem.",
+            "{winner} leaves alive while the Reaper quietly updates the watchlist.",
+            "The last file standing belongs to {winner}. It is now marked URGENT.",
+        ],
+    },
+    "insurance": {
+        "taunt": [
+            "Your policy covers accidental death, not whatever the fuck this is.",
+            "The assessor has labelled the revolver a pre-existing condition.",
+            "Please hold. Your remaining lifespan is important to us.",
+            "The premium just went up because the gun looked at you funny.",
+            "Actuarial science calls this an avoidable spike in stupidity.",
+            "The fine print says the chamber is always right.",
+        ],
+        "round_start": [
+            "A new claim period begins with one bullet and no coverage.",
+            "The cylinder spins. Your deductible becomes existential.",
+            "Another round begins under the comprehensive idiocy policy.",
+            "The assessor reloads and prepares to deny everything.",
+            "Coverage resets. Common sense remains excluded.",
+            "The underwriter sees the table and simply starts drinking.",
+        ],
+        "survival": [
+            "{player} survives. The insurer classifies breathing as an optional extra.",
+            "The chamber clicks and {player}'s premium triples anyway.",
+            "{player} lives, subject to excess, exclusions, and lifelong shaking.",
+            "The claim against {player}'s life has been denied on a technicality.",
+            "{player} remains alive but is no longer considered insurable by God.",
+            "The bullet fails to lodge a claim against {player}.",
+        ],
+        "death": [
+            "{victim}'s claim is denied: policy excludes acts of catastrophic dipshittery.",
+            "{victim} is now fully covered by the ground.",
+            "The insurer offers {victim}'s family thoughts, prayers, and a twelve-page rejection letter.",
+            "{victim} dies. The paperwork is somehow the real tragedy.",
+            "Cause of death: ballistic. Cause of non-payment: paragraph 8, subsection fuck-you.",
+            "{victim}'s life policy pays out one branded pen and a sincere voicemail menu.",
+        ],
+        "winner": [
+            "{winner} wins and is immediately denied renewal.",
+            "The actuaries predicted everyone but {winner}. They have been promoted.",
+            "{winner} receives the grand prize: a slightly lower deductible on therapy.",
+            "The insurer confirms {winner} is alive but refuses to put that in writing.",
+            "{winner} survives the risk assessment and becomes the risk.",
+            "Congratulations, {winner}. Your no-claims bonus is morally indefensible.",
+        ],
+    },
+    "true_crime": {
+        "taunt": [
+            "Investigators would later describe this decision as extremely fucking useful evidence.",
+            "Nobody knew the warning signs, except everyone in the room and the loaded gun.",
+            "The host lowers their voice because apparently whispering makes exploitation tasteful.",
+            "Stay tuned: after the gunshot, we rank the suspects by podcast potential.",
+            "A neighbour says you seemed quiet. You were asleep, but the edit is already locked.",
+            "This preventable nightmare is sponsored by a mattress nobody asked about.",
+        ],
+        "round_start": [
+            "Episode one: The Cylinder That Everyone Absolutely Saw Coming.",
+            "A new round begins, reconstructed through ominous stock footage.",
+            "The host says 'what happened next shocked the town' for the ninth time.",
+            "Another episode starts with rain sounds and several ethical violations.",
+            "The chamber spins beneath a tasteful amount of piano music.",
+            "Tonight: six chambers, one bullet, and forty-seven ad breaks.",
+        ],
+        "survival": [
+            "{player} survives, devastating producers who already bought the episode title.",
+            "The gun clicks. {player} is upgraded from victim to unreliable witness.",
+            "{player} lives, so the podcast invents a suspicious childhood instead.",
+            "The narrator calls {player}'s survival chilling, haunting, and available on Patreon.",
+            "{player} survives. Investigators have no comment; the host has three hours of comments.",
+            "The chamber spares {player}. Season two is now in serious trouble.",
+        ],
+        "death": [
+            "{victim} dies. Before we continue, a word from our sponsor.",
+            "The case of {victim} is solved immediately, ruining a perfectly good twelve-part series.",
+            "{victim}'s final mistake is remastered in immersive audio.",
+            "The chamber fires. Three podcasters simultaneously describe the room as sleepy.",
+            "{victim} becomes a tragedy, a thumbnail, and eventually a tasteful tote bag.",
+            "At level {level}, {victim} had their whole life ahead of them and six ads behind them.",
+        ],
+        "winner": [
+            "{winner} survives and signs an exclusive interview deal before the bodies cool.",
+            "The season finale reveals {winner} was alive the entire time.",
+            "{winner} wins. The podcast calls this closure because accuracy tested poorly.",
+            "All evidence points to {winner}, mostly because everyone else is evidence.",
+            "{winner} leaves with a book deal and the thousand-yard stare of a bestseller.",
+            "The host thanks {winner}, the victims, and listeners on the premium tier.",
+        ],
+    },
+    "reality_tv": {
+        "taunt": [
+            "The producers insist the loaded gun is here for the right reasons.",
+            "Please stare into camera three when your dignity leaves your body.",
+            "The audience loves authenticity, so try to scream naturally.",
+            "Your tragic backstory tested well. Your survival did not.",
+            "One chamber contains a bullet. The others contain brand partnerships.",
+            "The host pauses for eleven seconds because suspense has a contractual minimum.",
+        ],
+        "round_start": [
+            "Previously on People Making Fucking Terrible Choices...",
+            "A new elimination ceremony begins, now with legally distinct gunfire.",
+            "The cameras roll. The cylinder rolls. Standards continue to fall.",
+            "Another round begins with a shocking twist everyone saw in the trailer.",
+            "Contestants, take your marks. Medics, pretend this is normal.",
+            "The host welcomes everyone back with suspiciously dry hands.",
+        ],
+        "survival": [
+            "{player} survives and immediately cries in the confessional for screen time.",
+            "The chamber clicks. {player} receives immunity and a deeply invasive close-up.",
+            "{player} lives. The judges praise their courage and cheekbone definition.",
+            "The audience saves {player}; the gun was apparently outvoted.",
+            "{player} advances to next week's trauma challenge.",
+            "The bullet does not choose {player}. The producers look fucking furious.",
+        ],
+        "death": [
+            "{victim}, you have been eliminated. Extremely eliminated.",
+            "The chamber sends {victim} home in several production-approved containers.",
+            "{victim}'s journey ends here, but their reaction GIF is forever.",
+            "The judges wanted more vulnerability. {victim} has now provided all of it.",
+            "{victim} loses the challenge and gains a memorial montage.",
+            "The host calls {victim}'s death the most dramatic exit in franchise history.",
+        ],
+        "winner": [
+            "{winner} wins the season, a cash prize, and an unusable nervous system.",
+            "The audience crowns {winner}, mostly because the other phone lines are dead.",
+            "{winner} gets the final rose. It smells strongly of gunpowder.",
+            "Congratulations, {winner}. Your trauma airs Tuesdays at eight.",
+            "{winner} survives and is contractually obligated to return for All-Stars.",
+            "The host hugs {winner} after confirming there will be a second season.",
+        ],
+    },
+    "family_game_night": {
+        "taunt": [
+            "Nan brought biscuits. Uncle Barry brought unresolved rage and a revolver.",
+            "Nobody is leaving until someone wins or Dad admits he cheated at Monopoly.",
+            "The family that plays together stays together, except for whoever gets ventilated.",
+            "Mum says put the gun down. Mum has been ignored since 1997.",
+            "The rules are simple: spin, pull, and never mention the inheritance.",
+            "This is still healthier than discussing politics at Christmas.",
+        ],
+        "round_start": [
+            "Another wholesome family round begins with active resentment.",
+            "Dad reloads. Mum pours wine. The children update the will.",
+            "Game night continues because apparently Uno was not ruining enough lives.",
+            "The cylinder spins beside the good china nobody is allowed to use.",
+            "Everyone gathers close. The therapist gathers billable material.",
+            "A new round begins and the inheritance gets mathematically simpler.",
+        ],
+        "survival": [
+            "{player} survives. Their mother says not to make a fuss.",
+            "The gun clicks and {player} remains the family's second-biggest disappointment.",
+            "{player} lives. Uncle Barry accuses the chamber of favouritism.",
+            "Nan slips {player} another biscuit and whispers, 'Your turn will come.'",
+            "{player} survives and is still expected to help with the dishes.",
+            "The chamber spares {player}. The family group chat does not.",
+        ],
+        "death": [
+            "{victim} dies. Mum asks whether anyone thought to put newspaper down.",
+            "The family loses {victim} and gains an awkwardly available chair.",
+            "{victim} is removed from the game and, more importantly, the Christmas seating plan.",
+            "The gun fires. Dad mutters that this never happened when he was a kid.",
+            "{victim}'s inheritance is divided before the echo finishes.",
+            "Nan looks at {victim}, sips her tea, and says, 'Bit dramatic.'",
+        ],
+        "winner": [
+            "{winner} wins game night and is never invited to Christmas again.",
+            "The estate now belongs to {winner}. So does the cleanup.",
+            "{winner} is the last relative standing and finally controls the thermostat.",
+            "Mum congratulates {winner}, then asks why they could not just play Scrabble.",
+            "{winner} takes the family trophy and several incriminating casserole dishes.",
+            "The family group chat has one member left: {winner}, typing furiously.",
+        ],
+    },
+    "hell_bureaucracy": {
+        "taunt": [
+            "Please take a number. Damnation is experiencing higher than usual demand.",
+            "The gun is infernal, but the processing fee is worse.",
+            "Satan outsourced torment to a contractor with one revolver and no supervision.",
+            "Your soul has been pre-declined for reasons listed on a form you cannot access.",
+            "The ninth circle is just this lobby with harsher fluorescent lighting.",
+            "Hell is other people, but the bullet is doing most of the heavy lifting.",
+        ],
+        "round_start": [
+            "Infernal Intake begins another round of mandatory processing.",
+            "The cylinder spins while the damned complete Form 666-B.",
+            "A new round opens at Window Thirteen. The clerk does not look up.",
+            "The queue advances by one soul and several centuries.",
+            "Another chamber is loaded under the Eternal Efficiency Initiative.",
+            "Hell freezes over briefly; the paperwork remains warm.",
+        ],
+        "survival": [
+            "{player} survives because Hell misplaced the original death certificate.",
+            "The chamber clicks. {player} is redirected to another department.",
+            "{player}'s damnation request is rejected for insufficient suffering.",
+            "A demon stamps {player} NOT DEAD YET and goes on break.",
+            "{player} lives after presenting three forms of infernal identification.",
+            "Hell cannot process {player} until the manager returns, sometime after eternity.",
+        ],
+        "death": [
+            "{victim} arrives in Hell and is told death was only the first queue.",
+            "The chamber fires. {victim}'s soul is assigned a case number and immediately lost.",
+            "{victim} is damned for eternity, plus six to eight business eternities for processing.",
+            "A demon welcomes {victim}, then charges a convenience fee for the screaming.",
+            "{victim}'s appeal is denied before their body finishes falling.",
+            "Hell receives {victim} at level {level} and downgrades them to unpaid intern.",
+        ],
+        "winner": [
+            "{winner} escapes Hell on a technicality. Legal is furious.",
+            "The infernal clerk marks {winner} RETURNED: TOO DIFFICULT TO PROCESS.",
+            "{winner} survives and receives one complimentary sin waiver.",
+            "Hell closes for the day. {winner} remains somebody else's nightmare.",
+            "{winner} beats the system by being more exhausting than eternal punishment.",
+            "Congratulations, {winner}. Your soul remains conditionally yours.",
+        ],
+    },
+    "doomed_circus": {
+        "taunt": [
+            "The clown is holding the gun correctly. Somehow that makes this worse.",
+            "Ladies and gentlemen, prepare for the least talented death-defying act alive.",
+            "The ringmaster promises refunds to anyone who survives long enough to complain.",
+            "The cannon was too safe, so the clowns found a revolver.",
+            "Under the big top, every seat has a splash-zone disclaimer.",
+            "The calliope plays faster whenever the gun points at you.",
+        ],
+        "round_start": [
+            "The spotlight rises on another catastrophic performance.",
+            "A fresh act begins. The clowns have already notified next of kin.",
+            "The ringmaster reloads and calls it audience participation.",
+            "Another round enters the ring on a tiny, deeply cursed bicycle.",
+            "The band strikes up something cheerful and legally inadmissible.",
+            "Welcome back to the greatest shitshow on earth.",
+        ],
+        "survival": [
+            "The gun clicks. {player} receives a sad balloon and no explanation.",
+            "{player} survives while seventeen clowns boo from one impossibly small car.",
+            "The ringmaster calls {player}'s survival a rehearsal mistake.",
+            "{player} lives. The trapeze artist quietly cuts the backup rope anyway.",
+            "The bullet misses {player}; a cream pie completes the humiliation.",
+            "{player} survives and is promoted to Head of Unscheduled Screaming.",
+        ],
+        "death": [
+            "The clown honks once. The coroner understands. {victim} is gone.",
+            "{victim}'s final act receives a standing ovation from people trying to leave.",
+            "The ringmaster announces {victim} will not return after intermission.",
+            "{victim} is fired from the cannon of life directly into the gift shop memorial range.",
+            "The gun bangs, the cymbals crash, and {victim} absolutely fucking doesn't get up.",
+            "A clown places one tiny flower on {victim}. It squirts embalming fluid.",
+        ],
+        "winner": [
+            "{winner} wins the circus and inherits all seventeen clowns. Condolences.",
+            "The ringmaster crowns {winner} beneath a tasteful shower of liability waivers.",
+            "{winner} survives the big top. The small print says the circus follows them home.",
+            "The crowd cheers {winner}; the empty seats are significantly louder.",
+            "{winner} takes a bow while the clown car reverses over the evidence.",
+            "The circus leaves town. {winner}'s nightmares stay for an encore.",
+        ],
+    },
+    "mad_scientist": {
+        "taunt": [
+            "The hypothesis is that you will die. Peer review has loaded the gun.",
+            "Science asks questions. This revolver removes the people asking them.",
+            "The control group went home. You are the entertaining group.",
+            "The ethics committee sent a strongly worded letter, so naturally we burned it.",
+            "Please hold still. The data gets messy when the subjects beg.",
+            "The scientist assures everyone the screaming is statistically insignificant.",
+        ],
+        "round_start": [
+            "Trial begins. Variables controlled; consequences absolutely fucking not.",
+            "A new experiment starts with one bullet and several grant violations.",
+            "The laboratory resets. The stains have not.",
+            "Another round enters phase three human regretting.",
+            "The scientist spins the cylinder and writes down a result in advance.",
+            "Test subjects ready. Medical staff fictional. Begin.",
+        ],
+        "survival": [
+            "{player} survives, disproving the theory and infuriating the funding body.",
+            "The chamber clicks. {player} is marked ANOMALY: annoyingly alive.",
+            "{player} lives, so the scientist adds more exclamation marks to the notes.",
+            "The experiment fails to kill {player}. Further experiments are immediately approved.",
+            "{player} survives with a statistically significant amount of trauma.",
+            "The bullet avoids {player}. The scientist blames contamination.",
+        ],
+        "death": [
+            "{victim} validates the hypothesis by ceasing all measurable activity.",
+            "The experiment kills {victim}. The paper calls this a promising result.",
+            "{victim}'s final words are recorded as miscellaneous lab noise.",
+            "The chamber fires. {victim} moves from participant to figure 4B.",
+            "{victim} dies for science. Science does not remember asking.",
+            "At level {level}, {victim} discovers the terminal velocity of bad methodology.",
+        ],
+        "winner": [
+            "{winner} survives and is promoted from subject to unexplained contamination.",
+            "The scientist awards {winner} a certificate printed on the ethics complaint.",
+            "{winner} wins. The conclusion reads: somehow, the idiot persists.",
+            "The surviving sample is {winner}. Refrigerate after opening.",
+            "{winner} escapes the lab carrying several organs, mostly their own.",
+            "Peer review confirms {winner} is alive and the methodology is fucking horrifying.",
+        ],
+    },
+    "aussie": {
+        "taunt": [
+            "Spin the cylinder, ya mad cunt. Centrelink won't cover this.",
+            "This has gone from she'll be right to call the fucking coroner.",
+            "The pub has stopped taking bets and started measuring coffins.",
+            "One bullet, six chambers, zero fucking adult supervision.",
+            "The gun's hotter than a servo pie left on the dashboard.",
+            "Somewhere a magpie is watching this and thinking, 'Bit aggressive.'",
+            "Yeah nah, this is cooked beyond recognition.",
+            "If this goes wrong, tell the ambos it was a workplace incident.",
+        ],
+        "round_start": [
+            "Righto, new round. Somebody hold the beer and somebody call emergency.",
+            "The cylinder spins like a Commodore leaving a Bunnings car park.",
+            "Another round begins because nobody here knows when to fuck off home.",
+            "Fresh chamber, warm beer, absolutely rooted decision-making.",
+            "The pub goes quiet. Even the pokies reckon this is irresponsible.",
+            "Yeah nah, she'll be right. Statistically, she absolutely will not.",
+            "The gun comes back around like a dodgy kebab at three in the morning.",
+            "Round starts. The local ambo crew sighs in perfect unison.",
+        ],
+        "survival": [
+            "{player} survives. Yeah nah, lucky cunt.",
+            "The chamber clicks. {player} remains a happy little Vegemite.",
+            "{player} lives and immediately claims it was all part of the plan. Bullshit.",
+            "No bang. {player} is still upright, unlike the pub's last plastic chair.",
+            "{player} survives by the width of a bee's dick and twice the luck.",
+            "The gun says nah. {player} says fuck yeah. The ambos remain unconvinced.",
+            "{player} lives to make another decision this catastrophically cooked.",
+            "The bullet misses {player}. A magpie has volunteered to finish the job.",
+        ],
+        "death": [
+            "Yeah nah, shit's fucked, cunt. {victim} is cactus.",
+            "{victim} became a happy little Vegemite. Mostly little bits.",
+            "The gun said 'oi cunt' and {victim} answered. Fatal communication error.",
+            "{victim} is deader than a roo on the Hume and twice as inconvenient.",
+            "Ripper of a shot. Absolutely dogshit outcome for {victim}.",
+            "Tell {victim}'s mum they died doing what they loved: being a complete fucking drongo.",
+            "{victim} has been promoted from loose unit to permanent cemetery resident.",
+            "The chamber went off like a servo pie in a microwave. So did {victim}.",
+        ],
+        "winner": [
+            "{winner} wins and immediately claims it was skill, the lying cunt.",
+            "Last drongo standing: {winner}. Somebody buy the bastard a beer.",
+            "{winner} survives. The pub names a sticky patch of carpet in their honour.",
+            "Against all odds and basic common sense, {winner} fucking wins.",
+            "{winner} takes the crown, the cash, and absolutely no lessons from this.",
+            "The ambos pack up. {winner} cracks a cold one and calls that character development.",
+            "{winner} is the last happy little Vegemite in a room full of paperwork.",
+            "Yeah nah, fair play: {winner} survived the most cooked game in the country.",
+        ],
+    },
+}
+
+ADDITIONAL_THEME_EXPANSIONS: dict[str, dict[str, list[str]]] = {
+    "corporate": {
+        "taunt": [
+            "We are not colleagues; we are a family. Specifically, the kind with a suspicious life-insurance policy.",
+            "Your wellness app noticed elevated stress and recommended fewer bullets per quarter.",
+            "The team needs your death to be more cross-functional. Please involve Finance.",
+            "An AI has already drafted your condolence email. It calls you a valued first-name-placeholder.",
+            "Your Teams status says Available. The chamber intends to correct that.",
+            "A consultant charged forty grand to put your mortality on a two-by-two matrix.",
+        ],
+        "round_start": [
+            "Daily stand-up begins. Sitting down afterward is increasingly optional.",
+            "Quarterly targets reset: one bullet, six chambers, infinite shareholder value.",
+            "The town hall opens with transparency, accountability, and a concealed exit strategy.",
+            "The merger is complete. Life and death are now one badly managed department.",
+            "Sprint planning begins. The sprint is toward the fucking emergency exit.",
+            "Leadership unveils a bold new strategy: let the revolver choose the org chart.",
+        ],
+        "survival": [
+            "{player} survives and receives a calendar invite titled Quick Chat.",
+            "The chamber clicks. {player}'s manager takes credit for the successful outcome.",
+            "{player} lives, but their annual review says they lacked commitment.",
+            "Finance confirms {player} remains a depreciating asset.",
+            "{player} survives the pull and is rewarded with a mandatory resilience webinar.",
+            "The bullet misses {player}. Their promotion does too.",
+        ],
+        "death": [
+            "{victim} is gone, but their inbox has been reassigned to someone cheaper.",
+            "The chamber completes {victim}'s exit interview in one very direct question.",
+            "{victim} gave one hundred and ten percent. Ballistics took the extra ten.",
+            "Payroll removes {victim} before the medic checks for a pulse. Outstanding alignment.",
+            "{victim}'s desk is listed on the internal marketplace while still warm.",
+            "Management describes {victim}'s death as a difficult but exciting headcount opportunity.",
+        ],
+        "winner": [
+            "{winner} becomes Employee of the Month by process of elimination. Very literal elimination.",
+            "The board rewards {winner} with equity worth almost as much as the funeral flowers.",
+            "{winner} is now the entire department and still somehow has too many meetings.",
+            "Leadership congratulates {winner} in a message clearly written for someone else.",
+            "{winner} wins the corporate ladder after everyone above them falls off it.",
+            "The CEO shakes {winner}'s hand, then asks whether they can cover the weekend.",
+        ],
+    },
+    "reaper_office": {
+        "taunt": [
+            "Death cannot come to the gun right now. Please leave your name and last words after the bang.",
+            "The Reaper has seen plagues, wars, and empires fall. Your decision still made him say, 'Fucking hell.'",
+            "Your estimated wait time is one to six trigger pulls.",
+            "Mortality Services values your pulse. That is why they are taking it.",
+            "The Reaper checks the roster and draws a tiny coffin beside your name.",
+            "Death's office has casual Friday. The corpses are still business casual.",
+        ],
+        "round_start": [
+            "The skeleton staff begins another shift. For once, that phrase is literal.",
+            "Death answers the phones, reloads the chamber, and regrets not becoming an accountant.",
+            "The mortality help desk opens. Nobody here is getting help.",
+            "Another batch of living complaints enters terminal processing.",
+            "The Reaper starts a new spreadsheet titled People About To Become Past Tense.",
+            "A bell rings in the afterlife. Someone has pressed Take Next Customer.",
+        ],
+        "survival": [
+            "{player} survives because Death accidentally clicked Snooze for Eternity.",
+            "The Reaper calls {player}'s number, mispronounces it, and takes someone else.",
+            "{player} lives. Their file now has a passive-aggressive red flag on it.",
+            "Death reaches for {player}, pulls a hamstring, and files workers' compensation.",
+            "The chamber clicks. {player}'s soul remains in quality assurance.",
+            "{player} is spared after the Reaper discovers their death requires manager approval.",
+        ],
+        "death": [
+            "{victim} meets Death and immediately asks whether there is parking validation.",
+            "The Reaper clocks {victim} out, permanently, then forgets to submit the timesheet.",
+            "{victim} becomes another unread notification in Death's overflowing inbox.",
+            "The chamber fires. Death whispers, 'Finally, a ticket I can close.'",
+            "{victim}'s soul arrives without an appointment and is charged the walk-in fee.",
+            "Death files {victim} under F for Fuck Around, Findings Thereof.",
+        ],
+        "winner": [
+            "{winner} survives because Death has exceeded this month's collection quota.",
+            "The Reaper grants {winner} an extension, mostly to avoid the paperwork.",
+            "{winner}'s file is returned with the note: annoyingly persistent.",
+            "Death congratulates {winner}, then adds them on LinkedIn for later.",
+            "{winner} leaves the office alive. The exit survey is fucking glowing.",
+            "The Reaper watches {winner} go and quietly moves their name to Monday.",
+        ],
+    },
+    "insurance": {
+        "taunt": [
+            "The insurer would like proof you were alive before this conversation began.",
+            "Your policy includes roadside assistance but apparently not table-side stupidity.",
+            "The gun is in network. The emergency room is mysteriously not.",
+            "An actuary just felt a disturbance in the spreadsheet and bought another yacht.",
+            "Your coverage has a bullet-point list. Unfortunately, one bullet is very literal.",
+            "Customer service assures you the chamber is working as designed.",
+        ],
+        "round_start": [
+            "Open enrollment begins. Available plans are Bad, Worse, and Loaded.",
+            "The risk pool resets and immediately develops a deep red stain.",
+            "Another round begins after a brief word from nobody willing to insure it.",
+            "The claims department reloads the reason for denial.",
+            "A fresh policy period starts with zero grace and one live round.",
+            "The cylinder spins while an actuary whispers, 'Oh, this is beautiful.'",
+        ],
+        "survival": [
+            "{player} survives, but the click is billed as an out-of-network procedure.",
+            "The gun fails to kill {player}. Insurance calls that unnecessary treatment.",
+            "{player} lives and receives a premium increase for reckless continued existence.",
+            "The chamber clicks. {player}'s claim remains under review until the heat death of the universe.",
+            "{player} keeps breathing, an activity now subject to prior authorization.",
+            "The bullet declines {player}; the insurer still charges a projectile co-pay.",
+        ],
+        "death": [
+            "{victim} dies before meeting the deductible. Impeccable cost containment.",
+            "The insurer denies {victim}'s claim because being shot is apparently an elective procedure.",
+            "{victim}'s beneficiaries receive a sympathy hamper with a bill inside.",
+            "The chamber kills {victim}. Customer service asks whether they tried turning life off and on again.",
+            "{victim}'s death is covered, but only on alternate Tuesdays in leap years.",
+            "An assessor photographs {victim}, circles the bullet hole, and writes normal wear and tear.",
+        ],
+        "winner": [
+            "{winner} survives and becomes the insurer's least favourite data point.",
+            "The grand payout goes to {winner}, minus fees, taxes, and the concept of happiness.",
+            "{winner} wins. Their reward statement says actual value may be emotionally lower.",
+            "The actuary congratulates {winner} through gritted, expensively insured teeth.",
+            "{winner} remains alive, forcing the policy to auto-renew at an obscene rate.",
+            "The insurer sends {winner} a gold card redeemable for one-third of a therapist.",
+        ],
+    },
+    "true_crime": {
+        "taunt": [
+            "The documentary opens with your Facebook photo from 2012. You already look guilty.",
+            "Detectives found no motive, so the podcast invented three and a secret tunnel.",
+            "Your final moments will be reenacted by someone hotter who blinks too much.",
+            "The host describes the loaded gun as unassuming. It is visibly a loaded fucking gun.",
+            "For bonus episodes, subscribers can hear the scream without tasteful piano.",
+            "A Reddit detective has solved your death before it happens and blamed your spouse.",
+        ],
+        "round_start": [
+            "Episode two begins with a map, red string, and absolutely no restraint.",
+            "The narrator asks who could have predicted this. The answer is still everybody.",
+            "Another round begins after a content warning nobody listens to.",
+            "The producer dims the lights and brightens the affiliate links.",
+            "The cylinder spins while an amateur sleuth misidentifies three innocent neighbours.",
+            "Tonight's episode contains violence, coarse language, and a mattress discount code.",
+        ],
+        "survival": [
+            "{player} survives and immediately receives twelve interview requests from people whispering professionally.",
+            "The chamber clicks. {player}'s blurry yearbook photo is returned to storage.",
+            "{player} lives, forcing the narrator to use the phrase shocking twist with zero shame.",
+            "The podcast spares {player} but doxxes the wrong person for atmosphere.",
+            "{player} survives. A six-part miniseries about why is already in pre-production.",
+            "The gun clicks and {player} becomes the brave survivor who declined to comment forty-two times.",
+        ],
+        "death": [
+            "{victim} dies. The host mispronounces their name consistently across all eight episodes.",
+            "The chamber fires and {victim}'s family learns about it from a push notification.",
+            "{victim} becomes a cold case for roughly four seconds before everyone notices the smoking gun.",
+            "The podcast honours {victim} by putting their face behind the premium paywall.",
+            "{victim}'s death is tragic, senseless, and somehow merch-ready by Friday.",
+            "Investigators recover {victim}'s body and seventeen unsolicited theories from TikTok.",
+        ],
+        "winner": [
+            "{winner} survives, but the documentary edits their relief into a suspicious smirk.",
+            "The final episode names {winner} the sole survivor and heavily implies tax fraud for spice.",
+            "{winner} wins. Online detectives ruin two unrelated marriages while celebrating.",
+            "The host thanks {winner} for their bravery and asks them to repeat the crying with better audio.",
+            "{winner} leaves alive and spends the next decade correcting the Wikipedia page.",
+            "The truth sets {winner} free. The production contract absolutely does not.",
+        ],
+    },
+    "reality_tv": {
+        "taunt": [
+            "The producers replaced the safety officer with a social-media intern and engagement is up.",
+            "Please cry facing the light. Grief looks muddy from camera two.",
+            "The gun has immunity this week. You do not.",
+            "Your personality scored poorly, so production added a bullet arc.",
+            "The host says this is the hardest decision ever made by somebody else's revolver.",
+            "A boom mic dips into frame, briefly demonstrating more survival instinct than the cast.",
+        ],
+        "round_start": [
+            "Welcome back. Since last week, legal has tripled and the cast has halved.",
+            "Another elimination begins after thirty seconds of footage stretched across two ad breaks.",
+            "The challenge resets. Makeup touches up the living and gives up on everyone else.",
+            "The director calls action. The medic quietly calls dibs on the least messy one.",
+            "A new round begins with a dramatic helicopter shot of a perfectly normal room.",
+            "Contestants line up for the final challenge: maintaining eye contact with consequences.",
+        ],
+        "survival": [
+            "{player} survives and whispers, 'I didn't come here to make friends,' to the paramedic.",
+            "The gun clicks. {player}'s follower count rises by an ethically concerning amount.",
+            "{player} lives and earns a luxury date with an unlicensed trauma counsellor.",
+            "The judges save {player} because their breakdown tested exceptionally well with mums aged 34-49.",
+            "{player} survives. Production adds a villain sting over their breathing.",
+            "The chamber clicks and {player} receives one immunity necklace made of actual evidence.",
+        ],
+        "death": [
+            "{victim} is eliminated and immediately blurred for broadcast standards.",
+            "The gun fires. Production asks everyone to hold the reaction until after the sponsor bumper.",
+            "{victim}'s final confessional is mostly a producer asking them to say it with more energy.",
+            "The audience gasps as {victim} exits through the gift-shop-shaped hole in reality.",
+            "{victim} loses the immunity challenge and all remaining immune function.",
+            "The host tells {victim} their time is up with breathtaking fucking understatement.",
+        ],
+        "winner": [
+            "{winner} receives a million dollars before tax and approximately nine dollars after therapy.",
+            "The finale crowns {winner} while production sweeps the eliminated contestants under a tasteful montage.",
+            "{winner} wins and launches a podcast before leaving the stage.",
+            "The host congratulates {winner} with the warmth of someone already negotiating the reunion special.",
+            "{winner} is America's next top person who happened not to get shot.",
+            "The cameras stop. {winner} discovers the prize was exposure and one supermarket voucher.",
+        ],
+    },
+}
+
+ADDITIONAL_THEME_EXPANSIONS.update(
+    {
+        "family_game_night": {
+            "taunt": [
+                "Dad says it is house rules. The revolver says it owns the fucking house.",
+                "Your aunt brought a casserole, a pyramid scheme, and several unresolved motives.",
+                "The family photographer asks the survivors to squeeze together. Planning ahead is lovely.",
+                "Tonight's passive aggression has been upgraded to active ballistics.",
+                "The thermostat dispute was ugly, but the inheritance dispute brought ammunition.",
+                "Everyone agreed not to discuss politics, so now the gun is carrying the conversation.",
+            ],
+            "round_start": [
+                "Charades begins. The answer is generational trauma with a firearm.",
+                "The casserole is cooling. The grudges remain piping fucking hot.",
+                "Family meeting minutes will be recorded by the coroner.",
+                "Monopoly resumes after someone replaces the little silver thimble with live ammunition.",
+                "The board resets, Nan updates the will, and nobody makes eye contact.",
+                "Game night continues after Mum moves the suspicious rug over the suspicious stain.",
+            ],
+            "survival": [
+                "{player} survives. Mum says their cousin would have handled it more gracefully.",
+                "The chamber clicks. Dad calls {player}'s flinch a generational weakness.",
+                "{player} lives, but Aunt Carol starts the memorial fundraiser anyway.",
+                "Nan congratulates {player}, then reminds them the bins still need taking out.",
+                "{player} survives. Their sibling looks genuinely fucking disappointed.",
+                "The gun spares {player}; the family group chat removes them from the photo regardless.",
+            ],
+            "death": [
+                "{victim} dies. Dad asks whether anybody wants their leftovers.",
+                "The family group chat changes its icon before {victim} is cold.",
+                "The priest waits politely while everyone opens the inheritance spreadsheet.",
+                "{victim} is remembered forever as the one who always made everything dramatic.",
+                "The family removes {victim}'s place setting and asks somebody to pass the salt.",
+                "The undertaker finds Nan's loyalty card in {victim}'s pocket. One more funeral and the next is free.",
+            ],
+            "winner": [
+                "{winner} inherits the house and discovers the reverse mortgage was the real loaded weapon.",
+                "{winner} finally controls the remote. There is nobody left to watch with them.",
+                "Nan congratulates {winner}, then explains their dead sibling was still her favourite.",
+                "{winner} is the sole survivor and is somehow still expected to host Christmas.",
+                "The family awards {winner} the gravy boat and several generations of fresh trauma.",
+                "{winner} leaves with the leftovers, the inheritance, and an exhausting number of police questions.",
+            ],
+        },
+        "hell_bureaucracy": {
+            "taunt": [
+                "Your soul has been transferred through five departments and nobody knows why it is screaming.",
+                "Before damnation, please select every square containing a traffic light.",
+                "Hell's hold music is just your loved ones saying they warned you.",
+                "The forms require blood, but the printer is out of fucking magenta.",
+                "Your appointment is in nine hundred years. Fortunately, the gun accepts walk-ins.",
+                "Please consent to eternal torment and twelve thousand pages of infernal cookies.",
+            ],
+            "round_start": [
+                "Infernal quarterly processing begins. Screams may be monitored for quality assurance.",
+                "The ticket dispenser catches fire and somehow improves the service.",
+                "Break ended four hundred years ago. The demons are still emotionally unavailable.",
+                "The eternal queue advances three places sideways.",
+                "A demon supervisor stamps the ammunition APPROVED FOR NEEDLESS SUFFERING.",
+                "The lift opens at Basement Infinity. Mind the existential gap.",
+            ],
+            "survival": [
+                "{player}'s soul is returned because somebody misspelled the postcode.",
+                "The chamber clicks. A demon tells {player} they have waited in the wrong queue.",
+                "{player} survives but must resubmit their mortality in triplicate.",
+                "Hell's system goes down, leaving {player} inconveniently alive.",
+                "The gun clicks. The clerk stamps {player} INCOMPLETE and goes to lunch.",
+                "{player} lives because the password-reset raven never arrived.",
+            ],
+            "death": [
+                "{victim} reaches the front of the queue and is told death happened in the other building.",
+                "Hell assigns {victim}'s soul a cubicle beside the screaming printer.",
+                "{victim} dies and learns their six-century probation starts Monday.",
+                "The chamber turns {victim}'s exit interview into an entrance interview.",
+                "A demon hands {victim} a survey asking how satisfied they were with the fatality.",
+                "At level {level}, {victim} is downgraded from damned to fucking administrative.",
+            ],
+            "winner": [
+                "{winner} survives because Hell closed early for mandatory wellbeing training.",
+                "{winner}'s complaint is escalated to Satan, who marks it resolved without reading it.",
+                "A demon files {winner} as a duplicate soul and reluctantly lets them leave.",
+                "{winner} escapes damnation and receives a parking fine on the way out.",
+                "{winner} outlasts the gun, the queue, and three separate lunch breaks.",
+                "The infernal audit finds {winner} too stubborn to process and writes the whole thing off.",
+            ],
+        },
+        "doomed_circus": {
+            "taunt": [
+                "The clown says the gun is unloaded, but his shoes are full of spare bullets.",
+                "The lion requested a union representative after seeing your safety briefing.",
+                "There is a safety net. It is purely emotional and currently on smoke break.",
+                "Your face paint is running. Your survival odds left in the clown car.",
+                "The strongman cannot lift the crushing weight of this insurance premium.",
+                "A mime is trapped in an invisible coffin and frankly showing off.",
+            ],
+            "round_start": [
+                "The ringmaster proudly presents one bullet and a marquee full of poor judgement.",
+                "The calliope starts playing. Every coroner within ten kilometres sighs.",
+                "A clown reloads the revolver, honks twice, and violates seventeen safety codes.",
+                "Ladies, gentlemen, and future evidence: the next act begins.",
+                "The spotlight rises on a breathtaking display of workers' compensation fraud.",
+                "The circus resumes beneath a banner reading THIS SEEMED CHEAPER THAN THERAPY.",
+            ],
+            "survival": [
+                "{player} survives. A sad trombone plays from inside the gun.",
+                "The chamber clicks and {player} is pelted with legally distinct consolation confetti.",
+                "{player} lives, disappointing a clown who had already measured the coffin car.",
+                "The bullet misses {player} and hits the last remaining shred of circus dignity.",
+                "A trapeze artist catches {player}'s soul and tosses the confused bastard back in.",
+                "{player} survives. The bearded lady mutters that fucking amateurs get all the luck.",
+            ],
+            "death": [
+                "{victim} dies beneath the big top. The tiny hearse is somehow already idling.",
+                "The cannon misfires correctly and promotes {victim} to permanent audience participation.",
+                "{victim}'s death is ruled hilarious by twelve clowns and suspicious by everyone else.",
+                "The ringmaster covers {victim} with a handkerchief. They do not come back. Shit magician.",
+                "A seal balances the coroner's clipboard while {victim} misses the final bow.",
+                "At level {level}, {victim} becomes the only circus ghost with an employee discount.",
+            ],
+            "winner": [
+                "{winner} wins and is awarded one haunted clown car with seventeen previous owners.",
+                "The crowd gives {winner} a standing ovation because the seats are covered in evidence.",
+                "{winner} takes the trophy. It squirts something the lab refuses to identify.",
+                "The ringmaster names {winner} Greatest Survivor on Earth and immediately books a rematch.",
+                "{winner} escapes the circus, but the circus now knows their home address.",
+                "Confetti falls for {winner}. Half of it is legal paperwork and the rest has teeth.",
+            ],
+        },
+        "mad_scientist": {
+            "taunt": [
+                "The ethics board said no, so the scientist relabelled you miscellaneous lab equipment.",
+                "Your survival has a p-value of who gives a shit; pull the trigger.",
+                "The lab rats formed a union after watching the pilot study.",
+                "The scientist promises the procedure is double-blind. Nobody can see because of the explosion.",
+                "Your consent form was peer reviewed by three people who hate you.",
+                "The grant proposal calls you renewable test material. Optimistic little fuckers.",
+            ],
+            "round_start": [
+                "The experiment resumes after a brief evacuation and a much briefer apology.",
+                "A new trial begins with rigorous controls and a scientist wearing oven mitts.",
+                "The centrifuge stops. The screaming apparatus starts.",
+                "Researchers prepare another statistically significant workplace incident.",
+                "The professor shouts FOR SCIENCE, which legal confirms is not a defence.",
+                "The lab resets the chamber and lowers its expectations for human progress.",
+            ],
+            "survival": [
+                "{player} survives and is immediately asked to join the control group again.",
+                "The chamber clicks. Researchers classify {player} as too angry to die.",
+                "{player} lives, ruining the graph but dramatically improving the sequel funding.",
+                "The bullet avoids {player}; the scientist calls it quantum cowardice.",
+                "{player}'s vital signs continue despite several pages of very confident predictions.",
+                "The experiment spares {player}. A lab rat gives them a tiny, deeply sarcastic clap.",
+            ],
+            "death": [
+                "{victim} dies and is thanked in the paper somewhere between the mice and the coffee machine.",
+                "The scientist records {victim}'s last words as a surprising amount of profanity.",
+                "{victim} becomes proof that a larger sample size is not always good news for the sample.",
+                "The chamber fires. Peer review requests that {victim} repeat the result twice.",
+                "{victim}'s cause of death is listed as methodology with enthusiasm.",
+                "At level {level}, {victim} finally achieves statistical insignificance.",
+            ],
+            "winner": [
+                "{winner} survives and receives honorary authorship beneath fourteen people who did nothing.",
+                "The Nobel committee blocks {winner}'s number and changes the locks.",
+                "{winner} wins. The scientist celebrates by applying for funding to do it again.",
+                "The final graph is one hundred percent {winner} and zero percent ethics approval.",
+                "{winner} leaves with the prize and a side effect nobody can pronounce.",
+                "Science marches forward over everyone except {winner}, the stubborn fucking outlier.",
+            ],
+        },
+        "aussie": {
+            "taunt": [
+                "The RSL banned this game, and those mad bastards still run meat raffles next to the pokies.",
+                "Every galah at the table says she'll be right. Statistically, one of you is full of shit.",
+                "The gun has no rego, no roadworthy, and a boot full of terrible decisions.",
+                "Call triple zero now and beat the post-trigger rush, you organised little legend.",
+                "This chamber is more cooked than a servo pie forgotten behind the demister.",
+                "The cylinder is doing a shoey with your remaining life expectancy.",
+                "Your pub tab, your search history, and this gun are all about to catch up with you.",
+                "A magpie watched you load the revolver and decided humans were the aggressive species.",
+            ],
+            "round_start": [
+                "New round, same pack of galahs, slightly fewer functioning organs.",
+                "The sunburnt country proudly presents tonight's dumbest fucking indoor activity.",
+                "A tradie spins the chamber and says the safety guard was slowing production.",
+                "The RSL raffle is drawn: first prize, a meat tray; second prize, catastrophic ventilation.",
+                "The pokies stop jingling just long enough to hear the cylinder spin.",
+                "Bunnings has snags. This shed has ballistics and absolutely no adult supervision.",
+                "The ute is running, the esky is full, and the emergency plan is apparently fuck it.",
+                "Another round starts because nobody wanted to be the soft cunt who went home.",
+            ],
+            "survival": [
+                "The chamber clicks. {player} is luckier than a thong surviving a highway on-ramp.",
+                "{player} lives and immediately claims they never flinched, the lying drongo.",
+                "The gun spares {player}. A nearby magpie takes personal responsibility for finishing the job.",
+                "{player} survives by the same miracle keeping that backyard trampoline out of the neighbour's pool.",
+                "Click. {player} is still kicking, unlike the aircon at a rental inspection.",
+                "{player} lives. The ambos call that beauty; the landlord calls it pre-existing damage.",
+                "The bullet gives {player} a miss, proving even ammunition avoids awkward dickheads at the pub.",
+                "{player} survives and celebrates like a seagull stealing chips from a toddler.",
+            ],
+            "death": [
+                "Yeah nah, {victim} is fucked as a screen door on a submarine.",
+                "{victim} gives the Darwin Award a Southern Cross and a fucking victory lap.",
+                "The chamber fires. {victim} is now flatter than a cane toad on the Bruce Highway.",
+                "{victim} has gone to the great Bunnings sausage sizzle in the sky. Onions still underneath.",
+                "The ambos look at {victim}, look at each other, and say, 'Yeah nah, smoko first.'",
+                "At level {level}, {victim} discovers that 'she'll be right' is not recognised medical treatment.",
+                "{victim} is cactus. Even the flies have put on high-vis and clocked off.",
+                "The gun turns {victim} from a loose unit into several smaller, administratively difficult units.",
+            ],
+            "winner": [
+                "{winner} wins and is crowned King of the Fuckwits with a Bunnings bucket.",
+                "Last drongo standing: {winner}. The prize is a warm beer and lifelong tinnitus.",
+                "{winner} survives, shouts 'too easy,' and quietly deletes the footage of them sobbing.",
+                "The pub gives {winner} a meat tray, a barring notice, and directions to the nearest therapist.",
+                "{winner} walks out luckier than a bin chicken in an unattended kebab shop.",
+                "Australia salutes {winner} by charging them double for an ambulance they did not call.",
+                "{winner} is the last happy little Vegemite and the first suspect in a very short investigation.",
+                "Yeah nah, fair fucking play: {winner} beat death and still has to work Monday.",
+            ],
+        },
+    }
+)
+
+for _theme_key, _categories in ADDITIONAL_THEME_EXPANSIONS.items():
+    for _category, _lines in _categories.items():
+        ADDITIONAL_THEME_MESSAGES[_theme_key][_category].extend(_lines)
+
 THEME_TAUNTS: dict[str, list[str]] = {
     "dark": DARK_BASE_TAUNTS + DARK_PRE_TURN_TAUNTS,
     "noir": NOIR_PRE_TURN_TAUNTS,
@@ -731,6 +1608,9 @@ THEME_TAUNTS: dict[str, list[str]] = {
     "detective": DETECTIVE_PRE_TURN_TAUNTS,
     "pirate": PIRATE_PRE_TURN_TAUNTS,
 }
+
+for _theme_key, _theme_messages in ADDITIONAL_THEME_MESSAGES.items():
+    THEME_TAUNTS[_theme_key] = _theme_messages["taunt"]
 
 ALL_TAUNTS: list[str] = [line for lines in THEME_TAUNTS.values() for line in lines]
 THEME_TAUNTS["mixed"] = ALL_TAUNTS
@@ -1845,6 +2725,33 @@ PIRATE_ROUND_START = [
     "The deck goes quiet. The gun goes up.",
 ]
 
+WASTELAND_ROUND_START = [
+    "The Geiger counter clicks. Soon the gun might join in.",
+    "A fresh round begins beneath a sky that gave up years ago.",
+    "The cylinder spins while the last clean water changes hands.",
+    "Another chamber is loaded from the emergency bad-idea reserve.",
+    "The wasteland goes quiet. Even the mutants want to watch this shit.",
+    "New round. Same apocalypse. Somehow worse planning.",
+]
+
+MAFIA_ROUND_START = [
+    "The family calls another meeting. Attendance is about to become negotiable.",
+    "A new round begins. The gun is loaded; the alibis are not.",
+    "The Don spins the cylinder and asks everyone to remain respectful.",
+    "Another chamber opens for business. Cash only. No witnesses.",
+    "The table is set, the wine is poured, and somebody is absolutely fucked.",
+    "New round. Kiss the ring, pull the trigger, mind the carpet.",
+]
+
+MEDIEVAL_ROUND_START = [
+    "The herald announces another round and immediately hides behind a shield.",
+    "A fresh chamber turns beneath the deeply confused gaze of the clergy.",
+    "The court gathers for another trial by catastrophically modern weapon.",
+    "New round. The king demands entertainment; the undertaker demands a deposit.",
+    "The cylinder spins as the village idiot senses professional competition.",
+    "Another round begins. The plague doctor calls this preventative medicine.",
+]
+
 THEME_SURVIVAL = {
     "dark": DARK_SURVIVAL_MESSAGES,
     "noir": NOIR_SURVIVAL_MESSAGES,
@@ -1894,6 +2801,11 @@ THEME_WINNER = {
     "pirate": PIRATE_WINNER_MESSAGES,
 }
 
+for _theme_key, _theme_messages in ADDITIONAL_THEME_MESSAGES.items():
+    THEME_SURVIVAL[_theme_key] = _theme_messages["survival"]
+    THEME_DEATH[_theme_key] = _theme_messages["death"]
+    THEME_WINNER[_theme_key] = _theme_messages["winner"]
+
 ALL_SURVIVAL: list[str] = [line for lines in THEME_SURVIVAL.values() for line in lines]
 ALL_DEATH: list[str] = [line for lines in THEME_DEATH.values() for line in lines]
 ALL_WINNER: list[str] = [line for lines in THEME_WINNER.values() for line in lines]
@@ -1908,6 +2820,9 @@ THEME_ROUND_START = {
     "dark": DARK_ROUND_START,
     "noir": NOIR_ROUND_START,
     "western": WESTERN_ROUND_START,
+    "wasteland": WASTELAND_ROUND_START,
+    "mafia": MAFIA_ROUND_START,
+    "medieval": MEDIEVAL_ROUND_START,
     "arcade": ARCADE_ROUND_START,
     "greek": GREEK_ROUND_START,
     "norse": NORSE_ROUND_START,
@@ -1917,6 +2832,8 @@ THEME_ROUND_START = {
     "detective": DETECTIVE_ROUND_START,
     "pirate": PIRATE_ROUND_START,
 }
+for _theme_key, _theme_messages in ADDITIONAL_THEME_MESSAGES.items():
+    THEME_ROUND_START[_theme_key] = _theme_messages["round_start"]
 ALL_ROUND_START: list[str] = [line for lines in THEME_ROUND_START.values() for line in lines]
 THEME_ROUND_START["mixed"] = ALL_ROUND_START
 THEME_ROUND_START["gallows"] = THEME_ROUND_START["western"]
@@ -2005,8 +2922,28 @@ RR_SETTINGS_CHOICES = {
     "theme": [
         "dark", "noir", "western", "wasteland", "mafia", "medieval", "arcade",
         "greek", "norse", "farmer", "sarcastic_farmer", "horror", "detective",
-        "pirate", "mixed",
+        "pirate", "corporate", "reaper_office", "insurance", "true_crime",
+        "reality_tv", "family_game_night", "hell_bureaucracy", "doomed_circus",
+        "mad_scientist", "aussie", "mixed",
     ],
+}
+
+THEME_ALIASES = {
+    "gallows": "western",
+    "sarcasticfarmer": "sarcastic_farmer",
+    "sarcastic-farmer": "sarcastic_farmer",
+    "corporate_hr": "corporate",
+    "reaper": "reaper_office",
+    "grim_reaper": "reaper_office",
+    "grim_reaper_office": "reaper_office",
+    "truecrime": "true_crime",
+    "reality": "reality_tv",
+    "family": "family_game_night",
+    "hell": "hell_bureaucracy",
+    "circus": "doomed_circus",
+    "scientist": "mad_scientist",
+    "bogan": "aussie",
+    "aussie_pub": "aussie",
 }
 
 RR_SETTINGS_PRESETS = {
@@ -2916,8 +3853,7 @@ class Russian(commands.Cog):
             "allow_pass_on_double_down": "If they survive Double Down, they skip their next turn.",
             "allow_taunts": "Enable flavor lines for turns, survives, deaths, and winner.",
             "theme": (
-                "Flavor theme: dark, noir, western, wasteland, mafia, medieval, arcade, greek, "
-                "norse, farmer, sarcastic_farmer, horror, detective, pirate, mixed."
+                "Flavor pack for roulette narration. Choose from the theme dropdown."
             ),
             "victory_recap": "Show end-of-game stats for all players.",
             "allow_start_early": "Host can start before the lobby timer ends.",
@@ -2964,10 +3900,7 @@ class Russian(commands.Cog):
     @staticmethod
     def normalize_theme(value: str) -> str:
         theme = value.strip().lower()
-        if theme in {"sarcasticfarmer", "sarcastic-farmer"}:
-            theme = "sarcastic_farmer"
-        if theme == "gallows":
-            theme = "western"
+        theme = THEME_ALIASES.get(theme, theme)
         if theme not in THEME_TAUNTS:
             return "dark"
         return theme
@@ -3058,8 +3991,7 @@ class Russian(commands.Cog):
                 return False, "Spin mode must be fixed, spin_each_pull, or spin_each_turn."
         elif attr == "theme":
             raw_theme = value.strip().lower()
-            aliases = {"gallows", "sarcasticfarmer", "sarcastic-farmer"}
-            if raw_theme not in THEME_TAUNTS and raw_theme not in aliases:
+            if raw_theme not in THEME_TAUNTS and raw_theme not in THEME_ALIASES:
                 return False, "Choose a theme from the dropdown in the settings panel."
             parsed = self.normalize_theme(raw_theme)
         else:
@@ -3093,10 +4025,7 @@ class Russian(commands.Cog):
     @staticmethod
     def resolve_theme_key(value: str) -> Optional[str]:
         raw = value.strip().lower()
-        if raw in {"sarcasticfarmer", "sarcastic-farmer"}:
-            raw = "sarcastic_farmer"
-        if raw == "gallows":
-            return "western"
+        raw = THEME_ALIASES.get(raw, raw)
         if raw in THEME_TAUNTS:
             return raw
         return None
@@ -3741,11 +4670,11 @@ class Russian(commands.Cog):
             setattr(settings, attr, normalized)
         elif attr == "theme":
             raw_theme = value.strip().lower()
-            if raw_theme not in THEME_TAUNTS:
+            if raw_theme not in THEME_TAUNTS and raw_theme not in THEME_ALIASES:
                 return await ctx.send(
-                    "Theme must be dark, noir, western, wasteland, mafia, medieval, arcade, greek, "
-                    "norse, farmer, sarcastic_farmer, horror, detective, pirate, or mixed "
-                    "(gallows maps to western)."
+                    "Theme must be one of: "
+                    + ", ".join(RR_SETTINGS_CHOICES["theme"])
+                    + "."
                 )
             theme = self.normalize_theme(raw_theme)
             setattr(settings, attr, theme)
