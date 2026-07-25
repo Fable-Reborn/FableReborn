@@ -35,6 +35,7 @@ from .core.combatant import Combatant
 from .core.numbers import to_decimal
 from .dragon_party_card import render_dragon_party_card
 from .types.tower import TowerBattle
+from .types.training_dummy import TRAINING_DUMMY_DURATION, TrainingDummyBattle
 from .types.omnithrone import ensure_omnithrone_schema
 from classes.classes import from_string as class_from_string
 from classes.converters import IntGreaterThan
@@ -2664,6 +2665,14 @@ class Battles(commands.Cog):
         registration = str(fight_id or "default")
         self.fighting_players.setdefault(int(player_id), set()).add(registration)
         return registration
+
+    async def try_add_player_to_exclusive_fight(self, player_id):
+        """Register the default slot only when the player has no active battle."""
+        registrations = self.fighting_players.setdefault(int(player_id), set())
+        if registrations:
+            return False
+        registrations.add("default")
+        return True
 
     async def remove_player_from_fight(self, player_id, fight_id=None):
         """Remove only the specified battle registration for a player."""
@@ -10549,6 +10558,191 @@ class Battles(commands.Cog):
         except Exception as e:
             await ctx.send(f"An error occurred: {e}")
             await self.bot.reset_cooldown(ctx)
+
+    async def _run_training_dummy_turns(self, battle: TrainingDummyBattle):
+        """Run turns until combat, cancellation, or the hard deadline wins."""
+
+        async def turn_loop():
+            while not await battle.is_battle_over():
+                await battle.process_turn()
+                if battle.cancel_event.is_set():
+                    return
+                await asyncio.sleep(1)
+
+        runner = asyncio.create_task(turn_loop())
+        cancel_waiter = asyncio.create_task(battle.cancel_event.wait())
+        remaining = max(
+            0.0,
+            (
+                battle.start_time
+                + TRAINING_DUMMY_DURATION
+                - datetime.datetime.utcnow()
+            ).total_seconds(),
+        )
+
+        try:
+            done, _pending = await asyncio.wait(
+                {runner, cancel_waiter},
+                timeout=remaining,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if not done:
+                battle.forced_timeout = True
+                battle.finished = True
+            elif runner in done:
+                # Surface engine failures to the command's normal error handling.
+                await runner
+        finally:
+            tasks_to_stop = {
+                task for task in (runner, cancel_waiter) if not task.done()
+            }
+            for task in tasks_to_stop:
+                task.cancel()
+            if tasks_to_stop:
+                await asyncio.gather(*tasks_to_stop, return_exceptions=True)
+
+    @commands.command(
+        name="battledummy",
+        aliases=["dummybattle", "trainingdummy", "testdummy"],
+        brief=_("Test your build against a configurable training dummy"),
+    )
+    @has_char()
+    async def battle_dummy(
+        self,
+        ctx,
+        attack: int = None,
+        defense: int = None,
+        hp: int = None,
+        pets: str = "off",
+    ):
+        """Run a five-minute, no-reward battle against a custom test dummy.
+
+        Example: `$battledummy 250 100 50000 on`
+        The arguments are dummy attack, defense, HP, then optional pets on/off.
+        """
+        if attack is None or defense is None or hp is None:
+            return await ctx.send(
+                f"Usage: `{ctx.clean_prefix}battledummy <attack> <defense> <hp> "
+                "[pets: on/off]`\n"
+                f"Example: `{ctx.clean_prefix}battledummy 250 100 50000 on`"
+            )
+
+        stat_limits = {
+            "attack": (int(attack), 0, 1_000_000_000),
+            "defense": (int(defense), 0, 1_000_000_000),
+            "hp": (int(hp), 1, 1_000_000_000_000),
+        }
+        for label, (value, minimum, maximum) in stat_limits.items():
+            if not minimum <= value <= maximum:
+                return await ctx.send(
+                    f"Dummy {label} must be between **{minimum:,}** and "
+                    f"**{maximum:,}**."
+                )
+
+        pet_token = str(pets or "off").strip().casefold()
+        if pet_token.startswith("pets="):
+            pet_token = pet_token.split("=", 1)[1]
+        pet_on_values = {"on", "yes", "true", "1", "enabled", "enable", "pets"}
+        pet_off_values = {"off", "no", "false", "0", "disabled", "disable", "nopets"}
+        if pet_token in pet_on_values:
+            pets_enabled = True
+        elif pet_token in pet_off_values:
+            pets_enabled = False
+        else:
+            return await ctx.send(
+                "The pets option must be `on` or `off` "
+                "(for example: `pets=on`)."
+            )
+
+        ctx = self._guard_battle_context(ctx)
+        if self.fighting_players.get(int(ctx.author.id)):
+            return await ctx.send(
+                "You are already in a battle. Finish or cancel it before opening "
+                "a training dummy."
+            )
+
+        player_combatant = await self.battle_factory.create_player_combatant(
+            ctx,
+            ctx.author,
+            include_pet=pets_enabled,
+        )
+        pet_combatant = None
+        if pets_enabled:
+            pet_combatant = await self.battle_factory.pet_ext.get_pet_combatant(
+                ctx,
+                ctx.author,
+            )
+            if pet_combatant is None:
+                return await ctx.send(
+                    "Pets were enabled, but you do not have an available equipped "
+                    "pet. Equip one or run the command with pets `off`."
+                )
+
+        dummy_data = {
+            "name": "Training Dummy",
+            "hp": int(hp),
+            "attack": int(attack),
+            "defense": int(defense),
+            "element": "Unknown",
+        }
+        dummy_combatant = await self.battle_factory.create_monster_combatant(
+            dummy_data,
+            name="Training Dummy",
+        )
+
+        player_team = Team("Player", [player_combatant])
+        if pet_combatant is not None:
+            player_team.add_combatant(pet_combatant)
+        dummy_team = Team("Training Dummy", [dummy_combatant])
+        battle = TrainingDummyBattle(
+            ctx,
+            [player_team, dummy_team],
+            pets_enabled=pets_enabled,
+            monster_level=1,
+        )
+
+        if not await self.try_add_player_to_exclusive_fight(ctx.author.id):
+            return await ctx.send(
+                "Another battle started while this dummy was being prepared. "
+                "Finish or cancel it before trying again."
+            )
+        try:
+            await battle.start_battle()
+            await self._run_training_dummy_turns(battle)
+            await battle.end_battle()
+        except Exception:
+            logger.exception(
+                "Training dummy battle failed for user %s",
+                ctx.author.id,
+            )
+            battle.finished = True
+            battle.control_view.disable("Test Failed")
+            battle.control_view.stop()
+            if battle.battle_message is not None:
+                try:
+                    await battle.edit_with_retry(
+                        battle.battle_message,
+                        view=battle.control_view,
+                    )
+                except Exception:
+                    pass
+            await ctx.send(
+                "The training battle encountered an error and was stopped. "
+                "No rewards or progression were granted."
+            )
+        finally:
+            await self.remove_player_from_fight(ctx.author.id)
+
+    @battle_dummy.error
+    async def battle_dummy_error(self, ctx, error):
+        if isinstance(error, commands.BadArgument):
+            return await ctx.send(
+                f"Attack, defense, and HP must be whole numbers.\n"
+                f"Usage: `{ctx.clean_prefix}battledummy <attack> <defense> <hp> "
+                "[pets: on/off]`"
+            )
+        raise error
 
     @commands.command()
     @is_gm()
