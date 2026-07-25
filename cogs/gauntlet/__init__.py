@@ -506,14 +506,14 @@ class Gauntlet(commands.Cog):
                 emoji_hp_bars=hp_bar_style != TowerBattle.HP_BAR_STYLE_NORMAL,
             )
             battle.config["allow_pets"] = True
+            battle.config["pets_continue_battle"] = True
             await battle.start_battle()
             while not await battle.is_battle_over():
                 await battle.process_turn()
                 await asyncio.sleep(1)
             result = await battle.end_battle()
 
-            player_alive = any(not c.is_pet and c.is_alive() for c in player_team.combatants)
-            attacker_won = bool(result and result.name == "Player" and player_alive)
+            attacker_won = bool(result and result.name == "Player")
             async with self.bot.pool.acquire() as conn:
                 if attacker_won:
                     gain = 10 + 2 * int(defender_row["streak"] or 0)

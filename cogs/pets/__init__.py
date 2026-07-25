@@ -47,6 +47,16 @@ from utils.i18n import _, locale_doc
 from utils.joins import SingleJoinView
 
 DAYCARE_OWNER_REQUIRED_PATREON_TIER = 1
+PET_ELEMENT_EMOJIS = {
+    "Fire": "🔥",
+    "Water": "💧",
+    "Electric": "⚡",
+    "Nature": "🌿",
+    "Wind": "💨",
+    "Light": "🌟",
+    "Dark": "🌑",
+    "Corrupted": "🌀",
+}
 
 
 class PetSelect(discord.ui.Select):
@@ -8883,10 +8893,7 @@ class Pets(commands.Cog):
         total_skills = len(self.get_all_skill_names_for_element(element))
         
         # Get element emoji
-        element_emoji = {
-            "Fire": "🔥", "Water": "💧", "Electric": "⚡", "Nature": "🌿",
-            "Wind": "💨", "Light": "🌟", "Dark": "🌑", "Corrupted": "🌀"
-        }.get(element, "❓")
+        element_emoji = PET_ELEMENT_EMOJIS.get(element, "❓")
         gm_override_text = (
             "\n**GM Override:** All element skills enabled"
             if pet.get("gm_all_skills_enabled")
@@ -8938,7 +8945,7 @@ class Pets(commands.Cog):
                     branch_text += f"   *Reach level {level} to unlock*\n\n"
             
             if branch_text:
-                branch_header = f"🌿 {branch_name} Branch ({learned_in_branch}/5 learned)"
+                branch_header = f"{element_emoji} {branch_name} Branch ({learned_in_branch}/5 learned)"
                 embed.add_field(
                     name=branch_header,
                     value=branch_text,
@@ -10805,10 +10812,7 @@ class Pets(commands.Cog):
             
             elements_text = ""
             for elem in self.SKILL_TREES.keys():
-                emoji = {
-                    "Fire": "🔥", "Water": "💧", "Electric": "⚡", "Nature": "🌿",
-                    "Wind": "💨", "Light": "🌟", "Dark": "🌑", "Corrupted": "🌀"
-                }.get(elem, "❓")
+                emoji = PET_ELEMENT_EMOJIS.get(elem, "❓")
                 elements_text += f"{emoji} **{elem}**\n"
             
             embed.add_field(name="Available Elements", value=elements_text, inline=False)
@@ -10823,9 +10827,10 @@ class Pets(commands.Cog):
             return
 
         skill_tree = self.SKILL_TREES[element]
+        element_emoji = PET_ELEMENT_EMOJIS.get(element, "❓")
         
         embed = discord.Embed(
-            title=f"🌳 {element} Element - Complete Skill Tree",
+            title=f"{element_emoji} {element} Element - Complete Skill Tree",
             description=f"All 15 skills available for {element} pets",
             color=discord.Color.purple()
         )
@@ -10837,7 +10842,7 @@ class Pets(commands.Cog):
                 branch_text += f"*{skill_data['description'][:80]}{'...' if len(skill_data['description']) > 80 else ''}*\n\n"
             
             embed.add_field(
-                name=f"🌿 {branch_name} Branch",
+                name=f"{element_emoji} {branch_name} Branch",
                 value=branch_text,
                 inline=False
             )
