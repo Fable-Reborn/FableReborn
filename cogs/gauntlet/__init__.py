@@ -260,6 +260,20 @@ class Gauntlet(commands.Cog):
             player_high,
         )
 
+    @staticmethod
+    def _attacker_won_battle(battle, result) -> bool:
+        """Resolve the gauntlet winner from live HP before using the result label.
+
+        Death saves such as Blood Pact restore a combatant to 1 HP during the
+        hit.  The final team state is authoritative so a survivor cannot be
+        treated as defeated by stale or mismatched result metadata.
+        """
+        if battle.enemy_team.is_defeated():
+            return not battle.player_team.is_defeated()
+        if battle.player_team.is_defeated():
+            return False
+        return result is battle.player_team
+
     def _apply_snapshot_attrs(self, combatant, raw_snapshot, *, owner=None, user_id=None):
         snapshot = self._json_loads(raw_snapshot)
         if not isinstance(snapshot, dict):
@@ -615,7 +629,7 @@ class Gauntlet(commands.Cog):
                 await asyncio.sleep(1)
             result = await battle.end_battle()
 
-            attacker_won = bool(result and result.name == "Player")
+            attacker_won = self._attacker_won_battle(battle, result)
             async with self.bot.pool.acquire() as conn:
                 await self._record_matchup(conn, ctx.author.id, defender_id)
                 if attacker_won:
