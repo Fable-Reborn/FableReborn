@@ -957,13 +957,16 @@ class Raid(commands.Cog):
             if participant_type == "user" and not getattr(user, "bot", False)
         }
 
-    def _credit_raid_mvp_taken(self, raid_mvp, target, participant_type, amount):
+    def _credit_raid_mvp_taken(
+        self, raid_mvp, target, participant_type, incoming_damage
+    ):
+        """Credit Bulwark with damage aimed at a user before mitigation."""
         if participant_type != "user" or getattr(target, "bot", False):
             return
         entry = raid_mvp.get(target.id)
         if entry is not None:
             entry["taken"] = self._round_raid_number(
-                entry["taken"] + max(0.0, float(amount or 0))
+                entry["taken"] + max(0.0, float(incoming_damage or 0))
             )
 
     def _credit_raid_mvp_dealt(self, raid_mvp):
@@ -1419,14 +1422,11 @@ class Raid(commands.Cog):
                     finaldmg, seasonal_def_msgs = self._pooled_apply_incoming_seasonal(
                         target_data, finaldmg
                     )
-                before_hp = target_data["hp"]
                 finaldmg = self._round_raid_number(finaldmg)
                 target_data["hp"] = self._round_raid_number(
                     target_data["hp"] - finaldmg
                 )
-                theoretical_damage = self._round_raid_number(
-                    finaldmg + target_data["armor"]
-                )
+                theoretical_damage = self._round_raid_number(dmg)
                 if participant_type == "user" and target_data["hp"] <= 0:
                     seasonal_save = self._pooled_try_seasonal_save(
                         (target, participant_type), target_data
@@ -1437,7 +1437,7 @@ class Raid(commands.Cog):
                     raid_mvp,
                     target,
                     participant_type,
-                    min(before_hp, float(finaldmg)),
+                    theoretical_damage,
                 )
 
                 em = discord.Embed(title="Ragnarok attacked!", colour=0xFFB900)
@@ -2163,14 +2163,11 @@ class Raid(commands.Cog):
                     finaldmg, seasonal_def_msgs = self._pooled_apply_incoming_seasonal(
                         target_data, finaldmg
                     )
-                before_hp = target_data["hp"]
                 finaldmg = self._round_raid_number(finaldmg)
                 target_data["hp"] = self._round_raid_number(
                     target_data["hp"] - finaldmg
                 )
-                theoretical_damage = self._round_raid_number(
-                    finaldmg + target_data["armor"]
-                )
+                theoretical_damage = self._round_raid_number(dmg)
                 if participant_type == "user" and target_data["hp"] <= 0:
                     seasonal_save = self._pooled_try_seasonal_save(
                         (target, participant_type), target_data
@@ -2181,7 +2178,7 @@ class Raid(commands.Cog):
                     raid_mvp,
                     target,
                     participant_type,
-                    min(before_hp, float(finaldmg)),
+                    theoretical_damage,
                 )
 
                 em = discord.Embed(title="Ragnarok attacked!", colour=0xFFB900)
