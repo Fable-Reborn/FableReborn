@@ -1025,7 +1025,7 @@ class PetCollectionView(discord.ui.View):
             return
 
         await interaction.followup.send(
-            embed=self.cog.build_pet_equipped_embed(equipped_pet),
+            embed=self.cog.build_pet_equipped_embed(pet),
             ephemeral=True,
         )
 
@@ -2245,6 +2245,15 @@ class Pets(commands.Cog):
     PET_BATTLE_DAILY_XP_CAP = 24000
     PET_BATTLE_XP_BASE = 160
     PET_BATTLE_XP_PER_TIER = 50
+    BEASTMASTER_EVOLUTION_LEVELS = {
+        "Wrangler": 1,
+        "Beast Kin": 2,
+        "Packmate": 3,
+        "Wildcaller": 4,
+        "Alphabond": 5,
+        "Feralheart": 6,
+        "Beastlord": 7,
+    }
     PET_COMMAND_XP_VALUES = {
         "pet": 50,
         "play": 200,
@@ -4750,10 +4759,18 @@ class Pets(commands.Cog):
 
     async def fetch_pet_collection_browser_data(self, user_id: int):
         async with self.bot.pool.acquire() as conn:
-            pets = await conn.fetch(
+            pet_rows = await conn.fetch(
                 "SELECT * FROM monster_pets WHERE user_id = $1 ORDER BY id ASC;",
                 user_id,
             )
+            owner_bonuses = await self.get_owner_pet_stat_bonuses(
+                user_id,
+                conn=conn,
+            )
+            pets = [
+                self.apply_owner_pet_stat_bonuses(pet, owner_bonuses)
+                for pet in pet_rows
+            ]
             eggs = await conn.fetch(
                 """
                 SELECT *
@@ -4792,7 +4809,7 @@ class Pets(commands.Cog):
                     for boarding in active_boardings
                 }
 
-        return list(pets), list(eggs), boarding_lookup
+        return pets, list(eggs), boarding_lookup
 
     def get_egg_display_emoji(self, egg) -> str:
         element = str(egg.get("element") or "unknown").lower()
@@ -4879,6 +4896,13 @@ class Pets(commands.Cog):
         trust_level = pet.get("trust_level", 0)
         xp_multiplier = pet.get("xp_multiplier", 1.0)
         combat_level_bonus_pct = max(1, min(int(level), self.PET_MAX_LEVEL))
+        owner_bonus_pct = stat_data["owner_pet_bonus_pct"]
+        owner_bonus_text = (
+            f"\n**Owner Pet Bonus:** +{owner_bonus_pct:g}% "
+            "*(Beastmaster/Packleader)*"
+            if owner_bonus_pct > 0
+            else ""
+        )
         xp_multiplier_text = (
             f"\n**XP Multiplier:** x{xp_multiplier}"
             if xp_multiplier > 1.0
@@ -4893,6 +4917,7 @@ class Pets(commands.Cog):
                 f"**Skill Points:** {skill_points}\n"
                 f"**Combat Level Bonus:** +{combat_level_bonus_pct}%\n"
                 f"**Trust:** {trust_info['emoji']} {trust_info['name']} ({trust_level}/100)"
+                f"{owner_bonus_text}"
                 f"{xp_multiplier_text}"
             ),
             inline=False,
@@ -5039,6 +5064,12 @@ class Pets(commands.Cog):
         battle_hp = round(stat_data["battle_hp"], 1)
         battle_attack = round(stat_data["battle_attack"], 1)
         battle_defense = round(stat_data["battle_defense"], 1)
+        owner_bonus_pct = stat_data["owner_pet_bonus_pct"]
+        owner_bonus_text = (
+            f"\n**Owner Pet Bonus:** +{owner_bonus_pct:g}%"
+            if owner_bonus_pct > 0
+            else ""
+        )
 
         embed = discord.Embed(
             title="⚔️ Pet Equipped!",
@@ -5052,6 +5083,7 @@ class Pets(commands.Cog):
                 f"**Attack:** {battle_attack:,}\n"
                 f"**Defense:** {battle_defense:,}\n"
                 f"**Element:** {pet['element']}"
+                f"{owner_bonus_text}"
             ),
             inline=True,
         )
@@ -5131,8 +5163,69 @@ class Pets(commands.Cog):
                 return self.TRUST_LEVELS[threshold]
         return self.TRUST_LEVELS[0]  # Default to Distrustful
 
+    @classmethod
+    def get_beastmaster_pet_bonus_pct(cls, classes) -> float:
+        """Return the strongest Beastmaster class-line pet bonus."""
+        if not isinstance(classes, list):
+            classes = [classes]
+        grade = max(
+            (
+                cls.BEASTMASTER_EVOLUTION_LEVELS.get(class_name, 0)
+                for class_name in classes or []
+            ),
+            default=0,
+        )
+        return float(3 * grade)
+
+    async def get_owner_pet_stat_bonuses(self, user_id, *, conn=None) -> dict:
+        """Resolve the owner bonuses used by the live pet battle runtime."""
+        owns_connection = conn is None
+        if owns_connection:
+            conn = await self.bot.pool.acquire()
+        try:
+            classes = await conn.fetchval(
+                'SELECT class FROM profile WHERE "user" = $1;',
+                int(user_id),
+            )
+            beastmaster_pct = self.get_beastmaster_pet_bonus_pct(classes)
+            specialization_pct = 0.0
+            spec_cog = self.bot.get_cog("Specializations")
+            if spec_cog:
+                try:
+                    effects = await spec_cog.get_user_spec_effects(
+                        int(user_id),
+                        conn=conn,
+                    )
+                    pack_bond = effects.get("pet_stat_pct")
+                    if pack_bond:
+                        specialization_pct = float(pack_bond["value"])
+                except Exception:
+                    pass
+            return {
+                "beastmaster_pct": beastmaster_pct,
+                "specialization_pct": specialization_pct,
+                "total_pct": beastmaster_pct + specialization_pct,
+            }
+        finally:
+            if owns_connection:
+                await self.bot.pool.release(conn)
+
+    @staticmethod
+    def apply_owner_pet_stat_bonuses(pet, bonuses):
+        enriched_pet = dict(pet)
+        enriched_pet["_beastmaster_pet_bonus_pct"] = float(
+            bonuses.get("beastmaster_pct", 0) or 0
+        )
+        enriched_pet["_specialization_pet_bonus_pct"] = float(
+            bonuses.get("specialization_pct", 0) or 0
+        )
+        enriched_pet["_owner_pet_bonus_pct"] = float(
+            bonuses.get("total_pct", 0) or 0
+        )
+        return enriched_pet
+
     def calculate_pet_battle_stats(self, pet):
-        """Calculate effective in-battle stats using level and trust bonuses."""
+        """Calculate effective battle stats using pet and owner bonuses."""
         level = max(1, min(int(pet.get("level", 1)), self.PET_MAX_LEVEL))
         trust_level = int(pet.get("trust_level", 0) or 0)
         trust_info = self.get_trust_level_info(trust_level)
@@ -5140,14 +5233,20 @@ class Pets(commands.Cog):
 
         level_multiplier = 1 + (level * self.PET_LEVEL_STAT_BONUS)
         trust_multiplier = 1 + (trust_bonus_pct / 100.0)
+        owner_pet_bonus_pct = float(pet.get("_owner_pet_bonus_pct", 0) or 0)
+        owner_multiplier = 1 + (owner_pet_bonus_pct / 100.0)
 
         base_hp = float(pet.get("hp", 0) or 0)
         base_attack = float(pet.get("attack", 0) or 0)
         base_defense = float(pet.get("defense", 0) or 0)
 
-        battle_hp = base_hp * level_multiplier * trust_multiplier
-        battle_attack = base_attack * level_multiplier * trust_multiplier
-        battle_defense = base_defense * level_multiplier * trust_multiplier
+        battle_hp = base_hp * level_multiplier * trust_multiplier * owner_multiplier
+        battle_attack = (
+            base_attack * level_multiplier * trust_multiplier * owner_multiplier
+        )
+        battle_defense = (
+            base_defense * level_multiplier * trust_multiplier * owner_multiplier
+        )
 
         return {
             "base_hp": base_hp,
@@ -5156,6 +5255,7 @@ class Pets(commands.Cog):
             "battle_hp": battle_hp,
             "battle_attack": battle_attack,
             "battle_defense": battle_defense,
+            "owner_pet_bonus_pct": owner_pet_bonus_pct,
         }
 
     def calculate_level_requirements(self, level):
@@ -9100,6 +9200,11 @@ class Pets(commands.Cog):
             if snapshot:
                 pet = dict(pet)
                 pet.update(dict(snapshot))
+            owner_bonuses = await self.get_owner_pet_stat_bonuses(
+                ctx.author.id,
+                conn=conn,
+            )
+            pet = self.apply_owner_pet_stat_bonuses(pet, owner_bonuses)
 
         trust_info = self.get_trust_level_info(pet['trust_level'])
         if pet["level"] >= self.PET_MAX_LEVEL:
@@ -9154,13 +9259,21 @@ class Pets(commands.Cog):
         base_hp = round(stat_data["base_hp"])
         base_attack = round(stat_data["base_attack"])
         base_defense = round(stat_data["base_defense"])
+        owner_bonus_pct = stat_data["owner_pet_bonus_pct"]
+        owner_bonus_text = (
+            f"\n**Owner Pet Bonus:** +{owner_bonus_pct:g}% "
+            "*(Beastmaster/Packleader)*"
+            if owner_bonus_pct > 0
+            else ""
+        )
 
         embed.add_field(
             name="⚔️ Battle Stats",
             value=f"**HP:** {battle_hp:,} *(Base: {base_hp:,})*\n"
                   f"**Attack:** {battle_attack:,} *(Base: {base_attack:,})*\n"
                   f"**Defense:** {battle_defense:,} *(Base: {base_defense:,})*\n"
-                  f"**IV:** {pet['IV']}%",
+                  f"**IV:** {pet['IV']}%"
+                  f"{owner_bonus_text}",
             inline=True
         )
 
@@ -9220,6 +9333,10 @@ class Pets(commands.Cog):
         try:
             async with self.bot.pool.acquire() as conn:
                 pet, pet_id = await self.fetch_pet_for_user(conn, ctx.author.id, pet_ref)
+                owner_bonuses = await self.get_owner_pet_stat_bonuses(
+                    ctx.author.id,
+                    conn=conn,
+                )
             if not pet:
                 await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
                 return
@@ -9229,6 +9346,10 @@ class Pets(commands.Cog):
                 await ctx.send(error)
                 return
 
+            equipped_pet = self.apply_owner_pet_stat_bonuses(
+                equipped_pet,
+                owner_bonuses,
+            )
             await ctx.send(embed=self.build_pet_equipped_embed(equipped_pet))
         except Exception as e:
             await ctx.send(f"❌ An error occurred while equipping the pet: {e}")

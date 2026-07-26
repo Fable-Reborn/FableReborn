@@ -70,6 +70,19 @@ class Gauntlet(commands.Cog):
                     ADD COLUMN IF NOT EXISTS pet_snapshot TEXT NOT NULL DEFAULT '{}';
                     """
                 )
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS gauntlet_recent_matchups (
+                        player_low BIGINT NOT NULL,
+                        player_high BIGINT NOT NULL,
+                        fought_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        PRIMARY KEY (player_low, player_high),
+                        CHECK (player_low < player_high)
+                    );
+                    CREATE INDEX IF NOT EXISTS gauntlet_recent_matchups_fought_at_idx
+                    ON gauntlet_recent_matchups (fought_at);
+                    """
+                )
             self._tables_ready = True
 
     async def cog_load(self):
@@ -159,6 +172,93 @@ class Gauntlet(commands.Cog):
             for attr in attrs
             if hasattr(combatant, attr)
         }
+
+    @classmethod
+    def _snapshot_pet_id(cls, raw_snapshot):
+        """Return the stable pet ID saved in a Gauntlet snapshot, if valid."""
+        snapshot = cls._json_loads(raw_snapshot)
+        if not isinstance(snapshot, dict):
+            return None
+        try:
+            pet_id = int(snapshot.get("pet_id"))
+        except (TypeError, ValueError):
+            return None
+        return pet_id if pet_id > 0 else None
+
+    async def _owns_snapshotted_pet(self, conn, user_id, raw_snapshot) -> bool:
+        """Check that a snapshotted pet still belongs to the defender."""
+        pet_id = self._snapshot_pet_id(raw_snapshot)
+        if pet_id is None:
+            # Old or malformed snapshots cannot prove ownership, so fail closed.
+            return False
+        return bool(
+            await conn.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM monster_pets
+                    WHERE id = $1 AND user_id = $2
+                )
+                """,
+                pet_id,
+                int(user_id),
+            )
+        )
+
+    async def _fetch_matchmade_defender(self, conn, attacker_id, rating):
+        """Pick randomly from the closest eligible defenses, avoiding rematches."""
+        query = """
+            SELECT *
+            FROM (
+                SELECT gd.*
+                FROM gauntlet_defenses AS gd
+                WHERE gd.user_id != $1
+                  {recent_filter}
+                ORDER BY ABS(gd.rating - $2)
+                LIMIT 5
+            ) AS matchmaking_pool
+            ORDER BY RANDOM()
+            LIMIT 1
+        """
+        recent_filter = """
+            AND NOT EXISTS (
+                SELECT 1
+                FROM gauntlet_recent_matchups AS matchup
+                WHERE matchup.player_low = LEAST($1, gd.user_id)
+                  AND matchup.player_high = GREATEST($1, gd.user_id)
+                  AND matchup.fought_at > NOW() - INTERVAL '24 hours'
+            )
+        """
+        defender = await conn.fetchrow(
+            query.format(recent_filter=recent_filter),
+            int(attacker_id),
+            int(rating),
+        )
+        if defender:
+            return defender
+
+        # Small ladders must remain playable after every opponent has been fought.
+        return await conn.fetchrow(
+            query.format(recent_filter=""),
+            int(attacker_id),
+            int(rating),
+        )
+
+    @staticmethod
+    async def _record_matchup(conn, first_player_id, second_player_id):
+        player_low, player_high = sorted(
+            (int(first_player_id), int(second_player_id))
+        )
+        await conn.execute(
+            """
+            INSERT INTO gauntlet_recent_matchups (player_low, player_high, fought_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (player_low, player_high) DO UPDATE SET
+                fought_at = NOW()
+            """,
+            player_low,
+            player_high,
+        )
 
     def _apply_snapshot_attrs(self, combatant, raw_snapshot, *, owner=None, user_id=None):
         snapshot = self._json_loads(raw_snapshot)
@@ -279,10 +379,26 @@ class Gauntlet(commands.Cog):
                 "SELECT * FROM gauntlet_defenses WHERE user_id = $1",
                 ctx.author.id,
             )
+            pet_snapshot_owned = bool(
+                row and row["pet_name"]
+            ) and await self._owns_snapshotted_pet(
+                conn, ctx.author.id, row["pet_snapshot"]
+            )
         if not row:
             return await ctx.send("You have no gauntlet defense set. Use `$gauntlet set` first.")
         age_days = (datetime.utcnow() - row["set_at"].replace(tzinfo=None)).days
-        warning = "\n⚠️ Snapshot is older than 14 days. Refresh it with `$gauntlet set`." if age_days > 14 else ""
+        warnings = []
+        if age_days > 14:
+            warnings.append(
+                "⚠️ Snapshot is older than 14 days. "
+                "Refresh it with `$gauntlet set`."
+            )
+        if row["pet_name"] and not pet_snapshot_owned:
+            warnings.append(
+                "⚠️ The snapshotted pet is no longer yours and will not defend. "
+                "Refresh with `$gauntlet set`."
+            )
+        warning = "\n" + "\n".join(warnings) if warnings else ""
         embed = discord.Embed(
             title=f"{ctx.author.display_name}'s Gauntlet",
             description=(
@@ -304,7 +420,7 @@ class Gauntlet(commands.Cog):
             ),
             inline=False,
         )
-        if row["pet_name"]:
+        if row["pet_name"] and pet_snapshot_owned:
             embed.add_field(
                 name="Pet",
                 value=(
@@ -386,8 +502,8 @@ class Gauntlet(commands.Cog):
     @gauntlet.command(name="attack")
     @has_char()
     @user_cooldown(1800)
-    async def gauntlet_attack(self, ctx, member: discord.Member = None):
-        """Attack another player's gauntlet defense."""
+    async def gauntlet_attack(self, ctx):
+        """Attack a matchmaking-selected gauntlet defense."""
         await self.ensure_tables()
         battles = self.bot.get_cog("Battles")
         if not battles:
@@ -408,41 +524,27 @@ class Gauntlet(commands.Cog):
                 await self.bot.reset_cooldown(ctx)
                 return await ctx.send("Set your own defense first with `$gauntlet set`.")
 
-            if member is not None:
-                if member.id == ctx.author.id:
-                    await self.bot.reset_cooldown(ctx)
-                    return await ctx.send("You cannot attack your own gauntlet.")
-                defender_row = await conn.fetchrow(
-                    "SELECT * FROM gauntlet_defenses WHERE user_id = $1",
-                    member.id,
-                )
-                if not defender_row:
-                    await self.bot.reset_cooldown(ctx)
-                    return await ctx.send("That player has no gauntlet defense set.")
-                defender_id = member.id
-                defender_name = self._safe_defender_name(member, defender_id)
-            else:
-                defender_row = await conn.fetchrow(
-                    """
-                    SELECT *
-                    FROM gauntlet_defenses
-                    WHERE user_id != $1
-                    ORDER BY ABS(rating - $2), RANDOM()
-                    LIMIT 1
-                    """,
-                    ctx.author.id,
-                    int(attacker_row["rating"] or 0),
-                )
-                if not defender_row:
-                    await self.bot.reset_cooldown(ctx)
-                    return await ctx.send("No gauntlet defenses are available to attack.")
-                defender_id = int(defender_row["user_id"])
-                defender_user = None
-                if ctx.guild:
-                    defender_user = ctx.guild.get_member(defender_id)
-                if defender_user is None:
-                    defender_user = self.bot.get_user(defender_id)
-                defender_name = self._safe_defender_name(defender_user, defender_id)
+            defender_row = await self._fetch_matchmade_defender(
+                conn,
+                ctx.author.id,
+                int(attacker_row["rating"] or 0),
+            )
+            if not defender_row:
+                await self.bot.reset_cooldown(ctx)
+                return await ctx.send("No gauntlet defenses are available to attack.")
+            defender_id = int(defender_row["user_id"])
+            defender_user = None
+            if ctx.guild:
+                defender_user = ctx.guild.get_member(defender_id)
+            if defender_user is None:
+                defender_user = self.bot.get_user(defender_id)
+            defender_name = self._safe_defender_name(defender_user, defender_id)
+
+            defender_pet_owned = bool(
+                defender_row["pet_name"]
+            ) and await self._owns_snapshotted_pet(
+                conn, defender_id, defender_row["pet_snapshot"]
+            )
 
         await battles.add_player_to_fight(ctx.author.id)
         try:
@@ -470,7 +572,7 @@ class Gauntlet(commands.Cog):
             defender.element = defender.attack_element
             self._apply_snapshot_attrs(defender, defender_row["class_snapshot"])
             enemy_team.add_combatant(defender)
-            if defender_row["pet_name"]:
+            if defender_row["pet_name"] and defender_pet_owned:
                 pet_spec = {
                     "name": defender_row["pet_name"],
                     "hp": defender_row["pet_hp"],
@@ -515,6 +617,7 @@ class Gauntlet(commands.Cog):
 
             attacker_won = bool(result and result.name == "Player")
             async with self.bot.pool.acquire() as conn:
+                await self._record_matchup(conn, ctx.author.id, defender_id)
                 if attacker_won:
                     gain = 10 + 2 * int(defender_row["streak"] or 0)
                     await conn.execute(
