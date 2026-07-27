@@ -9191,6 +9191,8 @@ class Battles(commands.Cog):
                     await self._refund_ffa_entry(ctx, participants, money, paid_ids)
                     return await ctx.send(
                         _("Not enough players joined. Money has been refunded.")
+                        if money > 0
+                        else _("Not enough players joined.")
                     )
             else:
                 participants = [ctx.author]
@@ -9235,6 +9237,8 @@ class Battles(commands.Cog):
                     await self._refund_ffa_entry(ctx, participants, money, paid_ids)
                     return await ctx.send(
                         _("Not everyone joined in time. Money has been refunded.")
+                        if money > 0
+                        else _("Not everyone joined in time.")
                     )
 
             # Split into three sides of equal size
@@ -9308,7 +9312,9 @@ class Battles(commands.Cog):
             else:
                 await self._send_with_retry(
                     ctx,
-                    content=_("The battle timed out! All money has been refunded."),
+                    content=_("The battle timed out! All money has been refunded.")
+                    if money > 0
+                    else _("The battle timed out!"),
                     suppress_failure=True,
                 )
         except Exception as e:
