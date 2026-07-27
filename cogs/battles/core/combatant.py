@@ -288,8 +288,13 @@ class Combatant:
         
     @property
     def display_name(self):
-        """Get display name for the combatant"""
-        if hasattr(self.user, "display_name"):
+        """Get display name for the combatant.
+
+        A pet is built with its owner's Discord object as `user` so that skill
+        effects can find them, so it has to fall back to its own name here -
+        otherwise a pet displays under its owner's name.
+        """
+        if not self.is_pet and hasattr(self.user, "display_name"):
             return self.user.display_name
         return self.name
         
