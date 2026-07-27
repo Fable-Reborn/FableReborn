@@ -268,7 +268,15 @@ class Combatant:
         return True
     
     def heal(self, amount):
-        """Heal the combatant by the specified amount"""
+        """Heal the combatant by the specified amount.
+
+        A downed combatant stays down. Incidental healing (pet owner heals,
+        team regeneration, lifesteal) must never drag someone back above 0 HP
+        after they have been defeated - deliberate revivals such as Guardian
+        Angel, Phoenix Rebirth and Cyclebreaker assign ``hp`` directly.
+        """
+        if self.hp <= 0:
+            return self.hp
         self.hp += Decimal(str(amount))
         if self.hp > self.max_hp:
             self.hp = self.max_hp

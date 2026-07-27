@@ -148,6 +148,16 @@ class PetExtension:
 
         return None
     
+    @staticmethod
+    def _can_heal(combatant):
+        """Whether a heal aimed at this combatant should do anything.
+
+        A downed combatant cannot be healed back up - only deliberate revives
+        do that - so effects skip both the heal and its log line rather than
+        reporting a restore that never happened.
+        """
+        return combatant is not None and combatant.is_alive()
+
     def find_owner_combatant(self, pet_combatant):
         """Find and cache the owner combatant object associated with a pet."""
         if not hasattr(pet_combatant, 'owner'):
@@ -3077,7 +3087,7 @@ class PetExtension:
         # Warmth - heal owner on attack
         if (
             'warmth' in effects
-            and owner_combatant
+            and self._can_heal(owner_combatant)
             and getattr(pet_combatant, 'attacked_this_turn', False)
         ):
             heal_amount = self._scaled_heal(
@@ -3090,7 +3100,7 @@ class PetExtension:
 
         if (
             'coffee_break' in effects
-            and owner_combatant
+            and self._can_heal(owner_combatant)
             and getattr(pet_combatant, 'attacked_this_turn', False)
         ):
             heal_amount = self._scaled_heal(
@@ -3117,7 +3127,7 @@ class PetExtension:
             messages.append(f"{pet_combatant.name}'s Healing Rain restores the team.")
             
         # Life Spring - lifesteal to owner
-        if ('life_spring' in effects and owner_combatant and getattr(pet_combatant, 'attacked_this_turn', False)):
+        if ('life_spring' in effects and self._can_heal(owner_combatant) and getattr(pet_combatant, 'attacked_this_turn', False)):
             if hasattr(owner_combatant, 'heal'):
                 heal_amount = pet_combatant.damage * Decimal(str(effects['life_spring']['heal_percent']))
                 owner_combatant.heal(heal_amount)
@@ -3135,7 +3145,7 @@ class PetExtension:
                 messages.append(f"Purify cleanses {owner_combatant.name} of {removed_debuff}!")
                     
         # Immortal Waters - owner immortality
-        if ('immortal_waters' in effects and owner_combatant and getattr(pet_combatant, 'ultimate_ready', False)):
+        if ('immortal_waters' in effects and self._can_heal(owner_combatant) and getattr(pet_combatant, 'ultimate_ready', False)):
             duration = int(effects['immortal_waters'].get('duration', 2))
             setattr(owner_combatant, 'water_immortality', True)
             setattr(owner_combatant, 'water_immortality_duration', duration)
@@ -3220,7 +3230,7 @@ class PetExtension:
             messages.append(f"{pet_combatant.name} naturally heals **{heal_amount:.2f} HP**!")
             
             # Check for Symbiotic Bond healing sharing
-            if ('symbiotic_bond' in effects and owner_combatant and hasattr(owner_combatant, 'heal') and hasattr(owner_combatant, 'user')):
+            if ('symbiotic_bond' in effects and self._can_heal(owner_combatant) and hasattr(owner_combatant, 'heal') and hasattr(owner_combatant, 'user')):
                 share_percent = Decimal(str(effects['symbiotic_bond']['share_percent']))
                 shared_heal = heal_amount * share_percent
                 owner_combatant.heal(shared_heal)
@@ -3255,7 +3265,7 @@ class PetExtension:
             )
                 
         # Life Force - HP transfer to owner
-        if ('life_force' in effects and owner_combatant and hasattr(owner_combatant, 'heal')):
+        if ('life_force' in effects and self._can_heal(owner_combatant) and hasattr(owner_combatant, 'heal')):
             owner_hp_ratio = owner_combatant.hp / owner_combatant.max_hp if owner_combatant.max_hp else Decimal('1')
             uses_left = int(getattr(pet_combatant, 'life_force_uses_left', effects['life_force'].get('uses', 1)) or 0)
             if owner_hp_ratio <= Decimal(str(effects['life_force'].get('owner_threshold', 0.60))) and uses_left > 0:
@@ -3304,7 +3314,7 @@ class PetExtension:
             if (
                 hasattr(pet_combatant, 'skill_effects')
                 and 'symbiotic_bond' in pet_combatant.skill_effects
-                and owner_combatant
+                and self._can_heal(owner_combatant)
                 and hasattr(owner_combatant, 'heal')
                 and hasattr(owner_combatant, 'user')
             ):
@@ -3752,7 +3762,7 @@ class PetExtension:
             ally.heal(heal_amount)
             messages.append(f"{ally.name} regenerates **{heal_amount:.2f} HP** from Immortal Growth!")
 
-            if ally is pet_combatant and 'symbiotic_bond' in effects and owner_combatant and hasattr(owner_combatant, 'heal'):
+            if ally is pet_combatant and 'symbiotic_bond' in effects and self._can_heal(owner_combatant) and hasattr(owner_combatant, 'heal'):
                 share_percent = Decimal(str(effects['symbiotic_bond']['share_percent']))
                 shared_heal = heal_amount * share_percent
                 owner_combatant.heal(shared_heal)

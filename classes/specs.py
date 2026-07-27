@@ -27,7 +27,7 @@ SPECS: dict[str, dict] = {
     "juggernaut": {
         "name": "Juggernaut", "line": "Tank", "kind": "aggressive", "emoji": "💢",
         "passive": "Retaliation",
-        "description": "Reflect {value}% of damage taken back at the attacker. Your reflection plate has durability equal to {value}% of max HP each battle.",
+        "description": "Reflect an additional {value}% of damage taken back at the attacker, stacking on top of your Tank plating. Your reflection plate's durability each battle equals your total reflection as a share of max HP.",
         "effect": {"type": "reflect_pct", "base": 4, "per_grade": 1},
         "engines": ["modern", "simple"],
     },

@@ -539,9 +539,46 @@ class Battle(ABC):
 
         return actual_damage
 
+    def resolve_damage_reflection(self, defender):
+        """Final reflection percentage for a defender.
+
+        Gear reflection and the innate Tank plating do not stack with each
+        other - the stronger of the two applies - but Juggernaut's Retaliation
+        is *additional* on top of whichever wins. Without that, speccing into
+        Juggernaut was a dead pick for its own class line: an 11% spec loses
+        outright to a max Tank's innate 21%.
+        """
+        if defender is None:
+            return Decimal("0")
+
+        base_reflection = Decimal(str(getattr(defender, "damage_reflection", 0) or 0))
+        if getattr(defender, "is_pet", False) or not self.config.get("class_buffs", True):
+            return base_reflection
+
+        spec_effects = getattr(defender, "spec_effects", None) or {}
+        retaliation_fx = spec_effects.get("reflect_pct")
+        retaliation = (
+            Decimal(str(retaliation_fx["value"])) / Decimal("100")
+            if retaliation_fx
+            else Decimal("0")
+        )
+
+        # The combatant factory folds Retaliation into damage_reflection, so
+        # peel it back out before weighing gear against the innate plating.
+        gear_reflection = max(Decimal("0"), base_reflection - retaliation)
+        innate_reflection = Decimal("0.03") * int(getattr(defender, "tank_evolution", 0) or 0)
+
+        return max(gear_reflection, innate_reflection) + retaliation
+
     def _uses_reflection_plate(self, defender):
         if defender is None or getattr(defender, "is_pet", False):
             return False
+        # Stored player snapshots (Gauntlet defenders) carry a raw user id
+        # rather than a Discord object, so they opt in explicitly - they are
+        # real players and must be plated like one.
+        override = getattr(defender, "uses_reflection_plate", None)
+        if override is not None:
+            return bool(override)
         user = getattr(defender, "user", None)
         return getattr(user, "id", None) is not None
 

@@ -6,20 +6,30 @@ import discord
 import datetime
 
 from ..core.battle import Battle
+from ..extensions.specs import SpecExtension
 
 class TeamBattle(Battle):
     """Team vs Team battle implementation"""
-    
+
     def __init__(self, ctx, teams, **kwargs):
         super().__init__(ctx, teams, **kwargs)
+        self.spec_ext = SpecExtension()
         self.money = kwargs.get("money", 0)
         self.current_turn = 0
         self.turn_order = []
-        
+
         # Set team names
         self.teams[0].name = "A"
         self.teams[1].name = "B"
-        
+
+        # Named handles for the two sides (skeleton summoning reads these)
+        self.team_a = self.teams[0]
+        self.team_b = self.teams[1]
+
+    def format_battle_start_message(self, team_a_members, team_b_members):
+        """Opening log line. Subclasses reframe this for their own mode."""
+        return f"Team Battle: Team A ({team_a_members}) vs Team B ({team_b_members}) started!"
+
     async def start_battle(self):
         """Initialize and start the battle"""
         self.started = True
@@ -41,10 +51,20 @@ class TeamBattle(Battle):
         # Add battle start message to log
         team_a_members = ", ".join(c.name for c in self.teams[0].combatants)
         team_b_members = ", ".join(c.name for c in self.teams[1].combatants)
-        await self.add_to_log(f"Team Battle: Team A ({team_a_members}) vs Team B ({team_b_members}) started!")
+        await self.add_to_log(
+            self.format_battle_start_message(team_a_members, team_b_members)
+        )
         for opening_message in await self.trigger_ascension_openings():
             await self.add_to_log(opening_message)
-        
+
+        # Spec hook: opening party effects (Bulwark shields, Warchanter damage).
+        # Both sides get them - every combatant here is built from a real
+        # profile, so whoever carries the spec earns the opening.
+        if self.config.get("class_buffs", True):
+            for team in self.teams:
+                for opening_message in self.spec_ext.battle_start_effects(team):
+                    await self.add_to_log(opening_message)
+
         # Create and send initial embed
         embed = await self.create_battle_embed()
         self.battle_message = await self.publish_battle_message(embed=embed)
@@ -134,6 +154,22 @@ class TeamBattle(Battle):
                 )
                 ignore_reflection_this_hit = True
 
+                fireball_spec_messages = []
+                if self.config.get("class_buffs", True):
+                    damage, fireball_spec_messages = self.spec_ext.modify_outgoing_damage(
+                        current_combatant,
+                        target,
+                        damage,
+                        include_overload=False,
+                    )
+
+                # Overload: the Fireball detonates any banked Arcane charges.
+                overload_messages = []
+                if self.config.get("class_buffs", True):
+                    damage, overload_messages = self.spec_ext.consume_overload_fireball(
+                        current_combatant, damage
+                    )
+
                 damage, guard_messages, guard_source = self.apply_pet_owner_guard(
                     current_combatant,
                     target,
@@ -141,6 +177,18 @@ class TeamBattle(Battle):
                 )
                 target.take_damage(damage)
                 message = f"{current_combatant.name} casts Fireball! {target.name} takes **{self.format_number(damage)} HP** damage."
+                if fireball_spec_messages:
+                    message += "\n" + "\n".join(fireball_spec_messages)
+                if overload_messages:
+                    message += "\n" + "\n".join(overload_messages)
+                if self.config.get("class_buffs", True):
+                    spec_after_messages = self.spec_ext.after_attack_damage(
+                        current_combatant,
+                        target,
+                        self,
+                    )
+                    if spec_after_messages:
+                        message += "\n" + "\n".join(spec_after_messages)
                 if guard_messages:
                     message += "\n" + "\n".join(guard_messages)
                 used_fireball = True
@@ -150,6 +198,13 @@ class TeamBattle(Battle):
                 
                 # Start with base damage
                 raw_damage = current_combatant.damage
+
+                # Spec hook A: attacker-side bonuses (may set one-hit flags on target)
+                spec_attack_messages = []
+                if self.config.get("class_buffs", True):
+                    raw_damage, spec_attack_messages = self.spec_ext.modify_outgoing_damage(
+                        current_combatant, target, raw_damage
+                    )
 
                 outcome = self.resolve_pet_attack_outcome(
                     current_combatant,
@@ -170,9 +225,41 @@ class TeamBattle(Battle):
                     target,
                     damage,
                 )
+
+                # Spec hook B: defender-side avoidance and mitigation
+                spec_defense_messages = []
+                if self.config.get("class_buffs", True):
+                    damage, spec_defense_messages = self.spec_ext.modify_incoming_damage(
+                        current_combatant,
+                        target,
+                        damage,
+                        self.get_team_for_combatant(target),
+                    )
+
                 target.take_damage(damage)
 
                 message = f"{current_combatant.name} attacks! {target.name} takes **{self.format_number(damage)} HP** damage."
+                if getattr(target, "bloodpact_triggered", False):
+                    target.bloodpact_triggered = False
+                    message += f"\n🩸 **{target.name}**'s Blood Pact shatters — they cling to life!"
+                if spec_attack_messages:
+                    message += "\n" + "\n".join(spec_attack_messages)
+                if spec_defense_messages:
+                    message += "\n" + "\n".join(spec_defense_messages)
+
+                # Spec hook D: on-damage triggers (Second Wind)
+                if self.config.get("class_buffs", True):
+                    spec_after_messages = self.spec_ext.after_attack_damage(
+                        current_combatant,
+                        target,
+                        self,
+                    )
+                    if spec_after_messages:
+                        message += "\n" + "\n".join(spec_after_messages)
+                    spec_trigger_messages = self.spec_ext.post_damage_triggers(target)
+                    if spec_trigger_messages:
+                        message += "\n" + "\n".join(spec_trigger_messages)
+
                 if guard_messages:
                     message += "\n" + "\n".join(guard_messages)
 
@@ -269,34 +356,24 @@ class TeamBattle(Battle):
             
             # Handle damage reflection if applicable
             # Apply tank evolution reflection multiplier if applicable
-            reflection_value = target.damage_reflection
-            
-            # Apply tank evolution-based reflection if target has tank evolution
-            if self.config["class_buffs"] and target.tank_evolution and not target.is_pet:
-                # Tank evolution reflection multiplier
-                evolution_reflection_multiplier = {
-                    1: 0.04,  # 4%
-                    2: 0.08,  # 8%
-                    3: 0.12,  # 12%
-                    4: 0.16,  # 16%
-                    5: 0.20,  # 20%
-                    6: 0.24,  # 24%
-                    7: 0.28,  # 28%
-                }
-                
-                # Get reflection multiplier based on evolution level
-                tank_reflection = evolution_reflection_multiplier.get(target.tank_evolution, 0)
-                reflection_value = max(reflection_value, tank_reflection)  # Use higher of item reflection or tank reflection
-            
-            if (self.config["reflection_damage"] and 
-                reflection_value > 0 and 
+            # Best of gear/innate Tank plating, plus Juggernaut's Retaliation
+            reflection_value = self.resolve_damage_reflection(target)
+
+            if (self.config["reflection_damage"] and
+                reflection_value > 0 and
                 blocked_damage > 0 and
                 not ignore_reflection_this_hit):
-                
-                reflected = blocked_damage * Decimal(str(reflection_value))
-                current_combatant.take_damage(reflected)
-                message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
-                
+
+                # Calculate reflection as percentage of raw damage, capped at defender's armor
+                reflection_base = min(raw_damage, target.armor)
+                reflected = reflection_base * Decimal(str(reflection_value))
+                reflected, plate_message = self.apply_reflection_plate(target, reflected, reflection_value)
+                if reflected > 0:
+                    current_combatant.take_damage(reflected)
+                    message += f"\n{target.name}'s armor reflects **{self.format_number(reflected)} HP** damage back!"
+                if plate_message:
+                    message += f"\n{plate_message}"
+
                 if not current_combatant.is_alive():
                     message += f" {current_combatant.name} has been defeated by reflected damage!"
 
@@ -309,10 +386,14 @@ class TeamBattle(Battle):
                 guardian_message = self.maybe_trigger_guardian_angel(target)
                 if guardian_message:
                     message += f"\n{guardian_message}"
-                # Check for cheat death ability
+                # Check for water immortality first
                 if target.is_alive():
                     pass
-                elif (self.config["class_buffs"] and 
+                elif getattr(target, 'water_immortality', False):
+                    target.hp = Decimal('1')  # Stay at 1 HP
+                    message += f"\n💧 {target.name} is protected by Immortal Waters and refuses to fall!"
+                # Check for cheat death ability
+                elif (self.config["class_buffs"] and
                     self.config["cheat_death"] and
                     not target.is_pet and 
                     target.death_cheat_chance > 0 and
@@ -354,7 +435,27 @@ class TeamBattle(Battle):
         if current_combatant.is_pet and current_combatant.is_alive():
             for turn_msg in self.process_pet_turn_effects(current_combatant):
                 await self.add_to_log(turn_msg)
-        
+
+        # Spec hook E: turn-end party heal (Winterlight's Gift of Cheer), for
+        # whichever side is acting rather than a hardcoded team
+        if self.config.get("class_buffs", True):
+            acting_team = self.get_team_for_combatant(current_combatant)
+            if acting_team is not None:
+                for heal_msg in self.spec_ext.turn_end_party_heal(current_combatant, acting_team):
+                    await self.add_to_log(heal_msg)
+                bard_grade = getattr(current_combatant, "bard_evolution", None)
+                if bard_grade and not current_combatant.is_pet and current_combatant.is_alive():
+                    healed_any = False
+                    heal_pct = Decimal(str(0.005 * int(bard_grade)))
+                    for member in acting_team.combatants:
+                        if member.is_alive() and member.hp < member.max_hp:
+                            member.heal(Decimal(str(member.max_hp)) * heal_pct)
+                            healed_any = True
+                    if healed_any:
+                        await self.add_to_log(
+                            f"🎶 **{current_combatant.name}**'s bardic refrain restores the party!"
+                        )
+
         # Update the battle display
         await self.update_display()
         await asyncio.sleep(1)

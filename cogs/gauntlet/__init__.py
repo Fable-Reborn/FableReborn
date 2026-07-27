@@ -8,7 +8,7 @@ from discord.ext import commands
 
 from cogs.battles.extensions.elements import ElementExtension
 from cogs.battles.core.team import Team
-from cogs.battles.types.tower import TowerBattle
+from cogs.battles.types.gauntlet import GauntletBattle
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils.checks import has_char
 
@@ -584,6 +584,9 @@ class Gauntlet(commands.Cog):
             defender.attack_element = defender_row["attack_element"]
             defender.defense_element = defender_row["defense_element"]
             defender.element = defender.attack_element
+            # The defence is a real player's snapshot, so their reflection is
+            # limited by the same durability plate the attacker's is.
+            defender.uses_reflection_plate = True
             self._apply_snapshot_attrs(defender, defender_row["class_snapshot"])
             enemy_team.add_combatant(defender)
             if defender_row["pet_name"] and defender_pet_owned:
@@ -610,22 +613,25 @@ class Gauntlet(commands.Cog):
             hp_bar_style = "normal"
             if hasattr(battles, "_get_user_hp_bar_style"):
                 hp_bar_style = await battles._get_user_hp_bar_style(ctx.author.id)
-            hp_bar_style = TowerBattle.normalize_hp_bar_style(hp_bar_style)
+            hp_bar_style = GauntletBattle.normalize_hp_bar_style(hp_bar_style)
 
-            battle = TowerBattle(
+            battle = GauntletBattle(
                 ctx,
                 [player_team, enemy_team],
-                level=1,
-                level_data={},
                 allow_pets=True,
+                attacker_name=ctx.author.display_name,
+                defender_name=defender_name,
                 hp_bar_style=hp_bar_style,
-                emoji_hp_bars=hp_bar_style != TowerBattle.HP_BAR_STYLE_NORMAL,
+                emoji_hp_bars=hp_bar_style != GauntletBattle.HP_BAR_STYLE_NORMAL,
             )
             battle.config["allow_pets"] = True
-            battle.config["pets_continue_battle"] = True
             await battle.start_battle()
             while not await battle.is_battle_over():
-                await battle.process_turn()
+                # process_turn() returning False means it has nothing left to
+                # resolve; without this the loop spins silently until the
+                # battle times out.
+                if not await battle.process_turn():
+                    break
                 await asyncio.sleep(1)
             result = await battle.end_battle()
 

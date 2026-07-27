@@ -151,14 +151,39 @@ class TowerBattle(Battle):
         random.shuffle(self.turn_order)
         self.turn_order = self.prioritize_turn_order(self.turn_order)
     
+    def find_next_opponent_index(self):
+        """Return the index of the next enemy that can still be fought.
+
+        Scans forward from the current opponent and wraps around to the start,
+        so an enemy that is back on its feet after we already moved past it
+        (Guardian Angel, Cyclebreaker, an ally's revive) is faced again instead
+        of being stranded alive at an index we can never return to. Returns
+        None only when every enemy is down, which keeps this in agreement with
+        `is_battle_over`.
+        """
+        combatants = self.enemy_team.combatants
+        total = len(combatants)
+        for offset in range(1, total + 1):
+            index = (self.current_opponent_index + offset) % total
+            if combatants[index].is_alive():
+                return index
+        return None
+
     async def handle_enemy_transition(self):
         """Handle transition to the next enemy as a combined action"""
         # This function is called as a separate process_turn action
-        
+
         # Move to the next enemy and show both transition messages in the same action
-        self.current_opponent_index += 1
+        next_index = self.find_next_opponent_index()
+        if next_index is None:
+            # Every enemy went down before the transition ran
+            self.pending_enemy_transition = False
+            self.transition_state = 0
+            return False
+
+        self.current_opponent_index = next_index
         current_enemy = self.enemy_team.combatants[self.current_opponent_index]
-        
+
         # Show "Prepare to face" message
         await self.add_to_log(f"Prepare to face {current_enemy.name}!", force_new_action=True)
         await self.update_display()  # Show message with previous enemy HP at 0
@@ -215,11 +240,11 @@ class TowerBattle(Battle):
             current_enemy = self.enemy_team.combatants[self.current_opponent_index]
             
             if not current_enemy.is_alive():
-                # Current enemy is defeated, move to next one
-                if self.current_opponent_index < len(self.enemy_team.combatants) - 1:
+                # Current enemy is defeated, move to the next one that is still standing
+                if self.find_next_opponent_index() is not None:
                     # First just update the display to show the defeated enemy with 0 HP
                     await self.update_display()
-                    
+
                     # Schedule the transition to next enemy as a separate action
                     self.pending_enemy_transition = True
                     self.transition_state = 1  # Start at phase 1 (intro)
@@ -488,14 +513,10 @@ class TowerBattle(Battle):
             
             # Handle damage reflection if applicable
             # Apply tank evolution reflection multiplier if applicable
-            reflection_value = target.damage_reflection
-            
-            # Apply tank evolution-based reflection if target has tank evolution
-            if self.config["class_buffs"] and target.tank_evolution and not target.is_pet:
-                # Use the standard tank evolution reflection multiplier from classes.py
-                tank_reflection = 0.03 * target.tank_evolution  # 3% per level, so 21% at level 7
-                reflection_value = max(reflection_value, tank_reflection)  # Use higher of item reflection or tank reflection
-            
+            # Best of gear/innate Tank plating, plus Juggernaut's Retaliation
+            reflection_value = self.resolve_damage_reflection(target)
+
+
             if (self.config["reflection_damage"] and 
                 reflection_value > 0 and 
                 blocked_damage > 0 and
@@ -554,8 +575,8 @@ class TowerBattle(Battle):
                     if target in self.enemy_team.combatants:
                         if target == self.enemy_team.combatants[self.current_opponent_index]:
                             # Schedule the transition to next enemy as a separate action
-                            # (but don't increment the index here as that's done in handle_enemy_transition)
-                            if self.current_opponent_index < len(self.enemy_team.combatants) - 1:
+                            # (but don't pick the index here as that's done in handle_enemy_transition)
+                            if self.find_next_opponent_index() is not None:
                                 self.pending_enemy_transition = True
                                 self.transition_state = 1  # Start at phase 1 (intro)
         else:

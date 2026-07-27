@@ -35,6 +35,7 @@ class BattleSettings(commands.Cog):
             "tower": {},
             "jurytower": {},
             "team": {},
+            "gauntlet": {},
             "citywar": {},
             "dragon": {
                 "image_battle_card": False,
@@ -188,7 +189,7 @@ class BattleSettings(commands.Cog):
                 result[key] = await self.get_setting_async(battle_type, key)
         else:
             # Get all settings
-            for bt in ["global", "pve", "pvp", "raid", "tower", "jurytower", "team", "citywar", "dragon"]:
+            for bt in ["global", "pve", "pvp", "raid", "tower", "jurytower", "team", "gauntlet", "citywar", "dragon"]:
                 result[bt] = {}
                 for key in self._get_setting_keys(bt):
                     result[bt][key] = await self.get_setting_async(bt, key)
