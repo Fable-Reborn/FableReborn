@@ -63,6 +63,17 @@ class Battle(ABC):
     HP_BAR_BLUE_HALF_LEFT = "<:bluehalfleftedge:1486332747722133666>"
     HP_BAR_BLUE_HALF_MIDDLE = "<:middlehalf:1486333395339575487>"
     HP_BAR_BLUE_HALF_RIGHT = "<:bluetophalffull:1486332753841750036>"
+    HP_BAR_YELLOW_FULL_LEFT = "<:FullLeftEdgeYELLOW:1531335757657014373>"
+    HP_BAR_YELLOW_FULL_MIDDLE = "<:MiddleFullRedYELLOW:1531335772161183934>"
+    HP_BAR_YELLOW_FULL_RIGHT = "<:FullTopYELLOW:1531335760962129981>"
+    HP_BAR_YELLOW_HALF_LEFT = "<:leftedgehalfYELLOW:1531335769816305784>"
+    HP_BAR_YELLOW_HALF_MIDDLE = "<:HalfwayYELLOW:1531335766116925561>"
+    HP_BAR_YELLOW_HALF_RIGHT = "<:halfhopedgeYELLOW:1531335763382370497>"
+    # Battles with more than two sides cannot use friend/foe colouring - there is
+    # no single "foe". Subclasses set this to colour bars by team index instead,
+    # which also forces emoji bars on regardless of the viewer's preference.
+    HP_BAR_FORCE_TEAM_COLORS = False
+    HP_BAR_TEAM_COLOR_ORDER = ("blue", "red", "yellow")
     DISCORD_RETRY_ATTEMPTS = 3
     DISCORD_RETRY_BASE_DELAY = 1.0
 
@@ -426,8 +437,9 @@ class Battle(ABC):
         """Return whether a combatant belongs to the viewer-friendly side."""
         return getattr(combatant, "_battle_team_index", None) in self.friendly_team_indices
 
-    def _get_hp_bar_palette(self, style, friendly):
-        if style == self.HP_BAR_STYLE_TEAM and friendly:
+    def _hp_bar_palette(self, colour):
+        """Return the six bar tiles for a named colour."""
+        if colour == "blue":
             return {
                 "full_left": self.HP_BAR_BLUE_FULL_LEFT,
                 "half_left": self.HP_BAR_BLUE_HALF_LEFT,
@@ -435,6 +447,16 @@ class Battle(ABC):
                 "half_middle": self.HP_BAR_BLUE_HALF_MIDDLE,
                 "full_right": self.HP_BAR_BLUE_FULL_RIGHT,
                 "half_right": self.HP_BAR_BLUE_HALF_RIGHT,
+            }
+
+        if colour == "yellow":
+            return {
+                "full_left": self.HP_BAR_YELLOW_FULL_LEFT,
+                "half_left": self.HP_BAR_YELLOW_HALF_LEFT,
+                "full_middle": self.HP_BAR_YELLOW_FULL_MIDDLE,
+                "half_middle": self.HP_BAR_YELLOW_HALF_MIDDLE,
+                "full_right": self.HP_BAR_YELLOW_FULL_RIGHT,
+                "half_right": self.HP_BAR_YELLOW_HALF_RIGHT,
             }
 
         return {
@@ -445,6 +467,16 @@ class Battle(ABC):
             "full_right": self.HP_BAR_FULL_RIGHT,
             "half_right": self.HP_BAR_HALF_RIGHT,
         }
+
+    def _get_hp_bar_palette(self, style, friendly, team_index=None):
+        if self.HP_BAR_FORCE_TEAM_COLORS and team_index is not None:
+            order = self.HP_BAR_TEAM_COLOR_ORDER
+            return self._hp_bar_palette(order[team_index % len(order)])
+
+        if style == self.HP_BAR_STYLE_TEAM and friendly:
+            return self._hp_bar_palette("blue")
+
+        return self._hp_bar_palette("red")
 
     def create_hp_bar(self, current_hp, max_hp, length=None, combatant=None, friendly=None):
         """Create either the classic text HP bar or the emoji HP bar."""
@@ -459,6 +491,11 @@ class Battle(ABC):
             )
         )
 
+        # Multi-sided battles tell sides apart by bar colour, so the plain text
+        # bar is never an option there no matter what the viewer picked.
+        if self.HP_BAR_FORCE_TEAM_COLORS and style == self.HP_BAR_STYLE_NORMAL:
+            style = self.HP_BAR_STYLE_TEAM
+
         if style == self.HP_BAR_STYLE_NORMAL:
             safe_length = max(1, int(length or 20))
             filled_length = int(safe_length * ratio)
@@ -469,7 +506,12 @@ class Battle(ABC):
         safe_length = max(3, int(length or 10))
         if friendly is None and combatant is not None:
             friendly = self.is_friendly_combatant(combatant)
-        palette = self._get_hp_bar_palette(style, bool(friendly))
+        team_index = (
+            getattr(combatant, "_battle_team_index", None)
+            if combatant is not None
+            else None
+        )
+        palette = self._get_hp_bar_palette(style, bool(friendly), team_index=team_index)
         total_half_steps = safe_length * 2
         filled_half_steps = int(round(ratio * total_half_steps))
         filled_half_steps = max(0, min(total_half_steps, filled_half_steps))

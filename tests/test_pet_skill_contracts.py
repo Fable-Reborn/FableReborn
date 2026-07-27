@@ -259,9 +259,29 @@ class TestPetSkillContracts(unittest.TestCase):
         enemy_ally.team = enemy_team
 
         self.pet_ext.apply_skill_effects(pet, ["Lord of Shadows"])
-        pet.hp = Decimal("1600")
 
-        with patch("cogs.battles.extensions.pets.random.random", return_value=0.0):
+        def drain_queue():
+            """Materialise queued skeletons onto the team, as the battle does."""
+            for skeleton_data in list(getattr(pet, "summon_skeleton_queue", [])):
+                skeleton = self.Combatant(
+                    user=f"Skeleton Warrior #{skeleton_data['serial']}",
+                    hp=skeleton_data["hp"],
+                    max_hp=skeleton_data["hp"],
+                    damage=skeleton_data["damage"],
+                    armor=skeleton_data["armor"],
+                    element=skeleton_data["element"],
+                    luck=skeleton_data["luck"],
+                    is_pet=True,
+                    name=f"Skeleton Warrior #{skeleton_data['serial']}",
+                )
+                skeleton.is_summoned = True
+                skeleton.summoner = pet
+                friendly_team.combatants.append(skeleton)
+            if hasattr(pet, "summon_skeleton_queue"):
+                delattr(pet, "summon_skeleton_queue")
+
+        # Opening: fires on the first attack at full HP, with no roll involved.
+        with patch("cogs.battles.extensions.pets.random.random", return_value=0.99):
             damage_1, messages_1 = self.pet_ext.process_skill_effects_on_attack(
                 pet, enemy, Decimal("250")
             )
@@ -283,33 +303,58 @@ class TestPetSkillContracts(unittest.TestCase):
         self.assertEqual(Decimal("45.00"), enemy.luck)
         self.assertEqual(3, getattr(enemy, "lord_of_shadows_fear_duration", 0))
 
-        for skeleton_data in list(first_queue):
-            skeleton = self.Combatant(
-                user=f"Skeleton Warrior #{skeleton_data['serial']}",
-                hp=skeleton_data["hp"],
-                max_hp=skeleton_data["hp"],
-                damage=skeleton_data["damage"],
-                armor=skeleton_data["armor"],
-                element=skeleton_data["element"],
-                luck=skeleton_data["luck"],
-                is_pet=True,
-                name=f"Skeleton Warrior #{skeleton_data['serial']}",
-            )
-            skeleton.is_summoned = True
-            skeleton.summoner = pet
-            friendly_team.combatants.append(skeleton)
-        delattr(pet, "summon_skeleton_queue")
+        drain_queue()
 
-        with patch("cogs.battles.extensions.pets.random.random", return_value=0.0):
-            damage_2, messages_2 = self.pet_ext.process_skill_effects_on_attack(
+        # Still above the threshold and the roll fails, so nothing is raised.
+        with patch("cogs.battles.extensions.pets.random.random", return_value=0.99):
+            _, messages_idle = self.pet_ext.process_skill_effects_on_attack(
+                pet, enemy, Decimal("250")
+            )
+        self.assertFalse(any("Lord of Shadows" in msg for msg in messages_idle))
+        self.assertEqual([], list(getattr(pet, "summon_skeleton_queue", [])))
+
+        # Wounded surge: first attack at or below 80% HP raises two more,
+        # again without a roll.
+        pet.hp = Decimal("1600")
+        with patch("cogs.battles.extensions.pets.random.random", return_value=0.99):
+            _, messages_2 = self.pet_ext.process_skill_effects_on_attack(
                 pet, enemy, Decimal("250")
             )
 
-        self.assertEqual(Decimal("250"), damage_2)
-        self.assertTrue(any("A skeleton warrior rises" in msg for msg in messages_2))
+        self.assertTrue(any("Wounded" in msg for msg in messages_2))
         second_queue = getattr(pet, "summon_skeleton_queue", [])
-        self.assertEqual(1, len(second_queue))
+        self.assertEqual(2, len(second_queue))
         self.assertEqual(owner.luck, second_queue[0]["luck"])
+        drain_queue()
+        self.assertEqual(4, self.pet_ext._get_active_shadow_skeleton_count(pet))
+
+        # The surge only ever fires once, so later attacks fall through to the
+        # 20% roll - which misses at 0.99 and lands at 0.05.
+        with patch("cogs.battles.extensions.pets.random.random", return_value=0.99):
+            self.pet_ext.process_skill_effects_on_attack(pet, enemy, Decimal("250"))
+        self.assertEqual([], list(getattr(pet, "summon_skeleton_queue", [])))
+
+        with patch("cogs.battles.extensions.pets.random.random", return_value=0.05):
+            _, messages_3 = self.pet_ext.process_skill_effects_on_attack(
+                pet, enemy, Decimal("250")
+            )
+        self.assertTrue(any("A skeleton warrior rises" in msg for msg in messages_3))
+        self.assertEqual(1, len(getattr(pet, "summon_skeleton_queue", [])))
+        drain_queue()
+        self.assertEqual(5, self.pet_ext._get_active_shadow_skeleton_count(pet))
+
+        # Capped at five: the proc still lands but raises nobody.
+        with patch("cogs.battles.extensions.pets.random.random", return_value=0.05):
+            _, messages_4 = self.pet_ext.process_skill_effects_on_attack(
+                pet, enemy, Decimal("250")
+            )
+        self.assertTrue(
+            any("no more skeletons can be raised" in msg for msg in messages_4)
+        )
+        self.assertEqual([], list(getattr(pet, "summon_skeleton_queue", [])))
+        self.assertEqual(5, self.pet_ext._get_active_shadow_skeleton_count(pet))
+
+        # Buffs refresh rather than stack, across every trigger above.
         self.assertEqual(Decimal("287.50"), ally.damage)
         self.assertEqual(Decimal("88.00"), ally.armor)
         self.assertEqual(Decimal("55.00"), ally.luck)

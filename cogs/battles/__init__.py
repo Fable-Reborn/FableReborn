@@ -37,6 +37,7 @@ from .dragon_party_card import render_dragon_party_card
 from .types.tower import TowerBattle
 from .types.training_dummy import TRAINING_DUMMY_DURATION, TrainingDummyBattle
 from .types.omnithrone import ensure_omnithrone_schema
+from .types.ffa import FreeForAllBattle
 from classes.classes import from_string as class_from_string
 from classes.converters import IntGreaterThan
 from classes.errors import NoChoice
@@ -8983,6 +8984,333 @@ class Battles(commands.Cog):
                         money,
                         player.id,
                     )
+        except Exception as e:
+            await self._send_with_retry(ctx, content=str(e), suppress_failure=True)
+
+    async def _take_ffa_entry_fee(self, ctx, user_id, money, paid_ids):
+        """Deduct the stake, log it, and record the payer.
+
+        `paid_ids` is what the battle actually trusts at payout time - see
+        FreeForAllBattle.paid_player_ids.
+        """
+        if money <= 0:
+            paid_ids.add(user_id)
+            return
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
+                money,
+                user_id,
+            )
+            await self.bot.log_transaction(
+                ctx,
+                from_=user_id,
+                to=0,
+                subject=FreeForAllBattle.ENTRY_SUBJECT,
+                data={"Gold": money},
+                conn=conn,
+            )
+        paid_ids.add(user_id)
+
+    async def _refund_ffa_entry(self, ctx, players, money, paid_ids):
+        """Refund a lobby that never started and forget the payers."""
+        if money <= 0:
+            paid_ids.clear()
+            return
+        async with self.bot.pool.acquire() as conn:
+            for player in players:
+                if player.id not in paid_ids:
+                    continue
+                await conn.execute(
+                    'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                    money,
+                    player.id,
+                )
+                await self.bot.log_transaction(
+                    ctx,
+                    from_=0,
+                    to=player.id,
+                    subject=FreeForAllBattle.REFUND_SUBJECT,
+                    data={"Gold": money},
+                    conn=conn,
+                )
+        paid_ids.clear()
+
+    @has_char()
+    @user_cooldown(100)
+    @commands.command(
+        brief=_("Three-sided battle - last side standing wins"),
+        aliases=["3way", "ffa", "freeforall"],
+    )
+    @locale_doc
+    async def raidbattle3way(
+        self,
+        ctx,
+        money: IntGreaterThan(-1) = 0,
+        players: commands.Greedy[discord.Member] = None,
+    ):
+        _(
+            """`[money]` - A whole number that can be 0 or greater; defaults to 0
+            `[players]` - Either two users (for 1v1v1) or five users (for 2v2v2)
+
+            Fight a three-sided battle where every side is against both others.
+            Stats are evaluated the same way as raidbattle, including raidstats.
+
+            Mention nobody to open a public lobby - the battle starts once three
+            players have joined and each fights for themselves.
+
+            The money is taken from every player at the start. The last side
+            standing takes their own stake back plus everyone else's, split
+            evenly among that side's members.
+
+            The battle ends when only one side has anyone left standing, or after
+            5 minutes (a tie, where everyone is refunded).
+            (This command has a cooldown of 100 seconds)"""
+        )
+        ctx = self._guard_battle_context(ctx)
+        paid_ids = set()
+        try:
+            if ctx.character_data["money"] < money:
+                await self.bot.reset_cooldown(ctx)
+                return await ctx.send(_("You are too poor."))
+
+            players = list(players or [])
+            open_enrollment = not players
+
+            if not open_enrollment:
+                if len(players) not in (2, 5):
+                    await self.bot.reset_cooldown(ctx)
+                    return await ctx.send(
+                        _("Mention exactly two players for 1v1v1, or five for 2v2v2.")
+                    )
+                if ctx.author in players:
+                    await self.bot.reset_cooldown(ctx)
+                    return await ctx.send(_("You can't fight yourself."))
+                if len(set(players)) != len(players):
+                    await self.bot.reset_cooldown(ctx)
+                    return await ctx.send(_("You can't list the same player twice."))
+
+            async def check_character_and_money(user: discord.User) -> bool:
+                if not await self.bot.pool.fetchrow(
+                    'SELECT 1 FROM profile WHERE "user"=$1', user.id
+                ):
+                    return False
+                if money > 0:
+                    return await has_money(self.bot, user.id, money)
+                return True
+
+            await self._take_ffa_entry_fee(ctx, ctx.author.id, money, paid_ids)
+
+            if open_enrollment:
+                participants = [ctx.author]
+                participant_ids = {ctx.author.id}
+                battle_cog = self
+
+                class OpenFFAView(View):
+                    def __init__(self):
+                        super().__init__(timeout=60)
+                        self.is_complete = False
+
+                    @discord.ui.button(
+                        style=ButtonStyle.primary,
+                        label=_("Join the free-for-all!"),
+                        emoji="⚔️",
+                    )
+                    async def join(self, interaction: discord.Interaction, button: Button):
+                        user = interaction.user
+                        if user.id in participant_ids:
+                            return await interaction.response.send_message(
+                                _("You have already joined this battle."), ephemeral=True
+                            )
+                        if not await check_character_and_money(user):
+                            return await interaction.response.send_message(
+                                _("You don't have a character or enough money to join."),
+                                ephemeral=True,
+                            )
+
+                        await battle_cog._take_ffa_entry_fee(
+                            ctx, user.id, money, paid_ids
+                        )
+                        participants.append(user)
+                        participant_ids.add(user.id)
+                        await interaction.response.send_message(
+                            _("You have joined the battle!"), ephemeral=True
+                        )
+
+                        joined_text = "\n".join(f"• {p.mention}" for p in participants)
+                        needed = 3 - len(participants)
+                        await battle_cog._edit_message_with_retry(
+                            battle_msg,
+                            content=_(
+                                "{author} has started a three-way battle! "
+                                "The price is **${money}** per player.\n"
+                                "**Fighters ({count}/3):**\n{participants}\n\n"
+                                "{needed_text}"
+                            ).format(
+                                author=ctx.author.mention,
+                                money=money,
+                                count=len(participants),
+                                participants=joined_text,
+                                needed_text=_("Need {more} more to start!").format(
+                                    more=needed
+                                )
+                                if needed > 0
+                                else _("Battle ready to begin!"),
+                            ),
+                            suppress_failure=True,
+                        )
+
+                        if len(participants) >= 3:
+                            self.is_complete = True
+                            for item in self.children:
+                                item.disabled = True
+                            await battle_cog._edit_message_with_retry(
+                                battle_msg, view=self, suppress_failure=True
+                            )
+                            self.stop()
+
+                view = OpenFFAView()
+                battle_msg = await ctx.send(
+                    _(
+                        "{author} has started a three-way battle! "
+                        "The price is **${money}** per player.\n"
+                        "**Fighters (1/3):**\n• {author}\n\n"
+                        "Need 2 more to start!"
+                    ).format(author=ctx.author.mention, money=money),
+                    view=view,
+                )
+                if battle_msg is None:
+                    await self.bot.reset_cooldown(ctx)
+                    await self._refund_ffa_entry(ctx, participants, money, paid_ids)
+                    return
+
+                await view.wait()
+
+                if not view.is_complete:
+                    await self.bot.reset_cooldown(ctx)
+                    await self._refund_ffa_entry(ctx, participants, money, paid_ids)
+                    return await ctx.send(
+                        _("Not enough players joined. Money has been refunded.")
+                    )
+            else:
+                participants = [ctx.author]
+                futures = []
+                for player in players:
+                    future = asyncio.Future()
+                    join_view = SingleJoinView(
+                        future,
+                        Button(
+                            style=ButtonStyle.primary,
+                            label=_("Accept Challenge"),
+                            emoji="⚔️",
+                        ),
+                        allowed=player,
+                        prohibited=ctx.author,
+                        timeout=60,
+                        check=check_character_and_money,
+                        check_fail_message=_(
+                            "You don't have a character or enough money to join."
+                        ),
+                    )
+                    await ctx.send(
+                        _(
+                            "{player}, {author} has challenged you to a three-way "
+                            "battle! The price is **${money}** per player."
+                        ).format(
+                            player=player.mention,
+                            author=ctx.author.mention,
+                            money=money,
+                        ),
+                        view=join_view,
+                    )
+                    futures.append(future)
+
+                try:
+                    for future in futures:
+                        joined = await asyncio.wait_for(future, timeout=60)
+                        await self._take_ffa_entry_fee(ctx, joined.id, money, paid_ids)
+                        participants.append(joined)
+                except asyncio.TimeoutError:
+                    await self.bot.reset_cooldown(ctx)
+                    await self._refund_ffa_entry(ctx, participants, money, paid_ids)
+                    return await ctx.send(
+                        _("Not everyone joined in time. Money has been refunded.")
+                    )
+
+            # Split into three sides of equal size
+            random.shuffle(participants)
+            per_side = len(participants) // 3
+            sides = [
+                participants[index * per_side:(index + 1) * per_side]
+                for index in range(3)
+            ]
+
+            await self._send_with_retry(
+                ctx,
+                content=_(
+                    "🔵 **Side A**: {a}\n🔴 **Side B**: {b}\n🟡 **Side C**: {c}\n\n"
+                    "Every side fights both others. Last one standing wins!"
+                ).format(
+                    a=", ".join(m.mention for m in sides[0]),
+                    b=", ".join(m.mention for m in sides[1]),
+                    c=", ".join(m.mention for m in sides[2]),
+                ),
+                suppress_failure=True,
+            )
+
+            battle = await self.battle_factory.create_battle(
+                "ffa",
+                ctx,
+                team_members=sides,
+                money=money,
+                paid_player_ids=paid_ids,
+            )
+
+            await battle.start_battle()
+
+            while not await battle.is_battle_over():
+                await battle.process_turn()
+                await asyncio.sleep(2)
+
+            result = await battle.end_battle()
+
+            if result:
+                winning_name, losing_names = result
+                side_by_name = {"A": sides[0], "B": sides[1], "C": sides[2]}
+                winning_members = side_by_name.get(winning_name, [])
+                losing_members = [
+                    member
+                    for name in losing_names
+                    for member in side_by_name.get(name, [])
+                ]
+                await self._send_with_retry(
+                    ctx,
+                    content=_(
+                        "Side {winner} wins the three-way against {losers}! "
+                        "Congratulations {members}!"
+                    ).format(
+                        winner=winning_name,
+                        losers=" and ".join(losing_names),
+                        members=", ".join(m.mention for m in winning_members),
+                    ),
+                    suppress_failure=True,
+                )
+                losing_display = [m.display_name for m in losing_members] + [
+                    m.name for m in losing_members
+                ]
+                await self._progress_custom_quest_source(
+                    ctx,
+                    winning_members,
+                    "raidbattle",
+                    "3way",
+                    *losing_display,
+                )
+            else:
+                await self._send_with_retry(
+                    ctx,
+                    content=_("The battle timed out! All money has been refunded."),
+                    suppress_failure=True,
+                )
         except Exception as e:
             await self._send_with_retry(ctx, content=str(e), suppress_failure=True)
 
