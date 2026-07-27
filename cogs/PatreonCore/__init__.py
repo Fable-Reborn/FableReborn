@@ -51,7 +51,9 @@ class PatreonCore(commands.Cog):
     CAMPAIGNS_URL = "https://www.patreon.com/api/oauth2/api/current_user/campaigns"
     MEMBERS_URL = "https://www.patreon.com/api/oauth2/v2/campaigns/{campaign_id}/members"
     CAMPAIGN_DETAILS_URL = "https://www.patreon.com/api/oauth2/v2/campaigns/{campaign_id}"
-    DURATION_PART_RE = re.compile(r"(\d+)\s*([smhdw])", re.IGNORECASE)
+    # "months?" and "mo" must precede the single-letter class so that "3mo" is not
+    # read as 3 minutes followed by a stray "o".
+    DURATION_PART_RE = re.compile(r"(\d+)\s*(months?|mo|[smhdw])", re.IGNORECASE)
 
     def __init__(self, bot):
         self.bot = bot
@@ -213,17 +215,23 @@ class PatreonCore(commands.Cog):
         compact = re.sub(r"\s+", "", text)
         matches = list(cls.DURATION_PART_RE.finditer(compact))
         if not matches:
-            raise ValueError("Duration must look like 7d, 12h, 30m, or a combination like 7d12h.")
+            raise ValueError(
+                "Duration must look like 1mo, 3mo, 30d, 12h, 30m, "
+                "or a combination like 7d12h."
+            )
 
         consumed = "".join(match.group(0) for match in matches)
         if consumed != compact:
             raise ValueError("Invalid duration format.")
 
         total_seconds = 0
-        unit_seconds = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+        # A month is a flat 30 days here, matching the fixed-length units above.
+        unit_seconds = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800, "mo": 2592000}
         for match in matches:
             amount = int(match.group(1))
             unit = match.group(2).lower()
+            if unit.startswith("mo"):
+                unit = "mo"
             total_seconds += amount * unit_seconds[unit]
 
         if total_seconds <= 0:
@@ -1162,7 +1170,12 @@ class PatreonCore(commands.Cog):
         *,
         reason: str = "",
     ):
-        """Manually grant a Patreon tier with optional expiry (e.g. 30d, 12h, 7d12h)."""
+        """Manually grant a Patreon tier with optional expiry.
+
+        Duration accepts 1mo, 3mo, 6mo, 30d, 12h, 30m, or combinations like 7d12h.
+        A month is a flat 30 days. Note that "m" means minutes, not months.
+        Omit the duration (or pass "permanent") for a grant that never expires.
+        """
         if tier < 1 or tier > 4:
             return await ctx.send("Tier must be between 1 and 4.")
 
