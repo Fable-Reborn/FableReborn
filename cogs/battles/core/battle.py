@@ -156,13 +156,6 @@ class Battle(ABC):
             for combatant in getattr(team, "combatants", []):
                 setattr(combatant, "battle", self)
                 setattr(combatant, "_battle_team_index", team_index)
-
-        battles_cog = None
-        if hasattr(self.ctx, "bot") and hasattr(self.ctx.bot, "cogs"):
-            battles_cog = self.ctx.bot.cogs.get("Battles")
-        register_active_battle = getattr(battles_cog, "register_active_battle", None)
-        if callable(register_active_battle):
-            register_active_battle(self)
     
     @abstractmethod
     async def start_battle(self):

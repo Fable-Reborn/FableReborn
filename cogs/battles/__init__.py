@@ -6,7 +6,6 @@ import math
 import os
 import random
 import traceback
-import weakref
 from decimal import Decimal, ROUND_HALF_UP
 from collections import deque
 
@@ -2652,86 +2651,6 @@ class Battles(commands.Cog):
         
         await ctx.send(f"Set macro detection count for user {user_id} to {count}")
 
-    def register_active_battle(self, battle):
-        """Keep a weak, channel-scoped index for message-triggered battle effects."""
-        channel_id = getattr(getattr(getattr(battle, "ctx", None), "channel", None), "id", None)
-        if channel_id is None:
-            return
-
-        battles = self.active_battles.get(int(channel_id))
-        if not isinstance(battles, weakref.WeakSet):
-            battles = weakref.WeakSet()
-            self.active_battles[int(channel_id)] = battles
-        battles.add(battle)
-
-    def get_active_battles_for_channel(self, channel_id):
-        """Return started, unfinished battles in one Discord channel."""
-        try:
-            channel_id = int(channel_id)
-        except (TypeError, ValueError):
-            return []
-
-        battles = self.active_battles.get(channel_id)
-        if not battles:
-            return []
-
-        active = []
-        for battle in list(battles):
-            if getattr(battle, "finished", False):
-                battles.discard(battle)
-                continue
-            if getattr(battle, "started", False):
-                active.append(battle)
-        return active
-
-    @commands.Cog.listener()
-    async def on_message(self, message):
-        """Resolve Chuck's battle-only Arise command."""
-        pet_ext = self.battle_factory.pet_ext
-        if not pet_ext.is_chuck_arise_message(message):
-            return
-
-        channel_id = getattr(getattr(message, "channel", None), "id", None)
-        for battle in self.get_active_battles_for_channel(channel_id):
-            chuck = next(
-                (
-                    combatant
-                    for team in getattr(battle, "teams", [])
-                    for combatant in getattr(team, "combatants", [])
-                    if pet_ext.is_chuck_pet(combatant)
-                    and combatant.is_alive()
-                    and "chuck_arise" in getattr(combatant, "skill_effects", {})
-                ),
-                None,
-            )
-            if chuck is None:
-                continue
-
-            summons = pet_ext.activate_chuck_arise(battle, chuck)
-            if not summons:
-                continue
-
-            summon_names = ", ".join(f"**{summon.name}**" for summon in summons)
-            announcement = (
-                f"🔥 **{pet_ext.CHUCK_ARISE_MESSAGE}**\n"
-                f"⚔️ {summon_names} answer **Arise**!"
-            )
-            try:
-                await battle.add_to_log(announcement)
-                await battle.update_display()
-            except Exception:
-                logger.exception(
-                    "Chuck Arise spawned allies but could not refresh battle %s",
-                    getattr(battle, "battle_id", "unknown"),
-                )
-                send = getattr(getattr(message, "channel", None), "send", None)
-                if callable(send):
-                    await send(announcement)
-            return
-    
-
-
-    
     async def is_player_in_fight(self, player_id, fight_id=None):
         """Check legacy-exclusive state or a specific concurrent battle."""
         registrations = self.fighting_players.get(int(player_id), set())

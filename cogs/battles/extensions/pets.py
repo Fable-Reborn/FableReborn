@@ -8,19 +8,6 @@ from utils.april_fools import get_greg_hidden_pet_effects, mask_runtime_name
 
 class PetExtension:
     """Extension for pet integration in battles"""
-    CHUCK_PET_ID = 10907
-    CHUCK_ARISE_USER_ID = 295173706496475136
-    CHUCK_ARISE_ALLY_COUNT = 3
-    CHUCK_ARISE_ALLY_NAMES = (
-        "Bruce Lee",
-        "Arnold Schwarzenegger",
-        "Sylvester Stallone",
-        "Jackie Chan",
-    )
-    CHUCK_ARISE_HP = Decimal('100000')
-    CHUCK_ARISE_ATTACK = Decimal('75000')
-    CHUCK_ARISE_DEFENSE = Decimal('75000')
-    CHUCK_ARISE_MESSAGE = "Chuck Does what he wants and summons the best."
     BEASTMASTER_EVOLUTION_LEVELS = {
         "Wrangler": 1,
         "Beast Kin": 2,
@@ -374,86 +361,6 @@ class PetExtension:
         setattr(pet_combatant, 'summon_skeleton_queue', summon_queue)
         setattr(pet_combatant, 'skeleton_count', serial)
         return int(summon_count)
-
-    @classmethod
-    def is_chuck_pet(cls, pet_combatant):
-        try:
-            return int(getattr(pet_combatant, 'pet_id', 0) or 0) == cls.CHUCK_PET_ID
-        except (TypeError, ValueError):
-            return False
-
-    @classmethod
-    def is_chuck_arise_message(cls, message):
-        author = getattr(message, 'author', None)
-        return bool(
-            author is not None
-            and not getattr(author, 'bot', False)
-            and getattr(author, 'id', None) == cls.CHUCK_ARISE_USER_ID
-            and str(getattr(message, 'content', '')).strip().casefold() == 'arise'
-        )
-
-    def activate_chuck_arise(self, battle, pet_combatant):
-        """Summon three allies onto Chuck's current team."""
-        effects = getattr(pet_combatant, 'skill_effects', {})
-        if (
-            battle is None
-            or not self.is_chuck_pet(pet_combatant)
-            or 'chuck_arise' not in effects
-            or not pet_combatant.is_alive()
-        ):
-            return []
-
-        team = next(
-            (
-                candidate
-                for candidate in getattr(battle, 'teams', [])
-                if pet_combatant in getattr(candidate, 'combatants', [])
-            ),
-            None,
-        )
-        if team is None:
-            return []
-
-        selected_names = random.sample(
-            list(self.CHUCK_ARISE_ALLY_NAMES),
-            k=self.CHUCK_ARISE_ALLY_COUNT,
-        )
-        summons = []
-        for ally_name in selected_names:
-            ally = Combatant(
-                user=ally_name,
-                hp=self.CHUCK_ARISE_HP,
-                max_hp=self.CHUCK_ARISE_HP,
-                damage=self.CHUCK_ARISE_ATTACK,
-                armor=self.CHUCK_ARISE_DEFENSE,
-                element='Unknown',
-                luck=50,
-                is_pet=True,
-                name=ally_name,
-            )
-            setattr(ally, 'is_summoned', True)
-            setattr(ally, 'chuck_arise_ally', True)
-            battle.register_summoned_combatant(
-                ally,
-                team=team,
-                summoner=pet_combatant,
-            )
-            team.add_combatant(ally)
-            summons.append(ally)
-
-        turn_order = getattr(battle, 'turn_order', None)
-        if isinstance(turn_order, list):
-            turn_order.extend(summons)
-            prioritize = getattr(battle, 'prioritize_turn_order', None)
-            if callable(prioritize):
-                battle.turn_order = prioritize(turn_order)
-
-        player_turn_queue = getattr(battle, '_player_turn_queue', None)
-        if player_turn_queue is not None and hasattr(player_turn_queue, 'append'):
-            for ally in summons:
-                player_turn_queue.append(ally)
-
-        return summons
 
     def _apply_timed_multiplier(
         self,
@@ -851,19 +758,6 @@ class PetExtension:
     
     def apply_skill_effects(self, pet_combatant, learned_skills):
         """Apply skill effects to pet combatant with actual implementations"""
-        if self.is_chuck_pet(pet_combatant):
-            pet_combatant.skill_effects = {
-                'chuck_arise': {
-                    'trigger': 'Arise',
-                    'authorized_user_id': self.CHUCK_ARISE_USER_ID,
-                    'summon_count': self.CHUCK_ARISE_ALLY_COUNT,
-                    'type': 'message_triggered_summon',
-                }
-            }
-            pet_combatant.passive_effects = []
-            pet_combatant.active_abilities = []
-            return
-
         if not learned_skills:
             return
             
@@ -1505,9 +1399,6 @@ class PetExtension:
                 }
 
     def apply_greg_hidden_effects(self, bot, pet_combatant):
-        if self.is_chuck_pet(pet_combatant):
-            return
-
         greg_effects = get_greg_hidden_pet_effects(bot)
         if not greg_effects:
             return
