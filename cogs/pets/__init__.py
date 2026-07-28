@@ -2417,7 +2417,7 @@ class Pets(commands.Cog):
                 "Blaze": {
                     1: {"name": "Fire Affinity", "description": "+20% damage against Nature and Water element enemies", "cost": 1},
                     3: {"name": "Heat Wave", "description": "Attacks hit all nearby enemies for 55% of main target damage", "cost": 2},
-                    5: {"name": "Flame Barrier", "description": "Creates a shield equal to 250% of pet's defense stat. If broken, it reignites at 50% strength on the pet's next turn", "cost": 3},
+                    5: {"name": "Flame Barrier", "description": "Creates a shield equal to 250% of pet's defense stat. The first time it breaks, it reignites once at 50% strength on the pet's next turn", "cost": 3},
                     7: {"name": "Burning Spirit", "description": "30% chance attacks inflict burn: 10% of target's max HP per turn for 3 turns", "cost": 4},
                     10: {"name": "Sun God's Blessing", "description": "ULTIMATE (15-25% HP): 2.75x solar strike + 60% splash + burns enemies + team gains +30% power for 3 turns", "cost": 5}
                 }
@@ -2455,7 +2455,7 @@ class Pets(commands.Cog):
                 },
                 "Energy": {
                     1: {"name": "Power Surge", "description": "Owner gains +10% attack for 3 turns whenever pet attacks (refreshes, does not stack)", "cost": 1},
-                    3: {"name": "Energy Shield", "description": "Creates a shield equal to 200% of pet's defense stat. If broken, it recharges to 60% strength on the pet's next turn", "cost": 2},
+                    3: {"name": "Energy Shield", "description": "Creates a shield equal to 200% of pet's defense stat. The first time it breaks, it recharges once to 60% strength on the pet's next turn", "cost": 2},
                     5: {"name": "Battery Life", "description": "Reduces skill learning costs by 1 SP (or 2 SP if cost is 4+). Minimum cost is 1 SP.", "cost": 3},
                     7: {"name": "Overcharge", "description": "Once per battle below 60% HP, pet sacrifices 20% HP to give owner +35% all stats for 2 turns", "cost": 4},
                     10: {"name": "Infinite Energy", "description": "ULTIMATE (15-25% HP): Team gains +35% all stats and unlimited ability uses for 3 turns", "cost": 5}
@@ -11097,9 +11097,15 @@ class Pets(commands.Cog):
                 
                 # Test 2: Defense effects
                 incoming_damage = Decimal('150')
-                reduced_damage, defense_messages = pet_ext.process_skill_effects_on_damage_taken(
-                    test_pet, test_enemy, incoming_damage
+                barrier_damage, barrier_messages = pet_ext.process_barriers_before_defense(
+                    test_pet, incoming_damage
                 )
+                if barrier_damage > 0:
+                    barrier_damage = max(barrier_damage - test_pet.armor, Decimal('10'))
+                reduced_damage, defense_messages = pet_ext.process_skill_effects_on_damage_taken(
+                    test_pet, test_enemy, barrier_damage
+                )
+                defense_messages = barrier_messages + defense_messages
                 
                 if defense_messages or reduced_damage != incoming_damage:
                     results.append(f"\n**Defense Effects:**")
@@ -11312,7 +11318,15 @@ class Pets(commands.Cog):
                     )
                     
                     _, attack_msgs = pet_ext.process_skill_effects_on_attack(test_pet, test_enemy, Decimal('200'))
-                    _, defense_msgs = pet_ext.process_skill_effects_on_damage_taken(test_pet, test_enemy, Decimal('150'))
+                    barrier_damage, defense_msgs = pet_ext.process_barriers_before_defense(
+                        test_pet, Decimal('150')
+                    )
+                    if barrier_damage > 0:
+                        barrier_damage = max(barrier_damage - test_pet.armor, Decimal('10'))
+                    _, mitigation_msgs = pet_ext.process_skill_effects_on_damage_taken(
+                        test_pet, test_enemy, barrier_damage
+                    )
+                    defense_msgs.extend(mitigation_msgs)
                     turn_msgs = pet_ext.process_skill_effects_per_turn(test_pet)
                     
                     if attack_msgs or defense_msgs or turn_msgs or hasattr(test_pet, 'ultimate_threshold'):
@@ -11525,9 +11539,15 @@ class Pets(commands.Cog):
                 # Test 3: Defense effects with various attackers
                 for test_enemy in test_enemies:
                     for damage_level in [Decimal('150'), Decimal('250'), Decimal('350')]:
-                        reduced_damage, defense_msgs = pet_ext.process_skill_effects_on_damage_taken(
-                            test_pet, test_enemy, damage_level
+                        barrier_damage, barrier_msgs = pet_ext.process_barriers_before_defense(
+                            test_pet, damage_level
                         )
+                        if barrier_damage > 0:
+                            barrier_damage = max(barrier_damage - test_pet.armor, Decimal('10'))
+                        reduced_damage, defense_msgs = pet_ext.process_skill_effects_on_damage_taken(
+                            test_pet, test_enemy, barrier_damage
+                        )
+                        defense_msgs = barrier_msgs + defense_msgs
                         
                         if defense_msgs or reduced_damage != damage_level:
                             skill_results["tests"].append(f"✅ Defense_vs_{test_enemy.element}: {len(defense_msgs)} effects")
@@ -11592,7 +11612,15 @@ class Pets(commands.Cog):
                                 effects_detected += 1
                         else:
                             # Defense skill
-                            mod_dmg, msgs = pet_ext.process_skill_effects_on_damage_taken(test_pet, test_enemies[0], Decimal('150'))
+                            barrier_damage, msgs = pet_ext.process_barriers_before_defense(
+                                test_pet, Decimal('150')
+                            )
+                            if barrier_damage > 0:
+                                barrier_damage = max(barrier_damage - test_pet.armor, Decimal('10'))
+                            mod_dmg, mitigation_msgs = pet_ext.process_skill_effects_on_damage_taken(
+                                test_pet, test_enemies[0], barrier_damage
+                            )
+                            msgs.extend(mitigation_msgs)
                             if msgs or mod_dmg != Decimal('150'):
                                 effects_detected += 1
                     

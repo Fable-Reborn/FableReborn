@@ -8,6 +8,19 @@ from utils.april_fools import get_greg_hidden_pet_effects, mask_runtime_name
 
 class PetExtension:
     """Extension for pet integration in battles"""
+    CHUCK_PET_ID = 10907
+    CHUCK_ARISE_USER_ID = 295173706496475136
+    CHUCK_ARISE_ALLY_COUNT = 3
+    CHUCK_ARISE_ALLY_NAMES = (
+        "Bruce Lee",
+        "Arnold Schwarzenegger",
+        "Sylvester Stallone",
+        "Jackie Chan",
+    )
+    CHUCK_ARISE_HP = Decimal('100000')
+    CHUCK_ARISE_ATTACK = Decimal('75000')
+    CHUCK_ARISE_DEFENSE = Decimal('75000')
+    CHUCK_ARISE_MESSAGE = "Chuck Does what he wants and summons the best."
     BEASTMASTER_EVOLUTION_LEVELS = {
         "Wrangler": 1,
         "Beast Kin": 2,
@@ -362,6 +375,86 @@ class PetExtension:
         setattr(pet_combatant, 'skeleton_count', serial)
         return int(summon_count)
 
+    @classmethod
+    def is_chuck_pet(cls, pet_combatant):
+        try:
+            return int(getattr(pet_combatant, 'pet_id', 0) or 0) == cls.CHUCK_PET_ID
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def is_chuck_arise_message(cls, message):
+        author = getattr(message, 'author', None)
+        return bool(
+            author is not None
+            and not getattr(author, 'bot', False)
+            and getattr(author, 'id', None) == cls.CHUCK_ARISE_USER_ID
+            and str(getattr(message, 'content', '')).strip().casefold() == 'arise'
+        )
+
+    def activate_chuck_arise(self, battle, pet_combatant):
+        """Summon three allies onto Chuck's current team."""
+        effects = getattr(pet_combatant, 'skill_effects', {})
+        if (
+            battle is None
+            or not self.is_chuck_pet(pet_combatant)
+            or 'chuck_arise' not in effects
+            or not pet_combatant.is_alive()
+        ):
+            return []
+
+        team = next(
+            (
+                candidate
+                for candidate in getattr(battle, 'teams', [])
+                if pet_combatant in getattr(candidate, 'combatants', [])
+            ),
+            None,
+        )
+        if team is None:
+            return []
+
+        selected_names = random.sample(
+            list(self.CHUCK_ARISE_ALLY_NAMES),
+            k=self.CHUCK_ARISE_ALLY_COUNT,
+        )
+        summons = []
+        for ally_name in selected_names:
+            ally = Combatant(
+                user=ally_name,
+                hp=self.CHUCK_ARISE_HP,
+                max_hp=self.CHUCK_ARISE_HP,
+                damage=self.CHUCK_ARISE_ATTACK,
+                armor=self.CHUCK_ARISE_DEFENSE,
+                element='Unknown',
+                luck=50,
+                is_pet=True,
+                name=ally_name,
+            )
+            setattr(ally, 'is_summoned', True)
+            setattr(ally, 'chuck_arise_ally', True)
+            battle.register_summoned_combatant(
+                ally,
+                team=team,
+                summoner=pet_combatant,
+            )
+            team.add_combatant(ally)
+            summons.append(ally)
+
+        turn_order = getattr(battle, 'turn_order', None)
+        if isinstance(turn_order, list):
+            turn_order.extend(summons)
+            prioritize = getattr(battle, 'prioritize_turn_order', None)
+            if callable(prioritize):
+                battle.turn_order = prioritize(turn_order)
+
+        player_turn_queue = getattr(battle, '_player_turn_queue', None)
+        if player_turn_queue is not None and hasattr(player_turn_queue, 'append'):
+            for ally in summons:
+                player_turn_queue.append(ally)
+
+        return summons
+
     def _apply_timed_multiplier(
         self,
         target,
@@ -453,11 +546,101 @@ class PetExtension:
         setattr(combatant, barrier_attr, max(Decimal('0'), barrier_value))
         return getattr(combatant, barrier_attr)
 
+    def _absorb_pre_defense_barrier(
+        self,
+        combatant,
+        incoming_damage,
+        *,
+        barrier_attr,
+        recharge_attr,
+        recharge_used_attr,
+        effect,
+        label,
+    ):
+        """Drain a defense-based barrier before armor touches the overflow."""
+        remaining_damage = max(Decimal('0'), self._to_decimal(incoming_damage))
+        barrier = self._to_decimal(getattr(combatant, barrier_attr, 0))
+        if remaining_damage <= 0 or barrier <= 0:
+            return remaining_damage, []
+
+        absorbed = min(barrier, remaining_damage)
+        remaining_barrier = barrier - absorbed
+        setattr(combatant, barrier_attr, remaining_barrier)
+
+        if (
+            remaining_barrier <= 0
+            and (
+                not effect.get('recharge_once', True)
+                or not getattr(combatant, recharge_used_attr, False)
+            )
+            and not getattr(combatant, recharge_attr, 0)
+        ):
+            setattr(
+                combatant,
+                recharge_attr,
+                max(1, int(effect.get('recharge_turns', 1))),
+            )
+
+        return remaining_damage - absorbed, [
+            f"{label} absorbs **{absorbed:.2f} damage**!"
+        ]
+
+    def process_barriers_before_defense(self, pet_combatant, damage):
+        """Apply Flame Barrier and Energy Shield before ordinary defense.
+
+        Shield-piercing attacks skip these pools. Each pool may recharge only
+        once after its initial break; the recharge-used flag is set when that
+        one replacement pool is actually restored.
+        """
+        incoming_damage = max(Decimal('0'), self._to_decimal(damage))
+        if not hasattr(pet_combatant, 'skill_effects'):
+            return incoming_damage, []
+        if getattr(pet_combatant, 'ignore_shield_this_hit', False):
+            return incoming_damage, []
+
+        effects = pet_combatant.skill_effects
+        messages = []
+        barrier_specs = (
+            (
+                'flame_barrier',
+                'flame_shield',
+                'flame_shield_recharge',
+                'flame_shield_recharge_used',
+                'Flame Barrier',
+            ),
+            (
+                'energy_shield',
+                'energy_barrier',
+                'energy_barrier_recharge',
+                'energy_barrier_recharge_used',
+                'Energy Shield',
+            ),
+        )
+        for effect_key, barrier_attr, recharge_attr, used_attr, label in barrier_specs:
+            effect = effects.get(effect_key)
+            if not effect:
+                continue
+            incoming_damage, barrier_messages = self._absorb_pre_defense_barrier(
+                pet_combatant,
+                incoming_damage,
+                barrier_attr=barrier_attr,
+                recharge_attr=recharge_attr,
+                recharge_used_attr=used_attr,
+                effect=effect,
+                label=label,
+            )
+            messages.extend(barrier_messages)
+            if incoming_damage <= 0:
+                break
+
+        return incoming_damage, messages
+
     def _tick_barrier_recharge(
         self,
         combatant,
         barrier_attr,
         recharge_attr,
+        recharge_used_attr,
         multiplier,
         restore_ratio,
         messages,
@@ -470,6 +653,7 @@ class PetExtension:
         if turns_left <= 1:
             restored = self._restore_barrier(combatant, barrier_attr, multiplier, restore_ratio)
             delattr(combatant, recharge_attr)
+            setattr(combatant, recharge_used_attr, True)
             messages.append(
                 f"{combatant.name}'s {label} recharges to **{restored:.2f} shield**!"
             )
@@ -488,11 +672,19 @@ class PetExtension:
         if 'dark_shield' in effects:
             self._clear_timed_multiplier(pet_combatant, 'dark_shield')
         if 'flame_barrier' in effects:
-            for attr_name in ('flame_shield', 'flame_shield_recharge'):
+            for attr_name in (
+                'flame_shield',
+                'flame_shield_recharge',
+                'flame_shield_recharge_used',
+            ):
                 if hasattr(pet_combatant, attr_name):
                     delattr(pet_combatant, attr_name)
         if 'energy_shield' in effects:
-            for attr_name in ('energy_barrier', 'energy_barrier_recharge'):
+            for attr_name in (
+                'energy_barrier',
+                'energy_barrier_recharge',
+                'energy_barrier_recharge_used',
+            ):
                 if hasattr(pet_combatant, attr_name):
                     delattr(pet_combatant, attr_name)
         if 'growth_spurt' in effects:
@@ -659,6 +851,19 @@ class PetExtension:
     
     def apply_skill_effects(self, pet_combatant, learned_skills):
         """Apply skill effects to pet combatant with actual implementations"""
+        if self.is_chuck_pet(pet_combatant):
+            pet_combatant.skill_effects = {
+                'chuck_arise': {
+                    'trigger': 'Arise',
+                    'authorized_user_id': self.CHUCK_ARISE_USER_ID,
+                    'summon_count': self.CHUCK_ARISE_ALLY_COUNT,
+                    'type': 'message_triggered_summon',
+                }
+            }
+            pet_combatant.passive_effects = []
+            pet_combatant.active_abilities = []
+            return
+
         if not learned_skills:
             return
             
@@ -733,8 +938,12 @@ class PetExtension:
                     'shield_multiplier': 2.5,
                     'recharge_turns': 1,
                     'restore_ratio': 0.50,
+                    'recharge_once': True,
                     'type': 'shield',
                 }
+                for attr_name in ('flame_shield_recharge', 'flame_shield_recharge_used'):
+                    if hasattr(pet_combatant, attr_name):
+                        delattr(pet_combatant, attr_name)
                 self._restore_barrier(
                     pet_combatant,
                     'flame_shield',
@@ -860,8 +1069,12 @@ class PetExtension:
                     'shield_multiplier': 2.0,
                     'recharge_turns': 1,
                     'restore_ratio': 0.60,
+                    'recharge_once': True,
                     'type': 'shield',
                 }
+                for attr_name in ('energy_barrier_recharge', 'energy_barrier_recharge_used'):
+                    if hasattr(pet_combatant, attr_name):
+                        delattr(pet_combatant, attr_name)
                 self._restore_barrier(
                     pet_combatant,
                     'energy_barrier',
@@ -1291,6 +1504,9 @@ class PetExtension:
                 }
 
     def apply_greg_hidden_effects(self, bot, pet_combatant):
+        if self.is_chuck_pet(pet_combatant):
+            return
+
         greg_effects = get_greg_hidden_pet_effects(bot)
         if not greg_effects:
             return
@@ -2536,25 +2752,6 @@ class PetExtension:
                 self._deal_damage(pet_combatant, attacker, reflect_damage)
                 messages.append(f"{pet_combatant.name}'s Molten Armor reflects **{reflect_damage:.2f} damage**!")
                 
-        # Flame Barrier - shield
-        if 'flame_barrier' in effects:
-            flame_shield = self._to_decimal(getattr(pet_combatant, 'flame_shield', 0))
-            if flame_shield > 0:
-                absorbed = min(flame_shield, modified_damage)
-                remaining_shield = flame_shield - absorbed
-                setattr(pet_combatant, 'flame_shield', remaining_shield)
-                if remaining_shield <= 0:
-                    setattr(
-                        pet_combatant,
-                        'flame_shield_recharge',
-                        max(
-                            int(getattr(pet_combatant, 'flame_shield_recharge', 0) or 0),
-                            int(effects['flame_barrier'].get('recharge_turns', 1)),
-                        ),
-                    )
-                modified_damage -= absorbed
-                messages.append(f"Flame Barrier absorbs **{absorbed:.2f} damage**!")
-
         # Eternal Flame - pet survives lethal hits while owner is healthy
         if 'eternal_flame' in effects and modified_damage >= pet_combatant.hp:
             owner_combatant = self.find_owner_combatant(pet_combatant)
@@ -2639,25 +2836,6 @@ class PetExtension:
             return 0, messages
             
         # ⚡ ELECTRIC DEFENSIVE SKILLS
-        # Energy Shield - shield
-        if 'energy_shield' in effects:
-            energy_barrier = self._to_decimal(getattr(pet_combatant, 'energy_barrier', 0))
-            if energy_barrier > 0:
-                absorbed = min(energy_barrier, modified_damage)
-                remaining_barrier = energy_barrier - absorbed
-                setattr(pet_combatant, 'energy_barrier', remaining_barrier)
-                if remaining_barrier <= 0:
-                    setattr(
-                        pet_combatant,
-                        'energy_barrier_recharge',
-                        max(
-                            int(getattr(pet_combatant, 'energy_barrier_recharge', 0) or 0),
-                            int(effects['energy_shield'].get('recharge_turns', 1)),
-                        ),
-                    )
-                modified_damage -= absorbed
-                messages.append(f"Energy Shield absorbs **{absorbed:.2f} damage**!")
-                
         # Lightning Rod - absorb electric damage
         if ('lightning_rod' in effects and hasattr(attacker, 'element') and 
             attacker.element == effects['lightning_rod']['absorb_element']):
@@ -2930,6 +3108,7 @@ class PetExtension:
                 pet_combatant,
                 'flame_shield',
                 'flame_shield_recharge',
+                'flame_shield_recharge_used',
                 effects['flame_barrier']['shield_multiplier'],
                 effects['flame_barrier'].get('restore_ratio', 0.50),
                 messages,
@@ -2940,6 +3119,7 @@ class PetExtension:
                 pet_combatant,
                 'energy_barrier',
                 'energy_barrier_recharge',
+                'energy_barrier_recharge_used',
                 effects['energy_shield']['shield_multiplier'],
                 effects['energy_shield'].get('restore_ratio', 0.60),
                 messages,

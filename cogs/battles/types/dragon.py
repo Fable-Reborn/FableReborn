@@ -830,20 +830,22 @@ class DragonBattle(Battle):
                         # Fallback if element extension fails
                         element_modifier = 1.0
             
-            # Calculate damage using direct armor subtraction, matching Ice Dragon Challenge
-            # Convert target.armor to float if it's a Decimal to avoid type errors
-            if isinstance(target.armor, Decimal):
-                target_armor = float(target.armor)
-            else:
-                target_armor = target.armor
+            # Defense-based pet barriers take the raw hit before armor.
+            target_armor = Decimal(str(target.armor))
             if "Abyssal Presence" in dragon.passives:
-                target_armor *= 0.65
+                target_armor *= Decimal('0.65')
                 
             # Apply element modifier to base damage
-            if isinstance(base_damage, Decimal):
-                modified_base_damage = base_damage * Decimal(str(element_modifier))
-            else:
-                modified_base_damage = float(base_damage) * float(element_modifier)
+            modified_base_damage = Decimal(str(base_damage)) * Decimal(str(element_modifier))
+            defender_messages = []
+            pet_ext = None
+            if (target.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
+                pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
+                modified_base_damage, barrier_messages = pet_ext.process_barriers_before_defense(
+                    target,
+                    modified_base_damage,
+                )
+                defender_messages.extend(barrier_messages)
                 
             # Check for special damage types
             ignore_armor = getattr(target, 'ignore_armor_this_hit', False)
@@ -856,7 +858,10 @@ class DragonBattle(Battle):
             if self._has_effect(target, "true_damage_window"):
                 ignore_all = True
 
-            if ignore_all or true_damage or ignore_armor or bypass_defenses:
+            if modified_base_damage <= 0:
+                damage = Decimal(str(partial_true_damage))
+                blocked_damage = Decimal('0')
+            elif ignore_all or true_damage or ignore_armor or bypass_defenses:
                 damage = modified_base_damage  # No armor reduction
                 blocked_damage = Decimal('0')
             elif partial_true_damage > 0:
@@ -946,10 +951,9 @@ class DragonBattle(Battle):
                         self.cheat_death_used.add(target)
             
             # PROCESS PET SKILL EFFECTS ON DAMAGE TAKEN
-            defender_messages = []
-            if (target.is_pet and hasattr(self.ctx.bot.cogs["Battles"], "battle_factory")):
-                pet_ext = self.ctx.bot.cogs["Battles"].battle_factory.pet_ext
-                damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(target, dragon, damage)
+            if pet_ext and damage > 0:
+                damage, mitigation_messages = pet_ext.process_skill_effects_on_damage_taken(target, dragon, damage)
+                defender_messages.extend(mitigation_messages)
             
             # Apply Death's Embrace passive effect (10% chance to instantly kill)
             death_embrace_triggered = False

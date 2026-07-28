@@ -151,6 +151,7 @@ class TeamBattle(Battle):
                     target,
                     damage_variance=100,
                     minimum_damage=Decimal("10"),
+                    apply_armor=False,
                 )
                 ignore_reflection_this_hit = True
 
@@ -170,6 +171,14 @@ class TeamBattle(Battle):
                         current_combatant, damage
                     )
 
+                damage, blocked_damage, fireball_barrier_messages = (
+                    self.resolve_damage_after_pet_barriers(
+                        target,
+                        damage,
+                        minimum_damage=Decimal("10"),
+                    )
+                )
+
                 damage, guard_messages, guard_source = self.apply_pet_owner_guard(
                     current_combatant,
                     target,
@@ -177,6 +186,8 @@ class TeamBattle(Battle):
                 )
                 target.take_damage(damage)
                 message = f"{current_combatant.name} casts Fireball! {target.name} takes **{self.format_number(damage)} HP** damage."
+                if fireball_barrier_messages:
+                    message += "\n" + "\n".join(fireball_barrier_messages)
                 if fireball_spec_messages:
                     message += "\n" + "\n".join(fireball_spec_messages)
                 if overload_messages:

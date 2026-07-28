@@ -320,6 +320,14 @@ class PvEBattle(Battle):
                     self.defender,
                     damage_variance=100,
                     minimum_damage=Decimal("10"),
+                    apply_armor=False,
+                )
+                damage, blocked_damage, fireball_barrier_messages = (
+                    self.resolve_damage_after_pet_barriers(
+                        self.defender,
+                        damage,
+                        minimum_damage=Decimal("10"),
+                    )
                 )
                 ignore_reflection_this_hit = True
 
@@ -330,6 +338,8 @@ class PvEBattle(Battle):
                 )
                 self.defender.take_damage(damage)
                 message = f"{self.attacker.name} casts Fireball! {self.defender.name} takes **{self.format_number(damage)} HP** damage."
+                if fireball_barrier_messages:
+                    message += "\n" + "\n".join(fireball_barrier_messages)
                 if guard_messages:
                     message += "\n" + "\n".join(guard_messages)
                 used_fireball = True

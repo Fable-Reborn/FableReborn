@@ -145,6 +145,13 @@ class Battle(ABC):
             for combatant in getattr(team, "combatants", []):
                 setattr(combatant, "battle", self)
                 setattr(combatant, "_battle_team_index", team_index)
+
+        battles_cog = None
+        if hasattr(self.ctx, "bot") and hasattr(self.ctx.bot, "cogs"):
+            battles_cog = self.ctx.bot.cogs.get("Battles")
+        register_active_battle = getattr(battles_cog, "register_active_battle", None)
+        if callable(register_active_battle):
+            register_active_battle(self)
     
     @abstractmethod
     async def start_battle(self):
@@ -1996,17 +2003,46 @@ class Battle(ABC):
         *,
         damage_variance=100,
         minimum_damage=Decimal("10"),
+        apply_armor=True,
     ):
         damage_variance = Decimal(str(damage_variance))
         minimum_damage = Decimal(str(minimum_damage))
         raw_damage = Decimal(str(getattr(attacker, "damage", 0) or 0))
         raw_damage *= self.get_mage_fireball_damage_multiplier(attacker)
         raw_damage += Decimal(str(random.randint(0, int(damage_variance))))
-        raw_damage -= Decimal(str(getattr(target, "armor", 0) or 0))
+        if apply_armor:
+            raw_damage -= Decimal(str(getattr(target, "armor", 0) or 0))
         return max(
             raw_damage,
-            minimum_damage,
+            minimum_damage if apply_armor else Decimal("0"),
         )
+
+    def resolve_damage_after_pet_barriers(
+        self,
+        defender,
+        raw_damage,
+        *,
+        minimum_damage=Decimal("10"),
+    ):
+        """Resolve defense-based pet barriers before ordinary armor."""
+        remaining_damage = max(Decimal("0"), Decimal(str(raw_damage)))
+        minimum_damage = Decimal(str(minimum_damage))
+        barrier_messages = []
+
+        pet_ext = self._get_pet_extension()
+        if pet_ext and getattr(defender, "is_pet", False):
+            remaining_damage, barrier_messages = pet_ext.process_barriers_before_defense(
+                defender,
+                remaining_damage,
+            )
+
+        if remaining_damage <= 0:
+            return Decimal("0"), Decimal("0"), barrier_messages
+
+        armor = max(Decimal("0"), Decimal(str(getattr(defender, "armor", 0) or 0)))
+        blocked_damage = min(remaining_damage, armor)
+        final_damage = max(remaining_damage - armor, minimum_damage)
+        return final_damage, blocked_damage, barrier_messages
 
     def get_cheat_death_recovery_hp(self, combatant):
         max_hp = Decimal(str(getattr(combatant, "max_hp", 0) or 0))
@@ -2100,14 +2136,28 @@ class Battle(ABC):
             if hasattr(attacker, "ignore_reflection_this_hit"):
                 delattr(attacker, "ignore_reflection_this_hit")
 
-        # 4) Apply armor/defense bypass rules.
+        raw_damage_after_mods = Decimal(str(raw_damage))
+
+        # 4) Defense-based pet barriers take the raw normal portion first.
+        # Armor is intentionally applied only to damage that breaks through.
+        if pet_ext and getattr(defender, "is_pet", False):
+            raw_damage, barrier_messages = pet_ext.process_barriers_before_defense(
+                defender,
+                raw_damage,
+            )
+            defender_messages.extend(barrier_messages)
+
+        # 5) Apply armor/defense bypass rules to the barrier overflow.
         ignore_armor = getattr(defender, "ignore_armor_this_hit", False)
         true_damage = getattr(defender, "true_damage", False)
         bypass_defenses = getattr(defender, "bypass_defenses", False)
         ignore_all = getattr(defender, "ignore_all_defenses", False)
         partial_true_damage = Decimal(str(getattr(defender, "partial_true_damage", 0)))
 
-        if ignore_all or true_damage or ignore_armor or bypass_defenses:
+        if raw_damage <= 0:
+            final_damage = partial_true_damage
+            blocked_damage = Decimal("0")
+        elif ignore_all or true_damage or ignore_armor or bypass_defenses:
             final_damage = raw_damage
             blocked_damage = Decimal("0")
         elif partial_true_damage > 0:
@@ -2118,7 +2168,7 @@ class Battle(ABC):
             blocked_damage = min(raw_damage, defender.armor)
             final_damage = max(raw_damage - defender.armor, minimum_damage)
 
-        # 5) Clear one-hit flags in one place.
+        # 6) Clear one-hit flags in one place.
         for flag in [
             "ignore_armor_this_hit",
             "true_damage",
@@ -2129,16 +2179,18 @@ class Battle(ABC):
             if hasattr(defender, flag):
                 delattr(defender, flag)
 
-        # 6) Defender pet mitigation effects.
+        # 7) Defender pet mitigation effects.
         if pet_ext and getattr(defender, "is_pet", False):
-            final_damage, defender_messages = pet_ext.process_skill_effects_on_damage_taken(
-                defender, attacker, final_damage
-            )
+            if final_damage > 0:
+                final_damage, mitigation_messages = pet_ext.process_skill_effects_on_damage_taken(
+                    defender, attacker, final_damage
+                )
+                defender_messages.extend(mitigation_messages)
             if hasattr(defender, "lights_guidance_original_skill_effects"):
                 defender.skill_effects = getattr(defender, "lights_guidance_original_skill_effects")
                 delattr(defender, "lights_guidance_original_skill_effects")
 
-        # 7) Track damage dealt for pet lifesteal and per-turn effects.
+        # 8) Track damage dealt for pet lifesteal and per-turn effects.
         if getattr(attacker, "is_pet", False):
             setattr(attacker, "last_damage_dealt", final_damage)
         elif self.can_use_warrior_momentum(attacker):
@@ -2150,7 +2202,7 @@ class Battle(ABC):
             skill_messages=skill_messages,
             defender_messages=defender_messages,
             metadata={
-                "raw_damage_after_mods": Decimal(str(raw_damage)),
+                "raw_damage_after_mods": raw_damage_after_mods,
                 "ignore_reflection_this_hit": ignore_reflection_this_hit,
                 "partial_true_damage": partial_true_damage,
             },
@@ -2281,11 +2333,24 @@ class Battle(ABC):
             if redirected_damage <= 0:
                 continue
 
-            pet_damage, pet_messages = pet_ext.process_skill_effects_on_damage_taken(
+            barrier_overflow, pet_messages = pet_ext.process_barriers_before_defense(
                 ally,
-                attacker,
                 redirected_damage,
             )
+            if barrier_overflow > 0:
+                pet_damage = max(
+                    barrier_overflow - Decimal(str(getattr(ally, "armor", 0) or 0)),
+                    Decimal("10"),
+                )
+            else:
+                pet_damage = Decimal("0")
+            if pet_damage > 0:
+                pet_damage, mitigation_messages = pet_ext.process_skill_effects_on_damage_taken(
+                    ally,
+                    attacker,
+                    pet_damage,
+                )
+                pet_messages.extend(mitigation_messages)
             self.apply_damage(attacker, ally, pet_damage)
             messages = list(pet_messages)
             messages.append(

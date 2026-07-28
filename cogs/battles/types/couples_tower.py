@@ -115,19 +115,16 @@ class CouplesTowerBattle(TowerBattle):
     ):
         if variance_range is not None:
             min_variance, max_variance = variance_range
-            raw_damage = Decimal(str(getattr(attacker, "damage", 0) or 0))
-            raw_damage += Decimal(str(random.randint(int(min_variance), int(max_variance))))
-            raw_damage -= Decimal(str(getattr(target, "armor", 0) or 0))
-            damage = max(
-                raw_damage * self.get_mage_fireball_damage_multiplier(attacker),
-                minimum_damage,
-            )
+            damage = Decimal(str(getattr(attacker, "damage", 0) or 0))
+            damage += Decimal(str(random.randint(int(min_variance), int(max_variance))))
+            damage *= self.get_mage_fireball_damage_multiplier(attacker)
         else:
             damage = self.calculate_mage_fireball_damage(
                 attacker,
                 target,
                 damage_variance=damage_variance,
                 minimum_damage=minimum_damage,
+                apply_armor=False,
             )
 
         if self.config.get("class_buffs", True):
@@ -143,6 +140,14 @@ class CouplesTowerBattle(TowerBattle):
             )
             for spec_message in [*spec_messages, *overload_messages]:
                 self._queue_class_message(attacker, spec_message)
+
+        damage, _, barrier_messages = self.resolve_damage_after_pet_barriers(
+            target,
+            damage,
+            minimum_damage=minimum_damage,
+        )
+        for barrier_message in barrier_messages:
+            self._queue_class_message(attacker, barrier_message)
 
         return Decimal(str(damage))
 
