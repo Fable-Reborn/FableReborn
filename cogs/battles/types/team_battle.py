@@ -30,6 +30,15 @@ class TeamBattle(Battle):
         """Opening log line. Subclasses reframe this for their own mode."""
         return f"Team Battle: Team A ({team_a_members}) vs Team B ({team_b_members}) started!"
 
+    def get_targetable_combatants(self, combatant, current_team):
+        """Living enemies this combatant may attack.
+
+        The two-sided default: everyone on the other team. Subclasses with more
+        than two sides override this to pool or rotate their targets.
+        """
+        enemy_team = self.teams[1] if current_team == self.teams[0] else self.teams[0]
+        return enemy_team.get_alive_combatants()
+
     async def start_battle(self):
         """Initialize and start the battle"""
         self.started = True
@@ -118,11 +127,9 @@ class TeamBattle(Battle):
                 current_team = team
                 break
                 
-        # Get enemy team
-        enemy_team = self.teams[1] if current_team == self.teams[0] else self.teams[0]
-        
-        # Check if there are any alive enemies
-        alive_enemies = enemy_team.get_alive_combatants()
+        # Living combatants this one is allowed to hit. Two-sided by default;
+        # modes with three or more sides override get_targetable_combatants.
+        alive_enemies = self.get_targetable_combatants(current_combatant, current_team)
         if not alive_enemies:
             return False
             
@@ -309,26 +316,25 @@ class TeamBattle(Battle):
                         )
                         skeleton.is_summoned = True
 
-                        if current_combatant in self.team_a.combatants:
-                            self.register_summoned_combatant(
-                                skeleton,
-                                team=self.team_a,
-                                summoner=current_combatant,
-                            )
-                            self.team_a.combatants.append(skeleton)
-                            self.turn_order.append(skeleton)
-                            self.turn_order = self.prioritize_turn_order(self.turn_order)
-                            message += f"\n💀 Skeleton Warrior #{skeleton_serial} joins Team A!"
-                        else:
-                            self.register_summoned_combatant(
-                                skeleton,
-                                team=self.team_b,
-                                summoner=current_combatant,
-                            )
-                            self.team_b.combatants.append(skeleton)
-                            self.turn_order.append(skeleton)
-                            self.turn_order = self.prioritize_turn_order(self.turn_order)
-                            message += f"\n💀 Skeleton Warrior #{skeleton_serial} joins Team B!"
+                        # Summon joins whichever side raised it. Looking the team
+                        # up rather than branching on A/B keeps third and later
+                        # sides from having their skeletons handed to Team B.
+                        summon_team = (
+                            self.get_team_for_combatant(current_combatant)
+                            or self.team_a
+                        )
+                        self.register_summoned_combatant(
+                            skeleton,
+                            team=summon_team,
+                            summoner=current_combatant,
+                        )
+                        summon_team.combatants.append(skeleton)
+                        self.turn_order.append(skeleton)
+                        self.turn_order = self.prioritize_turn_order(self.turn_order)
+                        message += (
+                            f"\n💀 Skeleton Warrior #{skeleton_serial} "
+                            f"joins Team {summon_team.name}!"
+                        )
 
                     if hasattr(current_combatant, 'summon_skeleton_queue'):
                         delattr(current_combatant, 'summon_skeleton_queue')

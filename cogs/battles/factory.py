@@ -15,6 +15,7 @@ from .types.raid import RaidBattle
 from .types.tower import TowerBattle
 from .types.jury_tower import JuryTowerBattle
 from .types.team_battle import TeamBattle
+from .types.ffa import FreeForAllBattle, TEAM_LABELS
 from .types.city_war import CityWarBattle
 from .types.dragon import DragonBattle
 from .types.couples_tower import CouplesTowerBattle
@@ -318,6 +319,8 @@ class BattleFactory:
             return await self.create_jury_tower_battle(ctx, **settings_kwargs)
         elif battle_type == "team":
             return await self.create_team_battle(ctx, **settings_kwargs)
+        elif battle_type in ("ffa", "freeforall"):
+            return await self.create_ffa_battle(ctx, **settings_kwargs)
         elif battle_type == "citywar":
             return await self.create_city_war_battle(ctx, **settings_kwargs)
         elif battle_type == "dragon":
@@ -637,6 +640,36 @@ class BattleFactory:
         battle_kwargs.pop("team_a", None)
         battle_kwargs.pop("team_b", None)
         return TeamBattle(ctx, teams, money=money, **battle_kwargs)
+
+    async def create_ffa_battle(self, ctx, **kwargs):
+        """Create a free-for-all between three or more sides.
+
+        Accepts prebuilt `teams`, or `team_members` as a list of member lists.
+        """
+        teams = kwargs.get("teams", [])
+        money = kwargs.get("money", 0)
+
+        if not teams:
+            groups = kwargs.get("team_members") or []
+            allow_pets = kwargs.get("allow_pets")
+            teams = [
+                await self._create_player_team(
+                    ctx,
+                    TEAM_LABELS[index] if index < len(TEAM_LABELS) else str(index + 1),
+                    members,
+                    allow_pets,
+                )
+                for index, members in enumerate(groups)
+                if members
+            ]
+
+        if len(teams) < 3:
+            raise ValueError("Free-for-all requires at least three teams")
+
+        battle_kwargs = kwargs.copy()
+        for key in ("money", "teams", "team_members", "team_a", "team_b"):
+            battle_kwargs.pop(key, None)
+        return FreeForAllBattle(ctx, teams, money=money, **battle_kwargs)
 
     async def create_city_war_battle(self, ctx, **kwargs):
         """Create a city-war battle with prebuilt teams."""

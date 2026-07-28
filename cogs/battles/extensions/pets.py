@@ -1387,10 +1387,11 @@ class PetExtension:
             elif "lord of shadows" in skill_lower:
                 pet_combatant.skill_effects['lord_of_shadows'] = {
                     'proc_hp_threshold': 0.80,
-                    'proc_chance': 0.25,
-                    'initial_summons': 2,
+                    'proc_chance': 0.20,
+                    'opening_summons': 2,
+                    'threshold_summons': 2,
                     'repeat_summons': 1,
-                    'max_active_skeletons': 3,
+                    'max_active_skeletons': 5,
                     'skeleton_hp': 0.75,
                     'skeleton_damage': 0.90,
                     'skeleton_armor': 0.40,
@@ -2397,42 +2398,59 @@ class PetExtension:
             messages.append(f"{pet_combatant.name} brings Eternal Night! Darkness empowers the team!")
             pet_combatant.ultimate_ready = False
             
-        # Lord of Shadows - repeatable shadow-host proc
+        # Lord of Shadows - opening host, a wounded surge, then chance top-ups
         if 'lord_of_shadows' in effects:
+            shadow_config = effects['lord_of_shadows']
             hp_ratio = pet_combatant.hp / pet_combatant.max_hp
-            proc_threshold = Decimal(str(effects['lord_of_shadows'].get('proc_hp_threshold', 0.80)))
-            proc_chance = float(effects['lord_of_shadows'].get('proc_chance', 0.25))
+            proc_threshold = Decimal(str(shadow_config.get('proc_hp_threshold', 0.80)))
+            proc_chance = float(shadow_config.get('proc_chance', 0.20))
 
-            if hp_ratio <= proc_threshold and random.random() < proc_chance:
-                initial_proc = not getattr(
-                    pet_combatant,
-                    'lord_of_shadows_initial_proc_used',
-                    False,
+            # Three ways to raise the host, checked in order. The opening always
+            # lands on the pet's first attack, the wounded surge fires once when
+            # it first drops to the threshold, and everything after that rolls.
+            shadow_trigger = None
+            desired_summons = 0
+            if not getattr(pet_combatant, 'lord_of_shadows_opening_used', False):
+                shadow_trigger = 'opening'
+                desired_summons = int(shadow_config.get('opening_summons', 2))
+                setattr(pet_combatant, 'lord_of_shadows_opening_used', True)
+            elif (
+                not getattr(pet_combatant, 'lord_of_shadows_threshold_used', False)
+                and hp_ratio <= proc_threshold
+            ):
+                shadow_trigger = 'threshold'
+                desired_summons = int(shadow_config.get('threshold_summons', 2))
+                setattr(pet_combatant, 'lord_of_shadows_threshold_used', True)
+            elif random.random() < proc_chance:
+                shadow_trigger = 'repeat'
+                desired_summons = int(shadow_config.get('repeat_summons', 1))
+
+            if shadow_trigger:
+                # Skeletons already queued this turn have not joined the team
+                # yet, so count them too or a back-to-back trigger overshoots
+                # the cap.
+                pending_summons = len(
+                    getattr(pet_combatant, 'summon_skeleton_queue', None) or []
                 )
-                desired_summons = int(
-                    effects['lord_of_shadows'].get(
-                        'initial_summons' if initial_proc else 'repeat_summons',
-                        1,
-                    )
+                active_skeletons = (
+                    self._get_active_shadow_skeleton_count(pet_combatant)
+                    + pending_summons
                 )
-                active_skeletons = self._get_active_shadow_skeleton_count(pet_combatant)
                 max_active_skeletons = int(
-                    effects['lord_of_shadows'].get('max_active_skeletons', 3)
+                    shadow_config.get('max_active_skeletons', 5)
                 )
                 summons_to_queue = max(
                     0,
                     min(desired_summons, max_active_skeletons - active_skeletons),
                 )
-                if initial_proc:
-                    setattr(pet_combatant, 'lord_of_shadows_initial_proc_used', True)
 
                 queued_summons = self._queue_shadow_skeleton_summons(
                     pet_combatant,
                     summons_to_queue,
-                    effects['lord_of_shadows'],
+                    shadow_config,
                 )
 
-                duration = int(effects['lord_of_shadows'].get('duration', 3))
+                duration = int(shadow_config.get('duration', 3))
                 if hasattr(pet_combatant, 'team'):
                     for ally in pet_combatant.team.combatants:
                         if ally.is_alive():
@@ -2442,7 +2460,7 @@ class PetExtension:
                                 duration,
                                 damage_mult=Decimal('1')
                                 + Decimal(
-                                    str(effects['lord_of_shadows'].get('team_buff', 0.15))
+                                    str(shadow_config.get('team_buff', 0.15))
                                 ),
                                 armor_mult=Decimal('1.10'),
                                 luck_mult=Decimal('1.10'),
@@ -2457,7 +2475,7 @@ class PetExtension:
                                 damage_mult=Decimal('1')
                                 - Decimal(
                                     str(
-                                        effects['lord_of_shadows'].get(
+                                        shadow_config.get(
                                             'enemy_debuff',
                                             0.15,
                                         )
@@ -2466,12 +2484,26 @@ class PetExtension:
                                 luck_mult=Decimal('0.90'),
                             )
 
-                if queued_summons >= 2:
-                    summon_text = "Two skeleton warriors claw free from the dark at once!"
-                elif queued_summons == 1:
-                    summon_text = "A skeleton warrior rises from the shadow host!"
+                if queued_summons <= 0:
+                    summon_text = (
+                        "The shadow host answers, but no more skeletons can be "
+                        "raised right now."
+                    )
+                elif shadow_trigger == 'opening':
+                    summon_text = (
+                        "Two skeleton warriors claw free from the dark at once!"
+                    )
+                elif shadow_trigger == 'threshold':
+                    summon_text = (
+                        "Wounded, the shadow host surges - two more skeleton "
+                        "warriors tear their way out!"
+                    )
+                elif queued_summons >= 2:
+                    summon_text = (
+                        "Two skeleton warriors claw free from the dark at once!"
+                    )
                 else:
-                    summon_text = "The shadow host answers, but no more skeletons can be raised right now."
+                    summon_text = "A skeleton warrior rises from the shadow host!"
 
                 messages.append(
                     f"{pet_combatant.name} invokes Lord of Shadows! {summon_text}"

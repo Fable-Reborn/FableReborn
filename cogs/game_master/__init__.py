@@ -1173,6 +1173,96 @@ class GameMaster(commands.Cog):
             )
 
     @is_gm()
+    @commands.command(hidden=True, brief=_("Grant daily streak restore points"))
+    @locale_doc
+    async def gmrestorepoints(
+            self,
+            ctx,
+            other: UserWithCharacter,
+            amount: int = 1,
+            *,
+            reason: str = None,
+    ):
+        _(
+            """`<other>` - A discord User with a character
+            `[amount]` - How many restore points to grant, defaults to 1. Negative values revoke.
+            `[reason]` - The reason this action was done, defaults to the command message link
+
+            Grants a user daily streak restore points, spent by the `restore` command.
+
+            If the user has never run `daily` their streak row is created first, seeded
+            with the same 3 points a first daily claim would have given them, and dated
+            in the past so this does not consume their claim for today. The stored total
+            is never allowed below zero.
+
+            Only Game Masters can use this command."""
+        )
+        if amount == 0:
+            return await self._safe_ctx_send(ctx, _("Amount cannot be zero."))
+
+        try:
+            async with self.bot.pool.acquire() as conn:
+                # daily creates this table lazily, so it may not exist yet
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS streaks (
+                        user_id BIGINT PRIMARY KEY,
+                        current_streak INTEGER DEFAULT 0,
+                        highest_days INTEGER DEFAULT 0,
+                        restore_points INTEGER DEFAULT 3,
+                        last_daily TIMESTAMP DEFAULT NOW()
+                    );
+                    """
+                )
+                new_value = await conn.fetchval(
+                    """
+                    INSERT INTO streaks (
+                        user_id,
+                        current_streak,
+                        highest_days,
+                        restore_points,
+                        last_daily
+                    )
+                    VALUES (
+                        $1,
+                        0,
+                        0,
+                        GREATEST(3 + $2, 0),
+                        (NOW() AT TIME ZONE 'UTC') - INTERVAL '7 days'
+                    )
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        restore_points = GREATEST(streaks.restore_points + $2, 0)
+                    RETURNING restore_points;
+                    """,
+                    other.id,
+                    amount,
+                )
+        except Exception as e:
+            return await self._safe_ctx_send(ctx, e)
+
+        await self._safe_ctx_send(
+            ctx,
+            _("**{other}** now has **{points}** streak restore point(s).").format(
+                other=other, points=new_value
+            ),
+        )
+
+        with handle_message_parameters(
+                content="**{gm}** granted **{amount}** streak restore point(s) to **{other}** "
+                        "(now **{points}**).\n\nReason: *{reason}*".format(
+                    gm=ctx.author,
+                    amount=amount,
+                    other=other,
+                    points=new_value,
+                    reason=reason or f"<{ctx.message.jump_url}>",
+                )
+        ) as params:
+            await self.bot.http.send_message(
+                self.bot.config.game.gm_log_channel,
+                params=params,
+            )
+
+    @is_gm()
     @commands.command(hidden=True, brief=_("Create money"))
     @locale_doc
     async def gmgive(
