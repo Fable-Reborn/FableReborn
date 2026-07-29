@@ -1697,8 +1697,9 @@ class Battles(commands.Cog):
             "<:f_light:1170191258795376771>": "Light",
             "<:f_dark:1170191180164771920>": "Dark",
             "<:f_wind:1170191149802213526>": "Wind",
-            "<:f_nature:1170191288361033806>": "Nature",
-            "<:f_fire:1170192046632468564>": "Fire"
+            "<:f_nature:1532063420315074742>": "Nature",
+            "<:f_fire:1170192046632468564>": "Fire",
+            "<:f_earth:1170191288361033806>": "Earth",
         }
 
         # Load data files
