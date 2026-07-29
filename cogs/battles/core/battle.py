@@ -2350,27 +2350,60 @@ class Battle(ABC):
         if team is None or pet_ext is None:
             return damage, [], None
 
+        messages = []
+        fortress_reduction = Decimal(str(getattr(target, "living_fortress_reduction", 0) or 0))
+        if fortress_reduction > 0:
+            prevented = damage * fortress_reduction
+            damage -= prevented
+            messages.append(
+                f"🏰 Living Fortress prevents **{self.format_number(prevented)} HP** damage to **{target.name}**!"
+            )
+
+        # Avoid consuming a dual-element attacker's next element while resolving defense.
+        attack_element = getattr(attacker, "attack_element", getattr(attacker, "element", "Unknown"))
+        if attack_element == "Electric":
+            for ally in getattr(team, "combatants", []):
+                if not getattr(ally, "is_pet", False) or not ally.is_alive():
+                    continue
+                grounding = getattr(ally, "skill_effects", {}).get("grounding_field")
+                if not grounding:
+                    continue
+                reduction = Decimal(str(grounding.get("electric_reduction", 0.25)))
+                prevented = damage * reduction
+                damage -= prevented
+                messages.append(
+                    f"🌍 **{ally.name}** grounds the attack, preventing "
+                    f"**{self.format_number(prevented)} HP** Electric damage!"
+                )
+                if hasattr(target, "paralyzed"):
+                    delattr(target, "paralyzed")
+                break
+
         for ally in getattr(team, "combatants", []):
             if ally is target or not getattr(ally, "is_pet", False) or not ally.is_alive():
                 continue
 
             self.prepare_pet_context(ally)
             skill_effects = getattr(ally, "skill_effects", {})
-            embrace = skill_effects.get("oceans_embrace")
-            if not embrace:
+            guard = skill_effects.get("guardians_weight") or skill_effects.get("oceans_embrace")
+            if not guard:
                 continue
 
             owner = pet_ext.find_owner_combatant(ally)
             if owner is not target:
                 continue
 
-            redirected_damage = damage * Decimal(str(embrace.get("damage_share", 0)))
+            redirected_damage = damage * Decimal(str(guard.get("damage_share", 0)))
             if redirected_damage <= 0:
                 continue
 
+            pet_intercept = redirected_damage * (
+                Decimal("1") - Decimal(str(guard.get("redirected_reduction", 0)))
+            )
+
             barrier_overflow, pet_messages = pet_ext.process_barriers_before_defense(
                 ally,
-                redirected_damage,
+                pet_intercept,
             )
             if barrier_overflow > 0:
                 pet_damage = max(
@@ -2387,14 +2420,21 @@ class Battle(ABC):
                 )
                 pet_messages.extend(mitigation_messages)
             self.apply_damage(attacker, ally, pet_damage)
-            messages = list(pet_messages)
-            messages.append(
-                f"💧 **{ally.name}** intercepts **{self.format_number(pet_damage)} HP** "
-                f"for **{target.name}** with Ocean's Embrace!"
-            )
+            messages.extend(pet_messages)
+            if "guardians_weight" in skill_effects:
+                messages.append(
+                    f"🌍 **{ally.name}** redirects **{self.format_number(redirected_damage)} HP** "
+                    f"from **{target.name}** with Guardian's Weight and takes "
+                    f"**{self.format_number(pet_damage)} HP** after mitigation!"
+                )
+            else:
+                messages.append(
+                    f"💧 **{ally.name}** intercepts **{self.format_number(pet_damage)} HP** "
+                    f"for **{target.name}** with Ocean's Embrace!"
+                )
             return damage - redirected_damage, messages, ally
 
-        return damage, [], None
+        return damage, messages, None
 
     def apply_bonus_lifesteal(self, attacker, damage):
         bonus_lifesteal = Decimal(str(getattr(attacker, "bonus_lifesteal", 0) or 0))
@@ -2435,7 +2475,17 @@ class Battle(ABC):
 
         best_element = current_element
         best_score = score(current_element)
-        candidates = ("Light", "Dark", "Corrupted", "Nature", "Electric", "Water", "Fire", "Wind")
+        candidates = (
+            "Light",
+            "Dark",
+            "Corrupted",
+            "Fire",
+            "Nature",
+            "Water",
+            "Earth",
+            "Electric",
+            "Wind",
+        )
         for candidate in candidates:
             candidate_score = score(candidate)
             if candidate_score > best_score:

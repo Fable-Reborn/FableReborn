@@ -7,6 +7,8 @@ import math
 from decimal import Decimal, ROUND_HALF_UP
 from collections import deque
 
+from utils.elements import calculate_element_modifier
+
 # Define ranks and their corresponding XP thresholds and abilities
 RANKS = {
     "Resistance": [
@@ -1038,19 +1040,6 @@ class PlagueOfTheUndying(commands.Cog):
         # Define the elements and their strengths
         elements = ['Fire', 'Water', 'Earth', 'Wind', 'Light', 'Dark', 'Electric', 'Nature', 'Corrupted']
 
-        # Define element strengths for damage modifiers
-        element_strengths = {
-            "Light": "Corrupted",
-            "Dark": "Light",
-            "Corrupted": "Dark",
-            "Nature": "Electric",
-            "Electric": "Water",
-            "Water": "Fire",
-            "Fire": "Nature",
-            "Wind": "Electric",
-            "Earth": "Wind"  # Added Earth to have a strength
-        }
-
         # Define element to emoji mapping
         element_to_emoji = {
             "Light": "🌟",
@@ -1353,18 +1342,17 @@ class PlagueOfTheUndying(commands.Cog):
                 "element": monster["element"]
             }
 
-            # Function to calculate damage modifier based on elements
-            def calculate_damage_modifier(attacker_element, defender_element):
-                if attacker_element in element_strengths and element_strengths[attacker_element] == defender_element:
-                    return Decimal(str(round(random.uniform(0.1, 0.3), 3)))  # Increase damage by 10-30%
-                elif defender_element in element_strengths and element_strengths[defender_element] == attacker_element:
-                    return Decimal(str(round(random.uniform(-0.3, -0.1), 3)))  # Decrease damage by 10-30%
-                return Decimal('0.000')
-
             # Calculate damage modifiers
             damage_modifier_player = Decimal('0.000')
             if player_stats["element"]:
-                damage_modifier_player = calculate_damage_modifier(player_stats["element"], monster_stats["element"])
+                damage_modifier_player = Decimal(
+                    str(
+                        calculate_element_modifier(
+                            player_stats["element"],
+                            monster_stats["element"],
+                        )
+                    )
+                )
 
             # Function to create HP bar
             def create_hp_bar(current_hp, max_hp, length=20):

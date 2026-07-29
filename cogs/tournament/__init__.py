@@ -43,6 +43,7 @@ from cogs.help import chunks
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils import random
 from utils.checks import has_char, is_gm
+from utils.elements import calculate_element_modifier
 from utils.i18n import _, locale_doc
 from utils.joins import JoinView
 
@@ -1938,14 +1939,11 @@ class Tournament(commands.Cog):
         battle_message = await ctx.send(embed=embed)
         await asyncio.sleep(2)
 
-        # (Optional) Element modifier system.
-        element_strengths = {"Fire": "Nature", "Nature": "Water", "Water": "Fire"}
-
         def calc_modifier(attacker, defender):
-            if attacker["element"] in element_strengths and element_strengths[attacker["element"]] == defender[
-                "element"]:
-                return 0.2  # 20% bonus damage.
-            return 0.0
+            return calculate_element_modifier(
+                attacker["element"],
+                defender["element"],
+            )
 
         round_no = 1
         # Randomly determine who attacks first.

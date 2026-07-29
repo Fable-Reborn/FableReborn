@@ -1,5 +1,12 @@
 # battles/extensions/elements.py
 
+from utils.elements import (
+    ELEMENT_STRENGTHS,
+    SUPER_EFFECTIVE_MODIFIER as SHARED_SUPER_EFFECTIVE_MODIFIER,
+    WEAK_MODIFIER as SHARED_WEAK_MODIFIER,
+    normalize_element,
+)
+
 # Debug storage
 class DebugInfo:
     logs = []
@@ -12,19 +19,15 @@ class DebugInfo:
 
 class ElementExtension:
     """Extension for element-based effects"""
+
+    SUPER_EFFECTIVE_MODIFIER = SHARED_SUPER_EFFECTIVE_MODIFIER
+    WEAK_MODIFIER = SHARED_WEAK_MODIFIER
     
-    # Element strength relationships
-    element_strengths = {
-        "Light": "Corrupted",
-        "Dark": "Light",
-        "Corrupted": "Dark",
-        "Nature": "Electric",
-        "Electric": "Water",
-        "Water": "Fire",
-        "Fire": "Nature",
-        "Wind": "Electric",
-        "Unknown": None
-    }
+    # Element strength relationships form three balanced cycles:
+    # Light > Corrupted > Dark > Light
+    # Fire > Nature > Water > Fire
+    # Earth > Electric > Wind > Earth
+    element_strengths = dict(ELEMENT_STRENGTHS)
     
     # Element to emoji mapping
     element_to_emoji = {
@@ -42,9 +45,7 @@ class ElementExtension:
 
     @staticmethod
     def _normalize_element(element):
-        if not element:
-            return "Unknown"
-        return str(element).strip().capitalize()
+        return normalize_element(element)
 
     @staticmethod
     def _record_value(record, key, default=None):
@@ -170,8 +171,6 @@ class ElementExtension:
         - calculate_damage_modifier(attacker_element, defender_element)
         - calculate_damage_modifier(ctx, attacker_element, defender_element)
         """
-        import random
-        
         # Handle both calling conventions
         if defender_element is None:
             if attacker_element is None:
@@ -184,9 +183,9 @@ class ElementExtension:
         # Test log to verify this method is being called
         self._log_debug(f"calculate_damage_modifier called with: {attacker_element} vs {defender_element}")
         
-        # Ensure elements are properly capitalized to match the dictionary keys
-        attacker_element = str(attacker_element).capitalize() if attacker_element else "Unknown"
-        defender_element = str(defender_element).capitalize() if defender_element else "Unknown"
+        # Normalize elements consistently with equipment and combatant resolution.
+        attacker_element = self._normalize_element(attacker_element)
+        defender_element = self._normalize_element(defender_element)
         
         # Debug logging
         self._log_debug(f"Element check - Attacker: {attacker_element} ({type(attacker_element)}), "
@@ -198,11 +197,11 @@ class ElementExtension:
             self._log_debug(f"Attacker's strength: {self.element_strengths[attacker_element]}")
         
         if attacker_element in self.element_strengths and self.element_strengths[attacker_element] == defender_element:
-            mod = round(random.uniform(0.1, 0.3), 2)
+            mod = self.SUPER_EFFECTIVE_MODIFIER
             self._log_debug(f"Element bonus: +{mod*100}%")
             return mod
         elif defender_element in self.element_strengths and self.element_strengths[defender_element] == attacker_element:
-            mod = round(random.uniform(-0.3, -0.1), 2)
+            mod = self.WEAK_MODIFIER
             self._log_debug(f"Element penalty: {mod*100}%")
             return mod
         self._log_debug("No element modifier")

@@ -17,6 +17,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import asyncio
+import copy
 import datetime
 import json
 
@@ -368,7 +369,7 @@ class Miscellaneous(commands.Cog):
                     continue
 
             # Add command to task list and set cooldown
-            tasks.append(ctx.invoke(command))
+            tasks.append(self._invoke_all_command(ctx, command))
             await ctx.bot.redis.set(
                 f"cd:{ctx.author.id}:{command.qualified_name}",
                 command.qualified_name,
@@ -391,10 +392,14 @@ class Miscellaneous(commands.Cog):
                     status_report=status_report
                 )
             )
-        try:
-            await self.bot.reset_cooldown(ctx)
-        except Exception:
-            pass
+
+    @staticmethod
+    async def _invoke_all_command(ctx, command):
+        """Invoke an ``all`` child without leaking the parent command context."""
+        command_ctx = copy.copy(ctx)
+        command_ctx.command = command
+        command_ctx.invoked_with = command.name
+        return await command_ctx.invoke(command)
 
     def format_time(self, seconds):
         """Convert seconds to HH:MM:SS format."""

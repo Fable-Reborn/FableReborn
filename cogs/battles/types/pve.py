@@ -31,6 +31,7 @@ class PvEBattle(Battle):
         "Electric",
         "Water",
         "Fire",
+        "Earth",
         "Wind",
     )
     

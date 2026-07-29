@@ -36,6 +36,7 @@ from classes.bot import Bot
 from classes.classes import ALL_CLASSES_TYPES
 from classes.context import Context
 from utils.checks import has_open_help_request, is_supporter
+from utils.elements import SUPER_EFFECTIVE_MODIFIER, WEAK_MODIFIER
 from utils.i18n import _, locale_doc
 
 
@@ -1915,13 +1916,14 @@ class Help(commands.Cog):
         matchup_lines = "\n".join(
             [
                 "• **Light** > **Corrupted**",
-                "• **Dark** > **Light**",
                 "• **Corrupted** > **Dark**",
-                "• **Nature** > **Electric**",
-                "• **Electric** > **Water**",
-                "• **Water** > **Fire**",
+                "• **Dark** > **Light**",
                 "• **Fire** > **Nature**",
-                "• **Wind** > **Electric**",
+                "• **Nature** > **Water**",
+                "• **Water** > **Fire**",
+                "• **Earth** > **Electric**",
+                "• **Electric** > **Wind**",
+                "• **Wind** > **Earth**",
             ]
         )
         pet_metrics = self._get_pet_guide_metrics()
@@ -2160,8 +2162,8 @@ class Help(commands.Cog):
                             {
                                 "name": "Modifier Behavior",
                                 "value": (
-                                    "Advantage generally adds about +10% to +30% damage.\n"
-                                    "Disadvantage generally applies about -10% to -30%."
+                                    f"Advantage adds a fixed +{SUPER_EFFECTIVE_MODIFIER * 100:.0f}% damage.\n"
+                                    f"Disadvantage applies a fixed {WEAK_MODIFIER * 100:.0f}% damage penalty."
                                 ),
                                 "inline": False,
                             },

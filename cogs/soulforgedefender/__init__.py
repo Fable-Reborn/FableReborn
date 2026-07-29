@@ -9,6 +9,11 @@ from collections import deque
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 
 from utils.checks import is_gm
+from utils.elements import (
+    SUPER_EFFECTIVE_MODIFIER,
+    WEAK_MODIFIER,
+    is_element_strong_against,
+)
 
 class SoulforgeDefender(commands.Cog):
     def __init__(self, bot):
@@ -1188,9 +1193,9 @@ class SoulforgeDefender(commands.Cog):
         # Element-based modifiers
         if attacker.get("element") and defender.get("element"):
             if self.is_element_strong_against(attacker["element"], defender["element"]):
-                damage_after_defense *= 1.3  # 30% bonus damage
+                damage_after_defense *= 1 + SUPER_EFFECTIVE_MODIFIER
             elif self.is_element_strong_against(defender["element"], attacker["element"]):
-                damage_after_defense *= 0.7  # 30% damage reduction
+                damage_after_defense *= 1 + WEAK_MODIFIER
         
         # Additional small random factor for variety (±10%)
         damage_after_defense *= random.uniform(0.9, 1.1)
@@ -1204,18 +1209,7 @@ class SoulforgeDefender(commands.Cog):
     
     def is_element_strong_against(self, attacker_element, defender_element):
         """Check if attacker's element is strong against defender's element"""
-        element_strengths = {
-            "Light": "Corrupted",
-            "Dark": "Light",
-            "Corrupted": "Dark",
-            "Nature": "Electric",
-            "Electric": "Water",
-            "Water": "Fire",
-            "Fire": "Nature",
-            "Wind": "Electric"
-        }
-        
-        return element_strengths.get(attacker_element) == defender_element
+        return is_element_strong_against(attacker_element, defender_element)
     
     def create_hp_bar(self, current_hp, max_hp, length=20):
         """Create a visual bar representation"""

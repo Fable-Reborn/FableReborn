@@ -538,6 +538,7 @@ class PremiumShop(commands.Cog):
         "Electric",
         "Nature",
         "Wind",
+        "Earth",
     )
 
     def __init__(self, bot):
@@ -809,6 +810,7 @@ class PremiumShop(commands.Cog):
             "lightning": "Electric",
             "nature": "Nature",
             "wind": "Wind",
+            "earth": "Earth",
         }
         candidate = aliases.get(normalized)
         if not candidate:

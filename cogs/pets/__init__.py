@@ -53,6 +53,7 @@ PET_ELEMENT_EMOJIS = {
     "Electric": "⚡",
     "Nature": "🌿",
     "Wind": "💨",
+    "Earth": "🌍",
     "Light": "🌟",
     "Dark": "🌑",
     "Corrupted": "🌀",
@@ -2489,6 +2490,29 @@ class Pets(commands.Cog):
                     5: {"name": "Symbiotic Bond", "description": "Pet and owner share 50% of healing and damage taken", "cost": 3},
                     7: {"name": "Natural Balance", "description": "Pet can transfer buffs/debuffs between allies and enemies", "cost": 4},
                     10: {"name": "World Tree's Gift", "description": "ULTIMATE (15-25% HP): Seize the battlefield for 3 turns, grant 20% team shields, empower allies, and suppress enemy offense", "cost": 5}
+                }
+            },
+            "Earth": {
+                "Tectonic": {
+                    1: {"name": "Stonebreaker", "description": "Attacks deal bonus damage equal to 20% of the pet's defense", "cost": 1},
+                    3: {"name": "Fault Line", "description": "20% chance for attacks to reduce the target's armor by 25% for 2 turns", "cost": 2},
+                    5: {"name": "Seismic Wave", "description": "Attacks deal 50% splash damage to every other enemy", "cost": 3},
+                    7: {"name": "Aftershock", "description": "25% chance to strike again for 75% damage and stun the target for 1 turn", "cost": 4},
+                    10: {"name": "Worldbreaker", "description": "ULTIMATE (15-25% HP): 2.5x main-target damage, 60% splash, destroys enemy shields, and reduces enemy armor by 30% for 3 turns", "cost": 5}
+                },
+                "Bastion": {
+                    1: {"name": "Stone Skin", "description": "Pet takes 12% less damage from all attacks", "cost": 1},
+                    3: {"name": "Earthen Bulwark", "description": "Starts battle with a barrier equal to 250% of the pet's defense", "cost": 2},
+                    5: {"name": "Guardian's Weight", "description": "Redirects 35% of damage intended for the owner; redirected damage is reduced by 25%", "cost": 3},
+                    7: {"name": "Unyielding Bedrock", "description": "Once per battle, survives a lethal hit at 1 HP and gains a shield equal to 40% max HP", "cost": 4},
+                    10: {"name": "Living Fortress", "description": "ULTIMATE (15-25% HP): Allies gain 25% max-HP shields and 30% damage reduction for 3 turns; pet reflects 40% damage", "cost": 5}
+                },
+                "Geomancy": {
+                    1: {"name": "Earth Affinity", "description": "+20% damage against Electric and Wind element enemies", "cost": 1},
+                    3: {"name": "Grounding Field", "description": "Team takes 25% less Electric damage and cannot be paralyzed", "cost": 2},
+                    5: {"name": "Crystal Resonance", "description": "Each turn, shields the least-protected ally for 75% of pet defense, capped at 15% of that ally's max HP", "cost": 3},
+                    7: {"name": "Gravity Well", "description": "On the first attack and every fourth attack after it, delays all enemies and reduces their damage by 15% for 2 turns", "cost": 4},
+                    10: {"name": "Heart of the World", "description": "ULTIMATE (15-25% HP): Cleanses control effects; allies gain +25% armor, +20% damage, and regenerate 15% max-HP shields for 3 turns", "cost": 5}
                 }
             },
             "Wind": {
@@ -10741,9 +10765,10 @@ class Pets(commands.Cog):
             embed.add_field(
                 name=_("🌈 Element Skill Branches"),
                 value=_(
-                    "Each element has 3 unique skill branches (~120 total skills):\n"
+                    "Each element has 3 unique skill branches (135 total skills):\n"
                     "🔥 **Fire:** Inferno/Ember/Blaze • 💧 **Water:** Tidal/Healing/Flow\n"
                     "⚡ **Electric:** Lightning/Energy/Spark • 🌿 **Nature:** Growth/Life/Harmony\n"
+                    "🌍 **Earth:** Tectonic/Bastion/Geomancy\n"
                     "💨 **Wind:** Storm/Freedom/Breeze • 🌟 **Light:** Radiance/Protection/Grace\n"
                     "🌑 **Dark:** Shadow/Corruption/Night • 🌀 **Corrupted:** Chaos/Corruption/Void"
                 ),

@@ -475,6 +475,8 @@ class PetExtension:
         setattr(combatant, barrier_attr, remaining_barrier)
 
         if (
+            effect.get('recharge_enabled', True)
+            and
             remaining_barrier <= 0
             and (
                 not effect.get('recharge_once', True)
@@ -521,6 +523,13 @@ class PetExtension:
                 'energy_barrier_recharge',
                 'energy_barrier_recharge_used',
                 'Energy Shield',
+            ),
+            (
+                'earthen_bulwark',
+                'earth_barrier',
+                'earth_barrier_recharge',
+                'earth_barrier_recharge_used',
+                'Earthen Bulwark',
             ),
         )
         for effect_key, barrier_attr, recharge_attr, used_attr, label in barrier_specs:
@@ -594,6 +603,14 @@ class PetExtension:
             ):
                 if hasattr(pet_combatant, attr_name):
                     delattr(pet_combatant, attr_name)
+        if 'earthen_bulwark' in effects:
+            for attr_name in (
+                'earth_barrier',
+                'earth_barrier_recharge',
+                'earth_barrier_recharge_used',
+            ):
+                if hasattr(pet_combatant, attr_name):
+                    delattr(pet_combatant, attr_name)
         if 'growth_spurt' in effects:
             self._clear_timed_multiplier(pet_combatant, 'growth_spurt')
         if 'phoenix_rebirth' in effects:
@@ -640,6 +657,22 @@ class PetExtension:
                 delattr(owner_combatant, 'water_immortality')
 
         for ally in getattr(getattr(pet_combatant, 'team', None), 'combatants', []):
+            if 'grounding_field' in effects:
+                for attr_name in ('grounding_field_active', 'grounding_field_reduction'):
+                    if hasattr(ally, attr_name):
+                        delattr(ally, attr_name)
+            if 'living_fortress' in effects:
+                self._clear_timed_multiplier(
+                    ally,
+                    'living_fortress',
+                    extra_attrs=['living_fortress_reduction', 'living_fortress_reflect'],
+                )
+            if 'heart_of_the_world' in effects:
+                self._clear_timed_multiplier(
+                    ally,
+                    'heart_of_the_world',
+                    extra_attrs=['heart_of_world_shield_regen'],
+                )
             if 'inferno_mastery' in effects:
                 self._clear_timed_multiplier(ally, 'inferno_mastery_aura')
             if 'sun_gods_blessing' in effects:
@@ -718,6 +751,16 @@ class PetExtension:
                         delattr(ally, attr_name)
 
         for enemy in getattr(getattr(pet_combatant, 'enemy_team', None), 'combatants', []):
+            if 'fault_line' in effects:
+                self._clear_timed_multiplier(enemy, 'fault_line')
+            if 'gravity_well' in effects:
+                self._clear_timed_multiplier(
+                    enemy,
+                    'gravity_well',
+                    extra_attrs=['gravity_well_delay', 'zephyr_slow'],
+                )
+            if 'worldbreaker' in effects:
+                self._clear_timed_multiplier(enemy, 'worldbreaker')
             if 'decay_touch' in effects:
                 self._clear_timed_multiplier(enemy, 'decay_touch')
             if 'world_trees_gift' in effects:
@@ -1075,7 +1118,90 @@ class PetExtension:
                     'debuff_immunity': True,
                     'type': 'ultimate',
                 }
-                
+
+            # 🌍 EARTH SKILLS
+            elif "stonebreaker" in skill_lower:
+                pet_combatant.skill_effects['stonebreaker'] = {
+                    'defense_damage_percent': 0.20, 'type': 'defense_scaling_attack'
+                }
+            elif "fault line" in skill_lower:
+                pet_combatant.skill_effects['fault_line'] = {
+                    'chance': 20, 'armor_reduction': 0.25, 'duration': 2, 'type': 'defense_debuff'
+                }
+            elif "seismic wave" in skill_lower:
+                pet_combatant.skill_effects['seismic_wave'] = {
+                    'splash_percent': 0.50, 'type': 'aoe_attack'
+                }
+            elif "aftershock" in skill_lower:
+                pet_combatant.skill_effects['aftershock'] = {
+                    'chance': 25, 'second_strike_percent': 0.75, 'stun_duration': 1, 'type': 'follow_up_attack'
+                }
+            elif "worldbreaker" in skill_lower:
+                pet_combatant.skill_effects['worldbreaker'] = {
+                    'damage_multiplier': 2.5,
+                    'splash_percent': 0.60,
+                    'armor_reduction': 0.30,
+                    'duration': 3,
+                    'destroy_shields': True,
+                    'type': 'ultimate',
+                }
+            elif "stone skin" in skill_lower:
+                pet_combatant.skill_effects['stone_skin'] = {
+                    'damage_reduction': 0.12, 'type': 'damage_reduction'
+                }
+            elif "earthen bulwark" in skill_lower:
+                pet_combatant.skill_effects['earthen_bulwark'] = {
+                    'shield_multiplier': 2.5, 'recharge_enabled': False, 'type': 'shield'
+                }
+                for attr_name in ('earth_barrier_recharge', 'earth_barrier_recharge_used'):
+                    if hasattr(pet_combatant, attr_name):
+                        delattr(pet_combatant, attr_name)
+                self._restore_barrier(
+                    pet_combatant,
+                    'earth_barrier',
+                    pet_combatant.skill_effects['earthen_bulwark']['shield_multiplier'],
+                )
+            elif "guardian's weight" in skill_lower:
+                pet_combatant.skill_effects['guardians_weight'] = {
+                    'damage_share': 0.35, 'redirected_reduction': 0.25, 'type': 'owner_guard'
+                }
+            elif "unyielding bedrock" in skill_lower:
+                pet_combatant.skill_effects['unyielding_bedrock'] = {
+                    'shield_percent': 0.40, 'uses': 1, 'type': 'cheat_death'
+                }
+            elif "living fortress" in skill_lower:
+                pet_combatant.skill_effects['living_fortress'] = {
+                    'shield_percent': 0.25,
+                    'damage_reduction': 0.30,
+                    'reflect_percent': 0.40,
+                    'duration': 3,
+                    'type': 'ultimate',
+                }
+            elif "earth affinity" in skill_lower:
+                pet_combatant.skill_effects['earth_affinity'] = {
+                    'elements': ['Electric', 'Wind'], 'damage_bonus': 0.20, 'type': 'elemental_bonus'
+                }
+            elif "grounding field" in skill_lower:
+                pet_combatant.skill_effects['grounding_field'] = {
+                    'electric_reduction': 0.25, 'paralysis_immunity': True, 'type': 'team_resistance'
+                }
+            elif "crystal resonance" in skill_lower:
+                pet_combatant.skill_effects['crystal_resonance'] = {
+                    'defense_shield_percent': 0.75, 'max_hp_cap': 0.15, 'type': 'ally_shield'
+                }
+            elif "gravity well" in skill_lower:
+                pet_combatant.skill_effects['gravity_well'] = {
+                    'interval': 4, 'damage_reduction': 0.15, 'duration': 2, 'type': 'initiative_control'
+                }
+            elif "heart of the world" in skill_lower:
+                pet_combatant.skill_effects['heart_of_the_world'] = {
+                    'armor_bonus': 0.25,
+                    'damage_bonus': 0.20,
+                    'shield_regen_percent': 0.15,
+                    'duration': 3,
+                    'type': 'ultimate',
+                }
+
             # 💨 WIND SKILLS
             elif "wind slash" in skill_lower:
                 pet_combatant.skill_effects['wind_slash'] = {
@@ -1153,7 +1279,7 @@ class PetExtension:
                     'duration': 4,
                     'type': 'ultimate',
                 }
-                
+
             # 🌟 LIGHT SKILLS
             elif "light beam" in skill_lower:
                 pet_combatant.skill_effects['light_beam'] = {
@@ -1215,7 +1341,7 @@ class PetExtension:
                 pet_combatant.skill_effects['celestial_blessing'] = {
                     'team_buff': 0.25, 'physical_immunity': 2, 'type': 'ultimate'
                 }
-                
+
             # 🌑 DARK SKILLS
             elif "shadow strike" in skill_lower:
                 pet_combatant.skill_effects['shadow_strike'] = {
@@ -1900,7 +2026,123 @@ class PetExtension:
                                 
             messages.append(f"{pet_combatant.name} grants Immortal Growth! The team becomes one with nature!")
             pet_combatant.ultimate_ready = False
-            
+
+        # 🌍 EARTH SKILLS
+        if 'stonebreaker' in effects:
+            defense_bonus = self._to_decimal(getattr(pet_combatant, 'armor', 0)) * Decimal(
+                str(effects['stonebreaker']['defense_damage_percent'])
+            )
+            modified_damage += defense_bonus
+            messages.append(
+                f"{pet_combatant.name}'s Stonebreaker adds **{defense_bonus:.2f} damage** from its defense!"
+            )
+
+        if (
+            'fault_line' in effects
+            and random.randint(1, 100) <= int(effects['fault_line']['chance'])
+        ):
+            armor_reduction = Decimal(str(effects['fault_line']['armor_reduction']))
+            self._apply_timed_multiplier(
+                target,
+                'fault_line',
+                int(effects['fault_line']['duration']),
+                armor_mult=Decimal('1') - armor_reduction,
+            )
+            messages.append(
+                f"{pet_combatant.name} opens a Fault Line beneath {target.name}! "
+                f"(-{armor_reduction * Decimal('100'):.0f}% armor)"
+            )
+
+        if 'seismic_wave' in effects and hasattr(target, 'team'):
+            splash_damage = modified_damage * Decimal(str(effects['seismic_wave']['splash_percent']))
+            splash_targets = [
+                enemy for enemy in target.team.combatants
+                if enemy is not target and enemy.is_alive()
+            ]
+            for enemy in splash_targets:
+                self._deal_damage(pet_combatant, enemy, splash_damage)
+            if splash_targets:
+                messages.append(
+                    f"{pet_combatant.name}'s Seismic Wave hits {len(splash_targets)} other enemies "
+                    f"for **{splash_damage:.2f} damage** each!"
+                )
+
+        if (
+            'aftershock' in effects
+            and random.randint(1, 100) <= int(effects['aftershock']['chance'])
+        ):
+            aftershock_damage = modified_damage * Decimal(str(effects['aftershock']['second_strike_percent']))
+            self._deal_damage(pet_combatant, target, aftershock_damage)
+            stun_duration = int(effects['aftershock']['stun_duration'])
+            setattr(target, 'stunned', max(int(getattr(target, 'stunned', 0) or 0), stun_duration))
+            messages.append(
+                f"{pet_combatant.name}'s Aftershock strikes again for **{aftershock_damage:.2f} damage** "
+                f"and stuns {target.name}!"
+            )
+
+        if 'gravity_well' in effects:
+            attack_count = int(getattr(pet_combatant, 'gravity_well_attack_count', 0) or 0) + 1
+            setattr(pet_combatant, 'gravity_well_attack_count', attack_count)
+            interval = max(1, int(effects['gravity_well']['interval']))
+            if attack_count == 1 or (attack_count - 1) % interval == 0:
+                enemies = list(getattr(getattr(target, 'team', None), 'combatants', [target]))
+                affected = 0
+                for enemy in enemies:
+                    if not enemy.is_alive():
+                        continue
+                    self._apply_timed_multiplier(
+                        enemy,
+                        'gravity_well',
+                        int(effects['gravity_well']['duration']),
+                        damage_mult=Decimal('1') - Decimal(str(effects['gravity_well']['damage_reduction'])),
+                        extra_attrs={'gravity_well_delay': True, 'zephyr_slow': 4},
+                    )
+                    affected += 1
+                if affected:
+                    messages.append(
+                        f"{pet_combatant.name}'s Gravity Well drags down {affected} enemies, "
+                        "delaying them and reducing their damage!"
+                    )
+
+        # Earth Affinity is applied once by the shared elemental-affinity pass below.
+        if (
+            'earth_affinity' in effects
+            and hasattr(target, 'element')
+            and target.element in effects['earth_affinity']['elements']
+        ):
+            messages.append(
+                f"{pet_combatant.name}'s Earth Affinity crushes {target.element}! (+20% damage)"
+            )
+
+        if (
+            'worldbreaker' in effects
+            and getattr(pet_combatant, 'ultimate_ready', False)
+        ):
+            worldbreaker = effects['worldbreaker']
+            modified_damage *= Decimal(str(worldbreaker['damage_multiplier']))
+            enemies = list(getattr(getattr(target, 'team', None), 'combatants', [target]))
+            splash_damage = modified_damage * Decimal(str(worldbreaker['splash_percent']))
+            armor_reduction = Decimal(str(worldbreaker['armor_reduction']))
+            for enemy in enemies:
+                if not enemy.is_alive():
+                    continue
+                if worldbreaker.get('destroy_shields'):
+                    for shield_attr in ('shield', 'flame_shield', 'energy_barrier', 'earth_barrier'):
+                        if hasattr(enemy, shield_attr):
+                            setattr(enemy, shield_attr, Decimal('0'))
+                self._apply_timed_multiplier(
+                    enemy,
+                    'worldbreaker',
+                    int(worldbreaker['duration']),
+                    armor_mult=Decimal('1') - armor_reduction,
+                )
+                if enemy is not target:
+                    self._deal_damage(pet_combatant, enemy, splash_damage)
+            messages.append(
+                f"🌍 {pet_combatant.name} unleashes Worldbreaker! Shields shatter and the enemy line crumbles!"
+            )
+            pet_combatant.ultimate_ready = False
+
         # 💨 WIND SKILLS
         # Wind Slash - bypass defenses
         if 'wind_slash' in effects and random.randint(1, 100) <= effects['wind_slash']['chance']:
@@ -2775,7 +3017,65 @@ class PetExtension:
                 self._deal_damage(pet_combatant, attacker, poison_damage)
                 setattr(attacker, 'poisoned', 3)  # 3 turns of poison
                 messages.append(f"{pet_combatant.name}'s Thorn Shield poisons the attacker!")
-                
+
+        # 🌍 EARTH DEFENSIVE SKILLS
+        if 'stone_skin' in effects:
+            reduction = Decimal(str(effects['stone_skin']['damage_reduction']))
+            modified_damage *= Decimal('1') - reduction
+            messages.append(
+                f"{pet_combatant.name}'s Stone Skin reduces the blow by {reduction * Decimal('100'):.0f}%!"
+            )
+
+        # This literal check also keeps the start-of-battle barrier tied to its learned skill.
+        if 'earthen_bulwark' in effects:
+            pass
+
+        grounding = effects.get('grounding_field')
+        grounding_reduction = Decimal(str(
+            grounding.get('electric_reduction', 0.25) if grounding
+            else getattr(pet_combatant, 'grounding_field_reduction', 0)
+        ))
+        if (
+            ('grounding_field' in effects or getattr(pet_combatant, 'grounding_field_active', False))
+            and attacker is not None
+            and getattr(attacker, 'element', None) == 'Electric'
+        ):
+            modified_damage *= Decimal('1') - grounding_reduction
+            messages.append(f"{pet_combatant.name} is protected by Grounding Field! (-25% Electric damage)")
+        if 'grounding_field' in effects or getattr(pet_combatant, 'grounding_field_active', False):
+            if hasattr(pet_combatant, 'paralyzed'):
+                delattr(pet_combatant, 'paralyzed')
+
+        fortress_reduction = Decimal(str(getattr(pet_combatant, 'living_fortress_reduction', 0) or 0))
+        if fortress_reduction > 0:
+            modified_damage *= Decimal('1') - fortress_reduction
+            messages.append(f"Living Fortress reduces damage to {pet_combatant.name} by 30%!")
+
+        fortress_reflect = Decimal(str(getattr(pet_combatant, 'living_fortress_reflect', 0) or 0))
+        if fortress_reflect > 0 and modified_damage > 0 and attacker is not None and hasattr(attacker, 'take_damage'):
+            reflected_damage = modified_damage * fortress_reflect
+            self._deal_damage(pet_combatant, attacker, reflected_damage)
+            messages.append(
+                f"Living Fortress reflects **{reflected_damage:.2f} damage** into {attacker.name}!"
+            )
+
+        if (
+            'unyielding_bedrock' in effects
+            and modified_damage >= self._to_decimal(pet_combatant.hp)
+            and not getattr(pet_combatant, 'unyielding_bedrock_used', False)
+        ):
+            pet_combatant.hp = Decimal('1')
+            current_shield = self._to_decimal(getattr(pet_combatant, 'shield', 0))
+            pet_combatant.shield = current_shield + (
+                self._to_decimal(pet_combatant.max_hp)
+                * Decimal(str(effects['unyielding_bedrock']['shield_percent']))
+            )
+            setattr(pet_combatant, 'unyielding_bedrock_used', True)
+            messages.append(
+                f"{pet_combatant.name} becomes Unyielding Bedrock, survives at 1 HP, and raises a massive shield!"
+            )
+            return Decimal('0'), messages
+
         # 💨 WIND DEFENSIVE SKILLS
         # Air Shield - projectile immunity
         if 'air_shield' in effects:
@@ -3081,6 +3381,26 @@ class PetExtension:
             )
 
         for ally in team_combatants:
+            heart_duration = int(getattr(ally, 'heart_of_the_world_duration', 0) or 0)
+            if heart_duration > 1 and ally.is_alive():
+                regen_percent = Decimal(str(getattr(ally, 'heart_of_world_shield_regen', 0) or 0))
+                if regen_percent > 0:
+                    ally.shield = self._to_decimal(getattr(ally, 'shield', 0)) + (
+                        self._to_decimal(ally.max_hp) * regen_percent
+                    )
+                    messages.append(f"Heart of the World renews {ally.name}'s shield!")
+            self._tick_timed_multiplier(
+                ally,
+                'living_fortress',
+                messages,
+                extra_attrs=['living_fortress_reduction', 'living_fortress_reflect'],
+            )
+            self._tick_timed_multiplier(
+                ally,
+                'heart_of_the_world',
+                messages,
+                extra_attrs=['heart_of_world_shield_regen'],
+            )
             self._tick_timed_multiplier(ally, 'inferno_mastery_aura', messages)
             self._tick_timed_multiplier(ally, 'sun_gods_blessing', messages)
             self._tick_timed_multiplier(ally, 'poseidons_call', messages)
@@ -3163,6 +3483,13 @@ class PetExtension:
             )
 
         for enemy in enemy_combatants:
+            self._tick_timed_multiplier(
+                enemy,
+                'gravity_well',
+                messages,
+                extra_attrs=['gravity_well_delay', 'zephyr_slow'],
+            )
+            self._tick_timed_multiplier(enemy, 'worldbreaker', messages)
             self._tick_timed_multiplier(enemy, 'decay_touch', messages)
             self._tick_timed_multiplier(enemy, 'poseidons_call_curse', messages)
             self._tick_timed_multiplier(enemy, 'electromagnetic_field', messages)
@@ -3185,6 +3512,104 @@ class PetExtension:
                 messages,
                 clear_attrs=['zephyr_slow'],
             )
+
+        # 🌍 EARTH PER-TURN EFFECTS
+        if 'guardians_weight' in effects:
+            setattr(pet_combatant, 'guardians_weight_active', True)
+
+        if 'grounding_field' in effects:
+            reduction = effects['grounding_field']['electric_reduction']
+            for ally in team_combatants or [pet_combatant]:
+                if not ally.is_alive():
+                    continue
+                setattr(ally, 'grounding_field_active', True)
+                setattr(ally, 'grounding_field_reduction', reduction)
+                if hasattr(ally, 'paralyzed'):
+                    delattr(ally, 'paralyzed')
+            messages.append(f"{pet_combatant.name}'s Grounding Field protects the team from electricity and paralysis!")
+
+        if 'crystal_resonance' in effects:
+            alive_allies = [
+                ally for ally in (team_combatants or [pet_combatant])
+                if ally.is_alive() and self._to_decimal(getattr(ally, 'max_hp', 0)) > 0
+            ]
+            if alive_allies:
+                least_protected = min(
+                    alive_allies,
+                    key=lambda ally: (
+                        self._to_decimal(getattr(ally, 'shield', 0))
+                        / self._to_decimal(ally.max_hp, '1')
+                    ),
+                )
+                current_shield = self._to_decimal(getattr(least_protected, 'shield', 0))
+                shield_cap = self._to_decimal(least_protected.max_hp) * Decimal(
+                    str(effects['crystal_resonance']['max_hp_cap'])
+                )
+                shield_gain = min(
+                    self._to_decimal(pet_combatant.armor)
+                    * Decimal(str(effects['crystal_resonance']['defense_shield_percent'])),
+                    max(Decimal('0'), shield_cap - current_shield),
+                )
+                if shield_gain > 0:
+                    least_protected.shield = current_shield + shield_gain
+                    messages.append(
+                        f"Crystal Resonance shields {least_protected.name} for **{shield_gain:.2f}**!"
+                    )
+
+        if (
+            'living_fortress' in effects
+            and getattr(pet_combatant, 'ultimate_ready', False)
+        ):
+            fortress = effects['living_fortress']
+            duration = int(fortress['duration'])
+            for ally in team_combatants or [pet_combatant]:
+                if not ally.is_alive():
+                    continue
+                ally.shield = self._to_decimal(getattr(ally, 'shield', 0)) + (
+                    self._to_decimal(ally.max_hp) * Decimal(str(fortress['shield_percent']))
+                )
+                extra_attrs = {'living_fortress_reduction': fortress['damage_reduction']}
+                if ally is pet_combatant:
+                    extra_attrs['living_fortress_reflect'] = fortress['reflect_percent']
+                self._apply_timed_multiplier(
+                    ally,
+                    'living_fortress',
+                    duration,
+                    extra_attrs=extra_attrs,
+                )
+            messages.append(
+                f"🏰 {pet_combatant.name} becomes a Living Fortress! The team is shielded behind stone walls!"
+            )
+            pet_combatant.ultimate_ready = False
+
+        if (
+            'heart_of_the_world' in effects
+            and getattr(pet_combatant, 'ultimate_ready', False)
+        ):
+            heart = effects['heart_of_the_world']
+            duration = int(heart['duration'])
+            for ally in team_combatants or [pet_combatant]:
+                if not ally.is_alive():
+                    continue
+                for status in ('stunned', 'paralyzed', 'rooted'):
+                    if hasattr(ally, status):
+                        delattr(ally, status)
+                regen_percent = Decimal(str(heart['shield_regen_percent']))
+                ally.shield = self._to_decimal(getattr(ally, 'shield', 0)) + (
+                    self._to_decimal(ally.max_hp) * regen_percent
+                )
+                self._apply_timed_multiplier(
+                    ally,
+                    'heart_of_the_world',
+                    duration,
+                    damage_mult=Decimal('1') + Decimal(str(heart['damage_bonus'])),
+                    armor_mult=Decimal('1') + Decimal(str(heart['armor_bonus'])),
+                    extra_attrs={'heart_of_world_shield_regen': heart['shield_regen_percent']},
+                )
+            messages.append(
+                f"💚 {pet_combatant.name} invokes the Heart of the World! Control effects break and the team surges with earthen power!"
+            )
+            pet_combatant.ultimate_ready = False
 
         # 🔥 FIRE PER-TURN EFFECTS
         # Warmth - heal owner on attack
@@ -4160,6 +4585,7 @@ class PetExtension:
                 'oceans_wrath', 'immortal_waters', 'poseidons_call',
                 'storm_lord', 'infinite_energy', 'zeus_wrath',
                 'gaias_wrath', 'immortal_growth', 'world_trees_gift',
+                'worldbreaker', 'living_fortress', 'heart_of_the_world',
                 'storm_lord_wind', 'skys_blessing', 'zephyrs_dance',
                 'solar_flare', 'divine_protection', 'celestial_blessing',
                 'void_mastery', 'eternal_night',
