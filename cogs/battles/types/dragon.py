@@ -236,6 +236,8 @@ class DragonBattle(Battle):
     def _resolve_dragon_damage_owner_id(self, source):
         if source is None or source is self.dragon or getattr(source, "is_dragon", False):
             return None
+        if getattr(source, "is_birthday_assistant", False):
+            return None
         if self._has_effect(source, "possessed"):
             return None
 

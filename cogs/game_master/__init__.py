@@ -70,6 +70,11 @@ from classes.context import Context
 from classes.converters import UserWithCharacter
 from utils import shell
 from utils.april_fools import APRIL_FOOLS_GREG_FLAG
+from utils.birthday import (
+    BirthdayAssistantState,
+    get_active_birthday_assistant,
+    parse_birthday_duration,
+)
 from utils.misc import random_token
 from typing import Union
 
@@ -235,6 +240,8 @@ class GameMaster(commands.Cog):
         self.isbid = False
         self.event_flags = {}
         self.april_fools_flags = {}
+        if not hasattr(self.bot, "birthday_assistant_state"):
+            self.bot.birthday_assistant_state = None
 
     @staticmethod
     def _normalize_consumable_alias(alias: str) -> str:
@@ -6998,6 +7005,7 @@ class GameMaster(commands.Cog):
     async def cog_load(self):
         await self._init_event_settings()
         await self._init_april_fools_settings()
+        await self._init_birthday_assistant()
         await self._init_pve_census()
         greg_cog = self.bot.get_cog("Greg")
         if greg_cog and hasattr(greg_cog, "_sync_finale_event_flag"):
@@ -7060,6 +7068,81 @@ class GameMaster(commands.Cog):
         for key, default in self.APRIL_FOOLS_DEFAULTS.items():
             self.april_fools_flags.setdefault(key, default)
         self.bot.april_fools_flags = self.april_fools_flags
+
+    async def _init_birthday_assistant(self):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS birthday_assistant_settings (
+                    id SMALLINT PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    ends_at TIMESTAMPTZ NOT NULL,
+                    updated_by BIGINT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (id = 1)
+                )
+                """
+            )
+            row = await conn.fetchrow(
+                """
+                SELECT birthday.user_id, birthday.ends_at, profile.name
+                FROM birthday_assistant_settings AS birthday
+                LEFT JOIN profile ON profile."user" = birthday.user_id
+                WHERE birthday.id = 1
+                """
+            )
+            if row and (row["name"] is None or self._ensure_utc(row["ends_at"]) <= now):
+                await conn.execute("DELETE FROM birthday_assistant_settings WHERE id = 1")
+                row = None
+
+        if row:
+            self.bot.birthday_assistant_state = BirthdayAssistantState(
+                user_id=int(row["user_id"]),
+                character_name=str(row["name"]),
+                ends_at=self._ensure_utc(row["ends_at"]),
+            )
+        else:
+            self.bot.birthday_assistant_state = None
+
+    async def _set_birthday_assistant(
+        self,
+        *,
+        user_id: int,
+        character_name: str,
+        ends_at: datetime.datetime,
+        updated_by: int,
+    ) -> BirthdayAssistantState:
+        ends_at = self._ensure_utc(ends_at)
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO birthday_assistant_settings (id, user_id, ends_at, updated_by)
+                VALUES (1, $1, $2, $3)
+                ON CONFLICT (id)
+                DO UPDATE SET
+                    user_id = EXCLUDED.user_id,
+                    ends_at = EXCLUDED.ends_at,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = NOW()
+                """,
+                user_id,
+                ends_at,
+                updated_by,
+            )
+
+        state = BirthdayAssistantState(
+            user_id=user_id,
+            character_name=character_name,
+            ends_at=ends_at,
+        )
+        self.bot.birthday_assistant_state = state
+        return state
+
+    async def _disable_birthday_assistant(self) -> None:
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute("DELETE FROM birthday_assistant_settings WHERE id = 1")
+        self.bot.birthday_assistant_state = None
 
     async def _init_pve_census(self):
         async with self.bot.pool.acquire() as conn:
@@ -7330,6 +7413,79 @@ class GameMaster(commands.Cog):
             status = "enabled" if self.get_april_fools_flag_enabled(key) else "disabled"
             lines.append(f"{name}: {status}")
         return lines
+
+    @is_gm()
+    @commands.command(
+        name="gmbirthday",
+        hidden=True,
+        brief=_("Temporarily add a GM character as a PvE battle assistant"),
+    )
+    async def gmbirthday(
+        self,
+        ctx,
+        target: str | None = None,
+        duration: str | None = None,
+    ):
+        """Enable with `$gmbirthday <user id> <duration>` or disable with `$gmbirthday off`."""
+        if target is None:
+            state = get_active_birthday_assistant(self.bot)
+            if state is None:
+                return await ctx.send(
+                    "Birthday assistance is **disabled**.\n"
+                    "Use `$gmbirthday <user id> <duration>`, for example `$gmbirthday 123456789 24h`."
+                )
+            return await ctx.send(
+                f"Birthday assistance is **enabled** for <@{state.user_id}> "
+                f"(**{state.character_name}**) until "
+                f"{discord.utils.format_dt(state.ends_at, style='F')} "
+                f"({discord.utils.format_dt(state.ends_at, style='R')}).\n"
+                "Active modes: Battle Tower and Ice Dragon Challenge."
+            )
+
+        if target.strip().lower() in {"off", "disable", "disabled", "stop", "clear"}:
+            await self._disable_birthday_assistant()
+            return await ctx.send("Birthday assistance is now **disabled**.")
+
+        if duration is None:
+            return await ctx.send(
+                "Provide a duration, for example `$gmbirthday 123456789 24h`."
+            )
+
+        user_token = target.strip()
+        if user_token.startswith("<@") and user_token.endswith(">"):
+            user_token = user_token[2:-1].lstrip("!")
+        if not user_token.isdigit():
+            return await ctx.send("Target must be a Discord user ID or mention.")
+        user_id = int(user_token)
+
+        try:
+            parsed_duration = parse_birthday_duration(duration)
+        except ValueError as exc:
+            return await ctx.send(str(exc))
+
+        profile = await self.bot.pool.fetchrow(
+            'SELECT name FROM profile WHERE "user" = $1;',
+            user_id,
+        )
+        if not profile:
+            return await ctx.send("That user does not have a Fable character.")
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        state = await self._set_birthday_assistant(
+            user_id=user_id,
+            character_name=str(profile["name"]),
+            ends_at=now + parsed_duration,
+            updated_by=ctx.author.id,
+        )
+        await ctx.send(
+            f"🎂 <@{state.user_id}> (**{state.character_name}**) will now assist player teams "
+            "in **Battle Tower** and **Ice Dragon Challenge** until "
+            f"{discord.utils.format_dt(state.ends_at, style='F')} "
+            f"({discord.utils.format_dt(state.ends_at, style='R')}).\n"
+            "Their live character stats, equipped weapons/elements, raid stats, classes, "
+            "specializations, and level-100 Ascension Mantle are cloned for each new battle; "
+            "their pet is not included."
+        )
 
     @is_gm()
     @commands.group(name="gmevent", aliases=["gmevents"], invoke_without_command=True)

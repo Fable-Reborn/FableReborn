@@ -26,6 +26,10 @@ from .extensions.pets import PetExtension
 from .extensions.dragon import DragonExtension
 from .settings import BattleSettings
 from utils.april_fools import mask_runtime_name
+from utils.birthday import (
+    BirthdayAssistantIdentity,
+    get_active_birthday_assistant,
+)
 
 class BattleFactory:
     """Factory for creating various battle types"""
@@ -532,6 +536,32 @@ class BattleFactory:
                     combatants.append(pet_combatant)
 
         return Team(team_name, combatants)
+
+    async def add_birthday_assistant_to_team(self, ctx, team):
+        """Add one independent, petless clone of the active birthday GM."""
+        state = get_active_birthday_assistant(self.bot)
+        if state is None:
+            return None
+        if any(
+            getattr(combatant, "is_birthday_assistant", False)
+            for combatant in team.combatants
+        ):
+            return None
+
+        identity = BirthdayAssistantIdentity(
+            id=state.user_id,
+            display_name=f"{state.character_name} 🎂 Birthday Assist",
+        )
+        assistant = await self.create_player_combatant(
+            ctx,
+            identity,
+            include_pet=False,
+        )
+        assistant.is_birthday_assistant = True
+        assistant.birthday_assistant_user_id = state.user_id
+        assistant.birthday_assistant_ends_at = state.ends_at
+        team.add_combatant(assistant)
+        return assistant
     
     async def create_tower_battle(self, ctx, **kwargs):
         """Create a battle tower battle for a specific level"""
@@ -605,6 +635,7 @@ class BattleFactory:
         player_team = Team("Player", [player_combatant])
         if pet_combatant:
             player_team.add_combatant(pet_combatant)
+        await self.add_birthday_assistant_to_team(ctx, player_team)
             
         enemy_team = Team("Enemy", [minion1, minion2, boss])
         
@@ -766,6 +797,10 @@ class BattleFactory:
                     if pet_combatant:
                         player_combatants.append(pet_combatant)
 
+        player_team = Team("Players", player_combatants)
+        await self.add_birthday_assistant_to_team(ctx, player_team)
+        player_combatants = player_team.combatants
+
         class_buffs_enabled = kwargs.get(
             "class_buffs",
             self.settings.get_setting("dragon", "class_buffs", default=True),
@@ -789,8 +824,6 @@ class BattleFactory:
                         combatant.damage = Decimal(str(combatant.damage)) * bard_multiplier
                 kwargs["bard_song_owner_name"] = getattr(best_bard, "name", "A Bard")
                 kwargs["bard_song_bonus_pct"] = bard_bonus_pct
-        
-        player_team = Team("Players", player_combatants)
         
         # Create and return the battle
         battle_kwargs = kwargs.copy()
