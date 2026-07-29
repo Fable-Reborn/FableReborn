@@ -550,7 +550,7 @@ class BattleFactory:
 
         identity = BirthdayAssistantIdentity(
             id=state.user_id,
-            display_name=f"{state.character_name} 🎂 Birthday Assist",
+            display_name=state.character_name,
         )
         assistant = await self.create_player_combatant(
             ctx,

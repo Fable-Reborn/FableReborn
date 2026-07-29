@@ -7436,7 +7436,7 @@ class GameMaster(commands.Cog):
                 )
             return await ctx.send(
                 f"Birthday assistance is **enabled** for <@{state.user_id}> "
-                f"(**{state.character_name}**) until "
+                f"(**{state.character_name} 🎂**) until "
                 f"{discord.utils.format_dt(state.ends_at, style='F')} "
                 f"({discord.utils.format_dt(state.ends_at, style='R')}).\n"
                 "Active modes: Battle Tower and Ice Dragon Challenge."
@@ -7478,7 +7478,7 @@ class GameMaster(commands.Cog):
             updated_by=ctx.author.id,
         )
         await ctx.send(
-            f"🎂 <@{state.user_id}> (**{state.character_name}**) will now assist player teams "
+            f"<@{state.user_id}> (**{state.character_name} 🎂**) will now assist player teams "
             "in **Battle Tower** and **Ice Dragon Challenge** until "
             f"{discord.utils.format_dt(state.ends_at, style='F')} "
             f"({discord.utils.format_dt(state.ends_at, style='R')}).\n"

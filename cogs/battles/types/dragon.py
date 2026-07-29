@@ -284,6 +284,8 @@ class DragonBattle(Battle):
 
     def _participant_label(self, combatant):
         name = getattr(combatant, "name", "Unknown")
+        if getattr(combatant, "is_birthday_assistant", False):
+            return f"{name} 🎂"
         if getattr(combatant, "is_pet", False):
             owner = getattr(combatant, "owner", None)
             owner_name = getattr(owner, "display_name", None) or getattr(owner, "name", None)
@@ -1893,12 +1895,18 @@ class DragonBattle(Battle):
             if hasattr(player, 'element') and player.element and player.element in element_to_emoji:
                 player_element_emoji = element_to_emoji[player.element]
             possession_marker = " 🌀" if self._has_effect(player, "possessed") else ""
+            birthday_marker = (
+                " 🎂" if getattr(player, "is_birthday_assistant", False) else ""
+            )
             
             # Set name based on player type with element emoji
             if hasattr(player, 'is_pet') and player.is_pet:
                 field_name = f"{player.name} {player_element_emoji}{possession_marker}"
             else:
-                field_name = f"{player.name} {player_element_emoji}{possession_marker}"
+                field_name = (
+                    f"{player.name} {player_element_emoji}"
+                    f"{birthday_marker}{possession_marker}"
+                )
                 
             embed.add_field(
                 name=field_name,

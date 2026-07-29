@@ -672,7 +672,13 @@ class TowerBattle(Battle):
             if combatant.is_pet:
                 field_name = f"{combatant.name} {element_emoji}"
             else:
-                field_name = f"**[TEAM A]** \n{combatant.display_name} {element_emoji}"
+                birthday_marker = (
+                    " 🎂" if getattr(combatant, "is_birthday_assistant", False) else ""
+                )
+                field_name = (
+                    f"**[TEAM A]** \n{combatant.display_name} "
+                    f"{element_emoji}{birthday_marker}"
+                )
                 
             # Create field value with HP bar
             field_value = f"HP: {current_hp:.1f}/{max_hp:.1f}\n{hp_bar}"
