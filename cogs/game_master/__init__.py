@@ -840,7 +840,7 @@ class GameMaster(commands.Cog):
             )
         await self._safe_ctx_send(ctx, f"You granted **{other} {amount}** favor.")
         with handle_message_parameters(
-                content="**{gm}** granted **{other}** {amount} favor.".format(
+                content="**{gm}** granted **{other}** {amount} favor. {reason}".format(
                     gm=ctx.author,
                     amount=amount,
                     other=other,

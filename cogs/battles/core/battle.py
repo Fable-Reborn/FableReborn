@@ -295,8 +295,14 @@ class Battle(ABC):
         current_chunk = ""
 
         for action_num, message in log_entries:
-            entry = f"**Action #{action_num}**\n{message}"
-            entry_chunks = self._split_embed_text(entry, max_length=max_length)
+            header = f"**Action #{action_num}**"
+            message_length = max(1, max_length - len(header) - 1)
+            entry_chunks = [
+                f"{header}\n{part}"
+                for part in self._split_embed_text(
+                    str(message), max_length=message_length
+                )
+            ]
 
             for entry_chunk in entry_chunks:
                 if not current_chunk:
@@ -2939,7 +2945,7 @@ class Battle(ABC):
             state = {
                 'action_number': self.action_number,
                 'action_message': action_message,
-                'timestamp': datetime.datetime.utcnow().isoformat(),
+                'timestamp': datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 'teams': []
             }
             

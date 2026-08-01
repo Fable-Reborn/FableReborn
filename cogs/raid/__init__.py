@@ -3227,7 +3227,7 @@ class Raid(commands.Cog):
                     await acknowledge_ai_directive(target_role, controller, action)
 
             async def handle_role_takeover(role_name):
-                nonlocal champion, priest, followers
+                nonlocal champion, priest
 
                 current_actor = get_role_actor(role_name)
                 if current_actor is None or is_ai_actor(current_actor):

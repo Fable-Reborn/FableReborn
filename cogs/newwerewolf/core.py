@@ -7068,7 +7068,7 @@ class Game:
                 " the Werewolves."
             ).format(target=conversion_target.user)
         )
-        if conversion_target.public_role_name_override is None:
+        if getattr(conversion_target, "public_role_name_override", None) is None:
             conversion_target.public_role_name_override = self.get_public_role_name(
                 conversion_target
             )
@@ -10799,7 +10799,7 @@ class Player:
                     ).format(game_link=self.game.game_link)
                 )
                 return False
-            if not self.game.is_night_phase:
+            if not getattr(self.game, "is_night_phase", True):
                 if self.is_corrupted_today:
                     await self.send(
                         _(

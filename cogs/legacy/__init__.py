@@ -11,14 +11,23 @@ Other cogs award points by dispatching events (see the listeners below) or by
 calling `bot.get_cog("Legacy").award_points(...)` directly.
 """
 import asyncio
-import math
-from datetime import datetime, timedelta, timezone
+import logging
 
 import discord
 from discord.ext import commands
 
 from classes.badges import Badge
+from cogs.legacy.shop import (
+    LEGACY_SHOP,
+    LIVING_LEGEND_RELIC_MILESTONE,
+    build_legacy_shop_embed,
+    legacy_week_start,
+    living_legend_gate_failures,
+)
 from utils.checks import has_char
+
+
+logger = logging.getLogger(__name__)
 
 
 # Points per Ice Dragon stage, per party member
@@ -37,151 +46,11 @@ TOWER_MILESTONE_BONUS = 5   # floors 5, 10, 15, ...
 TOWER_FINALE_BONUS = 25     # floor 30
 TOWER_PRESTIGE_POINTS = 50
 
-LIVING_LEGEND_MIN_LIFETIME = 50_000
-LIVING_LEGEND_FEAT_RATIO = 0.82
-LIVING_LEGEND_RELIC_MILESTONE = "exalted"
-
-LEGACY_SHOP = {
-    "mystery5": {
-        "name": "5x Mystery Crates",
-        "cost": 300,
-        "description": "Five mystery crates, straight from the vault.",
-        "type": "crate",
-        "crate": "mystery",
-        "amount": 5,
-        "weekly_limit": 2,
-    },
-    "goldpouch": {
-        "name": "Legacy Gold Pouch",
-        "cost": 500,
-        "description": "A heavy pouch holding $250,000.",
-        "type": "money",
-        "amount": 250_000,
-        "weekly_limit": 2,
-    },
-    "fortune": {
-        "name": "Fortune Crate",
-        "cost": 1_000,
-        "description": "One fortune crate.",
-        "type": "crate",
-        "crate": "fortune",
-        "amount": 1,
-        "weekly_limit": 1,
-    },
-    "divine": {
-        "name": "Divine Crate",
-        "cost": 2_500,
-        "description": "One divine crate.",
-        "type": "crate",
-        "crate": "divine",
-        "amount": 1,
-        "weekly_limit": 1,
-    },
-    "badge": {
-        "name": "Living Legend Badge",
-        "cost": 25_000,
-        "description": "A permanent profile badge for masters of the realm. One per player.",
-        "type": "badge",
-        "badge": "LIVING_LEGEND",
-    },
+CRATE_REWARD_COLUMNS = {
+    "mystery": "crates_mystery",
+    "fortune": "crates_fortune",
+    "divine": "crates_divine",
 }
-
-
-def living_legend_required_feat_count(total_feats: int) -> int:
-    """Feat count required for the catalog's Living Legend rank."""
-    return math.ceil(max(0, int(total_feats)) * LIVING_LEGEND_FEAT_RATIO)
-
-
-def legacy_week_start(now: datetime | None = None) -> datetime:
-    """Return Monday 00:00 UTC for weekly shop stock."""
-
-    current = now or datetime.now(timezone.utc)
-    if current.tzinfo is None:
-        current = current.replace(tzinfo=timezone.utc)
-    current = current.astimezone(timezone.utc)
-    return (current - timedelta(days=current.weekday())).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-
-
-def living_legend_gate_failures(progress: dict) -> tuple[str, ...]:
-    """Human-readable unmet capstone requirements, without database access."""
-    required_feats = living_legend_required_feat_count(progress.get("feat_total", 0))
-    required_sets = max(0, int(progress.get("relic_total", 0)))
-    failures = []
-    if int(progress.get("lifetime", 0)) < LIVING_LEGEND_MIN_LIFETIME:
-        failures.append(
-            f"Lifetime LP: {int(progress.get('lifetime', 0)):,}/{LIVING_LEGEND_MIN_LIFETIME:,}"
-        )
-    if int(progress.get("feat_count", 0)) < required_feats:
-        failures.append(
-            f"Active Feats: {int(progress.get('feat_count', 0)):,}/{required_feats:,}"
-        )
-    if int(progress.get("relic_count", 0)) < required_sets:
-        failures.append(
-            f"Exalted Relic sets: {int(progress.get('relic_count', 0)):,}/{required_sets:,}"
-        )
-    return tuple(failures)
-
-
-def living_legend_progress_lines(progress: dict) -> list[str]:
-    required_feats = living_legend_required_feat_count(progress.get("feat_total", 0))
-    rows = (
-        (int(progress.get("lifetime", 0)), LIVING_LEGEND_MIN_LIFETIME, "lifetime LP"),
-        (int(progress.get("feat_count", 0)), required_feats, "active Feats"),
-        (
-            int(progress.get("relic_count", 0)),
-            int(progress.get("relic_total", 0)),
-            "Exalted Relic sets",
-        ),
-    )
-    return [
-        f"{'✓' if current >= required else '○'} **{current:,}/{required:,}** {label}"
-        for current, required, label in rows
-    ]
-
-
-def build_legacy_shop_embed(
-    points: int,
-    lifetime: int,
-    weekly_purchases: dict[str, int],
-    living_legend_progress: dict,
-) -> discord.Embed:
-    """Build the compact shop card without database or Discord I/O."""
-
-    embed = discord.Embed(
-        title="🏛️ Legacy Shop",
-        description=(
-            f"Balance **{int(points):,} LP**  ·  Lifetime **{int(lifetime):,} LP**\n"
-            "Account rewards earned through long-term mastery."
-        ),
-        color=0xD4B95E,
-    )
-    for key, item in LEGACY_SHOP.items():
-        if item["type"] == "badge":
-            requirements = "\n".join(
-                living_legend_progress_lines(living_legend_progress)
-            )
-            value = (
-                f"{item['description']}\n{requirements}\n"
-                f"`$legacy buy {key}`"
-            )
-        else:
-            used = max(0, int(weekly_purchases.get(key, 0)))
-            limit = int(item["weekly_limit"])
-            stock_marker = "✓" if used < limit else "—"
-            value = (
-                f"{item['description']}\n"
-                f"{stock_marker} Weekly stock **{min(used, limit)}/{limit}**  ·  "
-                f"`$legacy buy {key}`"
-            )
-        embed.add_field(
-            name=f"{item['name']} — {item['cost']:,} LP",
-            value=value,
-            inline=False,
-        )
-    embed.set_footer(text="Weekly stock resets Monday at 00:00 UTC")
-    return embed
 
 
 class Legacy(commands.Cog):
@@ -219,11 +88,8 @@ class Legacy(commands.Cog):
                         """
                     )
 
-                    # The original table stored server-local wall time. Convert
-                    # it once so Monday UTC stays exact in non-UTC databases.
-                    await conn.execute(
-                        "LOCK TABLE legacy_purchases IN ACCESS EXCLUSIVE MODE"
-                    )
+                    # Older installations stored server-local wall time. Avoid
+                    # taking an exclusive table lock on every normal startup.
                     timestamp_type = await conn.fetchval(
                         """
                         SELECT data_type
@@ -235,12 +101,27 @@ class Legacy(commands.Cog):
                     )
                     if timestamp_type == "timestamp without time zone":
                         await conn.execute(
+                            "LOCK TABLE legacy_purchases IN ACCESS EXCLUSIVE MODE"
+                        )
+                        # Another shard may have completed the migration while
+                        # this connection waited for the lock.
+                        timestamp_type = await conn.fetchval(
                             """
-                            ALTER TABLE legacy_purchases
-                            ALTER COLUMN purchased_at TYPE TIMESTAMPTZ
-                            USING purchased_at AT TIME ZONE current_setting('TIMEZONE')
+                            SELECT data_type
+                            FROM information_schema.columns
+                            WHERE table_schema = 'public'
+                              AND table_name = 'legacy_purchases'
+                              AND column_name = 'purchased_at'
                             """
                         )
+                        if timestamp_type == "timestamp without time zone":
+                            await conn.execute(
+                                """
+                                ALTER TABLE legacy_purchases
+                                ALTER COLUMN purchased_at TYPE TIMESTAMPTZ
+                                USING purchased_at AT TIME ZONE current_setting('TIMEZONE')
+                                """
+                            )
 
                     await conn.execute(
                         """
@@ -308,6 +189,143 @@ class Legacy(commands.Cog):
             "relic_total": len(relic_set_keys),
         }
 
+    async def _purchase_shop_item(self, conn, user_id: int, item) -> tuple[bool, str]:
+        """Validate and apply one shop purchase in a single transaction."""
+
+        user_id = int(user_id)
+        async with conn.transaction():
+            # Profile -> legacy is the lock order used by milestone rewards too.
+            # Keeping it consistent prevents a badge purchase and a reward grant
+            # from deadlocking one another.
+            profile_row = await conn.fetchrow(
+                'SELECT "badges" FROM profile WHERE "user" = $1 FOR UPDATE;',
+                user_id,
+            )
+            if profile_row is None:
+                return False, "Profile not found."
+
+            legacy_row = await conn.fetchrow(
+                "SELECT points, lifetime FROM legacy WHERE user_id = $1 FOR UPDATE",
+                user_id,
+            )
+            points = int(legacy_row["points"] or 0) if legacy_row else 0
+            lifetime = int(legacy_row["lifetime"] or 0) if legacy_row else 0
+
+            if item.weekly_limit is not None:
+                weekly_purchases = await conn.fetchval(
+                    """
+                    SELECT COUNT(*)
+                    FROM legacy_purchases
+                    WHERE user_id = $1
+                      AND item_key = $2
+                      AND purchased_at >= $3
+                    """,
+                    user_id,
+                    item.key,
+                    legacy_week_start(),
+                )
+                if int(weekly_purchases or 0) >= item.weekly_limit:
+                    return (
+                        False,
+                        f"This week's stock for **{item.name}** is sold out. "
+                        "It resets Monday at 00:00 UTC.",
+                    )
+
+            current_badges = None
+            badge = None
+            if item.reward_type == "badge":
+                badge = Badge.from_string(item.badge)
+                if badge is None:
+                    logger.error("Legacy Shop has an invalid badge reward: %s", item.badge)
+                    return False, "That reward is temporarily unavailable."
+                raw_badges = profile_row["badges"]
+                try:
+                    current_badges = (
+                        Badge(0) if raw_badges is None else Badge.from_db(raw_badges)
+                    )
+                except (AttributeError, TypeError, ValueError):
+                    logger.exception("Could not decode badges for user %s", user_id)
+                    return (
+                        False,
+                        "Your badge data could not be read. No Legacy Points were spent.",
+                    )
+                if current_badges & badge:
+                    return False, "You already own the Living Legend badge!"
+
+                progress = await self._living_legend_progress(
+                    conn, user_id, lifetime=lifetime
+                )
+                failures = living_legend_gate_failures(progress)
+                if failures:
+                    requirements = "\n".join(f"○ {failure}" for failure in failures)
+                    return (
+                        False,
+                        "**Living Legend is still locked.**\n" + requirements,
+                    )
+
+            if points < item.cost:
+                return (
+                    False,
+                    f"You need **{item.cost:,} LP** for {item.name}, "
+                    f"but you only have **{points:,} LP**.",
+                )
+
+            remaining_points = await conn.fetchval(
+                """
+                UPDATE legacy
+                SET points = points - $1
+                WHERE user_id = $2 AND points >= $1
+                RETURNING points
+                """,
+                item.cost,
+                user_id,
+            )
+            if remaining_points is None:
+                return False, "Your Legacy Point balance changed. Please try again."
+
+            if item.reward_type == "badge":
+                await conn.execute(
+                    'UPDATE profile SET "badges" = $1 WHERE "user" = $2;',
+                    (current_badges | badge).to_db(),
+                    user_id,
+                )
+            elif item.reward_type == "crate":
+                column = CRATE_REWARD_COLUMNS.get(item.crate)
+                if column is None:
+                    raise RuntimeError(f"Unsupported Legacy Shop crate: {item.crate}")
+                await conn.execute(
+                    f"UPDATE profile SET {column} = {column} + $1 "
+                    'WHERE "user" = $2;',
+                    item.amount,
+                    user_id,
+                )
+            elif item.reward_type == "money":
+                await conn.execute(
+                    'UPDATE profile SET money = money + $1 WHERE "user" = $2;',
+                    item.amount,
+                    user_id,
+                )
+            else:
+                raise RuntimeError(
+                    f"Unsupported Legacy Shop reward type: {item.reward_type}"
+                )
+
+            await conn.execute(
+                """
+                INSERT INTO legacy_purchases (user_id, item_key, cost)
+                VALUES ($1, $2, $3)
+                """,
+                user_id,
+                item.key,
+                item.cost,
+            )
+
+        return (
+            True,
+            f"🏛️ You bought **{item.name}** for **{item.cost:,} Legacy Points**! "
+            f"You have **{int(remaining_points):,} LP** left.",
+        )
+
     # --- Award API ---------------------------------------------------------
 
     async def award_points(self, user_id: int, amount: int, conn=None):
@@ -350,10 +368,10 @@ class Legacy(commands.Cog):
             if milestone:
                 await ctx.send(
                     f"🏛️ **+{points} Legacy Points** for conquering floor {level}! "
-                    "(`$legacy` to view)"
+                    f"(`{ctx.clean_prefix}legacy` to view)"
                 )
         except Exception:
-            pass  # never let reward bookkeeping break a battle flow
+            logger.exception("Legacy reward failed for Battle Tower completion")
 
     @commands.Cog.listener()
     async def on_battletower_prestige(self, ctx, new_prestige):
@@ -364,7 +382,7 @@ class Legacy(commands.Cog):
                 f"Prestige {new_prestige}!"
             )
         except Exception:
-            pass
+            logger.exception("Legacy reward failed for Battle Tower prestige")
 
     @commands.Cog.listener()
     async def on_icedragon_victory(self, ctx, party_members, stage_name, dragon_level):
@@ -377,7 +395,7 @@ class Legacy(commands.Cog):
                 f"for slaying the {stage_name}!"
             )
         except Exception:
-            pass
+            logger.exception("Legacy reward failed for Ice Dragon victory")
 
     # --- Commands ----------------------------------------------------------
 
@@ -412,7 +430,7 @@ class Legacy(commands.Cog):
             ),
             inline=False,
         )
-        embed.set_footer(text="Spend them with $legacy shop")
+        embed.set_footer(text=f"Spend them with {ctx.clean_prefix}legacy shop")
         await ctx.send(embed=embed)
 
     @legacy.command(name="shop")
@@ -451,6 +469,7 @@ class Legacy(commands.Cog):
             lifetime,
             weekly_purchases,
             living_legend_progress,
+            prefix=ctx.clean_prefix,
         )
         await ctx.send(embed=embed)
 
@@ -459,112 +478,15 @@ class Legacy(commands.Cog):
     async def legacy_buy(self, ctx, item_key: str):
         """Buy an item from the Legacy Shop."""
         await self.ensure_tables()
-        item_key = item_key.lower()
+        item_key = item_key.strip().lower()
         item = LEGACY_SHOP.get(item_key)
         if not item:
             keys = ", ".join(f"`{k}`" for k in LEGACY_SHOP)
             return await ctx.send(f"Unknown item. Available: {keys}")
 
         async with self.bot.pool.acquire() as conn:
-            async with conn.transaction():
-                # Lock the row so concurrent purchases can't double-spend
-                legacy_row = await conn.fetchrow(
-                    "SELECT points, lifetime FROM legacy WHERE user_id = $1 FOR UPDATE",
-                    ctx.author.id,
-                )
-                points = int(legacy_row["points"] or 0) if legacy_row else 0
-                lifetime = int(legacy_row["lifetime"] or 0) if legacy_row else 0
-
-                weekly_limit = item.get("weekly_limit")
-                if weekly_limit is not None:
-                    week_start = legacy_week_start()
-                    weekly_purchases = await conn.fetchval(
-                        """
-                        SELECT COUNT(*)
-                        FROM legacy_purchases
-                        WHERE user_id = $1
-                          AND item_key = $2
-                          AND purchased_at >= $3
-                        """,
-                        ctx.author.id,
-                        item_key,
-                        week_start,
-                    )
-                    if int(weekly_purchases or 0) >= int(weekly_limit):
-                        return await ctx.send(
-                            f"You have used this week's **{weekly_limit}/{weekly_limit}** "
-                            f"stock for {item['name']}. It resets Monday at 00:00 UTC."
-                        )
-
-                if item["type"] == "badge":
-                    badge = Badge.from_string(item["badge"])
-                    profile_row = await conn.fetchrow(
-                        'SELECT "badges" FROM profile WHERE "user" = $1 FOR UPDATE;',
-                        ctx.author.id,
-                    )
-                    if profile_row is None:
-                        return await ctx.send("Profile not found.")
-                    raw_badges = profile_row["badges"]
-                    try:
-                        current = Badge(0) if raw_badges is None else Badge.from_db(raw_badges)
-                    except Exception:
-                        current = Badge(0)
-                    if current & badge:
-                        return await ctx.send("You already own the Living Legend badge!")
-
-                    progress = await self._living_legend_progress(
-                        conn, ctx.author.id, lifetime=lifetime
-                    )
-                    failures = living_legend_gate_failures(progress)
-                    if failures:
-                        requirements = "\n".join(f"○ {failure}" for failure in failures)
-                        return await ctx.send(
-                            "**Living Legend is still locked.**\n" + requirements
-                        )
-
-                if points < item["cost"]:
-                    return await ctx.send(
-                        f"You need **{item['cost']:,} LP** for {item['name']}, "
-                        f"but you only have **{points:,} LP**."
-                    )
-
-                if item["type"] == "badge":
-                    badge = Badge.from_string(item["badge"])
-                    await conn.execute(
-                        'UPDATE profile SET "badges" = $1 WHERE "user" = $2;',
-                        (current | badge).to_db(),
-                        ctx.author.id,
-                    )
-                elif item["type"] == "crate":
-                    crate = item["crate"]
-                    await conn.execute(
-                        f"UPDATE profile SET crates_{crate} = crates_{crate} + $1 "
-                        'WHERE "user" = $2;',
-                        item["amount"],
-                        ctx.author.id,
-                    )
-                elif item["type"] == "money":
-                    await conn.execute(
-                        'UPDATE profile SET money = money + $1 WHERE "user" = $2;',
-                        item["amount"],
-                        ctx.author.id,
-                    )
-
-                await conn.execute(
-                    "UPDATE legacy SET points = points - $1 WHERE user_id = $2",
-                    item["cost"],
-                    ctx.author.id,
-                )
-                await conn.execute(
-                    "INSERT INTO legacy_purchases (user_id, item_key, cost) VALUES ($1, $2, $3)",
-                    ctx.author.id,
-                    item_key,
-                    item["cost"],
-                )
-
-        await ctx.send(
-            f"🏛️ You bought **{item['name']}** for **{item['cost']:,} Legacy Points**!"
-        )
+            _, message = await self._purchase_shop_item(conn, ctx.author.id, item)
+        await ctx.send(message)
 
     @legacy.command(name="top", aliases=["leaderboard", "board"])
     async def legacy_top(self, ctx):

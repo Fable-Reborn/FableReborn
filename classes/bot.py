@@ -1211,7 +1211,8 @@ class Bot(commands.AutoShardedBot):
         sources = []
         ids_section = getattr(self.config, "ids", None)
 
-        patreon_core = self.get_cog("PatreonCore")
+        get_cog = getattr(self, "get_cog", None)
+        patreon_core = get_cog("PatreonCore") if get_cog is not None else None
         if patreon_core is not None:
             guild_id = self._coerce_positive_int(getattr(patreon_core, "guild_id", None))
             role_mapping = {}

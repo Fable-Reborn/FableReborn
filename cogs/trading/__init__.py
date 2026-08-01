@@ -820,10 +820,6 @@ class Trading(commands.Cog):
         except Exception as e:
             print(f"An error occurred in decrease_happy_task: {e}")
 
-
-        except Exception as e:
-            print(f"An error occurred in decrease_hunger_task: {e}")
-
     @has_char()
     @commands.command(brief=_("Put an item in the market"))
     @locale_doc
@@ -2141,57 +2137,6 @@ class Trading(commands.Cog):
             # Default to 1 hour if the rarity is not recognized
             return dt.timedelta(hours=1)
 
-    async def start_incubation(self, user_id, egg_id, egg_name, ctx):
-        try:
-            async with self.bot.pool.acquire() as conn:
-                # Check if the user_id exists in user_eggs
-                user_owns_egg = await conn.fetchval(
-                    'SELECT COUNT(*) FROM user_eggs WHERE user_id = $1 AND id = $2;',
-                    user_id, egg_id
-                )
-
-                if not user_owns_egg:
-                    return await ctx.send(_("Invalid user ID or egg ID."))
-
-                # Check if the egg is already incubating
-                is_incubating = await conn.fetchval(
-                    'SELECT COUNT(*) FROM incubating_eggs WHERE user_id = $1 AND egg_id = $2;',
-                    user_id, egg_id
-                )
-
-                if is_incubating:
-                    return await ctx.send(_("This egg is already incubating."))
-
-                # Get incubation time based on egg rarity
-                incubation_time = await self.get_incubation_time(egg_name)
-
-                # Insert into incubating_eggs
-                await conn.execute(
-                    'INSERT INTO incubating_eggs (user_id, egg_id, egg_name, start_time) VALUES ($1, $2, $3, $4);',
-                    user_id, egg_id, egg_name, dt.datetime.now(dt.timezone.utc)
-                )
-
-                await ctx.send(_("Egg incubated successfully!"))
-
-        except Exception as e:
-            print(f"An error occurred: {e}")
-            await ctx.send(_(f"An error occurred while processing your request. {e}"))
-
-    async def get_incubation_status(self, user_id, egg_name, unique_identifier, ctx):
-        # Get the remaining time and other details from Redis
-        incubation_key = f'incubation:{user_id}:{unique_identifier}'
-        incubation_details = await self.bot.redis.hgetall(incubation_key)
-        await ctx.send("Checking Key..")
-
-        if incubation_details:
-            await ctx.send("Found a key!..")
-            # Extract remaining time from the hash
-            remaining_time = int(incubation_details.get('remaining_time', 0))
-            return remaining_time if remaining_time > 0 else None
-        else:
-            await ctx.send("I did not find a key!..")
-            return None
-
     async def update_incubation_status(self, user_id, egg_name, unique_identifier, time_delta, hp_change):
         # Update remaining time and HP in the Redis hash
         incubation_key = f'incubation:{user_id}:{unique_identifier}'
@@ -2209,37 +2154,53 @@ class Trading(commands.Cog):
 
     async def start_incubation(self, user_id, egg_id, egg_name, ctx):
         try:
-            # Check if the user_id exists in user_eggs
             async with self.bot.pool.acquire() as conn:
-                user_exists = await conn.fetchval('SELECT COUNT(*) FROM user_eggs WHERE user_id = $1 AND id = $2;',
-                                                  user_id, egg_id)
+                async with conn.transaction():
+                    egg = await conn.fetchrow(
+                        """
+                        SELECT egg_name
+                        FROM user_eggs
+                        WHERE user_id = $1 AND id = $2
+                        FOR UPDATE
+                        """,
+                        user_id,
+                        egg_id,
+                    )
+                    if egg is None:
+                        message = _("Invalid user ID or egg ID.")
+                    else:
+                        egg_name = egg["egg_name"]
+                        is_incubating = await conn.fetchval(
+                            """
+                            SELECT EXISTS (
+                                SELECT 1 FROM incubating_eggs
+                                WHERE user_id = $1 AND egg_id = $2
+                            )
+                            """,
+                            user_id,
+                            egg_id,
+                        )
+                        if is_incubating:
+                            message = _("This egg is already incubating.")
+                        else:
+                            incubation_time = await self.get_incubation_time(egg_name)
+                            incubation_end_time = (
+                                dt.datetime.now(dt.timezone.utc) + incubation_time
+                            )
+                            await conn.execute(
+                                """
+                                INSERT INTO incubating_eggs
+                                    (user_id, egg_id, egg_name, incubation_end_time)
+                                VALUES ($1, $2, $3, $4)
+                                """,
+                                user_id,
+                                egg_id,
+                                egg_name,
+                                incubation_end_time,
+                            )
+                            message = _("Egg incubated successfully!")
 
-            if not user_exists:
-                return await ctx.send(_("Invalid user ID."))
-
-            # Get incubation time based on egg rarity
-            incubation_time = await self.get_incubation_time(egg_name)
-
-            # Set the current time in UTC
-            current_time = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
-
-            # Set the incubation end time as an offset-aware datetime
-            incubation_end_time = current_time + incubation_time
-
-            # Use the egg ID for each egg in the incubation key
-            incubation_key = f'incubation:{user_id}:{egg_id}'
-
-            # Insert into incubating_eggs with the incubation end time
-            async with self.bot.pool.acquire() as conn:
-                await conn.execute(
-                    'INSERT INTO incubating_eggs (user_id, egg_id, egg_name, incubation_end_time) VALUES ($1, $2, $3, $4);',
-                    user_id,
-                    egg_id,
-                    egg_name,
-                    incubation_end_time,
-                )
-
-            await ctx.send(_("Egg incubated successfully!"))
+            await ctx.send(message)
 
         except Exception as e:
             print(f"An error occurred: {e}")
@@ -2275,37 +2236,7 @@ class Trading(commands.Cog):
     @is_gm()
     @commands.command(brief=_("Incubates a purchased egg"))
     async def incubate(self, ctx, egg_id: int):
-        try:
-            async with self.bot.pool.acquire() as conn:
-                # Check if the user owns the selected egg
-                user_owns_egg = await conn.fetchval(
-                    'SELECT COUNT(*) FROM user_eggs WHERE user_id=$1 AND id=$2;',
-                    ctx.author.id,
-                    egg_id,
-                )
-
-                if user_owns_egg:
-                    # Retrieve the selected egg's details
-                    selected_egg = await conn.fetchrow(
-                        'SELECT egg_name FROM user_eggs WHERE id=$1;',
-                        egg_id,
-                    )
-
-                    if selected_egg:
-                        egg_name = selected_egg['egg_name']
-
-                        # Start incubation using the dedicated method
-                        await self.start_incubation(ctx.author.id, egg_id, egg_name, ctx)
-
-                        await ctx.send(_("Egg incubated successfully!"))
-                    else:
-                        await ctx.send(_("Invalid egg ID."))
-                else:
-                    await ctx.send(_("You don't own the selected egg."))
-
-        except Exception as e:
-            print(f"An error occurred: {e}")
-            await ctx.send(_(f"An error occurred while processing your request. {e}"))
+        await self.start_incubation(ctx.author.id, egg_id, None, ctx)
 
     async def choose_pet(self, rarity):
         if rarity == "Common Egg":

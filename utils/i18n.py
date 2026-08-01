@@ -113,10 +113,14 @@ def i18n_docstring(func: Callable[[Any], Any]) -> Callable[[Any], Any]:
         if not isinstance(gettext_call.func, ast.Name) or gettext_call.func.id != "_":
             return func
 
-        if len(gettext_call.args) != 1 or not isinstance(gettext_call.args[0], ast.Str):
+        if (
+            len(gettext_call.args) != 1
+            or not isinstance(gettext_call.args[0], ast.Constant)
+            or not isinstance(gettext_call.args[0].value, str)
+        ):
             return func
 
-        func.__doc__ = gettext_call.args[0].s
+        func.__doc__ = gettext_call.args[0].value
     except Exception:
         return func
     return func
