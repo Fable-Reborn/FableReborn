@@ -1395,6 +1395,18 @@ class Crates(commands.Cog):
                 amount=amount, rarity=rarity, other=other.mention
             )
         )
+        ai_cog = self.bot.get_cog("AIPlayer")
+        if ai_cog is not None:
+            ai_cog.start_gift_received(
+                recipient_id=other.id,
+                sender=ctx.author,
+                gift={
+                    "kind": "crates",
+                    "rarity": rarity,
+                    "amount": int(amount),
+                },
+                public_channel=ctx.channel,
+            )
 
     @has_char()
     @user_cooldown(30)

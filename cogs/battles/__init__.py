@@ -2202,6 +2202,33 @@ class Battles(commands.Cog):
             "door_4_freedom": "Door 4 - Hidden Freedom Door",
         }.get(door_key, door_key.replace("_", " ").title())
 
+    async def _aiplayer_prompt_choice(
+        self,
+        ctx,
+        *,
+        event: dict,
+        choices: list[str],
+        timeout: float = 45,
+    ) -> tuple[bool, str | None]:
+        """Resolve a Densetsu prompt through the JSON bridge when it is active."""
+        ai_cog = self.bot.get_cog("AIPlayer")
+        if ai_cog is None or not await ai_cog.is_active_for(ctx.author.id):
+            return False, None
+        event = dict(event)
+        event["allowed_actions"] = [
+            {"name": choice, "description": f"Choose {choice}."}
+            for choice in choices
+        ]
+        decision = await ai_cog.choose_interaction(
+            user_id=ctx.author.id,
+            event=event,
+            public_channel=ctx.channel,
+            timeout=timeout,
+        )
+        if decision is None or decision.action not in choices:
+            return True, None
+        return True, decision.action
+
     async def _update_tower_run_progress(self, ctx, level: int):
         freedom_gain = int(self.TOWER_FREEDOM_MILESTONE_GAINS.get(level, 0) or 0)
         has_key_roll = level in self.TOWER_KEY_FLOOR_BITS
@@ -2307,6 +2334,34 @@ class Battles(commands.Cog):
 
         if not entries:
             return None
+
+        controlled, ai_choice = await self._aiplayer_prompt_choice(
+            ctx,
+            event={
+                "event": "battletower_finale_door_choice",
+                "doors": [
+                    {
+                        "action": door_key,
+                        "label": self._tower_door_label(door_key),
+                        "title": str(endings[door_key].get("title", "Unknown Ending")),
+                        "description": str(endings[door_key].get("description", "")),
+                        "doubles_finale_reward": door_key == "door_4_freedom",
+                    }
+                    for door_key in available_door_keys
+                    if door_key in endings
+                ],
+            },
+            choices=list(available_door_keys),
+        )
+        if controlled:
+            if ai_choice:
+                return ai_choice
+            chosen = random.choice(available_door_keys)
+            await ctx.send(
+                f"Densetsu did not decide in time. The tower chooses: "
+                f"**{self._tower_door_label(chosen)}**."
+            )
+            return chosen
 
         try:
             selected_idx = await self.bot.paginator.Choose(
@@ -4876,16 +4931,49 @@ class Battles(commands.Cog):
             else:
                 right_money_amount = random.choice(chest_options["money_options"])
             
+            left_reward = (
+                {"type": "crate", "rarity": left_crate_type, "amount": 1}
+                if left_reward_type == "crate"
+                else {
+                    "type": "money",
+                    "base_amount": int(left_money_amount),
+                    "actual_amount": int(left_money_amount * money_mult),
+                }
+            )
+            right_reward = (
+                {"type": "crate", "rarity": right_crate_type, "amount": 1}
+                if right_reward_type == "crate"
+                else {
+                    "type": "money",
+                    "base_amount": int(right_money_amount),
+                    "actual_amount": int(right_money_amount * money_mult),
+                }
+            )
+            controlled, choice = await self._aiplayer_prompt_choice(
+                ctx,
+                event={
+                    "event": "battletower_treasure_choice",
+                    "floor": int(level),
+                    "prestige_rewards_are_randomized_before_choice": True,
+                    "options": {"left": left_reward, "right": right_reward},
+                },
+                choices=["left", "right"],
+            )
+
             # Process user choice
             def check(m):
                 return m.author == ctx.author and m.content.lower() in ['left', 'right']
-                
-            try:
-                msg = await self.bot.wait_for('message', check=check, timeout=60.0)
-                choice = msg.content.lower()
-            except asyncio.TimeoutError:
+
+            if controlled and choice is None:
                 choice = random.choice(["left", "right"])
-                await ctx.send('You took too long to decide. The chest will be chosen at random.')
+                await ctx.send("Densetsu did not decide in time. The chest will be chosen at random.")
+            elif not controlled:
+                try:
+                    msg = await self.bot.wait_for('message', check=check, timeout=60.0)
+                    choice = msg.content.lower()
+                except asyncio.TimeoutError:
+                    choice = random.choice(["left", "right"])
+                    await ctx.send('You took too long to decide. The chest will be chosen at random.')
             
             # Process the reward based on choice
             new_level = level + 1
@@ -4951,13 +5039,31 @@ class Battles(commands.Cog):
         def check(m):
             return m.author == ctx.author and m.content.lower() in ['left', 'right']
             
-        try:
-            msg = await self.bot.wait_for('message', check=check, timeout=60.0)
-            choice = msg.content.lower()
-        except asyncio.TimeoutError:
+        controlled, choice = await self._aiplayer_prompt_choice(
+            ctx,
+            event={
+                "event": "battletower_treasure_choice",
+                "floor": int(level),
+                "prestige_rewards_are_randomized_before_choice": False,
+                "options": {
+                    "left": dict(rewards["left"]),
+                    "right": dict(rewards["right"]),
+                },
+            },
+            choices=["left", "right"],
+        )
+        if controlled and choice is None:
             newlevel = level + 1
             choice = random.choice(["left", "right"])
-            await ctx.send('You took too long to decide. The chest will be chosen at random.')
+            await ctx.send("Densetsu did not decide in time. The chest will be chosen at random.")
+        elif not controlled:
+            try:
+                msg = await self.bot.wait_for('message', check=check, timeout=60.0)
+                choice = msg.content.lower()
+            except asyncio.TimeoutError:
+                newlevel = level + 1
+                choice = random.choice(["left", "right"])
+                await ctx.send('You took too long to decide. The chest will be chosen at random.')
         
         # Process the reward based on choice
         if choice is not None:
@@ -8218,6 +8324,18 @@ class Battles(commands.Cog):
                 )
                 return
 
+            ai_offer_task = None
+            ai_player = self.bot.get_cog("AIPlayer")
+            if ai_player is not None:
+                ai_offer_task = ai_player.start_raidbattle_offer(
+                    future=future,
+                    view=view,
+                    challenger=ctx.author,
+                    requested_enemy=enemy,
+                    wager=money,
+                    public_channel=ctx.channel,
+                )
+
             try:
                 enemy_ = await future
             except asyncio.TimeoutError:
@@ -8236,6 +8354,9 @@ class Battles(commands.Cog):
                     ),
                     suppress_failure=True,
                 )
+            finally:
+                if ai_offer_task is not None and not ai_offer_task.done():
+                    ai_offer_task.cancel()
 
             # Deduct money from the enemy
             await self.bot.pool.execute(
@@ -9694,7 +9815,14 @@ class Battles(commands.Cog):
             return
 
         # Check for macro detection
-        macro_detected = await self.check_pve_macro_detection(ctx.author.id)
+        authorized_ai_player = bool(
+            getattr(ctx, "authorized_ai_player", False)
+        )
+        macro_detected = (
+            False
+            if authorized_ai_player
+            else await self.check_pve_macro_detection(ctx.author.id)
+        )
         if macro_detected:
             try:
                 if self.macro_alert_user_id:
@@ -10114,12 +10242,16 @@ class Battles(commands.Cog):
             suppress_failure=True,
         )
         if is_omnithrone_encounter:
-            confirm = await ctx.confirm(
-                _(
-                    "This encounter is not intended to be fought yet. "
-                    "You will die. Are you sure you want to continue?"
-                ),
-                timeout=45,
+            confirm = (
+                False
+                if authorized_ai_player
+                else await ctx.confirm(
+                    _(
+                        "This encounter is not intended to be fought yet. "
+                        "You will die. Are you sure you want to continue?"
+                    ),
+                    timeout=45,
+                )
             )
             if not confirm:
                 retreat_embed = discord.Embed(
@@ -10143,7 +10275,11 @@ class Battles(commands.Cog):
             await self._play_omnithrone_sanctum_cinematic(ctx, monster.get("name"))
 
         # Check for macro penalty
-        macro_penalty_level = self.get_pve_macro_penalty_level(ctx.author.id)
+        macro_penalty_level = (
+            0
+            if authorized_ai_player
+            else self.get_pve_macro_penalty_level(ctx.author.id)
+        )
         
         async def send_pve_error(exc):
             import traceback

@@ -227,7 +227,10 @@ class Bot(commands.AutoShardedBot):
             **second_database_creds, min_size=10, max_size=20, command_timeout=60.0
         )
 
-        for extension in self.config.bot.initial_extensions:
+        extensions = list(self.config.bot.initial_extensions)
+        if "cogs.aiplayer" not in extensions:
+            extensions.append("cogs.aiplayer")
+        for extension in extensions:
             try:
                 await self.load_extension(extension)
             except Exception:
@@ -305,6 +308,7 @@ class Bot(commands.AutoShardedBot):
         statdef=None,
         god=None,
         conn=None,
+        return_breakdown=False,
     ):
         """Generates the raidstats for a user"""
         v = self._coerce_user_id(thing)
@@ -312,6 +316,7 @@ class Bot(commands.AutoShardedBot):
         if conn is None:
             conn = await self.pool.acquire()
             local = True
+        unspent_statpoints = None
         if (
             atkmultiply is None
             or defmultiply is None
@@ -331,14 +336,19 @@ class Bot(commands.AutoShardedBot):
                 row["statatk"],
                 row["statdef"],
             )
+            unspent_statpoints = row["statpoints"]
             if god is not None and god != user_god:
                 raise ValueError()
         damage, armor = await self.get_damage_armor_for(
             v, classes=classes, race=race, conn=conn
         )
+        profile_attack_multiplier = atkmultiply
+        profile_defense_multiplier = defmultiply
+        city_raid_building_level = 0
         if buildings := await self.get_city_buildings(guild, conn=conn):
-            atkmultiply += buildings["raid_building"] * Decimal("0.1")
-            defmultiply += buildings["raid_building"] * Decimal("0.1")
+            city_raid_building_level = int(buildings["raid_building"] or 0)
+            atkmultiply += city_raid_building_level * Decimal("0.1")
+            defmultiply += city_raid_building_level * Decimal("0.1")
         classes = [class_from_string(c) for c in classes]
 
         statatk = Decimal(statatk)
@@ -356,19 +366,49 @@ class Bot(commands.AutoShardedBot):
                 #defmultiply = defmultiply + Decimal("0.1") * grade
         dmg = damage * atkmultiply
         deff = armor * defmultiply
-        print(f"[DEBUG] Pre-Amulet Stats - Damage: {dmg}, Defense: {deff}")
+        pre_amulet_damage = dmg
+        pre_amulet_defense = deff
 
         # Apply equipped amulet stats as a flat bonus
         amulet = await conn.fetchrow('SELECT attack, defense FROM amulets WHERE user_id=$1 AND equipped=true', v)
+        amulet_attack = 0
+        amulet_defense = 0
         if amulet:
-            print(f"[DEBUG] Amulet Bonus - Attack: {amulet['attack']}, Defense: {amulet['defense']}")
-            dmg += amulet['attack']
-            deff += amulet['defense']
-        print(f"[DEBUG] Final Stats - Damage: {dmg}, Defense: {deff}")
+            amulet_attack = amulet["attack"] or 0
+            amulet_defense = amulet["defense"] or 0
+            dmg += amulet_attack
+            deff += amulet_defense
 
 
         if local:
             await self.pool.release(conn)
+        if return_breakdown:
+            return dmg, deff, {
+                "equipment_class_race_attack": damage,
+                "equipment_class_race_defense": armor,
+                "profile_attack_multiplier": profile_attack_multiplier,
+                "profile_defense_multiplier": profile_defense_multiplier,
+                "city_raid_building_level": city_raid_building_level,
+                "city_multiplier_bonus": Decimal(city_raid_building_level) * Decimal("0.1"),
+                "allocated_attack_points": statatk,
+                "allocated_defense_points": statdef,
+                "unspent_stat_points": unspent_statpoints,
+                "stat_point_effects": {
+                    "attack": "+0.1 attack multiplier per point",
+                    "defense": "+0.1 defense multiplier per point",
+                    "health": "+50 maximum HP per point",
+                },
+                "allocated_attack_multiplier_bonus": statatk * Decimal("0.1"),
+                "allocated_defense_multiplier_bonus": statdef * Decimal("0.1"),
+                "applied_attack_multiplier": atkmultiply,
+                "applied_defense_multiplier": defmultiply,
+                "pre_amulet_attack": pre_amulet_damage,
+                "pre_amulet_defense": pre_amulet_defense,
+                "amulet_attack": amulet_attack,
+                "amulet_defense": amulet_defense,
+                "raid_attack_before_specialization": dmg,
+                "raid_defense_before_specialization": deff,
+            }
         return dmg, deff
 
     async def get_raidstatsjug(

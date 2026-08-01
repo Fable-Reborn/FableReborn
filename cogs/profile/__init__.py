@@ -5913,7 +5913,6 @@ class Profile(commands.Cog):
                 stat=stat, item=item["name"], newstat=main + 1
             )
         )
-
     @checks.has_char()
     @user_cooldown(3600)
     @commands.command(aliases=["upgrade"], brief=_("Upgrade an item"))
@@ -6066,6 +6065,14 @@ class Profile(commands.Cog):
                 other=other.mention, othermoney=othermoney, authormoney=authormoney
             )
         )
+        ai_cog = self.bot.get_cog("AIPlayer")
+        if ai_cog is not None:
+            ai_cog.start_gift_received(
+                recipient_id=other.id,
+                sender=ctx.author,
+                gift={"kind": "money", "amount": int(money)},
+                public_channel=ctx.channel,
+            )
 
     @checks.has_char()
     @commands.command(brief=_("Rename your character"))
