@@ -83,6 +83,9 @@ PAID_RAID_UPGRADE_MONEY_RESERVE = 50_000
 CLASS_CHANGE_COST = 5_000
 CLASS_CHANGE_COOLDOWN_SECONDS = 3_600
 CLASS_CHANGE_COOLDOWN_KEY = f"cd:{DENSETSU_USER_ID}:class"
+CLASS_PLAN_KEY = f"aiplayer:{DENSETSU_USER_ID}:class_plan"
+CLASS_CHANGE_PROPOSAL_KEY = f"aiplayer:{DENSETSU_USER_ID}:class_change_proposal"
+CLASS_CHANGE_PROPOSAL_TTL_SECONDS = 6 * 3_600
 ADVENTURE_BALANCED_SUCCESS_THRESHOLD = 80
 PET_EMERGENCY_HUNGER = 20
 PET_CARE_ACTION_KNOWLEDGE = {
@@ -305,6 +308,192 @@ def class_choice_options(
     return options
 
 
+def hypothetical_class_equipment_fit(
+    *,
+    items: list[dict[str, Any]],
+    current_item_ids: list[int],
+    class_names: list[str],
+    slot: int,
+    replacement_class_name: str,
+) -> dict[str, Any]:
+    """Score the full owned inventory under a proposed class replacement."""
+    hypothetical_classes = list(class_names[:2])
+    while len(hypothetical_classes) < 2:
+        hypothetical_classes.append("No Class")
+    hypothetical_classes[slot] = replacement_class_name
+    current_ids = {int(item_id) for item_id in current_item_ids}
+    current_items = [item for item in items if int(item["id"]) in current_ids]
+    current_build_best = choose_best_equipment(items, class_names, current_ids)
+    hypothetical_best = choose_best_equipment(
+        items, hypothetical_classes, current_ids
+    )
+    equipped_under_hypothetical = (
+        score_loadout(current_items, hypothetical_classes)
+        if current_items
+        else {"score": 0, "class_weapon_bonus_damage": 0, "class_weapon_bonus_armor": 0}
+    )
+
+    item_by_id = {int(item["id"]): item for item in items}
+    best_ids = list((hypothetical_best or {}).get("item_ids", []))
+
+    def item_summary(item: dict[str, Any]) -> dict[str, Any]:
+        replacement_only = score_loadout([item], [replacement_class_name])
+        return {
+            "id": int(item["id"]),
+            "name": str(item.get("name") or "Unknown item"),
+            "type": str(item.get("type") or "Unknown"),
+            "hand": str(item.get("hand") or "any"),
+            "effective_damage_before_class_bonus": round(
+                float(item.get("effective_damage", item.get("damage", 0)) or 0), 2
+            ),
+            "effective_armor_before_class_bonus": round(
+                float(item.get("effective_armor", item.get("armor", 0)) or 0), 2
+            ),
+            "replacement_class_bonus_damage": replacement_only[
+                "class_weapon_bonus_damage"
+            ],
+            "replacement_class_bonus_armor": replacement_only[
+                "class_weapon_bonus_armor"
+            ],
+            "favored_by_replacement": bool(
+                replacement_only["class_weapon_bonus_damage"]
+                or replacement_only["class_weapon_bonus_armor"]
+            ),
+        }
+
+    favored_owned = []
+    for item in items:
+        summary = item_summary(item)
+        if summary["favored_by_replacement"]:
+            summary["equipped_now"] = int(item["id"]) in current_ids
+            favored_owned.append(summary)
+    favored_owned.sort(
+        key=lambda item: (
+            item["effective_damage_before_class_bonus"]
+            + item["effective_armor_before_class_bonus"]
+            + item["replacement_class_bonus_damage"]
+            + item["replacement_class_bonus_armor"]
+        ),
+        reverse=True,
+    )
+
+    current_best_score = float((current_build_best or {}).get("score", 0) or 0)
+    hypothetical_best_score = float((hypothetical_best or {}).get("score", 0) or 0)
+    return {
+        "resulting_classes": hypothetical_classes,
+        "equipped_loadout_under_replacement": equipped_under_hypothetical,
+        "best_owned_loadout_under_replacement": hypothetical_best,
+        "best_owned_loadout_items": [
+            item_summary(item_by_id[item_id])
+            for item_id in best_ids
+            if item_id in item_by_id
+        ],
+        "favored_owned_items": favored_owned[:2],
+        "equipped_favored_item_count": sum(
+            1 for item in favored_owned if item["equipped_now"]
+        ),
+        "best_loadout_score_delta_vs_current_class_build": round(
+            hypothetical_best_score - current_best_score, 2
+        ),
+        "uses_full_owned_inventory": True,
+        "score_scope": (
+            "Exact equipment, Starforge, Soulbound, hand, and favored-weapon fit only; "
+            "compare class_knowledge separately for combat and utility mechanics."
+        ),
+    }
+
+
+def class_pet_fit(
+    class_key: str, *, level: int, pet_state: dict[str, Any]
+) -> dict[str, Any]:
+    """Make the Ranger/Beastmaster pet distinction explicit for class decisions."""
+    pets = list(pet_state.get("pets") or [])
+    recommended_id = pet_state.get("recommended_combat_pet_id")
+    active = next((pet for pet in pets if pet.get("equipped")), None)
+    if active is None and recommended_id is not None:
+        active = next(
+            (pet for pet in pets if int(pet.get("id", 0)) == int(recommended_id)),
+            None,
+        )
+    grade = min(7, max(1, int(level) // 5 + 1))
+    active_summary = (
+        {
+            "id": int(active["id"]),
+            "name": str(active.get("name") or active.get("species") or "Pet"),
+            "hp": int(active.get("hp", 0) or 0),
+            "attack": int(active.get("attack", 0) or 0),
+            "defense": int(active.get("defense", 0) or 0),
+            "combat_score": float(active.get("combat_score", 0) or 0),
+        }
+        if active is not None
+        else None
+    )
+    result = {
+        "active_or_recommended_pet": active_summary,
+        "has_combat_pet": active is not None,
+        "direct_pet_stat_multiplier": 1.0,
+        "direct_pet_combat_bonus": False,
+        "pet_collection_utility": False,
+    }
+    if class_key == "beastmaster":
+        multiplier = 1 + 0.03 * grade
+        result.update(
+            {
+                "direct_pet_stat_multiplier": round(multiplier, 2),
+                "direct_pet_combat_bonus": True,
+                "explanation": (
+                    f"At currently unlocked grade {grade}, Pack Bond multiplies the "
+                    f"equipped pet's HP, attack, and defense by {multiplier:.2f} in "
+                    "supported pet battle modes."
+                ),
+            }
+        )
+        if active is not None:
+            result["projected_pet_stats"] = {
+                stat: round(float(active.get(stat, 0) or 0) * multiplier, 2)
+                for stat in ("hp", "attack", "defense")
+            }
+    elif class_key == "ranger":
+        result.update(
+            {
+                "pet_collection_utility": True,
+                "explanation": (
+                    "Ranger/Tamer improves scouting, egg acquisition, and pet "
+                    "collection but does not directly multiply a pet's battle stats."
+                ),
+            }
+        )
+    else:
+        result["explanation"] = (
+            "This line has no base-class mechanic that directly multiplies pet combat stats."
+        )
+    return result
+
+
+def confirms_class_change_proposal(
+    pending: dict[str, Any] | None,
+    *,
+    slot: int,
+    expected_current: str,
+    class_key: str,
+    event_id: str,
+) -> bool:
+    """Require the same paid switch on a genuinely later model decision."""
+    if not isinstance(pending, dict):
+        return False
+    try:
+        pending_slot = int(pending.get("slot", -1))
+    except (TypeError, ValueError):
+        return False
+    return (
+        pending_slot == slot
+        and str(pending.get("expected_current") or "") == expected_current
+        and str(pending.get("to_class_key") or "") == class_key
+        and bool(str(pending.get("event_id") or ""))
+        and str(pending.get("event_id")) != event_id
+    )
+
+
 def class_progression_payload(
     class_names: list[str], level: int
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -511,6 +700,195 @@ class AIPlayer(commands.Cog):
     async def is_active_for(self, user_id: int) -> bool:
         """Return whether this cog is currently controlling the requested player."""
         return int(user_id) == DENSETSU_USER_ID and await self._is_enabled()
+
+    async def _redis_json_get(self, key: str) -> dict[str, Any] | None:
+        raw = await self.bot.redis.get(key)
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="ignore")
+        if not raw:
+            return None
+        try:
+            value = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    async def _redis_json_set(
+        self, key: str, value: dict[str, Any], *, expires: int | None = None
+    ) -> None:
+        payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        if expires is None:
+            await self.bot.redis.set(key, payload)
+        else:
+            await self.bot.redis.set(key, payload, ex=max(1, int(expires)))
+
+    @staticmethod
+    def _class_build_snapshot(state: dict[str, Any]) -> dict[str, Any]:
+        equipment = state.get("equipment") or {}
+        current_equipment = equipment.get("current") or {}
+        pets = (state.get("companions") or {}).get("pets") or []
+        active_pet = next(
+            (pet for pet in pets if isinstance(pet, dict) and pet.get("equipped")),
+            None,
+        )
+        raid_final = ((state.get("raid_stats") or {}).get("final_raidbattle_stats") or {})
+        level = int((state.get("character") or {}).get("level", 0) or 0)
+        return {
+            "level": level,
+            "class_evolution_cap_grade": min(7, max(1, level // 5 + 1)),
+            "secondary_class_slot_unlocked": level >= 12,
+            "specialization_level_gate_unlocked": level >= MASTERY_UNLOCK_LEVEL,
+            "equipped_item_ids": sorted(
+                int(item_id) for item_id in current_equipment.get("item_ids", [])
+            ),
+            "equipped_item_types": sorted(
+                str(item.get("type") or "Unknown")
+                for item in equipment.get("equipped_items", [])
+                if isinstance(item, dict)
+            ),
+            "equipped_pet_id": int(active_pet["id"]) if active_pet else None,
+            "equipped_pet_combat_score": (
+                float(active_pet.get("combat_score", 0) or 0) if active_pet else None
+            ),
+            "raid_attack": float(raid_final.get("attack", 0) or 0),
+            "raid_defense": float(raid_final.get("defense", 0) or 0),
+            "raid_max_hp": float(raid_final.get("max_hp", 0) or 0),
+        }
+
+    async def _record_class_plan(
+        self,
+        *,
+        decision: Decision,
+        state: dict[str, Any],
+        slot: int,
+        class_key: str,
+        previous_class_name: str,
+        selection_kind: str,
+    ) -> None:
+        plan = await self._redis_json_get(CLASS_PLAN_KEY) or {"slots": {}}
+        slots = plan.get("slots")
+        if not isinstance(slots, dict):
+            slots = {}
+        slots[str(slot)] = {
+            "slot": slot,
+            "selected_class_key": class_key,
+            "selected_class_line": ALL_KNOWN_CLASSES[class_key].__name__,
+            "previous_class_name": previous_class_name,
+            "previous_class_keys": sorted(
+                class_keys_for_evolution(previous_class_name)
+            ),
+            "selection_kind": selection_kind,
+            "reason": decision.reason or "No long-term rationale was supplied.",
+            "selected_at_unix": int(
+                datetime.datetime.now(datetime.timezone.utc).timestamp()
+            ),
+            "build_snapshot": self._class_build_snapshot(state),
+        }
+        plan["slots"] = slots
+        await self._redis_json_set(CLASS_PLAN_KEY, plan)
+
+    async def _collect_class_strategy_state(
+        self, *, class_names: list[str], state: dict[str, Any]
+    ) -> dict[str, Any]:
+        plan = await self._redis_json_get(CLASS_PLAN_KEY) or {"slots": {}}
+        plan_slots = plan.get("slots")
+        if not isinstance(plan_slots, dict):
+            plan_slots = {}
+        proposal = await self._redis_json_get(CLASS_CHANGE_PROPOSAL_KEY)
+        if proposal is not None:
+            try:
+                proposal_slot = int(proposal.get("slot", -1))
+            except (TypeError, ValueError):
+                proposal_slot = -1
+            if (
+                proposal_slot not in (0, 1)
+                or proposal_slot >= len(class_names)
+                or str(proposal.get("expected_current") or "")
+                != str(class_names[proposal_slot])
+            ):
+                await self.bot.redis.delete(CLASS_CHANGE_PROPOSAL_KEY)
+                proposal = None
+        current_snapshot = self._class_build_snapshot(state)
+        now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+        seeded_baseline = False
+        for slot, class_name in enumerate(class_names[:2]):
+            if class_name == "No Class" or str(slot) in plan_slots:
+                continue
+            current_keys = sorted(class_keys_for_evolution(class_name))
+            if not current_keys:
+                continue
+            class_key = current_keys[0]
+            plan_slots[str(slot)] = {
+                "slot": slot,
+                "selected_class_key": class_key,
+                "selected_class_line": ALL_KNOWN_CLASSES[class_key].__name__,
+                "previous_class_name": None,
+                "previous_class_keys": [],
+                "selection_kind": "adopted_existing_build_baseline",
+                "reason": (
+                    "This equipped class was adopted as the long-term baseline when "
+                    "class consistency tracking was enabled."
+                ),
+                "selected_at_unix": now,
+                "build_snapshot": current_snapshot,
+            }
+            seeded_baseline = True
+        if seeded_baseline:
+            plan["slots"] = plan_slots
+            await self._redis_json_set(CLASS_PLAN_KEY, plan)
+        active_plans = []
+        for raw_slot, raw_plan in plan_slots.items():
+            if not isinstance(raw_plan, dict):
+                continue
+            try:
+                slot = int(raw_slot)
+            except (TypeError, ValueError):
+                continue
+            if slot not in (0, 1) or slot >= len(class_names):
+                continue
+            entry = dict(raw_plan)
+            selected_at = int(entry.get("selected_at_unix", 0) or 0)
+            original_snapshot = entry.get("build_snapshot") or {}
+            changes = []
+            for field, label in (
+                ("equipped_item_ids", "equipped items changed"),
+                ("equipped_pet_id", "equipped pet changed"),
+            ):
+                if original_snapshot.get(field) != current_snapshot.get(field):
+                    changes.append(label)
+            for field, label in (
+                ("class_evolution_cap_grade", "a new class evolution grade unlocked"),
+                ("secondary_class_slot_unlocked", "the second class slot unlocked"),
+                ("specialization_level_gate_unlocked", "the specialization level gate unlocked"),
+            ):
+                if original_snapshot.get(field) != current_snapshot.get(field):
+                    changes.append(label)
+            entry.update(
+                {
+                    "current_class_name": class_names[slot],
+                    "current_class_still_matches_plan": entry.get(
+                        "selected_class_key"
+                    )
+                    in class_keys_for_evolution(class_names[slot]),
+                    "seconds_since_selection": max(0, now - selected_at),
+                    "observable_build_changes_since_selection": changes,
+                    "observable_build_changed": bool(changes),
+                }
+            )
+            active_plans.append(entry)
+        return {
+            "policy": {
+                "cooldown_expiry_only_makes_change_legal": True,
+                "cooldown_expiry_is_not_a_reason_to_change": True,
+                "preserve_a_coherent_long_term_build": True,
+                "reversing_a_recent_choice_requires_new_concrete_evidence": True,
+                "paid_change_requires_same_proposal_on_two_separate_decisions": True,
+                "switching_remains_available_when_strategically_justified": True,
+            },
+            "recorded_slot_plans": active_plans,
+            "pending_paid_change_proposal": proposal,
+            "current_build_snapshot": current_snapshot,
+        }
 
     async def _max_wager_percent(self) -> int:
         value = await self.bot.redis.get(MAX_WAGER_PERCENT_KEY)
@@ -970,7 +1348,10 @@ class AIPlayer(commands.Cog):
         }, actions
 
     async def _collect_equipment_state(
-        self, connection, class_names: list[str]
+        self,
+        connection,
+        class_names: list[str],
+        available_classes: dict[str, type],
     ) -> dict[str, Any]:
         rows = await connection.fetch(
             """
@@ -989,6 +1370,7 @@ class AIPlayer(commands.Cog):
                 "class_weapon_bonus_rules": favored_weapon_bonus_rules(),
                 "class_weapon_bonuses_apply_to_each_matching_equipped_item": True,
                 "class_weapon_bonuses_are_included_in_scores": True,
+                "_hypothetical_class_change_fit": {},
                 "candidates": [],
             }
 
@@ -1051,6 +1433,19 @@ class AIPlayer(commands.Cog):
         current_items = [item for item in items if int(item["id"]) in current_ids]
         current = score_loadout(current_items, class_names)
         recommended = choose_best_equipment(items, class_names, current_ids)
+        hypothetical_fit = {
+            str(slot): {
+                key: hypothetical_class_equipment_fit(
+                    items=items,
+                    current_item_ids=current_ids,
+                    class_names=class_names,
+                    slot=slot,
+                    replacement_class_name=get_first_evolution(class_type).class_name(),
+                )
+                for key, class_type in available_classes.items()
+            }
+            for slot in range(2)
+        }
 
         ranked_items = sorted(
             items,
@@ -1094,6 +1489,18 @@ class AIPlayer(commands.Cog):
             "class_weapon_bonus_rules": favored_weapon_bonus_rules(),
             "class_weapon_bonuses_apply_to_each_matching_equipped_item": True,
             "class_weapon_bonuses_are_included_in_scores": True,
+            "equipped_items": [
+                {
+                    "id": int(item["id"]),
+                    "name": str(item["name"]),
+                    "type": str(item["type"]),
+                    "hand": str(item["hand"]),
+                    "effective_damage": round(float(item["effective_damage"]), 2),
+                    "effective_armor": round(float(item["effective_armor"]), 2),
+                }
+                for item in current_items
+            ],
+            "_hypothetical_class_change_fit": hypothetical_fit,
             "candidates": candidates,
         }
 
@@ -1658,6 +2065,12 @@ class AIPlayer(commands.Cog):
                 len(choices),
                 event_id,
                 maximum,
+            )
+            return None
+        if sum(choice.action == "change_class" for choice in choices) > 1:
+            logger.warning(
+                "Densetsu returned multiple class-change proposals for event %s",
+                event_id,
             )
             return None
         allowed = action_names(event)
@@ -2315,7 +2728,7 @@ class AIPlayer(commands.Cog):
                 connection, profile, level=level
             )
             equipment_state = await self._collect_equipment_state(
-                connection, class_names
+                connection, class_names, available_classes
             )
             amulet_state, amulet_actions = await self._collect_amulet_state(
                 connection, level=level
@@ -2346,6 +2759,15 @@ class AIPlayer(commands.Cog):
         class_change_cooldown = await self._command_cooldown("class")
         battle_cog = self.bot.get_cog("Battles")
         raid_stats = await self._collect_raid_stats(DENSETSU_USER_ID)
+        class_strategy_state = await self._collect_class_strategy_state(
+            class_names=class_names,
+            state={
+                "character": {"level": level},
+                "equipment": equipment_state,
+                "companions": pet_state,
+                "raid_stats": raid_stats,
+            },
+        )
         paid_raid_upgrades, paid_raid_action = (
             await self._collect_paid_raid_upgrade_state(profile, raid_stats)
         )
@@ -2458,6 +2880,57 @@ class AIPlayer(commands.Cog):
             level=level,
             cost=CLASS_CHANGE_COST,
         )
+        plan_by_slot = {
+            int(plan["slot"]): plan
+            for plan in class_strategy_state.get("recorded_slot_plans", [])
+            if isinstance(plan, dict) and plan.get("slot") in (0, 1)
+        }
+        pending_class_change = class_strategy_state.get(
+            "pending_paid_change_proposal"
+        )
+        equipment_fit = equipment_state.get("_hypothetical_class_change_fit") or {}
+        class_pet_fit_by_class = {
+            key: class_pet_fit(key, level=level, pet_state=pet_state)
+            for key in available_classes
+        }
+        for option in [*empty_class_options, *paid_class_options]:
+            slot = int(option["slot"])
+            class_key = str(option["class"])
+            option["class_knowledge_key"] = class_key
+            option["read_full_mechanics_from_class_knowledge_key"] = True
+            option["equipment_fit"] = (
+                equipment_fit.get(str(slot), {}).get(class_key, {})
+            )
+            option["pet_fit_key"] = class_key
+            current_plan = plan_by_slot.get(slot)
+            option["consistency"] = {
+                "reverts_the_recorded_previous_class": bool(
+                    current_plan
+                    and class_key in current_plan.get("previous_class_keys", [])
+                ),
+                "read_current_plan_from_class_system": current_plan is not None,
+                "cooldown_expiry_is_not_a_strategic_reason": True,
+            }
+            if int(option["cost"]) > 0:
+                confirms_pending = bool(
+                    isinstance(pending_class_change, dict)
+                    and int(pending_class_change.get("slot", -1)) == slot
+                    and str(pending_class_change.get("expected_current") or "")
+                    == str(option["replaces"])
+                    and str(pending_class_change.get("to_class_key") or "")
+                    == class_key
+                )
+                option["confirmation"] = {
+                    "confirms_pending_proposal": confirms_pending,
+                    "first_selection_records_proposal_without_changing_class": not confirms_pending,
+                    "same_exact_choice_on_a_later_decision_executes_change": True,
+                }
+            else:
+                option["confirmation"] = {
+                    "initial_empty_slot_selection_is_immediate_and_free": True,
+                    "paid_change_confirmation_not_required": True,
+                }
+        equipment_state.pop("_hypothetical_class_change_fit", None)
         if (
             paid_class_options
             and class_change_cooldown <= 0
@@ -2467,10 +2940,14 @@ class AIPlayer(commands.Cog):
                 {
                     "name": "change_class",
                     "description": (
-                        f"Replace one class line for ${CLASS_CHANGE_COST:,}. Only do "
-                        "this for a material long-term build improvement: the selected "
-                        "line restarts at grade 1, then free evolve_classes catches it "
-                        "up to the highest evolution unlocked by character level."
+                        f"Propose or confirm replacing one class line for "
+                        f"${CLASS_CHANGE_COST:,}. The same exact choice must be made on "
+                        "two separate decisions before any class or gold changes. Only "
+                        "do this for a material long-term improvement supported by the "
+                        "option's equipment_fit plus the keyed pet fit, full class "
+                        "mechanics, and recorded build plan. A replacement starts at "
+                        "grade 1, then free "
+                        "evolve_classes catches it up to the current level unlock."
                     ),
                     "priority": "optional_major_build_change",
                     "parameters": {"options": paid_class_options},
@@ -2623,6 +3100,8 @@ class AIPlayer(commands.Cog):
             "class_change_cost": CLASS_CHANGE_COST,
             "class_change_cooldown_seconds": class_change_cooldown,
             "class_changes_are_optional_and_should_be_long_term_decisions": True,
+            "class_strategy": class_strategy_state,
+            "class_pet_fit_by_class": class_pet_fit_by_class,
             "class_change_resets_only_the_replaced_line_to_grade_1": True,
             "free_evolve_then_catches_a_new_line_up_to_character_level": True,
             "duplicate_class_lines_are_not_allowed": True,
@@ -2957,6 +3436,14 @@ class AIPlayer(commands.Cog):
         await self.bot.redis.set(
             CLASS_CHANGE_COOLDOWN_KEY, "1", ex=CLASS_CHANGE_COOLDOWN_SECONDS
         )
+        await self._record_class_plan(
+            decision=decision,
+            state=state,
+            slot=slot,
+            class_key=class_key,
+            previous_class_name="No Class",
+            selection_kind="initial_free_selection",
+        )
         return f"selected {classes[slot]} in class slot {slot + 1}"
 
     async def _change_class(self, decision: Decision, state: dict[str, Any]) -> str:
@@ -2965,6 +3452,45 @@ class AIPlayer(commands.Cog):
         class_key = str(selected["class"])
         class_type = ALL_KNOWN_CLASSES[class_key]
         expected_current = str(selected["replaces"])
+        pending = await self._redis_json_get(CLASS_CHANGE_PROPOSAL_KEY)
+        confirms_pending = confirms_class_change_proposal(
+            pending,
+            slot=slot,
+            expected_current=expected_current,
+            class_key=class_key,
+            event_id=decision.event_id,
+        )
+        if not confirms_pending:
+            proposal = {
+                "slot": slot,
+                "expected_current": expected_current,
+                "from_class_keys": sorted(
+                    class_keys_for_evolution(expected_current)
+                ),
+                "to_class_key": class_key,
+                "to_class_line": class_type.__name__,
+                "reason": decision.reason or "No long-term rationale was supplied.",
+                "event_id": decision.event_id,
+                "proposed_at_unix": int(
+                    datetime.datetime.now(datetime.timezone.utc).timestamp()
+                ),
+                "build_snapshot": self._class_build_snapshot(state),
+                "confirmation_rule": (
+                    "Select this same slot and class on a later decision to execute; "
+                    "a different proposal replaces this one."
+                ),
+            }
+            await self._redis_json_set(
+                CLASS_CHANGE_PROPOSAL_KEY,
+                proposal,
+                expires=CLASS_CHANGE_PROPOSAL_TTL_SECONDS,
+            )
+            return (
+                f"recorded a class-change proposal for slot {slot + 1}: "
+                f"{expected_current} to {get_first_evolution(class_type).class_name()}; "
+                "no class or gold changed, and the same choice must be confirmed on a "
+                "later decision"
+            )
         ctx = await self._context_as_densetsu(decision.message, "profile")
 
         async with self.bot.pool.acquire() as connection:
@@ -3020,6 +3546,15 @@ class AIPlayer(commands.Cog):
 
         await self.bot.redis.set(
             CLASS_CHANGE_COOLDOWN_KEY, "1", ex=CLASS_CHANGE_COOLDOWN_SECONDS
+        )
+        await self.bot.redis.delete(CLASS_CHANGE_PROPOSAL_KEY)
+        await self._record_class_plan(
+            decision=decision,
+            state=state,
+            slot=slot,
+            class_key=class_key,
+            previous_class_name=old_name,
+            selection_kind="confirmed_paid_change",
         )
         return (
             f"changed class slot {slot + 1} from {old_name} to {classes[slot]} "
