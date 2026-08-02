@@ -61,6 +61,8 @@ TICK_LOCK_KEY = "aiplayer:tick_lock"
 MAX_WAGER_PERCENT_KEY = "aiplayer:max_wager_percent"
 DEFAULT_MAX_WAGER_PERCENT = 10
 DEFAULT_CHARACTER_NAME = "Densetsu"
+MAX_AUTOPLAY_ACTIONS = 6
+AUTOPLAY_TICK_LOCK_SECONDS = 600
 BASIC_PET_FOOD_COST = 10_000
 PET_CARE_MONEY_RESERVE = 50_000
 PAID_RAID_UPGRADE_MONEY_RESERVE = 50_000
@@ -179,6 +181,13 @@ PLAYABLE_CLASSES = {
 
 
 @dataclass(slots=True)
+class DecisionAction:
+    action: str
+    parameters: dict[str, Any]
+    reason: str
+
+
+@dataclass(slots=True)
 class Decision:
     event_id: str
     action: str
@@ -186,6 +195,22 @@ class Decision:
     reason: str
     dialogue: str
     message: discord.Message
+    actions: tuple[DecisionAction, ...] = ()
+
+    def ordered_actions(self) -> tuple[DecisionAction, ...]:
+        if self.actions:
+            return self.actions
+        return (DecisionAction(self.action, self.parameters, self.reason),)
+
+    def for_action(self, selected: DecisionAction) -> "Decision":
+        return Decision(
+            event_id=self.event_id,
+            action=selected.action,
+            parameters=selected.parameters,
+            reason=selected.reason,
+            dialogue=self.dialogue,
+            message=self.message,
+        )
 
 
 def parse_marked_json(content: str, marker: str) -> dict[str, Any] | None:
@@ -212,19 +237,52 @@ def decision_from_payload(
     payload: dict[str, Any], message: discord.Message
 ) -> Decision | None:
     event_id = str(payload.get("event_id", "")).strip()
-    action = str(payload.get("action", "")).strip().casefold()
-    if not event_id or not action:
+    if not event_id:
         return None
-    parameters = payload.get("parameters", {})
-    if not isinstance(parameters, dict):
-        parameters = {}
+    parsed_actions = []
+    raw_actions = payload.get("actions")
+    if isinstance(raw_actions, list):
+        for raw_action in raw_actions:
+            if not isinstance(raw_action, dict):
+                return None
+            action = str(raw_action.get("action", "")).strip().casefold()
+            if not action:
+                return None
+            parameters = raw_action.get("parameters", {})
+            if not isinstance(parameters, dict):
+                parameters = {}
+            parsed_actions.append(
+                DecisionAction(
+                    action=action,
+                    parameters=parameters,
+                    reason=str(raw_action.get("reason", "")).strip()[:500],
+                )
+            )
+        if not parsed_actions:
+            return None
+    else:
+        action = str(payload.get("action", "")).strip().casefold()
+        if not action:
+            return None
+        parameters = payload.get("parameters", {})
+        if not isinstance(parameters, dict):
+            parameters = {}
+        parsed_actions.append(
+            DecisionAction(
+                action=action,
+                parameters=parameters,
+                reason=str(payload.get("reason", "")).strip()[:500],
+            )
+        )
+    first = parsed_actions[0]
     return Decision(
         event_id=event_id,
-        action=action,
-        parameters=parameters,
-        reason=str(payload.get("reason", "")).strip()[:500],
+        action=first.action,
+        parameters=first.parameters,
+        reason=first.reason,
         dialogue=str(payload.get("dialogue", "")).strip()[:500],
         message=message,
+        actions=tuple(parsed_actions),
     )
 
 
@@ -1374,12 +1432,49 @@ class AIPlayer(commands.Cog):
         finally:
             self._pending.pop(event_id, None)
 
-        if decision.action not in action_names(event):
+        choices = decision.ordered_actions()
+        batch_allowed = event.get("multiple_actions_allowed") is True
+        try:
+            configured_maximum = int(event.get("maximum_actions", 1))
+        except (TypeError, ValueError):
+            configured_maximum = 1
+        maximum = (
+            min(MAX_AUTOPLAY_ACTIONS, max(1, configured_maximum))
+            if batch_allowed
+            else 1
+        )
+        if len(choices) > maximum:
             logger.warning(
-                "Densetsu returned disallowed action %s for event %s",
-                decision.action,
+                "Densetsu returned %s actions for event %s with maximum %s",
+                len(choices),
                 event_id,
+                maximum,
             )
+            return None
+        allowed = action_names(event)
+        fingerprints = set()
+        for choice in choices:
+            if choice.action not in allowed:
+                logger.warning(
+                    "Densetsu returned disallowed action %s for event %s",
+                    choice.action,
+                    event_id,
+                )
+                return None
+            fingerprint = (
+                choice.action,
+                json.dumps(choice.parameters, sort_keys=True, separators=(",", ":")),
+            )
+            if fingerprint in fingerprints:
+                logger.warning(
+                    "Densetsu returned a duplicate action for event %s", event_id
+                )
+                return None
+            fingerprints.add(fingerprint)
+        if len(choices) > 1 and any(
+            choice.action == "wait" for choice in choices
+        ):
+            logger.warning("Densetsu mixed wait into action batch %s", event_id)
             return None
         return decision
 
@@ -1851,6 +1946,9 @@ class AIPlayer(commands.Cog):
         if profile is None:
             return {
                 "event": "autoplay_tick",
+                "multiple_actions_allowed": True,
+                "maximum_actions": MAX_AUTOPLAY_ACTIONS,
+                "actions_execute_in_order_with_fresh_state_validation": True,
                 "character": None,
                 "allowed_actions": [
                     {
@@ -2152,6 +2250,9 @@ class AIPlayer(commands.Cog):
 
         return {
             "event": "autoplay_tick",
+            "multiple_actions_allowed": True,
+            "maximum_actions": MAX_AUTOPLAY_ACTIONS,
+            "actions_execute_in_order_with_fresh_state_validation": True,
             "character": {
                 "name": str(profile["name"]),
                 "level": level,
@@ -3061,7 +3162,10 @@ class AIPlayer(commands.Cog):
         async with self._local_tick_lock:
             lock_value = uuid.uuid4().hex
             acquired = await self.bot.redis.set(
-                TICK_LOCK_KEY, lock_value, ex=240, nx=True
+                TICK_LOCK_KEY,
+                lock_value,
+                ex=AUTOPLAY_TICK_LOCK_SECONDS,
+                nx=True,
             )
             if not acquired:
                 return "already running"
@@ -3072,12 +3176,47 @@ class AIPlayer(commands.Cog):
                     return "no decision"
                 if not await self._is_enabled():
                     return "disabled"
-                result = await self._execute_decision(decision, state)
+                planned_actions = decision.ordered_actions()
+                current_state = state
+                results = []
+                for index, planned in enumerate(planned_actions):
+                    if not await self._is_enabled():
+                        results.append("batch stopped because autoplay was disabled")
+                        break
+                    action_decision = decision.for_action(planned)
+                    if planned.action not in action_names(current_state):
+                        results.append(
+                            f"{planned.action}: skipped because it is no longer available"
+                        )
+                    else:
+                        try:
+                            result = await self._execute_decision(
+                                action_decision, current_state
+                            )
+                        except ValueError as exc:
+                            logger.warning(
+                                "Densetsu batch action %s failed safely: %s",
+                                planned.action,
+                                exc,
+                            )
+                            results.append(
+                                f"{planned.action}: skipped ({str(exc)[:180]})"
+                            )
+                        else:
+                            results.append(f"{planned.action}: {result}")
+                    if index + 1 < len(planned_actions):
+                        current_state = await self._collect_state()
+
+                if len(results) == 1:
+                    message = f"AI action complete: **{results[0]}**."
+                else:
+                    lines = [f"- {result[:240]}" for result in results]
+                    message = "AI action batch complete:\n" + "\n".join(lines)
                 await channel.send(
-                    f"AI action complete: **{result}**.",
+                    message[:1950],
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
-                return result
+                return "; ".join(results)[:1000]
             except Exception as exc:
                 logger.exception("Densetsu autoplay tick failed")
                 await channel.send(
