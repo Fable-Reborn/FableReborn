@@ -62,6 +62,8 @@ DEFAULT_MAX_WAGER_PERCENT = 10
 DEFAULT_CHARACTER_NAME = "Densetsu"
 BASIC_PET_FOOD_COST = 10_000
 PET_CARE_MONEY_RESERVE = 50_000
+PAID_RAID_UPGRADE_MONEY_RESERVE = 50_000
+ADVENTURE_BALANCED_SUCCESS_THRESHOLD = 80
 PET_EMERGENCY_HUNGER = 20
 CRATE_RARITIES = (
     "common",
@@ -1306,10 +1308,250 @@ class AIPlayer(commands.Cog):
                 decision.dialogue or message,
             )
 
+    async def _collect_adventure_risk(
+        self,
+        profile,
+        *,
+        level: int,
+        class_names: list[str],
+        booster_state: dict[str, Any],
+        include_levels: set[int] | None = None,
+    ) -> dict[str, Any]:
+        damage, armor = await self.bot.get_damage_armor_for(
+            DENSETSU_USER_ID,
+            classes=class_names,
+            race=str(profile["race"] or "Human"),
+        )
+        buildings = await self.bot.get_city_buildings(profile["guild"])
+        city_level = int(buildings["adventure_building"] or 0) if buildings else 0
+        chance_bonus = 5 if level > 30 else city_level
+        luck = profile["luck"] or Decimal("1")
+        active_seconds = booster_state.get("active_seconds") or {}
+        ritualist = any(
+            game_class is not None and game_class.in_class_line(Ritualist)
+            for game_class in (class_from_string(name) for name in class_names)
+        )
+        all_options = []
+        for adventure_level in range(1, min(level, 100) + 1):
+            duration_seconds = adventure_level * 3600
+            duration_seconds *= max(0, 100 - city_level) / 100
+            # The live adventure command currently applies its tier-4 25% reduction.
+            duration_seconds *= 0.75
+            if int(active_seconds.get("time", 0) or 0) > 0:
+                duration_seconds /= 2
+            duration_seconds = max(1, int(duration_seconds))
+
+            without_booster = rpgtools.calcchance_probability(
+                damage,
+                armor,
+                adventure_level,
+                level,
+                luck,
+                booster=False,
+                bonus=chance_bonus,
+            )
+            with_booster = rpgtools.calcchance_probability(
+                damage,
+                armor,
+                adventure_level,
+                level,
+                luck,
+                booster=True,
+                bonus=chance_bonus,
+            )
+            luck_active_at_completion = int(
+                active_seconds.get("luck", 0) or 0
+            ) >= duration_seconds + 60
+            money_active_at_completion = int(
+                active_seconds.get("money", 0) or 0
+            ) >= duration_seconds + 60
+            estimated = with_booster if luck_active_at_completion else without_booster
+            loot_chance = 5 if adventure_level == 1 else 5 + 1.5 * adventure_level
+            if ritualist:
+                loot_chance *= 2
+            minimum_gold = round(20 * adventure_level * luck)
+            maximum_gold = round(60 * adventure_level * luck)
+            boosted_minimum_gold = int(minimum_gold * 1.25)
+            boosted_maximum_gold = int(maximum_gold * 1.25)
+            if money_active_at_completion:
+                estimated_gold = [boosted_minimum_gold, boosted_maximum_gold]
+            else:
+                estimated_gold = [int(minimum_gold), int(maximum_gold)]
+            minimum_xp = 250 * adventure_level
+            maximum_xp = 500 * adventure_level
+            if level < 29:
+                minimum_xp = int(minimum_xp * 1.25)
+                maximum_xp = int(maximum_xp * 1.25)
+            all_options.append(
+                {
+                    "level": adventure_level,
+                    "success_chance_percent": round(estimated, 2),
+                    "death_chance_percent": round(100 - estimated, 2),
+                    "success_without_luck_booster_percent": round(without_booster, 2),
+                    "success_with_luck_booster_percent": round(with_booster, 2),
+                    "luck_booster_expected_active_at_completion": luck_active_at_completion,
+                    "money_booster_expected_active_at_completion": money_active_at_completion,
+                    "duration_seconds": duration_seconds,
+                    "success_reward_ranges": {
+                        "gold": estimated_gold,
+                        "gold_without_money_booster": [
+                            int(minimum_gold),
+                            int(maximum_gold),
+                        ],
+                        "gold_with_money_booster": [
+                            boosted_minimum_gold,
+                            boosted_maximum_gold,
+                        ],
+                        "xp": [minimum_xp, maximum_xp],
+                        "loot_item_chance_percent": min(100, round(loot_chance, 2)),
+                    },
+                }
+            )
+        balanced = [
+            option
+            for option in all_options
+            if option["success_chance_percent"]
+            >= ADVENTURE_BALANCED_SUCCESS_THRESHOLD
+        ]
+        recommended = (
+            max(balanced, key=lambda option: option["level"])["level"]
+            if balanced
+            else max(
+                all_options,
+                key=lambda option: option["success_chance_percent"],
+            )["level"]
+        )
+        candidate_levels = {1, min(level, 100), recommended}
+        candidate_levels.update(include_levels or set())
+        candidate_levels.update(
+            candidate
+            for candidate in range(recommended - 2, recommended + 3)
+            if 1 <= candidate <= min(level, 100)
+        )
+        for threshold in (99, 95, 90, 80, 70, 50):
+            eligible = [
+                option
+                for option in all_options
+                if option["success_chance_percent"] >= threshold
+            ]
+            if eligible:
+                candidate_levels.add(
+                    max(eligible, key=lambda option: option["level"])["level"]
+                )
+        options = [
+            option
+            for option in all_options
+            if option["level"] in candidate_levels
+        ]
+        return {
+            "current_resolution_stats": {
+                "effective_damage": self._json_safe_raid_value(damage),
+                "effective_armor": self._json_safe_raid_value(armor),
+                "combined_power": self._json_safe_raid_value(damage + armor),
+                "god_luck_multiplier": self._json_safe_raid_value(luck),
+                "city_adventure_building_level": city_level,
+                "chance_bonus": chance_bonus,
+            },
+            "options": options,
+            "candidate_levels_are_curated_for_context_size": True,
+            "maximum_unlocked_level": min(level, 100),
+            "balanced_recommendation": recommended,
+            "balanced_threshold_percent": ADVENTURE_BALANCED_SUCCESS_THRESHOLD,
+            "failure_effect": "Adds one death only; it does not remove money, XP, gear, pets, or the character.",
+            "odds_are_recalculated_at_claim": True,
+            "claim_uses_current_equipment_luck_city_and_luck_booster": True,
+        }
+
+    async def _collect_paid_raid_upgrade_state(
+        self,
+        profile,
+        raid_stats: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        raid_cog = self.bot.get_cog("Raid")
+        cooldown = await self._command_cooldown("increase")
+        if raid_cog is None or not hasattr(raid_cog, "getpriceto"):
+            return {"available": False, "cooldown_seconds": cooldown}, None
+        breakdown = raid_stats.get("attack_defense_breakdown") or {}
+        base_attack = float(breakdown.get("equipment_class_race_attack", 0) or 0)
+        base_defense = float(breakdown.get("equipment_class_race_defense", 0) or 0)
+        money = int(profile["money"] or 0)
+        raw_options = [
+            {
+                "upgrade": "damage",
+                "current_level": float(profile["atkmultiply"]),
+                "next_level": float(Decimal(profile["atkmultiply"]) + Decimal("0.1")),
+                "price": int(
+                    raid_cog.getpriceto(
+                        Decimal(profile["atkmultiply"]) + Decimal("0.1")
+                    )
+                ),
+                "effect": "+0.1 profile raid attack multiplier",
+                "estimated_final_stat_gain": round(base_attack * 0.1, 3),
+            },
+            {
+                "upgrade": "defense",
+                "current_level": float(profile["defmultiply"]),
+                "next_level": float(Decimal(profile["defmultiply"]) + Decimal("0.1")),
+                "price": int(
+                    raid_cog.getpriceto(
+                        Decimal(profile["defmultiply"]) + Decimal("0.1")
+                    )
+                ),
+                "effect": "+0.1 profile raid defense multiplier",
+                "estimated_final_stat_gain": round(base_defense * 0.1, 3),
+            },
+            {
+                "upgrade": "health",
+                "current_level": float(profile["hplevel"]),
+                "next_level": float(Decimal(profile["hplevel"]) + Decimal("0.1")),
+                "price": int(
+                    raid_cog.getpricetohp(
+                        Decimal(profile["hplevel"]) + Decimal("0.1")
+                    )
+                ),
+                "effect": "+5 additive maximum combat HP",
+                "estimated_final_stat_gain": 5,
+            },
+        ]
+        for option in raw_options:
+            option["money_after_purchase"] = money - option["price"]
+            option["affordable_with_reserve"] = (
+                option["price"] > 0
+                and money - option["price"] >= PAID_RAID_UPGRADE_MONEY_RESERVE
+            )
+        offered = [
+            option for option in raw_options if option["affordable_with_reserve"]
+        ]
+        action = None
+        if cooldown <= 0 and offered:
+            action = {
+                "name": "purchase_raid_upgrade",
+                "description": (
+                    "Spend gold on one normal $increase raid-stat step while "
+                    "preserving the configured cash reserve."
+                ),
+                "parameters": {
+                    "upgrade": [option["upgrade"] for option in offered],
+                },
+                "available_options": offered,
+            }
+        return {
+            "available": bool(action),
+            "cooldown_seconds": cooldown,
+            "money": money,
+            "minimum_money_reserve": PAID_RAID_UPGRADE_MONEY_RESERVE,
+            "all_next_upgrades": raw_options,
+            "offered_upgrades": offered if cooldown <= 0 else [],
+            "purchase_is_permanent": True,
+            "does_not_change_adventure_success": True,
+        }, action
+
     async def _collect_state(self) -> dict[str, Any]:
         async with self.bot.pool.acquire() as connection:
             profile = await connection.fetchrow(
-                'SELECT name, xp, money, "class", health, stathp, luck, race, '
+                'SELECT name, xp, money, "class", health, stathp, statatk, '
+                'statdef, statpoints, atkmultiply, defmultiply, hplevel, '
+                'luck, race, guild, '
                 'tier, crates_common, crates_uncommon, crates_rare, '
                 'crates_magic, crates_legendary, crates_divine, '
                 'crates_mystery, crates_fortune, crates_materials, '
@@ -1355,11 +1597,21 @@ class AIPlayer(commands.Cog):
             )
             booster_state, booster_actions = await self._collect_booster_state(profile)
         adventure = await self.bot.get_adventure(DENSETSU_USER_ID)
+        adventure_risk = await self._collect_adventure_risk(
+            profile,
+            level=level,
+            class_names=class_names,
+            booster_state=booster_state,
+            include_levels={int(adventure[0])} if adventure is not None else None,
+        )
         tower_cooldown = await self.bot.redis.ttl(
             f"cd:{DENSETSU_USER_ID}:battletower fight"
         )
         battle_cog = self.bot.get_cog("Battles")
         raid_stats = await self._collect_raid_stats(DENSETSU_USER_ID)
+        paid_raid_upgrades, paid_raid_action = (
+            await self._collect_paid_raid_upgrade_state(profile, raid_stats)
+        )
         in_fight = False
         if battle_cog is not None and hasattr(battle_cog, "is_player_in_fight"):
             try:
@@ -1373,6 +1625,38 @@ class AIPlayer(commands.Cog):
         actions.extend(reward_actions)
         actions.extend(booster_actions)
         actions.extend(pet_actions)
+        if paid_raid_action is not None:
+            actions.append(paid_raid_action)
+        unspent_stat_points = int(profile["statpoints"] or 0)
+        stat_progression = {
+            "unspent": unspent_stat_points,
+            "allocated": {
+                "attack": int(profile["statatk"] or 0),
+                "defense": int(profile["statdef"] or 0),
+                "health": int(profile["stathp"] or 0),
+            },
+            "per_point_effects": {
+                "attack": "+0.1 raid attack multiplier",
+                "defense": "+0.1 raid defense multiplier",
+                "health": "+50 fresh maximum combat HP",
+            },
+            "does_not_change_adventure_success": True,
+            "allocation_is_permanent_without_a_reset_potion": True,
+        }
+        if unspent_stat_points > 0:
+            actions.append(
+                {
+                    "name": "allocate_stat_points",
+                    "description": (
+                        "Permanently spend available progression points to improve "
+                        "raid attack, raid defense, or fresh combat HP."
+                    ),
+                    "parameters": {
+                        "stat": ["attack", "defense", "health"],
+                        "amount": {"minimum": 1, "maximum": unspent_stat_points},
+                    },
+                }
+            )
         recommended_equipment = equipment_state.get("recommended")
         current_equipment = equipment_state.get("current") or {}
         if (
@@ -1457,20 +1741,78 @@ class AIPlayer(commands.Cog):
             actions.append(
                 {
                     "name": "start_adventure",
-                    "description": "Start a timed adventure. Higher levels are riskier and take longer.",
+                    "description": (
+                        "Start one offered adventure using Fable's exact calculated "
+                        "risk/reward table."
+                    ),
                     "parameters": {
-                        "level": {"minimum": 1, "maximum": min(level, 100)},
-                        "recommended": max(1, min(level, round(level * 0.7))),
+                        "level": [
+                            option["level"] for option in adventure_risk["options"]
+                        ],
+                        "recommended": adventure_risk["balanced_recommendation"],
                     },
                 }
             )
-            adventure_state = None
+            adventure_state = {
+                "active": False,
+                "risk_evaluation": adventure_risk,
+            }
         else:
             number, remaining, done = adventure
+            remaining_seconds = max(0, int(remaining.total_seconds()))
+            resolution_risk = next(
+                (
+                    option
+                    for option in adventure_risk["options"]
+                    if int(option["level"]) == int(number)
+                ),
+                None,
+            )
+            if resolution_risk is not None:
+                resolution_risk = dict(resolution_risk)
+                if done:
+                    luck_expected = int(
+                        booster_state["active_seconds"].get("luck", 0) or 0
+                    ) > 0
+                    money_expected = int(
+                        booster_state["active_seconds"].get("money", 0) or 0
+                    ) > 0
+                else:
+                    luck_expected = int(
+                        booster_state["active_seconds"].get("luck", 0) or 0
+                    ) >= remaining_seconds + 60
+                    money_expected = int(
+                        booster_state["active_seconds"].get("money", 0) or 0
+                    ) >= remaining_seconds + 60
+                current_success = (
+                    resolution_risk["success_with_luck_booster_percent"]
+                    if luck_expected
+                    else resolution_risk["success_without_luck_booster_percent"]
+                )
+                resolution_risk["success_chance_percent"] = current_success
+                resolution_risk["death_chance_percent"] = round(
+                    100 - current_success, 2
+                )
+                resolution_risk[
+                    "luck_booster_expected_active_at_completion"
+                ] = luck_expected
+                resolution_risk[
+                    "money_booster_expected_active_at_completion"
+                ] = money_expected
+                reward_ranges = dict(resolution_risk["success_reward_ranges"])
+                reward_ranges["gold"] = (
+                    reward_ranges["gold_with_money_booster"]
+                    if money_expected
+                    else reward_ranges["gold_without_money_booster"]
+                )
+                resolution_risk["success_reward_ranges"] = reward_ranges
             adventure_state = {
+                "active": True,
                 "level": number,
                 "done": bool(done),
-                "remaining_seconds": max(0, int(remaining.total_seconds())),
+                "remaining_seconds": remaining_seconds,
+                "resolution_risk_using_current_stats": resolution_risk,
+                "odds_are_recalculated_when_claimed": True,
             }
             if done:
                 actions.append(
@@ -1533,6 +1875,8 @@ class AIPlayer(commands.Cog):
             "class_knowledge": CLASS_KNOWLEDGE,
             "equipment": equipment_state,
             "raid_stats": raid_stats,
+            "stat_progression": stat_progression,
+            "paid_raid_upgrades": paid_raid_upgrades,
             "pve": pve_state,
             "companions": pet_state,
             "rewards": reward_state,
@@ -1874,6 +2218,62 @@ class AIPlayer(commands.Cog):
             raise ValueError(message)
         return message
 
+    async def _allocate_stat_points(
+        self, decision: Decision, state: dict[str, Any]
+    ) -> str:
+        action = self._action_definition(state, "allocate_stat_points") or {}
+        parameters = action.get("parameters") or {}
+        stat = str(decision.parameters.get("stat", "")).strip().casefold()
+        allowed_stats = {
+            str(value).casefold() for value in parameters.get("stat", [])
+        }
+        try:
+            amount = int(decision.parameters.get("amount", 0))
+            maximum = int((parameters.get("amount") or {})["maximum"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("A valid stat-point amount is required")
+        if stat not in allowed_stats or not 1 <= amount <= maximum:
+            raise ValueError("That stat allocation was not offered")
+        profile_cog = self.bot.get_cog("Profile")
+        if profile_cog is None or not hasattr(profile_cog, "_allocate_stat_points"):
+            raise ValueError("Fable's stat allocation system is unavailable")
+        ok, message, _snapshot = await profile_cog._allocate_stat_points(
+            DENSETSU_USER_ID,
+            stat,
+            amount,
+        )
+        if not ok:
+            raise ValueError(message)
+        return message
+
+    async def _purchase_raid_upgrade(
+        self, decision: Decision, state: dict[str, Any]
+    ) -> str:
+        action = self._action_definition(state, "purchase_raid_upgrade") or {}
+        options = action.get("available_options") or []
+        upgrade = str(decision.parameters.get("upgrade", "")).strip().casefold()
+        selected = next(
+            (option for option in options if option.get("upgrade") == upgrade),
+            None,
+        )
+        if selected is None:
+            raise ValueError("That paid raid-stat upgrade was not offered")
+        if await self._command_cooldown("increase") > 0:
+            raise ValueError("Paid raid-stat upgrades are now on cooldown")
+        raid_cog = self.bot.get_cog("Raid")
+        if raid_cog is None or not hasattr(raid_cog, "purchase_raid_upgrade_for_ai"):
+            raise ValueError("Fable's paid raid-stat upgrade system is unavailable")
+        ctx = await self._context_as_densetsu(decision.message, "raidstats")
+        ok, message, _result = await raid_cog.purchase_raid_upgrade_for_ai(
+            ctx,
+            upgrade,
+            minimum_remaining=PAID_RAID_UPGRADE_MONEY_RESERVE,
+            expected_price=int(selected["price"]),
+        )
+        if not ok:
+            raise ValueError(message)
+        return message
+
     async def _execute_decision(
         self, decision: Decision, state: dict[str, Any]
     ) -> str:
@@ -1892,13 +2292,19 @@ class AIPlayer(commands.Cog):
             await self._invoke_as_densetsu(decision.message, "status")
             return "resolved the completed adventure"
         if decision.action == "start_adventure":
-            character = state.get("character") or {}
-            maximum = min(int(character.get("level", 1)), 100)
+            action = self._action_definition(state, "start_adventure") or {}
+            parameters = action.get("parameters") or {}
+            offered_levels = {
+                int(value) for value in parameters.get("level", [])
+            }
             try:
-                level = int(decision.parameters.get("level", 1))
+                level = int(
+                    decision.parameters.get("level", parameters.get("recommended"))
+                )
             except (TypeError, ValueError):
-                level = 1
-            level = max(1, min(level, maximum))
+                raise ValueError("A valid adventure level is required")
+            if level not in offered_levels:
+                raise ValueError("That adventure level was not offered")
             await self._invoke_as_densetsu(decision.message, f"adventure {level}")
             return f"started adventure {level}"
         if decision.action == "choose_class":
@@ -1929,6 +2335,10 @@ class AIPlayer(commands.Cog):
             return "claimed the available daily booster"
         if decision.action == "activate_booster":
             return await self._activate_booster(decision, state)
+        if decision.action == "allocate_stat_points":
+            return await self._allocate_stat_points(decision, state)
+        if decision.action == "purchase_raid_upgrade":
+            return await self._purchase_raid_upgrade(decision, state)
         if decision.action == "start_battletower":
             async with self.bot.pool.acquire() as connection:
                 await connection.execute(

@@ -4456,6 +4456,98 @@ class Raid(commands.Cog):
     def getpricetohp(self, level: float):
         return 2 * sum(i * 15000 for i in range(1, int(level * 10) - 9))
 
+    async def purchase_raid_upgrade_for_ai(
+        self,
+        ctx,
+        upgrade: str,
+        *,
+        minimum_remaining: int = 0,
+        expected_price: int | None = None,
+    ):
+        """Atomically purchase one normal paid raid-stat step for an AI player."""
+        upgrade = str(upgrade).strip().casefold()
+        if upgrade not in {"damage", "defense", "health"}:
+            return False, "Invalid raid-stat upgrade.", None
+        async with self.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    'SELECT money, atkmultiply, defmultiply, hplevel, health '
+                    'FROM profile WHERE "user"=$1 FOR UPDATE;',
+                    ctx.author.id,
+                )
+                if row is None:
+                    return False, "Character data could not be found.", None
+                if upgrade == "damage":
+                    current = Decimal(row["atkmultiply"])
+                    new_value = current + Decimal("0.1")
+                    price = int(self.getpriceto(new_value))
+                    update = (
+                        'UPDATE profile SET atkmultiply=$1, money=money-$2 '
+                        'WHERE "user"=$3;'
+                    )
+                    update_args = (new_value, price, ctx.author.id)
+                    subject = "Raid Stats Upgrade ATK"
+                    effect = "+0.1 profile raid attack multiplier"
+                elif upgrade == "defense":
+                    current = Decimal(row["defmultiply"])
+                    new_value = current + Decimal("0.1")
+                    price = int(self.getpriceto(new_value))
+                    update = (
+                        'UPDATE profile SET defmultiply=$1, money=money-$2 '
+                        'WHERE "user"=$3;'
+                    )
+                    update_args = (new_value, price, ctx.author.id)
+                    subject = "Raid Stats Upgrade DEF"
+                    effect = "+0.1 profile raid defense multiplier"
+                else:
+                    current = Decimal(row["hplevel"])
+                    new_value = current + Decimal("0.1")
+                    price = int(self.getpricetohp(new_value))
+                    update = (
+                        'UPDATE profile SET hplevel=$1, health=health+5, money=money-$2 '
+                        'WHERE "user"=$3;'
+                    )
+                    update_args = (new_value, price, ctx.author.id)
+                    subject = "Raid Stats Upgrade HEALTH"
+                    effect = "+5 additive maximum combat HP"
+                money = int(row["money"] or 0)
+                if expected_price is not None and price != int(expected_price):
+                    return False, "The live raid-stat price changed; request a new decision.", {
+                        "upgrade": upgrade,
+                        "expected_price": int(expected_price),
+                        "live_price": price,
+                    }
+                if money < price or money - price < max(0, int(minimum_remaining)):
+                    return False, "The upgrade is not affordable within the cash reserve.", {
+                        "upgrade": upgrade,
+                        "price": price,
+                        "money": money,
+                    }
+                await conn.execute(update, *update_args)
+                await self.bot.log_transaction(
+                    ctx,
+                    from_=ctx.author.id,
+                    to=2,
+                    subject=subject,
+                    data={"Gold": price},
+                    conn=conn,
+                )
+        await self.bot.set_cooldown(ctx.author.id, 30, identifier="increase")
+        result = {
+            "upgrade": upgrade,
+            "old_multiplier_level": float(current),
+            "new_multiplier_level": float(new_value),
+            "price": price,
+            "remaining_money": money - price,
+            "effect": effect,
+        }
+        return (
+            True,
+            f"Purchased one {upgrade} raid-stat upgrade for ${price:,}; "
+            f"${money - price:,} remains.",
+            result,
+        )
+
     @commands.group(invoke_without_command=True, brief=_("Increase your raidstats"))
     @locale_doc
     async def increase(self, ctx):

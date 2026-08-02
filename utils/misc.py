@@ -209,6 +209,35 @@ def calcchance(
         return randomn <= success
 
 
+def calcchance_probability(
+        sword, shield, dungeon, level, luck, booster=False, bonus=0
+):
+    """Return the exact success percentage for the random process in calcchance."""
+    favorable_rolls = 0
+    outcome_count = 0
+    booster_shift = 25 if booster else 0
+    for difficulty_roll in range(1, 8):
+        for level_adjustment in (level, -level / Decimal("2")):
+            success = (
+                    sword
+                    + shield
+                    + 75
+                    - (dungeon * difficulty_roll)
+                    + level_adjustment
+                    + bonus
+            )
+            if success >= 0:
+                success = round(success * luck)
+            else:
+                success = round(success / luck)
+            favorable_rolls += max(
+                0,
+                min(101, int(success) + booster_shift + 1),
+            )
+            outcome_count += 101
+    return (favorable_rolls / outcome_count) * 100
+
+
 async def lookup(bot, userid, return_none=False):
     userid = int(userid)
     member = await bot.get_user_global(userid)
