@@ -214,6 +214,63 @@ class PetExtension:
         """Convert internal skill ids into readable battle-log text."""
         return str(skill_name).replace('_', ' ')
 
+    @staticmethod
+    def _has_lightning_rod(combatant):
+        """Return whether a pet currently owns the Lightning Rod effect."""
+        if combatant is None or not getattr(combatant, 'is_pet', False):
+            return False
+        if getattr(combatant, 'learned_lightning_rod', False):
+            return True
+        effects = getattr(combatant, 'skill_effects', {})
+        return isinstance(effects, dict) and 'lightning_rod' in effects
+
+    def _lightning_rod_is_nullified(self, pet_combatant, attacker=None):
+        """Cancel Lightning Rod when an opposing pet also has the skill.
+
+        The lookup prefers the battle's canonical team resolver, then the pet
+        context installed by the battle runtime.  The current attacker's team
+        and the attacker itself are fallbacks for lightweight battle modes and
+        focused tests that do not expose the full Battle API.
+        """
+        if not self._has_lightning_rod(pet_combatant):
+            return False
+
+        own_team = getattr(pet_combatant, 'team', None)
+        opposing_teams = []
+
+        battle = getattr(pet_combatant, 'battle', None)
+        get_enemy_team = getattr(battle, 'get_enemy_team_for_combatant', None)
+        if callable(get_enemy_team):
+            enemy_team = get_enemy_team(pet_combatant)
+            if enemy_team is not None:
+                opposing_teams.append(enemy_team)
+
+        enemy_team = getattr(pet_combatant, 'enemy_team', None)
+        if enemy_team is not None and enemy_team is not own_team:
+            opposing_teams.append(enemy_team)
+
+        attacker_team = getattr(attacker, 'team', None)
+        if attacker_team is not None and attacker_team is not own_team:
+            opposing_teams.append(attacker_team)
+
+        seen_teams = set()
+        for team in opposing_teams:
+            team_identity = id(team)
+            if team_identity in seen_teams:
+                continue
+            seen_teams.add(team_identity)
+            if any(
+                opponent is not pet_combatant and self._has_lightning_rod(opponent)
+                for opponent in getattr(team, 'combatants', [])
+            ):
+                return True
+
+        attacker_is_teammate = (
+            own_team is not None
+            and attacker_team is own_team
+        )
+        return not attacker_is_teammate and self._has_lightning_rod(attacker)
+
     def _consume_quick_charge_opener(self, pet_combatant, target):
         """Resolve Quick Charge's once-per-battle guaranteed electric opener."""
         effects = getattr(pet_combatant, 'skill_effects', {})
@@ -801,6 +858,11 @@ class PetExtension:
     
     def apply_skill_effects(self, pet_combatant, learned_skills):
         """Apply skill effects to pet combatant with actual implementations"""
+        setattr(
+            pet_combatant,
+            'learned_lightning_rod',
+            any('lightning rod' in str(skill).lower() for skill in (learned_skills or [])),
+        )
         if not learned_skills:
             return
             
@@ -3002,8 +3064,9 @@ class PetExtension:
             
         # ⚡ ELECTRIC DEFENSIVE SKILLS
         # Lightning Rod - absorb electric damage
-        if ('lightning_rod' in effects and hasattr(attacker, 'element') and 
-            attacker.element == effects['lightning_rod']['absorb_element']):
+        if ('lightning_rod' in effects and hasattr(attacker, 'element') and
+            attacker.element == effects['lightning_rod']['absorb_element'] and
+            not self._lightning_rod_is_nullified(pet_combatant, attacker)):
             # Absorb damage and gain attack bonus
             pet_combatant.damage *= (Decimal('1') + Decimal(str(effects['lightning_rod']['attack_bonus'])))
             messages.append(f"{pet_combatant.name} absorbs electric energy and grows stronger!")
