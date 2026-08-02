@@ -22,9 +22,12 @@ from classes.classes import (
     Beastmaster,
     Mage,
     Paladin,
+    Paragon,
     Raider,
     Ranger,
+    Reaper,
     Ritualist,
+    SantasHelper,
     Tank,
     Thief,
     Warrior,
@@ -32,12 +35,23 @@ from classes.classes import (
     get_class_evolves,
     get_first_evolution,
 )
+from classes.class_mastery import (
+    GAUNTLET_ICE_DRAGON_MASTERY_DAILY_CAP,
+    MASTERY_AWARDS,
+    MASTERY_UNLOCK_LEVEL,
+    MASTERY_UNLOCK_POINTS,
+    claim_free_class_mastery,
+    get_class_mastery,
+    get_free_mastery_claim,
+)
 from classes.endgame import apply_item_progression_bonus, soulbound_level_from_xp
+from classes.specs import RESPEC_COST, SPECS, describe_spec, specs_for_line
 from cogs.aiplayer.strategy import (
     CLASS_KNOWLEDGE,
     choose_best_equipment,
     choose_best_pet,
     combat_health_state,
+    evaluate_raid_matchup,
     favored_weapon_bonus_rules,
     is_valid_loadout,
     pet_combat_score,
@@ -66,6 +80,9 @@ AUTOPLAY_TICK_LOCK_SECONDS = 600
 BASIC_PET_FOOD_COST = 10_000
 PET_CARE_MONEY_RESERVE = 50_000
 PAID_RAID_UPGRADE_MONEY_RESERVE = 50_000
+CLASS_CHANGE_COST = 5_000
+CLASS_CHANGE_COOLDOWN_SECONDS = 3_600
+CLASS_CHANGE_COOLDOWN_KEY = f"cd:{DENSETSU_USER_ID}:class"
 ADVENTURE_BALANCED_SUCCESS_THRESHOLD = 80
 PET_EMERGENCY_HUNGER = 20
 PET_CARE_ACTION_KNOWLEDGE = {
@@ -178,6 +195,114 @@ PLAYABLE_CLASSES = {
     "thief": Thief,
     "warrior": Warrior,
 }
+
+ALL_KNOWN_CLASSES = {
+    **PLAYABLE_CLASSES,
+    "paragon": Paragon,
+    "reaper": Reaper,
+    "santashelper": SantasHelper,
+}
+CLASS_EVOLUTION_LEVELS = (0, 5, 10, 15, 20, 25, 30)
+
+
+def available_player_classes(profile: Any) -> dict[str, type]:
+    """Return class lines the current profile is genuinely allowed to select."""
+    available = dict(PLAYABLE_CLASSES)
+    tier = int(profile["tier"] or 0)
+    if tier > 0:
+        available["paragon"] = Paragon
+    if bool(profile["spookyclass"]) or tier == 4:
+        available["reaper"] = Reaper
+    if bool(profile["chrissy2023"]) or tier == 4:
+        available["santashelper"] = SantasHelper
+    return available
+
+
+def class_keys_for_evolution(class_name: str) -> set[str]:
+    """Return every possible line for an evolution name, including aliases."""
+    normalized = str(class_name or "").replace(" ", "").casefold()
+    return {
+        key
+        for key, class_type in ALL_KNOWN_CLASSES.items()
+        if any(
+            evolution.class_name().replace(" ", "").casefold() == normalized
+            for evolution in get_class_evolves(class_type)
+        )
+    }
+
+
+def class_knowledge_payload(available_classes: dict[str, type]) -> dict[str, Any]:
+    """Attach authoritative evolution and specialization roadmaps to each class."""
+    payload = {}
+    for key, class_type in ALL_KNOWN_CLASSES.items():
+        knowledge = dict(CLASS_KNOWLEDGE[key])
+        line_name = class_type.__name__
+        knowledge.update(
+            {
+                "class_line": line_name,
+                "selectable_now": key in available_classes,
+                "evolution_path": [
+                    {
+                        "grade": index + 1,
+                        "required_character_level": CLASS_EVOLUTION_LEVELS[index],
+                        "name": evolution.class_name(),
+                    }
+                    for index, evolution in enumerate(get_class_evolves(class_type))
+                ],
+                "future_specializations": [
+                    {
+                        "spec_key": spec_key,
+                        "name": spec["name"],
+                        "kind": spec["kind"],
+                        "passive": spec["passive"],
+                        "effect_at_final_evolution": describe_spec(spec_key, 7),
+                        "effect_formula": dict(spec["effect"]),
+                        "supported_battle_engines": list(spec["engines"]),
+                    }
+                    for spec_key, spec in specs_for_line(line_name).items()
+                ],
+            }
+        )
+        payload[key] = knowledge
+    return payload
+
+
+def class_choice_options(
+    *,
+    class_names: list[str],
+    slots: list[int],
+    available_classes: dict[str, type],
+    level: int,
+    cost: int,
+) -> list[dict[str, Any]]:
+    """Return exact legal slot/class pairs instead of an unsafe Cartesian product."""
+    unlocked_index = min(6, max(0, int(level)) // 5)
+    options = []
+    for slot in slots:
+        other_keys = set()
+        for index, class_name in enumerate(class_names[:2]):
+            if index != slot:
+                other_keys.update(class_keys_for_evolution(class_name))
+        current_name = class_names[slot]
+        current_keys = class_keys_for_evolution(current_name)
+        for key, class_type in available_classes.items():
+            if key in other_keys or key in current_keys:
+                continue
+            evolutions = get_class_evolves(class_type)
+            options.append(
+                {
+                    "slot": slot,
+                    "class": key,
+                    "class_line": class_type.__name__,
+                    "replaces": current_name,
+                    "cost": int(cost),
+                    "starts_as": evolutions[0].class_name(),
+                    "highest_currently_unlocked_after_evolve": evolutions[
+                        min(unlocked_index, len(evolutions) - 1)
+                    ].class_name(),
+                }
+            )
+    return options
 
 
 @dataclass(slots=True)
@@ -398,9 +523,22 @@ class AIPlayer(commands.Cog):
                 user_id,
                 return_breakdown=True,
             )
-            raid_allows_pets = bool(
-                await factory.settings.get_setting_async("raid", "allow_pets")
+            raid_setting_names = (
+                "allow_pets",
+                "class_buffs",
+                "element_effects",
+                "reflection_damage",
+                "cheat_death",
+                "tripping",
+                "pets_continue_battle",
             )
+            raid_settings = {
+                name: bool(
+                    await factory.settings.get_setting_async("raid", name)
+                )
+                for name in raid_setting_names
+            }
+            raid_allows_pets = raid_settings["allow_pets"]
             combat_ctx = SimpleNamespace(bot=self.bot)
             combatant = await factory.create_player_combatant(
                 combat_ctx, player, include_pet=raid_allows_pets
@@ -466,6 +604,9 @@ class AIPlayer(commands.Cog):
                 "attack": self._json_safe_raid_value(combatant.damage),
                 "defense": self._json_safe_raid_value(combatant.armor),
                 "max_hp": self._json_safe_raid_value(combatant.max_hp),
+                "shield": self._json_safe_raid_value(
+                    getattr(combatant, "shield", 0)
+                ),
                 "luck_percent": self._json_safe_raid_value(combatant.luck),
                 "attack_element": str(
                     getattr(combatant, "attack_element", "Unknown")
@@ -484,6 +625,7 @@ class AIPlayer(commands.Cog):
             ),
             "raidbattle_pet": pet_stats,
             "standard_raidbattle_allows_pets": raid_allows_pets,
+            "raidbattle_settings": raid_settings,
             "stats_are_rebuilt_at_battle_start": True,
         }
 
@@ -1925,13 +2067,150 @@ class AIPlayer(commands.Cog):
             "does_not_change_adventure_success": True,
         }, action
 
+    async def _collect_class_specialization_state(
+        self,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        state: dict[str, Any] = {
+            "unlock_requirements": {
+                "character_level": MASTERY_UNLOCK_LEVEL,
+                "final_class_grade": 7,
+                "mastery_points_for_that_class_line": MASTERY_UNLOCK_POINTS,
+            },
+            "mastery_point_sources": dict(MASTERY_AWARDS),
+            "mastery_awards_apply_to_each_equipped_grade_7_line": True,
+            "gauntlet_and_ice_dragon_shared_daily_mastery_cap": (
+                GAUNTLET_ICE_DRAGON_MASTERY_DAILY_CAP
+            ),
+            "initial_specialization_choice_is_free": True,
+            "chosen_path_persists_for_its_class_line_when_unequipped": True,
+            "changing_a_chosen_path_requires_reset": True,
+            "reset_cost": RESPEC_COST,
+            "lines": {},
+        }
+        actions: list[dict[str, Any]] = []
+        cog = self.bot.get_cog("Specializations")
+        if cog is None or not hasattr(cog, "ensure_tables"):
+            state["available"] = False
+            return state, actions
+
+        await cog.ensure_tables()
+        mastery = await get_class_mastery(self.bot, DENSETSU_USER_ID)
+        free_claim = await get_free_mastery_claim(self.bot, DENSETSU_USER_ID)
+        state["one_time_free_100_mastery_gift"] = {
+            "available": free_claim is None,
+            "used_for_class_line": (
+                free_claim["class_line"] if free_claim is not None else None
+            ),
+            "strategic_note": (
+                "This irreversible gift can instantly satisfy the mastery-points "
+                "gate for one line. Preserve it until the intended long-term class "
+                "and specialization path is clear."
+            ),
+        }
+        async with self.bot.pool.acquire() as connection:
+            rows = await connection.fetch(
+                "SELECT class_line, spec_key FROM class_specs WHERE user_id=$1;",
+                DENSETSU_USER_ID,
+            )
+        chosen = {str(row["class_line"]): str(row["spec_key"]) for row in rows}
+        options = []
+        mastery_claim_options = []
+        for line, raw_line_state in (mastery.get("lines") or {}).items():
+            line_state = dict(raw_line_state)
+            chosen_key = chosen.get(line)
+            chosen_spec = SPECS.get(chosen_key) if chosen_key else None
+            line_state["chosen_specialization"] = (
+                {
+                    "spec_key": chosen_key,
+                    "name": chosen_spec["name"],
+                    "active_now": bool(
+                        line_state.get("equipped")
+                        and int(line_state.get("grade") or 0) >= 7
+                    ),
+                    "effect_at_current_grade": (
+                        describe_spec(chosen_key, int(line_state["grade"]))
+                        if line_state.get("equipped")
+                        and int(line_state.get("grade") or 0) >= 7
+                        else None
+                    ),
+                }
+                if chosen_spec is not None
+                else None
+            )
+            state["lines"][line] = line_state
+            if (
+                free_claim is None
+                and int(mastery.get("level") or 0) >= MASTERY_UNLOCK_LEVEL
+                and line_state.get("equipped")
+                and int(line_state.get("grade") or 0) >= 7
+                and int(line_state.get("points") or 0) < MASTERY_UNLOCK_POINTS
+            ):
+                mastery_claim_options.append(
+                    {
+                        "class_line": line,
+                        "current_points": int(line_state.get("points") or 0),
+                        "points_after_claim": MASTERY_UNLOCK_POINTS,
+                        "enables_specialization_choice": True,
+                        "cost": 0,
+                    }
+                )
+            if (
+                line_state.get("equipped")
+                and line_state.get("unlocked")
+                and chosen_key is None
+            ):
+                grade = max(1, int(line_state.get("grade") or 1))
+                for spec_key, spec in specs_for_line(line).items():
+                    options.append(
+                        {
+                            "spec_key": spec_key,
+                            "name": spec["name"],
+                            "class_line": line,
+                            "kind": spec["kind"],
+                            "passive": spec["passive"],
+                            "effect_at_current_grade": describe_spec(spec_key, grade),
+                            "cost": 0,
+                        }
+                    )
+
+        state["available"] = True
+        state["character_level"] = int(mastery.get("level") or 0)
+        if mastery_claim_options:
+            actions.append(
+                {
+                    "name": "claim_specialization_mastery",
+                    "description": (
+                        "Irreversibly use the one-time free mastery gift on one "
+                        "equipped final-evolution class line, bringing it to 100 "
+                        "mastery so its specialization can be chosen. Compare both "
+                        "class roadmaps before committing the gift."
+                    ),
+                    "priority": "optional_irreversible_build_choice",
+                    "parameters": {"options": mastery_claim_options},
+                }
+            )
+        if options:
+            actions.append(
+                {
+                    "name": "choose_specialization",
+                    "description": (
+                        "Choose one unlocked specialization using its exact effects. "
+                        "The initial choice is free and immediately beneficial, but "
+                        f"changing it later requires a ${RESPEC_COST:,} reset."
+                    ),
+                    "priority": "high_value_free_progression_choice",
+                    "parameters": {"options": options},
+                }
+            )
+        return state, actions
+
     async def _collect_state(self) -> dict[str, Any]:
         async with self.bot.pool.acquire() as connection:
             profile = await connection.fetchrow(
                 'SELECT name, xp, money, "class", health, stathp, statatk, '
                 'statdef, statpoints, atkmultiply, defmultiply, hplevel, '
                 'luck, race, cv, god, favor, reset_points, guild, '
-                'tier, crates_common, crates_uncommon, crates_rare, '
+                'tier, spookyclass, chrissy2023, crates_common, crates_uncommon, crates_rare, '
                 'crates_magic, crates_legendary, crates_divine, '
                 'crates_mystery, crates_fortune, crates_materials, '
                 'time_booster, luck_booster, money_booster '
@@ -1962,6 +2241,8 @@ class AIPlayer(commands.Cog):
 
         level = int(rpgtools.xptolevel(profile["xp"]))
         class_names = list(profile["class"] or ["No Class", "No Class"])
+        available_classes = available_player_classes(profile)
+        class_knowledge = class_knowledge_payload(available_classes)
         async with self.bot.pool.acquire() as connection:
             health_state = await self._collect_health_state(
                 connection, profile, level=level
@@ -1981,6 +2262,9 @@ class AIPlayer(commands.Cog):
                 connection, profile
             )
             booster_state, booster_actions = await self._collect_booster_state(profile)
+        specialization_state, specialization_actions = (
+            await self._collect_class_specialization_state()
+        )
         adventure = await self.bot.get_adventure(DENSETSU_USER_ID)
         adventure_risk = await self._collect_adventure_risk(
             profile,
@@ -1992,6 +2276,7 @@ class AIPlayer(commands.Cog):
         tower_cooldown = await self.bot.redis.ttl(
             f"cd:{DENSETSU_USER_ID}:battletower fight"
         )
+        class_change_cooldown = await self._command_cooldown("class")
         battle_cog = self.bot.get_cog("Battles")
         raid_stats = await self._collect_raid_stats(DENSETSU_USER_ID)
         paid_raid_upgrades, paid_raid_action = (
@@ -2004,13 +2289,12 @@ class AIPlayer(commands.Cog):
             except Exception:
                 logger.exception("Could not read Densetsu's active-fight state")
 
-        actions: list[dict[str, Any]] = [
-            {"name": "wait", "description": "Take no action this cycle."}
-        ]
+        actions: list[dict[str, Any]] = []
         actions.extend(reward_actions)
         actions.extend(booster_actions)
         actions.extend(amulet_actions)
         actions.extend(pet_actions)
+        actions.extend(specialization_actions)
         faith_state, race_choice_state, identity_actions = (
             self._collect_identity_choice_state(profile)
         )
@@ -2073,15 +2357,56 @@ class AIPlayer(commands.Cog):
             for index, value in enumerate(class_names[:2])
             if value == "No Class" and (index == 0 or level >= 12)
         ]
-        if empty_slots:
-            actions.append(
+        empty_class_options = class_choice_options(
+            class_names=class_names,
+            slots=empty_slots,
+            available_classes=available_classes,
+            level=level,
+            cost=0,
+        )
+        if empty_class_options and class_change_cooldown <= 0:
+            actions.insert(
+                0,
                 {
                     "name": "choose_class",
-                    "description": "Fill one currently empty class slot.",
-                    "parameters": {
-                        "slot": empty_slots,
-                        "class": sorted(PLAYABLE_CLASSES),
-                    },
+                    "description": (
+                        "Fill an unlocked empty class slot for free. Every class gives "
+                        "immediate permanent benefits, so leaving this unresolved in "
+                        "favor of wait has no strategic value."
+                    ),
+                    "priority": "required_free_progression",
+                    "parameters": {"options": empty_class_options},
+                }
+            )
+
+        filled_slots = [
+            index
+            for index, value in enumerate(class_names[:2])
+            if value != "No Class" and (index == 0 or level >= 12)
+        ]
+        paid_class_options = class_choice_options(
+            class_names=class_names,
+            slots=filled_slots,
+            available_classes=available_classes,
+            level=level,
+            cost=CLASS_CHANGE_COST,
+        )
+        if (
+            paid_class_options
+            and class_change_cooldown <= 0
+            and int(profile["money"] or 0) >= CLASS_CHANGE_COST
+        ):
+            actions.append(
+                {
+                    "name": "change_class",
+                    "description": (
+                        f"Replace one class line for ${CLASS_CHANGE_COST:,}. Only do "
+                        "this for a material long-term build improvement: the selected "
+                        "line restarts at grade 1, then free evolve_classes catches it "
+                        "up to the highest evolution unlocked by character level."
+                    ),
+                    "priority": "optional_major_build_change",
+                    "parameters": {"options": paid_class_options},
                 }
             )
         evolution_ready = False
@@ -2113,17 +2438,28 @@ class AIPlayer(commands.Cog):
                     {
                         "current": current_name,
                         "class_line": game_class.get_class_line_name(),
+                        "current_grade": current_index + 1,
                         "highest_unlocked": target_name,
+                        "highest_unlocked_grade": target_index + 1,
                         "next_evolution_level": next_level,
+                        "evolution_available_now": current_name != target_name,
+                        "evolution_is_free": True,
+                        "evolution_has_no_downside": True,
                     }
                 )
                 if current_name != target_name:
                     evolution_ready = True
         if evolution_ready:
-            actions.append(
+            actions.insert(
+                0,
                 {
                     "name": "evolve_classes",
-                    "description": "Apply every class evolution unlocked by the current level.",
+                    "description": (
+                        "Immediately and freely upgrade every class to the highest "
+                        "evolution already unlocked by character level. This has no "
+                        "cost or downside and should never be deferred in favor of wait."
+                    ),
+                    "priority": "required_free_power_upgrade",
                 }
             )
 
@@ -2248,6 +2584,23 @@ class AIPlayer(commands.Cog):
                     }
                 )
 
+        actions.append({"name": "wait", "description": "Take no action this cycle."})
+        class_system = {
+            "primary_class_available_from_level": 1,
+            "secondary_class_unlock_level": 12,
+            "first_selection_for_each_slot_is_free": True,
+            "class_change_cost": CLASS_CHANGE_COST,
+            "class_change_cooldown_seconds": class_change_cooldown,
+            "class_changes_are_optional_and_should_be_long_term_decisions": True,
+            "class_change_resets_only_the_replaced_line_to_grade_1": True,
+            "free_evolve_then_catches_a_new_line_up_to_character_level": True,
+            "duplicate_class_lines_are_not_allowed": True,
+            "evolution_unlock_levels": list(CLASS_EVOLUTION_LEVELS[1:]),
+            "evolution_is_free_and_strictly_beneficial": True,
+            "evolve_classes_upgrades_all_eligible_slots_together": True,
+            "shared_favored_weapon_rules_do_not_stack_twice": True,
+            "shared_favored_weapons_still_make_pairing_equipment_efficient": True,
+        }
         return {
             "event": "autoplay_tick",
             "multiple_actions_allowed": True,
@@ -2270,7 +2623,9 @@ class AIPlayer(commands.Cog):
                 ),
                 "patreon_tier": int(profile["tier"] or 0),
             },
-            "class_knowledge": CLASS_KNOWLEDGE,
+            "class_system": class_system,
+            "class_knowledge": class_knowledge,
+            "class_specializations": specialization_state,
             "equipment": equipment_state,
             "amulets": amulet_state,
             "raid_stats": raid_stats,
@@ -2513,15 +2868,35 @@ class AIPlayer(commands.Cog):
             raise ValueError("Densetsu's initial race choice was already completed")
         return f"selected {race} as Densetsu's race"
 
-    async def _choose_class(self, decision: Decision, state: dict[str, Any]) -> str:
+    def _offered_class_option(
+        self, decision: Decision, state: dict[str, Any], action_name: str
+    ) -> dict[str, Any]:
         try:
             slot = int(decision.parameters.get("slot", 0))
         except (TypeError, ValueError):
             raise ValueError("Class slot must be 0 or 1")
         class_key = str(decision.parameters.get("class", "")).strip().casefold()
-        class_type = PLAYABLE_CLASSES.get(class_key)
-        if class_type is None:
-            raise ValueError("The selected class is not available to the AI player")
+        action = self._action_definition(state, action_name) or {}
+        options = (action.get("parameters") or {}).get("options", [])
+        selected = next(
+            (
+                option
+                for option in options
+                if isinstance(option, dict)
+                and int(option.get("slot", -1)) == slot
+                and str(option.get("class", "")).strip().casefold() == class_key
+            ),
+            None,
+        )
+        if selected is None or class_key not in ALL_KNOWN_CLASSES:
+            raise ValueError("That exact class and slot combination was not offered")
+        return selected
+
+    async def _choose_class(self, decision: Decision, state: dict[str, Any]) -> str:
+        selected = self._offered_class_option(decision, state, "choose_class")
+        slot = int(selected["slot"])
+        class_key = str(selected["class"])
+        class_type = ALL_KNOWN_CLASSES[class_key]
 
         character = state.get("character") or {}
         level = int(character.get("level", 0))
@@ -2546,7 +2921,133 @@ class AIPlayer(commands.Cog):
                     'INSERT INTO pets ("user") VALUES ($1) ON CONFLICT DO NOTHING;',
                     DENSETSU_USER_ID,
                 )
+        await self.bot.redis.set(
+            CLASS_CHANGE_COOLDOWN_KEY, "1", ex=CLASS_CHANGE_COOLDOWN_SECONDS
+        )
         return f"selected {classes[slot]} in class slot {slot + 1}"
+
+    async def _change_class(self, decision: Decision, state: dict[str, Any]) -> str:
+        selected = self._offered_class_option(decision, state, "change_class")
+        slot = int(selected["slot"])
+        class_key = str(selected["class"])
+        class_type = ALL_KNOWN_CLASSES[class_key]
+        expected_current = str(selected["replaces"])
+        ctx = await self._context_as_densetsu(decision.message, "profile")
+
+        async with self.bot.pool.acquire() as connection:
+            async with connection.transaction():
+                row = await connection.fetchrow(
+                    'SELECT "class", money FROM profile WHERE "user"=$1 FOR UPDATE;',
+                    DENSETSU_USER_ID,
+                )
+                if row is None:
+                    raise ValueError("Densetsu no longer has a character")
+                classes = list(row["class"] or ["No Class", "No Class"])
+                if classes[slot] != expected_current:
+                    raise ValueError("That class slot changed before the decision executed")
+                if int(row["money"] or 0) < CLASS_CHANGE_COST:
+                    raise ValueError("Densetsu can no longer afford the class change")
+                other_slot = 1 - slot
+                if class_key in class_keys_for_evolution(classes[other_slot]):
+                    raise ValueError("The same class line cannot occupy both slots")
+
+                old_name = classes[slot]
+                classes[slot] = get_first_evolution(class_type).class_name()
+                await connection.execute(
+                    'UPDATE profile SET "class"=$1, money=money-$2 WHERE "user"=$3;',
+                    classes,
+                    CLASS_CHANGE_COST,
+                    DENSETSU_USER_ID,
+                )
+                has_ranger = any(
+                    "ranger" in class_keys_for_evolution(class_name)
+                    for class_name in classes
+                )
+                if has_ranger:
+                    await connection.execute(
+                        'INSERT INTO pets ("user") VALUES ($1) ON CONFLICT DO NOTHING;',
+                        DENSETSU_USER_ID,
+                    )
+                else:
+                    await connection.execute(
+                        "UPDATE pet_daycares SET is_open=FALSE WHERE owner_user_id=$1;",
+                        DENSETSU_USER_ID,
+                    )
+                    await connection.execute(
+                        'DELETE FROM pets WHERE "user"=$1;', DENSETSU_USER_ID
+                    )
+                await self.bot.log_transaction(
+                    ctx,
+                    from_=DENSETSU_USER_ID,
+                    to=2,
+                    subject="class change",
+                    data={"Gold": CLASS_CHANGE_COST},
+                    conn=connection,
+                )
+
+        await self.bot.redis.set(
+            CLASS_CHANGE_COOLDOWN_KEY, "1", ex=CLASS_CHANGE_COOLDOWN_SECONDS
+        )
+        return (
+            f"changed class slot {slot + 1} from {old_name} to {classes[slot]} "
+            f"for ${CLASS_CHANGE_COST:,}"
+        )
+
+    async def _choose_specialization(
+        self, decision: Decision, state: dict[str, Any]
+    ) -> str:
+        action = self._action_definition(state, "choose_specialization") or {}
+        options = (action.get("parameters") or {}).get("options", [])
+        requested = str(decision.parameters.get("spec_key", "")).strip().casefold()
+        selected = next(
+            (
+                option
+                for option in options
+                if isinstance(option, dict)
+                and str(option.get("spec_key", "")).strip().casefold() == requested
+            ),
+            None,
+        )
+        if selected is None:
+            raise ValueError("That specialization was not offered to the AI player")
+        await self._invoke_as_densetsu(
+            decision.message, f"spec choose {selected['name']}"
+        )
+        return f"selected {selected['name']} for the {selected['class_line']} line"
+
+    async def _claim_specialization_mastery(
+        self, decision: Decision, state: dict[str, Any]
+    ) -> str:
+        action = self._action_definition(state, "claim_specialization_mastery") or {}
+        options = (action.get("parameters") or {}).get("options", [])
+        requested = str(decision.parameters.get("class_line", "")).strip().casefold()
+        selected = next(
+            (
+                option
+                for option in options
+                if isinstance(option, dict)
+                and str(option.get("class_line", "")).strip().casefold() == requested
+            ),
+            None,
+        )
+        if selected is None:
+            raise ValueError("That mastery-gift target was not offered to the AI player")
+        result = await claim_free_class_mastery(
+            self.bot, DENSETSU_USER_ID, str(selected["class_line"])
+        )
+        if result.get("status") == "already_claimed":
+            raise ValueError(
+                f"The mastery gift was already used on {result.get('class_line')}"
+            )
+        if result.get("status") == "already_mastered":
+            return (
+                f"{result['class_line']} was already fully mastered; "
+                "the one-time gift was preserved"
+            )
+        return (
+            f"used the one-time mastery gift on {result['class_line']} "
+            f"({int(result.get('points') or 0)}/{MASTERY_UNLOCK_POINTS})"
+        )
 
     @staticmethod
     def _action_definition(
@@ -3092,9 +3593,15 @@ class AIPlayer(commands.Cog):
             return await self._choose_race(decision, state)
         if decision.action == "choose_class":
             return await self._choose_class(decision, state)
+        if decision.action == "change_class":
+            return await self._change_class(decision, state)
         if decision.action == "evolve_classes":
             await self._invoke_as_densetsu(decision.message, "evolve")
             return "evolved every eligible class"
+        if decision.action == "choose_specialization":
+            return await self._choose_specialization(decision, state)
+        if decision.action == "claim_specialization_mastery":
+            return await self._claim_specialization_mastery(decision, state)
         if decision.action == "optimize_equipment":
             return await self._optimize_equipment(state)
         if decision.action == "equip_amulet":
@@ -3367,6 +3874,14 @@ class AIPlayer(commands.Cog):
         raid_comparison = self._raid_stat_comparison(
             ai_raid_stats, opponent_raid_stats
         )
+        matchup_risk = evaluate_raid_matchup(
+            ai_raid_stats,
+            opponent_raid_stats,
+            wager=wager,
+            bankroll=int(ai_profile["money"]),
+        )
+        can_accept_matchup = bool(matchup_risk.get("acceptance_allowed"))
+        can_accept = can_accept_wager and can_accept_matchup
 
         event = {
             "event": "raidbattle_offer",
@@ -3384,19 +3899,31 @@ class AIPlayer(commands.Cog):
                 "raid_stats": opponent_raid_stats,
             },
             "raid_stat_comparison": raid_comparison,
+            "matchup_risk": matchup_risk,
             "wager": int(wager),
             "maximum_allowed_wager": maximum_wager,
             "combat_is_automatic": True,
             "allowed_actions": (
                 [
-                    {"name": "accept", "description": "Join and pay the wager."},
+                    {
+                        "name": "accept",
+                        "description": (
+                            "Join and pay the wager. Fable's conservative simulated "
+                            "win chance meets the required safety threshold."
+                        ),
+                    },
                     {"name": "decline", "description": "Do not join."},
                 ]
-                if can_accept_wager
+                if can_accept
                 else [
                     {
                         "name": "decline",
-                        "description": "The wager exceeds the configured safety limit.",
+                        "description": (
+                            "Acceptance is blocked because the wager exceeds the "
+                            "configured limit, complete combat stats are unavailable, "
+                            "or the conservative simulated win chance is below the "
+                            "bankroll-adjusted safety threshold."
+                        ),
                     }
                 ]
             ),
@@ -3427,6 +3954,25 @@ class AIPlayer(commands.Cog):
             'SELECT money FROM profile WHERE "user"=$1;', DENSETSU_USER_ID
         )
         if current_money is None or wager > await self._maximum_raid_wager(current_money):
+            return
+        fresh_ai_stats, fresh_opponent_stats = await asyncio.gather(
+            self._collect_raid_stats(DENSETSU_USER_ID, densetsu),
+            self._collect_raid_stats(challenger.id, challenger),
+        )
+        fresh_matchup_risk = evaluate_raid_matchup(
+            fresh_ai_stats,
+            fresh_opponent_stats,
+            wager=wager,
+            bankroll=int(current_money),
+        )
+        if not fresh_matchup_risk.get("acceptance_allowed"):
+            self._relay_raidbattle_dialogue(
+                public_channel.id,
+                "The matchup changed, and those odds are no longer worth the wager.",
+            )
+            if requested_enemy is not None and not future.done():
+                future.set_exception(asyncio.TimeoutError())
+                view.stop()
             return
         if future.done():
             return
