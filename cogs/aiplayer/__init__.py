@@ -65,6 +65,38 @@ PET_CARE_MONEY_RESERVE = 50_000
 PAID_RAID_UPGRADE_MONEY_RESERVE = 50_000
 ADVENTURE_BALANCED_SUCCESS_THRESHOLD = 80
 PET_EMERGENCY_HUNGER = 20
+PET_CARE_ACTION_KNOWLEDGE = {
+    "feed": {
+        "command": "pets feed <pet_id> basic",
+        "base_cooldown_seconds": 3600,
+        "cost": BASIC_PET_FOOD_COST,
+        "effects": "+50 fullness, +25 happiness, +1 trust, and 665 base XP",
+    },
+    "pet": {
+        "command": "pets pet <pet_id>",
+        "base_cooldown_seconds": 300,
+        "cost": 0,
+        "effects": "+5 or +10 happiness, +0 or +1 trust, and +50 base XP",
+    },
+    "play": {
+        "command": "pets play <pet_id>",
+        "base_cooldown_seconds": 300,
+        "cost": 0,
+        "effects": "+25 happiness, +1 trust, and +200 base XP",
+    },
+    "treat": {
+        "command": "pets treat <pet_id>",
+        "base_cooldown_seconds": 600,
+        "cost": 0,
+        "effects": "+50 happiness, +5 trust, and +500 base XP",
+    },
+    "train": {
+        "command": "pets train <pet_id>",
+        "base_cooldown_seconds": 1800,
+        "cost": 0,
+        "effects": "+2 trust and +1000 base XP",
+    },
+}
 CRATE_RARITIES = (
     "common",
     "uncommon",
@@ -810,8 +842,15 @@ class AIPlayer(commands.Cog):
                     "attack": int(pet.get("attack") or 0),
                     "defense": int(pet.get("defense") or 0),
                     "growth_stage": str(pet.get("growth_stage") or "baby"),
-                    "hunger": int(pet.get("hunger") or 0),
-                    "happiness": int(pet.get("happiness") or 0),
+                    "is_adult": str(
+                        pet.get("growth_stage") or "baby"
+                    ).casefold() == "adult",
+                    "fullness_percent": int(pet.get("hunger") or 0),
+                    "fullness_scale": "100 is fully fed; 0 is starving",
+                    "happiness_percent": int(pet.get("happiness") or 0),
+                    "fullness_and_happiness_decay": str(
+                        pet.get("growth_stage") or "baby"
+                    ).casefold() != "adult",
                     "level": int(pet.get("level") or 1),
                     "experience": int(pet.get("experience") or 0),
                     "trust": int(pet.get("trust_level") or 0),
@@ -865,31 +904,70 @@ class AIPlayer(commands.Cog):
         target_id = equipped_id or best_pet_id
         target = next((pet for pet in pets if pet["id"] == target_id), None)
         care_options = []
+        care_action_status = []
         if target is not None and not target["in_daycare"]:
+            is_adult = bool(target["is_adult"])
+            fullness = int(target["fullness_percent"])
+            happiness = int(target["happiness_percent"])
             can_afford_feed = money >= BASIC_PET_FOOD_COST and (
-                target["hunger"] <= PET_EMERGENCY_HUNGER
+                (not is_adult and fullness <= PET_EMERGENCY_HUNGER)
                 or money - BASIC_PET_FOOD_COST >= PET_CARE_MONEY_RESERVE
             )
-            care_rules = (
-                ("feed", target["hunger"] <= 60 and can_afford_feed),
-                ("pet", target["happiness"] < 90 or target["trust"] < 81),
-                ("play", target["happiness"] < 90 or target["trust"] < 81),
-                ("treat", target["happiness"] < 75 or target["trust"] < 61),
-                ("train", target["level"] < 100 or target["trust"] < 100),
-            )
-            for kind, needed in care_rules:
-                if not needed:
-                    continue
+            needed_by_kind = {
+                # Adult pets never lose fullness, so feeding is not maintenance.
+                "feed": not is_adult and fullness <= 60 and can_afford_feed,
+                "pet": happiness < 90 or target["trust"] < 81,
+                "play": happiness < 90 or target["trust"] < 81,
+                "treat": happiness < 75 or target["trust"] < 61,
+                "train": target["level"] < 100 or target["trust"] < 100,
+            }
+            reason_by_kind = {
+                "feed": (
+                    "Adult pets are self-sufficient and do not lose fullness."
+                    if is_adult
+                    else (
+                        f"Growing pet fullness is {fullness}%; feeding is useful at 60% or lower."
+                        if fullness <= 60
+                        else f"Fullness is already safe at {fullness}%."
+                    )
+                ),
+                "pet": "Raises happiness and can raise trust while granting a little XP.",
+                "play": "Raises happiness and trust while granting pet XP.",
+                "treat": "Large happiness and trust gain with moderate pet XP.",
+                "train": "Best free pet XP action and always grants trust.",
+            }
+            for kind, knowledge in PET_CARE_ACTION_KNOWLEDGE.items():
                 cooldown = await self._command_cooldown(f"pets {kind}")
-                if cooldown <= 0:
+                needed = bool(needed_by_kind[kind])
+                offered = needed and cooldown <= 0
+                status = {
+                    "kind": kind,
+                    "command": knowledge["command"],
+                    "pet_id": target["id"],
+                    "effects": knowledge["effects"],
+                    "cost": int(knowledge["cost"]),
+                    "base_cooldown_seconds": int(
+                        knowledge["base_cooldown_seconds"]
+                    ),
+                    "cooldown_remaining_seconds": cooldown,
+                    "cooldown_ready": cooldown <= 0,
+                    "needed_now": needed,
+                    "offered_now": offered,
+                    "reason": reason_by_kind[kind],
+                }
+                care_action_status.append(status)
+                if offered:
                     care_options.append(
                         {
                             "kind": kind,
                             "pet_id": target["id"],
-                            "cost": BASIC_PET_FOOD_COST if kind == "feed" else 0,
-                            "emergency": (
+                            "cost": int(knowledge["cost"]),
+                            "effects": knowledge["effects"],
+                            "reason": reason_by_kind[kind],
+                            "starvation_emergency": (
                                 kind == "feed"
-                                and target["hunger"] <= PET_EMERGENCY_HUNGER
+                                and not is_adult
+                                and fullness <= PET_EMERGENCY_HUNGER
                             ),
                         }
                     )
@@ -897,7 +975,11 @@ class AIPlayer(commands.Cog):
             actions.append(
                 {
                     "name": "care_for_pet",
-                    "description": "Perform one needed pet-care action with its real cooldown.",
+                    "description": (
+                        "Perform exactly one currently offered pet-care action. "
+                        "Choose an exact kind and pet_id pair from parameters.options; "
+                        "never invent an action omitted by its cooldown or need rules."
+                    ),
                     "parameters": {"options": care_options},
                 }
             )
@@ -949,7 +1031,12 @@ class AIPlayer(commands.Cog):
             "collection_used": len(pets) + len(eggs),
             "collection_capacity": max_collection,
             "routine_feed_money_reserve": PET_CARE_MONEY_RESERVE,
-            "emergency_feed_hunger_threshold": PET_EMERGENCY_HUNGER,
+            "fullness_scale": "100 is fully fed; 0 is starving",
+            "adult_pets_are_self_sufficient": True,
+            "adult_fullness_and_happiness_do_not_decay": True,
+            "emergency_fullness_threshold_for_growing_pets": PET_EMERGENCY_HUNGER,
+            "care_target_pet_id": target["id"] if target is not None else None,
+            "care_actions": care_action_status,
         }
         return state, actions
 
@@ -1179,30 +1266,6 @@ class AIPlayer(commands.Cog):
             decision.dialogue or "Thanks. I'll put that to good use.",
         )
 
-    async def decide_trade_request(self, *, ctx, requester, target) -> bool | None:
-        """Return None for a normal player, otherwise Densetsu's safe decision."""
-        if not await self.is_active_for(target.id):
-            return None
-        event = {
-            "event": "trade_request",
-            "requester": {
-                "discord_id": int(requester.id),
-                "display_name": str(requester.display_name),
-            },
-            "note": "Accepting only opens an editable trade session; no assets move yet.",
-            "allowed_actions": [
-                {"name": "accept", "description": "Open the trade session."},
-                {"name": "decline", "description": "Refuse the trade request."},
-            ],
-        }
-        decision = await self.choose_interaction(
-            user_id=target.id,
-            event=event,
-            public_channel=ctx.channel,
-            timeout=45,
-        )
-        return bool(decision and decision.action == "accept")
-
     @staticmethod
     def _serialize_trade_offer(offer: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -1270,6 +1333,8 @@ class AIPlayer(commands.Cog):
         densetsu_receives = self._serialize_trade_offer(trans["content"][other])
         event = {
             "event": "trade_offer_confirmation",
+            "counterparty_has_confirmed": True,
+            "decision_requested_after_counterparty_confirmation": True,
             "counterparty": {
                 "discord_id": int(other.id),
                 "display_name": str(other.display_name),
@@ -2051,6 +2116,11 @@ class AIPlayer(commands.Cog):
         )
         if selected is None:
             raise ValueError("That pet-care action is not currently available")
+        cooldown = await self._command_cooldown(f"pets {kind}")
+        if cooldown > 0:
+            raise ValueError(
+                f"The pets {kind} cooldown has {cooldown} second(s) remaining"
+            )
         command = (
             f"pets feed {pet_id} basic"
             if kind == "feed"

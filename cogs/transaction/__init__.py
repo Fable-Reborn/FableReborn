@@ -177,17 +177,39 @@ class TradeDecisionView(discord.ui.View):
         self.base_content = base.content if base and base.content else ""
 
     async def refresh_offer_content(self, footer_message: str | None = None):
+        self.cancel_ai_decision()
         self.base_content = self.cog.build_trade_content(self.trans, self.ctx.clean_prefix)
         await self._update_message(footer_message=footer_message)
-        self.restart_ai_decision()
 
-    def restart_ai_decision(self):
+    def cancel_ai_decision(self):
         if self.ai_task is not None and not self.ai_task.done():
             self.ai_task.cancel()
         self.ai_task = None
-        base = self.trans.get("base")
+
+    async def start_ai_decision_after_confirmation(self, participant_id: int):
+        """Ask an AI participant only after the human confirms the final offer."""
+        if self.result is not None or self.ai_task is not None:
+            return
+
         ai_cog = self.cog.bot.get_cog("AIPlayer")
-        if base is not None and ai_cog is not None and self.result is None:
+        if ai_cog is None:
+            return
+
+        participant_id = int(participant_id)
+        active_ai_ids = {
+            candidate_id
+            for candidate_id in self.participant_order
+            if await ai_cog.is_active_for(candidate_id)
+        }
+        if (
+            not active_ai_ids
+            or participant_id in active_ai_ids
+            or not active_ai_ids.isdisjoint(self.accepted_participants)
+        ):
+            return
+
+        base = self.trans.get("base")
+        if base is not None:
             self.ai_task = ai_cog.start_trade_offer_decision(
                 view=self,
                 trans=self.trans,
@@ -299,6 +321,7 @@ class TradeDecisionView(discord.ui.View):
             return True, "Trade accepted by both participants."
 
         await self._update_message()
+        await self.start_ai_decision_after_confirmation(participant_id)
         return True, "Trade accepted; waiting for the other participant."
 
     async def decline_participant(self, participant_id: int, user) -> tuple[bool, str]:
@@ -717,7 +740,6 @@ class Transaction(commands.Cog):
         )
         try:
             await view._update_message()
-            view.restart_ai_decision()
             await view.wait()
         except asyncio.CancelledError:
             if view.ai_task is not None:
@@ -1059,15 +1081,11 @@ class Transaction(commands.Cog):
         )
         if user == ctx.author:
             return await ctx.send(_("You cannot trade with yourself."))
-        ai_decision = None
         ai_cog = self.bot.get_cog("AIPlayer")
-        if ai_cog is not None:
-            ai_decision = await ai_cog.decide_trade_request(
-                ctx=ctx,
-                requester=ctx.author,
-                target=user,
-            )
-        if ai_decision is None:
+        ai_controls_target = bool(
+            ai_cog is not None and await ai_cog.is_active_for(user.id)
+        )
+        if not ai_controls_target:
             if not await ctx.confirm(
                 _("{user} has requested a trade, {user2}.").format(
                     user=ctx.author.mention, user2=user.mention
@@ -1075,8 +1093,6 @@ class Transaction(commands.Cog):
                 user=user,
             ):
                 return
-        elif not ai_decision:
-            return await ctx.send(_("The trade request was declined."))
         if any([str(user.id) in key for key in self.transactions]) or any(
             [str(ctx.author.id) in key for key in self.transactions]
         ):
