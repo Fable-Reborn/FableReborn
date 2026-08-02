@@ -305,6 +305,73 @@ def class_choice_options(
     return options
 
 
+def class_progression_payload(
+    class_names: list[str], level: int
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Describe the exact evolution ceiling even when no evolution is available."""
+    level = max(1, int(level))
+    unlocked_index = min(6, min(level, 30) // 5)
+    progression = []
+    evolution_ready = False
+    for class_name in class_names:
+        game_class = class_from_string(class_name)
+        if game_class is None:
+            continue
+        evolutions = get_class_evolves(game_class.get_class_line())
+        target_index = min(unlocked_index, len(evolutions) - 1)
+        current_name = game_class.class_name()
+        current_index = next(
+            (
+                index
+                for index, evolution in enumerate(evolutions)
+                if evolution.class_name() == current_name
+            ),
+            target_index,
+        )
+        evolution_available = current_index < target_index
+        next_level = (
+            (current_index + 1) * 5
+            if current_index + 1 < len(evolutions)
+            else None
+        )
+        progression.append(
+            {
+                "current": current_name,
+                "class_line": game_class.get_class_line_name(),
+                "current_grade": current_index + 1,
+                "highest_unlocked": evolutions[target_index].class_name(),
+                "highest_unlocked_grade": target_index + 1,
+                "currently_at_highest_unlocked_grade": not evolution_available,
+                "next_evolution_level": next_level,
+                "levels_until_next_evolution": (
+                    max(0, next_level - level) if next_level is not None else None
+                ),
+                "evolution_available_now": evolution_available,
+                "evolution_is_free": True,
+                "evolution_has_no_downside": True,
+            }
+        )
+        evolution_ready = evolution_ready or evolution_available
+
+    future_unlocks = [
+        int(entry["next_evolution_level"])
+        for entry in progression
+        if entry["next_evolution_level"] is not None
+        and int(entry["next_evolution_level"]) > level
+    ]
+    summary = {
+        "evolution_available_now": evolution_ready,
+        "all_equipped_classes_at_current_level_cap": bool(progression)
+        and not evolution_ready,
+        "next_evolution_unlock_level": min(future_unlocks)
+        if future_unlocks
+        else None,
+        "evolve_classes_action_should_be_offered_now": evolution_ready,
+        "do_not_attempt_evolve_classes_when_action_is_absent": True,
+    }
+    return progression, summary
+
+
 @dataclass(slots=True)
 class DecisionAction:
     action: str
@@ -2409,46 +2476,10 @@ class AIPlayer(commands.Cog):
                     "parameters": {"options": paid_class_options},
                 }
             )
-        evolution_ready = False
-        class_progression = []
-        if level >= 5:
-            evolution_index = min(6, int(min(level, 30) / 5))
-            for class_name in class_names:
-                game_class = class_from_string(class_name)
-                if game_class is None:
-                    continue
-                evolutions = get_class_evolves(game_class.get_class_line())
-                target_index = min(evolution_index, len(evolutions) - 1)
-                target_name = evolutions[target_index].class_name()
-                current_name = game_class.class_name()
-                current_index = next(
-                    (
-                        index
-                        for index, evolution in enumerate(evolutions)
-                        if evolution.class_name() == current_name
-                    ),
-                    target_index,
-                )
-                next_level = (
-                    (current_index + 1) * 5
-                    if current_index + 1 < len(evolutions)
-                    else None
-                )
-                class_progression.append(
-                    {
-                        "current": current_name,
-                        "class_line": game_class.get_class_line_name(),
-                        "current_grade": current_index + 1,
-                        "highest_unlocked": target_name,
-                        "highest_unlocked_grade": target_index + 1,
-                        "next_evolution_level": next_level,
-                        "evolution_available_now": current_name != target_name,
-                        "evolution_is_free": True,
-                        "evolution_has_no_downside": True,
-                    }
-                )
-                if current_name != target_name:
-                    evolution_ready = True
+        class_progression, class_progression_summary = class_progression_payload(
+            class_names, level
+        )
+        evolution_ready = class_progression_summary["evolution_available_now"]
         if evolution_ready:
             actions.insert(
                 0,
@@ -2598,6 +2629,8 @@ class AIPlayer(commands.Cog):
             "evolution_unlock_levels": list(CLASS_EVOLUTION_LEVELS[1:]),
             "evolution_is_free_and_strictly_beneficial": True,
             "evolve_classes_upgrades_all_eligible_slots_together": True,
+            "current_progression_status": class_progression_summary,
+            "allowed_actions_is_the_exhaustive_command_whitelist": True,
             "shared_favored_weapon_rules_do_not_stack_twice": True,
             "shared_favored_weapons_still_make_pairing_equipment_efficient": True,
         }
