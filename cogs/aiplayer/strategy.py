@@ -91,6 +91,22 @@ FAVORED_WEAPON_BONUSES = (
 )
 
 
+def favored_weapon_bonus_rules() -> list[dict[str, Any]]:
+    """Return the live class/weapon bonus table in JSON-safe form."""
+    rules = []
+    for class_lines, bonuses in FAVORED_WEAPON_BONUSES:
+        for weapon_type, (damage, armor) in bonuses.items():
+            rules.append(
+                {
+                    "class_lines": [line.__name__ for line in class_lines],
+                    "weapon_type": weapon_type,
+                    "damage_per_matching_item": damage,
+                    "armor_per_matching_item": armor,
+                }
+            )
+    return rules
+
+
 def _class_lines(class_names: Iterable[str]) -> set[type]:
     lines = set()
     for class_name in class_names:
@@ -130,20 +146,32 @@ def is_valid_loadout(items: Iterable[dict[str, Any]]) -> bool:
 def score_loadout(
     items: Iterable[dict[str, Any]], class_names: Iterable[str]
 ) -> dict[str, Any]:
-    damage = 0.0
-    armor = 0.0
+    base_damage = 0.0
+    base_armor = 0.0
+    class_bonus_damage = 0.0
+    class_bonus_armor = 0.0
     item_ids = []
     for item in items:
         item_ids.append(int(item["id"]))
-        damage += float(item.get("effective_damage", item.get("damage", 0)) or 0)
-        armor += float(item.get("effective_armor", item.get("armor", 0)) or 0)
+        base_damage += float(
+            item.get("effective_damage", item.get("damage", 0)) or 0
+        )
+        base_armor += float(
+            item.get("effective_armor", item.get("armor", 0)) or 0
+        )
         bonus_damage, bonus_armor = favored_item_bonus(
             str(item.get("type") or ""), class_names
         )
-        damage += bonus_damage
-        armor += bonus_armor
+        class_bonus_damage += bonus_damage
+        class_bonus_armor += bonus_armor
+    damage = base_damage + class_bonus_damage
+    armor = base_armor + class_bonus_armor
     return {
         "item_ids": sorted(item_ids),
+        "base_effective_damage": round(base_damage, 2),
+        "base_effective_armor": round(base_armor, 2),
+        "class_weapon_bonus_damage": round(class_bonus_damage, 2),
+        "class_weapon_bonus_armor": round(class_bonus_armor, 2),
         "effective_damage": round(damage, 2),
         "effective_armor": round(armor, 2),
         "score": round(damage + armor, 2),

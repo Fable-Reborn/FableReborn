@@ -38,6 +38,7 @@ from cogs.aiplayer.strategy import (
     choose_best_equipment,
     choose_best_pet,
     combat_health_state,
+    favored_weapon_bonus_rules,
     is_valid_loadout,
     pet_combat_score,
     score_loadout,
@@ -123,6 +124,44 @@ BOOSTER_KNOWLEDGE = {
     "time": "Halves adventure duration; activate before starting an adventure.",
     "luck": "Raises adventure success chance by 25%; it matters when the adventure resolves.",
     "money": "Raises adventure gold rewards by 25%; it matters when the adventure resolves.",
+}
+
+RACE_KNOWLEDGE = {
+    "Human": {
+        "attack_bonus": 2,
+        "defense_bonus": 2,
+        "summary": "Balanced teamwork and equal attack and defense.",
+    },
+    "Dwarf": {
+        "attack_bonus": 1,
+        "defense_bonus": 3,
+        "summary": "A defensive forge-master with a small attack bonus.",
+    },
+    "Elf": {
+        "attack_bonus": 3,
+        "defense_bonus": 1,
+        "summary": "An agile, attack-oriented nature fighter.",
+    },
+    "Orc": {
+        "attack_bonus": 0,
+        "defense_bonus": 4,
+        "summary": "A heavily defensive race with no attack bonus.",
+    },
+    "Jikill": {
+        "attack_bonus": 4,
+        "defense_bonus": 0,
+        "summary": "A heavily offensive race with no defense bonus.",
+    },
+    "Djinn": {
+        "attack_bonus": 5,
+        "defense_bonus": -1,
+        "summary": "Maximum offense at the cost of one defense point.",
+    },
+    "Shadeborn": {
+        "attack_bonus": -1,
+        "defense_bonus": 5,
+        "summary": "Maximum defense at the cost of one attack point.",
+    },
 }
 
 PLAYABLE_CLASSES = {
@@ -680,6 +719,9 @@ class AIPlayer(commands.Cog):
             return {
                 "current": {"item_ids": [], "score": 0},
                 "recommended": None,
+                "class_weapon_bonus_rules": favored_weapon_bonus_rules(),
+                "class_weapon_bonuses_apply_to_each_matching_equipped_item": True,
+                "class_weapon_bonuses_are_included_in_scores": True,
                 "candidates": [],
             }
 
@@ -760,6 +802,18 @@ class AIPlayer(commands.Cog):
                     "element": str(item.get("element") or "Unknown"),
                     "damage": single["effective_damage"],
                     "armor": single["effective_armor"],
+                    "base_damage": single["base_effective_damage"],
+                    "base_armor": single["base_effective_armor"],
+                    "class_weapon_bonus_damage": single[
+                        "class_weapon_bonus_damage"
+                    ],
+                    "class_weapon_bonus_armor": single[
+                        "class_weapon_bonus_armor"
+                    ],
+                    "favored_by_current_class": bool(
+                        single["class_weapon_bonus_damage"]
+                        or single["class_weapon_bonus_armor"]
+                    ),
                     "class_adjusted_score": single["score"],
                     "progression_bonus_percent": item["progression_bonus_percent"],
                     "equipped": item["equipped"],
@@ -770,8 +824,173 @@ class AIPlayer(commands.Cog):
             "current": current,
             "recommended": recommended,
             "recommendation_uses_real_class_and_progression_bonuses": True,
+            "class_weapon_bonus_rules": favored_weapon_bonus_rules(),
+            "class_weapon_bonuses_apply_to_each_matching_equipped_item": True,
+            "class_weapon_bonuses_are_included_in_scores": True,
             "candidates": candidates,
         }
+
+    async def _collect_amulet_state(
+        self, connection, *, level: int
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        amulet_cog = self.bot.get_cog("AmuletCrafting")
+        if amulet_cog is None:
+            return {"available": False}, []
+
+        try:
+            resource_rows = await connection.fetch(
+                "SELECT resource_type, amount FROM crafting_resources "
+                "WHERE user_id=$1 AND amount>0;",
+                DENSETSU_USER_ID,
+            )
+            amulet_rows = await connection.fetch(
+                """
+                SELECT id, type, tier, hp, attack, defense, equipped
+                FROM amulets
+                WHERE user_id=$1
+                ORDER BY tier DESC, id ASC;
+                """,
+                DENSETSU_USER_ID,
+            )
+        except Exception:
+            logger.exception("Could not read Densetsu's amulet state")
+            return {"available": False}, []
+
+        resources = {
+            str(row["resource_type"]): int(row["amount"] or 0)
+            for row in resource_rows
+        }
+        owned = [
+            {
+                "id": int(row["id"]),
+                "type": str(row["type"]),
+                "tier": int(row["tier"]),
+                "health": int(row["hp"] or 0),
+                "attack": int(row["attack"] or 0),
+                "defense": int(row["defense"] or 0),
+                "equipped": bool(row["equipped"]),
+            }
+            for row in amulet_rows
+        ]
+        equipped = next((amulet for amulet in owned if amulet["equipped"]), None)
+        current_tier = int(equipped["tier"]) if equipped is not None else 0
+        highest_owned_tier = max(
+            (int(amulet["tier"]) for amulet in owned), default=0
+        )
+        max_unlocked_tier = max(
+            (
+                int(tier)
+                for tier, required_level in amulet_cog.TIER_LEVELS.items()
+                if level >= int(required_level)
+            ),
+            default=0,
+        )
+
+        craftable_upgrades = []
+        next_targets = []
+        owned_pairs = {
+            (str(amulet["type"]).casefold(), int(amulet["tier"]))
+            for amulet in owned
+        }
+        for amulet_type, tier_stats in amulet_cog.AMULET_TYPES.items():
+            candidates = []
+            targets = []
+            for tier in sorted(int(value) for value in tier_stats):
+                if tier > max_unlocked_tier or tier <= highest_owned_tier:
+                    continue
+                recipe = dict(
+                    amulet_cog.AMULET_RECIPES.get(amulet_type, {}).get(tier, {})
+                )
+                if not recipe or (amulet_type.casefold(), tier) in owned_pairs:
+                    continue
+                stats = tier_stats[tier]
+                missing = {
+                    resource: max(0, int(required) - resources.get(resource, 0))
+                    for resource, required in recipe.items()
+                    if resources.get(resource, 0) < int(required)
+                }
+                option = {
+                    "type": str(amulet_type),
+                    "tier": tier,
+                    "stats": {
+                        "health": int(stats["health"]),
+                        "attack": int(stats["attack"]),
+                        "defense": int(stats["defense"]),
+                    },
+                    "recipe": {
+                        str(resource): int(required)
+                        for resource, required in recipe.items()
+                    },
+                    "missing_resources": missing,
+                    "craftable_now": not missing,
+                }
+                targets.append(option)
+                if not missing:
+                    candidates.append(option)
+            if candidates:
+                craftable_upgrades.append(max(candidates, key=lambda item: item["tier"]))
+            if targets:
+                next_targets.append(min(targets, key=lambda item: item["tier"]))
+
+        equip_options = [
+            amulet
+            for amulet in owned
+            if not amulet["equipped"] and int(amulet["tier"]) > current_tier
+        ]
+        actions: list[dict[str, Any]] = []
+        if equip_options:
+            actions.append(
+                {
+                    "name": "equip_amulet",
+                    "description": (
+                        "Equip one already-owned higher-tier amulet. Only one "
+                        "amulet can be equipped at a time."
+                    ),
+                    "parameters": {
+                        "amulet_id": [option["id"] for option in equip_options]
+                    },
+                    "available_options": equip_options,
+                }
+            )
+        if craftable_upgrades:
+            actions.append(
+                {
+                    "name": "craft_and_equip_amulet",
+                    "description": (
+                        "Consume the exact listed materials to craft one strictly "
+                        "higher-tier amulet and immediately equip it. Choose its "
+                        "type for the current class and combat build."
+                    ),
+                    "parameters": {
+                        "options": [
+                            {"type": option["type"], "tier": option["tier"]}
+                            for option in craftable_upgrades
+                        ]
+                    },
+                    "available_options": craftable_upgrades,
+                }
+            )
+
+        return {
+            "available": True,
+            "only_one_can_be_equipped": True,
+            "stats": {
+                "health": "flat maximum combat HP",
+                "attack": "flat raid attack added after equipment multipliers",
+                "defense": "flat raid defense added after equipment multipliers",
+            },
+            "equipped": equipped,
+            "owned": owned,
+            "resources": resources,
+            "maximum_tier_unlocked_by_level": max_unlocked_tier,
+            "highest_owned_tier": highest_owned_tier,
+            "upgrade_policy": (
+                "Only amulets above the highest owned tier are offered for "
+                "crafting, preventing duplicate and sidegrade material waste."
+            ),
+            "craftable_upgrades": craftable_upgrades,
+            "next_upgrade_targets": next_targets,
+        }, actions
 
     @staticmethod
     def _egg_seconds_remaining(hatch_time) -> int:
@@ -1616,7 +1835,7 @@ class AIPlayer(commands.Cog):
             profile = await connection.fetchrow(
                 'SELECT name, xp, money, "class", health, stathp, statatk, '
                 'statdef, statpoints, atkmultiply, defmultiply, hplevel, '
-                'luck, race, guild, '
+                'luck, race, cv, god, favor, reset_points, guild, '
                 'tier, crates_common, crates_uncommon, crates_rare, '
                 'crates_magic, crates_legendary, crates_divine, '
                 'crates_mystery, crates_fortune, crates_materials, '
@@ -1651,6 +1870,9 @@ class AIPlayer(commands.Cog):
             )
             equipment_state = await self._collect_equipment_state(
                 connection, class_names
+            )
+            amulet_state, amulet_actions = await self._collect_amulet_state(
+                connection, level=level
             )
             pet_state, pet_actions = await self._collect_pet_state(
                 connection,
@@ -1689,7 +1911,12 @@ class AIPlayer(commands.Cog):
         ]
         actions.extend(reward_actions)
         actions.extend(booster_actions)
+        actions.extend(amulet_actions)
         actions.extend(pet_actions)
+        faith_state, race_choice_state, identity_actions = (
+            self._collect_identity_choice_state(profile)
+        )
+        actions.extend(identity_actions)
         if paid_raid_action is not None:
             actions.append(paid_raid_action)
         unspent_stat_points = int(profile["statpoints"] or 0)
@@ -1935,10 +2162,16 @@ class AIPlayer(commands.Cog):
                 "combat_health": health_state,
                 "luck": float(profile["luck"] or 1),
                 "race": str(profile["race"] or "Unknown"),
+                "god": (
+                    str(profile["god"])
+                    if profile["god"] is not None
+                    else None
+                ),
                 "patreon_tier": int(profile["tier"] or 0),
             },
             "class_knowledge": CLASS_KNOWLEDGE,
             "equipment": equipment_state,
+            "amulets": amulet_state,
             "raid_stats": raid_stats,
             "stat_progression": stat_progression,
             "paid_raid_upgrades": paid_raid_upgrades,
@@ -1946,10 +2179,99 @@ class AIPlayer(commands.Cog):
             "companions": pet_state,
             "rewards": reward_state,
             "boosters": booster_state,
+            "faith": faith_state,
+            "race_choice": race_choice_state,
             "adventure": adventure_state,
             "battle_tower": tower_state,
             "allowed_actions": actions,
         }
+
+    def _collect_identity_choice_state(
+        self, profile
+    ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+        current_god = profile["god"]
+        reset_points = int(profile["reset_points"] or 0)
+        god_options = []
+        for configured in getattr(self.bot.config, "gods", []) or []:
+            name = str(configured.get("name") or "").strip()
+            if not name:
+                continue
+            god_options.append(
+                {
+                    "god": name,
+                    "description": str(configured.get("description") or ""),
+                    "weekly_luck_range": {
+                        "minimum": float(configured.get("boundary_low", 1)),
+                        "maximum": float(configured.get("boundary_high", 1)),
+                    },
+                }
+            )
+
+        can_follow = current_god is None and reset_points >= 0 and bool(god_options)
+        faith_state = {
+            "current_god": str(current_god) if current_god is not None else None,
+            "favor": int(profile["favor"] or 0),
+            "reset_points": reset_points,
+            "permanently_godless": current_god is None and reset_points < 0,
+            "initial_selection_available": can_follow,
+            "following_changes_weekly_luck_and_unlocks_god_progression": True,
+            "weekly_luck_can_increase_or_decrease": True,
+            "options": god_options,
+        }
+
+        current_race = str(profile["race"] or "Human")
+        try:
+            personal_choice = int(profile["cv"])
+        except (TypeError, ValueError):
+            personal_choice = -1
+        can_choose_race = (
+            current_race.casefold() == "human" and personal_choice == -1
+        )
+        race_options = [
+            {"race": race, **knowledge}
+            for race, knowledge in RACE_KNOWLEDGE.items()
+        ]
+        race_choice_state = {
+            "current_race": current_race,
+            "initial_selection_complete": not can_choose_race,
+            "initial_selection_available": can_choose_race,
+            "human_is_a_valid_choice": True,
+            "choosing_human_means_staying_human": True,
+            "options": race_options,
+        }
+
+        actions: list[dict[str, Any]] = []
+        if can_follow:
+            actions.append(
+                {
+                    "name": "follow_god",
+                    "description": (
+                        "Choose one configured god for Densetsu's currently "
+                        "godless character. This is an identity and progression "
+                        "choice whose weekly luck can rise or fall."
+                    ),
+                    "parameters": {
+                        "god": [option["god"] for option in god_options]
+                    },
+                    "available_options": god_options,
+                }
+            )
+        if can_choose_race:
+            actions.append(
+                {
+                    "name": "choose_race",
+                    "description": (
+                        "Make the initial race choice using the exact combat "
+                        "bonuses. Human is explicitly valid if Densetsu prefers "
+                        "to remain Human."
+                    ),
+                    "parameters": {
+                        "race": [option["race"] for option in race_options]
+                    },
+                    "available_options": race_options,
+                }
+            )
+        return faith_state, race_choice_state, actions
 
     async def _context_as_densetsu(
         self,
@@ -1986,6 +2308,109 @@ class AIPlayer(commands.Cog):
             context_overrides=context_overrides,
         )
         await self.bot.invoke(ctx)
+
+    async def _follow_god(
+        self, decision: Decision, state: dict[str, Any]
+    ) -> str:
+        action = self._action_definition(state, "follow_god") or {}
+        offered = {
+            str(value).casefold(): str(value)
+            for value in (action.get("parameters") or {}).get("god", [])
+        }
+        requested = str(decision.parameters.get("god", "")).strip().casefold()
+        god = offered.get(requested)
+        if god is None:
+            raise ValueError("That god was not offered to the AI player")
+
+        configured = {
+            str(value.get("name") or "").strip().casefold(): str(
+                value.get("name") or ""
+            ).strip()
+            for value in (getattr(self.bot.config, "gods", []) or [])
+            if str(value.get("name") or "").strip()
+        }
+        if configured.get(requested) != god:
+            raise ValueError("That god is no longer configured")
+
+        async with self.bot.pool.acquire() as connection:
+            updated = await connection.fetchval(
+                """
+                UPDATE profile
+                SET god=$1
+                WHERE "user"=$2
+                  AND god IS NULL
+                  AND COALESCE(reset_points, 0) >= 0
+                RETURNING god;
+                """,
+                god,
+                DENSETSU_USER_ID,
+            )
+        if updated is None:
+            raise ValueError("Densetsu is no longer eligible to follow a god")
+
+        # Role synchronization is auxiliary; the database choice remains valid if
+        # Discord role management is temporarily unavailable.
+        gods_cog = self.bot.get_cog("Gods")
+        try:
+            support_guild = self.bot.get_guild(
+                self.bot.config.game.support_server_id
+            )
+            member = (
+                support_guild.get_member(DENSETSU_USER_ID)
+                if support_guild is not None
+                else None
+            )
+            if gods_cog is not None and member is not None:
+                godless_role = support_guild.get_role(gods_cog.godless_role_id)
+                stale_roles = [
+                    support_guild.get_role(role_id)
+                    for role_id in gods_cog.support_god_role_ids.values()
+                ]
+                removable = [
+                    role
+                    for role in [godless_role, *stale_roles]
+                    if role is not None and role in member.roles
+                ]
+                if removable:
+                    await member.remove_roles(*removable)
+                role_id = gods_cog.support_god_role_ids.get(god)
+                role = support_guild.get_role(role_id) if role_id else None
+                if role is not None and role not in member.roles:
+                    await member.add_roles(role)
+        except Exception:
+            logger.exception("Could not synchronize Densetsu's god role")
+
+        return f"followed {god}"
+
+    async def _choose_race(
+        self, decision: Decision, state: dict[str, Any]
+    ) -> str:
+        action = self._action_definition(state, "choose_race") or {}
+        offered = {
+            str(value).casefold(): str(value)
+            for value in (action.get("parameters") or {}).get("race", [])
+        }
+        requested = str(decision.parameters.get("race", "")).strip().casefold()
+        race = offered.get(requested)
+        if race is None or race not in RACE_KNOWLEDGE:
+            raise ValueError("That race was not offered to the AI player")
+
+        async with self.bot.pool.acquire() as connection:
+            updated = await connection.fetchval(
+                """
+                UPDATE profile
+                SET race=$1, cv=0
+                WHERE "user"=$2
+                  AND LOWER(COALESCE(race, 'Human'))='human'
+                  AND cv=-1
+                RETURNING race;
+                """,
+                race,
+                DENSETSU_USER_ID,
+            )
+        if updated is None:
+            raise ValueError("Densetsu's initial race choice was already completed")
+        return f"selected {race} as Densetsu's race"
 
     async def _choose_class(self, decision: Decision, state: dict[str, Any]) -> str:
         try:
@@ -2075,6 +2500,189 @@ class AIPlayer(commands.Cog):
                 )
         names = ", ".join(str(item["name"]) for item in items)
         return f"equipped optimized loadout: {names}"
+
+    async def _equip_amulet(
+        self, decision: Decision, state: dict[str, Any]
+    ) -> str:
+        action = self._action_definition(state, "equip_amulet") or {}
+        allowed_ids = {
+            int(value)
+            for value in (action.get("parameters") or {}).get("amulet_id", [])
+        }
+        try:
+            amulet_id = int(decision.parameters.get("amulet_id"))
+        except (TypeError, ValueError):
+            raise ValueError("A valid amulet ID is required")
+        if amulet_id not in allowed_ids:
+            raise ValueError("That amulet was not offered to the AI player")
+
+        async with self.bot.pool.acquire() as connection:
+            async with connection.transaction():
+                amulet = await connection.fetchrow(
+                    """
+                    SELECT id, type, tier, equipped
+                    FROM amulets
+                    WHERE id=$1 AND user_id=$2
+                    FOR UPDATE;
+                    """,
+                    amulet_id,
+                    DENSETSU_USER_ID,
+                )
+                if amulet is None:
+                    raise ValueError("Densetsu no longer owns that amulet")
+                if bool(amulet["equipped"]):
+                    raise ValueError("That amulet is already equipped")
+                current_tier = await connection.fetchval(
+                    """
+                    SELECT tier FROM amulets
+                    WHERE user_id=$1 AND equipped=TRUE
+                    ORDER BY tier DESC
+                    LIMIT 1
+                    FOR UPDATE;
+                    """,
+                    DENSETSU_USER_ID,
+                )
+                if int(current_tier or 0) >= int(amulet["tier"]):
+                    raise ValueError(
+                        "A same-tier or stronger amulet is already equipped"
+                    )
+                await connection.execute(
+                    "UPDATE amulets SET equipped=FALSE WHERE user_id=$1;",
+                    DENSETSU_USER_ID,
+                )
+                await connection.execute(
+                    "UPDATE amulets SET equipped=TRUE WHERE id=$1 AND user_id=$2;",
+                    amulet_id,
+                    DENSETSU_USER_ID,
+                )
+        return (
+            f"equipped Tier {int(amulet['tier'])} "
+            f"{str(amulet['type']).title()} amulet {amulet_id}"
+        )
+
+    async def _craft_and_equip_amulet(
+        self, decision: Decision, state: dict[str, Any]
+    ) -> str:
+        action = self._action_definition(state, "craft_and_equip_amulet") or {}
+        options = (action.get("parameters") or {}).get("options", [])
+        amulet_type = str(decision.parameters.get("type", "")).strip().casefold()
+        try:
+            tier = int(decision.parameters.get("tier"))
+        except (TypeError, ValueError):
+            raise ValueError("A valid amulet tier is required")
+        selected = next(
+            (
+                option
+                for option in options
+                if str(option.get("type", "")).casefold() == amulet_type
+                and int(option.get("tier", 0) or 0) == tier
+            ),
+            None,
+        )
+        if selected is None:
+            raise ValueError("That amulet recipe was not offered to the AI player")
+
+        amulet_cog = self.bot.get_cog("AmuletCrafting")
+        if amulet_cog is None:
+            raise ValueError("Fable's amulet crafting system is unavailable")
+        recipe = dict(
+            amulet_cog.AMULET_RECIPES.get(amulet_type, {}).get(tier, {})
+        )
+        stats = amulet_cog.AMULET_TYPES.get(amulet_type, {}).get(tier)
+        required_level = int(amulet_cog.TIER_LEVELS.get(tier, 999))
+        if not recipe or stats is None:
+            raise ValueError("That amulet recipe is no longer configured")
+
+        async with self.bot.pool.acquire() as connection:
+            xp = await connection.fetchval(
+                'SELECT xp FROM profile WHERE "user"=$1;', DENSETSU_USER_ID
+            )
+            if xp is None or int(rpgtools.xptolevel(xp)) < required_level:
+                raise ValueError("Densetsu no longer meets the amulet level requirement")
+            async with connection.transaction():
+                for resource, amount_needed in recipe.items():
+                    current_amount = await connection.fetchval(
+                        """
+                        SELECT amount FROM crafting_resources
+                        WHERE user_id=$1 AND resource_type=$2
+                        FOR UPDATE;
+                        """,
+                        DENSETSU_USER_ID,
+                        resource,
+                    )
+                    if int(current_amount or 0) < int(amount_needed):
+                        raise ValueError(
+                            f"Not enough {resource} remains to craft that amulet"
+                        )
+                highest_owned_tier = await connection.fetchval(
+                    """
+                    SELECT tier FROM amulets
+                    WHERE user_id=$1
+                    ORDER BY tier DESC
+                    LIMIT 1
+                    FOR UPDATE;
+                    """,
+                    DENSETSU_USER_ID,
+                )
+                if int(highest_owned_tier or 0) >= tier:
+                    raise ValueError(
+                        "Densetsu already owns a same-tier or stronger amulet"
+                    )
+                duplicate = await connection.fetchval(
+                    """
+                    SELECT id FROM amulets
+                    WHERE user_id=$1 AND LOWER(type)=$2 AND tier=$3
+                    FOR UPDATE;
+                    """,
+                    DENSETSU_USER_ID,
+                    amulet_type,
+                    tier,
+                )
+                if duplicate is not None:
+                    raise ValueError("Densetsu already owns that exact amulet")
+                for resource, amount_needed in recipe.items():
+                    await connection.execute(
+                        """
+                        UPDATE crafting_resources
+                        SET amount=amount-$1
+                        WHERE user_id=$2 AND resource_type=$3;
+                        """,
+                        int(amount_needed),
+                        DENSETSU_USER_ID,
+                        resource,
+                    )
+                await connection.execute(
+                    "UPDATE amulets SET equipped=FALSE WHERE user_id=$1;",
+                    DENSETSU_USER_ID,
+                )
+                amulet_id = await connection.fetchval(
+                    """
+                    INSERT INTO amulets
+                        (user_id, type, tier, hp, attack, defense, equipped)
+                    VALUES ($1, $2, $3, $4, $5, $6, TRUE)
+                    RETURNING id;
+                    """,
+                    DENSETSU_USER_ID,
+                    amulet_type,
+                    tier,
+                    int(stats["health"]),
+                    int(stats["attack"]),
+                    int(stats["defense"]),
+                )
+                if amulet_id is None:
+                    raise ValueError("Fable did not create the amulet")
+
+        try:
+            ctx = await self._context_as_densetsu(
+                decision.message, f"amulet craft {amulet_type} {tier}"
+            )
+            self.bot.dispatch("amulet_crafted", ctx, amulet_type, tier)
+        except Exception:
+            logger.exception("Could not dispatch Densetsu's amulet-crafted event")
+        return (
+            f"crafted and equipped Tier {tier} {amulet_type.title()} amulet "
+            f"{int(amulet_id)}"
+        )
 
     async def _equip_pet(
         self, decision: Decision, state: dict[str, Any]
@@ -2377,6 +2985,10 @@ class AIPlayer(commands.Cog):
                 raise ValueError("That adventure level was not offered")
             await self._invoke_as_densetsu(decision.message, f"adventure {level}")
             return f"started adventure {level}"
+        if decision.action == "follow_god":
+            return await self._follow_god(decision, state)
+        if decision.action == "choose_race":
+            return await self._choose_race(decision, state)
         if decision.action == "choose_class":
             return await self._choose_class(decision, state)
         if decision.action == "evolve_classes":
@@ -2384,6 +2996,10 @@ class AIPlayer(commands.Cog):
             return "evolved every eligible class"
         if decision.action == "optimize_equipment":
             return await self._optimize_equipment(state)
+        if decision.action == "equip_amulet":
+            return await self._equip_amulet(decision, state)
+        if decision.action == "craft_and_equip_amulet":
+            return await self._craft_and_equip_amulet(decision, state)
         if decision.action == "equip_pet":
             return await self._equip_pet(decision, state)
         if decision.action == "care_for_pet":
