@@ -77,6 +77,7 @@ DEFAULT_MAX_WAGER_PERCENT = 10
 DEFAULT_CHARACTER_NAME = "Densetsu"
 MAX_AUTOPLAY_ACTIONS = 6
 AUTOPLAY_TICK_LOCK_SECONDS = 600
+AUTOPLAY_DECISION_TIMEOUT_SECONDS = 180
 BASIC_PET_FOOD_COST = 10_000
 PET_CARE_MONEY_RESERVE = 50_000
 PAID_RAID_UPGRADE_MONEY_RESERVE = 50_000
@@ -1999,12 +2000,44 @@ class AIPlayer(commands.Cog):
         payload = parse_marked_json(message.content, DECISION_MARKER)
         if payload is None:
             return
+        if payload.get("payload_attachment") is True:
+            payload = await self._read_decision_attachment(message, payload)
+            if payload is None:
+                return
         decision = decision_from_payload(payload, message)
         if decision is None:
             return
         future = self._pending.get(decision.event_id)
         if future is not None and not future.done():
             future.set_result(decision)
+
+    async def _read_decision_attachment(
+        self, message: discord.Message, envelope: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        attachments = list(getattr(message, "attachments", []))
+        if len(attachments) != 1:
+            logger.warning(
+                "Ignored Densetsu decision %s without exactly one attachment",
+                envelope.get("event_id"),
+            )
+            return None
+        attachment = attachments[0]
+        size = int(getattr(attachment, "size", 0) or 0)
+        if size > 128 * 1024:
+            logger.warning("Ignored oversized Densetsu decision attachment")
+            return None
+        try:
+            raw = await attachment.read()
+            payload = json.loads(raw.decode("utf-8"))
+        except (AttributeError, UnicodeDecodeError, ValueError):
+            logger.warning("Ignored malformed Densetsu decision attachment")
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if str(payload.get("event_id")) != str(envelope.get("event_id")):
+            logger.warning("Ignored mismatched Densetsu decision attachment")
+            return None
+        return payload
 
     async def request_decision(
         self, event: dict[str, Any], *, timeout: float = 90
@@ -4246,7 +4279,9 @@ class AIPlayer(commands.Cog):
                 return "already running"
             try:
                 state = await self._collect_state()
-                decision = await self.request_decision(state)
+                decision = await self.request_decision(
+                    state, timeout=AUTOPLAY_DECISION_TIMEOUT_SECONDS
+                )
                 if decision is None:
                     return "no decision"
                 if not await self._is_enabled():
