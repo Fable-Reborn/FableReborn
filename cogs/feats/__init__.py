@@ -220,7 +220,7 @@ FEATS = {
     },
     "rift_ace": {
         "name": "Rift Ace", "category": "The Rift", "tier": "legendary", "lp": 150,
-        "description": "Full-clear a Heroic or Mythic Rift with a score above 90,000.",
+        "description": "Full-clear a Heroic-or-higher Rift with a score above 90,000.",
     },
     "rift_veteran_25": {
         "name": "Between Worlds", "category": "The Rift", "tier": "mythic", "lp": 125,
@@ -1220,7 +1220,11 @@ class Feats(commands.Cog):
         try:
             await self.award_feat(ctx.author.id, "rift_sealer", ctx.channel)
             await self.add_progress(ctx.author.id, "rift_full_clears", 1, ctx.channel)
-            is_ace_tier = str(difficulty or "normal").lower() in {"heroic", "mythic"}
+            is_ace_tier = str(difficulty or "normal").lower() in {
+                "heroic",
+                "mythic",
+                "ascendant",
+            }
             if is_ace_tier and int(score or 0) >= RIFT_ACE_SCORE:
                 await self.award_feat(ctx.author.id, "rift_ace", ctx.channel)
         except Exception:

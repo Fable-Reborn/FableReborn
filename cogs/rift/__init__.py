@@ -86,6 +86,29 @@ RIFT_DIFFICULTIES = {
         "armor_pct": 0.24,
         "boss_armor_pct": 0.34,
     },
+    "ascendant": {
+        "label": "Ascendant",
+        "min_level": 100,
+        "score_multiplier": 2.20,
+        "reward_multiplier": 2.10,
+        "full_clear_lp": 200,
+        "fortune_crates": 3,
+        "pet_damage_weight": 1.00,
+        # Ascendant HP is a flat 40% step above Mythic. Damage and armor
+        # receive separately seeded weekly rolls in scale_rift_rooms.
+        "hp_floor_multiplier": 2.80,
+        "damage_floor_multiplier": 1.80,
+        "damage_multiplier_range": (1.40, 1.50),
+        "armor_multiplier_range": (1.25, 1.30),
+        "room_rounds_start": 5.88,
+        "room_rounds_step": 0.77,
+        "boss_rounds": 16.10,
+        "room_pressure_start": 0.090,
+        "room_pressure_step": 0.008,
+        "boss_pressure": 0.180,
+        "armor_pct": 0.24,
+        "boss_armor_pct": 0.34,
+    },
 }
 RIFT_DIFFICULTY_ALIASES = {
     "n": "normal",
@@ -97,6 +120,9 @@ RIFT_DIFFICULTY_ALIASES = {
     "m": "mythic",
     "myth": "mythic",
     "mythic": "mythic",
+    "a": "ascendant",
+    "asc": "ascendant",
+    "ascendant": "ascendant",
 }
 
 
@@ -137,6 +163,69 @@ def rift_score(rooms_cleared, hp_pct, seconds, difficulty="normal"):
     return int(round(base_score * RIFT_DIFFICULTIES[difficulty_key]["score_multiplier"]))
 
 
+def rift_room_difficulty_multipliers(week, room_number, difficulty="normal"):
+    """Return stable per-room difficulty rolls shared by every weekly entrant."""
+    difficulty_key = normalize_rift_difficulty(difficulty) or "normal"
+    tuning = RIFT_DIFFICULTIES[difficulty_key]
+    rng = random.Random(f"rift-scaling-{week}-{difficulty_key}-{int(room_number)}")
+    damage_low, damage_high = tuning.get("damage_multiplier_range", (1.0, 1.0))
+    armor_low, armor_high = tuning.get("armor_multiplier_range", (1.0, 1.0))
+    return {
+        "damage": rng.uniform(float(damage_low), float(damage_high)),
+        "armor": rng.uniform(float(armor_low), float(armor_high)),
+    }
+
+
+async def claim_rift_attempt(conn, week, user_id, difficulty_key):
+    """Claim a normal attempt or one explicitly unlocked retry."""
+    return bool(
+        await conn.fetchval(
+            """
+            INSERT INTO rift_runs (week, user_id, difficulty, retry_available)
+            VALUES ($1, $2, $3, FALSE)
+            ON CONFLICT (week, user_id) DO UPDATE
+            SET retry_available = FALSE
+            WHERE rift_runs.retry_available IS TRUE
+            RETURNING TRUE
+            """,
+            week,
+            user_id,
+            difficulty_key,
+        )
+    )
+
+
+async def store_rift_personal_best(
+    conn,
+    week,
+    user_id,
+    rooms_cleared,
+    hp_pct,
+    seconds,
+    score,
+    difficulty_key,
+):
+    """Store a completed run only when its score beats the weekly best."""
+    return bool(
+        await conn.fetchval(
+            """
+            UPDATE rift_runs
+            SET rooms_cleared = $3, hp_pct = $4, seconds = $5, score = $6,
+                difficulty = $7, ran_at = NOW()
+            WHERE week = $1 AND user_id = $2 AND score < $6
+            RETURNING TRUE
+            """,
+            week,
+            user_id,
+            rooms_cleared,
+            hp_pct,
+            seconds,
+            score,
+            difficulty_key,
+        )
+    )
+
+
 def scale_rift_rooms(rift_data, player_damage, player_hp, player_armor, pet_damage=0, difficulty="normal"):
     difficulty_key = normalize_rift_difficulty(difficulty) or "normal"
     tuning = RIFT_DIFFICULTIES[difficulty_key]
@@ -152,6 +241,13 @@ def scale_rift_rooms(rift_data, player_damage, player_hp, player_armor, pet_dama
     for room in rift_data["rooms"]:
         room_number = int(room["room"])
         is_boss = bool(room["is_boss"])
+        difficulty_multipliers = rift_room_difficulty_multipliers(
+            rift_data.get("week", "unknown"),
+            room_number,
+            difficulty_key,
+        )
+        damage_multiplier = difficulty_multipliers["damage"]
+        armor_multiplier = difficulty_multipliers["armor"]
         if is_boss:
             expected_rounds = tuning["boss_rounds"]
             pressure = tuning["boss_pressure"]
@@ -170,16 +266,23 @@ def scale_rift_rooms(rift_data, player_damage, player_hp, player_armor, pet_dama
             party_damage * expected_rounds,
         )
         damage = max(
-            float(room["damage"]) * tuning["damage_floor_multiplier"],
-            player_armor + (player_hp * pressure),
+            float(room["damage"])
+            * tuning["damage_floor_multiplier"]
+            * damage_multiplier,
+            player_armor + (player_hp * pressure * damage_multiplier),
         )
-        armor = max(float(room["armor"]) * 0.75, armor_reference * armor_pct)
+        armor = max(
+            float(room["armor"]) * 0.75 * armor_multiplier,
+            armor_reference * armor_pct * armor_multiplier,
+        )
 
         scaled_room = dict(room)
         scaled_room["hp"] = int(round(hp))
         scaled_room["damage"] = int(round(damage))
         scaled_room["armor"] = int(round(armor))
         scaled_room["difficulty"] = difficulty_key
+        scaled_room["difficulty_damage_multiplier"] = damage_multiplier
+        scaled_room["difficulty_armor_multiplier"] = armor_multiplier
         scaled_rooms.append(scaled_room)
 
     scaled_rift = dict(rift_data)
@@ -240,6 +343,11 @@ class RiftDifficultySelect(discord.ui.Select):
                 label="Mythic Rift",
                 value="mythic",
                 description="Level 90+. Veteran scaling, 1.65x score, 2 crates and 150 LP.",
+            ),
+            discord.SelectOption(
+                label="Ascendant Rift",
+                value="ascendant",
+                description="Level 100+. +40% HP, +40-50% damage, +25-30% armor; 2.20x score.",
             ),
         ]
         super().__init__(
@@ -316,6 +424,7 @@ class Rift(commands.Cog):
                         seconds INT NOT NULL DEFAULT 0,
                         score BIGINT NOT NULL DEFAULT 0,
                         difficulty TEXT NOT NULL DEFAULT 'normal',
+                        retry_available BOOLEAN NOT NULL DEFAULT FALSE,
                         ran_at TIMESTAMP NOT NULL DEFAULT NOW(),
                         PRIMARY KEY (week, user_id)
                     );
@@ -325,6 +434,12 @@ class Rift(commands.Cog):
                     """
                     ALTER TABLE rift_runs
                     ADD COLUMN IF NOT EXISTS difficulty TEXT NOT NULL DEFAULT 'normal';
+                    """
+                )
+                await conn.execute(
+                    """
+                    ALTER TABLE rift_runs
+                    ADD COLUMN IF NOT EXISTS retry_available BOOLEAN NOT NULL DEFAULT FALSE;
                     """
                 )
             self._tables_ready = True
@@ -389,7 +504,7 @@ class Rift(commands.Cog):
         async with self.bot.pool.acquire() as conn:
             own_row = await conn.fetchrow(
                 """
-                SELECT rooms_cleared, score, difficulty
+                SELECT rooms_cleared, score, difficulty, retry_available
                 FROM rift_runs
                 WHERE week = $1 AND user_id = $2
                 """,
@@ -402,9 +517,10 @@ class Rift(commands.Cog):
         if own_row:
             difficulty_key = normalize_rift_difficulty(own_row["difficulty"]) or "normal"
             difficulty_label = RIFT_DIFFICULTIES[difficulty_key]["label"]
+            attempt_state = "Retry available" if own_row["retry_available"] else "Used"
             attempt_text = (
-                f"Used ({difficulty_label}) - {own_row['rooms_cleared']}/7 rooms, "
-                f"score **{own_row['score']:,}**"
+                f"{attempt_state} · Best ({difficulty_label}) - "
+                f"{own_row['rooms_cleared']}/7 rooms, score **{own_row['score']:,}**"
             )
 
         embed = discord.Embed(
@@ -506,6 +622,14 @@ class Rift(commands.Cog):
             value="Level 90+ · veteran scaling · 1.65x score · full clear: 2 Fortune Crates, 150 LP",
             inline=False,
         )
+        embed.add_field(
+            name="Ascendant",
+            value=(
+                "Level 100+ · +40% HP · +40-50% damage · +25-30% armor · "
+                "2.20x score · full clear: 3 Fortune Crates, 200 LP"
+            ),
+            inline=False,
+        )
         return embed
 
     async def _send_difficulty_picker(self, ctx):
@@ -550,13 +674,8 @@ class Rift(commands.Cog):
 
         week = current_rift_week()
         async with self.bot.pool.acquire() as conn:
-            inserted = await conn.fetchval(
-                """
-                INSERT INTO rift_runs (week, user_id, difficulty)
-                VALUES ($1, $2, $3)
-                ON CONFLICT DO NOTHING
-                RETURNING TRUE
-                """,
+            inserted = await claim_rift_attempt(
+                conn,
                 week,
                 ctx.author.id,
                 difficulty_key,
@@ -648,13 +767,8 @@ class Rift(commands.Cog):
                     difficulty_key,
                     ctx.author.id,
                 )
-                await conn.execute(
-                    """
-                    UPDATE rift_runs
-                    SET rooms_cleared = $3, hp_pct = $4, seconds = $5, score = $6,
-                        difficulty = $7, ran_at = NOW()
-                    WHERE week = $1 AND user_id = $2
-                    """,
+                improved_personal_best = await store_rift_personal_best(
+                    conn,
                     week,
                     ctx.author.id,
                     rooms_cleared,
@@ -663,11 +777,24 @@ class Rift(commands.Cog):
                     score,
                     difficulty_key,
                 )
+                personal_best = await conn.fetchval(
+                    """
+                    SELECT score
+                    FROM rift_runs
+                    WHERE week = $1 AND user_id = $2
+                    """,
+                    week,
+                    ctx.author.id,
+                )
 
             await ctx.send(
                 f"{difficulty_label} Rift run complete: **{rooms_cleared}/7** rooms, "
                 f"**{int(hp_pct)}%** HP, **{seconds}s**, score **{score:,}**."
             )
+            if not improved_personal_best:
+                await ctx.send(
+                    f"Your weekly best remains **{int(personal_best or 0):,}**."
+                )
             self.bot.dispatch(
                 "rift_completion",
                 ctx,
@@ -701,7 +828,7 @@ class Rift(commands.Cog):
                         f"+{difficulty_info['fortune_crates']} Fortune {crate_word} and "
                         f"+{difficulty_info['full_clear_lp']} Legacy Points."
                     )
-                if score > int(previous_best or 0):
+                if improved_personal_best and score > int(previous_best or 0):
                     await ctx.send(
                         f"👑 **New {difficulty_label} Rift record this week:** "
                         f"{ctx.author.mention} leads with **{score:,}**!"
