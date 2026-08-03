@@ -22,6 +22,7 @@ _STABILITY_SUFFIX_RE = re.compile(
     r"\s*(\[(?:FINAL|SPECIAL|DESTABILISED|DESTABILIZED|UNSTABLE|EVENT)\])\s*$",
     re.IGNORECASE,
 )
+_RECIPE_SUFFIX_RE = re.compile(r"\s*\[S\d+(?:-\d+)?\]\s*")
 _UNIQUE_VIOLATION = "23505"
 MAX_SPLICE_RESULT_NAME_LENGTH = 100
 
@@ -130,6 +131,104 @@ def plan_duplicate_splice_names(rows: Iterable[Mapping[str, Any]]) -> list[Splic
                 )
             )
     return repairs
+
+
+@dataclass(frozen=True)
+class SpliceParentRepair:
+    splice_id: int
+    slot: str
+    orphan_name: str
+    new_name: str
+    parent_splice_id: int
+
+
+@dataclass(frozen=True)
+class OrphanParentGroup:
+    orphan_name: str
+    children: tuple[int, ...]
+    candidates: tuple[tuple[int, str], ...]
+
+
+def _pre_repair_name(row: Mapping[str, Any]) -> Optional[str]:
+    """Recover the name a recipe carried before it was disambiguated."""
+    stored = clean_name(_row_value(row, "base_result_name"))
+    if stored:
+        return stored
+    current = clean_name(_row_value(row, "result_name"))
+    if not current or "[S" not in current:
+        return None
+    return clean_name(_RECIPE_SUFFIX_RE.sub(" ", current))
+
+
+def plan_orphan_parent_repairs(
+    rows: Iterable[Mapping[str, Any]],
+    base_monster_names: Iterable[Any],
+) -> tuple[list[SpliceParentRepair], list[OrphanParentGroup], list[OrphanParentGroup]]:
+    """Repoint parent names left dangling when a duplicate result was renamed.
+
+    Legacy lineage is stored as parent *names*, so renaming ``X`` to ``X [S12]``
+    orphans every recipe still referencing ``X``.  Returns the unambiguous
+    repairs plus the orphans that need a human: ``ambiguous`` ones have several
+    rename candidates, ``unresolved`` ones have none at all.
+    """
+    parsed: list[tuple[int, Mapping[str, Any], Optional[str]]] = []
+    known: set[str] = {
+        cleaned for name in base_monster_names if (cleaned := clean_name(name))
+    }
+    for row in rows:
+        try:
+            splice_id = int(_row_value(row, "id"))
+        except (TypeError, ValueError):
+            continue
+        name = clean_name(_row_value(row, "result_name"))
+        if name:
+            known.add(name)
+        parsed.append((splice_id, row, name))
+
+    candidates: dict[str, list[tuple[int, str]]] = {}
+    for splice_id, row, name in parsed:
+        if not name:
+            continue
+        previous = _pre_repair_name(row)
+        if previous and previous != name:
+            candidates.setdefault(previous, []).append((splice_id, name))
+
+    repairs: list[SpliceParentRepair] = []
+    children_by_orphan: dict[str, list[int]] = {}
+    for splice_id, row, _name in parsed:
+        for slot in ("pet1_default", "pet2_default"):
+            parent = clean_name(_row_value(row, slot))
+            if not parent or parent in known:
+                continue
+            children_by_orphan.setdefault(parent, []).append(splice_id)
+            options = candidates.get(parent, ())
+            if len(options) == 1:
+                parent_splice_id, new_name = options[0]
+                repairs.append(
+                    SpliceParentRepair(
+                        splice_id=splice_id,
+                        slot=slot,
+                        orphan_name=parent,
+                        new_name=new_name,
+                        parent_splice_id=parent_splice_id,
+                    )
+                )
+
+    ambiguous: list[OrphanParentGroup] = []
+    unresolved: list[OrphanParentGroup] = []
+    for orphan_name in sorted(children_by_orphan):
+        options = tuple(sorted(candidates.get(orphan_name, ())))
+        if len(options) == 1:
+            continue
+        group = OrphanParentGroup(
+            orphan_name=orphan_name,
+            children=tuple(sorted(set(children_by_orphan[orphan_name]))),
+            candidates=options,
+        )
+        (ambiguous if options else unresolved).append(group)
+
+    repairs.sort(key=lambda repair: (repair.splice_id, repair.slot))
+    return repairs, ambiguous, unresolved
 
 
 async def ensure_splice_identity_schema(conn) -> None:

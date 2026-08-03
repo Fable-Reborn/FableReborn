@@ -33,6 +33,7 @@ from cogs.splice_identity import (
     ensure_splice_identity_schema,
     link_created_splice_result,
     plan_duplicate_splice_names,
+    plan_orphan_parent_repairs,
     reserve_splice_combination,
 )
 from cogs.frontier_catalog.legacy import clean_name, normalize_name
@@ -3783,6 +3784,178 @@ class ProcessSplice(commands.Cog):
             file=discord.File(
                 BytesIO(report.encode("utf-8")),
                 filename="splice_name_repair_applied.txt",
+            ),
+        )
+
+    @is_gm()
+    @commands.command(
+        name="repairspliceparents",
+        aliases=["fixspliceparents", "spliceparentaudit"],
+        hidden=True,
+    )
+    async def repair_splice_parents(self, ctx: commands.Context, mode: str = "preview"):
+        """Repoint parent names orphaned by the duplicate-name repair."""
+        mode = str(mode or "preview").strip().lower()
+        if mode not in {"preview", "apply"}:
+            return await ctx.send(
+                "Use `$repairspliceparents preview` or `$repairspliceparents apply`."
+            )
+
+        from cogs.soulforge_frontiers.frontier_pve import resolve_recipe_generations
+
+        base_names = self._load_default_pve_monster_names()
+        async with self.bot.pool.acquire() as conn:
+            splice_columns = {
+                row["column_name"]
+                for row in await conn.fetch(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'splice_combinations';
+                    """
+                )
+            }
+            base_column = (
+                "base_result_name"
+                if "base_result_name" in splice_columns
+                else "NULL::text AS base_result_name"
+            )
+            rows = [
+                dict(row)
+                for row in await conn.fetch(
+                    f"""
+                    SELECT id, pet1_default, pet2_default, result_name, {base_column}
+                    FROM splice_combinations
+                    ORDER BY id ASC;
+                    """
+                )
+            ]
+
+            repairs, ambiguous, unresolved = plan_orphan_parent_repairs(rows, base_names)
+            if not repairs and not ambiguous and not unresolved:
+                return await ctx.send("No orphaned splice parent names found.")
+
+            before = len(resolve_recipe_generations(base_names, rows))
+            repaired_rows = [dict(row) for row in rows]
+            row_by_id = {int(row["id"]): row for row in repaired_rows}
+            for repair in repairs:
+                row_by_id[repair.splice_id][repair.slot] = repair.new_name
+            after = len(resolve_recipe_generations(base_names, repaired_rows))
+
+            report_lines = [
+                "SPLICE PARENT REPAIR PLAN",
+                "=" * 76,
+                f"Mode: {mode.upper()}",
+                f"Orphaned parent slots repaired: {len(repairs)}",
+                f"Ambiguous orphan names left untouched: {len(ambiguous)}",
+                f"Unmatched orphan names left untouched: {len(unresolved)}",
+                f"Recipes with a resolvable generation: {before} -> {after}",
+                "",
+            ]
+            for repair in repairs:
+                report_lines.append(
+                    f"S{repair.splice_id}.{repair.slot}: {repair.orphan_name!r} -> "
+                    f"{repair.new_name!r} (recipe S{repair.parent_splice_id})"
+                )
+            if ambiguous:
+                report_lines.extend(["", "AMBIGUOUS (several rename candidates)", "-" * 76])
+                for group in ambiguous:
+                    options = ", ".join(
+                        f"S{splice_id} {name!r}" for splice_id, name in group.candidates
+                    )
+                    report_lines.append(
+                        f"{group.orphan_name!r} used by {list(group.children)} -> {options}"
+                    )
+            if unresolved:
+                report_lines.extend(["", "NO RENAME CANDIDATE (a different problem)", "-" * 76])
+                for group in unresolved:
+                    report_lines.append(
+                        f"{group.orphan_name!r} used by {list(group.children)}"
+                    )
+            report = "\n".join(report_lines)
+
+            if mode == "preview":
+                return await ctx.send(
+                    (
+                        f"Found **{len(repairs)}** repairable parent slots, "
+                        f"**{len(ambiguous)}** ambiguous and **{len(unresolved)}** unmatched "
+                        f"orphan names. Resolvable generations would go "
+                        f"**{before} -> {after}**. Preview attached; no data changed."
+                    ),
+                    file=discord.File(
+                        BytesIO(report.encode("utf-8")),
+                        filename="splice_parent_repair_preview.txt",
+                    ),
+                )
+
+            if not repairs:
+                return await ctx.send(
+                    "Nothing can be repaired automatically; every orphan needs a decision.",
+                    file=discord.File(
+                        BytesIO(report.encode("utf-8")),
+                        filename="splice_parent_repair_preview.txt",
+                    ),
+                )
+
+            confirmed = await ctx.confirm(
+                f"Repoint {len(repairs)} orphaned parent slots across "
+                f"{len({repair.splice_id for repair in repairs})} recipes? "
+                f"{len(ambiguous) + len(unresolved)} orphan names will be left untouched."
+            )
+            if not confirmed:
+                return await ctx.send("Splice parent repair cancelled; no data changed.")
+
+            link_columns = {
+                "pet1_default": "parent1_splice_combination_id",
+                "pet2_default": "parent2_splice_combination_id",
+            }
+            async with conn.transaction():
+                for slot, link_column in link_columns.items():
+                    slot_repairs = [
+                        repair for repair in repairs if repair.slot == slot
+                    ]
+                    if not slot_repairs:
+                        continue
+                    if link_column in splice_columns:
+                        await conn.executemany(
+                            f"""
+                            UPDATE splice_combinations
+                            SET {slot} = $1,
+                                {link_column} = $2
+                            WHERE id = $3;
+                            """,
+                            [
+                                (repair.new_name, repair.parent_splice_id, repair.splice_id)
+                                for repair in slot_repairs
+                            ],
+                        )
+                    else:
+                        await conn.executemany(
+                            f"UPDATE splice_combinations SET {slot} = $1 WHERE id = $2;",
+                            [
+                                (repair.new_name, repair.splice_id)
+                                for repair in slot_repairs
+                            ],
+                        )
+
+        refresh_note = ""
+        frontier_cog = self.bot.get_cog("SoulforgeFrontiers")
+        if frontier_cog is not None and getattr(frontier_cog, "catalog", None) is not None:
+            try:
+                await frontier_cog.catalog.refresh_legacy()
+            except Exception as error:
+                refresh_note = f" Frontier refresh failed and needs a retry/restart: {error}"
+
+        await ctx.send(
+            (
+                f"Repointed **{len(repairs)}** orphaned parent slots. "
+                f"Recipes with a resolvable generation: **{before} -> {after}**. "
+                f"Left **{len(ambiguous) + len(unresolved)}** orphan names for review."
+                f"{refresh_note}"
+            ),
+            file=discord.File(
+                BytesIO(report.encode("utf-8")),
+                filename="splice_parent_repair_applied.txt",
             ),
         )
 

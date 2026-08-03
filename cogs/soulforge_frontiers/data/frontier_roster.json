@@ -325,7 +325,7 @@
       "region_id": "stormbreak_reach",
       "role": "boss",
       "tier": 5,
-      "expected_generation": 5,
+      "expected_generation": 6,
       "egg_eligible": false,
       "weight": 1
     },

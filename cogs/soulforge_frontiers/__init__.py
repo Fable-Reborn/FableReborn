@@ -1949,6 +1949,51 @@ class SoulforgeFrontiers(commands.Cog):
                 boss["frontier_species_id"] = source["frontier_result_species_id"]
         return boss
 
+    @staticmethod
+    def _broken_ancestry(rows, base_names, splice_id: int, limit: int = 8) -> list[str]:
+        """Walk a recipe's parents upward and report every unresolvable link."""
+        row_by_id = {int(row["id"]): row for row in rows}
+        row_by_name: dict[str, Any] = {}
+        duplicate_names: set[str] = set()
+        for row in rows:
+            name = str(row["result_name"] or "").strip()
+            if not name:
+                continue
+            if name in row_by_name:
+                duplicate_names.add(name)
+            else:
+                row_by_name[name] = row
+
+        broken: list[str] = []
+        visited: set[int] = set()
+        stack: list[tuple[int, tuple[str, ...]]] = [(int(splice_id), ())]
+        while stack and len(broken) < limit:
+            current, path = stack.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            row = row_by_id.get(current)
+            if row is None:
+                continue
+            trail = path + (f"S{current}",)
+            for slot in ("pet1_default", "pet2_default"):
+                name = str(row[slot] or "").strip()
+                if not name:
+                    broken.append(" -> ".join(trail) + f" -> EMPTY {slot}")
+                    continue
+                if name in base_names:
+                    continue
+                parent = row_by_name.get(name)
+                if parent is None:
+                    broken.append(" -> ".join(trail) + f" -> UNKNOWN {name!r}")
+                    continue
+                if name in duplicate_names:
+                    broken.append(" -> ".join(trail) + f" -> AMBIGUOUS {name!r}")
+                stack.append((int(parent["id"]), trail))
+        if not broken:
+            broken.append(f"no broken link found (visited {len(visited)} recipes; possible cycle)")
+        return broken
+
     async def _diagnose_boss(self, region_id: str) -> str:
         """Explain, in one line, why the curated boss failed to resolve."""
         entry = next(
@@ -2003,9 +2048,33 @@ class SoulforgeFrontiers(commands.Cog):
         generations = resolve_recipe_generations(base_names, rows)
         actual_generation = generations.get(splice_id)
         if actual_generation != int(entry["expected_generation"]):
+            parent_status = []
+            for slot in ("pet1_default", "pet2_default"):
+                name = str(row[slot] or "").strip()
+                parent = next(
+                    (
+                        item
+                        for item in rows
+                        if str(item["result_name"] or "").strip() == name
+                    ),
+                    None,
+                )
+                parent_status.append(
+                    f"{name!r}="
+                    + (
+                        "base"
+                        if name in base_names
+                        else f"S{parent['id']}/gen{generations.get(int(parent['id']))}"
+                        if parent is not None
+                        else "NOT FOUND"
+                    )
+                )
+            lines = self._broken_ancestry(rows, base_names, splice_id)
             return (
-                f"GENERATION: db={actual_generation} expected={entry['expected_generation']} "
-                f"parents={row['pet1_default']!r}+{row['pet2_default']!r} ({context})"
+                f"GENERATION: db={actual_generation} expected={entry['expected_generation']}\n"
+                f"parents: {', '.join(parent_status)}\n"
+                + "\n".join(lines)
+                + f"\n({context})"
             )
 
         state = get_rotation_state(self.config)
