@@ -70,7 +70,7 @@ RIFT_DIFFICULTIES = {
     "mythic": {
         "label": "Mythic",
         "min_level": 90,
-        "score_multiplier": 1.65,
+        "score_multiplier": 2.10,
         "reward_multiplier": 1.60,
         "full_clear_lp": 150,
         "fortune_crates": 2,
@@ -90,7 +90,7 @@ RIFT_DIFFICULTIES = {
     "ascendant": {
         "label": "Ascendant",
         "min_level": 100,
-        "score_multiplier": 2.20,
+        "score_multiplier": 3.30,
         "reward_multiplier": 2.10,
         "full_clear_lp": 200,
         "fortune_crates": 3,
@@ -349,12 +349,12 @@ class RiftDifficultySelect(discord.ui.Select):
             discord.SelectOption(
                 label="Mythic Rift",
                 value="mythic",
-                description="Level 90+. Smart targeting, 1.65x score, 2 crates and 150 LP.",
+                description="Level 90+. Smart targeting, 2.10x score, 2 crates and 150 LP.",
             ),
             discord.SelectOption(
                 label="Ascendant Rift",
                 value="ascendant",
-                description="Level 100+. Smart targeting and escalating pressure; 2.20x score.",
+                description="Level 100+. Smart targeting and escalating pressure; 3.30x score.",
             ),
         ]
         super().__init__(
@@ -628,7 +628,7 @@ class Rift(commands.Cog):
             name="Mythic",
             value=(
                 "Level 90+ · veteran scaling · smart healer targeting · "
-                "1.65x score · full clear: 2 Fortune Crates, 150 LP"
+                "2.10x score · full clear: 2 Fortune Crates, 150 LP"
             ),
             inline=False,
         )
@@ -637,7 +637,7 @@ class Rift(commands.Cog):
             value=(
                 "Level 100+ · +40% HP · +40-65% damage · +25-30% armor · "
                 "smart healer targeting · attacks gain 3-5% pressure per turn · "
-                "2.20x score · full clear: 3 Fortune Crates, 200 LP"
+                "3.30x score · full clear: 3 Fortune Crates, 200 LP"
             ),
             inline=False,
         )
