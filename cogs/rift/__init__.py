@@ -85,6 +85,7 @@ RIFT_DIFFICULTIES = {
         "boss_pressure": 0.180,
         "armor_pct": 0.24,
         "boss_armor_pct": 0.34,
+        "smart_targeting": True,
     },
     "ascendant": {
         "label": "Ascendant",
@@ -108,6 +109,8 @@ RIFT_DIFFICULTIES = {
         "boss_pressure": 0.180,
         "armor_pct": 0.24,
         "boss_armor_pct": 0.34,
+        "smart_targeting": True,
+        "attack_pressure_growth_range": (0.03, 0.05),
     },
 }
 RIFT_DIFFICULTY_ALIASES = {
@@ -346,12 +349,12 @@ class RiftDifficultySelect(discord.ui.Select):
             discord.SelectOption(
                 label="Mythic Rift",
                 value="mythic",
-                description="Level 90+. Veteran scaling, 1.65x score, 2 crates and 150 LP.",
+                description="Level 90+. Smart targeting, 1.65x score, 2 crates and 150 LP.",
             ),
             discord.SelectOption(
                 label="Ascendant Rift",
                 value="ascendant",
-                description="Level 100+. +40% HP, +40-65% damage, +25-30% armor; 2.20x score.",
+                description="Level 100+. Smart targeting and escalating pressure; 2.20x score.",
             ),
         ]
         super().__init__(
@@ -623,13 +626,17 @@ class Rift(commands.Cog):
         )
         embed.add_field(
             name="Mythic",
-            value="Level 90+ · veteran scaling · 1.65x score · full clear: 2 Fortune Crates, 150 LP",
+            value=(
+                "Level 90+ · veteran scaling · smart healer targeting · "
+                "1.65x score · full clear: 2 Fortune Crates, 150 LP"
+            ),
             inline=False,
         )
         embed.add_field(
             name="Ascendant",
             value=(
                 "Level 100+ · +40% HP · +40-65% damage · +25-30% armor · "
+                "smart healer targeting · attacks gain 3-5% pressure per turn · "
                 "2.20x score · full clear: 3 Fortune Crates, 200 LP"
             ),
             inline=False,
@@ -724,6 +731,14 @@ class Rift(commands.Cog):
                         "rift_target_hp_pressure",
                         room["target_hp_pressure"],
                     )
+                if difficulty_info.get("smart_targeting"):
+                    setattr(enemy, "rift_smart_targeting", True)
+                pressure_growth = difficulty_info.get(
+                    "attack_pressure_growth_range"
+                )
+                if pressure_growth:
+                    setattr(enemy, "rift_pressure_growth_range", pressure_growth)
+                    setattr(enemy, "rift_pressure_bonus", 0)
                 enemy_team.add_combatant(enemy)
 
             await ctx.send(

@@ -162,8 +162,112 @@ class TowerBattle(Battle):
 
         target_armor = Decimal(str(getattr(target, "armor", 0) or 0))
         target_max_hp = Decimal(str(getattr(target, "max_hp", 0) or 0))
-        pressure_damage = target_armor + (target_max_hp * pressure)
+        pressure_bonus = Decimal(
+            str(getattr(attacker, "rift_pressure_bonus", 0) or 0)
+        )
+        pressure_damage = target_armor + (
+            target_max_hp * pressure * (Decimal("1") + pressure_bonus)
+        )
         return max(Decimal(str(raw_damage)), pressure_damage)
+
+    @staticmethod
+    def rift_healing_threat(combatant, allies):
+        """Estimate how much sustain a combatant can supply each action."""
+        if combatant is None:
+            return Decimal("0")
+
+        def number(value):
+            try:
+                return max(Decimal("0"), Decimal(str(value or 0)))
+            except Exception:
+                return Decimal("0")
+
+        max_hp = number(getattr(combatant, "max_hp", 0))
+        damage = number(getattr(combatant, "damage", 0))
+        team_max_hp = sum(
+            (number(getattr(ally, "max_hp", 0)) for ally in allies),
+            Decimal("0"),
+        )
+        threat = Decimal("0")
+
+        if getattr(combatant, "is_pet", False):
+            for effect in (getattr(combatant, "skill_effects", None) or {}).values():
+                if not isinstance(effect, dict):
+                    continue
+                effect_type = str(effect.get("type", "")).lower()
+                for field in (
+                    "heal_percent",
+                    "team_heal_percent",
+                    "heal_per_turn",
+                    "lifesteal_percent",
+                    "lifesteal",
+                    "team_lifesteal",
+                ):
+                    amount = number(effect.get(field))
+                    if amount <= 0:
+                        continue
+                    if "lifesteal" in field or "lifesteal" in effect_type:
+                        base = damage
+                    elif field.startswith("team_") or "team_heal" in effect_type:
+                        base = team_max_hp
+                    else:
+                        base = max_hp
+                    threat += base * amount
+                if effect.get("heal_to_full"):
+                    threat += team_max_hp
+            return threat
+
+        threat += damage * number(getattr(combatant, "lifesteal_percent", 0)) / 100
+        threat += damage * number(getattr(combatant, "bonus_lifesteal", 0))
+        threat += damage * number(getattr(combatant, "dark_ritual_lifesteal", 0))
+        threat += team_max_hp * Decimal("0.005") * number(
+            getattr(combatant, "bard_evolution", 0)
+        )
+
+        spec_effects = getattr(combatant, "spec_effects", None) or {}
+        for key, base in (
+            ("party_round_heal_pct", team_max_hp),
+            ("second_wind_heal_pct", max_hp),
+            ("soul_ward_lifesteal_pct", damage),
+            ("christmas_miracle_pct", max_hp),
+        ):
+            effect = spec_effects.get(key)
+            if isinstance(effect, dict):
+                threat += base * number(effect.get("value")) / 100
+        return threat
+
+    @classmethod
+    def select_rift_smart_target(cls, attacker, alive_targets):
+        """Focus the living combatant with the greatest healing threat."""
+        if not getattr(attacker, "rift_smart_targeting", False):
+            return None
+        scored = [
+            (cls.rift_healing_threat(target, alive_targets), index, target)
+            for index, target in enumerate(alive_targets)
+        ]
+        if not scored or max(score for score, _index, _target in scored) <= 0:
+            return None
+        return max(scored, key=lambda item: (item[0], -item[1]))[2]
+
+    @staticmethod
+    def advance_rift_attack_pressure(attacker):
+        """Increase an Ascendant enemy's future damage by a random 3-5%."""
+        growth_range = getattr(attacker, "rift_pressure_growth_range", None)
+        if not growth_range or not getattr(attacker, "is_alive", lambda: True)():
+            return None
+        low, high = growth_range
+        growth = Decimal(str(random.uniform(float(low), float(high))))
+        bonus = Decimal(str(getattr(attacker, "rift_pressure_bonus", 0) or 0))
+        bonus += growth
+        attacker.rift_pressure_bonus = bonus
+        return bonus
+
+    @staticmethod
+    def reset_rift_attack_pressure(attacker):
+        if hasattr(attacker, "rift_pressure_bonus"):
+            attacker.rift_pressure_bonus = Decimal("0")
+        if hasattr(attacker, "rift_last_smart_target"):
+            delattr(attacker, "rift_last_smart_target")
     
     def find_next_opponent_index(self):
         """Return the index of the next enemy that can still be fought.
@@ -197,6 +301,7 @@ class TowerBattle(Battle):
 
         self.current_opponent_index = next_index
         current_enemy = self.enemy_team.combatants[self.current_opponent_index]
+        self.reset_rift_attack_pressure(current_enemy)
 
         # Show "Prepare to face" message
         await self.add_to_log(f"Prepare to face {current_enemy.name}!", force_new_action=True)
@@ -247,6 +352,8 @@ class TowerBattle(Battle):
             await asyncio.sleep(1)
             return True
             
+        smart_target_message = None
+
         # Determine which team the combatant belongs to
         if current_combatant in self.player_team.combatants:
             # Player's turn, target the current enemy
@@ -276,23 +383,19 @@ class TowerBattle(Battle):
             if not alive_players:
                 return False  # All players are defeated
             
-            # Target selection logic - pets have different weighting
-            weighted_targets = []
-            weights = []
-            
-            for player in alive_players:
-                if player.is_pet:
-                    weighted_targets.append(player)
-                    weights.append(0.4)  # 40% chance to target pets
-                else:
-                    weighted_targets.append(player)
-                    weights.append(0.6)  # 60% chance to target players
-            
-            # Normalize weights
-            total_weight = sum(weights)
-            weights = [w/total_weight for w in weights]
-            
-            target = random.choices(weighted_targets, weights=weights)[0]
+            target = self.select_rift_smart_target(current_combatant, alive_players)
+            if target is not None:
+                marker = id(target)
+                if getattr(current_combatant, "rift_last_smart_target", None) != marker:
+                    current_combatant.rift_last_smart_target = marker
+                    smart_target_message = (
+                        f"🧠 {current_combatant.name} identifies **{target.name}** "
+                        "as the greatest healing threat!"
+                    )
+            else:
+                # Standard targeting retains the original player/pet weighting.
+                weights = [0.4 if player.is_pet else 0.6 for player in alive_players]
+                target = random.choices(alive_players, weights=weights)[0]
         
         # Process attack based on luck
         luck_roll = random.randint(1, 100)
@@ -618,6 +721,20 @@ class TowerBattle(Battle):
             else:
                 message = f"{current_combatant.name}'s attack missed!"
         
+        if smart_target_message:
+            message += f"\n{smart_target_message}"
+
+        if current_combatant in self.enemy_team.combatants:
+            pressure_bonus = self.advance_rift_attack_pressure(current_combatant)
+            if pressure_bonus is not None:
+                message += (
+                    "\n🌀 Rift pressure intensifies: the enemy's next attack gains "
+                    f"**+{float(pressure_bonus) * 100:.1f}%** damage."
+                )
+
+        if target in self.enemy_team.combatants and not target.is_alive():
+            self.reset_rift_attack_pressure(target)
+
         # Add message to battle log - use a new action number for each combat action
         await self.add_to_log(message, force_new_action=True)
 
