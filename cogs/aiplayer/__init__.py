@@ -2289,9 +2289,14 @@ class AIPlayer(commands.Cog):
             if future is not None and not future.done():
                 future.set_result(decision)
             elif future is None:
+                awaited = [
+                    key for key, pending in self._pending.items()
+                    if not pending.done()
+                ]
+                hint = ", ".join(f"`{key}`" for key in awaited[:3]) or "none"
                 await bridge.send(
                     f"AI decision ignored: no pending event `{decision.event_id}` "
-                    "(late reply, or autoplay is not waiting for one).",
+                    f"(events currently awaited: {hint}).",
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
         except Exception as exc:
@@ -4868,6 +4873,18 @@ class AIPlayer(commands.Cog):
                 nx=True,
             )
             if not acquired:
+                ttl = await self.bot.redis.ttl(TICK_LOCK_KEY)
+                if ttl > 0:
+                    lock_hint = f"expires in ~{ttl}s"
+                elif ttl == -1:
+                    lock_hint = "no expiry set — the lock is stuck"
+                else:
+                    lock_hint = "lock vanished while checking"
+                await channel.send(
+                    "AI tick skipped: another decision cycle holds the tick lock "
+                    f"({lock_hint}).",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
                 return "already running"
             try:
                 state = await self._collect_state()
@@ -4875,6 +4892,11 @@ class AIPlayer(commands.Cog):
                     state, timeout=AUTOPLAY_DECISION_TIMEOUT_SECONDS
                 )
                 if decision is None:
+                    await channel.send(
+                        "AI tick ended: no usable decision was applied for this "
+                        "event (see the timeout/rejection message above).",
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
                     return "no decision"
                 if not await self._is_enabled():
                     return "disabled"
@@ -4983,7 +5005,13 @@ class AIPlayer(commands.Cog):
     @is_gm()
     async def aiplayer_tick(self, ctx) -> None:
         await ctx.send("Running one Densetsu decision cycle...")
-        result = await self.run_autoplay_once()
+        try:
+            result = await self.run_autoplay_once()
+        except Exception as exc:
+            logger.exception("Densetsu manual tick failed")
+            return await ctx.send(
+                f"Tick failed: `{type(exc).__name__}: {str(exc)[:400]}`"
+            )
         await ctx.send(f"Densetsu decision cycle finished: **{result}**.")
 
     @aiplayer.command(name="maxwager", hidden=True)
