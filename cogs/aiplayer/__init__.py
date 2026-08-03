@@ -727,6 +727,30 @@ class AIPlayer(commands.Cog):
             return None
         return self.bot.get_channel(channel_id)
 
+    async def _report_error(self, where: str, exc: BaseException) -> None:
+        """Log an AI player failure and echo it to the bound bridge channel."""
+        logger.exception("Densetsu %s failed", where, exc_info=exc)
+        try:
+            channel = await self._bridge_channel()
+            if channel is None:
+                return
+            await channel.send(
+                f"AI player error in {where}: "
+                f"`{type(exc).__name__}: {str(exc)[:450]}`",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except Exception:
+            logger.exception(
+                "Could not report the Densetsu error to the bridge channel"
+            )
+
+    def _queue_error_report(self, where: str, exc: BaseException) -> None:
+        """Schedule a bridge error report from a synchronous done-callback."""
+        try:
+            asyncio.get_running_loop().create_task(self._report_error(where, exc))
+        except RuntimeError:
+            logger.exception("Densetsu %s failed", where, exc_info=exc)
+
     async def _is_enabled(self) -> bool:
         value = await self.bot.redis.get(ENABLED_KEY)
         if isinstance(value, bytes):
@@ -2240,24 +2264,27 @@ class AIPlayer(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        if message.author.id != DENSETSU_USER_ID:
-            return
-        bridge = await self._bridge_channel()
-        if bridge is None or message.channel.id != bridge.id:
-            return
-        payload = parse_marked_json(message.content, DECISION_MARKER)
-        if payload is None:
-            return
-        if payload.get("payload_attachment") is True:
-            payload = await self._read_decision_attachment(message, payload)
+        try:
+            if message.author.id != DENSETSU_USER_ID:
+                return
+            bridge = await self._bridge_channel()
+            if bridge is None or message.channel.id != bridge.id:
+                return
+            payload = parse_marked_json(message.content, DECISION_MARKER)
             if payload is None:
                 return
-        decision = decision_from_payload(payload, message)
-        if decision is None:
-            return
-        future = self._pending.get(decision.event_id)
-        if future is not None and not future.done():
-            future.set_result(decision)
+            if payload.get("payload_attachment") is True:
+                payload = await self._read_decision_attachment(message, payload)
+                if payload is None:
+                    return
+            decision = decision_from_payload(payload, message)
+            if decision is None:
+                return
+            future = self._pending.get(decision.event_id)
+            if future is not None and not future.done():
+                future.set_result(decision)
+        except Exception as exc:
+            await self._report_error("decision handling", exc)
 
     async def _read_decision_attachment(
         self, message: discord.Message, envelope: dict[str, Any]
@@ -2427,14 +2454,13 @@ class AIPlayer(commands.Cog):
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
-    @staticmethod
-    def _background_task_finished(task: asyncio.Task) -> None:
+    def _background_task_finished(self, task: asyncio.Task) -> None:
         if task.cancelled():
             return
         try:
             task.result()
-        except Exception:
-            logger.exception("Densetsu background interaction failed")
+        except Exception as exc:
+            self._queue_error_report("background interaction", exc)
 
     def _start_background(self, coroutine) -> asyncio.Task:
         task = asyncio.create_task(coroutine)
@@ -3799,6 +3825,23 @@ class AIPlayer(commands.Cog):
             setattr(ctx, key, value)
         return ctx
 
+    def _clear_global_cooldown(self, ctx) -> None:
+        """Free the AI player from the human anti-spam limiter for one command."""
+        for mapping_name in ("normal_cooldown", "donator_cooldown"):
+            mapping = getattr(self.bot, mapping_name, None)
+            if mapping is None:
+                continue
+            try:
+                bucket = mapping.get_bucket(ctx.message)
+                if bucket is not None:
+                    bucket.reset()
+            except Exception:
+                # Never let anti-spam bookkeeping stop a validated action.
+                logger.debug(
+                    "Could not reset %s for the AI player", mapping_name,
+                    exc_info=True,
+                )
+
     async def _invoke_as_densetsu(
         self,
         source_message: discord.Message,
@@ -3811,7 +3854,39 @@ class AIPlayer(commands.Cog):
             command_text,
             context_overrides=context_overrides,
         )
-        await self.bot.invoke(ctx)
+        # bot.invoke() hands CommandError to the global error handler instead of
+        # raising, so a command that fails every check still looked like a
+        # success and the tick reported work it never did. Run the command the
+        # same way bot.invoke() does, but let the failure reach the caller.
+        # The global anti-spam limiter buckets on ctx.message.created_at, but
+        # every action in a batch reuses the one decision message, so all of
+        # them look simultaneous and the later ones raise GlobalCooldown. The AI
+        # player is already bounded by Fable's own per-command cooldowns and by
+        # MAX_AUTOPLAY_ACTIONS, so clear its bucket rather than let the human
+        # anti-spam rule silently drop its turn.
+        self._clear_global_cooldown(ctx)
+
+        self.bot.dispatch("command", ctx)
+        try:
+            if not await self.bot.can_run(ctx, call_once=True):
+                raise commands.CheckFailure(
+                    f"Global checks refused {command_text!r} for the AI player"
+                )
+            await ctx.command.invoke(ctx)
+        except commands.CommandError as exc:
+            logger.warning(
+                "Densetsu command %r failed: %s: %s",
+                command_text,
+                type(exc).__name__,
+                exc,
+            )
+            # ValueError is what the batch loop reports per action, so the
+            # bridge message names the real reason instead of claiming success.
+            raise ValueError(
+                f"{command_text} failed: {type(exc).__name__}: {exc}"
+            ) from exc
+        else:
+            self.bot.dispatch("command_completion", ctx)
 
     async def _follow_god(
         self, decision: Decision, state: dict[str, Any]
@@ -4846,7 +4921,10 @@ class AIPlayer(commands.Cog):
 
     @tasks.loop(seconds=60)
     async def autoplay_loop(self) -> None:
-        await self.run_autoplay_once()
+        try:
+            await self.run_autoplay_once()
+        except Exception as exc:
+            await self._report_error("autoplay tick", exc)
 
     @autoplay_loop.before_loop
     async def before_autoplay_loop(self) -> None:
@@ -4905,28 +4983,26 @@ class AIPlayer(commands.Cog):
             f"**{percent}%** of its current money."
         )
 
-    @staticmethod
-    def _raidbattle_offer_finished(task: asyncio.Task) -> None:
+    def _raidbattle_offer_finished(self, task: asyncio.Task) -> None:
         if task.cancelled():
             return
         try:
             task.result()
-        except Exception:
-            logger.exception("Densetsu raidbattle offer handler failed")
+        except Exception as exc:
+            self._queue_error_report("raidbattle offer", exc)
 
     def start_raidbattle_offer(self, **kwargs) -> asyncio.Task:
         task = asyncio.create_task(self.offer_raidbattle(**kwargs))
         task.add_done_callback(self._raidbattle_offer_finished)
         return task
 
-    @staticmethod
-    def _raidbattle_speech_finished(task: asyncio.Task) -> None:
+    def _raidbattle_speech_finished(self, task: asyncio.Task) -> None:
         if task.cancelled():
             return
         try:
             task.result()
-        except Exception:
-            logger.exception("Densetsu raidbattle dialogue relay failed")
+        except Exception as exc:
+            self._queue_error_report("raidbattle dialogue relay", exc)
 
     def _relay_raidbattle_dialogue(self, channel_id: int, text: str) -> None:
         speech_task = asyncio.create_task(self.speak(channel_id, text))
