@@ -37,6 +37,7 @@ from cogs.splice_identity import (
     reserve_splice_combination,
 )
 from cogs.frontier_catalog.legacy import clean_name, normalize_name
+from .parent_resolver import ParentResolverView
 
 # Constants for auto splice persistence
 AUTO_SPLICE_SAVE_FILE = "auto_splice_saves.json"
@@ -3969,6 +3970,88 @@ class ProcessSplice(commands.Cog):
                 filename="splice_parent_repair_applied.txt",
             ),
         )
+
+    @is_gm()
+    @commands.command(
+        name="resolvespliceparents",
+        aliases=["spliceparentpicker", "pickspliceparents"],
+        hidden=True,
+    )
+    async def resolve_splice_parents(self, ctx: commands.Context):
+        """Pick the right parent for each slot the repair could not infer."""
+        from cogs.soulforge_frontiers.frontier_pve import resolve_recipe_generations
+
+        base_names = self._load_default_pve_monster_names()
+        async with self.bot.pool.acquire() as conn:
+            splice_columns = {
+                row["column_name"]
+                for row in await conn.fetch(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'splice_combinations';
+                    """
+                )
+            }
+            base_column = (
+                "base_result_name"
+                if "base_result_name" in splice_columns
+                else "NULL::text AS base_result_name"
+            )
+            rows = [
+                dict(row)
+                for row in await conn.fetch(
+                    f"""
+                    SELECT id, pet1_default, pet2_default, result_name, created_at,
+                           hp, attack, defense, element, url, {base_column}
+                    FROM splice_combinations
+                    ORDER BY id ASC;
+                    """
+                )
+            ]
+
+        _repairs, ambiguous, _unresolved = plan_orphan_parent_repairs(rows, base_names)
+        if not ambiguous:
+            return await ctx.send(
+                "No ambiguous parent slots left. Run `$repairspliceparents preview` "
+                "to see what still needs a different kind of fix."
+            )
+
+        row_by_id = {int(row["id"]): row for row in rows}
+        generations = resolve_recipe_generations(base_names, rows)
+
+        link_columns = {
+            "pet1_default": "parent1_splice_combination_id",
+            "pet2_default": "parent2_splice_combination_id",
+        }
+
+        async def on_choose(
+            splice_id: int, slot: str, parent_splice_id: int, parent_name: str
+        ) -> None:
+            link_column = link_columns[slot]
+            async with self.bot.pool.acquire() as conn:
+                if link_column in splice_columns:
+                    await conn.execute(
+                        f"""
+                        UPDATE splice_combinations
+                        SET {slot} = $1,
+                            {link_column} = $2
+                        WHERE id = $3;
+                        """,
+                        parent_name,
+                        int(parent_splice_id),
+                        int(splice_id),
+                    )
+                else:
+                    await conn.execute(
+                        f"UPDATE splice_combinations SET {slot} = $1 WHERE id = $2;",
+                        parent_name,
+                        int(splice_id),
+                    )
+            row_by_id[int(splice_id)][slot] = parent_name
+
+        view = ParentResolverView(ctx, ambiguous, row_by_id, generations, on_choose)
+        await view.start()
 
     @is_gm()
     @commands.command(name="linksplicepet", hidden=True)
