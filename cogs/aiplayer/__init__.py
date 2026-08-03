@@ -2279,10 +2279,21 @@ class AIPlayer(commands.Cog):
                     return
             decision = decision_from_payload(payload, message)
             if decision is None:
+                await bridge.send(
+                    "AI decision ignored: the reply was not a valid decision "
+                    "payload (missing `event_id` or `action`).",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
                 return
             future = self._pending.get(decision.event_id)
             if future is not None and not future.done():
                 future.set_result(decision)
+            elif future is None:
+                await bridge.send(
+                    f"AI decision ignored: no pending event `{decision.event_id}` "
+                    "(late reply, or autoplay is not waiting for one).",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
         except Exception as exc:
             await self._report_error("decision handling", exc)
 
@@ -2352,9 +2363,21 @@ class AIPlayer(commands.Cog):
             decision = await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
             logger.warning("Densetsu timed out for event %s", event_id)
+            await channel.send(
+                f"AI decision timed out after {timeout:.0f}s for event "
+                f"`{event_id}`; no reply was applied.",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
             return None
         finally:
             self._pending.pop(event_id, None)
+
+        async def reject(reason: str) -> None:
+            logger.warning("%s (event %s)", reason, event_id)
+            await channel.send(
+                f"AI decision rejected for event `{event_id}`: {reason}"[:1950],
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
 
         choices = decision.ordered_actions()
         batch_allowed = event.get("multiple_actions_allowed") is True
@@ -2368,27 +2391,20 @@ class AIPlayer(commands.Cog):
             else 1
         )
         if len(choices) > maximum:
-            logger.warning(
-                "Densetsu returned %s actions for event %s with maximum %s",
-                len(choices),
-                event_id,
-                maximum,
+            await reject(
+                f"returned {len(choices)} actions but at most {maximum} "
+                "are allowed"
             )
             return None
         if sum(choice.action == "change_class" for choice in choices) > 1:
-            logger.warning(
-                "Densetsu returned multiple class-change proposals for event %s",
-                event_id,
-            )
+            await reject("returned multiple class-change proposals")
             return None
         allowed = action_names(event)
         fingerprints = set()
         for choice in choices:
             if choice.action not in allowed:
-                logger.warning(
-                    "Densetsu returned disallowed action %s for event %s",
-                    choice.action,
-                    event_id,
+                await reject(
+                    f"action `{choice.action}` was not offered in this event"
                 )
                 return None
             fingerprint = (
@@ -2396,15 +2412,13 @@ class AIPlayer(commands.Cog):
                 json.dumps(choice.parameters, sort_keys=True, separators=(",", ":")),
             )
             if fingerprint in fingerprints:
-                logger.warning(
-                    "Densetsu returned a duplicate action for event %s", event_id
-                )
+                await reject(f"action `{choice.action}` was returned twice")
                 return None
             fingerprints.add(fingerprint)
         if len(choices) > 1 and any(
             choice.action == "wait" for choice in choices
         ):
-            logger.warning("Densetsu mixed wait into action batch %s", event_id)
+            await reject("mixed `wait` into a multi-action batch")
             return None
         return decision
 
