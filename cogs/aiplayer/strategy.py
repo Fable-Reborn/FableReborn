@@ -426,6 +426,37 @@ def choose_best_pet(pets: Iterable[dict[str, Any]]) -> int | None:
     return int(max(equippable, key=pet_combat_score)["id"])
 
 
+def egg_combat_score(egg: dict[str, Any]) -> float:
+    """Score an unhatched egg by the pet it will actually become.
+
+    An egg row's hp/attack/defense are already the monster species' base stats
+    plus its rolled IV points, so this captures both species quality and roll
+    quality. IV percent alone does not: a 95% roll on a weak species is worse
+    than a 60% roll on a strong one. The weighting matches pet_combat_score's
+    base term so egg and pet scores stay comparable; growth, level, and trust
+    multipliers are omitted because an egg has none of them yet.
+    """
+    return round(
+        float(egg.get("hp") or 0) * 0.1
+        + float(egg.get("attack") or 0) * 2
+        + float(egg.get("defense") or 0),
+        2,
+    )
+
+
+def choose_weakest_egg(eggs: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
+    """Return the owned egg that costs the least to give up, or None."""
+    candidates = [egg for egg in eggs if egg.get("id") is not None]
+    if not candidates:
+        return None
+    # Ties break toward the lower id, so repeated drops stay deterministic
+    # instead of churning between two identically scored eggs.
+    return min(
+        candidates,
+        key=lambda egg: (egg_combat_score(egg), int(egg["id"])),
+    )
+
+
 def combat_health_state(
     *,
     level: int,

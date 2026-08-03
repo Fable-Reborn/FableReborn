@@ -10375,8 +10375,140 @@ class Battles(commands.Cog):
                 getattr(battle, "battle_id", None),
             )
 
+    @staticmethod
+    def _roll_egg_stats(monster) -> dict:
+        """Roll one egg's IV and stats without touching the database.
+
+        Rolling before the capacity check lets Densetsu compare the incoming
+        egg against the ones it already owns. Nothing is persisted here, so a
+        cancelled or declined drop discards the roll exactly as it did when the
+        roll happened further down.
+        """
+        iv_percentage = random.uniform(10, 1000)
+        if iv_percentage < 20:
+            iv_percentage = random.uniform(90, 100)
+        elif iv_percentage < 70:
+            iv_percentage = random.uniform(80, 90)
+        elif iv_percentage < 150:
+            iv_percentage = random.uniform(70, 80)
+        elif iv_percentage < 350:
+            iv_percentage = random.uniform(60, 70)
+        elif iv_percentage < 700:
+            iv_percentage = random.uniform(50, 60)
+        else:
+            iv_percentage = random.uniform(30, 50)
+
+        total_iv_points = (iv_percentage / 100) * 200
+
+        def allocate_iv_points(total_points):
+            a = random.random()
+            b = random.random()
+            c = random.random()
+            total = a + b + c
+            hp_iv = int(round(total_points * (a / total)))
+            attack_iv = int(round(total_points * (b / total)))
+            defense_iv = int(round(total_points * (c / total)))
+
+            # Ensure sum matches total
+            iv_sum = hp_iv + attack_iv + defense_iv
+            if iv_sum != int(round(total_points)):
+                diff = int(round(total_points)) - iv_sum
+                max_iv = max(hp_iv, attack_iv, defense_iv)
+                if hp_iv == max_iv:
+                    hp_iv += diff
+                elif attack_iv == max_iv:
+                    attack_iv += diff
+                else:
+                    defense_iv += diff
+            return hp_iv, attack_iv, defense_iv
+
+        hp_iv, attack_iv, defense_iv = allocate_iv_points(total_iv_points)
+        return {
+            "IV": iv_percentage,
+            "hp_iv": hp_iv,
+            "attack_iv": attack_iv,
+            "defense_iv": defense_iv,
+            "hp": monster["hp"] + hp_iv,
+            "attack": monster["attack"] + attack_iv,
+            "defense": monster["defense"] + defense_iv,
+        }
+
+    async def _award_egg(self, ctx, conn, monster, rolled: dict) -> None:
+        """Persist a rolled egg and announce it."""
+        # Set hatch time (36 hours from now)
+        egg_hatch_time = datetime.datetime.utcnow() + datetime.timedelta(minutes=2160)
+        iv_percentage = rolled["IV"]
+
+        try:
+            egg_id = await conn.fetchval(
+                """
+                INSERT INTO monster_eggs (
+                    user_id, egg_type, hp, attack, defense, element, url, hatch_time,
+                    "IV", hp_iv, attack_iv, defense_iv
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                RETURNING id;
+                """,
+                ctx.author.id,
+                monster["name"],
+                rolled["hp"],
+                rolled["attack"],
+                rolled["defense"],
+                monster["element"],
+                monster["url"],
+                egg_hatch_time,
+                iv_percentage,
+                rolled["hp_iv"],
+                rolled["attack_iv"],
+                rolled["defense_iv"],
+            )
+
+            await ctx.send(
+                _(f"{ctx.author.mention}! You found a **{monster['name']} Egg** with an IV of {iv_percentage:.2f}%! It will hatch in 36 hours.")
+            )
+            self.bot.dispatch(
+                "frontier_egg_obtained",
+                ctx,
+                dict(monster),
+                int(egg_id) if egg_id is not None else None,
+            )
+
+            # Log high IV eggs
+            if iv_percentage > 95:
+                await self.bot.public_log(
+                    f"**{ctx.author}** obtained a {monster['name']} egg with {iv_percentage:.2f}% IV!"
+                )
+        except Exception as e:
+            await ctx.send(str(e))
+
+    async def _resolve_densetsu_egg_capacity(
+        self, ctx, conn, monster, rolled: dict
+    ) -> bool | None:
+        """Ask Densetsu whether to trade its weakest egg for this drop.
+
+        Returns None when the player is not the AI, so the caller falls through
+        to the ordinary human dropdown. Returns True when room was made and
+        False when Densetsu chose to keep its collection.
+        """
+        ai_cog = self.bot.get_cog("AIPlayer")
+        if ai_cog is None or not hasattr(ai_cog, "resolve_egg_capacity"):
+            return None
+        try:
+            if not await ai_cog.is_active_for(ctx.author.id):
+                return None
+            return await ai_cog.resolve_egg_capacity(
+                ctx, conn, monster=monster, rolled=rolled
+            )
+        except Exception:
+            # A bridge or model failure must never destroy an owned egg or
+            # stall the battle; forfeit this drop and keep the collection.
+            logger.exception("Densetsu egg-capacity decision failed")
+            return False
+
     async def handle_egg_drop(self, ctx, monster, levelchoice):
         """Handle monster egg drops from PVE battles."""
+        rolled = self._roll_egg_stats(monster)
+
         async with self.bot.pool.acquire() as conn:
             # Count pets, unhatched eggs, and pending splice requests
             pet_and_egg_count = await conn.fetchval(
@@ -10401,7 +10533,19 @@ class Battles(commands.Cog):
                 total_allowed = 25
             
             # Check if player has reached the limit
+            densetsu_handled = False
             if pet_and_egg_count >= total_allowed:
+                # Densetsu cannot click a dropdown, so resolve its swap over the
+                # AI bridge before falling back to the human prompt below.
+                densetsu_outcome = await self._resolve_densetsu_egg_capacity(
+                    ctx, conn, monster, rolled
+                )
+                if densetsu_outcome is not None:
+                    if not densetsu_outcome:
+                        return
+                    densetsu_handled = True
+
+            if pet_and_egg_count >= total_allowed and not densetsu_handled:
                 # Get detailed pet and egg information for the dropdown
                 pet_and_egg_list = []
                 
@@ -10514,99 +10658,7 @@ class Battles(commands.Cog):
                     await ctx.send(_("An error occurred while releasing the pet/egg: ") + str(e))
                     return
             
-            # Generate random IV percentage
-            iv_percentage = random.uniform(10, 1000)
-            if iv_percentage < 20:
-                iv_percentage = random.uniform(90, 100)
-            elif iv_percentage < 70:
-                iv_percentage = random.uniform(80, 90)
-            elif iv_percentage < 150:
-                iv_percentage = random.uniform(70, 80)
-            elif iv_percentage < 350:
-                iv_percentage = random.uniform(60, 70)
-            elif iv_percentage < 700:
-                iv_percentage = random.uniform(50, 60)
-            else:
-                iv_percentage = random.uniform(30, 50)
-            
-            # Calculate IVs
-            total_iv_points = (iv_percentage / 100) * 200
-            
-            # Allocate IV points
-            def allocate_iv_points(total_points):
-                a = random.random()
-                b = random.random()
-                c = random.random()
-                total = a + b + c
-                hp_iv = int(round(total_points * (a / total)))
-                attack_iv = int(round(total_points * (b / total)))
-                defense_iv = int(round(total_points * (c / total)))
-                
-                # Ensure sum matches total
-                iv_sum = hp_iv + attack_iv + defense_iv
-                if iv_sum != int(round(total_points)):
-                    diff = int(round(total_points)) - iv_sum
-                    max_iv = max(hp_iv, attack_iv, defense_iv)
-                    if hp_iv == max_iv:
-                        hp_iv += diff
-                    elif attack_iv == max_iv:
-                        attack_iv += diff
-                    else:
-                        defense_iv += diff
-                return hp_iv, attack_iv, defense_iv
-            
-            hp_iv, attack_iv, defense_iv = allocate_iv_points(total_iv_points)
-            
-            # Calculate base stats with IVs
-            hp = monster["hp"] + hp_iv
-            attack = monster["attack"] + attack_iv
-            defense = monster["defense"] + defense_iv
-            
-            # Set hatch time (36 hours from now)
-            egg_hatch_time = datetime.datetime.utcnow() + datetime.timedelta(minutes=2160)
-            
-            # Insert egg into database
-            try:
-                egg_id = await conn.fetchval(
-                    """
-                    INSERT INTO monster_eggs (
-                        user_id, egg_type, hp, attack, defense, element, url, hatch_time,
-                        "IV", hp_iv, attack_iv, defense_iv
-                    )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                    RETURNING id;
-                    """,
-                    ctx.author.id,
-                    monster["name"],
-                    hp,
-                    attack,
-                    defense,
-                    monster["element"],
-                    monster["url"],
-                    egg_hatch_time,
-                    iv_percentage,
-                    hp_iv,
-                    attack_iv,
-                    defense_iv
-                )
-                
-                await ctx.send(
-                    _(f"{ctx.author.mention}! You found a **{monster['name']} Egg** with an IV of {iv_percentage:.2f}%! It will hatch in 36 hours.")
-                )
-                self.bot.dispatch(
-                    "frontier_egg_obtained",
-                    ctx,
-                    dict(monster),
-                    int(egg_id) if egg_id is not None else None,
-                )
-                
-                # Log high IV eggs
-                if iv_percentage > 95:
-                    await self.bot.public_log(
-                        f"**{ctx.author}** obtained a {monster['name']} egg with {iv_percentage:.2f}% IV!"
-                    )
-            except Exception as e:
-                await ctx.send(str(e))
+            await self._award_egg(ctx, conn, monster, rolled)
 
     @commands.command(brief="Scout ahead to see what monster you'll face")
     @has_char()

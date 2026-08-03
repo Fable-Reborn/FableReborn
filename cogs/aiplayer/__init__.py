@@ -7,6 +7,7 @@ import datetime
 import io
 import json
 import logging
+import re
 import uuid
 from copy import copy
 from dataclasses import dataclass
@@ -50,7 +51,9 @@ from cogs.aiplayer.strategy import (
     CLASS_KNOWLEDGE,
     choose_best_equipment,
     choose_best_pet,
+    choose_weakest_egg,
     combat_health_state,
+    egg_combat_score,
     evaluate_raid_matchup,
     favored_weapon_bonus_rules,
     is_valid_loadout,
@@ -78,6 +81,38 @@ DEFAULT_CHARACTER_NAME = "Densetsu"
 MAX_AUTOPLAY_ACTIONS = 6
 AUTOPLAY_TICK_LOCK_SECONDS = 600
 AUTOPLAY_DECISION_TIMEOUT_SECONDS = 180
+# The human release dropdown waits 120s. Stay well inside that so a slow model
+# never leaves the battle hanging longer than a player would have.
+EGG_CAPACITY_DECISION_TIMEOUT_SECONDS = 45
+# Only this player's Infernal Ritual prompts Densetsu to ask for a slot, and
+# only this player's answer can admit it.
+EVIL_RITUAL_HOST_USER_ID = 506379037690691595
+EVIL_RITUAL_GOD = "Sepulchure"
+# The ritual's own join window is about 15.5 minutes. Stop listening before it
+# closes so a late confirmation can never race the participant roll call.
+EVIL_RITUAL_CONFIRM_TIMEOUT_SECONDS = 840
+EVIL_RITUAL_ASK_TIMEOUT_SECONDS = 45
+EVIL_RITUAL_DEFAULT_ASK = (
+    "The eclipse is yours to command. Let me kneel among your followers "
+    "and lend my voice to the chant."
+)
+EVIL_RITUAL_DEFAULT_ACCEPTED = "Then I chant. Try to keep up."
+EVIL_RITUAL_DEFAULT_REFUSED = (
+    "Suit yourself. Enjoy the ritual one voice short — I'll be watching it "
+    "stall from here."
+)
+# "no problem" and friends are agreement that happens to contain a refusal
+# word, so they are stripped before the refusal test runs.
+EVIL_RITUAL_FALSE_REFUSAL = re.compile(
+    r"\bno[\s-]+(problem|worries|prob|probs|issue|issues|biggie)\b",
+    re.IGNORECASE,
+)
+EVIL_RITUAL_REFUSAL = re.compile(
+    r"\b(no|nah|nope|naw|never|denied|deny|refuse[ds]?|declin(?:e|ed|es)|"
+    r"reject(?:ed|s)?|forbidden|banned|absolutely\s+not|no\s+way|"
+    r"not\s+a\s+chance|piss\s+off|fuck\s+off|get\s+lost|go\s+away)\b",
+    re.IGNORECASE,
+)
 BASIC_PET_FOOD_COST = 10_000
 PET_CARE_MONEY_RESERVE = 50_000
 PAID_RAID_UPGRADE_MONEY_RESERVE = 50_000
@@ -1757,6 +1792,21 @@ class AIPlayer(commands.Cog):
             )
 
         max_collection = {1: 12, 2: 14, 3: 17, 4: 25}.get(int(tier), 10)
+        # handle_egg_drop gates on pets + unhatched eggs + pending splice
+        # requests. Counting only pets and eggs made Densetsu believe it had
+        # room the game would refuse.
+        try:
+            pending_splices = int(
+                await connection.fetchval(
+                    "SELECT COUNT(*) FROM splice_requests "
+                    "WHERE user_id=$1 AND status='pending';",
+                    DENSETSU_USER_ID,
+                )
+                or 0
+            )
+        except Exception:
+            logger.exception("Could not read Densetsu's pending splice requests")
+            pending_splices = 0
         eggs = [
             {
                 "id": int(egg["id"]),
@@ -1915,15 +1965,47 @@ class AIPlayer(commands.Cog):
                 }
             )
 
+        collection_used = len(pets) + len(eggs) + pending_splices
+        for egg in eggs:
+            egg["combat_score"] = egg_combat_score(egg)
+        weakest_egg = choose_weakest_egg(eggs)
         state = {
+            # The cap tops out at 25, so show the whole collection. Truncating
+            # to 12 hid items a tier-4 character owns and made it impossible to
+            # identify the weakest egg.
             "pets": sorted(
                 pets, key=lambda pet: pet["combat_score"], reverse=True
-            )[:12],
+            )[:25],
             "recommended_combat_pet_id": best_pet_id,
-            "eggs": eggs[:12],
+            "eggs": sorted(
+                eggs, key=lambda egg: egg["combat_score"], reverse=True
+            )[:25],
             "egg_hatching_is_automatic": True,
-            "collection_used": len(pets) + len(eggs),
+            "weakest_owned_egg_id": (
+                int(weakest_egg["id"]) if weakest_egg is not None else None
+            ),
+            "egg_scoring": (
+                "combat_score is hp*0.1 + attack*2 + defense, which already "
+                "includes the species' base stats and the rolled IV points; it "
+                "ranks eggs better than iv_percent alone."
+            ),
+            "collection_used": collection_used,
             "collection_capacity": max_collection,
+            "collection_breakdown": {
+                "pets": len(pets),
+                "unhatched_eggs": len(eggs),
+                "pending_splice_requests": pending_splices,
+            },
+            "collection_slots_free": max(0, max_collection - collection_used),
+            "at_collection_capacity": collection_used >= max_collection,
+            "capacity_rule": (
+                "The cap counts pets, unhatched eggs, and pending splice "
+                "requests together. While at capacity, a PvE egg drop forces a "
+                "release-or-forfeit choice: Fable offers the swap only when the "
+                "new egg outscores the weakest owned egg, and pets are never "
+                "released. Eggs hatch into pets and still occupy one slot each, "
+                "so being full does not resolve itself over time."
+            ),
             "routine_feed_money_reserve": PET_CARE_MONEY_RESERVE,
             "fullness_scale": "100 is fully fed; 0 is starving",
             "adult_pets_are_self_sufficient": True,
@@ -1933,6 +2015,172 @@ class AIPlayer(commands.Cog):
             "care_actions": care_action_status,
         }
         return state, actions
+
+    async def _owned_egg_snapshot(self, connection) -> list[dict[str, Any]]:
+        """Return every unhatched egg with its comparable combat score."""
+        rows = await connection.fetch(
+            """
+            SELECT id, egg_type, element, "IV", hp, attack, defense, hatch_time
+            FROM monster_eggs
+            WHERE user_id=$1 AND hatched=FALSE
+            ORDER BY id ASC;
+            """,
+            DENSETSU_USER_ID,
+        )
+        eggs = []
+        for row in rows:
+            egg = {
+                "id": int(row["id"]),
+                "species": str(row["egg_type"]),
+                "element": str(row.get("element") or "Unknown"),
+                "iv_percent": round(float(row.get("IV") or 0), 2),
+                "hp": int(row.get("hp") or 0),
+                "attack": int(row.get("attack") or 0),
+                "defense": int(row.get("defense") or 0),
+                "hatches_in_seconds": self._egg_seconds_remaining(
+                    row.get("hatch_time")
+                ),
+            }
+            egg["combat_score"] = egg_combat_score(egg)
+            eggs.append(egg)
+        return eggs
+
+    async def resolve_egg_capacity(
+        self, ctx, connection, *, monster: dict[str, Any], rolled: dict[str, Any]
+    ) -> bool:
+        """Trade the weakest owned egg for a better incoming drop.
+
+        Fable ranks both sides here and only exposes the swap when the drop is a
+        genuine upgrade, mirroring how raid offers only expose accept when the
+        odds clear the threshold. A model slip therefore cannot destroy a better
+        egg for a worse one, and pets are never release candidates.
+
+        Returns True only when an egg was actually deleted and the caller should
+        award the drop.
+        """
+        incoming = {
+            "species": str(monster.get("name") or "Unknown"),
+            "element": str(monster.get("element") or "Unknown"),
+            "iv_percent": round(float(rolled["IV"]), 2),
+            "hp": int(rolled["hp"]),
+            "attack": int(rolled["attack"]),
+            "defense": int(rolled["defense"]),
+        }
+        incoming["combat_score"] = egg_combat_score(incoming)
+
+        owned = await self._owned_egg_snapshot(connection)
+        weakest = choose_weakest_egg(owned)
+        is_upgrade = (
+            weakest is not None
+            and incoming["combat_score"] > weakest["combat_score"]
+        )
+
+        allowed_actions: list[dict[str, Any]] = []
+        if is_upgrade:
+            allowed_actions.append(
+                {
+                    "name": "release_egg",
+                    "description": (
+                        "Release the weakest owned egg to make room, then keep "
+                        "the incoming egg. This permanently destroys the "
+                        "released egg and is the only way to gain this drop."
+                    ),
+                    "parameters": {
+                        "egg_id": [int(weakest["id"])],
+                        "recommended": int(weakest["id"]),
+                    },
+                }
+            )
+        allowed_actions.append(
+            {
+                "name": "decline",
+                "description": (
+                    "Keep the collection exactly as it is and forfeit the "
+                    "incoming egg permanently."
+                ),
+            }
+        )
+
+        event = {
+            "event": "egg_capacity_decision",
+            "collection": {
+                "at_capacity": True,
+                "capacity_counts": (
+                    "pets plus unhatched eggs plus pending splice requests"
+                ),
+                "only_eggs_may_be_released_here": True,
+                "pets_are_never_release_candidates": True,
+            },
+            "incoming_egg": incoming,
+            "owned_eggs": sorted(
+                owned, key=lambda egg: egg["combat_score"], reverse=True
+            ),
+            "weakest_owned_egg": weakest,
+            "replacement_is_an_upgrade": bool(is_upgrade),
+            "combat_score_gain_if_replaced": (
+                round(incoming["combat_score"] - weakest["combat_score"], 2)
+                if is_upgrade
+                else 0
+            ),
+            "scoring": (
+                "combat_score is hp*0.1 + attack*2 + defense using each egg's "
+                "real stats, which already include both the species' base "
+                "stats and its rolled IV points. A high IV percent on a weak "
+                "species can still score below a low IV percent on a strong "
+                "one, so compare combat_score and not iv_percent."
+            ),
+            "decision_rule": (
+                "Fable offers release_egg only when the incoming egg strictly "
+                "outscores the weakest owned egg. When it is not an upgrade, "
+                "or no unhatched egg is owned, only decline is available."
+            ),
+            "allowed_actions": allowed_actions,
+        }
+
+        decision = await self.choose_interaction(
+            user_id=DENSETSU_USER_ID,
+            event=event,
+            public_channel=ctx.channel,
+            timeout=EGG_CAPACITY_DECISION_TIMEOUT_SECONDS,
+        )
+        if decision is None or decision.action != "release_egg" or not is_upgrade:
+            return False
+
+        try:
+            egg_id = int(decision.parameters.get("egg_id"))
+        except (TypeError, ValueError):
+            logger.warning("Densetsu returned a non-numeric egg_id to release")
+            return False
+        if egg_id != int(weakest["id"]):
+            logger.warning(
+                "Densetsu tried to release egg %s instead of the offered %s",
+                egg_id,
+                weakest["id"],
+            )
+            return False
+
+        # DELETE ... RETURNING closes the race where the egg hatched or was
+        # traded away while the model was deciding.
+        released = await connection.fetchrow(
+            "DELETE FROM monster_eggs WHERE id=$1 AND user_id=$2 AND "
+            "hatched=FALSE RETURNING id, egg_type;",
+            egg_id,
+            DENSETSU_USER_ID,
+        )
+        if released is None:
+            logger.info(
+                "Densetsu's chosen egg %s was already gone; keeping the drop "
+                "unclaimed rather than exceeding the cap",
+                egg_id,
+            )
+            return False
+
+        await ctx.send(
+            f"Released the **{released['egg_type']}** egg "
+            f"({weakest['combat_score']:g} score) to make room for a stronger "
+            f"**{incoming['species']}** egg ({incoming['combat_score']:g} score)."
+        )
+        return True
 
     async def _collect_pve_state(
         self, battle_cog, *, level: int, in_fight: bool
@@ -2151,13 +2399,26 @@ class AIPlayer(commands.Cog):
             self._relay_dialogue(public_channel.id, decision.dialogue)
         return decision
 
-    async def speak(self, channel_id: int, text: str) -> None:
+    async def speak(
+        self,
+        channel_id: int,
+        text: str,
+        *,
+        mention_user_ids: list[int] | None = None,
+    ) -> None:
         bridge = await self._bridge_channel()
         text = text.strip()[:1900]
         if bridge is None or not text:
             return
+        request: dict[str, Any] = {"channel_id": int(channel_id), "text": text}
+        if mention_user_ids:
+            # Densetsu suppresses every mention unless Fable names exact user
+            # IDs here. @everyone and roles are never relayable.
+            request["mention_user_ids"] = [
+                int(value) for value in mention_user_ids[:4]
+            ]
         payload = json.dumps(
-            {"channel_id": int(channel_id), "text": text},
+            request,
             ensure_ascii=False,
             separators=(",", ":"),
         )
@@ -2182,6 +2443,248 @@ class AIPlayer(commands.Cog):
 
     def _relay_dialogue(self, channel_id: int, text: str) -> None:
         self._start_background(self.speak(channel_id, text))
+
+    async def _densetsu_user(self, ctx):
+        """Resolve a Densetsu user object the raid can treat as a participant."""
+        guild = getattr(ctx, "guild", None)
+        if guild is not None:
+            member = guild.get_member(DENSETSU_USER_ID)
+            if member is not None:
+                return member
+        user = self.bot.get_user(DENSETSU_USER_ID)
+        if user is not None:
+            return user
+        try:
+            return await self.bot.fetch_user(DENSETSU_USER_ID)
+        except discord.HTTPException:
+            return None
+
+    async def offer_evil_ritual_follower(self, ctx, join_view) -> bool:
+        """Ask the ritual host for a follower slot and join if they answer.
+
+        Densetsu cannot click the join buttons, so it asks in the channel
+        instead. Only EVIL_RITUAL_HOST_USER_ID's own reply or mention admits it,
+        and it only ever asks for the follower role.
+        """
+        if not await self.is_active_for(DENSETSU_USER_ID):
+            return False
+        densetsu = await self._densetsu_user(ctx)
+        if densetsu is None:
+            return False
+        if (
+            densetsu in join_view.follower_joined
+            or densetsu in join_view.leader_joined
+        ):
+            return False
+
+        # The ritual silently drops anyone who does not follow its god, so do
+        # not ask for a slot Densetsu would be refused at roll call anyway.
+        async with self.bot.pool.acquire() as connection:
+            god = await connection.fetchval(
+                'SELECT god FROM profile WHERE "user"=$1;', DENSETSU_USER_ID
+            )
+        if str(god or "") != EVIL_RITUAL_GOD:
+            logger.info(
+                "Densetsu follows %r, not %s, so it did not ask to join the "
+                "Infernal Ritual",
+                god,
+                EVIL_RITUAL_GOD,
+            )
+            return False
+
+        event = {
+            "event": "evil_ritual_join_request",
+            "ritual": {
+                "name": "Infernal Ritual",
+                "god": EVIL_RITUAL_GOD,
+                "host_user_id": EVIL_RITUAL_HOST_USER_ID,
+                "densetsu_follows_this_god": True,
+            },
+            "role_requested": "follower",
+            "role_is_not_negotiable": (
+                "Densetsu may only ask to join as a follower. It never asks to "
+                "be Champion or Priest and cannot lead the ritual."
+            ),
+            "what_a_follower_does": (
+                "Followers act as a group each turn. Densetsu will chant every "
+                "turn, which adds 1% ritual progress per chanting follower."
+            ),
+            "permission_rule": (
+                "Only the host may admit Densetsu, by replying to this message "
+                "or mentioning Densetsu. Fable handles that; return the asking "
+                "line only."
+            ),
+            "allowed_actions": [
+                {
+                    "name": "request_follower_slot",
+                    "description": (
+                        "Ask the host for permission to join the ritual as a "
+                        "follower. Put the in-character request in dialogue."
+                    ),
+                },
+                {
+                    "name": "decline",
+                    "description": "Stay out of this ritual and say nothing.",
+                },
+            ],
+        }
+
+        decision = await self.choose_interaction(
+            user_id=DENSETSU_USER_ID,
+            event=event,
+            timeout=EVIL_RITUAL_ASK_TIMEOUT_SECONDS,
+        )
+        if decision is not None and decision.action == "decline":
+            return False
+        # A bridge or model failure still asks, because the host explicitly
+        # wanted to be offered the choice.
+        line = ""
+        if decision is not None:
+            line = (decision.dialogue or "").strip()
+        await self.speak(
+            ctx.channel.id,
+            f"<@{EVIL_RITUAL_HOST_USER_ID}> {line or EVIL_RITUAL_DEFAULT_ASK}",
+            mention_user_ids=[EVIL_RITUAL_HOST_USER_ID],
+        )
+
+        # Densetsu posts the question itself, so learn the message id to make
+        # reply detection exact rather than guessing from the cache.
+        channel_id = ctx.channel.id
+
+        def is_densetsu_post(message: discord.Message) -> bool:
+            return (
+                message.author.id == DENSETSU_USER_ID
+                and message.channel.id == channel_id
+            )
+
+        try:
+            asked = await self.bot.wait_for(
+                "message", check=is_densetsu_post, timeout=30
+            )
+            asked_id = asked.id
+        except asyncio.TimeoutError:
+            logger.warning("Densetsu's ritual request was never relayed")
+            asked_id = None
+
+        def is_host_confirmation(message: discord.Message) -> bool:
+            if (
+                message.author.id != EVIL_RITUAL_HOST_USER_ID
+                or message.channel.id != channel_id
+            ):
+                return False
+            if any(user.id == DENSETSU_USER_ID for user in message.mentions):
+                return True
+            reference = message.reference
+            if reference is None:
+                return False
+            if asked_id is not None and reference.message_id == asked_id:
+                return True
+            replied_to = getattr(reference, "resolved", None)
+            author = getattr(replied_to, "author", None)
+            return author is not None and author.id == DENSETSU_USER_ID
+
+        try:
+            answer = await self.bot.wait_for(
+                "message",
+                check=is_host_confirmation,
+                timeout=EVIL_RITUAL_CONFIRM_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.info("The ritual host never answered Densetsu's request")
+            return False
+
+        if self._is_ritual_refusal(getattr(answer, "content", "")):
+            logger.info("The ritual host refused Densetsu's request")
+            await self._speak_ritual_reaction(ctx, accepted=False)
+            return False
+
+        if not await self.is_active_for(DENSETSU_USER_ID):
+            return False
+        if (
+            densetsu in join_view.follower_joined
+            or densetsu in join_view.leader_joined
+        ):
+            return False
+        join_view.follower_joined.append(densetsu)
+        await self._speak_ritual_reaction(ctx, accepted=True)
+        logger.info("Densetsu joined the Infernal Ritual as a follower")
+        return True
+
+    @staticmethod
+    def _is_ritual_refusal(text: str) -> bool:
+        """Read the host's answer as a refusal rather than permission."""
+        cleaned = EVIL_RITUAL_FALSE_REFUSAL.sub(" ", str(text or ""))
+        return bool(EVIL_RITUAL_REFUSAL.search(cleaned))
+
+    async def _speak_ritual_reaction(self, ctx, *, accepted: bool) -> None:
+        """Answer the host in character, and never graciously when refused."""
+        if accepted:
+            options = [
+                {
+                    "name": "taunt_host",
+                    "description": (
+                        "Accept the slot with a smug, cocky, or backhanded line "
+                        "instead of thanks."
+                    ),
+                },
+                {
+                    "name": "acknowledge_quietly",
+                    "description": "Accept with a short, flat line.",
+                },
+            ]
+        else:
+            # Being refused always gets an answer; only its wording is the
+            # model's to choose.
+            options = [
+                {
+                    "name": "mock_refusal",
+                    "description": (
+                        "Answer the refusal with contempt, mockery, or a "
+                        "threat. Do not accept it gracefully."
+                    ),
+                }
+            ]
+
+        event = {
+            "event": "evil_ritual_join_answer",
+            "host_user_id": EVIL_RITUAL_HOST_USER_ID,
+            "host_answer": "accepted" if accepted else "refused",
+            "outcome": (
+                "Densetsu is in the ritual as a follower and will chant every "
+                "turn."
+                if accepted
+                else "Densetsu has been shut out of the ritual entirely and "
+                "cannot join by any other route."
+            ),
+            "tone": (
+                "Densetsu is proud and does not beg or thank anyone. A refusal "
+                "is an insult and should be answered with contempt, mockery, or "
+                "a threat, never politeness or an apology. Being let in earns no "
+                "gratitude either; smug, cocky, or backhanded is welcome. Stay "
+                "in character, keep it to one line, and put it in dialogue."
+            ),
+            "allowed_actions": options,
+        }
+
+        decision = await self.choose_interaction(
+            user_id=DENSETSU_USER_ID,
+            event=event,
+            timeout=EVIL_RITUAL_ASK_TIMEOUT_SECONDS,
+        )
+        line = ""
+        if decision is not None:
+            line = (decision.dialogue or "").strip()
+        if not line:
+            line = (
+                EVIL_RITUAL_DEFAULT_ACCEPTED
+                if accepted
+                else EVIL_RITUAL_DEFAULT_REFUSED
+            )
+        await self.speak(
+            ctx.channel.id,
+            f"<@{EVIL_RITUAL_HOST_USER_ID}> {line}",
+            mention_user_ids=[EVIL_RITUAL_HOST_USER_ID],
+        )
 
     def start_gift_received(
         self,

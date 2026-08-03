@@ -42,6 +42,7 @@ from classes.warrior import (
     resolve_warrior_attack,
     warrior_damage_reduction_pct,
 )
+from cogs.aiplayer import DENSETSU_USER_ID, EVIL_RITUAL_HOST_USER_ID
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils import random
 from utils.checks import AlreadyRaiding, has_char, is_gm, is_god
@@ -2743,14 +2744,21 @@ class Raid(commands.Cog):
         :return: The player's chosen option or the default action based on the role if they don't respond in time.
         """
 
+        default_actions = {
+            "follower": "Chant",
+            "champion": "Smite",
+            "priest": "Bless"
+        }
+
+        # Densetsu is a bot account, and Discord forbids bot-to-bot DMs, so it
+        # can never be prompted. It joins only as a follower and chants every
+        # turn, which is exactly the follower default.
+        if getattr(player, "id", None) == DENSETSU_USER_ID:
+            return default_actions.get(role, "Chant"), False
+
         # Check if player is AI
         if isinstance(player, (ShadowChampionAI, ShadowPriestAI)):
             # AI players don't need DMs, just return a default action
-            default_actions = {
-                "follower": "Chant",
-                "champion": "Smite",
-                "priest": "Bless"
-            }
             return default_actions[role], False
         decision_timeouts = {
             "follower": 30,
@@ -2833,6 +2841,18 @@ class Raid(commands.Cog):
             await ctx.send(
                 "Prepare yourselves. The ritual will commence soon. This is **BETA** and may require balancing.")
 
+            # Densetsu cannot click the join buttons, so when this specific host
+            # opens the ritual it asks them in the channel for a follower slot
+            # and joins only if they answer. This runs alongside the countdown.
+            densetsu_request = None
+            if ctx.author.id == EVIL_RITUAL_HOST_USER_ID:
+                ai_cog = self.bot.get_cog("AIPlayer")
+                if ai_cog is not None and hasattr(
+                    ai_cog, "offer_evil_ritual_follower"
+                ):
+                    densetsu_request = asyncio.create_task(
+                        ai_cog.offer_evil_ritual_follower(ctx, dual_view)
+                    )
 
             # Wait for the ritual to start
             await asyncio.sleep(300)
@@ -2848,6 +2868,18 @@ class Raid(commands.Cog):
             await asyncio.sleep(20)
             await ctx.send("**Darkness engulfs you... 10 seconds.**")
             await asyncio.sleep(10)
+
+            # Close Densetsu's request before roll call so a late confirmation
+            # can never mutate the participant list mid-count. Whether it joined
+            # or not, the ritual proceeds normally.
+            if densetsu_request is not None:
+                densetsu_request.cancel()
+                try:
+                    await densetsu_request
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    traceback.print_exc()
 
             dual_view.stop()
 
@@ -2921,6 +2953,10 @@ class Raid(commands.Cog):
                 return
 
             for participant in participants.copy():
+                # Densetsu takes its turns over the AI bridge and cannot be
+                # DM'd by another bot, so the DM probe would evict it.
+                if getattr(participant, "id", None) == DENSETSU_USER_ID:
+                    continue
                 try:
                     await participant.send("You have joined the ritual! Stay tuned for more info.")
                     await asyncio.sleep(1)
@@ -3109,6 +3145,10 @@ class Raid(commands.Cog):
             }
 
             def is_ai_actor(actor):
+                # Densetsu counts as an AI actor so takeover pressure never
+                # tries to promote it out of the follower role it asked for.
+                if getattr(actor, "id", None) == DENSETSU_USER_ID:
+                    return True
                 return isinstance(actor, (ShadowChampionAI, ShadowPriestAI))
 
             def get_role_actor(role_name):
@@ -3315,6 +3355,8 @@ class Raid(commands.Cog):
 
             # DM the followers the instructions
             for follower in followers:
+                if is_ai_actor(follower):
+                    continue
                 await follower.send(embed=followers_embed_help)
 
             # Turn-based logic
