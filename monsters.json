@@ -1562,6 +1562,15 @@
             "ispublic": false
         },
         {
+            "name": "Dawnhare",
+            "hp": 1200,
+            "attack": 250,
+            "defense": 1750,
+            "element": "Electric",
+            "url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/273652235588599808_BunnyMon.png",
+            "ispublic": false
+        },
+        {
             "name": "Umbra, The Shadow Drake [Event]",
             "hp": 1250,
             "attack": 1230,
