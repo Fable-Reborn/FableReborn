@@ -8,6 +8,7 @@ recipe ID and canonical parent pair the authoritative identity.
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import re
@@ -143,10 +144,31 @@ class SpliceParentRepair:
 
 
 @dataclass(frozen=True)
+class AmbiguousParentSlot:
+    splice_id: int
+    slot: str
+    orphan_name: str
+    candidates: tuple[tuple[int, str], ...]
+
+
+@dataclass(frozen=True)
 class OrphanParentGroup:
     orphan_name: str
     children: tuple[int, ...]
     candidates: tuple[tuple[int, str], ...]
+    suggestions: tuple[str, ...] = ()
+
+
+def _created_before(candidate: Mapping[str, Any], child: Mapping[str, Any]) -> bool:
+    """A recipe can only be spliced from a creature that already existed."""
+    candidate_at = _row_value(candidate, "created_at")
+    child_at = _row_value(child, "created_at")
+    if candidate_at is not None and child_at is not None and candidate_at != child_at:
+        return candidate_at < child_at
+    try:
+        return int(_row_value(candidate, "id")) < int(_row_value(child, "id"))
+    except (TypeError, ValueError):
+        return False
 
 
 def _pre_repair_name(row: Mapping[str, Any]) -> Optional[str]:
@@ -193,17 +215,27 @@ def plan_orphan_parent_repairs(
         if previous and previous != name:
             candidates.setdefault(previous, []).append((splice_id, name))
 
+    row_by_id = {splice_id: row for splice_id, row, _name in parsed}
     repairs: list[SpliceParentRepair] = []
-    children_by_orphan: dict[str, list[int]] = {}
+    ambiguous: list[AmbiguousParentSlot] = []
+    unmatched_children: dict[str, list[int]] = {}
     for splice_id, row, _name in parsed:
         for slot in ("pet1_default", "pet2_default"):
             parent = clean_name(_row_value(row, slot))
             if not parent or parent in known:
                 continue
-            children_by_orphan.setdefault(parent, []).append(splice_id)
             options = candidates.get(parent, ())
-            if len(options) == 1:
-                parent_splice_id, new_name = options[0]
+            if not options:
+                unmatched_children.setdefault(parent, []).append(splice_id)
+                continue
+            # Only a recipe that already existed can have been the parent.
+            viable = tuple(
+                option
+                for option in options
+                if _created_before(row_by_id[option[0]], row)
+            ) or tuple(options)
+            if len(viable) == 1:
+                parent_splice_id, new_name = viable[0]
                 repairs.append(
                     SpliceParentRepair(
                         splice_id=splice_id,
@@ -213,21 +245,31 @@ def plan_orphan_parent_repairs(
                         parent_splice_id=parent_splice_id,
                     )
                 )
+            else:
+                ambiguous.append(
+                    AmbiguousParentSlot(
+                        splice_id=splice_id,
+                        slot=slot,
+                        orphan_name=parent,
+                        candidates=tuple(sorted(viable)),
+                    )
+                )
 
-    ambiguous: list[OrphanParentGroup] = []
     unresolved: list[OrphanParentGroup] = []
-    for orphan_name in sorted(children_by_orphan):
-        options = tuple(sorted(candidates.get(orphan_name, ())))
-        if len(options) == 1:
-            continue
-        group = OrphanParentGroup(
-            orphan_name=orphan_name,
-            children=tuple(sorted(set(children_by_orphan[orphan_name]))),
-            candidates=options,
+    for orphan_name in sorted(unmatched_children):
+        unresolved.append(
+            OrphanParentGroup(
+                orphan_name=orphan_name,
+                children=tuple(sorted(set(unmatched_children[orphan_name]))),
+                candidates=(),
+                suggestions=tuple(
+                    difflib.get_close_matches(orphan_name, sorted(known), n=3, cutoff=0.7)
+                ),
+            )
         )
-        (ambiguous if options else unresolved).append(group)
 
     repairs.sort(key=lambda repair: (repair.splice_id, repair.slot))
+    ambiguous.sort(key=lambda slot: (slot.orphan_name, slot.splice_id, slot.slot))
     return repairs, ambiguous, unresolved
 
 

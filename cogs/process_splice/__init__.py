@@ -3824,7 +3824,8 @@ class ProcessSplice(commands.Cog):
                 dict(row)
                 for row in await conn.fetch(
                     f"""
-                    SELECT id, pet1_default, pet2_default, result_name, {base_column}
+                    SELECT id, pet1_default, pet2_default, result_name, created_at,
+                           {base_column}
                     FROM splice_combinations
                     ORDER BY id ASC;
                     """
@@ -3847,9 +3848,12 @@ class ProcessSplice(commands.Cog):
                 "=" * 76,
                 f"Mode: {mode.upper()}",
                 f"Orphaned parent slots repaired: {len(repairs)}",
-                f"Ambiguous orphan names left untouched: {len(ambiguous)}",
+                f"Ambiguous parent slots left untouched: {len(ambiguous)}",
                 f"Unmatched orphan names left untouched: {len(unresolved)}",
                 f"Recipes with a resolvable generation: {before} -> {after}",
+                "",
+                "Only a recipe created before the child can have been its parent;",
+                "that rules out later duplicates automatically.",
                 "",
             ]
             for repair in repairs:
@@ -3858,19 +3862,26 @@ class ProcessSplice(commands.Cog):
                     f"{repair.new_name!r} (recipe S{repair.parent_splice_id})"
                 )
             if ambiguous:
-                report_lines.extend(["", "AMBIGUOUS (several rename candidates)", "-" * 76])
-                for group in ambiguous:
+                report_lines.extend(
+                    ["", "AMBIGUOUS (several candidates predate the child)", "-" * 76]
+                )
+                for slot in ambiguous:
                     options = ", ".join(
-                        f"S{splice_id} {name!r}" for splice_id, name in group.candidates
+                        f"S{splice_id} {name!r}" for splice_id, name in slot.candidates
                     )
                     report_lines.append(
-                        f"{group.orphan_name!r} used by {list(group.children)} -> {options}"
+                        f"S{slot.splice_id}.{slot.slot}: {slot.orphan_name!r} -> {options}"
                     )
             if unresolved:
                 report_lines.extend(["", "NO RENAME CANDIDATE (a different problem)", "-" * 76])
                 for group in unresolved:
+                    hint = (
+                        f"  ? did you mean {', '.join(repr(s) for s in group.suggestions)}"
+                        if group.suggestions
+                        else ""
+                    )
                     report_lines.append(
-                        f"{group.orphan_name!r} used by {list(group.children)}"
+                        f"{group.orphan_name!r} used by {list(group.children)}{hint}"
                     )
             report = "\n".join(report_lines)
 
