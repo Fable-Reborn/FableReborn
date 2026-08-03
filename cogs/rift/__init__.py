@@ -98,7 +98,7 @@ RIFT_DIFFICULTIES = {
         # receive separately seeded weekly rolls in scale_rift_rooms.
         "hp_floor_multiplier": 2.80,
         "damage_floor_multiplier": 1.80,
-        "damage_multiplier_range": (1.40, 1.50),
+        "damage_multiplier_range": (1.40, 1.65),
         "armor_multiplier_range": (1.25, 1.30),
         "room_rounds_start": 5.88,
         "room_rounds_step": 0.77,
@@ -283,6 +283,10 @@ def scale_rift_rooms(rift_data, player_damage, player_hp, player_armor, pet_dama
         scaled_room["difficulty"] = difficulty_key
         scaled_room["difficulty_damage_multiplier"] = damage_multiplier
         scaled_room["difficulty_armor_multiplier"] = armor_multiplier
+        if difficulty_key == "ascendant":
+            # Preserve the rolled max-HP pressure against the selected target,
+            # so a high-defense pet cannot nullify Ascendant enemy turns.
+            scaled_room["target_hp_pressure"] = pressure * damage_multiplier
         scaled_rooms.append(scaled_room)
 
     scaled_rift = dict(rift_data)
@@ -347,7 +351,7 @@ class RiftDifficultySelect(discord.ui.Select):
             discord.SelectOption(
                 label="Ascendant Rift",
                 value="ascendant",
-                description="Level 100+. +40% HP, +40-50% damage, +25-30% armor; 2.20x score.",
+                description="Level 100+. +40% HP, +40-65% damage, +25-30% armor; 2.20x score.",
             ),
         ]
         super().__init__(
@@ -625,7 +629,7 @@ class Rift(commands.Cog):
         embed.add_field(
             name="Ascendant",
             value=(
-                "Level 100+ · +40% HP · +40-50% damage · +25-30% armor · "
+                "Level 100+ · +40% HP · +40-65% damage · +25-30% armor · "
                 "2.20x score · full clear: 3 Fortune Crates, 200 LP"
             ),
             inline=False,
@@ -714,6 +718,12 @@ class Rift(commands.Cog):
                 enemy = await battles.battle_factory.create_monster_combatant(spec, name=spec["name"])
                 if room["is_boss"]:
                     setattr(enemy, "is_boss", True)
+                if room.get("target_hp_pressure"):
+                    setattr(
+                        enemy,
+                        "rift_target_hp_pressure",
+                        room["target_hp_pressure"],
+                    )
                 enemy_team.add_combatant(enemy)
 
             await ctx.send(

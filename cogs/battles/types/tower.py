@@ -150,6 +150,20 @@ class TowerBattle(Battle):
         # Shuffle to randomize initial order
         random.shuffle(self.turn_order)
         self.turn_order = self.prioritize_turn_order(self.turn_order)
+
+    @staticmethod
+    def apply_rift_target_hp_pressure(attacker, target, raw_damage):
+        """Keep Ascendant Rift pressure meaningful against owner or pet."""
+        pressure = Decimal(
+            str(getattr(attacker, "rift_target_hp_pressure", 0) or 0)
+        )
+        if pressure <= 0:
+            return raw_damage
+
+        target_armor = Decimal(str(getattr(target, "armor", 0) or 0))
+        target_max_hp = Decimal(str(getattr(target, "max_hp", 0) or 0))
+        pressure_damage = target_armor + (target_max_hp * pressure)
+        return max(Decimal(str(raw_damage)), pressure_damage)
     
     def find_next_opponent_index(self):
         """Return the index of the next enemy that can still be fought.
@@ -367,6 +381,11 @@ class TowerBattle(Battle):
                 
                 # Start with base damage
                 raw_damage = current_combatant.damage
+                raw_damage = self.apply_rift_target_hp_pressure(
+                    current_combatant,
+                    target,
+                    raw_damage,
+                )
 
                 # Spec hook A: attacker-side bonuses (may set one-hit flags on target)
                 spec_attack_messages = []
