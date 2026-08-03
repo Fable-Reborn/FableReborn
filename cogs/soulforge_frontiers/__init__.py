@@ -11,7 +11,6 @@ import datetime as dt
 import inspect
 import json
 import logging
-import traceback
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -1949,140 +1948,6 @@ class SoulforgeFrontiers(commands.Cog):
                 boss["frontier_species_id"] = source["frontier_result_species_id"]
         return boss
 
-    @staticmethod
-    def _broken_ancestry(rows, base_names, splice_id: int, limit: int = 8) -> list[str]:
-        """Walk a recipe's parents upward and report every unresolvable link."""
-        row_by_id = {int(row["id"]): row for row in rows}
-        row_by_name: dict[str, Any] = {}
-        duplicate_names: set[str] = set()
-        for row in rows:
-            name = str(row["result_name"] or "").strip()
-            if not name:
-                continue
-            if name in row_by_name:
-                duplicate_names.add(name)
-            else:
-                row_by_name[name] = row
-
-        broken: list[str] = []
-        visited: set[int] = set()
-        stack: list[tuple[int, tuple[str, ...]]] = [(int(splice_id), ())]
-        while stack and len(broken) < limit:
-            current, path = stack.pop()
-            if current in visited:
-                continue
-            visited.add(current)
-            row = row_by_id.get(current)
-            if row is None:
-                continue
-            trail = path + (f"S{current}",)
-            for slot in ("pet1_default", "pet2_default"):
-                name = str(row[slot] or "").strip()
-                if not name:
-                    broken.append(" -> ".join(trail) + f" -> EMPTY {slot}")
-                    continue
-                if name in base_names:
-                    continue
-                parent = row_by_name.get(name)
-                if parent is None:
-                    broken.append(" -> ".join(trail) + f" -> UNKNOWN {name!r}")
-                    continue
-                if name in duplicate_names:
-                    broken.append(" -> ".join(trail) + f" -> AMBIGUOUS {name!r}")
-                stack.append((int(parent["id"]), trail))
-        if not broken:
-            broken.append(f"no broken link found (visited {len(visited)} recipes; possible cycle)")
-        return broken
-
-    async def _diagnose_boss(self, region_id: str) -> str:
-        """Explain, in one line, why the curated boss failed to resolve."""
-        entry = next(
-            (
-                item
-                for item in self.config.get("entries", ())
-                if item["region_id"] == region_id and item["role"] == "boss"
-            ),
-            None,
-        )
-        if entry is None:
-            return f"roster has no boss entry for region {region_id!r}"
-
-        battles = self.bot.get_cog("Battles")
-        if battles is not None and getattr(battles, "monsters_data", None):
-            public_pool = battles.monsters_data
-            pool_source = "battles.monsters_data"
-        else:
-            public_pool = json.loads(MONSTERS_PATH.read_text(encoding="utf-8"))
-            pool_source = "monsters.json"
-        base_names = {
-            str(monster.get("name") or "").strip()
-            for monsters in public_pool.values()
-            for monster in monsters
-            if str(monster.get("name") or "").strip()
-        }
-
-        async with self.bot.pool.acquire() as conn:
-            db_name = await conn.fetchval("SELECT current_database();")
-            rows = await conn.fetch(
-                """
-                SELECT id, pet1_default, pet2_default, result_name
-                FROM splice_combinations ORDER BY id;
-                """
-            )
-
-        splice_id = int(entry["legacy_splice_id"])
-        row = next((item for item in rows if int(item["id"]) == splice_id), None)
-        context = (
-            f"db={db_name} splice_rows={len(rows)} "
-            f"base_names={len(base_names)} pool={pool_source}"
-        )
-        if row is None:
-            return f"MISSING: no splice_combinations row id={splice_id} ({context})"
-
-        actual_name = str(row["result_name"] or "").strip()
-        if actual_name.casefold() != str(entry["expected_name"]).casefold():
-            return (
-                f"NAME: db={actual_name!r} expected={entry['expected_name']!r} ({context})"
-            )
-
-        generations = resolve_recipe_generations(base_names, rows)
-        actual_generation = generations.get(splice_id)
-        if actual_generation != int(entry["expected_generation"]):
-            parent_status = []
-            for slot in ("pet1_default", "pet2_default"):
-                name = str(row[slot] or "").strip()
-                parent = next(
-                    (
-                        item
-                        for item in rows
-                        if str(item["result_name"] or "").strip() == name
-                    ),
-                    None,
-                )
-                parent_status.append(
-                    f"{name!r}="
-                    + (
-                        "base"
-                        if name in base_names
-                        else f"S{parent['id']}/gen{generations.get(int(parent['id']))}"
-                        if parent is not None
-                        else "NOT FOUND"
-                    )
-                )
-            lines = self._broken_ancestry(rows, base_names, splice_id)
-            return (
-                f"GENERATION: db={actual_generation} expected={entry['expected_generation']}\n"
-                f"parents: {', '.join(parent_status)}\n"
-                + "\n".join(lines)
-                + f"\n({context})"
-            )
-
-        state = get_rotation_state(self.config)
-        return (
-            f"entry resolves fine here; rotation={state.region_id} "
-            f"asked={region_id} ({context})"
-        )
-
     @frontier.command(name="boss", aliases=["challenge"])
     @has_char()
     async def frontier_boss(self, ctx) -> None:
@@ -2113,18 +1978,13 @@ class SoulforgeFrontiers(commands.Cog):
             monster = await self._build_boss_monster(state.region_id)
         except Exception:
             log.exception("Frontier boss build failed for %s", state.region_id)
-            trace = traceback.format_exc()
-            return await ctx.send(
-                f"Frontier boss build raised an exception:\n```py\n{trace[-1800:]}\n```"
-            )
+            monster = None
         if not monster:
-            try:
-                detail = await self._diagnose_boss(state.region_id)
-            except Exception:
-                detail = traceback.format_exc()[-1200:]
+            log.warning(
+                "Frontier boss could not be resolved for region %s", state.region_id
+            )
             return await ctx.send(
-                "This week's boss could not be loaded safely. Please contact a GM.\n"
-                f"```\nregion={state.region_id}\n{detail}\n```"
+                "This week's boss could not be loaded safely. Please contact a GM."
             )
         cooldown_key = f"cd:{ctx.author.id}:{pve_command.qualified_name}"
         acquired = await self.bot.redis.execute_command(
