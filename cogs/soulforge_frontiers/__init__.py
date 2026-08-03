@@ -11,6 +11,7 @@ import datetime as dt
 import inspect
 import json
 import logging
+import traceback
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -1974,10 +1975,26 @@ class SoulforgeFrontiers(commands.Cog):
         pve_command = self.bot.get_command("pve")
         if pve_command is None:
             return await ctx.send("PvE is temporarily unavailable.")
-        monster = await self._build_boss_monster(state.region_id)
-        if not monster:
+        try:
+            monster = await self._build_boss_monster(state.region_id)
+        except Exception:
+            log.exception("Frontier boss build failed for %s", state.region_id)
+            trace = traceback.format_exc()
             return await ctx.send(
-                "This week's boss could not be loaded safely. Please contact a GM."
+                f"Frontier boss build raised an exception:\n```py\n{trace[-1800:]}\n```"
+            )
+        if not monster:
+            entry = next(
+                (
+                    item
+                    for item in self.config.get("entries", ())
+                    if item["region_id"] == state.region_id and item["role"] == "boss"
+                ),
+                None,
+            )
+            return await ctx.send(
+                "This week's boss could not be loaded safely. Please contact a GM.\n"
+                f"`region={state.region_id} entry={entry}`"
             )
         cooldown_key = f"cd:{ctx.author.id}:{pve_command.qualified_name}"
         acquired = await self.bot.redis.execute_command(
