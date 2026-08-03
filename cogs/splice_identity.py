@@ -148,7 +148,8 @@ class AmbiguousParentSlot:
     splice_id: int
     slot: str
     orphan_name: str
-    candidates: tuple[tuple[int, str], ...]
+    # (recipe id, name); the id is None when the candidate is a base monster.
+    candidates: tuple[tuple[Optional[int], str], ...]
 
 
 @dataclass(frozen=True)
@@ -271,6 +272,74 @@ def plan_orphan_parent_repairs(
     repairs.sort(key=lambda repair: (repair.splice_id, repair.slot))
     ambiguous.sort(key=lambda slot: (slot.orphan_name, slot.splice_id, slot.slot))
     return repairs, ambiguous, unresolved
+
+
+def known_parent_names(
+    rows: Iterable[Mapping[str, Any]],
+    base_monster_names: Iterable[Any],
+) -> tuple[set[str], dict[str, int]]:
+    """Every name a parent slot may legally hold, plus its recipe id when it has one."""
+    known: set[str] = {
+        cleaned for name in base_monster_names if (cleaned := clean_name(name))
+    }
+    id_by_name: dict[str, int] = {}
+    for row in rows:
+        name = clean_name(_row_value(row, "result_name"))
+        if not name:
+            continue
+        known.add(name)
+        try:
+            id_by_name.setdefault(name, int(_row_value(row, "id")))
+        except (TypeError, ValueError):
+            continue
+    return known, id_by_name
+
+
+def plan_unmatched_parent_slots(
+    rows: Iterable[Mapping[str, Any]],
+    base_monster_names: Iterable[Any],
+    *,
+    limit: int = 4,
+    cutoff: float = 0.55,
+) -> list[AmbiguousParentSlot]:
+    """One decision per slot whose parent name matches nothing at all.
+
+    These are not rename fallout — the name was changed, misspelled, or dropped
+    outside the splice table entirely — so the only candidates worth offering
+    are near misses among names that currently exist.
+    """
+    rows = list(rows)
+    known, id_by_name = known_parent_names(rows, base_monster_names)
+    ordered_known = sorted(known)
+
+    slots: list[AmbiguousParentSlot] = []
+    suggestion_cache: dict[str, tuple[tuple[Optional[int], str], ...]] = {}
+    for row in rows:
+        try:
+            splice_id = int(_row_value(row, "id"))
+        except (TypeError, ValueError):
+            continue
+        for slot in ("pet1_default", "pet2_default"):
+            parent = clean_name(_row_value(row, slot))
+            if not parent or parent in known:
+                continue
+            if parent not in suggestion_cache:
+                suggestion_cache[parent] = tuple(
+                    (id_by_name.get(match), match)
+                    for match in difflib.get_close_matches(
+                        parent, ordered_known, n=limit, cutoff=cutoff
+                    )
+                )
+            slots.append(
+                AmbiguousParentSlot(
+                    splice_id=splice_id,
+                    slot=slot,
+                    orphan_name=parent,
+                    candidates=suggestion_cache[parent],
+                )
+            )
+    slots.sort(key=lambda item: (item.orphan_name, item.splice_id, item.slot))
+    return slots
 
 
 async def ensure_splice_identity_schema(conn) -> None:

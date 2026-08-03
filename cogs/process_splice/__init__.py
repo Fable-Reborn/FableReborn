@@ -32,9 +32,11 @@ import secrets
 from cogs.splice_identity import (
     canonical_parent_pair_key,
     ensure_splice_identity_schema,
+    known_parent_names,
     link_created_splice_result,
     plan_duplicate_splice_names,
     plan_orphan_parent_repairs,
+    plan_unmatched_parent_slots,
     reserve_splice_combination,
 )
 from cogs.frontier_catalog.legacy import clean_name, normalize_name
@@ -2007,6 +2009,24 @@ class ProcessSplice(commands.Cog):
                         if cleaned:
                             base_names.add(cleaned)
         return base_names
+
+    def _load_default_pve_monsters(self):
+        """Load full base monster records from monsters.json, keyed by name."""
+        with open("monsters.json", "r", encoding="utf-8") as f:
+            monsters_data = json.load(f)
+
+        by_name = {}
+        if isinstance(monsters_data, dict):
+            for monster_list in monsters_data.values():
+                if not isinstance(monster_list, list):
+                    continue
+                for monster in monster_list:
+                    if not isinstance(monster, dict):
+                        continue
+                    name = monster.get("name")
+                    if isinstance(name, str) and name.strip():
+                        by_name.setdefault(name.strip(), monster)
+        return by_name
 
     def _build_splice_generation_map(self, base_monster_names, completed_rows):
         """
@@ -4038,14 +4058,17 @@ class ProcessSplice(commands.Cog):
             ]
 
         _repairs, ambiguous, _unresolved = plan_orphan_parent_repairs(rows, base_names)
-        if not ambiguous:
+        worklist = list(ambiguous) + plan_unmatched_parent_slots(rows, base_names)
+        if not worklist:
             return await ctx.send(
-                "No ambiguous parent slots left. Run `$repairspliceparents preview` "
-                "to see what still needs a different kind of fix."
+                "No orphaned parent slots left. Run `$repairspliceparents preview` "
+                "to confirm."
             )
 
         row_by_id = {int(row["id"]): row for row in rows}
         generations = resolve_recipe_generations(base_names, rows)
+        known_names, id_by_name = known_parent_names(rows, base_names)
+        base_by_name = self._load_default_pve_monsters()
 
         link_columns = {
             "pet1_default": "parent1_splice_combination_id",
@@ -4053,11 +4076,11 @@ class ProcessSplice(commands.Cog):
         }
 
         async def on_choose(
-            splice_id: int, slot: str, parent_splice_id: int, parent_name: str
+            splice_id: int, slot: str, parent_splice_id: Optional[int], parent_name: str
         ) -> None:
             link_column = link_columns[slot]
             async with self.bot.pool.acquire() as conn:
-                if link_column in splice_columns:
+                if parent_splice_id is not None and link_column in splice_columns:
                     await conn.execute(
                         f"""
                         UPDATE splice_combinations
@@ -4077,7 +4100,16 @@ class ProcessSplice(commands.Cog):
                     )
             row_by_id[int(splice_id)][slot] = parent_name
 
-        view = ParentResolverView(ctx, ambiguous, row_by_id, generations, on_choose)
+        view = ParentResolverView(
+            ctx,
+            worklist,
+            row_by_id,
+            generations,
+            on_choose,
+            base_by_name=base_by_name,
+            known_names=known_names,
+            id_by_name=id_by_name,
+        )
         await view.start()
 
     @is_gm()

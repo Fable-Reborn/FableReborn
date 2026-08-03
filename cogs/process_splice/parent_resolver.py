@@ -9,13 +9,14 @@ and writes the answer one decision at a time.
 
 from __future__ import annotations
 
+import difflib
 import traceback
 from typing import Any, Awaitable, Callable, Mapping, Optional, Sequence
 
 import discord
 
 
-ChoiceCallback = Callable[[int, str, int, str], Awaitable[None]]
+ChoiceCallback = Callable[[int, str, Optional[int], str], Awaitable[None]]
 
 
 def _stat_line(row: Mapping[str, Any]) -> str:
@@ -35,8 +36,14 @@ def _parent_line(row: Mapping[str, Any]) -> str:
 
 
 class CandidateButton(discord.ui.Button):
-    def __init__(self, view: "ParentResolverView", position: int, splice_id: int, name: str):
-        label = f"S{splice_id} · {name}"
+    def __init__(
+        self,
+        view: "ParentResolverView",
+        position: int,
+        splice_id: Optional[int],
+        name: str,
+    ):
+        label = name if splice_id is None else f"S{splice_id} · {name}"
         super().__init__(
             label=label[:80],
             style=discord.ButtonStyle.primary,
@@ -50,6 +57,37 @@ class CandidateButton(discord.ui.Button):
         await self.resolver.choose(interaction, self.splice_id, self.candidate_name)
 
 
+class ManualNameModal(discord.ui.Modal):
+    """Free-text entry for orphans no suggestion catches."""
+
+    def __init__(self, view: "ParentResolverView"):
+        super().__init__(title="Enter the parent name")
+        self.resolver = view
+        self.name = discord.ui.TextInput(
+            label="Exact existing name",
+            placeholder=view.current.orphan_name[:100],
+            max_length=100,
+        )
+        self.add_item(self.name)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        typed = str(self.name.value or "").strip()
+        if typed not in self.resolver.known_names:
+            close = difflib.get_close_matches(
+                typed, sorted(self.resolver.known_names), n=3, cutoff=0.5
+            )
+            hint = f" Did you mean: {', '.join(close)}?" if close else ""
+            await interaction.response.send_message(
+                f"**{typed}** is not a base monster or an existing splice result, "
+                f"so it would just orphan the slot again.{hint}",
+                ephemeral=True,
+            )
+            return
+        await self.resolver.choose(
+            interaction, self.resolver.id_by_name.get(typed), typed
+        )
+
+
 class ParentResolverView(discord.ui.View):
     """Owner-only walkthrough of every ambiguous parent slot."""
 
@@ -61,6 +99,9 @@ class ParentResolverView(discord.ui.View):
         generations: Mapping[int, int],
         on_choose: ChoiceCallback,
         *,
+        base_by_name: Optional[Mapping[str, Mapping[str, Any]]] = None,
+        known_names: Optional[set] = None,
+        id_by_name: Optional[Mapping[str, int]] = None,
         timeout: float = 600,
     ):
         super().__init__(timeout=timeout)
@@ -71,6 +112,9 @@ class ParentResolverView(discord.ui.View):
         self.row_by_id = row_by_id
         self.generations = generations
         self.on_choose = on_choose
+        self.base_by_name = base_by_name or {}
+        self.known_names = known_names or set()
+        self.id_by_name = id_by_name or {}
         self.index = 0
         self.resolved = 0
         self.skipped = 0
@@ -87,19 +131,24 @@ class ParentResolverView(discord.ui.View):
 
     def _sync_components(self) -> None:
         self.clear_items()
-        for position, (splice_id, name) in enumerate(self.current.candidates):
+        candidates = self.current.candidates
+        for position, (splice_id, name) in enumerate(candidates):
             self.add_item(CandidateButton(self, position, splice_id, name))
+        controls_row = min(4, (max(0, len(candidates) - 1) // 5) + 1)
+        manual = discord.ui.Button(
+            label="Enter name…",
+            style=discord.ButtonStyle.success,
+            row=controls_row,
+        )
+        manual.callback = self._manual
+        self.add_item(manual)
         skip = discord.ui.Button(
-            label="Skip",
-            style=discord.ButtonStyle.secondary,
-            row=(len(self.current.candidates) - 1) // 5 + 1,
+            label="Skip", style=discord.ButtonStyle.secondary, row=controls_row
         )
         skip.callback = self._skip
         self.add_item(skip)
         stop = discord.ui.Button(
-            label="Stop",
-            style=discord.ButtonStyle.danger,
-            row=(len(self.current.candidates) - 1) // 5 + 1,
+            label="Stop", style=discord.ButtonStyle.danger, row=controls_row
         )
         stop.callback = self._stop
         self.add_item(stop)
@@ -122,26 +171,39 @@ class ParentResolverView(discord.ui.View):
         if child_url:
             header.set_thumbnail(url=child_url)
 
+        if not slot.candidates:
+            header.add_field(
+                name="No suggestions",
+                value="Nothing close enough to guess. Use **Enter name…**.",
+                inline=False,
+            )
+
         embeds = [header]
         for splice_id, name in slot.candidates:
-            row = self.row_by_id.get(splice_id, {})
-            generation = self.generations.get(int(splice_id))
-            embed = discord.Embed(
-                title=f"S{splice_id} · {name}",
-                description=_parent_line(row),
-                colour=0x4C7DD9,
-            )
-            embed.add_field(name="Stats", value=_stat_line(row), inline=True)
-            embed.add_field(
-                name="Generation",
-                value="unresolved" if generation is None else str(generation),
-                inline=True,
-            )
-            created_at = row.get("created_at")
-            if created_at is not None:
-                embed.set_footer(text=f"created {created_at}")
+            if splice_id is None:
+                row = self.base_by_name.get(name, {})
+                embed = discord.Embed(
+                    title=name, description="base monster", colour=0x4CAF72
+                )
+            else:
+                row = self.row_by_id.get(splice_id, {})
+                generation = self.generations.get(int(splice_id))
+                embed = discord.Embed(
+                    title=f"S{splice_id} · {name}",
+                    description=_parent_line(row),
+                    colour=0x4C7DD9,
+                )
+                embed.add_field(
+                    name="Generation",
+                    value="unresolved" if generation is None else str(generation),
+                    inline=True,
+                )
+                created_at = row.get("created_at")
+                if created_at is not None:
+                    embed.set_footer(text=f"created {created_at}")
+            embed.insert_field_at(0, name="Stats", value=_stat_line(row), inline=True)
             url = str(row.get("url") or "").strip()
-            if url:
+            if url.startswith(("http://", "https://")):
                 embed.set_image(url=url)
             embeds.append(embed)
         return embeds
@@ -158,10 +220,13 @@ class ParentResolverView(discord.ui.View):
         )
         return False
 
+    async def _manual(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(ManualNameModal(self))
+
     async def choose(
         self,
         interaction: discord.Interaction,
-        parent_splice_id: int,
+        parent_splice_id: Optional[int],
         parent_name: str,
     ) -> None:
         slot = self.current
