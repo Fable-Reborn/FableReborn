@@ -1,5 +1,6 @@
 import datetime
 import mimetypes
+import traceback
 from operator import truediv
 from collections import defaultdict, deque, OrderedDict
 import re
@@ -3796,6 +3797,26 @@ class ProcessSplice(commands.Cog):
     )
     async def repair_splice_parents(self, ctx: commands.Context, mode: str = "preview"):
         """Repoint parent names orphaned by the duplicate-name repair."""
+        try:
+            await self._repair_splice_parents(ctx, mode)
+        except Exception:
+            await self._send_splice_traceback(ctx, "repairspliceparents")
+
+    @staticmethod
+    async def _send_splice_traceback(ctx: commands.Context, label: str) -> None:
+        """Surface a failure instead of letting the command die quietly."""
+        trace = traceback.format_exc()
+        try:
+            await ctx.send(f"`{label}` raised:\n```py\n{trace[-1800:]}\n```")
+        except Exception:
+            await ctx.send(
+                f"`{label}` raised an exception too large to display; see the log.",
+                file=discord.File(
+                    BytesIO(trace.encode("utf-8")), filename=f"{label}_traceback.txt"
+                ),
+            )
+
+    async def _repair_splice_parents(self, ctx: commands.Context, mode: str) -> None:
         mode = str(mode or "preview").strip().lower()
         if mode not in {"preview", "apply"}:
             return await ctx.send(
@@ -3979,6 +4000,12 @@ class ProcessSplice(commands.Cog):
     )
     async def resolve_splice_parents(self, ctx: commands.Context):
         """Pick the right parent for each slot the repair could not infer."""
+        try:
+            await self._resolve_splice_parents(ctx)
+        except Exception:
+            await self._send_splice_traceback(ctx, "resolvespliceparents")
+
+    async def _resolve_splice_parents(self, ctx: commands.Context) -> None:
         from cogs.soulforge_frontiers.frontier_pve import resolve_recipe_generations
 
         base_names = self._load_default_pve_monster_names()

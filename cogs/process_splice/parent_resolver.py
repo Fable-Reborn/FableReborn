@@ -9,6 +9,7 @@ and writes the answer one decision at a time.
 
 from __future__ import annotations
 
+import traceback
 from typing import Any, Awaitable, Callable, Mapping, Optional, Sequence
 
 import discord
@@ -202,6 +203,25 @@ class ParentResolverView(discord.ui.View):
             ),
             colour=0x4CAF72,
         )
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,
+    ) -> None:
+        """discord.py swallows component errors by default; show them instead."""
+        trace = "".join(
+            traceback.format_exception(type(error), error, error.__traceback__)
+        )
+        message = f"Resolver failed on `{getattr(item, 'label', item)}`:\n```py\n{trace[-1500:]}\n```"
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except discord.HTTPException:
+            pass
 
     async def on_timeout(self) -> None:
         for item in self.children:
