@@ -1949,6 +1949,71 @@ class SoulforgeFrontiers(commands.Cog):
                 boss["frontier_species_id"] = source["frontier_result_species_id"]
         return boss
 
+    async def _diagnose_boss(self, region_id: str) -> str:
+        """Explain, in one line, why the curated boss failed to resolve."""
+        entry = next(
+            (
+                item
+                for item in self.config.get("entries", ())
+                if item["region_id"] == region_id and item["role"] == "boss"
+            ),
+            None,
+        )
+        if entry is None:
+            return f"roster has no boss entry for region {region_id!r}"
+
+        battles = self.bot.get_cog("Battles")
+        if battles is not None and getattr(battles, "monsters_data", None):
+            public_pool = battles.monsters_data
+            pool_source = "battles.monsters_data"
+        else:
+            public_pool = json.loads(MONSTERS_PATH.read_text(encoding="utf-8"))
+            pool_source = "monsters.json"
+        base_names = {
+            str(monster.get("name") or "").strip()
+            for monsters in public_pool.values()
+            for monster in monsters
+            if str(monster.get("name") or "").strip()
+        }
+
+        async with self.bot.pool.acquire() as conn:
+            db_name = await conn.fetchval("SELECT current_database();")
+            rows = await conn.fetch(
+                """
+                SELECT id, pet1_default, pet2_default, result_name
+                FROM splice_combinations ORDER BY id;
+                """
+            )
+
+        splice_id = int(entry["legacy_splice_id"])
+        row = next((item for item in rows if int(item["id"]) == splice_id), None)
+        context = (
+            f"db={db_name} splice_rows={len(rows)} "
+            f"base_names={len(base_names)} pool={pool_source}"
+        )
+        if row is None:
+            return f"MISSING: no splice_combinations row id={splice_id} ({context})"
+
+        actual_name = str(row["result_name"] or "").strip()
+        if actual_name.casefold() != str(entry["expected_name"]).casefold():
+            return (
+                f"NAME: db={actual_name!r} expected={entry['expected_name']!r} ({context})"
+            )
+
+        generations = resolve_recipe_generations(base_names, rows)
+        actual_generation = generations.get(splice_id)
+        if actual_generation != int(entry["expected_generation"]):
+            return (
+                f"GENERATION: db={actual_generation} expected={entry['expected_generation']} "
+                f"parents={row['pet1_default']!r}+{row['pet2_default']!r} ({context})"
+            )
+
+        state = get_rotation_state(self.config)
+        return (
+            f"entry resolves fine here; rotation={state.region_id} "
+            f"asked={region_id} ({context})"
+        )
+
     @frontier.command(name="boss", aliases=["challenge"])
     @has_char()
     async def frontier_boss(self, ctx) -> None:
@@ -1984,17 +2049,13 @@ class SoulforgeFrontiers(commands.Cog):
                 f"Frontier boss build raised an exception:\n```py\n{trace[-1800:]}\n```"
             )
         if not monster:
-            entry = next(
-                (
-                    item
-                    for item in self.config.get("entries", ())
-                    if item["region_id"] == state.region_id and item["role"] == "boss"
-                ),
-                None,
-            )
+            try:
+                detail = await self._diagnose_boss(state.region_id)
+            except Exception:
+                detail = traceback.format_exc()[-1200:]
             return await ctx.send(
                 "This week's boss could not be loaded safely. Please contact a GM.\n"
-                f"`region={state.region_id} entry={entry}`"
+                f"```\nregion={state.region_id}\n{detail}\n```"
             )
         cooldown_key = f"cd:{ctx.author.id}:{pve_command.qualified_name}"
         acquired = await self.bot.redis.execute_command(
