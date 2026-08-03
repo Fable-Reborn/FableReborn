@@ -216,6 +216,10 @@ LEGACY_LINK_COLUMNS = {
         ADD COLUMN IF NOT EXISTS frontier_species_id BIGINT
         REFERENCES frontier_species(species_id) ON DELETE SET NULL;
         """,
+        """
+        ALTER TABLE monster_pets
+        ADD COLUMN IF NOT EXISTS splice_combination_id INTEGER;
+        """,
     ),
     "monster_eggs": (
         """
@@ -225,6 +229,26 @@ LEGACY_LINK_COLUMNS = {
         """,
     ),
     "splice_combinations": (
+        """
+        ALTER TABLE splice_combinations
+        ADD COLUMN IF NOT EXISTS base_result_name TEXT;
+        """,
+        """
+        ALTER TABLE splice_combinations
+        ADD COLUMN IF NOT EXISTS result_name_key TEXT;
+        """,
+        """
+        ALTER TABLE splice_combinations
+        ADD COLUMN IF NOT EXISTS parent_pair_key TEXT;
+        """,
+        """
+        ALTER TABLE splice_combinations
+        ADD COLUMN IF NOT EXISTS parent1_splice_combination_id INTEGER;
+        """,
+        """
+        ALTER TABLE splice_combinations
+        ADD COLUMN IF NOT EXISTS parent2_splice_combination_id INTEGER;
+        """,
         """
         ALTER TABLE splice_combinations
         ADD COLUMN IF NOT EXISTS frontier_recipe_id BIGINT
@@ -299,7 +323,9 @@ class FrontierCatalogStore:
                         legacy_rows = await conn.fetch(
                             """
                             SELECT id, pet1_default, pet2_default, result_name,
-                                   hp, attack, defense, element, url, created_at
+                                   hp, attack, defense, element, url, created_at,
+                                   parent1_splice_combination_id,
+                                   parent2_splice_combination_id
                             FROM splice_combinations
                             ORDER BY id ASC;
                             """
@@ -469,6 +495,19 @@ class FrontierCatalogStore:
                     link_updates,
                 )
 
+        if legacy_tables.get("monster_pets") and legacy_tables.get("splice_combinations"):
+            await conn.execute(
+                """
+                UPDATE monster_pets pet
+                SET frontier_species_id = splice.frontier_result_species_id
+                FROM splice_combinations splice
+                WHERE pet.splice_combination_id = splice.id
+                  AND splice.frontier_result_species_id IS NOT NULL
+                  AND pet.frontier_species_id IS DISTINCT FROM
+                      splice.frontier_result_species_id;
+                """
+            )
+
         species_rows = await conn.fetch(
             """
             SELECT species_id, normalized_name, origin, publication_status
@@ -582,6 +621,9 @@ class FrontierCatalogStore:
                     legacy_name, snapshot
                 ) VALUES ($1, $2, $3, $4, $5, $6::JSONB)
                 ON CONFLICT (source_key) DO UPDATE SET
+                    species_id = EXCLUDED.species_id,
+                    source_type = EXCLUDED.source_type,
+                    legacy_row_id = EXCLUDED.legacy_row_id,
                     legacy_name = EXCLUDED.legacy_name,
                     snapshot = EXCLUDED.snapshot,
                     last_seen_at = NOW();
@@ -657,11 +699,17 @@ class FrontierCatalogStore:
                     $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
                 )
                 ON CONFLICT (legacy_splice_id) DO UPDATE SET
+                    parent_low_species_id = EXCLUDED.parent_low_species_id,
+                    parent_high_species_id = EXCLUDED.parent_high_species_id,
+                    result_species_id = EXCLUDED.result_species_id,
+                    canonical_parent_key = EXCLUDED.canonical_parent_key,
+                    variant_rank = EXCLUDED.variant_rank,
                     generation = CASE
                         WHEN EXCLUDED.generation IS NULL THEN frontier_recipes.generation
                         WHEN frontier_recipes.generation IS NULL THEN EXCLUDED.generation
                         ELSE LEAST(frontier_recipes.generation, EXCLUDED.generation)
                     END,
+                    stability = EXCLUDED.stability,
                     legacy_parent_a_name = EXCLUDED.legacy_parent_a_name,
                     legacy_parent_b_name = EXCLUDED.legacy_parent_b_name,
                     legacy_result_name = EXCLUDED.legacy_result_name,

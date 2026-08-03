@@ -12,6 +12,10 @@ import random
 import json
 import aiohttp
 from cogs.shard_communication import user_on_cooldown as user_cooldown
+from cogs.splice_identity import (
+    canonical_parent_pair_key,
+    ensure_splice_identity_schema,
+)
 from utils.checks import has_char, is_gm, is_patreon
 
 SPLICE_ARCHIVE_USER_ID = 0
@@ -1580,6 +1584,7 @@ class Soulforge(commands.Cog):
         await conn.execute(
             "ALTER TABLE splice_requests ADD COLUMN IF NOT EXISTS splice_style TEXT NOT NULL DEFAULT 'auto';"
         )
+        await ensure_splice_identity_schema(conn)
 
     async def _count_user_pet_capacity_items(self, conn, user_id: int) -> int:
         pet_count = await conn.fetchval(
@@ -1609,23 +1614,23 @@ class Soulforge(commands.Cog):
 
         return int((pet_count or 0) + (egg_count or 0) + (pending_splice_count or 0))
 
-    async def ensure_splice_browser_tables(self, conn) -> None:
-        await conn.execute(
+    async def _has_ambiguous_legacy_splice_identity(self, conn, pet) -> bool:
+        """Return true when an unlinked legacy pet name maps to several recipes."""
+        if pet["splice_combination_id"] is not None:
+            return False
+        recipe_count = await conn.fetchval(
             """
-            CREATE TABLE IF NOT EXISTS splice_combinations (
-                id SERIAL PRIMARY KEY,
-                pet1_default TEXT,
-                pet2_default TEXT,
-                result_name TEXT,
-                hp INTEGER,
-                attack INTEGER,
-                defense INTEGER,
-                element TEXT,
-                url TEXT,
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-            """
+            SELECT COUNT(*)
+            FROM splice_combinations
+            WHERE lower(btrim(COALESCE(base_result_name, result_name))) =
+                  lower(btrim($1));
+            """,
+            pet["default_name"],
         )
+        return int(recipe_count or 0) > 1
+
+    async def ensure_splice_browser_tables(self, conn) -> None:
+        await ensure_splice_identity_schema(conn)
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS splice_favorites (
@@ -3508,6 +3513,7 @@ class Soulforge(commands.Cog):
             
             # Check if player owns both pets
             async with self.bot.pool.acquire() as conn:
+                await ensure_splice_identity_schema(conn)
                 pet1_data = await conn.fetchrow(
                     "SELECT * FROM monster_pets WHERE id = $1 AND user_id = $2",
                     pet1_id, ctx.author.id
@@ -3517,6 +3523,13 @@ class Soulforge(commands.Cog):
                     "SELECT * FROM monster_pets WHERE id = $1 AND user_id = $2",
                     pet2_id, ctx.author.id
                 )
+
+                ambiguous_pet_ids = []
+                for pet_data in (pet1_data, pet2_data):
+                    if pet_data and await self._has_ambiguous_legacy_splice_identity(
+                        conn, pet_data
+                    ):
+                        ambiguous_pet_ids.append(int(pet_data["id"]))
 
             unspliceable_pets = ["Sepulchure", "Elysia", "Drakath", "Ultra Sepulchure", "Ultra Elysia",
                                  "Ultra Drakath"]
@@ -3528,6 +3541,14 @@ class Soulforge(commands.Cog):
             if not pet2_data:
                 await self.bot.reset_cooldown(ctx)
                 return await ctx.send(f"You don't own a pet with ID {pet2_id}.")
+
+            if ambiguous_pet_ids:
+                await self.bot.reset_cooldown(ctx)
+                return await ctx.send(
+                    "This splice was stopped because the legacy identity for pet ID(s) "
+                    f"**{', '.join(map(str, ambiguous_pet_ids))}** matches multiple recipes. "
+                    "A GM must resolve the pet's recipe link before it can be used as a parent."
+                )
 
             if pet1_data["daycare_boarding_id"] is not None:
                 await self.bot.reset_cooldown(ctx)
@@ -3598,30 +3619,24 @@ class Soulforge(commands.Cog):
             
             # Check if this combination has been spliced before
             async with self.bot.pool.acquire() as conn:
-                # Create table if it doesn't exist
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS splice_combinations (
-                        id SERIAL PRIMARY KEY,
-                        pet1_default TEXT,
-                        pet2_default TEXT,
-                        result_name TEXT,
-                        hp INTEGER,
-                        attack INTEGER,
-                        defense INTEGER,
-                        element TEXT,
-                        url TEXT,
-                        created_at TIMESTAMP DEFAULT NOW()
-                    )
-                """)
+                await ensure_splice_identity_schema(conn)
+                parent_pair_key = canonical_parent_pair_key(
+                    pet1_data["default_name"],
+                    pet2_data["default_name"],
+                )
                 
                 existing_splice = await conn.fetchrow(
                     """
-                    SELECT * FROM splice_combinations 
-                    WHERE (pet1_default = $1 AND pet2_default = $2) OR (pet1_default = $2 AND pet2_default = $1)
+                    SELECT * FROM splice_combinations
+                    WHERE parent_pair_key = $3
+                       OR ((pet1_default = $1 AND pet2_default = $2)
+                           OR (pet1_default = $2 AND pet2_default = $1))
                     ORDER BY id ASC
                     LIMIT 1
                     """,
-                    pet1_data["default_name"], pet2_data["default_name"]
+                    pet1_data["default_name"],
+                    pet2_data["default_name"],
+                    parent_pair_key,
                 )
             if existing_splice and "[FINAL]" in existing_splice["result_name"]:
                 await self.bot.reset_cooldown(ctx)
@@ -3880,8 +3895,9 @@ class Soulforge(commands.Cog):
                     new_pet_id = await conn.fetchval(
                         """
                         INSERT INTO monster_pets 
-                        (user_id, name, hp, attack, defense, element, default_name, url, growth_stage, growth_time, "IV") 
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) 
+                        (user_id, name, hp, attack, defense, element, default_name, url,
+                         growth_stage, growth_time, "IV", splice_combination_id)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                         RETURNING id
                         """,
                         ctx.author.id, 
@@ -3894,7 +3910,8 @@ class Soulforge(commands.Cog):
                         existing_splice["url"], 
                         'baby',
                         growth_time,
-                        total_iv_points
+                        total_iv_points,
+                        int(existing_splice["id"]),
                     )
 
                 self.bot.dispatch(

@@ -28,6 +28,15 @@ from openai import OpenAI
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 import secrets
 
+from cogs.splice_identity import (
+    canonical_parent_pair_key,
+    ensure_splice_identity_schema,
+    link_created_splice_result,
+    plan_duplicate_splice_names,
+    reserve_splice_combination,
+)
+from cogs.frontier_catalog.legacy import clean_name, normalize_name
+
 # Constants for auto splice persistence
 AUTO_SPLICE_SAVE_FILE = "auto_splice_saves.json"
 SPLICE_IMAGE_MODEL = "gpt-image-2-2026-04-21"
@@ -1330,6 +1339,93 @@ class ProcessSplice(commands.Cog):
         adjusted_attack = int(round(float(attack or 0) * multiplier))
         adjusted_defense = int(round(float(defense or 0) * multiplier))
         return adjusted_hp, adjusted_attack, adjusted_defense
+
+    async def _persist_processed_splice_pet(
+        self,
+        conn,
+        pet: dict,
+        *,
+        hp_iv: int | float,
+        attack_iv: int | float,
+        defense_iv: int | float,
+        growth_time,
+        iv_percentage: int | float,
+    ) -> tuple[int, int]:
+        """Create one result pet with an immutable recipe link."""
+        async with conn.transaction():
+            reservation = await reserve_splice_combination(
+                conn,
+                parent1_name=pet["pet1_default"],
+                parent2_name=pet["pet2_default"],
+                proposed_result_name=pet["name"],
+                hp=pet["hp"],
+                attack=pet["attack"],
+                defense=pet["defense"],
+                element=pet["element"],
+                url=pet["url"],
+                parent1_pet_id=pet.get("pet1_id"),
+                parent2_pet_id=pet.get("pet2_id"),
+            )
+            recipe = reservation.row
+
+            # A concurrently discovered parent pair must reuse the canonical
+            # recipe rather than persisting a second stat/name variant.
+            pet["name"] = recipe["result_name"]
+            pet["hp"] = int(recipe["hp"])
+            pet["attack"] = int(recipe["attack"])
+            pet["defense"] = int(recipe["defense"])
+            pet["element"] = recipe["element"]
+            pet["url"] = recipe["url"]
+
+            creation_bonus_pct = 0.0
+            if reservation.created:
+                creation_bonus_pct = await self._get_splice_creation_bonus_pct_for_ids(
+                    conn,
+                    pet.get("pet1_id"),
+                    pet.get("pet2_id"),
+                )
+            baby_hp, baby_attack, baby_defense = self._apply_splice_creation_bonus_pct(
+                round(pet["hp"] * 0.25),
+                round(pet["attack"] * 0.25),
+                round(pet["defense"] * 0.25),
+                creation_bonus_pct,
+            )
+            baby_hp += hp_iv
+            baby_attack += attack_iv
+            baby_defense += defense_iv
+
+            new_pet_id = await conn.fetchval(
+                """
+                INSERT INTO monster_pets (
+                    user_id, name, hp, attack, defense, element, default_name,
+                    url, growth_stage, growth_time, "IV", splice_combination_id
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7,
+                    $8, $9, $10, $11, $12
+                )
+                RETURNING id;
+                """,
+                pet["user_id"],
+                pet["name"],
+                baby_hp,
+                baby_attack,
+                baby_defense,
+                pet["element"],
+                pet["name"],
+                pet["url"],
+                "baby",
+                growth_time,
+                iv_percentage,
+                int(recipe["id"]),
+            )
+            await link_created_splice_result(
+                conn,
+                request_id=pet.get("splice_id"),
+                pet_id=int(new_pet_id),
+                splice_id=int(recipe["id"]),
+                result_name=pet["name"],
+            )
+        return int(new_pet_id), int(recipe["id"])
 
     async def _get_splice_creation_bonus_pct_for_ids(
         self,
@@ -3266,6 +3362,558 @@ class ProcessSplice(commands.Cog):
 
     @is_gm()
     @commands.command(
+        name="repairsplicenames",
+        aliases=["fixsplicenames", "splicenameaudit"],
+        hidden=True,
+    )
+    async def repair_splice_names(self, ctx: commands.Context, mode: str = "preview"):
+        """Preview or apply deterministic repairs for duplicate splice names."""
+        mode = str(mode or "preview").strip().lower()
+        if mode not in {"preview", "apply"}:
+            return await ctx.send("Use `$repairsplicenames preview` or `$repairsplicenames apply`.")
+
+        async with self.bot.pool.acquire() as conn:
+            await ensure_splice_identity_schema(conn)
+            splice_rows = [
+                dict(row)
+                for row in await conn.fetch(
+                    """
+                    SELECT id, pet1_default, pet2_default, result_name,
+                           base_result_name, hp, attack, defense, element, url,
+                           parent1_splice_combination_id,
+                           parent2_splice_combination_id
+                    FROM splice_combinations
+                    ORDER BY id ASC;
+                    """
+                )
+            ]
+            repairs = plan_duplicate_splice_names(splice_rows)
+            if not repairs:
+                return await ctx.send("No duplicate splice result names need repair.")
+
+            recipe_by_id = {int(row["id"]): row for row in splice_rows}
+            repair_by_id = {repair.splice_id: repair for repair in repairs}
+            duplicate_keys = {repair.normalized_base_name for repair in repairs}
+            final_name_by_recipe = {
+                recipe_id: (
+                    repair_by_id[recipe_id].new_name
+                    if recipe_id in repair_by_id
+                    else clean_name(row["result_name"])
+                )
+                for recipe_id, row in recipe_by_id.items()
+            }
+
+            pet_rows = [
+                dict(row)
+                for row in await conn.fetch(
+                    """
+                    SELECT id, user_id, name, default_name, url,
+                           splice_combination_id
+                    FROM monster_pets
+                    ORDER BY id ASC;
+                    """
+                )
+            ]
+
+            candidates_by_name_url = defaultdict(list)
+            for recipe_id, row in recipe_by_id.items():
+                recipe_url = clean_name(row["url"])
+                if not recipe_url:
+                    continue
+                identity_keys = {
+                    normalize_name(row["result_name"]),
+                    normalize_name(row["base_result_name"]),
+                }
+                for identity_key in identity_keys:
+                    if identity_key:
+                        candidates_by_name_url[(identity_key, recipe_url)].append(recipe_id)
+
+            pet_recipe_map = {}
+            ambiguous_duplicate_pets = []
+            for pet in pet_rows:
+                current_recipe_id = pet.get("splice_combination_id")
+                if current_recipe_id is not None and int(current_recipe_id) in recipe_by_id:
+                    pet_recipe_map[int(pet["id"])] = int(current_recipe_id)
+                    continue
+
+                pet_name_key = normalize_name(pet.get("default_name"))
+                pet_url = clean_name(pet.get("url"))
+                candidates = set(
+                    candidates_by_name_url.get((pet_name_key, pet_url), ())
+                )
+                if len(candidates) == 1:
+                    pet_recipe_map[int(pet["id"])] = candidates.pop()
+                elif pet_name_key in duplicate_keys:
+                    ambiguous_duplicate_pets.append(int(pet["id"]))
+
+            request_rows = []
+            requests_exist = await conn.fetchval(
+                "SELECT to_regclass('public.splice_requests') IS NOT NULL;"
+            )
+            if requests_exist:
+                request_rows = [
+                    dict(row)
+                    for row in await conn.fetch(
+                        """
+                        SELECT id, status, pet1_id, pet2_id,
+                               pet1_default, pet2_default
+                        FROM splice_requests
+                        ORDER BY id ASC;
+                        """
+                    )
+                ]
+
+            recipes_by_pair = defaultdict(list)
+            for row in splice_rows:
+                pair_key = canonical_parent_pair_key(
+                    row["pet1_default"], row["pet2_default"]
+                )
+                if pair_key:
+                    recipes_by_pair[pair_key].append(int(row["id"]))
+
+            requests_by_pair = defaultdict(list)
+            request_recipe_map = {}
+            for request in request_rows:
+                pair_key = canonical_parent_pair_key(
+                    request["pet1_default"], request["pet2_default"]
+                )
+                if not pair_key:
+                    continue
+                requests_by_pair[pair_key].append(request)
+                matching_recipes = recipes_by_pair.get(pair_key, ())
+                if len(matching_recipes) == 1 and request.get("status") == "completed":
+                    request_recipe_map[int(request["id"])] = matching_recipes[0]
+
+            lineage_updates = {}
+            unresolved_parent_slots = 0
+            for row in splice_rows:
+                parent_names = [row["pet1_default"], row["pet2_default"]]
+                parent_recipe_ids = [
+                    row.get("parent1_splice_combination_id"),
+                    row.get("parent2_splice_combination_id"),
+                ]
+                pair_key = canonical_parent_pair_key(*parent_names)
+                matching_requests = requests_by_pair.get(pair_key, ())
+
+                for slot in (0, 1):
+                    parent_key = normalize_name(parent_names[slot])
+                    inferred_recipe_ids = set()
+                    for request in matching_requests:
+                        for request_slot in (0, 1):
+                            if normalize_name(request[f"pet{request_slot + 1}_default"]) != parent_key:
+                                continue
+                            source_pet_id = request.get(f"pet{request_slot + 1}_id")
+                            source_recipe_id = (
+                                pet_recipe_map.get(int(source_pet_id))
+                                if source_pet_id is not None
+                                else None
+                            )
+                            if source_recipe_id is not None:
+                                inferred_recipe_ids.add(source_recipe_id)
+
+                    if len(inferred_recipe_ids) == 1:
+                        parent_recipe_id = inferred_recipe_ids.pop()
+                        parent_recipe_ids[slot] = parent_recipe_id
+                        parent_names[slot] = final_name_by_recipe[parent_recipe_id]
+                    elif parent_key in duplicate_keys:
+                        unresolved_parent_slots += 1
+
+                lineage_updates[int(row["id"])] = (
+                    parent_names[0],
+                    parent_names[1],
+                    int(parent_recipe_ids[0]) if parent_recipe_ids[0] is not None else None,
+                    int(parent_recipe_ids[1]) if parent_recipe_ids[1] is not None else None,
+                )
+
+            final_pair_keys = {
+                recipe_id: canonical_parent_pair_key(names[0], names[1])
+                for recipe_id, names in lineage_updates.items()
+            }
+            pair_key_counts = defaultdict(int)
+            for pair_key in final_pair_keys.values():
+                if pair_key:
+                    pair_key_counts[pair_key] += 1
+
+            matched_pets_by_recipe = defaultdict(int)
+            for recipe_id in pet_recipe_map.values():
+                matched_pets_by_recipe[recipe_id] += 1
+
+            report_lines = [
+                "SPLICE NAME REPAIR PLAN",
+                "=" * 76,
+                f"Mode: {mode.upper()}",
+                f"Duplicate base-name groups: {len(duplicate_keys)}",
+                f"Recipes to disambiguate: {len(repairs)}",
+                f"Existing pets linked by exact identity evidence: {len(pet_recipe_map)}",
+                f"Ambiguous duplicate-name pets left untouched: {len(ambiguous_duplicate_pets)}",
+                f"Ambiguous duplicate parent slots left untouched: {unresolved_parent_slots}",
+                "",
+            ]
+            for repair in repairs:
+                row = recipe_by_id[repair.splice_id]
+                report_lines.extend(
+                    [
+                        "-" * 76,
+                        f"Recipe S{repair.splice_id}: {repair.old_name} -> {repair.new_name}",
+                        f"Parents: {row['pet1_default']} + {row['pet2_default']}",
+                        (
+                            f"Stats: HP {row['hp']} | ATK {row['attack']} | "
+                            f"DEF {row['defense']} | {row['element']}"
+                        ),
+                        f"Matched existing pets: {matched_pets_by_recipe[repair.splice_id]}",
+                    ]
+                )
+            if ambiguous_duplicate_pets:
+                report_lines.extend(
+                    [
+                        "",
+                        "AMBIGUOUS PET IDS (no changes will be guessed)",
+                        ", ".join(map(str, ambiguous_duplicate_pets)),
+                    ]
+                )
+            report = "\n".join(report_lines)
+
+            if mode == "preview":
+                return await ctx.send(
+                    (
+                        f"Found **{len(duplicate_keys)}** duplicate-name groups across "
+                        f"**{len(repairs)}** recipes. Preview attached; no data changed."
+                    ),
+                    file=discord.File(
+                        BytesIO(report.encode("utf-8")),
+                        filename="splice_name_repair_preview.txt",
+                    ),
+                )
+
+            confirmed = await ctx.confirm(
+                f"Apply unique recipe-ID names to {len(repairs)} splice recipes and "
+                f"link {len(pet_recipe_map)} pets? Ambiguous records will be left untouched."
+            )
+            if not confirmed:
+                return await ctx.send("Splice name repair cancelled; no data changed.")
+
+            pet_columns = {
+                row["column_name"]
+                for row in await conn.fetch(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'monster_pets';
+                    """
+                )
+            }
+            splice_columns = {
+                row["column_name"]
+                for row in await conn.fetch(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'splice_combinations';
+                    """
+                )
+            }
+
+            async with conn.transaction():
+                # Clear constrained keys first so every rename is an atomic swap.
+                await conn.execute(
+                    """
+                    UPDATE splice_combinations
+                    SET result_name_key = NULL,
+                        parent_pair_key = NULL;
+                    """
+                )
+
+                await conn.executemany(
+                    """
+                    UPDATE splice_combinations
+                    SET result_name = $1,
+                        base_result_name = $2
+                    WHERE id = $3;
+                    """,
+                    [
+                        (repair.new_name, repair.base_name, repair.splice_id)
+                        for repair in repairs
+                    ],
+                )
+
+                for pet in pet_rows:
+                    pet_id = int(pet["id"])
+                    recipe_id = pet_recipe_map.get(pet_id)
+                    if recipe_id is None:
+                        continue
+                    new_default_name = final_name_by_recipe[recipe_id]
+                    update_visible_name = normalize_name(pet.get("name")) == normalize_name(
+                        pet.get("default_name")
+                    )
+                    if "frontier_species_id" in pet_columns:
+                        await conn.execute(
+                            """
+                            UPDATE monster_pets
+                            SET default_name = $1,
+                                name = CASE WHEN $2 THEN $1 ELSE name END,
+                                splice_combination_id = $3,
+                                frontier_species_id = NULL
+                            WHERE id = $4;
+                            """,
+                            new_default_name,
+                            update_visible_name,
+                            recipe_id,
+                            pet_id,
+                        )
+                    else:
+                        await conn.execute(
+                            """
+                            UPDATE monster_pets
+                            SET default_name = $1,
+                                name = CASE WHEN $2 THEN $1 ELSE name END,
+                                splice_combination_id = $3
+                            WHERE id = $4;
+                            """,
+                            new_default_name,
+                            update_visible_name,
+                            recipe_id,
+                            pet_id,
+                        )
+
+                if requests_exist:
+                    await conn.execute(
+                        """
+                        UPDATE splice_requests sr
+                        SET pet1_default = pet.default_name
+                        FROM monster_pets pet
+                        WHERE sr.pet1_id = pet.id
+                          AND pet.splice_combination_id IS NOT NULL;
+                        """
+                    )
+                    await conn.execute(
+                        """
+                        UPDATE splice_requests sr
+                        SET pet2_default = pet.default_name
+                        FROM monster_pets pet
+                        WHERE sr.pet2_id = pet.id
+                          AND pet.splice_combination_id IS NOT NULL;
+                        """
+                    )
+                    await conn.executemany(
+                        """
+                        UPDATE splice_requests
+                        SET result_splice_combination_id = $1,
+                            result_name = $2
+                        WHERE id = $3;
+                        """,
+                        [
+                            (
+                                recipe_id,
+                                final_name_by_recipe[recipe_id],
+                                request_id,
+                            )
+                            for request_id, recipe_id in request_recipe_map.items()
+                        ],
+                    )
+
+                await conn.executemany(
+                    """
+                    UPDATE splice_combinations
+                    SET pet1_default = $1,
+                        pet2_default = $2,
+                        parent1_splice_combination_id = $3,
+                        parent2_splice_combination_id = $4
+                    WHERE id = $5;
+                    """,
+                    [
+                        (*lineage_updates[recipe_id], recipe_id)
+                        for recipe_id in sorted(lineage_updates)
+                    ],
+                )
+
+                await conn.executemany(
+                    """
+                    UPDATE splice_combinations
+                    SET result_name_key = $1,
+                        parent_pair_key = $2
+                    WHERE id = $3;
+                    """,
+                    [
+                        (
+                            normalize_name(final_name_by_recipe[recipe_id]),
+                            (
+                                final_pair_keys[recipe_id]
+                                if pair_key_counts[final_pair_keys[recipe_id]] == 1
+                                else None
+                            ),
+                            recipe_id,
+                        )
+                        for recipe_id in sorted(recipe_by_id)
+                    ],
+                )
+
+                frontier_link_columns = {
+                    "frontier_recipe_id",
+                    "frontier_parent1_species_id",
+                    "frontier_parent2_species_id",
+                    "frontier_result_species_id",
+                }
+                if frontier_link_columns.issubset(splice_columns):
+                    await conn.execute(
+                        """
+                        UPDATE splice_combinations
+                        SET frontier_recipe_id = NULL,
+                            frontier_parent1_species_id = NULL,
+                            frontier_parent2_species_id = NULL,
+                            frontier_result_species_id = NULL;
+                        """
+                    )
+
+        refresh_note = ""
+        frontier_cog = self.bot.get_cog("SoulforgeFrontiers")
+        if frontier_cog is not None and getattr(frontier_cog, "catalog", None) is not None:
+            try:
+                await frontier_cog.catalog.refresh_legacy()
+            except Exception as error:
+                refresh_note = f" Frontier refresh failed and needs a retry/restart: {error}"
+
+        await ctx.send(
+            (
+                f"Repaired **{len(repairs)}** splice recipes across "
+                f"**{len(duplicate_keys)}** duplicate-name groups and linked "
+                f"**{len(pet_recipe_map)}** existing pets. "
+                f"Left **{len(ambiguous_duplicate_pets)}** ambiguous pets unchanged."
+                f"{refresh_note}"
+            ),
+            file=discord.File(
+                BytesIO(report.encode("utf-8")),
+                filename="splice_name_repair_applied.txt",
+            ),
+        )
+
+    @is_gm()
+    @commands.command(name="linksplicepet", hidden=True)
+    async def link_splice_pet(
+        self,
+        ctx: commands.Context,
+        pet_id: int,
+        recipe_id: int,
+    ):
+        """Manually resolve one pet that the automated repair left ambiguous."""
+        async with self.bot.pool.acquire() as conn:
+            await ensure_splice_identity_schema(conn)
+            pet = await conn.fetchrow(
+                """
+                SELECT id, user_id, name, default_name, hp, attack, defense,
+                       element, url, splice_combination_id
+                FROM monster_pets
+                WHERE id = $1;
+                """,
+                int(pet_id),
+            )
+            recipe = await conn.fetchrow(
+                """
+                SELECT id, result_name, pet1_default, pet2_default,
+                       hp, attack, defense, element, url
+                FROM splice_combinations
+                WHERE id = $1;
+                """,
+                int(recipe_id),
+            )
+            if pet is None:
+                return await ctx.send(f"Monster pet ID `{pet_id}` does not exist.")
+            if recipe is None:
+                return await ctx.send(f"Splice recipe ID `S{recipe_id}` does not exist.")
+
+            current_link = pet["splice_combination_id"]
+            url_match = clean_name(pet["url"]) == clean_name(recipe["url"])
+            confirmed = await ctx.confirm(
+                f"Link pet **#{pet_id}** (`{pet['default_name']}`) to "
+                f"**S{recipe_id}: {recipe['result_name']}**?\n"
+                f"Recipe parents: `{recipe['pet1_default']} + {recipe['pet2_default']}`\n"
+                f"Recipe stats: HP {recipe['hp']} | ATK {recipe['attack']} | "
+                f"DEF {recipe['defense']} | {recipe['element']}\n"
+                f"Exact image URL match: **{'Yes' if url_match else 'No'}**\n"
+                f"Current recipe link: `{current_link or 'none'}`"
+            )
+            if not confirmed:
+                return await ctx.send("Pet recipe link cancelled; no data changed.")
+
+            pet_columns = {
+                row["column_name"]
+                for row in await conn.fetch(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'monster_pets';
+                    """
+                )
+            }
+            update_visible_name = normalize_name(pet["name"]) == normalize_name(
+                pet["default_name"]
+            )
+            async with conn.transaction():
+                if "frontier_species_id" in pet_columns:
+                    await conn.execute(
+                        """
+                        UPDATE monster_pets
+                        SET default_name = $1,
+                            name = CASE WHEN $2 THEN $1 ELSE name END,
+                            splice_combination_id = $3,
+                            frontier_species_id = NULL
+                        WHERE id = $4;
+                        """,
+                        recipe["result_name"],
+                        update_visible_name,
+                        int(recipe_id),
+                        int(pet_id),
+                    )
+                else:
+                    await conn.execute(
+                        """
+                        UPDATE monster_pets
+                        SET default_name = $1,
+                            name = CASE WHEN $2 THEN $1 ELSE name END,
+                            splice_combination_id = $3
+                        WHERE id = $4;
+                        """,
+                        recipe["result_name"],
+                        update_visible_name,
+                        int(recipe_id),
+                        int(pet_id),
+                    )
+
+                requests_exist = await conn.fetchval(
+                    "SELECT to_regclass('public.splice_requests') IS NOT NULL;"
+                )
+                if requests_exist:
+                    await conn.execute(
+                        """
+                        UPDATE splice_requests
+                        SET pet1_default = $1
+                        WHERE pet1_id = $2;
+                        """,
+                        recipe["result_name"],
+                        int(pet_id),
+                    )
+                    await conn.execute(
+                        """
+                        UPDATE splice_requests
+                        SET pet2_default = $1
+                        WHERE pet2_id = $2;
+                        """,
+                        recipe["result_name"],
+                        int(pet_id),
+                    )
+
+        frontier_cog = self.bot.get_cog("SoulforgeFrontiers")
+        if frontier_cog is not None and getattr(frontier_cog, "catalog", None) is not None:
+            try:
+                await frontier_cog.catalog.refresh_legacy()
+            except Exception:
+                pass
+        await ctx.send(
+            f"Linked pet **#{pet_id}** to **S{recipe_id}: {recipe['result_name']}**. "
+            "Run `$repairsplicenames apply` again to propagate the resolved parent lineage."
+        )
+
+    @is_gm()
+    @commands.command(
         name="testbgremoval",
         aliases=["test_bg_removal", "testbgremove"],
         hidden=True,
@@ -3975,48 +4623,14 @@ class ProcessSplice(commands.Cog):
                 growth_t = datetime.datetime.utcnow() + datetime.timedelta(days=2)
 
                 async with self.bot.pool.acquire() as conn:
-                    creation_bonus_pct = await self._get_splice_creation_bonus_pct_for_ids(
+                    new_id, legacy_splice_id = await self._persist_processed_splice_pet(
                         conn,
-                        pet.get("pet1_id"),
-                        pet.get("pet2_id"),
-                    )
-                    baby_hp, baby_atk, baby_def = self._apply_splice_creation_bonus_pct(
-                        round(pet["hp"] * 0.25),
-                        round(pet["attack"] * 0.25),
-                        round(pet["defense"] * 0.25),
-                        creation_bonus_pct,
-                    )
-                    baby_hp += hp_iv
-                    baby_atk += atk_iv
-                    baby_def += def_iv
-
-                    new_id = await conn.fetchval(
-                        """
-                        INSERT INTO monster_pets
-                        (user_id,name,hp,attack,defense,element,default_name,
-                         url,growth_stage,growth_time,"IV")
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id
-                        """,
-                        pet["user_id"], pet["name"],
-                        baby_hp, baby_atk, baby_def,
-                        pet["element"], pet["name"], pet["url"],
-                        "baby", growth_t, iv_pct,
-                    )
-                    
-                    await conn.execute(
-                        "UPDATE splice_requests SET status='completed' WHERE id=$1",
-                        pet["splice_id"],
-                    )
-                    
-                    legacy_splice_id = await conn.fetchval(
-                        """
-                        INSERT INTO splice_combinations
-                        (pet1_default,pet2_default,result_name,hp,attack,defense,element,url)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-                        RETURNING id
-                        """,
-                        pet["pet1_default"], pet["pet2_default"], pet["name"],
-                        pet["hp"], pet["attack"], pet["defense"], pet["element"], pet["url"],
+                        pet,
+                        hp_iv=hp_iv,
+                        attack_iv=atk_iv,
+                        defense_iv=def_iv,
+                        growth_time=growth_t,
+                        iv_percentage=iv_pct,
                     )
 
                 self.bot.dispatch(
@@ -4185,48 +4799,14 @@ class ProcessSplice(commands.Cog):
                 growth_t = datetime.datetime.utcnow() + datetime.timedelta(days=2)
 
                 async with self.bot.pool.acquire() as conn:
-                    creation_bonus_pct = await self._get_splice_creation_bonus_pct_for_ids(
+                    new_id, legacy_splice_id = await self._persist_processed_splice_pet(
                         conn,
-                        pet.get("pet1_id"),
-                        pet.get("pet2_id"),
-                    )
-                    baby_hp, baby_atk, baby_def = self._apply_splice_creation_bonus_pct(
-                        round(pet["hp"] * 0.25),
-                        round(pet["attack"] * 0.25),
-                        round(pet["defense"] * 0.25),
-                        creation_bonus_pct,
-                    )
-                    baby_hp += hp_iv
-                    baby_atk += atk_iv
-                    baby_def += def_iv
-
-                    new_id = await conn.fetchval(
-                        """
-                        INSERT INTO monster_pets
-                        (user_id,name,hp,attack,defense,element,default_name,
-                         url,growth_stage,growth_time,"IV")
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id
-                        """,
-                        pet["user_id"], pet["name"],
-                        baby_hp, baby_atk, baby_def,
-                        pet["element"], pet["name"], pet["url"],
-                        "baby", growth_t, iv_pct,
-                    )
-                    
-                    await conn.execute(
-                        "UPDATE splice_requests SET status='completed' WHERE id=$1",
-                        pet["splice_id"],
-                    )
-                    
-                    legacy_splice_id = await conn.fetchval(
-                        """
-                        INSERT INTO splice_combinations
-                        (pet1_default,pet2_default,result_name,hp,attack,defense,element,url)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-                        RETURNING id
-                        """,
-                        pet["pet1_default"], pet["pet2_default"], pet["name"],
-                        pet["hp"], pet["attack"], pet["defense"], pet["element"], pet["url"],
+                        pet,
+                        hp_iv=hp_iv,
+                        attack_iv=atk_iv,
+                        defense_iv=def_iv,
+                        growth_time=growth_t,
+                        iv_percentage=iv_pct,
                     )
 
                 self.bot.dispatch(
@@ -4879,46 +5459,14 @@ class ProcessSplice(commands.Cog):
                 growth_t = datetime.datetime.utcnow() + datetime.timedelta(days=2)
 
                 async with self.bot.pool.acquire() as conn:
-                    creation_bonus_pct = await self._get_splice_creation_bonus_pct_for_ids(
+                    new_id, legacy_splice_id = await self._persist_processed_splice_pet(
                         conn,
-                        pet.get("pet1_id"),
-                        pet.get("pet2_id"),
-                    )
-                    baby_hp, baby_atk, baby_def = self._apply_splice_creation_bonus_pct(
-                        round(pet["hp"] * 0.25),
-                        round(pet["attack"] * 0.25),
-                        round(pet["defense"] * 0.25),
-                        creation_bonus_pct,
-                    )
-                    baby_hp += hp_iv
-                    baby_atk += atk_iv
-                    baby_def += def_iv
-
-                    new_id = await conn.fetchval(
-                        """
-                        INSERT INTO monster_pets
-                        (user_id,name,hp,attack,defense,element,default_name,
-                         url,growth_stage,growth_time,"IV")
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id
-                        """,
-                        pet["user_id"], pet["name"],
-                        baby_hp, baby_atk, baby_def,
-                        pet["element"], pet["name"], pet["url"],
-                        "baby", growth_t, iv_pct,
-                    )
-                    await conn.execute(
-                        "UPDATE splice_requests SET status='completed' WHERE id=$1",
-                        pet["splice_id"],
-                    )
-                    legacy_splice_id = await conn.fetchval(
-                        """
-                        INSERT INTO splice_combinations
-                        (pet1_default,pet2_default,result_name,hp,attack,defense,element,url)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-                        RETURNING id
-                        """,
-                        pet["pet1_default"], pet["pet2_default"], pet["name"],
-                        pet["hp"], pet["attack"], pet["defense"], pet["element"], pet["url"],
+                        pet,
+                        hp_iv=hp_iv,
+                        attack_iv=atk_iv,
+                        defense_iv=def_iv,
+                        growth_time=growth_t,
+                        iv_percentage=iv_pct,
                     )
 
                 self.bot.dispatch(
@@ -5595,12 +6143,48 @@ class ProcessSplice(commands.Cog):
 
             # Create the spliced pet
             async with self.bot.pool.acquire() as conn:
+                reservation = await reserve_splice_combination(
+                    conn,
+                    parent1_name=splice["pet1_default"],
+                    parent2_name=splice["pet2_default"],
+                    proposed_result_name=new_name,
+                    hp=hp,
+                    attack=attack,
+                    defense=defense,
+                    element=element,
+                    url=url,
+                    parent1_pet_id=splice.get("pet1_id"),
+                    parent2_pet_id=splice.get("pet2_id"),
+                )
+                recipe = reservation.row
+                legacy_splice_id = int(recipe["id"])
+                new_name = recipe["result_name"]
+                hp = int(recipe["hp"])
+                attack = int(recipe["attack"])
+                defense = int(recipe["defense"])
+                element = recipe["element"]
+                url = recipe["url"]
+
+                effective_bonus_pct = (
+                    splice_creation_bonus_pct if reservation.created else 0.0
+                )
+                baby_hp, baby_attack, baby_defense = self._apply_splice_creation_bonus_pct(
+                    round(hp * stat_multiplier),
+                    round(attack * stat_multiplier),
+                    round(defense * stat_multiplier),
+                    effective_bonus_pct,
+                )
+                baby_hp += hp_iv
+                baby_attack += attack_iv
+                baby_defense += defense_iv
+
                 # Insert the new pet
                 new_pet_id = await conn.fetchval(
                     """
                     INSERT INTO monster_pets 
-                    (user_id, name, hp, attack, defense, element, default_name, url, growth_stage, growth_time, "IV") 
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) 
+                    (user_id, name, hp, attack, defense, element, default_name, url,
+                     growth_stage, growth_time, "IV", splice_combination_id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                     RETURNING id
                     """,
                     splice["user_id"],
@@ -5613,13 +6197,16 @@ class ProcessSplice(commands.Cog):
                     url,
                     'baby',
                     growth_time,
-                    iv_percentage
+                    iv_percentage,
+                    legacy_splice_id,
                 )
 
-                # Update the splice request status
-                await conn.execute(
-                    "UPDATE splice_requests SET status = 'completed' WHERE id = $1",
-                    splice_id
+                await link_created_splice_result(
+                    conn,
+                    request_id=splice_id,
+                    pet_id=int(new_pet_id),
+                    splice_id=legacy_splice_id,
+                    result_name=new_name,
                 )
 
                 # Update forge condition and divine attention if they were edited
@@ -5628,24 +6215,6 @@ class ProcessSplice(commands.Cog):
                         'UPDATE splicing_quest SET forge_condition = $1, divine_attention = $2 WHERE user_id = $3',
                         forge_condition, divine_attention, splice["user_id"]
                     )
-
-                # Store the combination for future automatic splices
-                legacy_splice_id = await conn.fetchval(
-                    """
-                    INSERT INTO splice_combinations 
-                    (pet1_default, pet2_default, result_name, hp, attack, defense, element, url) 
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                    RETURNING id
-                    """,
-                    splice["pet1_default"],
-                    splice["pet2_default"],
-                    new_name,
-                    hp,  # Store adult stats
-                    attack,
-                    defense,
-                    element,
-                    url
-                )
 
                 self.bot.dispatch(
                     "frontier_splice_created",
@@ -5701,8 +6270,9 @@ class ProcessSplice(commands.Cog):
                     pending_pet_id = await conn.fetchval(
                         """
                         INSERT INTO monster_pets 
-                        (user_id, name, hp, attack, defense, element, default_name, url, growth_stage, growth_time, "IV") 
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                        (user_id, name, hp, attack, defense, element, default_name, url,
+                         growth_stage, growth_time, "IV", splice_combination_id)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                         RETURNING id
                         """,
                         pending["user_id"],
@@ -5715,13 +6285,16 @@ class ProcessSplice(commands.Cog):
                         url,
                         'baby',
                         datetime.datetime.utcnow() + growth_time_interval,
-                        iv_percentage
+                        iv_percentage,
+                        legacy_splice_id,
                     )
 
-                    # Mark request as completed
-                    await conn.execute(
-                        "UPDATE splice_requests SET status = 'completed' WHERE id = $1",
-                        pending["id"]
+                    await link_created_splice_result(
+                        conn,
+                        request_id=int(pending["id"]),
+                        pet_id=int(pending_pet_id),
+                        splice_id=legacy_splice_id,
+                        result_name=new_name,
                     )
 
                     self.bot.dispatch(

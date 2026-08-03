@@ -291,6 +291,7 @@ def build_catalog_seed(
 
     splice_by_name: dict[str, dict[str, Any]] = {}
     splice_sources: list[SpeciesSourceSeed] = []
+    splice_result_key_by_legacy_id: dict[int, str] = {}
     parent_display_by_normalized: dict[str, str] = {}
     for row in rows:
         legacy_id = _as_positive_int(_row_value(row, "id"))
@@ -299,6 +300,7 @@ def build_catalog_seed(
         if legacy_id is None or not result_name or not result_normalized:
             continue
         result_key = make_species_key("splice", result_name)
+        splice_result_key_by_legacy_id[legacy_id] = result_key
         generation = generation_by_name.get(result_name)
         candidate = {
             "stable_key": result_key,
@@ -403,8 +405,20 @@ def build_catalog_seed(
         result_name = clean_name(_row_value(row, "result_name"))
         if legacy_id is None or not parent_a_name or not parent_b_name or not result_name:
             continue
-        parent_a_key = parent_species_key(parent_a_name)
-        parent_b_key = parent_species_key(parent_b_name)
+        parent_a_recipe_id = _as_positive_int(
+            _row_value(row, "parent1_splice_combination_id")
+        )
+        parent_b_recipe_id = _as_positive_int(
+            _row_value(row, "parent2_splice_combination_id")
+        )
+        parent_a_key = splice_result_key_by_legacy_id.get(
+            parent_a_recipe_id,
+            parent_species_key(parent_a_name),
+        )
+        parent_b_key = splice_result_key_by_legacy_id.get(
+            parent_b_recipe_id,
+            parent_species_key(parent_b_name),
+        )
         result_key = make_species_key("splice", result_name)
         pair_key = make_pair_key(parent_a_key, parent_b_key)
         variant_rank = pair_counts.get(pair_key, 0) + 1
