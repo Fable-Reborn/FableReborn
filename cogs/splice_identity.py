@@ -160,7 +160,7 @@ class OrphanParentGroup:
     suggestions: tuple[str, ...] = ()
 
 
-def _created_before(candidate: Mapping[str, Any], child: Mapping[str, Any]) -> bool:
+def created_before(candidate: Mapping[str, Any], child: Mapping[str, Any]) -> bool:
     """A recipe can only be spliced from a creature that already existed."""
     candidate_at = _row_value(candidate, "created_at")
     child_at = _row_value(child, "created_at")
@@ -233,7 +233,7 @@ def plan_orphan_parent_repairs(
             viable = tuple(
                 option
                 for option in options
-                if _created_before(row_by_id[option[0]], row)
+                if created_before(row_by_id[option[0]], row)
             ) or tuple(options)
             if len(viable) == 1:
                 parent_splice_id, new_name = viable[0]
@@ -311,6 +311,12 @@ def plan_unmatched_parent_slots(
     rows = list(rows)
     known, id_by_name = known_parent_names(rows, base_monster_names)
     ordered_known = sorted(known)
+    row_by_id: dict[int, Mapping[str, Any]] = {}
+    for row in rows:
+        try:
+            row_by_id[int(_row_value(row, "id"))] = row
+        except (TypeError, ValueError):
+            continue
 
     slots: list[AmbiguousParentSlot] = []
     suggestion_cache: dict[str, tuple[tuple[Optional[int], str], ...]] = {}
@@ -330,12 +336,23 @@ def plan_unmatched_parent_slots(
                         parent, ordered_known, n=limit, cutoff=cutoff
                     )
                 )
+            # A recipe created after this one cannot be its parent, and offering
+            # it invites a lineage cycle that no generation walk can resolve.
+            candidates = tuple(
+                candidate
+                for candidate in suggestion_cache[parent]
+                if candidate[0] is None
+                or (
+                    candidate[0] in row_by_id
+                    and created_before(row_by_id[candidate[0]], row)
+                )
+            )
             slots.append(
                 AmbiguousParentSlot(
                     splice_id=splice_id,
                     slot=slot,
                     orphan_name=parent,
-                    candidates=suggestion_cache[parent],
+                    candidates=candidates,
                 )
             )
     slots.sort(key=lambda item: (item.orphan_name, item.splice_id, item.slot))

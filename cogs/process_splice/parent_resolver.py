@@ -15,6 +15,8 @@ from typing import Any, Awaitable, Callable, Mapping, Optional, Sequence
 
 import discord
 
+from cogs.splice_identity import created_before
+
 
 ChoiceCallback = Callable[[int, str, Optional[int], str], Awaitable[None]]
 
@@ -83,9 +85,20 @@ class ManualNameModal(discord.ui.Modal):
                 ephemeral=True,
             )
             return
-        await self.resolver.choose(
-            interaction, self.resolver.id_by_name.get(typed), typed
-        )
+
+        typed_id = self.resolver.id_by_name.get(typed)
+        child = self.resolver.row_by_id.get(self.resolver.current.splice_id)
+        candidate = self.resolver.row_by_id.get(typed_id) if typed_id else None
+        if candidate is not None and child is not None and not created_before(candidate, child):
+            await interaction.response.send_message(
+                f"**{typed}** (S{typed_id}) was created after "
+                f"S{self.resolver.current.splice_id}, so it cannot be its parent — "
+                "picking it would make the lineage circular.",
+                ephemeral=True,
+            )
+            return
+
+        await self.resolver.choose(interaction, typed_id, typed)
 
 
 class ParentResolverView(discord.ui.View):
