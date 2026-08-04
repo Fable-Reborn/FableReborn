@@ -703,6 +703,17 @@ class FrontierCatalogStore:
                     parent_high_species_id = EXCLUDED.parent_high_species_id,
                     result_species_id = EXCLUDED.result_species_id,
                     canonical_parent_key = EXCLUDED.canonical_parent_key,
+                    -- A recipe whose parents were relinked moves to a different
+                    -- pair.  It must drop its primary flag on the way out, or it
+                    -- collides with the primary the destination pair already has
+                    -- and aborts the whole migration transaction.  The fallback
+                    -- pass below re-elects a primary for any pair left without.
+                    is_primary = CASE
+                        WHEN frontier_recipes.canonical_parent_key
+                             IS DISTINCT FROM EXCLUDED.canonical_parent_key
+                        THEN FALSE
+                        ELSE frontier_recipes.is_primary
+                    END,
                     variant_rank = EXCLUDED.variant_rank,
                     generation = CASE
                         WHEN EXCLUDED.generation IS NULL THEN frontier_recipes.generation
