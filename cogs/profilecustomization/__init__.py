@@ -507,6 +507,30 @@ class ProfileCustomization(commands.Cog):
         await ctx.send("\n".join(lines))
 
     @staticmethod
+    def get_scales_for_user(custom_positions: Optional[Dict[str, Any]]) -> Dict[str, float]:
+        """
+        Pull the per-element scale multipliers out of a user's saved layout.
+        okapi treats a missing entry as 1.0, so only real overrides are sent.
+        """
+        if not custom_positions:
+            return {}
+
+        scales: Dict[str, float] = {}
+        for base_name in ELEMENT_NAMES:
+            value = custom_positions.get(f"{base_name}_scale")
+            if value is None:
+                continue
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                continue
+            if value <= 0 or value != value:  # reject zero, negative, NaN
+                continue
+            scales[base_name] = round(min(4.0, max(0.25, value)), 2)
+
+        return scales
+
+    @staticmethod
     def get_positions_for_user(custom_positions: Optional[Dict[str, Any]]) -> Dict[str, tuple[int, int]]:
         """
         Get final positions for a user, merging custom with defaults,
@@ -521,8 +545,18 @@ class ProfileCustomization(commands.Cog):
             merged_positions.update(str_key_custom_positions)
 
         transformed_positions: Dict[str, tuple[int, int]] = {}
+
+        # okapi reads positions["badges"].1 for the badge row's Y and ignores the
+        # X, so send a real pair rather than dropping the key -- omitting it made
+        # badges_y silently unusable.
+        badges_y = merged_positions.get("badges_y", DEFAULT_POSITIONS["badges_y"])
+        try:
+            transformed_positions["badges"] = (0, int(badges_y))
+        except (TypeError, ValueError):
+            transformed_positions["badges"] = (0, int(DEFAULT_POSITIONS["badges_y"]))
+
         for base_name in ELEMENT_NAMES.keys():
-            if base_name == "badges":  # Badges only have a Y, Okapi handles X based on index
+            if base_name == "badges":  # handled above
                 # Okapi's `positions` field expects (i64, i64) tuples.
                 # If badges_y is the only customizable part and Okapi handles X internally,
                 # it shouldn't be in *this* map if it doesn't fit the (x,y) tuple structure.

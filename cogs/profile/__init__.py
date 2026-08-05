@@ -3171,6 +3171,7 @@ class Profile(commands.Cog):
                 # Parse JSON string to dict before passing to get_positions_for_user
                 custom_positions = json.loads(custom_positions_json) if custom_positions_json else None
                 positions = ProfileCustomization.get_positions_for_user(custom_positions)
+                scales = ProfileCustomization.get_scales_for_user(custom_positions)
 
 
                 # A declared specialization replaces the class name at final evolution
@@ -3202,7 +3203,8 @@ class Profile(commands.Cog):
                     "adventure_name": adventure_name,   # From user's snippet
                     "adventure_time": adventure_time,
                     "badges": [],
-                    "positions": positions
+                    "positions": positions,
+                    "scales": scales,
                 }
                 
 
