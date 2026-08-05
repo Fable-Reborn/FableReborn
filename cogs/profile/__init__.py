@@ -53,6 +53,35 @@ from utils.i18n import _, locale_doc
 
 JURY_COSMETIC_TITLE = "Favored by the Seven"
 
+# Class icons okapi has compiled in. It indexes CLASSES[icon] directly and is
+# built with panic = "abort", so an unknown icon kills the whole service for
+# everyone. Bard and Beastmaster have no cast asset upstream -> send "none".
+OKAPI_CLASS_ICONS = frozenset(
+    {
+        "mage",
+        "paladin",
+        "paragon",
+        "raider",
+        "ranger",
+        "reaper",
+        "ritualist",
+        "santashelper",
+        "support",
+        "tank",
+        "thief",
+        "warrior",
+    }
+)
+
+
+def okapi_class_icons(classes) -> list[str]:
+    """Clamp class icons to what okapi can render, padded to the 2 it indexes."""
+    icons = [
+        c.get_class_line_name().lower() if c else "none" for c in (classes or [])
+    ]
+    icons = [icon if icon in OKAPI_CLASS_ICONS else "none" for icon in icons]
+    return (icons + ["none", "none"])[:2]
+
 
 
 import discord
@@ -3114,7 +3143,7 @@ class Profile(commands.Cog):
                 color = [color["red"], color["green"], color["blue"], color["alpha"]]
                 embed_color = discord.Colour.from_rgb(color[0], color[1], color[2])
                 classes = [class_from_string(c) for c in profile["class"]]
-                icons = [c.get_class_line_name().lower() if c else "none" for c in classes]
+                icons = okapi_class_icons(classes)
 
                 guild_rank = None if not profile["guild"] else profile["guildrank"]
 

@@ -583,7 +583,14 @@ class Patreon(commands.Cog):
         allowed_whitelist = ["https://cdn.discordapp.com", "https://i.postimg.cc", "https://i.ibb.co", "https://media.discordapp.net",
                              "https://idlerpg.xyz", "https://gcdnb.pbrd.co", "https://storage.googleapis.com"]
 
-        if not any(url.startswith(whitelisted) for whitelisted in allowed_whitelist):
+        # Our own R2 bucket, so uploads from $makebackground pass their own check
+        r2_base = self.bot.config.external.r2_public_base_url
+        if r2_base:
+            allowed_whitelist.append(r2_base.rstrip("/"))
+
+        if isinstance(url, str) and not any(
+            url.startswith(whitelisted) for whitelisted in allowed_whitelist
+        ):
             return await ctx.send(_("The provided URL is not in the allowed whitelist."))
 
         if url != 0 and not await user_is_patron(self.bot, ctx.author):
