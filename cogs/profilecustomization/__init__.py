@@ -10,6 +10,7 @@ import json
 
 from classes.bot import Bot
 from classes.context import Context
+from utils.checks import is_gm
 from utils.i18n import _, locale_doc
 
 # Default positions for all customizable elements
@@ -422,6 +423,88 @@ class ProfileCustomization(commands.Cog):
         view.add_item(cancel_btn)
         
         await ctx.send(embed=embed, view=view)
+
+    @is_gm()
+    @commands.command(name="profileimport", aliases=["pcimport"])
+    @locale_doc
+    async def profile_import(self, ctx: Context):
+        """
+        Load a custom_positions JSON onto your own profile. Attach the file
+        exported by the layout editor. GM only, and only ever writes to the
+        caller's own row.
+        """
+        if not ctx.message.attachments:
+            return await ctx.send(
+                "Attach the .json exported by the layout editor to this message."
+            )
+
+        att = ctx.message.attachments[0]
+        if att.size > 64 * 1024:
+            return await ctx.send("That file is too large to be a position set.")
+
+        try:
+            data = json.loads((await att.read()).decode("utf-8"))
+        except UnicodeDecodeError:
+            return await ctx.send("That file isn't UTF-8 text.")
+        except json.JSONDecodeError as e:
+            return await ctx.send(f"That isn't valid JSON: line {e.lineno}, {e.msg}")
+
+        if not isinstance(data, dict):
+            return await ctx.send("Expected a JSON object of position keys.")
+
+        valid_keys = set(DEFAULT_POSITIONS)
+        valid_keys.update(f"{name}_scale" for name in ELEMENT_NAMES)
+
+        cleaned: Dict[str, Any] = {}
+        unknown: list[str] = []
+        bad: list[str] = []
+
+        for key, value in data.items():
+            if key not in valid_keys:
+                unknown.append(str(key))
+                continue
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                bad.append(str(key))
+                continue
+            if key.endswith("_scale"):
+                cleaned[key] = round(min(4.0, max(0.25, float(value))), 2)
+            elif key.endswith("_x"):
+                cleaned[key] = int(min(800, max(0, value)))
+            else:
+                cleaned[key] = int(min(533, max(0, value)))
+
+        if not cleaned:
+            return await ctx.send(
+                "Nothing usable in that file. Expected keys like `race_icon_x`, "
+                "`money_y`, `badges_y`."
+            )
+
+        async with self.bot.pool.acquire() as conn:
+            has_char = await conn.fetchval(
+                'SELECT "user" FROM profile WHERE "user" = $1', ctx.author.id
+            )
+            if not has_char:
+                return await ctx.send("You don't have a character yet!")
+            await conn.execute(
+                'UPDATE profile SET custom_positions = $1 WHERE "user" = $2',
+                json.dumps(cleaned),
+                ctx.author.id,
+            )
+
+        lines = [f"Applied **{len(cleaned)}** position values to your profile."]
+        scales = sum(1 for k in cleaned if k.endswith("_scale"))
+        if scales:
+            lines.append(
+                f"{scales} scale value(s) stored, but okapi ignores them until it "
+                "is rebuilt with size support."
+            )
+        if unknown:
+            lines.append(f"Skipped {len(unknown)} unknown key(s): {', '.join(unknown[:6])}")
+        if bad:
+            lines.append(f"Skipped {len(bad)} non-numeric value(s): {', '.join(bad[:6])}")
+        lines.append(f"Run `{ctx.prefix}p` to see the result.")
+
+        await ctx.send("\n".join(lines))
 
     @staticmethod
     def get_positions_for_user(custom_positions: Optional[Dict[str, Any]]) -> Dict[str, tuple[int, int]]:
