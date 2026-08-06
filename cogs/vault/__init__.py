@@ -137,7 +137,7 @@ THEMES = {
         "solo": "**{player}** leaves alone and pockets an extra {bonus} on the way past.",
         "bust": [
             "The drill hits an empty shelf. The alarm goes off like a scream.",
-            "Nothing behind the plate but air — and then sirens.",
+            "Nothing behind the plate but air - and then sirens.",
             "The bit punches through into nothing. Every light in the building comes on.",
         ],
         "survive": "The crew that got out early counts its money and says nothing.",
@@ -262,7 +262,7 @@ THEMES = {
         "solo": "**{player}** slips away alone with an extra {bonus} in their coat.",
         "bust": [
             "A hand closes on bare wood. The hold floods.",
-            "Nothing left but splinters — and then the ship goes down.",
+            "Nothing left but splinters - and then the ship goes down.",
             "The chest is empty, and the crew turns on itself in the dark.",
         ],
         "survive": "Those who went ashore early are drinking to the ones who didn't.",
@@ -304,7 +304,7 @@ THEME_ALIASES = {
 class VaultGame:
     def __init__(self, host_id: int, settings: VaultSettings):
         # The Game Master running the event. They set the pool, so they never
-        # play — knowing the size would tell them roughly when it runs dry.
+        # play - knowing the size would tell them roughly when it runs dry.
         self.host_id = host_id
         self.settings = settings
         self.participants: list[discord.User] = []
@@ -364,7 +364,7 @@ class PrizeModal(Modal):
         self.join_view = view
         self.amount = TextInput(
             label="Amount to generate",
-            placeholder="e.g. 250000 — players will never see this",
+            placeholder="e.g. 250000 - players will never see this",
             required=True,
             max_length=15,
         )
@@ -502,7 +502,7 @@ class DecisionView(View):
     async def _record(self, interaction: discord.Interaction, choice: str) -> None:
         if self.closed or self.game.round != self.round_number:
             await interaction.response.send_message(
-                "Too late — that round is already resolved.", ephemeral=True
+                "Too late - that round is already resolved.", ephemeral=True
             )
             return
 
@@ -556,7 +556,7 @@ class Vault(commands.Cog):
             )
 
     async def gm_log(self, content: str) -> None:
-        """Post to the GM log channel. Best-effort — logging must never break or
+        """Post to the GM log channel. Best-effort - logging must never break or
         delay a running game, and the channel may not be configured. The pool is
         generated currency, so the channel doubles as the audit trail for it.
         Sent over the raw HTTP route (like the game_master cog) so it works even
@@ -579,12 +579,12 @@ class Vault(commands.Cog):
 
         for token in tokens:
             if "=" not in token:
-                problems.append(f"Ignored `{token}` — use `name=value`.")
+                problems.append(f"Ignored `{token}` - use `name=value`.")
                 continue
             raw_key, _sep, raw_value = token.partition("=")
             key = SETUP_TOKENS.get(raw_key.strip().lower())
             if key is None:
-                problems.append(f"Ignored `{raw_key}` — not a known option.")
+                problems.append(f"Ignored `{raw_key}` - not a known option.")
                 continue
 
             value = raw_value.strip().lower()
@@ -645,12 +645,12 @@ class Vault(commands.Cog):
         cap = f" / {settings.max_players}" if settings.max_players else ""
 
         embed = discord.Embed(
-            title=f"{theme['title']} — Lobby",
+            title=f"{theme['title']} - Lobby",
             colour=theme["colour"],
             description=(
                 # The rules card sits directly above this, so repeating it here
                 # would only make the pair harder to read.
-                "**Free to enter.** Press **Join the Crew** to get in — the rules "
+                "**Free to enter.** Press **Join the Crew** to get in - the rules "
                 "are in the message above.\n\n"
                 f"Lobby closes in **{minutes:02d}:{seconds:02d}**."
             ),
@@ -685,10 +685,10 @@ class Vault(commands.Cog):
         return embed
 
     def build_howto_embed(self, game: Optional[VaultGame] = None) -> discord.Embed:
-        """The rules card. Kept deliberately plain — flavour belongs in the game,
+        """The rules card. Kept deliberately plain - flavour belongs in the game,
         not in the one message a first-time player has to understand."""
         embed = discord.Embed(
-            title="\N{BANK} The Vault — How to Play",
+            title="\N{BANK} The Vault - How to Play",
             colour=game.theme["colour"] if game else discord.Color.dark_gold(),
             description=(
                 "**Take as much as you dare. Get out before it runs dry.**\n"
@@ -699,22 +699,22 @@ class Vault(commands.Cog):
             name="\N{MONEY BAG} Every round",
             value=(
                 "The vault is drilled, and the money splits between everyone "
-                "still inside.\nThat's your **haul** — and it is *not safe yet*."
+                "still inside.\nThat's your **haul** - and it is *not safe yet*."
             ),
             inline=False,
         )
         embed.add_field(
             name="\N{DOOR} Then you choose, privately",
             value=(
-                "**Stay In** — you get a share of the next drill too.\n"
-                "**Walk Away** — your haul is banked for good, and you're out."
+                "**Stay In** - you get a share of the next drill too.\n"
+                "**Walk Away** - your haul is banked for good, and you're out."
             ),
             inline=False,
         )
         embed.add_field(
             name="\N{POLICE CARS REVOLVING LIGHT} The catch",
             value=(
-                "You only ever get **hints** about how full it looks — never a number.\n"
+                "You only ever get **hints** about how full it looks - never a number.\n"
                 "When a drill finds the vault empty, **everyone still inside loses "
                 "everything.**\nEveryone who already walked keeps every penny."
             ),
@@ -724,7 +724,7 @@ class Vault(commands.Cog):
             name="\N{DIRECT HIT} Leaving alone",
             value=(
                 "If you're the **only** one to walk in a round, you take a bonus cut "
-                "on the way out — straight out of the vault, making it more dangerous "
+                "on the way out - straight out of the vault, making it more dangerous "
                 "for everyone you left behind."
             ),
             inline=False,
@@ -769,7 +769,7 @@ class Vault(commands.Cog):
                 return "The lobby is full."
             if not await self.has_profile(user.id):
                 return (
-                    "You need a character before you can play — "
+                    "You need a character before you can play - "
                     "there'd be nowhere to pay your winnings."
                 )
 
@@ -873,7 +873,7 @@ class Vault(commands.Cog):
             return "Nobody left inside"
         ordered = sorted(inside, key=lambda p: game.hauls.get(p.id, 0), reverse=True)
         return "\n".join(
-            f"**{p.display_name}** — {money(game.hauls.get(p.id, 0))}" for p in ordered
+            f"**{p.display_name}** - {money(game.hauls.get(p.id, 0))}" for p in ordered
         )
 
     def build_drill_embed(
@@ -891,10 +891,10 @@ class Vault(commands.Cog):
         inside = game.players_inside()
         opener = theme["surge"] if surge else (flavour or random.choice(theme["drill"]))
         embed = discord.Embed(
-            title=f"{theme['title']} — Round {game.round}",
+            title=f"{theme['title']} - Round {game.round}",
             colour=discord.Color.orange() if surge else theme["colour"],
             description=(
-                f"{opener} **{money(taken)}** comes out — "
+                f"{opener} **{money(taken)}** comes out - "
                 f"**{money(share)}** each.\n"
                 f"*{hint or game.hint_line()}*"
             ),
@@ -982,7 +982,7 @@ class Vault(commands.Cog):
             embed.add_field(
                 name="Lost inside",
                 value="\n".join(
-                    f"**{by_id[user_id].display_name}** — {money(amount)} gone"
+                    f"**{by_id[user_id].display_name}** - {money(amount)} gone"
                     for user_id, amount in ordered
                 ),
                 inline=False,
@@ -1015,14 +1015,14 @@ class Vault(commands.Cog):
             description = f"{names} tie on {money(top)}."
 
         embed = discord.Embed(
-            title=f"{theme['title']} — Final Count",
+            title=f"{theme['title']} - Final Count",
             colour=theme["colour"],
             description=description,
         )
         embed.add_field(
             name="Payouts",
             value="\n".join(
-                f"{i}. {p.display_name} — **{money(game.banked.get(p.id, 0))}**"
+                f"{i}. {p.display_name} - **{money(game.banked.get(p.id, 0))}**"
                 for i, p in enumerate(ranked, start=1)
             )
             or "None",
@@ -1144,8 +1144,8 @@ class Vault(commands.Cog):
         await self.gm_log(
             f"\N{BANK} **The Vault** finished in {ctx.channel.mention} "
             f"(host **{ctx.author}**)\n"
-            f"Pool **{money(game.pot)}** — vault held **{money(game.vault_total)}** "
-            f"— paid out **{money(paid)}** to **{winners}/{len(game.participants)}** "
+            f"Pool **{money(game.pot)}** - vault held **{money(game.vault_total)}** "
+            f"- paid out **{money(paid)}** to **{winners}/{len(game.participants)}** "
             f"over **{game.round}** round(s)."
         )
 
@@ -1181,7 +1181,7 @@ class Vault(commands.Cog):
                 await ctx.send("⚠️ " + "\n⚠️ ".join(problems))
 
             # Event lobbies pull in people who have never played, so the rules
-            # go above the lobby — leaving the lobby as the bottom message, which
+            # go above the lobby - leaving the lobby as the bottom message, which
             # is the one with the buttons on it.
             await ctx.send(embed=self.build_howto_embed(game))
 
@@ -1224,8 +1224,8 @@ class Vault(commands.Cog):
             await self.gm_log(
                 f"\N{BANK} **The Vault** started by **{ctx.author}** "
                 f"(`{ctx.author.id}`)\n"
-                f"Channel: {ctx.channel.mention} — Players: "
-                f"**{len(game.participants)}** — Theme: **{game.settings.theme}**\n"
+                f"Channel: {ctx.channel.mention} - Players: "
+                f"**{len(game.participants)}** - Theme: **{game.settings.theme}**\n"
                 f"Prize pool: **{money(game.pot)}**\n"
                 f"Started: <{ctx.message.jump_url}>"
             )
@@ -1314,7 +1314,7 @@ class Vault(commands.Cog):
         embed.set_footer(
             text=(
                 "Most money banked wins. "
-                "Games are run by Game Masters — watch for a lobby."
+                "Games are run by Game Masters - watch for a lobby."
             )
         )
         await ctx.send(embed=embed)
