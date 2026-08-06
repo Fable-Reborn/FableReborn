@@ -67,7 +67,7 @@ class VaultSettings:
     min_players: int = 3
     max_players: int = 0
     allow_start_early: bool = True
-    pick_timeout: int = 30
+    pick_timeout: int = 60
     solo_bonus_pct: int = 15
     drill_min_pct: int = 8
     drill_max_pct: int = 18
@@ -1043,6 +1043,24 @@ class Vault(commands.Cog):
     # ------------------------------------------------------------------
     # Round loop
     # ------------------------------------------------------------------
+    def _decision_ping(self, game: VaultGame) -> str:
+        """Mention whoever still has to decide.
+
+        Sent as message content rather than inside the embed, because Discord
+        only notifies on mentions in content. On the countdown edits this
+        narrows to the players yet to answer - an edit never re-notifies, so
+        nobody gets pinged twice for the same round.
+        """
+        waiting = [
+            player
+            for player in game.players_inside()
+            if player.id not in game.choices
+        ]
+        if not waiting:
+            return "Everyone has decided."
+        mentions = " ".join(player.mention for player in waiting)
+        return f"\N{ALARM CLOCK} **Stay in or walk?** {mentions}"
+
     async def collect_choices(
         self, ctx, game: VaultGame, taken: int, share: int, surge: bool
     ) -> None:
@@ -1055,6 +1073,7 @@ class Vault(commands.Cog):
 
         view = DecisionView(game, game.settings.pick_timeout)
         message = await ctx.send(
+            content=self._decision_ping(game),
             embed=self.build_drill_embed(
                 game, taken, share, game.settings.pick_timeout, 0, surge, flavour, hint
             ),
@@ -1069,6 +1088,9 @@ class Vault(commands.Cog):
             seconds_left = max(0, int(deadline - time.monotonic()))
             try:
                 await message.edit(
+                    # Narrows to whoever is still holding things up. Editing does
+                    # not re-notify, so this nudges without pinging twice.
+                    content=self._decision_ping(game),
                     embed=self.build_drill_embed(
                         game,
                         taken,
