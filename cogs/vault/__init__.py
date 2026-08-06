@@ -729,7 +729,12 @@ class Vault(commands.Cog):
             ),
             inline=False,
         )
-        embed.set_footer(text="Most money banked wins. No answer walks you out safely.")
+        embed.set_footer(
+            text=(
+                "Most money banked wins. "
+                "If you don't answer in time, you walk out safely."
+            )
+        )
         return embed
 
     async def update_lobby_message(self, game: VaultGame) -> None:
@@ -912,7 +917,7 @@ class Vault(commands.Cog):
         embed.set_footer(
             text=(
                 f"{seconds_left}s to decide. "
-                "No answer walks you out safely."
+                "If you don't answer, you walk out safely."
             )
         )
         return embed
