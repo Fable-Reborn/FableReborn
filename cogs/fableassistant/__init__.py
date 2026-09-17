@@ -376,17 +376,17 @@ class MonsterPaginationView(discord.ui.View):
         # Add thumbnail based on filter if element-specific
         if self.filter_type.startswith("element_"):
             element_icons = {
-                "fire": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_fire.png",
-                "water": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_water.png",
-                "earth": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_earth.png",
-                "nature": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_nature.png", 
-                "dark": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_dark.png",
-                "light": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_light.png",
-                "electric": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Electric.png",
-                "corrupted": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_corrupted.png",
-                "ice": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ice.png",
-                "wind": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_air.png",
-                "air": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_air.png"
+                "fire": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_fire.png",
+                "water": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_water.png",
+                "earth": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_earth.png",
+                "nature": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_nature.png", 
+                "dark": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_dark.png",
+                "light": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_light.png",
+                "electric": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_Electric.png",
+                "corrupted": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_corrupted.png",
+                "ice": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_ice.png",
+                "wind": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_air.png",
+                "air": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_air.png"
             }
             element = self.filter_type.split("_")[1].lower()
             if element in element_icons:
@@ -490,17 +490,17 @@ class MonsterPaginationView(discord.ui.View):
         else:
             # Use element icon if available
             element_icons = {
-                "fire": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_fire.png",
-                "water": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_water.png",
-                "earth": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_earth.png",
-                "nature": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_nature.png", 
-                "dark": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_dark.png",
-                "light": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_light.png",
-                "electric": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Electric.png",
-                "corrupted": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_corrupted.png",
-                "ice": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_ice.png",
-                "wind": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_air.png",
-                "air": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_air.png"
+                "fire": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_fire.png",
+                "water": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_water.png",
+                "earth": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_earth.png",
+                "nature": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_nature.png", 
+                "dark": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_dark.png",
+                "light": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_light.png",
+                "electric": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_Electric.png",
+                "corrupted": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_corrupted.png",
+                "ice": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_ice.png",
+                "wind": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_air.png",
+                "air": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_air.png"
             }
             if element in element_icons:
                 embed.set_thumbnail(url=element_icons[element])

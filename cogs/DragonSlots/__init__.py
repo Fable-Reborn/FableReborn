@@ -272,7 +272,7 @@ class Slots(commands.Cog):
                 # Process each dragon roll
                 for i in range(1, dragon_count + 1):
                     await asyncio.sleep(1)
-                    background_url = 'https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Picsart_24-04-13_11-36-22-184.jpg'
+                    background_url = 'https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_Picsart_24-04-13_11-36-22-184.jpg'
                     bg_image = Image.open(requests.get(background_url, stream=True).raw)
                     font_path = 'EightBitDragon-anqx.ttf'
                     dragonHP_font = ImageFont.truetype(font_path, size=38)

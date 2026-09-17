@@ -1552,7 +1552,7 @@ class Raid(commands.Cog):
                     em.set_author(name=str(target), icon_url=target.display_avatar.url)
                 else:  # For bots
                     em.set_author(name=str(target))
-                em.set_thumbnail(url=f"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_dragonattack.webp")
+                em.set_thumbnail(url=f"https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_dragonattack.webp")
                 for channel_id in channels_ids:
                     current_channel = self.bot.get_channel(channel_id)
                     if current_channel:
@@ -1569,7 +1569,7 @@ class Raid(commands.Cog):
                 await asyncio.sleep(4)
 
                 em = discord.Embed(title="The raid attacked Ragnarok!", colour=0xFF5C00)
-                em.set_thumbnail(url=f"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_attackdragon.webp")
+                em.set_thumbnail(url=f"https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_attackdragon.webp")
                 em.add_field(name="Damage", value=f"{dmg_to_take:,.2f}")
                 if seasonal_attack_msgs:
                     em.add_field(
@@ -2319,7 +2319,7 @@ class Raid(commands.Cog):
                     em.set_author(name=str(target), icon_url=target.display_avatar.url)
                 else:  # For bots
                     em.set_author(name=str(target))
-                em.set_thumbnail(url=f"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_dragonattack.webp")
+                em.set_thumbnail(url=f"https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_dragonattack.webp")
                 for channel_id in channels_ids:
                     channel = self.bot.get_channel(channel_id)
                     if channel:
@@ -2338,7 +2338,7 @@ class Raid(commands.Cog):
                 await asyncio.sleep(4)
 
                 em = discord.Embed(title="The raid attacked Ragnarok!", colour=0xFF5C00)
-                em.set_thumbnail(url=f"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_attackdragon.webp")
+                em.set_thumbnail(url=f"https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_attackdragon.webp")
                 em.add_field(name="Damage", value=f"{dmg_to_take:,.2f}")
                 if seasonal_attack_msgs:
                     em.add_field(
@@ -5283,7 +5283,7 @@ class Raid(commands.Cog):
                     em.set_author(name=str(target))
                 
                 # Get appropriate element image URL
-                element_icon = f"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_{guardian_element}attack.webp"
+                element_icon = f"https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_{guardian_element}attack.webp"
                 em.set_thumbnail(url=element_icon)
                 
                 # Send attack message to all channels
@@ -5324,7 +5324,7 @@ class Raid(commands.Cog):
                 
                 # Create raid attack embed
                 em = discord.Embed(title="The raid attacked the Celestial Guardian!", colour=0xFF5C00)
-                em.set_thumbnail(url=f"https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_attackcelestial.webp")
+                em.set_thumbnail(url=f"https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_attackcelestial.webp")
                 em.add_field(name="Combined Damage", value=f"{total_dmg:,.0f}")
                 
                 if self.boss["hp"] > 0:

@@ -130,7 +130,7 @@ class Christmas(commands.Cog):
 
                 embed.set_footer(
                     text=_("You have {} Snowflakes - $cs buy <ID> to buy.").format(snowflake_count),
-                    icon_url="https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_f6cb3576-8519-41a9-84e2-8f0d6f1ec618.webp")
+                    icon_url="https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_f6cb3576-8519-41a9-84e2-8f0d6f1ec618.webp")
 
                 await ctx.send(embed=embed)
 

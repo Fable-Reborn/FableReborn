@@ -1326,7 +1326,7 @@ class Soulforge(commands.Cog):
                 "attack": 3500,
                 "defense": 2500,
                 "element": "Light",
-                "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_5z90r962trs71_1-Photoroom.png",
+                "url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_5z90r962trs71_1-Photoroom.png",
             },
         },
         "Sepulchure": {
@@ -1345,7 +1345,7 @@ class Soulforge(commands.Cog):
                 "attack": 3000,
                 "defense": 3000,
                 "element": "Dark",
-                "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_wakai-quketsuki-sepulchuredoomknightdoomblade-Photoroom.png",
+                "url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_wakai-quketsuki-sepulchuredoomknightdoomblade-Photoroom.png",
             },
         },
         "Drakath": {
@@ -1364,7 +1364,7 @@ class Soulforge(commands.Cog):
                 "attack": 4000,
                 "defense": 2500,
                 "element": "Corrupted",
-                "url": "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/295173706496475136_Pngtreelightning_source_lightning_effect_purple_3916970.png",
+                "url": "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_Pngtreelightning_source_lightning_effect_purple_3916970.png",
             },
         },
     }

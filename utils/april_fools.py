@@ -4,7 +4,7 @@ from __future__ import annotations
 APRIL_FOOLS_GREG_FLAG = "greg_mode"
 GREG_DISPLAY_NAME = "Greg"
 GREG_PET_IMAGE_URL = (
-    "https://storage.googleapis.com/fablerpg-f74c2.appspot.com/"
+    "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/"
     "295173706496475136_greg_profile_pic2023-640w-removebg-preview-removebg-preview_1.png"
 )
 GREG_HIDDEN_PET_EFFECTS = {
