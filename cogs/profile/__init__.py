@@ -4090,7 +4090,7 @@ class Profile(commands.Cog):
         )
         for theme in THEMES.values():
             embed.add_field(name=f"{theme.emoji} {theme.name} · {theme.key}", value=theme.description, inline=False)
-        embed.set_footer(text="Cosmetic only • Your stats stay the same • Menu active for 3 minutes")
+        embed.set_footer(text="Cosmetic only • Menu active for 3 minutes")
         view = ProfileThemePicker(ctx, selected.key)
         view.message = await ctx.send(embed=embed, view=view)
 
