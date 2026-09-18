@@ -2601,7 +2601,7 @@ class Profile(commands.Cog):
             mission_text = mission_name
         draw.rounded_rectangle((gear_x, 830, gear_x + gear_w, 876), radius=12, fill=((76, 53, 32, 230) if theme.classic else theme.background), outline=colors["border_dim"], width=2)
         draw.text((gear_x + 16, 839), "Quest:", font=label_font, fill=colors["border"])
-        draw.text((gear_x + 118, 842), clip(mission_text, tiny_font, max(80, gear_w - 132)), font=tiny_font, fill=colors["text"])
+        draw.text((gear_x + 118, 843), clip(mission_text, tiny_font, max(80, gear_w - 132)), font=tiny_font, fill=colors["text"])
 
         #footer = "Fable Reborn - Dragon Chronicle" if theme.classic else f"Fable Reborn / {theme.name}"
         #draw.text((width - 16 - tw(footer, tiny_font), height - (19 if theme.classic else 25)), footer, font=tiny_font, fill=colors["muted"])
