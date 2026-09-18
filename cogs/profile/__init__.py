@@ -50,6 +50,8 @@ from utils.april_fools import get_pet_display_name, mask_pet_record_for_display
 from utils import misc as rpgtools
 from utils.checks import is_gm
 from utils.i18n import _, locale_doc
+from .themes import THEMES, resolve_theme, theme_font, theme_background, add_theme_banner
+from .theme_picker import ProfileThemePicker, save_theme
 
 JURY_COSMETIC_TITLE = "Favored by the Seven"
 
@@ -1556,6 +1558,9 @@ class Profile(commands.Cog):
 
     async def cog_load(self):
         await self._ensure_profile_xp_bigint()
+        await self.bot.pool.execute(
+            "ALTER TABLE profile ADD COLUMN IF NOT EXISTS prpg_theme TEXT NOT NULL DEFAULT 'classic';"
+        )
 
     async def _ensure_profile_xp_bigint(self) -> None:
         async with self.bot.pool.acquire() as conn:
@@ -1959,7 +1964,9 @@ class Profile(commands.Cog):
         raid_defense: Optional[float] = None,
         total_health: Optional[float] = None,
         amulet_data=None,
+        theme_key: Optional[str] = None,
     ) -> BytesIO:
+        theme = resolve_theme(theme_key or profile.get("prpg_theme")) or THEMES["classic"]
         width, height = 1660, 940
         canvas = Image.new("RGBA", (width, height), (58, 38, 22, 255))
         draw = ImageDraw.Draw(canvas)
@@ -1974,50 +1981,59 @@ class Profile(commands.Cog):
             "bar_bg": (65, 48, 34, 255),
         }
 
-        for y in range(height):
-            t = y / max(1, height - 1)
-            r = int(44 + (150 - 44) * t)
-            g = int(30 + (111 - 30) * t)
-            b = int(18 + (72 - 18) * t)
-            draw.line([(0, y), (width, y)], fill=(r, g, b, 255))
+        if theme.classic:
+            for y in range(height):
+                t = y / max(1, height - 1)
+                r = int(44 + (150 - 44) * t)
+                g = int(30 + (111 - 30) * t)
+                b = int(18 + (72 - 18) * t)
+                draw.line([(0, y), (width, y)], fill=(r, g, b, 255))
 
-        if hasattr(Image, "effect_noise"):
-            try:
-                noise = Image.effect_noise((width, height), 14).convert("L")
-                tex = ImageOps.colorize(noise, (46, 31, 20), (170, 132, 86)).convert("RGBA")
-                tex.putalpha(42)
-                canvas.alpha_composite(tex)
-            except Exception:
-                pass
-
-        for path in (
-            Path("assets") / "other" / "dragon.webp",
-            Path("assets") / "other" / "dragon.jpg",
-            Path("assets") / "other" / "dragon.jpeg",
-        ):
-            if path.exists():
+            if hasattr(Image, "effect_noise"):
                 try:
-                    dragon = Image.open(path).convert("RGBA")
-                    dragon = ImageOps.fit(dragon, (1060, 680), method=resample)
-                    dragon = ImageOps.grayscale(dragon).convert("RGBA")
-                    tint = Image.new("RGBA", dragon.size, (210, 166, 100, 255))
-                    dragon = Image.blend(dragon, tint, 0.58)
-                    dragon.putalpha(dragon.split()[3].point(lambda p: int(p * 0.18)))
-                    canvas.alpha_composite(dragon, (480, 150))
-                    break
+                    noise = Image.effect_noise((width, height), 14).convert("L")
+                    tex = ImageOps.colorize(noise, (46, 31, 20), (170, 132, 86)).convert("RGBA")
+                    tex.putalpha(42)
+                    canvas.alpha_composite(tex)
                 except Exception:
-                    continue
+                    pass
 
-        draw.rounded_rectangle((24, 24, width - 24, height - 24), radius=34, fill=(39, 24, 14, 242), outline=colors["border"], width=4)
-        draw.rounded_rectangle((40, 40, width - 40, height - 40), radius=30, outline=colors["border_dim"], width=2)
+            for path in (
+                Path("assets") / "other" / "dragon.webp",
+                Path("assets") / "other" / "dragon.jpg",
+                Path("assets") / "other" / "dragon.jpeg",
+            ):
+                if path.exists():
+                    try:
+                        dragon = Image.open(path).convert("RGBA")
+                        dragon = ImageOps.fit(dragon, (1060, 680), method=resample)
+                        dragon = ImageOps.grayscale(dragon).convert("RGBA")
+                        tint = Image.new("RGBA", dragon.size, (210, 166, 100, 255))
+                        dragon = Image.blend(dragon, tint, 0.58)
+                        dragon.putalpha(dragon.split()[3].point(lambda p: int(p * 0.18)))
+                        canvas.alpha_composite(dragon, (480, 150))
+                        break
+                    except Exception:
+                        continue
 
-        title_font = self._profile_font(44)
-        subtitle_font = self._profile_font(24)
-        heading_font = self._profile_font(31)
-        label_font = self._profile_font(24)
-        value_font = self._profile_font(25)
-        tiny_font = self._profile_font(20)
-        micro_font = self._profile_font(19)
+            draw.rounded_rectangle((24, 24, width - 24, height - 24), radius=34, fill=(39, 24, 14, 242), outline=colors["border"], width=4)
+            draw.rounded_rectangle((40, 40, width - 40, height - 40), radius=30, outline=colors["border_dim"], width=2)
+
+        else:
+            canvas = theme_background(theme, (width, height))
+            draw = ImageDraw.Draw(canvas)
+            colors = theme.palette
+
+        def card_font(size, role="body"):
+            return self._profile_font(size) if theme.classic else theme_font(size, role)
+
+        title_font = card_font(44, "heading")
+        subtitle_font = card_font(24)
+        heading_font = card_font(31, "heading")
+        label_font = card_font(24)
+        value_font = card_font(25, "heading")
+        tiny_font = card_font(20)
+        micro_font = card_font(19)
 
         def tw(text, font):
             box = draw.textbbox((0, 0), str(text), font=font)
@@ -2045,7 +2061,7 @@ class Profile(commands.Cog):
         gear_rect = (868, 470, 1268, 884)
         pet_rect = (1286, 66, width - 56, 884)
         panel(left_rect, "Hero Sigil")
-        panel(header_rect, "Dragonforged Chronicle")
+        panel(header_rect, "Dragonforged Chronicle" if theme.classic else "Hero Chronicle")
         panel(ledger_rect, "Adventurer Ledger")
         panel(gear_rect, "Armory and Quests")
         panel(pet_rect, "Pet Status")
@@ -2178,7 +2194,7 @@ class Profile(commands.Cog):
         stars = max(1, min(5, math.ceil(level / 20)))
         ribbon = clip(f"{rarity} Tier {'*' * stars}", label_font, 420)
         rw = tw(ribbon, label_font) + 34
-        draw.rounded_rectangle((name_x, 250, name_x + rw, 294), radius=16, fill=(164, 120, 64, 245), outline=colors["border"], width=2)
+        draw.rounded_rectangle((name_x, 250, name_x + rw, 294), radius=16, fill=((164, 120, 64, 245) if theme.classic else theme.background), outline=colors["border"], width=2)
         draw.text((name_x + 16, 260), ribbon, font=label_font, fill=colors["text"])
         draw.text((name_x, 310), clip(f"Power {power:,}", value_font, 390), font=value_font, fill=colors["border"])
         draw.text((844, 310), clip(f"Luck Blessing {luck_percent:.2f}%", value_font, 390), font=value_font, fill=colors["muted"])
@@ -2192,7 +2208,7 @@ class Profile(commands.Cog):
                 element_name = "Unknown"
             x = icon_start + idx * (icon_size + icon_gap)
             slot = (x, 146, x + icon_size, 146 + icon_size)
-            draw.rounded_rectangle(slot, radius=14, fill=(70, 48, 28, 220), outline=colors["border_dim"], width=2)
+            draw.rounded_rectangle(slot, radius=14, fill=((70, 48, 28, 220) if theme.classic else theme.background), outline=colors["border_dim"], width=2)
             if one_unique_element and idx == 1:
                 pad = 18
                 x1, y1 = x + pad, 146 + pad
@@ -2224,7 +2240,7 @@ class Profile(commands.Cog):
             if fw > 0:
                 draw.rounded_rectangle((x + 1, by + 1, x + 1 + fw, by + 15), radius=7, fill=color)
 
-        stat_bar(434, 340, 390, "Level", f"{level}", level / 100.0, (178, 133, 70, 255))
+        stat_bar(434, 340, 390, "Level", f"{level}", level / 100.0, ((178, 133, 70, 255) if theme.classic else theme.accent))
         stat_bar(844, 340, 390, "Attack", f"{raid_attack_value:,}", min(1.0, raid_attack_value / 5000.0), (171, 84, 64, 255))
         stat_bar(434, 394, 390, "Health", f"{total_health_value:,}", min(1.0, total_health_value / 20000.0), (112, 151, 93, 255))
         stat_bar(844, 394, 390, "Defense", f"{raid_defense_value:,}", min(1.0, raid_defense_value / 5000.0), (88, 118, 164, 255))
@@ -2350,7 +2366,7 @@ class Profile(commands.Cog):
         draw.rounded_rectangle(
             (portrait_x - 10, portrait_y - 10, portrait_x + portrait_size + 10, portrait_y + portrait_size + 10),
             radius=18,
-            fill=(63, 41, 25, 235),
+            fill=((63, 41, 25, 235) if theme.classic else theme.background),
             outline=colors["border_dim"],
             width=2,
         )
@@ -2392,7 +2408,7 @@ class Profile(commands.Cog):
                 draw.rounded_rectangle(
                     (portrait_x, portrait_y, portrait_x + portrait_size, portrait_y + portrait_size),
                     radius=14,
-                    fill=(82, 59, 38, 240),
+                    fill=((82, 59, 38, 240) if theme.classic else theme.background),
                     outline=colors["border_dim"],
                     width=1,
                 )
@@ -2441,7 +2457,7 @@ class Profile(commands.Cog):
             draw.rounded_rectangle(
                 (px1 + 12, combat_top, px2 - 12, py2 - 18),
                 radius=14,
-                fill=(76, 53, 32, 220),
+                fill=((76, 53, 32, 220) if theme.classic else theme.background),
                 outline=colors["border_dim"],
                 width=2,
             )
@@ -2459,7 +2475,7 @@ class Profile(commands.Cog):
             draw.rounded_rectangle(
                 (portrait_x, portrait_y, portrait_x + portrait_size, portrait_y + portrait_size),
                 radius=14,
-                fill=(82, 59, 38, 240),
+                fill=((82, 59, 38, 240) if theme.classic else theme.background),
                 outline=colors["border_dim"],
                 width=1,
             )
@@ -2565,7 +2581,7 @@ class Profile(commands.Cog):
         gear_w = gear_rect[2] - gear_rect[0] - 32
 
         def item_block(x, y, width_px, title, item):
-            draw.rounded_rectangle((x, y, x + width_px, y + 108), radius=14, fill=(76, 53, 32, 220), outline=colors["border_dim"], width=2)
+            draw.rounded_rectangle((x, y, x + width_px, y + 108), radius=14, fill=((76, 53, 32, 220) if theme.classic else theme.background), outline=colors["border_dim"], width=2)
             draw.text((x + 14, y + 10), title, font=label_font, fill=colors["border"])
             if item:
                 name = clip(str(item.get("name", "Unknown")), value_font, max(120, width_px - 28))
@@ -2583,14 +2599,16 @@ class Profile(commands.Cog):
         if mission:
             mission_name = ADVENTURE_NAMES.get(mission[0], str(mission[0]))
             mission_text = mission_name
-        draw.rounded_rectangle((gear_x, 830, gear_x + gear_w, 876), radius=12, fill=(76, 53, 32, 230), outline=colors["border_dim"], width=2)
+        draw.rounded_rectangle((gear_x, 830, gear_x + gear_w, 876), radius=12, fill=((76, 53, 32, 230) if theme.classic else theme.background), outline=colors["border_dim"], width=2)
         draw.text((gear_x + 16, 842), "Quest:", font=label_font, fill=colors["border"])
         draw.text((gear_x + 118, 844), clip(mission_text, tiny_font, max(80, gear_w - 132)), font=tiny_font, fill=colors["text"])
 
-        footer = "Fable Reborn - Dragon Chronicle"
-        draw.text((width - 12 - tw(footer, tiny_font), height - 22), footer, font=tiny_font, fill=colors["muted"])
+        footer = "Fable Reborn - Dragon Chronicle" if theme.classic else f"Fable Reborn / {theme.name}"
+        draw.text((width - 16 - tw(footer, tiny_font), height - (19 if theme.classic else 25)), footer, font=tiny_font, fill=colors["muted"])
 
         output = BytesIO()
+        if not theme.classic:
+            canvas = add_theme_banner(canvas, theme)
         canvas.convert("RGB").save(output, format="PNG", optimize=True)
         output.seek(0)
         return output
@@ -4039,10 +4057,11 @@ class Profile(commands.Cog):
 
         await ctx.send(embed=embed)
 
-    @commands.command(
+    @commands.group(
         name="profilerpg",
         aliases=["prpg", "rpgprofile"],
         brief=_("View someone's profile as an RPG stat card"),
+        invoke_without_command=True,
     )
     @locale_doc
     async def profilerpg(self, ctx, *, target: str = None):
@@ -4051,7 +4070,54 @@ class Profile(commands.Cog):
 
             Render a high-detail RPG profile card with avatar, progression, combat stats, gear, ranks, and quest info."""
         )
+        await self._send_profile_rpg(ctx, target)
 
+    @profilerpg.command(name="themes", aliases=["wardrobe"])
+    @checks.has_char()
+    async def prpg_themes(self, ctx):
+        """Browse the free PRPG theme collection and choose a saved appearance."""
+        current = await self.bot.pool.fetchval(
+            'SELECT prpg_theme FROM profile WHERE "user" = $1;', ctx.author.id,
+        )
+        selected = resolve_theme(current) or THEMES["classic"]
+        prefix = ctx.clean_prefix
+        embed = discord.Embed(
+            title="The Chronicle Wardrobe",
+            description=(f"Equipped: **{selected.name}**\n"
+                         "Every theme is free. Choose below to equip, or preview your full card first.\n"
+                         f"`{prefix}prpg preview dragon` · `{prefix}prpg theme dragon`"),
+            colour=int(selected.accent.lstrip("#"), 16),
+        )
+        for theme in THEMES.values():
+            embed.add_field(name=f"{theme.emoji} {theme.name} · {theme.key}", value=theme.description, inline=False)
+        embed.set_footer(text="Cosmetic only • Your stats stay the same • Menu active for 3 minutes")
+        view = ProfileThemePicker(ctx, selected.key)
+        view.message = await ctx.send(embed=embed, view=view)
+
+    @profilerpg.command(name="theme")
+    @checks.has_char()
+    async def prpg_theme(self, ctx, *, name: str = None):
+        """Save a theme: classic, dragon, evil, chaos, good, forest or frost."""
+        if name is None:
+            return await ctx.invoke(self.prpg_themes)
+        theme = resolve_theme(name)
+        if theme is None:
+            return await ctx.send(f"Unknown theme. Choose: {', '.join(THEMES)}.")
+        if not await save_theme(self.bot.pool, ctx.author.id, theme):
+            return await ctx.send("You need a character to equip a theme.")
+        await ctx.send(f"{theme.emoji} **{theme.name}** equipped. Use `{ctx.clean_prefix}prpg` to view it.")
+
+    @profilerpg.command(name="preview")
+    @checks.has_char()
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    async def prpg_preview(self, ctx, *, name: str):
+        """Preview a theme on your own card without changing your saved choice."""
+        theme = resolve_theme(name)
+        if theme is None:
+            return await ctx.send(f"Unknown theme. Choose: {', '.join(THEMES)}.")
+        await self._send_profile_rpg(ctx, None, theme_key=theme.key)
+
+    async def _send_profile_rpg(self, ctx, target=None, *, theme_key=None):
         user = await self._resolve_profile_target_user(ctx, target)
         if not user:
             return await ctx.send(_("Unknown User"))
@@ -4145,9 +4211,11 @@ class Profile(commands.Cog):
             raid_defense=raid_defense,
             total_health=total_health,
             amulet_data=amulet_data,
+            theme_key=theme_key,
         )
         await ctx.send(
-            _("Your RPG Profile Card:"),
+            (f"Preview: **{THEMES[theme_key].name}** — equip with `{ctx.clean_prefix}prpg theme {theme_key}`"
+             if theme_key else _("Your RPG Profile Card:")),
             file=discord.File(
                 fp=image_buffer,
                 filename=f"profile_rpg_{user.id}.png",
