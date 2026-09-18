@@ -2603,8 +2603,8 @@ class Profile(commands.Cog):
         draw.text((gear_x + 16, 842), "Quest:", font=label_font, fill=colors["border"])
         draw.text((gear_x + 118, 844), clip(mission_text, tiny_font, max(80, gear_w - 132)), font=tiny_font, fill=colors["text"])
 
-        footer = "Fable Reborn - Dragon Chronicle" if theme.classic else f"Fable Reborn / {theme.name}"
-        draw.text((width - 16 - tw(footer, tiny_font), height - (19 if theme.classic else 25)), footer, font=tiny_font, fill=colors["muted"])
+        #footer = "Fable Reborn - Dragon Chronicle" if theme.classic else f"Fable Reborn / {theme.name}"
+        #draw.text((width - 16 - tw(footer, tiny_font), height - (19 if theme.classic else 25)), footer, font=tiny_font, fill=colors["muted"])
 
         output = BytesIO()
         if not theme.classic:
