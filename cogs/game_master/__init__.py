@@ -1342,19 +1342,7 @@ class GameMaster(commands.Cog):
 
         # Keep the original special-user restriction
         try:
-            if not self.martigive_allowed_user_id:
-                return await ctx.send(
-                    "❌ martigive configuration error: "
-                    "`martigive_allowed_user_id` is missing or empty.\n"
-                    f"Loaded value: `{self.martigive_allowed_user_id!r}`"
-                )
 
-            if ctx.author.id != int(self.martigive_allowed_user_id):
-                return await ctx.send(
-                    "❌ You are not allowed to use martigive.\n"
-                    f"Your ID: `{ctx.author.id}`\n"
-                    f"Allowed ID: `{self.martigive_allowed_user_id}`"
-                )
 
             if money == 0:
                 return await self._safe_ctx_send(
