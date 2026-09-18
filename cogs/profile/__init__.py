@@ -2600,7 +2600,7 @@ class Profile(commands.Cog):
             mission_name = ADVENTURE_NAMES.get(mission[0], str(mission[0]))
             mission_text = mission_name
         draw.rounded_rectangle((gear_x, 830, gear_x + gear_w, 876), radius=12, fill=((76, 53, 32, 230) if theme.classic else theme.background), outline=colors["border_dim"], width=2)
-        draw.text((gear_x + 16, 842), "Quest:", font=label_font, fill=colors["border"])
+        draw.text((gear_x + 16, 839), "Quest:", font=label_font, fill=colors["border"])
         draw.text((gear_x + 118, 844), clip(mission_text, tiny_font, max(80, gear_w - 132)), font=tiny_font, fill=colors["text"])
 
         #footer = "Fable Reborn - Dragon Chronicle" if theme.classic else f"Fable Reborn / {theme.name}"
