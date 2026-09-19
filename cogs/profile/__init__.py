@@ -50,8 +50,9 @@ from utils.april_fools import get_pet_display_name, mask_pet_record_for_display
 from utils import misc as rpgtools
 from utils.checks import is_gm
 from utils.i18n import _, locale_doc
-from .themes import THEMES, resolve_theme, theme_font, theme_background, add_theme_banner
-from .theme_picker import ProfileThemePicker, save_theme
+from .themes import THEMES, resolve_theme, theme_font, theme_background, add_theme_banner, draw_ornament
+from .theme_picker import ProfileThemePicker
+from .theme_unlocks import ThemeLocked, ensure_theme_schema, sync_theme_unlocks, save_theme, grant_theme
 
 JURY_COSMETIC_TITLE = "Favored by the Seven"
 
@@ -1558,9 +1559,7 @@ class Profile(commands.Cog):
 
     async def cog_load(self):
         await self._ensure_profile_xp_bigint()
-        await self.bot.pool.execute(
-            "ALTER TABLE profile ADD COLUMN IF NOT EXISTS prpg_theme TEXT NOT NULL DEFAULT 'classic';"
-        )
+        await ensure_theme_schema(self.bot.pool)
 
     async def _ensure_profile_xp_bigint(self) -> None:
         async with self.bot.pool.acquire() as conn:
@@ -2051,9 +2050,12 @@ class Profile(commands.Cog):
             x1, y1, x2, y2 = rect
             draw.rounded_rectangle(rect, radius=24, fill=colors["panel"], outline=colors["border_dim"], width=3)
             draw.rounded_rectangle((x1 + 4, y1 + 4, x2 - 4, y2 - 4), radius=20, outline=colors["panel_inner"], width=1)
-            title_text = clip(title, heading_font, max(64, (x2 - x1) - 36))
+            title_text = clip(title, heading_font, max(64, (x2 - x1) - (36 if theme.classic else 68)))
             draw.text((x1 + 18, y1 + 14), title_text, font=heading_font, fill=colors["border"])
             draw.line((x1 + 18, y1 + 56, x2 - 18, y1 + 56), fill=colors["border_dim"], width=2)
+            if not theme.classic:
+                draw_ornament(draw, x2 - 28, y1 + 31, 10, theme)
+                draw.line((x1 + 24, y1 + 1, x1 + 90, y1 + 1), fill=theme.accent, width=2)
 
         left_rect = (56, 66, 390, 884)
         header_rect = (412, 66, 1268, 450)
@@ -2134,9 +2136,19 @@ class Profile(commands.Cog):
         rd.ellipse((13, 13, 224, 224), outline=colors["border_dim"], width=2)
         canvas.alpha_composite(ring, (102, 146))
         canvas.paste(avatar, (115, 159), mask)
+        if not theme.classic:
+            for ox, oy in ((221, 147), (221, 383), (103, 265), (339, 265)):
+                draw_ornament(draw, ox, oy, 8, theme)
 
         draw.text((80, 404), clip(f"Level {level}  {rarity}", value_font, 286), font=value_font, fill=colors["border"])
         draw.text((80, 436), clip(race_name, tiny_font, 286), font=tiny_font, fill=colors["muted"])
+        if not theme.classic:
+            draw.rounded_rectangle((80, 474, 366, 481), radius=3, fill=theme.background)
+            if xp_progress > 0:
+                draw.rounded_rectangle((80, 474, 80 + max(2, int(286 * xp_progress)), 481), radius=3, fill=theme.accent)
+            draw.text((80, 486), f"{xp_progress:.0%} TO LEVEL {level + 1}", font=theme_font(14, "heading"), fill=theme.muted)
+            ranks = f"XP #{rank_xp or '-'}  /  Wealth #{rank_money or '-'}"
+            draw.text((80, 710), clip(ranks, tiny_font, 286), font=tiny_font, fill=theme.muted)
         badge_value = self._badge_from_db_value(profile.get("badges"))
         if badge_value:
             badge_lines = badge_value.to_profile_display_items(limit=6)
@@ -4075,35 +4087,27 @@ class Profile(commands.Cog):
     @profilerpg.command(name="themes", aliases=["wardrobe"])
     @checks.has_char()
     async def prpg_themes(self, ctx):
-        """Browse the free PRPG theme collection and choose a saved appearance."""
-        current = await self.bot.pool.fetchval(
-            'SELECT prpg_theme FROM profile WHERE "user" = $1;', ctx.author.id,
-        )
-        selected = resolve_theme(current) or THEMES["classic"]
-        prefix = ctx.clean_prefix
-        embed = discord.Embed(
-            title="The Chronicle Wardrobe",
-            description=(f"Equipped: **{selected.name}**\n"
-                         "Every theme is free. Choose below to equip, or preview your full card first.\n"
-                         f"`{prefix}prpg preview dragon` · `{prefix}prpg theme dragon`"),
-            colour=int(selected.accent.lstrip("#"), 16),
-        )
-        for theme in THEMES.values():
-            embed.add_field(name=f"{theme.emoji} {theme.name} · {theme.key}", value=theme.description, inline=False)
-        embed.set_footer(text="Cosmetic only • Menu active for 3 minutes")
-        view = ProfileThemePicker(ctx, selected.key)
-        view.message = await ctx.send(embed=embed, view=view)
+        """Browse, preview and equip themes you own. Discover more through gameplay."""
+        state = await sync_theme_unlocks(self.bot.pool, ctx.author.id)
+        if state is None:
+            return await ctx.send("You need a character to collect themes.")
+        view = ProfileThemePicker(ctx, state, self._send_profile_rpg)
+        await view.send()
 
     @profilerpg.command(name="theme")
     @checks.has_char()
     async def prpg_theme(self, ctx, *, name: str = None):
-        """Save a theme: classic, dragon, evil, chaos, good, forest or frost."""
+        """Equip an unlocked theme by key or full name. Use prpg themes to browse."""
         if name is None:
             return await ctx.invoke(self.prpg_themes)
         theme = resolve_theme(name)
         if theme is None:
-            return await ctx.send(f"Unknown theme. Choose: {', '.join(THEMES)}.")
-        if not await save_theme(self.bot.pool, ctx.author.id, theme):
+            return await ctx.send(f"Choose a theme you own from `{ctx.clean_prefix}prpg themes`.")
+        try:
+            saved = await save_theme(self.bot.pool, ctx.author.id, theme)
+        except ThemeLocked:
+            return await ctx.send(f"Choose a theme you own from `{ctx.clean_prefix}prpg themes`.")
+        if not saved:
             return await ctx.send("You need a character to equip a theme.")
         await ctx.send(f"{theme.emoji} **{theme.name}** equipped. Use `{ctx.clean_prefix}prpg` to view it.")
 
@@ -4111,13 +4115,32 @@ class Profile(commands.Cog):
     @checks.has_char()
     @commands.cooldown(1, 5, commands.BucketType.user)
     async def prpg_preview(self, ctx, *, name: str):
-        """Preview a theme on your own card without changing your saved choice."""
+        """Preview an owned theme on your own card without changing your saved choice."""
+        theme = resolve_theme(name)
+        if theme is None:
+            return await ctx.send(f"Choose a theme you own from `{ctx.clean_prefix}prpg themes`.")
+        await self._send_profile_rpg(ctx, None, theme_key=theme.key)
+
+    @commands.command(name="gmprpgtheme", hidden=True)
+    @is_gm()
+    async def gm_prpg_theme(self, ctx, target: UserWithCharacter, *, name: str):
+        """Permanently award one cosmetic: gmprpgtheme @player <theme>."""
         theme = resolve_theme(name)
         if theme is None:
             return await ctx.send(f"Unknown theme. Choose: {', '.join(THEMES)}.")
-        await self._send_profile_rpg(ctx, None, theme_key=theme.key)
+        if not await grant_theme(self.bot.pool, target.id, theme, f"gm:{ctx.author.id}"):
+            return await ctx.send("That player no longer has a character.")
+        await ctx.send(f"Awarded **{theme.name}** to **{discord.utils.escape_markdown(str(target))}**.",
+                       allowed_mentions=discord.AllowedMentions.none())
 
     async def _send_profile_rpg(self, ctx, target=None, *, theme_key=None):
+        # Shared boundary for both the preview command and wardrobe callbacks.
+        # Check the requesting player's ownership before loading or rendering art.
+        if theme_key is not None:
+            theme_state = await sync_theme_unlocks(self.bot.pool, ctx.author.id)
+            if theme_state is None or theme_key not in theme_state.unlocked:
+                return await ctx.send(f"Choose a theme you own from `{ctx.clean_prefix}prpg themes`.")
+            target = None
         user = await self._resolve_profile_target_user(ctx, target)
         if not user:
             return await ctx.send(_("Unknown User"))
@@ -4196,6 +4219,11 @@ class Profile(commands.Cog):
                 return_none=True,
             )
 
+        # Ordinary profiles also use permanent ownership when others view them.
+        if theme_key is None:
+            theme_state = await sync_theme_unlocks(self.bot.pool, user.id)
+            profile_data["prpg_theme"] = theme_state.current if theme_state else "classic"
+
         image_buffer = await self._build_profile_rpg_card(
             user=user,
             profile=profile_data,
@@ -4214,7 +4242,8 @@ class Profile(commands.Cog):
             theme_key=theme_key,
         )
         await ctx.send(
-            (f"Preview: **{THEMES[theme_key].name}** — equip with `{ctx.clean_prefix}prpg theme {theme_key}`"
+            (f"Preview: **{THEMES[theme_key].name}**. "
+             f"Equip with `{ctx.clean_prefix}prpg theme {theme_key}`"
              if theme_key else _("Your RPG Profile Card:")),
             file=discord.File(
                 fp=image_buffer,

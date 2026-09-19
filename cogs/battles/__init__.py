@@ -57,6 +57,7 @@ from utils.april_fools import get_pet_display_name, get_pet_display_url
 from utils.checks import has_char, has_money, is_gm
 from utils.i18n import _, locale_doc
 from utils.joins import JoinView, SingleJoinView
+from cogs.profile.theme_unlocks import roll_theme_drop, theme_drop_message, DROP_CHANCES
 
 JURY_TOWER_IS_DEV = False
 JURY_TOWER_DEV_USER_ID = 295173706496475136
@@ -5574,6 +5575,10 @@ class Battles(commands.Cog):
                         player_balance=player_balance,
                         player_god=god_value,
                     )
+                    if random.random() < DROP_CHANCES["bt"]:
+                        theme_key = await roll_theme_drop(self.bot.pool, ctx.author.id, "bt")
+                        if theme_key:
+                            await ctx.send(theme_drop_message(theme_key, ctx.clean_prefix))
 
                     # Bonus loot for cleansing a corrupted floor
                     if corruption:
@@ -10314,6 +10319,10 @@ class Battles(commands.Cog):
 
         # Handle egg drops and other PvE-specific outcomes
         if result and result.name == "Player":
+            if macro_penalty_level == 0 and random.random() < DROP_CHANCES["pve"]:
+                theme_key = await roll_theme_drop(self.bot.pool, ctx.author.id, "pve")
+                if theme_key:
+                    await ctx.send(theme_drop_message(theme_key, ctx.clean_prefix))
             # Player won - handle PvE drops (skip if macro penalty is active)
             if levelchoice < 12 and macro_penalty_level == 0:
                 # God fights now roll alignment shards directly (not affected by ranger bonuses).
@@ -12347,6 +12356,7 @@ class Battles(commands.Cog):
                     reward_text += (
                         f"🐉 Dragon Coin Bonus: Each party member also received {dragon_coin_reward} <:dragoncoin:1404860657366728788> Dragon Coins\n"
                     )
+
         except Exception:
             # Try to continue with embed even if rewards failed
             reward_text = "Error processing rewards."
@@ -12408,6 +12418,25 @@ class Battles(commands.Cog):
             # Try a simple text message as fallback
             await ctx.send("Victory! The dragon has been defeated and rewards have been distributed.")
             pass
+
+        for member in party_members:
+            try:
+                # Every player gets their own independent boss drop roll
+                if random.random() < DROP_CHANCES["boss"]:
+                    theme_key = await roll_theme_drop(
+                        self.bot.pool,
+                        member.id,
+                        "boss"
+                    )
+
+                    if theme_key:
+                        await ctx.send(theme_drop_message(theme_key, ctx.clean_prefix, member.mention))
+
+            except Exception:
+                logger.exception(
+                    "Failed to award or announce boss theme drop for user %s",
+                    member.id
+                )
 
         self.bot.dispatch("icedragon_victory", ctx, party_members, stage_name, old_level)
 

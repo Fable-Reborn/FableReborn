@@ -1,58 +1,150 @@
 # The Chronicle Collection
 
-Six illustrated PRPG cosmetics, plus the unchanged original `classic` card.
-All themes are free to select. They confer no gameplay benefits or alignment restrictions.
+36 illustrated cosmetics, plus the original `classic` profile. The latest six additions include three Uncommon, two Mythic, and one Legendary theme, each with a new panoramic painting and matching card palette. Existing artwork remains available.
 
-| Key | Theme | Art direction |
-| --- | --- | --- |
-| `dragon` | Ashen Sovereign | Obsidian dragon, molten gold, volcanic citadel |
-| `evil` | The Hollow Crown | Blood eclipse, skeletal throne, blackened steel |
-| `chaos` | Violet Rupture | Amethyst lightning, shattered dimensions, eldritch eye |
-| `good` | Dawnward | Celestial guardian, feathered wings, pearl and sun gold |
-| `forest` | Verdant Oath | Sacred stag, luminous antlers, emerald forest cathedral |
-| `frost` | Winterveil | Ice queen, crystalline kingdom, midnight auroras |
-| `classic` | Original Chronicle | Existing parchment-and-bronze card |
+Every illustrated theme is permanent once earned. The 7 core **Origins** themes are free starter themes immediately available to every adventurer. The remaining 30 themes are **Collectible Drops** that drop from various activities based on their rarity tier. Unlocks are cosmetic only and permanently owned by the current character once claimed. The original card remains freely available.
 
-## Player commands
+## Rarity tiers and drops
+
+On a successful activity, roll for a drop: adventures **6%**, Battle Tower **5%**, PvE **3%**, and Ice Dragon **1% per party member**. PvE macro penalties suppress theme drops. Adventure drops have no extra character-level gate.
+
+If the roll succeeds, choose among unowned themes available from that source using these relative weights:
+
+- 🟢 **Common**: 55
+- 🔵 **Uncommon**: 40
+- 🟣 **Rare**: 10
+- 🟠 **Epic**: 4
+- 🔴 **Legendary**: 1
+- 💠 **Mythic**: 0.25
+
+Mythic is a new drop tier above Legendary. Each Mythic has one quarter of a Legendary theme's selection weight when both are eligible. These are relative per-theme weights, not absolute drop percentages; activity trigger rates are unchanged.
+
+There are no stat or god requirements. Owned themes are excluded; completing a source collection produces no further drops from that source. PvP currently has no theme rewards.
+
+## Developer catalogue (contains spoilers)
+
+| Collection | Key | Theme | Rarity | Drop sources |
+| --- | --- | --- | --- | --- |
+| Origins | `classic` | Original Chronicle | Starter | Free |
+| Origins | `dragon` | Ashen Sovereign | Starter | Free |
+| Origins | `evil` | The Hollow Crown | Starter | Free |
+| Origins | `chaos` | Violet Rupture | Starter | Free |
+| Origins | `good` | Dawnward | Starter | Free |
+| Origins | `forest` | Verdant Oath | Starter | Free |
+| Origins | `frost` | Winterveil | Starter | Free |
+| Divine | `elysia` | Elysia's Mercy | Rare | Adventure, Ice Dragon, Battle Tower |
+| Divine | `sepulchure` | Sepulchure's Requiem | Rare | Adventure, Ice Dragon, Battle Tower |
+| Divine | `drakath` | Drakath's Paradox | Rare | Adventure, Ice Dragon, Battle Tower |
+| Companions | `moonbunny` | Moonpetal Burrow | Common | Adventure, PvE |
+| Companions | `slime` | Slime Royalty | Common | Adventure, PvE |
+| Companions | `frogzard` | Frogzard Festival | Uncommon | Adventure, PvE |
+| Companions | `chickencow` | Cloudmilk Meadow | Common | Adventure, PvE |
+| Companions | `mushroom` | Mosslight Hollow | Common | Adventure, PvE |
+| Mythic | `leviathan` | Abyssal Monarch | Epic | Adventure, Ice Dragon, Battle Tower |
+| Mythic | `phoenix` | Cindersong | Epic | Adventure, Ice Dragon, Battle Tower |
+| Mythic | `storm` | Stormbreaker | Rare | Ice Dragon, Battle Tower |
+| Mythic | `eclipse` | Eclipse Devourer | Legendary | Ice Dragon, Battle Tower |
+| Mythic | `bloodmoon` | Bloodmoon Hunt | Epic | Ice Dragon, Battle Tower |
+| Mythic | `astral` | Starfall Archive | Epic | Ice Dragon, Battle Tower |
+| Wonders | `kitsune` | Foxfire Masquerade | Rare | Adventure, Battle Tower, PvE |
+| Wonders | `mimic` | The Gilded Maw | Rare | Adventure, Battle Tower, PvE |
+| Wonders | `lotus` | Lotus Dream | Uncommon | Adventure, Battle Tower, PvE |
+| Wonders | `clockwork` | Clockwork Seraph | Uncommon | Adventure, Battle Tower, PvE |
+| Elven | `darkelf` | Nightglass Court | Uncommon | Adventure, Battle Tower, PvE |
+| Elven | `woodelf` | Heartwood Covenant | Common | Adventure, PvE |
+| Elven | `highelf` | Starglass Dominion | Rare | Adventure, Battle Tower, PvE |
+| Divine | `elysia_ascendant` | Elysia Ascendant | Legendary | Ice Dragon |
+| Divine | `sepulchure_unbound` | Sepulchure Unbound | Legendary | Ice Dragon |
+| Divine | `drakath_incarnate` | Drakath Incarnate | Legendary | Ice Dragon |
+| Companions | `lanternwake` | Lanternwake | Uncommon | Adventure, PvE |
+| Wonders | `glasswing` | Glasswing Reverie | Uncommon | Adventure, PvE |
+| Wonders | `porcelain` | Porcelain Tempest | Uncommon | Adventure, Battle Tower, PvE |
+| Mythic | `firstflame` | Crown of the First Flame | Legendary | Adventure, Ice Dragon, Battle Tower |
+| Mythic | `unwritten` | The World Unwritten | Mythic | Ice Dragon |
+| Mythic | `laststar` | Cathedral of the Last Star | Mythic | Ice Dragon, Battle Tower |
+
+## Player commands and collection browser
 
 Use your server's command prefix in place of `$` if different.
 
-- `$prpg themes` — browse the collection and equip from an owner-only dropdown.
-- `$prpg preview dragon` — render your own full card without changing your selection.
-- `$prpg theme dragon` — save a theme across restarts.
-- `$prpg theme classic` — return to the original card (`reset`, `normal`, and `default` also work).
-- `$prpg` — your saved theme; `$prpg @user` — that player's saved theme.
-- Full names and friendly aliases work, e.g. `$prpg theme The Hollow Crown` or `$prpg theme purple`.
+- `$prpg themes` (or `$prpg wardrobe`) shows only owned themes and their collections.
+- Locked names, descriptions, source hints, and artwork stay hidden so discoveries are a surprise.
+- Successful drops immediately announce the awarded theme's name and rarity, with preview and equip commands. Ice Dragon announces each recipient's reward as it is granted.
+- **Preview full card** and `$prpg preview <theme>` only preview owned themes.
+- **Equip theme** or `$prpg theme <theme>` saves an owned theme. Names and aliases work too.
+- **Claim progress** refreshes ownership and claims free starter themes.
+- `$prpg theme classic` restores the original appearance.
+- `$prpg` shows your saved theme; `$prpg @user` shows that player's saved, owned theme.
 
-## Installation and storage
+All seven Origins themes are free. The other 30 themes come from gameplay drops or GM/event grants. Ownership is permanent for the character; changing stats or gods does not remove it. Character deletion removes ownership through the database foreign key.
 
-Deploy `cogs/profile/__init__.py`, `themes.py`, `theme_picker.py`, and this entire asset
-directory, then reload the Profile extension or restart the bot. `Profile.cog_load`
-idempotently adds `profile.prpg_theme TEXT NOT NULL DEFAULT 'classic'` using the bot's
-existing PostgreSQL connection. Existing characters retain their original appearance.
-No live database was changed during development. The bot database role needs its
-existing schema-alteration permission. No new Python package is required.
+The browser is owner-only and expires after five minutes. The server checks ownership again for previews and equips, including stale buttons. Previewing never equips. Menus stay below Discord option and embed limits.
 
-Selection writes are parameterized and limited to the invoking user's profile row.
-Unknown stored themes fall back to classic. Missing/corrupt artwork falls back to
-a matching colour background while keeping the user's stats visible.
+## GM and event rewards
 
-Themed output is 1660 × 1460 PNG; classic remains 1660 × 940.
-Only six decoded background illustrations are cached, never composed player cards.
-All artwork and fonts load locally; image generation is not called at runtime.
+`$gmprpgtheme @player <theme>` permanently grants one theme, without equipping it.
+It uses the existing `is_gm` permission check. Grants record their timestamp and
+`gm:<issuer_id>` source and are idempotent. No awards were issued during development.
 
-## Artwork and review
+An event cog can call `grant_theme(bot.pool, user_id, THEMES[key], "event:<event-id>")`
+from `cogs.profile.theme_unlocks` when issuing its rewards. Drop sources and rarity
+weights live in `COLLECTIBLE_THEMES`; per-activity rates live in `DROP_CHANCES`.
+Already-recorded ownership is preserved when drop settings change.
 
-Original banner PNGs were generated with the built-in imagegen tool. The exact final
-prompt set is saved in [prompts.json](prompts.json). These are separate paintings,
-not palette swaps. Cinzel and Lato fonts come from the Google Fonts repository;
-their SIL Open Font Licenses are included in `fonts/`.
+## Deployment and storage
 
-The `previews/` directory contains full cards rendered from the production renderer
-with fictional sample data and a placeholder avatar/pet portrait. It is not required
-at runtime. [View the collection](previews/collection.jpg).
+Deploy the modified Adventure, Battles and Profile cogs, `themes.py`, `theme_picker.py`, `theme_unlocks.py`,
+and the banner/font files under this directory. Reload the Profile extension or
+restart the bot. Its existing database role needs DDL permission, as before.
 
-Run the offline checks with `python -m pytest tests/test_profile_themes.py -q`.
-They exercise full rendering, aliases, fallback behavior, cache isolation, player-scoped
-saves, preview isolation, picker ownership and Discord command routing. Live Discord
-and PostgreSQL integration still require verification after deployment.
+`Profile.cog_load` idempotently adds `profile.prpg_theme` if needed and creates
+`profile_theme_unlocks` with a unique `(user_id, theme_key)` key. The migration uses
+an advisory transaction lock to serialize first-time creation across shards.
+Players who already have one of the six original illustrated themes equipped
+keep that theme through a `legacy-equipped` grant. All seven Origins starter
+themes are automatically claimed when ownership is synchronized.
+
+No live PostgreSQL schema or Discord bot was changed during development. Verify
+against your deployment after reloading. No new runtime Python package is required.
+
+Unlock claims and equips lock the character row in a transaction; all user values
+are SQL parameters. Unknown/unowned stored selections render as classic. Missing
+or corrupt artwork falls back to a matching background while preserving the stats.
+
+## Rendering and artwork
+
+Themed output stays at 1660 x 1460 PNG, classic at 1660 x 940. Every illustrated
+card now has motif-specific ornaments, a decorated avatar ring, collection/rarity
+information, an XP progress strip and wealth/XP ranks. The original six receive
+the same visual upgrades. Existing character, item, pet and combat calculations
+are preserved. The classic appearance remains unchanged.
+
+All 36 banners are paintings made with the built-in imagegen tool. Exact
+prompts are in [prompts.json](prompts.json) for the launch six and
+[expansion-prompts.json](expansion-prompts.json) for the first 21 additions, and
+[god-reference-prompts.json](god-reference-prompts.json) for the three god variants.
+The newest six prompts are preserved in [ascendant-prompts.json](ascendant-prompts.json).
+The Exalted god set uses the tier-11 image references from `monsters.json`:
+Elysia's black hair, white/crimson robes and golden phoenix throne; Sepulchure's
+crimson DoomKnight armor and skull sword; Drakath's orange eyes, horned shoulders,
+purple chest eye and black cloak. Source URLs and downloaded reference images are
+preserved under `references/` for provenance and are not needed at runtime. Fonts are
+Cinzel and Lato from Google Fonts, with SIL Open Font Licenses under `fonts/`.
+
+Everything loads locally at runtime; no image-generation API is called. Only six
+decoded source banners are cached at once, never composed player cards.
+
+## Preview gallery and validation
+
+[Open the local gallery](previews/index.html) or [overview](previews/collection.jpg).
+Individual full cards and six collection contact sheets are in `previews/`.
+Samples use fictional character data and placeholder avatar/pet portraits.
+Preview files are review artifacts and are not required by the live bot.
+
+Regenerate samples with `python scripts/render_profile_theme_previews.py`
+(requires the test dependencies). The script runs the production card renderer.
+
+Run `python -m pytest tests/test_profile_themes.py tests/test_profile_theme_unlocks.py -q`.
+Tests exercise full-card rendering, font/assets, aliases, fallback/cache behavior,
+real Discord command routing, every unlock boundary, persistent ownership,
+idempotent/concurrent claims, grants, stale equips, owner-only UI and Discord limits.

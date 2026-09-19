@@ -60,3 +60,13 @@ audit/hunt_mechanics_check.py
 tests/test_hunt_combat.py
 tests/test_hunt_notifications.py
 tests/test_tower_challenge_scaling.py
+assets/profile_themes/god-reference-prompts.json
+assets/profile_themes/expansion-prompts.json
+assets/profile_themes/ascendant-prompts.json
+assets/profile_themes/previews/index.html
+assets/profile_themes/references/sources.json
+tests/test_profile_themes.py
+tests/test_profile_theme_unlocks.py
+scripts/render_profile_theme_previews.py
+tests/test_profile_themes.py
+tests/test_profile_themes.py

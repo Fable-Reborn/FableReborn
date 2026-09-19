@@ -1917,6 +1917,14 @@ class Adventure(commands.Cog):
                 )
 
                 iscompleted = True
+                # Profile imports ADVENTURE_NAMES; defer this import until both
+                # cogs have loaded to avoid a circular import during startup.
+                from cogs.profile.theme_unlocks import roll_theme_drop, theme_drop_message, DROP_CHANCES
+
+                if random.random() < DROP_CHANCES["adventure"]:
+                    theme_key = await roll_theme_drop(self.bot.pool, ctx.author.id, "adventure")
+                    if theme_key:
+                        await ctx.send(theme_drop_message(theme_key, ctx.clean_prefix))
                 if current_level >= 15:
                     self.bot.dispatch("adventure_completion", ctx, iscompleted)
                     self.bot.dispatch("raid_completion", ctx, iscompleted, ctx.author.id)

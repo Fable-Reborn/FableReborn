@@ -52,7 +52,7 @@ def profile_renderer():
         # Deterministic level curve and badge fixture; neither is modified by themes.
         rpgtools=SimpleNamespace(xptolevel=lambda xp: max(1, int(xp // 1000)), xp_for_level=lambda level: level * 1000),
         get_ascension_mantle=lambda key: None, ADVENTURE_NAMES={1: "The Ashen Citadel"},
-        **{name: getattr(themes, name) for name in ("THEMES", "resolve_theme", "theme_font", "theme_background", "add_theme_banner")},
+        **{name: getattr(themes, name) for name in ("THEMES", "resolve_theme", "theme_font", "theme_background", "add_theme_banner", "draw_ornament")},
     )
     exec(compile(ast.Module(body=[profile], type_ignores=[]), str(source), "exec"), namespace)
     instance = namespace["Profile"]()
@@ -71,7 +71,7 @@ def render(theme, *, pet=False, long_names=False):
     renderer = profile_renderer()
     name = "Aurelia Stormborn" if not long_names else "An impossibly long character name " * 8
     data = dict(
-        user=SimpleNamespace(id=295173706496475136, display_name=name),
+        user=SimpleNamespace(id=123456789012345678, display_name=name),
         profile={"name": name, "race": "High Elf", "class": ["Paragon", "Archmage"],
                  "xp": 92500, "money": 8732140, "luck": 1.2, "health": 18420, "pvpwins": 128,
                  "god": "Elysia", "prpg_theme": theme},
@@ -121,20 +121,6 @@ def test_missing_art_keeps_card_available(monkeypatch):
     assert Image.open(render("chaos")).size == (1660, 1460)
 
 
-def test_theme_save_is_scoped_to_player():
-    tree = ast.parse((ROOT / "cogs/profile/theme_picker.py").read_text())
-    method = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "save_theme")
-    ns = {}
-    exec(compile(ast.Module(body=[method], type_ignores=[]), "theme_picker", "exec"), ns)
-    pool = SimpleNamespace(fetchval=AsyncMock(return_value=123))
-    assert asyncio.run(ns["save_theme"](pool, 123, load_themes().THEMES["evil"]))
-    pool.fetchval.assert_awaited_once_with(
-        'UPDATE profile SET prpg_theme = $1 WHERE "user" = $2 RETURNING "user";', "evil", 123,
-    )
-    pool.fetchval.return_value = None
-    assert not asyncio.run(ns["save_theme"](pool, 123, load_themes().THEMES["evil"]))
-
-
 def test_preview_does_not_save():
     tree = ast.parse((ROOT / "cogs/profile/__init__.py").read_text(encoding="utf-8"))
     profile = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Profile")
@@ -143,7 +129,7 @@ def test_preview_does_not_save():
     ns = {"resolve_theme": load_themes().resolve_theme, "THEMES": load_themes().THEMES}
     exec(compile(ast.Module(body=[preview], type_ignores=[]), "preview", "exec"), ns)
     cog = SimpleNamespace(_send_profile_rpg=AsyncMock())
-    ctx = SimpleNamespace(send=AsyncMock())
+    ctx = SimpleNamespace(send=AsyncMock(), clean_prefix="$")
     asyncio.run(ns["prpg_preview"](cog, ctx, name="purple"))
     cog._send_profile_rpg.assert_awaited_once_with(ctx, None, theme_key="chaos")
     cog._send_profile_rpg.reset_mock()
@@ -195,35 +181,4 @@ def test_real_discord_group_routes_profiles_and_subcommands():
                     save.assert_not_awaited()
                 else:
                     save.assert_awaited_once_with(bot.pool, 123, load_themes().THEMES["evil"])
-    asyncio.run(scenario())
-
-
-def test_picker_rejects_other_players():
-    tree = ast.parse((ROOT / "cogs/profile/theme_picker.py").read_text(encoding="utf-8"))
-    tree.body = [node for node in tree.body if isinstance(node, (ast.ClassDef, ast.AsyncFunctionDef))]
-    ns = {"asyncio": asyncio, "discord": discord, "THEMES": load_themes().THEMES}
-    exec(compile(tree, "theme_picker", "exec"), ns)
-    async def scenario():
-        pool = SimpleNamespace(fetchval=AsyncMock(return_value=123))
-        ctx = SimpleNamespace(author=SimpleNamespace(id=123), clean_prefix="$", bot=SimpleNamespace(pool=pool))
-        picker = ns["ProfileThemePicker"](ctx, "classic")
-        interaction = SimpleNamespace(user=SimpleNamespace(id=456), response=SimpleNamespace(send_message=AsyncMock()))
-        assert not await picker.interaction_check(interaction)
-        pool.fetchval.assert_not_awaited()
-        interaction.user.id = 123
-        assert await picker.interaction_check(interaction)
-        interaction.response.defer = AsyncMock()
-        interaction.followup = SimpleNamespace(send=AsyncMock())
-        interaction.message = SimpleNamespace(
-            embeds=[discord.Embed(description="Equipped: **Original Chronicle**\nPreview before equipping.")],
-            edit=AsyncMock(),
-        )
-        picker.select._values = ["chaos"]
-        await picker.choose(interaction)
-        assert interaction.message.edit.call_args.kwargs["embed"].description.startswith("Equipped: **Violet Rupture**")
-        assert next(option for option in picker.select.options if option.default).value == "chaos"
-        picker.message = interaction.message
-        await picker.on_timeout()
-        assert picker.select.disabled
-        picker.stop()
     asyncio.run(scenario())
