@@ -1808,7 +1808,7 @@ class Miscellaneous(commands.Cog):
         await ctx.send(
             _(
                 """\
-This bot has its own patreon page.
+This bot has its own Ko-Fi page.
 
 **Why should I donate?**
 This bot is currently on {guild_count} servers, and it is growing fast.
@@ -1817,7 +1817,7 @@ If you want to continue using the bot or just help us, please donate a small amo
 Even $1 can help us.
 **Thank you!**
 
-<https://patreon.com/FableReborn>"""
+<https://ko-fi.com/fablereborn>"""
             ).format(guild_count=guild_count)
         )
 
