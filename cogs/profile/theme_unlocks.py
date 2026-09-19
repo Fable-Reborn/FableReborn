@@ -52,8 +52,8 @@ class UnlockRule:
 # ---------------------------------------------------------------------------
 
 RARITY_WEIGHTS = {
-    "Common": 48,
-    "Uncommon": 36,
+    "Common": 68,
+    "Uncommon": 26,
     "Rare": 10,
     "Epic": 4,
     "Legendary": 1.25,
