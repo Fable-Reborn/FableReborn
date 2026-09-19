@@ -238,12 +238,16 @@ class TestDragonBattleCard(unittest.TestCase):
                 self.old_was_deleted_at_send = old_message.deleted
                 return new_message
 
+            async def _delete_overflow_messages(self):
+                self.overflow_cleaned = True
+
         battle = FakeBattle()
         result = real_asyncio.run(publish(battle))
 
         self.assertIs(new_message, result)
         self.assertFalse(battle.old_was_deleted_at_send)
         self.assertTrue(old_message.deleted)
+        self.assertTrue(battle.overflow_cleaned)
         self.assertIn("mobile summary", battle.sent_kwargs["content"])
         self.assertIn("Battle ID:", battle.sent_kwargs["content"])
         self.assertNotIn("embed", battle.sent_kwargs)

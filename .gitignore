@@ -70,3 +70,5 @@ tests/test_profile_theme_unlocks.py
 scripts/render_profile_theme_previews.py
 tests/test_profile_themes.py
 tests/test_profile_themes.py
+tests/test_dragon_embed_limits.py
+tests/test_dragon_battle_card.py

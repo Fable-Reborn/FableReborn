@@ -2,6 +2,7 @@ from decimal import Decimal
 import asyncio
 import logging
 import random
+import re
 import discord
 from datetime import datetime, timedelta
 from collections import deque
@@ -17,6 +18,81 @@ from classes.classes import from_string as class_from_string
 
 
 logger = logging.getLogger(__name__)
+
+
+def _embed_text_length(text):
+    # Count astral emoji conservatively as two units, including custom emoji markup.
+    return len(str(text).encode("utf-16-le")) // 2
+
+
+def _embed_total_chars(embed):
+    """Count the text Discord includes in its combined 6,000-character budget."""
+    data = embed.to_dict()
+    total = sum(_embed_text_length(data.get(key, "")) for key in ("title", "description"))
+    total += _embed_text_length(data.get("footer", {}).get("text", ""))
+    total += _embed_text_length(data.get("author", {}).get("name", ""))
+    for field in data.get("fields", []):
+        total += _embed_text_length(field.get("name", ""))
+        total += _embed_text_length(field.get("value", ""))
+    return total
+
+
+def _clip_embed_text(text, limit):
+    text = str(text)
+    if _embed_text_length(text) <= limit:
+        return text
+    return text.encode("utf-16-le")[: (limit - 1) * 2].decode("utf-16-le", errors="ignore") + "…"
+
+
+def _split_embed_value(text):
+    """Keep every character and complete custom emoji when a field needs splitting."""
+    parts, current, size = [], [], 0
+    for token in re.findall(r"<a?:[A-Za-z0-9_]{1,32}:\d{17,20}>|.", str(text), flags=re.DOTALL):
+        token_size = _embed_text_length(token)
+        if current and size + token_size > 1024:
+            parts.append("".join(current))
+            current, size = [], 0
+        current.append(token)
+        size += token_size
+    if current:
+        parts.append("".join(current))
+    return parts or ["\u200b"]
+
+
+def _paginate_battle_embed(embed):
+    """Each returned embed must be sent in its OWN message (6,000 combined limit)."""
+    metadata = embed.to_dict()
+    fields = metadata.pop("fields", [])
+    metadata["title"] = _clip_embed_text(metadata.get("title", "Battle"), 220)
+    metadata["description"] = _clip_embed_text(metadata.get("description", ""), 512)
+    if "footer" in metadata:
+        metadata["footer"]["text"] = _clip_embed_text(metadata["footer"].get("text", ""), 128)
+    if "author" in metadata:
+        metadata["author"]["name"] = _clip_embed_text(metadata["author"].get("name", ""), 256)
+    base_size = sum(_embed_text_length(text) for text in (
+        metadata["title"], metadata["description"],
+        metadata.get("footer", {}).get("text", ""), metadata.get("author", {}).get("name", ""),
+    ))
+    pages = []
+    page, size = discord.Embed.from_dict(metadata), base_size
+    for field in fields:
+        for index, value in enumerate(_split_embed_value(field["value"])):
+            name = _clip_embed_text(field["name"], 230)
+            if index:
+                name += " (continued)"
+            field_size = _embed_text_length(name) + _embed_text_length(value)
+            # Leave headroom for the page number and Discord's counting rules.
+            if len(page.fields) >= 25 or size + field_size > 5800:
+                pages.append(page)
+                page, size = discord.Embed.from_dict(metadata), base_size
+            page.add_field(name=name, value=value, inline=field.get("inline", False))
+            size += field_size
+    pages.append(page)
+    if len(pages) > 1:
+        for index, page in enumerate(pages, 1):
+            page.title = f"{metadata['title']} · {index}/{len(pages)}"
+    return pages
+
 
 class DragonBattle(Battle):
     """Implementation of Ice Dragon Challenge battle"""
@@ -1765,6 +1841,7 @@ class DragonBattle(Battle):
         if send_result not in (None, False):
             self.battle_message = send_result
             self._last_image_card_turn = self.current_turn
+            await self._delete_overflow_messages()
             if previous_message is not None and previous_message is not send_result:
                 try:
                     await previous_message.delete()
@@ -1822,13 +1899,55 @@ class DragonBattle(Battle):
         return summary
 
     async def _publish_embed_fallback(self):
-        embed = await self.create_battle_embed()
-        kwargs = {"embed": embed}
+        # The deque remains the complete five-action replay window. The visible
+        # window is deliberately disposable: if five actions push the message
+        # over Discord's combined limit, show only the newest action this turn.
+        visible_logs = list(self.log)[-5:]
+        embed = await self.create_battle_embed(log_entries=visible_logs)
+        if _embed_total_chars(embed) > 6000 and visible_logs:
+            embed = await self.create_battle_embed(log_entries=visible_logs[-1:])
+        pages = _paginate_battle_embed(embed)
+        kwargs = {"embed": pages[0], "content": None}
         if self.battle_message:
             kwargs["attachments"] = []
-        return await self.publish_battle_message(**kwargs)
+        result = await self.publish_battle_message(**kwargs)
+        overflow = list(getattr(self, "_battle_overflow_messages", []))
+        for index, page in enumerate(pages[1:]):
+            message = overflow[index] if index < len(overflow) else None
+            updated = None
+            if message is not None:
+                updated = await self.edit_with_retry(message, embed=page, content=None, attachments=[])
+                if updated is False:
+                    continue
+            if updated is None:
+                updated = await self.send_with_retry(embed=page)
+            message = updated if updated not in (None, False) else message
+            if index < len(overflow):
+                overflow[index] = message
+            else:
+                overflow.append(message)
+            self._battle_overflow_messages = overflow
+        self._battle_overflow_messages = overflow
+        await self._delete_overflow_messages(keep=len(pages) - 1)
+        return result
 
-    async def create_battle_embed(self):
+    async def _delete_overflow_messages(self, keep=0):
+        messages = list(getattr(self, "_battle_overflow_messages", []))
+        remaining = messages[:keep]
+        for message in messages[keep:]:
+            if message is None:
+                continue
+            try:
+                await message.delete()
+            except discord.NotFound:
+                pass
+            except Exception:
+                # Keep track of undeleted pages so a later update can retry cleanup.
+                remaining.append(message)
+                logger.exception("Battle %s could not remove an extra status message", self.battle_id)
+        self._battle_overflow_messages = remaining
+
+    async def create_battle_embed(self, *, log_entries=None):
         """Create the battle status embed"""
         # Get current stage name
         stage_name = self.dragon.stage
@@ -1924,17 +2043,24 @@ class DragonBattle(Battle):
             
         # Add battle log
         log_text = ""
-        max_length = 900  # Leave some room for "..." and potential formatting
+        # Five normal actions get a generous visible window. The outer
+        # six-thousand-character tripwire decides whether to collapse this to
+        # the newest action for the current turn.
+        max_length = 4200
         
-        # Process log entries in reverse order (newest first)
-        for action_num, msg in reversed(self.log):
+        # The caller can trip the display window down to one action without
+        # mutating self.log, which keeps full replay history intact.
+        visible_log = list(self.log)[-5:] if log_entries is None else list(log_entries)[-5:]
+        # Process visible entries in reverse order (newest first)
+        for action_num, msg in reversed(visible_log):
             # Format the message with proper newlines and action number
             formatted_msg = str(msg).replace('\n', '\n    ')  # Indent wrapped lines
             new_entry = f"**Action #{action_num}**\n{formatted_msg}\n\n"
             
             # Check if adding this entry would exceed the max length
             if len(log_text) + len(new_entry) > max_length:
-                log_text = "...\n\n" + log_text  # Add ellipsis for truncated messages
+                # A single summon-heavy action can fill the log on its own.
+                log_text = _clip_embed_text(log_text or new_entry, max_length)
                 break
                 
             log_text = new_entry + log_text

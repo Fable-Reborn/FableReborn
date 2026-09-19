@@ -73,11 +73,11 @@ RARITY_EMOJI = {
 # The calling cog decides WHEN to call roll_theme_drop; these defaults
 # are available if you want a shared constant.
 DROP_CHANCES = {
-    "pve": 0.05,
-    "adventure": 0.06,
-    "bt": 0.05,
+    "pve": 0.09,
+    "adventure": 0.20,
+    "bt": 0.15,
     "pvp": 0.05,
-    "boss": 0.05,
+    "boss": 0.12,
 }
 
 
