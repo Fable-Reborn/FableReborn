@@ -113,12 +113,34 @@ def test_banner_cache_never_contains_player_pixels():
     assert ImageChops.difference(original, themes._banner("dragon")).getbbox() is None
 
 
-def test_missing_art_keeps_card_available(monkeypatch):
+@pytest.mark.parametrize("key", ["chaos", "allworlds"])
+def test_missing_art_keeps_card_available(monkeypatch, key):
     themes = load_themes()
     def missing(key):
         raise OSError("asset not installed")
     monkeypatch.setattr(themes, "_banner", missing)
-    assert Image.open(render("chaos")).size == (1660, 1460)
+    assert Image.open(render(key)).size == (1660, 1460)
+
+
+def test_prismatic_finish_preserves_stat_panels_avatar_and_input_card():
+    themes = load_themes()
+    card = Image.new("RGB", (1660, 940), "#526479")
+    original = card.copy()
+    result = themes.add_theme_banner(card, themes.THEMES["allworlds"])
+    assert ImageChops.difference(card, original).getbbox() is None
+    # All live profile text, bars, pet data and avatar pixels remain untouched.
+    for x1, y1, x2, y2 in ((412, 66, 1268, 884), (1286, 66, 1604, 884),
+                           (56, 404, 390, 884)):
+        expected = original.crop((x1, y1, x2, y2))
+        actual = result.crop((x1, y1+520, x2, y2+520))
+        assert ImageChops.difference(expected, actual).getbbox() is None
+    # The avatar uses a circular mask; the square's corners belong to the halo.
+    expected = original.crop((115, 159, 327, 371))
+    actual = result.crop((115, 679, 327, 891))
+    visible = Image.new("L", (212, 212))
+    ImageDraw.Draw(visible).ellipse((0, 0, 211, 211), fill=255)
+    difference = ImageChops.difference(expected, actual)
+    assert Image.composite(difference, Image.new("RGB", difference.size), visible).getbbox() is None
 
 
 def test_preview_does_not_save():

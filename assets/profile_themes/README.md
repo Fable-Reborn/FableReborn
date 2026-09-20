@@ -1,23 +1,23 @@
 # The Chronicle Collection
 
-36 illustrated cosmetics, plus the original `classic` profile. The latest six additions include three Uncommon, two Mythic, and one Legendary theme, each with a new panoramic painting and matching card palette. Existing artwork remains available.
+59 illustrated cosmetics, plus the original `classic` profile. The latest thirteen additions follow the requested rarity breakdown: four Common, four Uncommon, two Rare, two Epic, and one Mythic. Each has a new panoramic painting and matching card palette. **Covenant of All Worlds** introduces an exclusive prismatic finish with foil lettering, jeweled rails, seven realm gems and an opal avatar halo.
 
-Every illustrated theme is permanent once earned. The 7 core **Origins** themes are free starter themes immediately available to every adventurer. The remaining 30 themes are **Collectible Drops** that drop from various activities based on their rarity tier. Unlocks are cosmetic only and permanently owned by the current character once claimed. The original card remains freely available.
+Every illustrated theme is permanent once earned. The 7 core **Origins** themes are free starter themes immediately available to every adventurer. The remaining 53 themes are **Collectible Drops** that drop from various activities based on their rarity tier. Unlocks are cosmetic only and permanently owned by the current character once claimed. The original card remains freely available.
 
 ## Rarity tiers and drops
 
-On a successful activity, roll for a drop: adventures **6%**, Battle Tower **5%**, PvE **3%**, and Ice Dragon **1% per party member**. PvE macro penalties suppress theme drops. Adventure drops have no extra character-level gate.
+On a successful activity, roll for a drop: adventures **20%**, Battle Tower **15%**, PvE **10%**, and Ice Dragon **8% per party member**. PvE macro penalties suppress theme drops. Adventure drops have no extra character-level gate. This expansion preserves the current configured rates.
 
 If the roll succeeds, choose among unowned themes available from that source using these relative weights:
 
-- 🟢 **Common**: 55
-- 🔵 **Uncommon**: 40
+- 🟢 **Common**: 68
+- 🔵 **Uncommon**: 26
 - 🟣 **Rare**: 10
 - 🟠 **Epic**: 4
-- 🔴 **Legendary**: 1
-- 💠 **Mythic**: 0.25
+- 🔴 **Legendary**: 1.25
+- 💠 **Mythic**: 0.75
 
-Mythic is a new drop tier above Legendary. Each Mythic has one quarter of a Legendary theme's selection weight when both are eligible. These are relative per-theme weights, not absolute drop percentages; activity trigger rates are unchanged.
+Mythic is the drop tier above Legendary. Each Mythic has 60% of a Legendary theme's selection weight when both are eligible. These are relative per-theme weights, not absolute drop percentages. Adding eligible themes expands the source pool, so individual theme probabilities change even with the same activity trigger rates and weights.
 
 There are no stat or god requirements. Owned themes are excluded; completing a source collection produces no further drops from that source. PvP currently has no theme rewards.
 
@@ -62,6 +62,31 @@ There are no stat or god requirements. Owned themes are excluded; completing a s
 | Mythic | `firstflame` | Crown of the First Flame | Legendary | Adventure, Ice Dragon, Battle Tower |
 | Mythic | `unwritten` | The World Unwritten | Mythic | Ice Dragon |
 | Mythic | `laststar` | Cathedral of the Last Star | Mythic | Ice Dragon, Battle Tower |
+| Bestiary | `tynfdarius` | Emperor of the Caldera | Epic | PvE, Adventure, Battle Tower |
+| Bestiary | `mechaknight` | The Iron Apocalypse | Epic | PvE, Adventure, Battle Tower |
+| Bestiary | `umbracrown` | Garden of the Petrified | Legendary | PvE, Adventure, Battle Tower |
+| Bestiary | `deimos` | Chains of the Dread King | Legendary | PvE, Battle Tower, Ice Dragon |
+| Bestiary | `voiddragon` | Sovereign of the Rift | Legendary | PvE, Adventure, Ice Dragon |
+| Bestiary | `nullstar` | Hunger Beyond Heaven | Mythic | Battle Tower, Ice Dragon |
+| Wonders | `boneglass` | Boneglass Requiem | Epic | PvE, Adventure, Battle Tower |
+| Wonders | `drownedpearl` | Pearl of the Drowned | Legendary | Adventure, Battle Tower, Ice Dragon |
+| Mythic | `worldheart` | Anvil of Creation | Mythic | Battle Tower, Ice Dragon |
+| Wonders | `sandreign` | Empire in the Hourglass | Epic | PvE, Adventure, Battle Tower |
+| Wonders | `emberkettle` | The Last Warm Hearth | Common | PvE, Adventure |
+| Companions | `mossback` | Mossback Caravan | Common | PvE, Adventure |
+| Companions | `brassbeak` | Brassbeak Post | Common | PvE, Adventure |
+| Companions | `moonharvest` | Moonberry Harvest | Common | PvE, Adventure |
+| Wonders | `stormheron` | Heron of the Thunder Marsh | Uncommon | PvE, Adventure, Battle Tower |
+| Companions | `velvetprowl` | Velvet Prowler | Uncommon | PvE, Adventure, Battle Tower |
+| Companions | `emberbloom` | Emberbloom Sanctuary | Uncommon | PvE, Adventure, Battle Tower |
+| Wonders | `tideweaver` | The Tideweaver | Uncommon | PvE, Adventure, Battle Tower |
+| Wonders | `amberreliquary` | The Amber Reliquary | Rare | PvE, Adventure, Battle Tower |
+| Companions | `frostgardener` | The Frost Gardener | Rare | PvE, Adventure, Battle Tower |
+| Mythic | `leviathanswake` | The Leviathan's Wake | Epic | Adventure, Battle Tower, Ice Dragon |
+| Mythic | `gravebloom` | Where Titans Sleep | Epic | Adventure, Battle Tower, Ice Dragon |
+| Mythic | `allworlds` | Covenant of All Worlds | Mythic | Battle Tower, Ice Dragon |
+
+Bestiary artwork follows the corresponding monster references; drops use the listed activity pools and do not require defeating that specific monster.
 
 ## Player commands and collection browser
 
@@ -76,7 +101,7 @@ Use your server's command prefix in place of `$` if different.
 - `$prpg theme classic` restores the original appearance.
 - `$prpg` shows your saved theme; `$prpg @user` shows that player's saved, owned theme.
 
-All seven Origins themes are free. The other 30 themes come from gameplay drops or GM/event grants. Ownership is permanent for the character; changing stats or gods does not remove it. Character deletion removes ownership through the database foreign key.
+All seven Origins themes are free. The other 53 themes come from gameplay drops or GM/event grants. Ownership is permanent for the character; changing stats or gods does not remove it. Character deletion removes ownership through the database foreign key.
 
 The browser is owner-only and expires after five minutes. The server checks ownership again for previews and equips, including stale buttons. Previewing never equips. Menus stay below Discord option and embed limits.
 
@@ -119,11 +144,16 @@ information, an XP progress strip and wealth/XP ranks. The original six receive
 the same visual upgrades. Existing character, item, pet and combat calculations
 are preserved. The classic appearance remains unchanged.
 
-All 36 banners are paintings made with the built-in imagegen tool. Exact
+All 59 banners are paintings made with the built-in imagegen tool. Exact
 prompts are in [prompts.json](prompts.json) for the launch six and
 [expansion-prompts.json](expansion-prompts.json) for the first 21 additions, and
 [god-reference-prompts.json](god-reference-prompts.json) for the three god variants.
-The newest six prompts are preserved in [ascendant-prompts.json](ascendant-prompts.json).
+The previous six prompts are preserved in [ascendant-prompts.json](ascendant-prompts.json).
+The previous ten prompts and monster reference mappings are in [legends-prompts.json](legends-prompts.json).
+The latest thirteen prompts are in [covenant-prompts.json](covenant-prompts.json).
+Bestiary references are Avatar Tynfdarius, Mech-a-Knight and Umbracrown Basilisk (tier 9),
+and Deimos, Void Dragon and Nullstar Behemoth (tier 10). Their original images were
+inspected and supplied to imagegen to retain their recognizable designs.
 The Exalted god set uses the tier-11 image references from `monsters.json`:
 Elysia's black hair, white/crimson robes and golden phoenix throne; Sepulchure's
 crimson DoomKnight armor and skull sword; Drakath's orange eyes, horned shoulders,
@@ -131,13 +161,20 @@ purple chest eye and black cloak. Source URLs and downloaded reference images ar
 preserved under `references/` for provenance and are not needed at runtime. Fonts are
 Cinzel and Lato from Google Fonts, with SIL Open Font Licenses under `fonts/`.
 
+Covenant's exclusive decoration is applied automatically when that theme is equipped or previewed by its owner.
+It stays cosmetic, uses the existing image dimensions, and keeps all stat panels, bars and avatar pixels visible.
+Its frame is rendered locally in Python; no additional database columns or player settings are required.
+
 Everything loads locally at runtime; no image-generation API is called. Only six
 decoded source banners are cached at once, never composed player cards.
 
 ## Preview gallery and validation
 
 [Open the local gallery](previews/index.html) or [overview](previews/collection.jpg).
-Individual full cards and six collection contact sheets are in `previews/`.
+Individual full cards and seven collection contact sheets are in `previews/`.
+[The thirteen newest banners](previews/covenant-showcase.jpg) have their own review sheet,
+including a full-width Mythic spotlight. [Covenant's complete card](previews/allworlds.png)
+shows the exclusive finish. The previous [ten-theme showcase](previews/legends-showcase.jpg) remains available.
 Samples use fictional character data and placeholder avatar/pet portraits.
 Preview files are review artifacts and are not required by the live bot.
 

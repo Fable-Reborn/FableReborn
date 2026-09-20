@@ -96,6 +96,99 @@ class ThemeDrop:
 # ---------------------------------------------------------------------------
 
 COLLECTIBLE_THEMES: dict[str, ThemeDrop] = {
+    "emberkettle": ThemeDrop(
+        UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"],
+        frozenset({"pve", "adventure"}), "Drops from PvE battles and adventures",
+    ),
+    "mossback": ThemeDrop(
+        UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"],
+        frozenset({"pve", "adventure"}), "Drops from PvE battles and adventures",
+    ),
+    "brassbeak": ThemeDrop(
+        UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"],
+        frozenset({"pve", "adventure"}), "Drops from PvE battles and adventures",
+    ),
+    "moonharvest": ThemeDrop(
+        UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"],
+        frozenset({"pve", "adventure"}), "Drops from PvE battles and adventures",
+    ),
+    "stormheron": ThemeDrop(
+        UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"],
+        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
+    ),
+    "velvetprowl": ThemeDrop(
+        UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"],
+        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
+    ),
+    "emberbloom": ThemeDrop(
+        UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"],
+        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
+    ),
+    "tideweaver": ThemeDrop(
+        UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"],
+        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
+    ),
+    "amberreliquary": ThemeDrop(
+        UnlockRule("drop"), "Rare", RARITY_WEIGHTS["Rare"],
+        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
+    ),
+    "frostgardener": ThemeDrop(
+        UnlockRule("drop"), "Rare", RARITY_WEIGHTS["Rare"],
+        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
+    ),
+    "leviathanswake": ThemeDrop(
+        UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"],
+        frozenset({"adventure", "bt", "boss"}), "Drops from adventures, Battle Tower, and bosses",
+    ),
+    "gravebloom": ThemeDrop(
+        UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"],
+        frozenset({"adventure", "bt", "boss"}), "Drops from adventures, Battle Tower, and bosses",
+    ),
+    "allworlds": ThemeDrop(
+        UnlockRule("drop"), "Mythic", RARITY_WEIGHTS["Mythic"],
+        frozenset({"bt", "boss"}), "Drops from Battle Tower and bosses",
+    ),
+    # Bestiary and the ten-chronicle expansion. All remain hidden until dropped.
+    "tynfdarius": ThemeDrop(
+        UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"],
+        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
+    ),
+    "mechaknight": ThemeDrop(
+        UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"],
+        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
+    ),
+    "umbracrown": ThemeDrop(
+        UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"],
+        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
+    ),
+    "deimos": ThemeDrop(
+        UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"],
+        frozenset({"pve", "bt", "boss"}), "Drops from PvE, Battle Tower, and bosses",
+    ),
+    "voiddragon": ThemeDrop(
+        UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"],
+        frozenset({"pve", "adventure", "boss"}), "Drops from PvE, adventures, and bosses",
+    ),
+    "nullstar": ThemeDrop(
+        UnlockRule("drop"), "Mythic", RARITY_WEIGHTS["Mythic"],
+        frozenset({"bt", "boss"}), "Drops from Battle Tower and bosses",
+    ),
+    "boneglass": ThemeDrop(
+        UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"],
+        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
+    ),
+    "drownedpearl": ThemeDrop(
+        UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"],
+        frozenset({"adventure", "bt", "boss"}), "Drops from adventures, Battle Tower, and bosses",
+    ),
+    "worldheart": ThemeDrop(
+        UnlockRule("drop"), "Mythic", RARITY_WEIGHTS["Mythic"],
+        frozenset({"bt", "boss"}), "Drops from Battle Tower and bosses",
+    ),
+    "sandreign": ThemeDrop(
+        UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"],
+        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
+    ),
     "lanternwake": ThemeDrop(
         UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"],
         frozenset({"pve", "adventure"}), "Drops from PvE battles and adventures",
