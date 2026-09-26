@@ -1963,6 +1963,7 @@ class Profile(commands.Cog):
         raid_defense: Optional[float] = None,
         total_health: Optional[float] = None,
         amulet_data=None,
+        tiamat_player=None,
         theme_key: Optional[str] = None,
     ) -> BytesIO:
         theme = resolve_theme(theme_key or profile.get("prpg_theme")) or THEMES["classic"]
@@ -2185,6 +2186,93 @@ class Profile(commands.Cog):
                 else:
                     left_hand = i
 
+        # Optional Tiamat in-game character portrait. The source sheet uses the
+        # same crop as the standalone preview: (50, 0) -> (94, 50). Inside
+        # PRPG it is rendered at 3x so it fits naturally above the stat bars.
+        ingame_character_rendered = False
+        if tiamat_player and tiamat_player.get("charimg"):
+            try:
+                char_source = Image.open(
+                    BytesIO(bytes(tiamat_player["charimg"]))
+                ).convert("RGBA")
+                char_sprite = char_source.crop((50, 0, 94, 50))
+                char_sprite = char_sprite.resize((132, 150), Image.NEAREST)
+
+                plaque_x = header_rect[0] + 22
+                plaque_y = 132
+                plaque_w = 154
+                plaque_h = 204
+                plaque_header_h = 44
+
+                plaque_fill = (
+                    (46, 31, 19, 245)
+                    if theme.classic
+                    else theme.background
+                )
+                sprite_fill = (
+                    (30, 20, 13, 230)
+                    if theme.classic
+                    else theme.panel
+                )
+
+                draw.rounded_rectangle(
+                    (plaque_x, plaque_y, plaque_x + plaque_w, plaque_y + plaque_h),
+                    radius=14,
+                    fill=plaque_fill,
+                    outline=colors["border_dim"],
+                    width=2,
+                )
+                draw.line(
+                    (
+                        plaque_x + 10,
+                        plaque_y + plaque_header_h,
+                        plaque_x + plaque_w - 10,
+                        plaque_y + plaque_header_h,
+                    ),
+                    fill=colors["border"],
+                    width=2,
+                )
+
+                ig_label_font = card_font(13, "heading")
+                ig_name_font = card_font(17, "heading")
+                ig_label = "In-Game Character"
+                ig_name = str(tiamat_player.get("display_name") or card_name)
+
+                label_text = clip(ig_label, ig_label_font, plaque_w - 18)
+                name_text = clip(ig_name, ig_name_font, plaque_w - 18)
+                draw.text(
+                    (plaque_x + (plaque_w - tw(label_text, ig_label_font)) // 2, plaque_y + 5),
+                    label_text,
+                    font=ig_label_font,
+                    fill=colors["muted"],
+                )
+                draw.text(
+                    (plaque_x + (plaque_w - tw(name_text, ig_name_font)) // 2, plaque_y + 21),
+                    name_text,
+                    font=ig_name_font,
+                    fill=colors["border"],
+                )
+
+                sprite_x = plaque_x + 11
+                sprite_y = plaque_y + plaque_header_h + 5
+                draw.rounded_rectangle(
+                    (sprite_x - 2, sprite_y - 2, sprite_x + 133, sprite_y + 151),
+                    radius=8,
+                    fill=sprite_fill,
+                    outline=colors["border_dim"],
+                    width=1,
+                )
+                canvas.paste(char_sprite, (sprite_x, sprite_y), char_sprite)
+
+                if not theme.classic:
+                    draw_ornament(draw, plaque_x + 8, plaque_y + 22, 5, theme)
+                    draw_ornament(draw, plaque_x + plaque_w - 8, plaque_y + 22, 5, theme)
+
+                ingame_character_rendered = True
+            except Exception:
+                # Bad/missing image data must never stop PRPG from rendering.
+                ingame_character_rendered = False
+
         icon_size, icon_gap = 74, 10
         display_right = right_hand or left_hand
         display_left = left_hand if right_hand else None
@@ -2199,7 +2287,7 @@ class Profile(commands.Cog):
         one_unique_element = len(set(equipped_elements)) == 1 and bool(equipped_elements)
         icon_count = len(element_slots)
         icon_start = header_rect[2] - 22 - (icon_size * icon_count + icon_gap * (icon_count - 1))
-        name_x = header_rect[0] + 22
+        name_x = header_rect[0] + (194 if ingame_character_rendered else 22)
         name_max = max(80, icon_start - name_x - 20)
         draw.text((name_x, 150), clip(card_name, title_font, name_max), font=title_font, fill=colors["text"])
         draw.text((name_x, 208), clip(f"{race_name} | {classes}", subtitle_font, name_max), font=subtitle_font, fill=colors["muted"])
@@ -4196,6 +4284,11 @@ class Profile(commands.Cog):
             )
             pet_data = dict(pet_data) if pet_data else None
             pet_data = mask_pet_record_for_display(self.bot, pet_data)
+            tiamat_player = await conn.fetchrow(
+                'SELECT charimg, display_name FROM tiamat_players WHERE profile_user = $1 LIMIT 1;',
+                user.id,
+            )
+            tiamat_player = dict(tiamat_player) if tiamat_player else None
             pet_name = (
                 get_pet_display_name(
                     self.bot,
@@ -4239,6 +4332,7 @@ class Profile(commands.Cog):
             raid_defense=raid_defense,
             total_health=total_health,
             amulet_data=amulet_data,
+            tiamat_player=tiamat_player,
             theme_key=theme_key,
         )
         await ctx.send(
