@@ -194,7 +194,7 @@ class Tiamat(commands.Cog):
             await ctx.send("I sent your one-use RPG link code by DM.", delete_after=20)
         except Exception as e:
             print(f"Error in link command: {e}")
-            await ctx.send("An error occurred while processing your request. {e}")
+            await ctx.send(f"An error occurred while processing your request. {e}")
 
     @checks.has_char()
     @commands.command(
