@@ -170,27 +170,31 @@ class Tiamat(commands.Cog):
     @commands.command(name="link", brief="Create a private Tiamat RPG link code")
     async def link(self, ctx) -> None:
         try:
-            code, linked = await issue_link_code(self.bot.pool, ctx.author.id)
-        except LookupError as error:
-            return await ctx.send(str(error))
-        if linked:
-            return await ctx.send(
-                f"Your Fable profile is already linked to RPG account "
-                f"**{linked['game_username']}**. Use `$rpg` to view it."
-            )
-        try:
-            await ctx.author.send(
-                "Your one-use Tiamat RPG account link code is:\n\n"
-                f"**`{code}`**\n\n"
-                f"Enter it when creating the RPG account. It expires in "
-                f"{LINK_CODE_TTL_MINUTES} minutes. Never give this code to another player."
-            )
-        except discord.Forbidden:
-            await revoke_link_code(self.bot.pool, ctx.author.id, code)
-            return await ctx.send(
-                "I could not DM you. Enable direct messages and run `$link` again."
-            )
-        await ctx.send("I sent your one-use RPG link code by DM.", delete_after=20)
+            try:
+                code, linked = await issue_link_code(self.bot.pool, ctx.author.id)
+            except LookupError as error:
+                return await ctx.send(str(error))
+            if linked:
+                return await ctx.send(
+                    f"Your Fable profile is already linked to RPG account "
+                    f"**{linked['game_username']}**. Use `$rpg` to view it."
+                )
+            try:
+                await ctx.author.send(
+                    "Your one-use Tiamat RPG account link code is:\n\n"
+                    f"**`{code}`**\n\n"
+                    f"Enter it when creating the RPG account. It expires in "
+                    f"{LINK_CODE_TTL_MINUTES} minutes. Never give this code to another player."
+                )
+            except discord.Forbidden:
+                await revoke_link_code(self.bot.pool, ctx.author.id, code)
+                return await ctx.send(
+                    "I could not DM you. Enable direct messages and run `$link` again."
+                )
+            await ctx.send("I sent your one-use RPG link code by DM.", delete_after=20)
+        except Exception as e:
+            print(f"Error in link command: {e}")
+            await ctx.send("An error occurred while processing your request. {e}")
 
     @checks.has_char()
     @commands.command(
