@@ -2,7 +2,8 @@ import discord
 from discord.ext import commands
 
 from utils.checks import is_gm
-from utils.fables import unlock_fable, unlocked_fables
+from utils.fables import complete_fable, unlock_fable, unlocked_fables
+from .showcase import FableShowcase
 
 
 class Fables(commands.Cog):
@@ -18,12 +19,13 @@ class Fables(commands.Cog):
             rows = await unlocked_fables(self.bot.pool, ctx.author.id)
             if not rows:
                 return await ctx.send("You have not unlocked any Fables yet.")
-            for offset in range(0, len(rows), 20):
-                embed = discord.Embed(title="Your Fables", colour=discord.Colour.gold())
-                embed.description = "Stories you have unlocked and can play with your linked game account."
-                for row in rows[offset:offset + 20]:
-                    embed.add_field(name=row["title"][:256], value=row["description"][:1024], inline=False)
-                await ctx.send(embed=embed)
+            view = FableShowcase(ctx.author.id, ctx.author.display_name, rows, ctx.author.display_avatar.url)
+            embed, file = view.page()
+            try:
+                view.message = await ctx.send(embed=embed, files=[file] if file else [], view=view)
+            finally:
+                if file:
+                    file.close()
         except Exception as e:
             print(f"Error in fables command: {e}")
             await ctx.send(f"An error occurred while processing your request. {e}")
@@ -40,6 +42,15 @@ class Fables(commands.Cog):
         except Exception as e:
             print(f"Error in unlockfable command: {e}")
             await ctx.send(f"An error occurred while processing your request. {e}")
+
+
+    @commands.command(name="completefable", hidden=True)
+    @is_gm()
+    async def completefable(self, ctx, user: discord.User, fable_id: str):
+        changed = await complete_fable(self.bot.pool, user.id, fable_id)
+        await ctx.send(f"{user.display_name}: {fable_id} " + (
+            "marked completed." if changed else "is already completed or has not been unlocked."
+        ))
 
 
 async def setup(bot):
