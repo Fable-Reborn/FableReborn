@@ -1009,7 +1009,8 @@ class InventoryCategoryView(discord.ui.View):
 class PlayerSettingsView(discord.ui.View):
     """One place for the user preferences that were previously separate commands."""
 
-    def __init__(self, ctx, profile_cog, *, profile_old, hp_bar_style, pve_splices, pve_default):
+    def __init__(self, ctx, profile_cog, *, profile_old, hp_bar_style, pve_splices, pve_default,
+                 has_ingame_character=False, show_ingame_character=True):
         super().__init__(timeout=300)
         self.ctx = ctx
         self.profile_cog = profile_cog
@@ -1018,6 +1019,10 @@ class PlayerSettingsView(discord.ui.View):
         self.hp_bar_style = str(hp_bar_style or "normal")
         self.pve_splices = bool(pve_splices)
         self.pve_default = pve_default
+        self.has_ingame_character = has_ingame_character
+        self.show_ingame_character = show_ingame_character
+        if not has_ingame_character:
+            self.remove_item(self.ingame_character_button)
         self.message = None
         self.sync_buttons()
 
@@ -1027,6 +1032,13 @@ class PlayerSettingsView(discord.ui.View):
         async with ctx.bot.pool.acquire() as conn:
             profile_old = await conn.fetchval(
                 'SELECT profilestyle FROM profile WHERE "user"=$1;', ctx.author.id
+            )
+            show_ingame_character = await conn.fetchval(
+                'SELECT show_ingame_character FROM profile WHERE "user"=$1;', ctx.author.id
+            )
+            has_ingame_character = await conn.fetchval(
+                'SELECT EXISTS (SELECT 1 FROM tiamat_players WHERE profile_user=$1 '
+                'AND octet_length(charimg)>0);', ctx.author.id
             )
         if battles:
             hp_bar_style = await battles._get_user_hp_bar_style(ctx.author.id)
@@ -1045,9 +1057,15 @@ class PlayerSettingsView(discord.ui.View):
             hp_bar_style=hp_bar_style,
             pve_splices=pve_splices,
             pve_default=pve_default,
+            has_ingame_character=has_ingame_character,
+            show_ingame_character=show_ingame_character is not False,
         )
 
     def sync_buttons(self):
+        self.ingame_character_button.label = f"In-game Character: {'On' if self.show_ingame_character else 'Off'}"
+        self.ingame_character_button.style = (
+            discord.ButtonStyle.success if self.show_ingame_character else discord.ButtonStyle.secondary
+        )
         self.profile_style_button.label = "Profile: Old" if self.profile_old else "Profile: New"
         self.battle_bars_button.label = f"HP Bars: {self.hp_bar_style.replace('_', ' ').title()}"
         self.pve_splices_button.label = f"PvE Splices: {'On' if self.pve_splices else 'Off'}"
@@ -1066,6 +1084,8 @@ class PlayerSettingsView(discord.ui.View):
             value=(
                 f"Display style: **{'Old' if self.profile_old else 'New'}**\n"
                 "Use **Profile Layout** for element positioning."
+                + (f"\nIn-game character on RPG profile: **{'On' if self.show_ingame_character else 'Off'}**"
+                   if self.has_ingame_character else "")
             ),
             inline=False,
         )
@@ -1105,6 +1125,21 @@ class PlayerSettingsView(discord.ui.View):
             self.author_id,
         )
         await self.refresh_message(interaction, "Profile display style updated.")
+
+    @discord.ui.button(label="In-game Character", style=discord.ButtonStyle.success, row=2)
+    async def ingame_character_button(self, interaction, button):
+        enabled = await self.ctx.bot.pool.fetchval(
+            'UPDATE profile SET show_ingame_character=NOT show_ingame_character '
+            'WHERE "user"=$1 AND EXISTS (SELECT 1 FROM tiamat_players '
+            'WHERE profile_user=$1 AND octet_length(charimg)>0) '
+            'RETURNING show_ingame_character;', self.author_id
+        )
+        if enabled is None:
+            return await interaction.response.send_message(
+                "Save a character in-game before changing this setting.", ephemeral=True
+            )
+        self.show_ingame_character = enabled
+        await self.refresh_message(interaction, "In-game character visibility saved. Open your RPG profile to see the change.")
 
     @discord.ui.button(label="HP Bars", style=discord.ButtonStyle.primary, row=0)
     async def battle_bars_button(self, interaction, button):
@@ -2190,7 +2225,7 @@ class Profile(commands.Cog):
         # same crop as the standalone preview: (50, 0) -> (94, 50). Inside
         # PRPG it is rendered at 3x so it fits naturally above the stat bars.
         ingame_character_rendered = False
-        if tiamat_player and tiamat_player.get("charimg"):
+        if profile.get("show_ingame_character", True) and tiamat_player and tiamat_player.get("charimg"):
             try:
                 char_source = Image.open(
                     BytesIO(bytes(tiamat_player["charimg"]))

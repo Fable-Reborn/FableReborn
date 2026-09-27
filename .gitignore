@@ -79,3 +79,5 @@ cogs/fables/README.md
 scripts/fables_showcase.sql
 tests/test_fable_showcase.py
 scripts/crownfall_description.sql
+tests/test_profile_character_toggle.py
+scripts/profile_ingame_character.sql
