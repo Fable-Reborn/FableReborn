@@ -72,3 +72,5 @@ tests/test_profile_themes.py
 tests/test_profile_themes.py
 tests/test_dragon_embed_limits.py
 tests/test_dragon_battle_card.py
+scripts/fables.sql
+tests/test_fable_unlocks.py

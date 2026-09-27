@@ -228,6 +228,8 @@ class Bot(commands.AutoShardedBot):
         )
 
         extensions = list(self.config.bot.initial_extensions)
+        if "cogs.fables" not in extensions:
+            extensions.append("cogs.fables")
         # Quest campaigns, faction-aware conversations, and shops share the
         # Factions service. Load it ahead of Quests even on older configs.
         if "cogs.factions" not in extensions:
