@@ -29,17 +29,17 @@ def build_page(row, index, total, completed, owner_name, avatar_url=None):
         author["icon_url"] = str(avatar_url)
     embed.set_author(**author)
     custom = row.get("protagonist_type") == "custom"
-    protagonist = "**Custom hero**\nYour own character" if custom else (
-        "**Story protagonist**\n" + (row.get("protagonist_name") or "An established character")
+    protagonist = "**Custom hero** · Your own character" if custom else (
+        "**Story protagonist** · " + (row.get("protagonist_name") or "An established character")
     )
     status = "✅ **Completed**" if finished else "◌ **Not completed**"
     if finished:
-        status += f"\nFinished {date_label(row['completed_at'])}"
+        status += f" · Finished {date_label(row['completed_at'])}"
     else:
-        status += "\nAdventure underway" if row.get("started_at") else "Your adventure awaits"
-    embed.add_field(name="Protagonist", value=protagonist, inline=True)
-    embed.add_field(name="Completion", value=status, inline=True)
-    embed.add_field(name="Unlocked", value=date_label(row.get("unlocked_at")), inline=True)
+        status += " · Adventure underway" if row.get("started_at") else " · Your adventure awaits"
+    embed.add_field(name="Protagonist", value=protagonist, inline=False)
+    embed.add_field(name="Completion", value=status, inline=False)
+    embed.add_field(name="Unlocked", value=date_label(row.get("unlocked_at")), inline=False)
     embed.set_footer(text=f"Fable {index + 1} of {total}  •  {completed}/{total} stories completed  •  FableReborn")
     cover = ASSETS / COVERS[row["id"]] if row["id"] in COVERS else None
     if cover and cover.is_file():
