@@ -53,14 +53,14 @@ class CrownConversionModal(discord.ui.Modal, title="Convert Fable gold to crowns
             )
         except (ValueError, LookupError) as error:
             return await interaction.followup.send(str(error), ephemeral=True)
-        except Exception:
+        except Exception as e:
             log.exception(
                 "Unexpected Tiamat crown conversion failure for Discord user %s",
                 interaction.user.id,
             )
             return await interaction.followup.send(
                 "The conversion could not be completed. No balance was changed; "
-                "the error has been logged.",
+                f"the error has been logged. {e}",
                 ephemeral=True,
             )
         await interaction.followup.send(
