@@ -29,6 +29,7 @@ import discord
 from discord.ext import commands
 from discord.ui import View, Button, Modal, TextInput
 from utils import misc as rpgtools
+from utils.ascension import grant_ascension_potions
 
 from discord import Object, HTTPException
 from PIL import Image
@@ -4496,6 +4497,34 @@ class GameMaster(commands.Cog):
 
         await ctx.send(
             f"✅ Gave **1 Reset Potion** to **{int(granted or 0):,}** player(s)."
+        )
+
+    @is_gm()
+    @commands.command(
+        hidden=True,
+        name="gmascensionpotion",
+        aliases=["giveascensionpotion", "gmascentionpotion"],
+        brief=_("Give an ascension reset potion to a user ID or all level-100+ players"),
+    )
+    async def gmascensionpotion(self, ctx, target: str):
+        """Give one potion: gmascensionpotion <user_id|all>. Requires level 100+."""
+        normalized = target.strip().lower()
+        if normalized == "all":
+            user_id = None
+            if not await ctx.confirm("Give **1 Ascension Reset Potion** to every level-100-or-higher character?"):
+                return await ctx.send("Ascension potion grant cancelled.")
+        else:
+            raw_id = normalized.removeprefix("<@").removeprefix("!").removesuffix(">")
+            if not raw_id.isdigit() or not 0 < int(raw_id) < 2**63:
+                return await ctx.send(f"Usage: `{ctx.clean_prefix}gmascensionpotion <user_id|all>`")
+            user_id = int(raw_id)
+        count = await grant_ascension_potions(self.bot, user_id)
+        if not count:
+            return await ctx.send("No eligible characters found. Recipients must have a character at level 100 or higher.")
+        recipient = f"user **{user_id}**" if user_id is not None else f"**{count:,}** level-100+ characters"
+        await ctx.send(
+            f"Gave **1 Ascension Reset Potion** to {recipient}. "
+            f"Use `{ctx.clean_prefix}consume ascension`, then `{ctx.clean_prefix}ascension` to choose again."
         )
 
     @is_gm()

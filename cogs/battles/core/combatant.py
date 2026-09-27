@@ -195,6 +195,17 @@ class Combatant:
                 self.soul_ward = soul_ward - ward_absorbed
                 damage -= ward_absorbed
 
+        # Elysia's ward has its own cap and only its absorption generates Radiance.
+        if not bypass_shield and damage > 0:
+            ward = getattr(self, "ascension_ward", Decimal("0"))
+            absorbed = min(ward, damage)
+            if absorbed > 0:
+                self.ascension_ward = ward - absorbed
+                self.ascension_absorbed = getattr(self, "ascension_absorbed", Decimal("0")) + absorbed
+                damage -= absorbed
+                if self.ascension_ward <= 0:
+                    self.release_ascension_radiance()
+
         # Check if combatant has shield attribute.
         shield_absorbed = Decimal('0')
         if not bypass_shield and hasattr(self, 'shield') and self.shield > 0:
@@ -219,6 +230,15 @@ class Combatant:
 
         return self.hp
 
+    def release_ascension_radiance(self):
+        self.ascension_radiance = min(
+            self.max_hp * Decimal("0.10"),
+            getattr(self, "ascension_radiance", Decimal("0"))
+            + getattr(self, "ascension_absorbed", Decimal("0")) * Decimal("0.50"),
+        )
+        self.ascension_absorbed = Decimal("0")
+        self.ascension_ward = Decimal("0")
+
     def _apply_hp_damage(self, damage):
         """Apply direct HP damage without shield absorption."""
         self.hp -= damage
@@ -230,6 +250,9 @@ class Combatant:
             return
         battle = getattr(self, "battle", None)
         if self.hp <= 0 and battle is not None:
+            ascension_save = getattr(battle, "try_ascension_death_save", None)
+            if callable(ascension_save) and ascension_save(self):
+                return
             seasonal_save = getattr(battle, "try_seasonal_death_save", None)
             if callable(seasonal_save) and seasonal_save(self):
                 return

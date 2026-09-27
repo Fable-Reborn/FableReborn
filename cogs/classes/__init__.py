@@ -163,7 +163,7 @@ class Classes(commands.Cog):
             inline=False,
         )
         embed.set_footer(
-            text="Ascension Mantles are permanent level-100 choices. Use ascension on/off to toggle."
+            text="Level 100+. Use ascension on/off to toggle; consume ascension to reset with a potion."
         )
         return embed
 
@@ -181,7 +181,7 @@ class Classes(commands.Cog):
             At level 100, you may bind yourself to one Ascension Mantle:
             Thronekeeper, Grave Sovereign, or Cyclebreaker.
 
-            This choice is permanent and grants powerful automated battle effects.
+            This choice grants automated battle effects and can be reset with an Ascension Reset Potion.
             Use `{prefix}ascension on` or `{prefix}ascension off` to toggle it later."""
         )
         await self._ensure_ascension_tables()
@@ -221,7 +221,7 @@ class Classes(commands.Cog):
             if mantle is None:
                 return await ctx.send(_("Your ascension record is invalid. Contact a GM."))
             embed = self._build_ascension_embed(mantle.key, enabled=enabled)
-            embed.set_footer(text=f"Your ascension mantle is locked in. Current state: {'Active' if enabled else 'Dormant'}.")
+            embed.set_footer(text=f"Use consume ascension with a reset potion to choose again. Current state: {'Active' if enabled else 'Dormant'}.")
             return await ctx.send(embed=embed)
 
         level = int(rpgtools.xptolevel(ctx.character_data["xp"]))
@@ -244,7 +244,7 @@ class Classes(commands.Cog):
 
         if not await ctx.confirm(
             _(
-                "Bind yourself to **{mantle}**? This choice is permanent."
+                "Bind yourself to **{mantle}**? Changing later requires an Ascension Reset Potion."
             ).format(mantle=chosen_mantle.title)
         ):
             return await ctx.send(_("Ascension cancelled."))

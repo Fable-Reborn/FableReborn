@@ -147,6 +147,10 @@ class RaidBattle(Battle):
         if turns_checked >= max_turns:
             return False
 
+        if not await self.begin_ascension_turn(current_combatant):
+            await self.update_display()
+            return True
+
         silenced_message = self.consume_ascension_action_lock(current_combatant)
         if silenced_message:
             await self.add_to_log(silenced_message)
@@ -309,12 +313,13 @@ class RaidBattle(Battle):
                     if hasattr(current_combatant, 'summon_skeleton'):
                         delattr(current_combatant, 'summon_skeleton')
 
-            grave_message = await self.maybe_trigger_grave_sovereign(
+            ascension_message = await self.resolve_ascension_attack(
                 current_combatant,
                 target,
+                damage,
             )
-            if grave_message:
-                message += "\n" + grave_message
+            if ascension_message:
+                message += "\n" + ascension_message
 
             cycle_message = await self.maybe_trigger_cyclebreaker(
                 target,

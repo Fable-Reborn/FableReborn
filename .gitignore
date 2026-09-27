@@ -81,3 +81,9 @@ tests/test_fable_showcase.py
 scripts/crownfall_description.sql
 tests/test_profile_character_toggle.py
 scripts/profile_ingame_character.sql
+backups/ascension_trial_20260927_204424/manifest.json
+backups/ascension_trial_20260927_204424/original_files.zip
+ASCENSION_TRIAL.md
+backups/ascension_trial_20260927_204424/README.md
+tests/test_ascension_potions.py
+tests/test_ascension_trial.py

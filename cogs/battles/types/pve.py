@@ -255,6 +255,11 @@ class PvEBattle(Battle):
             self.current_turn += 1
             return True
 
+        if not await self.begin_ascension_turn(self.attacker):
+            self.current_turn += 1
+            await self.update_display()
+            return True
+
         silenced_message = self.consume_ascension_action_lock(self.attacker)
         if silenced_message:
             await self.add_to_log(silenced_message)
@@ -424,12 +429,13 @@ class PvEBattle(Battle):
                     if hasattr(self.attacker, 'summon_skeleton'):
                         delattr(self.attacker, 'summon_skeleton')
 
-            grave_message = await self.maybe_trigger_grave_sovereign(
+            ascension_message = await self.resolve_ascension_attack(
                 self.attacker,
                 self.defender,
+                damage,
             )
-            if grave_message:
-                message += "\n" + grave_message
+            if ascension_message:
+                message += "\n" + ascension_message
 
             cycle_message = await self.maybe_trigger_cyclebreaker(
                 self.defender,

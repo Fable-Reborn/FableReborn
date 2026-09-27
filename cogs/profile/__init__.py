@@ -33,6 +33,7 @@ from discord import Embed
 from discord.ext import commands
 
 from classes.ascension import ASCENSION_TABLE_NAME, get_ascension_mantle
+from utils.ascension import consume_ascension_potion, ensure_ascension_potions
 from classes.badges import Badge
 from classes.bot import Bot
 from classes.classes import from_string as class_from_string
@@ -3668,10 +3669,20 @@ class Profile(commands.Cog):
     async def consume(self, ctx, item_type: str, target_arg: str = None, *, extra: str = None):
         """
         Consume either a reset potion, candy, or premium consumable.
-        Valid types: reset, candy, highcandy, petage <pet_id>, petspeed <pet_id>, petxp <pet_id>, petmindwipe, petelement <pet_id> <element>, weapelement <weapon_id> <element>
+        Valid types: ascension, reset, candy, highcandy, petage <pet_id>, petspeed <pet_id>, petxp <pet_id>, petmindwipe, petelement <pet_id> <element>, weapelement <weapon_id> <element>
         """
         try:
             item_type = item_type.lower()
+            if item_type in {"ascension", "ascention", "ascensionpotion", "ascension reset potion"}:
+                if not await ctx.confirm("Consume **1 Ascension Reset Potion** to clear your mantle and choose again?"):
+                    await self.bot.reset_cooldown(ctx)
+                    return await ctx.send("Ascension reset cancelled. Your potion was kept.")
+                success, message = await consume_ascension_potion(self.bot, ctx.author.id)
+                if success:
+                    message += f" Use `{ctx.clean_prefix}ascension` to choose your new mantle."
+                else:
+                    await self.bot.reset_cooldown(ctx)
+                return await ctx.send(message)
             target_value = str(target_arg).strip() if target_arg is not None else None
 
             def parse_single_numeric_target():
@@ -3983,7 +3994,7 @@ class Profile(commands.Cog):
                 
             else:
                 await ctx.send(
-                    "Unknown item type. Valid types are: reset, candy, highcandy, "
+                    "Unknown item type. Valid types are: ascension, reset, candy, highcandy, "
                     "petage <pet_id>, petspeed <pet_id>, petxp <pet_id>, "
                     "petmindwipe, petelement <pet_id> <element>, "
                     "weapelement <weapon_id> <element>"
@@ -4672,6 +4683,18 @@ class Profile(commands.Cog):
         }
         potion_definitions = (
             {
+                "entry_key": "potion:ascension",
+                "name": "Ascension Reset Potion",
+                "quantity": int(profile_data.get("ascension_reset_potions") or 0),
+                "description": "Clears your chosen ascension so you can choose a new mantle at level 100+.",
+                "summary": "Resets your ascension after confirmation; keeps your classes and stats.",
+                "consume_key": "ascension",
+                "usage_command": "ascension",
+                "button_enabled": True,
+                "action_text": "Drink it to reset your ascension after confirmation.",
+                "button_note": "",
+            },
+            {
                 "entry_key": "potion:reset",
                 "name": "Reset Potion",
                 "quantity": int(profile_data.get("resetpotion") or 0),
@@ -4903,6 +4926,7 @@ class Profile(commands.Cog):
         return categories
 
     async def _fetch_inventory_categories(self, user_id: int, *, conn=None) -> list[dict]:
+        await ensure_ascension_potions(self.bot)
         local = conn is None
         if local:
             conn = await self.bot.pool.acquire()
@@ -4917,6 +4941,11 @@ class Profile(commands.Cog):
             )
             if not profile_row:
                 return []
+
+            profile_row = dict(profile_row)
+            profile_row["ascension_reset_potions"] = await conn.fetchval(
+                "SELECT quantity FROM ascension_reset_potions WHERE user_id = $1;", user_id
+            ) or 0
 
             amulets = await conn.fetch(
                 """

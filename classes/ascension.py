@@ -29,14 +29,15 @@ ASCENSION_MANTLES: dict[str, AscensionMantle] = {
             "Elysia offered you service beneath her light. You took her authority "
             "instead. The battlefield now answers to your decree."
         ),
-        signature_name="Edict of Silence",
+        signature_name="Radiant Covenant",
         signature_summary=(
-            "At battle start, you cast a divine decree that shields your allies "
-            "and binds the enemy's first action."
+            "Protect your party with renewing wards. When a ward breaks, expires, "
+            "or renews, half its absorbed damage empowers the protected ally's next hit."
         ),
         passive_lines=(
-            "Opens battle with a radiant team barrier.",
-            "The enemy's first action is sealed by throne-law.",
+            "Opening ward: 15% of each ally's max HP; renews to at least 8% every 3 personal turns.",
+            "Wards last 3 recipient turns and do not stack with other Elysia wards.",
+            "Radiance stores up to 10% of the recipient's max HP; normal shields do not charge it.",
         ),
     ),
     "grave_sovereign": AscensionMantle(
@@ -48,14 +49,16 @@ ASCENSION_MANTLES: dict[str, AscensionMantle] = {
             "Sepulchure offered you godhood through slaughter. You claimed "
             "something colder: dominion over endings themselves."
         ),
-        signature_name="Usurp the Fallen",
+        signature_name="Doom and Reap",
         signature_summary=(
-            "When an enemy weakens, you rip a Grave Echo from its soul, deal a "
-            "burst of finishing damage, and force the echo to fight for you."
+            "Successful attacks build Doom. Below 25% HP, an enemy with at least "
+            "3 stacks suffers Reap, consuming the stacks for a finishing burst."
         ),
         passive_lines=(
-            "Consumes weakened enemies with burst true damage.",
-            "Raises a Grave Echo to fight at your side once per battle.",
+            "One stack per successful turn, maximum 5; expires after 3 target turns without refresh.",
+            "Each stack ticks for 6% of your attack, capped at 1.5% of the target's max HP, at their turn start.",
+            "Reap deals 4 ticks at once, capped at 10% target max HP; shields still protect against Doom and Reap.",
+            "Killing a marked enemy carries half its stacks to your next target. No clone or instant boss kill.",
         ),
     ),
     "cyclebreaker": AscensionMantle(
@@ -69,12 +72,14 @@ ASCENSION_MANTLES: dict[str, AscensionMantle] = {
         ),
         signature_name="I Reject This Timeline",
         signature_summary=(
-            "At battle start, your element adapts to the enemy. On your first "
-            "death, reality tears open, you return, and a Paradox Echo joins the fight."
+            "Open with a targetable Paradox Echo that mirrors your attacks. "
+            "Reject one fatal hit by sacrificing your surviving echo."
         ),
         passive_lines=(
-            "Adapts your element to counter the enemy at battle start.",
-            "Once per battle, fatal damage is rejected and a Paradox Echo appears.",
+            "Chaos Surge adds 30% damage on turns 1, 3, 5...; intervening turns are recovery turns.",
+            "Echo: 25% of your max HP, 50% armor; mirrors 20% of one resolved hit per turn without its own action.",
+            "Once per battle, a living echo is sacrificed to revive you at 30% HP. Destroying it prevents the revive.",
+            "Your chosen attack and defense elements stay unchanged.",
         ),
     ),
 }

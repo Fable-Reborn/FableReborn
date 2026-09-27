@@ -576,6 +576,11 @@ class DragonBattle(Battle):
             await self.update_display(wait_for_turn_delay=True)
             return True
 
+        if not await self.begin_ascension_turn(current_combatant):
+            self._decrement_status_effects(current_combatant)
+            await self.update_display(wait_for_turn_delay=True)
+            return True
+
         silenced_message = self.consume_ascension_action_lock(current_combatant)
         if silenced_message:
             await self.add_to_log(silenced_message)
@@ -1320,6 +1325,7 @@ class DragonBattle(Battle):
         
         # Apply Reality Bender passive effect (50% chance to negate attack)
         reality_bender_negated = False
+        ascension_attack_damage = Decimal("0")
         spec_after_messages = []
         if is_dragon_target and "Reality Bender" in target.passives and random.random() < 0.5:
             reality_bender_negated = True
@@ -1332,6 +1338,7 @@ class DragonBattle(Battle):
             message = f"{player.name} attacks!{crit_message} 🌀 **REALITY BENDER** negates the attack! {player.name} takes **{self.format_number(reflected_damage)} HP** reflected damage!"
         else:
             # Apply damage to dragon normally
+            ascension_attack_damage = final_damage
             self.apply_damage(player, target, final_damage)
             if self.config.get("class_buffs", True) and not getattr(player, "is_pet", False):
                 spec_after_messages = self.spec_ext.after_attack_damage(
@@ -1392,6 +1399,8 @@ class DragonBattle(Battle):
                     fireball_damage,
             )
             self.apply_damage(player, target, fireball_damage)
+            if ascension_attack_damage <= 0:
+                ascension_attack_damage = fireball_damage
             fireball_after_messages = []
             if self.config.get("class_buffs", True):
                 fireball_after_messages = self.spec_ext.after_attack_damage(
@@ -1513,9 +1522,11 @@ class DragonBattle(Battle):
             if hasattr(player, 'summon_skeleton'):
                 delattr(player, 'summon_skeleton')
 
-        grave_message = await self.maybe_trigger_grave_sovereign(player, target)
-        if grave_message:
-            message += f"\n{grave_message}"
+        ascension_message = await self.resolve_ascension_attack(
+            player, target, ascension_attack_damage
+        )
+        if ascension_message:
+            message += f"\n{ascension_message}"
 
         cycle_message = await self.maybe_trigger_cyclebreaker(target, player)
         if cycle_message:
