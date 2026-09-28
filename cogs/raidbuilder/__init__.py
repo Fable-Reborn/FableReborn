@@ -1,10 +1,12 @@
 import asyncio
 import copy
 import json
+import io
 import random as randomm
 import re
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,17 @@ from utils.checks import is_gm, is_god
 from utils.i18n import _
 from utils.joins import JoinView
 
+from .advanced import AdvancedBuilderMixin, AdvancedOptionsView
+from .engine import advanced_starter, validate_encounter
+from .mechanics import upgrade_encounter
+from .canvas import editor_html, import_package, MAX_PACKAGE_BYTES
+from .storage import (
+    RaidStore,
+    library_counts,
+    registry_edit,
+    registry_navigation,
+    require_slot,
+)
 
 EVIL_INTRO_IMAGE_URL = "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_78926c12-aef0-4c89-8d83-867a1d82cef0.png"
 EVIL_SENTINEL_IMAGE_URL = "https://pub-0e7afc36364b4d5dbd1fd2bea161e4d1.r2.dev/295173706496475136_68592fa3-a675-4f9e-afea-d71716725426.png"
@@ -37,7 +50,7 @@ EVIL_GUARDIAN_PHASE_IMAGE_URLS = {
 class SkeletonOptionGroup:
     title: str
     summary: str
-    options: tuple[str, ...] = field(default_factory=tuple)
+    options: tuple[str, ...] = dataclass_field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -48,7 +61,9 @@ class RaidModeSpec:
     summary: str
     legacy_command: str
     legacy_usage: str
-    option_groups: tuple[SkeletonOptionGroup, ...] = field(default_factory=tuple)
+    option_groups: tuple[SkeletonOptionGroup, ...] = dataclass_field(
+        default_factory=tuple
+    )
 
 
 MODE_SPECS: dict[str, RaidModeSpec] = {
@@ -901,6 +916,10 @@ class RaidBuilderFormModal(Modal):
         super().__init__(title=title[:45])
         self.builder_view = builder_view
         self.submit_handler = submit_handler
+        self.edit_revision = builder_view.cog.registry_revision
+        self.definition_id = builder_view.selected_definition_id
+        self.page_key = builder_view.current_page_key
+        self.item_key = builder_view.current_item_key
         self.inputs = {}
         for field in fields[:5]:
             widget = TextInput(
@@ -914,6 +933,7 @@ class RaidBuilderFormModal(Modal):
             self.inputs[field["key"]] = widget
             self.add_item(widget)
 
+    @registry_edit
     async def on_submit(self, interaction: discord.Interaction):
         if interaction.user.id != self.builder_view.author.id:
             return await interaction.response.send_message(
@@ -922,7 +942,14 @@ class RaidBuilderFormModal(Modal):
             )
         values = {key: widget.value for key, widget in self.inputs.items()}
         try:
-            response_text = await self.submit_handler(values)
+            definition = self.builder_view.cog._get_definition(self.definition_id)
+            self.builder_view.cog._assert_owned(
+                definition, interaction.user.id, draft=True
+            )
+            payload = self.builder_view.cog._builder_page_payload(
+                definition, self.page_key, self.item_key
+            )
+            response_text = await payload["submit_handler"](values)
         except ValueError as exc:
             return await interaction.response.send_message(str(exc), ephemeral=True)
         await interaction.response.defer(ephemeral=True)
@@ -934,8 +961,13 @@ class RaidBuilderFormModal(Modal):
 class RaidBuilderNewDraftModal(Modal, title="Create Raid Draft"):
     def __init__(self, builder_view: "RaidBuilderPanelView"):
         super().__init__()
-        suggested = f"{builder_view.selected_mode}_draft"
+        suggested = builder_view.cog._unique_builder_key(
+            set(builder_view.cog.registry["definitions"]),
+            f"{builder_view.selected_mode}_{builder_view.author.id}_draft",
+        )
         self.builder_view = builder_view
+        self.edit_revision = builder_view.cog.registry_revision
+        self.mode_key = builder_view.selected_mode
         self.definition_id = TextInput(
             label="Definition ID",
             placeholder="my_custom_raid",
@@ -946,7 +978,7 @@ class RaidBuilderNewDraftModal(Modal, title="Create Raid Draft"):
         default_skeleton = MODE_SPECS[builder_view.selected_mode].skeleton
         self.skeleton = TextInput(
             label="Skeleton Template",
-            placeholder="trial, ritual, or attrition",
+            placeholder="trial, ritual, attrition, or advanced",
             default=default_skeleton,
             required=True,
             max_length=16,
@@ -954,6 +986,7 @@ class RaidBuilderNewDraftModal(Modal, title="Create Raid Draft"):
         self.add_item(self.definition_id)
         self.add_item(self.skeleton)
 
+    @registry_edit
     async def on_submit(self, interaction: discord.Interaction):
         if interaction.user.id != self.builder_view.author.id:
             return await interaction.response.send_message(
@@ -977,18 +1010,15 @@ class RaidBuilderNewDraftModal(Modal, title="Create Raid Draft"):
         skeleton_key = self.builder_view.cog._coerce_skeleton_key(self.skeleton.value)
         if skeleton_key is None:
             return await interaction.response.send_message(
-                "Skeleton templates must be one of `good`, `evil`, `chaos`, `trial`, `ritual`, or `attrition`.",
+                "Choose `trial`, `ritual`, `attrition`, or `advanced`.",
                 ephemeral=True,
             )
 
-        self.builder_view.cog.registry["definitions"][normalized_definition_id] = (
-            self.builder_view.cog.build_draft_from_starter(
-                self.builder_view.selected_mode,
-                normalized_definition_id,
-                skeleton_key=skeleton_key,
-            )
+        self.builder_view.cog._new_personal_draft(
+            self.mode_key, normalized_definition_id, skeleton_key, interaction.user.id
         )
-        self.builder_view.cog._save_registry()
+        await self.builder_view.cog._save_registry()
+        self.builder_view.selected_mode = self.mode_key
         self.builder_view.selected_definition_id = normalized_definition_id
         self.builder_view.current_page_key = None
         self.builder_view.current_item_key = None
@@ -1020,6 +1050,7 @@ class RaidBuilderModeSelect(Select):
             row=0,
         )
 
+    @registry_navigation
     async def callback(self, interaction: discord.Interaction):
         self.builder_view.selected_mode = self.values[0]
         self.builder_view.selected_definition_id = None
@@ -1033,8 +1064,20 @@ class RaidBuilderDefinitionSelect(Select):
     def __init__(self, builder_view: "RaidBuilderPanelView"):
         self.builder_view = builder_view
         definitions = builder_view._definitions_for_selected_mode()
+        current = builder_view.current_definition()
+        if current and current not in definitions:
+            definitions.append(current)
         options = []
-        for definition in definitions[:25]:
+        selected_index = next(
+            (
+                i
+                for i, d in enumerate(definitions)
+                if d["id"] == builder_view.selected_definition_id
+            ),
+            0,
+        )
+        self.page_start = selected_index // 23 * 23
+        for definition in definitions[self.page_start : self.page_start + 23]:
             definition_id = definition["id"]
             status = definition.get("status", "draft")
             active = (
@@ -1053,6 +1096,12 @@ class RaidBuilderDefinitionSelect(Select):
                     default=definition_id == builder_view.selected_definition_id,
                 )
             )
+        if self.page_start:
+            options.append(
+                discord.SelectOption(label="Previous raids", value="__previous__")
+            )
+        if self.page_start + 23 < len(definitions):
+            options.append(discord.SelectOption(label="More raids", value="__next__"))
         if not options:
             options.append(
                 discord.SelectOption(
@@ -1071,9 +1120,21 @@ class RaidBuilderDefinitionSelect(Select):
             disabled=not definitions,
         )
 
+    @registry_navigation
     async def callback(self, interaction: discord.Interaction):
-        if self.values[0] != "__none__":
-            self.builder_view.selected_definition_id = self.values[0]
+        value = self.values[0]
+        if value in {"__next__", "__previous__"}:
+            definitions = self.builder_view._definitions_for_selected_mode()
+            index = max(
+                0,
+                min(
+                    len(definitions) - 1,
+                    self.page_start + (23 if value == "__next__" else -23),
+                ),
+            )
+            value = definitions[index]["id"]
+        if value != "__none__":
+            self.builder_view.selected_definition_id = value
             self.builder_view.current_page_key = None
             self.builder_view.current_item_key = None
         await interaction.response.defer()
@@ -1101,6 +1162,7 @@ class RaidBuilderPageSelect(Select):
             row=2,
         )
 
+    @registry_navigation
     async def callback(self, interaction: discord.Interaction):
         self.builder_view.current_page_key = self.values[0]
         self.builder_view.current_item_key = None
@@ -1111,16 +1173,31 @@ class RaidBuilderPageSelect(Select):
 class RaidBuilderItemSelect(Select):
     def __init__(self, builder_view: "RaidBuilderPanelView"):
         self.builder_view = builder_view
-        options = []
-        for item in builder_view._item_options():
-            options.append(
-                discord.SelectOption(
-                    label=item["label"][:100],
-                    value=item["key"],
-                    description=item["description"][:100],
-                    default=item["key"] == builder_view.current_item_key,
-                )
+        items = builder_view._item_options()
+        selected_index = next(
+            (
+                i
+                for i, item in enumerate(items)
+                if item["key"] == builder_view.current_item_key
+            ),
+            0,
+        )
+        self.page_start = (selected_index // 23) * 23
+        options = [
+            discord.SelectOption(
+                label=item["label"][:100],
+                value=item["key"],
+                description=item["description"][:100],
+                default=item["key"] == builder_view.current_item_key,
             )
+            for item in items[self.page_start : self.page_start + 23]
+        ]
+        if self.page_start:
+            options.append(
+                discord.SelectOption(label="Previous items", value="__previous__")
+            )
+        if self.page_start + 23 < len(items):
+            options.append(discord.SelectOption(label="More items", value="__next__"))
         super().__init__(
             placeholder="Choose the page item",
             min_values=1,
@@ -1129,8 +1206,20 @@ class RaidBuilderItemSelect(Select):
             row=3,
         )
 
+    @registry_navigation
     async def callback(self, interaction: discord.Interaction):
-        self.builder_view.current_item_key = self.values[0]
+        value = self.values[0]
+        if value in {"__next__", "__previous__"}:
+            items = self.builder_view._item_options()
+            index = max(
+                0,
+                min(
+                    len(items) - 1,
+                    self.page_start + (23 if value == "__next__" else -23),
+                ),
+            )
+            value = items[index]["key"]
+        self.builder_view.current_item_key = value
         await interaction.response.defer()
         await self.builder_view.refresh_message()
 
@@ -1139,14 +1228,22 @@ class RaidBuilderStructureView(View):
     def __init__(self, builder_view: "RaidBuilderPanelView"):
         super().__init__(timeout=300)
         self.builder_view = builder_view
+        self.edit_revision = builder_view.cog.registry_revision
+        self.definition_id = builder_view.selected_definition_id
+        self.page_key = builder_view.current_page_key
+        self.item_key = builder_view.current_item_key
         self._sync_buttons()
 
     def _state(self) -> dict[str, Any]:
-        return self.builder_view.structure_state()
+        return self.builder_view.cog._builder_structure_state(
+            self.builder_view.cog._get_definition(self.definition_id),
+            self.page_key,
+            self.item_key,
+        )
 
     def _build_embed(self) -> discord.Embed:
         state = self._state()
-        definition = self.builder_view.current_definition()
+        definition = self.builder_view.cog._get_definition(self.definition_id)
         embed = discord.Embed(
             title="Builder Structure",
             color=discord.Color.orange(),
@@ -1185,29 +1282,39 @@ class RaidBuilderStructureView(View):
         self.move_up_button.disabled = not supported or not state.get("can_move_up")
         self.move_down_button.disabled = not supported or not state.get("can_move_down")
 
+    @registry_edit
     async def _run_action(self, interaction: discord.Interaction, action: str, *, delta: int = 0):
         if interaction.user.id != self.builder_view.author.id:
             return await interaction.response.send_message(
                 "This structure panel is not for you.",
                 ephemeral=True,
             )
-        definition = self.builder_view.current_definition()
-        if definition is None or self.builder_view.current_page_key is None:
+        definition = self.builder_view.cog._get_definition(self.definition_id)
+        if definition is None or self.page_key is None:
             return await interaction.response.send_message(
                 "No editable list is selected.",
                 ephemeral=True,
             )
         try:
-            page_key, item_key, message = self.builder_view.cog._builder_structure_action(
-                definition,
-                self.builder_view.current_page_key,
-                self.builder_view.current_item_key,
-                action,
-                delta=delta,
+            self.builder_view.cog._assert_owned(
+                definition, interaction.user.id, draft=True
+            )
+            page_key, item_key, message = (
+                await self.builder_view.cog._builder_structure_action(
+                    definition,
+                    self.page_key,
+                    self.item_key,
+                    action,
+                    delta=delta,
+                )
             )
         except ValueError as exc:
             return await interaction.response.send_message(str(exc), ephemeral=True)
 
+        self.edit_revision = self.builder_view.cog.registry_revision
+        self.page_key, self.item_key = page_key, item_key
+        self.builder_view.selected_mode = definition["mode"]
+        self.builder_view.selected_definition_id = self.definition_id
         self.builder_view.current_page_key = page_key
         self.builder_view.current_item_key = item_key
         self._sync_buttons()
@@ -1240,9 +1347,11 @@ class RaidBuilderDeleteDefinitionView(View):
     def __init__(self, builder_view: "RaidBuilderPanelView"):
         super().__init__(timeout=120)
         self.builder_view = builder_view
+        self.edit_revision = builder_view.cog.registry_revision
+        self.definition_id = builder_view.selected_definition_id
 
     def _build_embed(self) -> discord.Embed:
-        definition = self.builder_view.current_definition()
+        definition = self.builder_view.cog._get_definition(self.definition_id)
         embed = discord.Embed(
             title="Delete Raid Definition",
             color=discord.Color.red(),
@@ -1283,17 +1392,22 @@ class RaidBuilderDeleteDefinitionView(View):
         return False
 
     @discord.ui.button(label="Delete", style=discord.ButtonStyle.danger)
+    @registry_edit
     async def confirm_button(self, interaction: discord.Interaction, button: Button):
         if await self._deny_foreign_user(interaction):
             return
-        definition = self.builder_view.current_definition()
+        definition = self.builder_view.cog._get_definition(self.definition_id)
         if definition is None:
             return await interaction.response.send_message(
                 "No definition is selected.",
                 ephemeral=True,
             )
         try:
-            cleared_modes = self.builder_view.cog._delete_definition(definition["id"])
+            definition = self.builder_view.cog._get_definition(self.definition_id)
+            self.builder_view.cog._assert_owned(definition, interaction.user.id)
+            cleared_modes = await self.builder_view.cog._delete_definition(
+                definition["id"]
+            )
         except ValueError as exc:
             return await interaction.response.send_message(str(exc), ephemeral=True)
 
@@ -1343,6 +1457,9 @@ class RaidBuilderPanelView(View):
         self.cog = cog
         self.ctx = ctx
         self.author = ctx.author
+        self.registry_revision = cog.registry_revision
+        self.initial_mode = initial_mode
+        self.initial_definition_id = initial_definition_id
         self.selected_mode = initial_mode or "good"
         self.selected_definition_id = initial_definition_id
         self.current_page_key: str | None = None
@@ -1368,6 +1485,10 @@ class RaidBuilderPanelView(View):
             definition
             for definition in self.cog.registry["definitions"].values()
             if definition.get("mode") == self.selected_mode
+            and (
+                not hasattr(self, "author")
+                or definition.get("creator_id") in (None, self.author.id)
+            )
         ]
         return sorted(
             definitions,
@@ -1381,7 +1502,14 @@ class RaidBuilderPanelView(View):
         active_definition_id = self.cog._get_active_definition_id(self.selected_mode)
         if active_definition_id:
             active_definition = self.cog._get_definition(active_definition_id)
-            if active_definition and active_definition.get("mode") == self.selected_mode:
+            if (
+                active_definition
+                and active_definition.get("mode") == self.selected_mode
+                and (
+                    not hasattr(self, "author")
+                    or active_definition.get("creator_id") in (None, self.author.id)
+                )
+            ):
                 return active_definition_id
 
         definitions = self._definitions_for_selected_mode()
@@ -1479,8 +1607,19 @@ class RaidBuilderPanelView(View):
             self.current_definition() is None or not self.structure_state().get("supported")
         )
         self.edit_page_button.disabled = self.current_definition() is None
+        selected = self.current_definition()
+        owned_draft = (
+            selected
+            and selected.get("creator_id") == self.author.id
+            and selected.get("status") != "published"
+        )
+        self.edit_page_button.label = "Edit" if owned_draft else "Copy / Revise"
+        self.structure_button.disabled = (
+            self.structure_button.disabled or not owned_draft
+        )
         self.delete_definition_button.disabled = (
             self.current_definition() is None
+            or self.current_definition().get("creator_id") != self.author.id
             or not self.cog._can_delete_definition(self.current_definition()["id"])
         )
 
@@ -1491,7 +1630,10 @@ class RaidBuilderPanelView(View):
             self.state_button.style = discord.ButtonStyle.secondary
             return
 
-        self.state_button.disabled = False
+        self.state_button.disabled = definition.get("creator_id") not in (
+            None,
+            self.author.id,
+        )
         is_active = self.cog._get_active_definition_id(self.selected_mode) == definition["id"]
         status = definition.get("status", "draft")
         if is_active:
@@ -1548,17 +1690,53 @@ class RaidBuilderPanelView(View):
             ]
         else:
             footer_bits = [f"Owner: {self.selected_mode}", "Definition: none"]
+        counts = library_counts(self.cog.registry, self.author.id)
+        footer_bits.extend(
+            (f"Saved {counts['saved']}/5", f"Drafts {counts['drafts']}/10")
+        )
         embed.set_footer(text=" • ".join(footer_bits))
         return embed
 
+    async def _remember(self):
+        try:
+            await self.cog.store.save_preferences(
+                self.author.id,
+                getattr(self.ctx.guild, "id", 0),
+                {
+                    "mode": self.selected_mode,
+                    "definition": self.selected_definition_id,
+                    "page": self.current_page_key,
+                    "item": self.current_item_key,
+                },
+            )
+        except Exception:
+            # Preference failure must not falsely report a committed raid edit as lost.
+            self.cog.bot.logger.warning(
+                "Could not save raid builder navigation", exc_info=True
+            )
+
     async def start(self):
+        saved = await self.cog.store.preferences(
+            self.author.id, getattr(self.ctx.guild, "id", 0)
+        )
+        if not self.initial_mode and not self.initial_definition_id:
+            self.selected_mode = saved.get("mode", "good")
+        if not self.initial_definition_id and saved.get("mode") == self.selected_mode:
+            self.selected_definition_id = saved.get("definition")
+        if self.selected_definition_id == saved.get("definition"):
+            self.current_page_key = saved.get("page")
+            self.current_item_key = saved.get("item")
         self._sync_controls()
+        self.registry_revision = self.cog.registry_revision
         self.message = await self.ctx.send(embed=self._build_embed(), view=self)
+        await self._remember()
 
     async def refresh_message(self):
         self._sync_controls()
+        self.registry_revision = self.cog.registry_revision
         if self.message is not None:
             await self.message.edit(embed=self._build_embed(), view=self)
+        await self._remember()
 
     @discord.ui.button(label="Structure", style=discord.ButtonStyle.secondary, row=4)
     async def structure_button(self, interaction: discord.Interaction, button: Button):
@@ -1574,8 +1752,46 @@ class RaidBuilderPanelView(View):
         await interaction.response.send_modal(RaidBuilderNewDraftModal(self))
 
     @discord.ui.button(label="Edit", style=discord.ButtonStyle.primary, row=4)
+    @registry_edit
     async def edit_page_button(self, interaction: discord.Interaction, button: Button):
+        definition = self.current_definition()
+        if definition and (
+            definition.get("creator_id") != self.author.id
+            or definition.get("status") == "published"
+        ):
+            new_id = self.cog._unique_builder_key(
+                set(self.cog.registry["definitions"]), f"raid_{self.author.id}_draft"
+            )
+            draft = self.cog._new_personal_draft(
+                self.selected_mode,
+                new_id,
+                definition["skeleton"],
+                self.author.id,
+                source=definition,
+            )
+            await self.cog._save_registry()
+            self.selected_definition_id = draft["id"]
+            await interaction.response.defer(ephemeral=True)
+            await self.refresh_message()
+            await interaction.followup.send(
+                "Created your draft. Edit it, then Publish to save it. The current saved raid stays unchanged.",
+                ephemeral=True,
+            )
+            return
+        if definition and definition.get("skeleton") == "encounter" and self.current_page_key == "canvas":
+            content = editor_html(definition)
+            await interaction.response.send_message(
+                f"Open this canvas in your browser. Download Save File when finished and attach it to `raidmode import {definition['id']}`.",
+                file=discord.File(io.BytesIO(content), filename=f"raid_canvas_{definition['id']}.html"), ephemeral=True)
+            return
         payload = self._current_payload()
+        if payload.get("option_fields"):
+            await interaction.response.send_message(
+                "Choose settings below, then use Details for text and numbers.",
+                view=AdvancedOptionsView(self),
+                ephemeral=True,
+            )
+            return
         submit_handler = payload.get("submit_handler")
         form_fields = payload.get("form_fields") or []
         if submit_handler is None or not form_fields:
@@ -1608,6 +1824,7 @@ class RaidBuilderPanelView(View):
         )
 
     @discord.ui.button(label="State", style=discord.ButtonStyle.success, row=4)
+    @registry_edit
     async def state_button(self, interaction: discord.Interaction, button: Button):
         definition = self.current_definition()
         if definition is None:
@@ -1616,10 +1833,12 @@ class RaidBuilderPanelView(View):
                 ephemeral=True,
             )
 
+        if definition.get("creator_id") not in (None, interaction.user.id):
+            raise ValueError("Only the raid creator can change its state.")
         is_active = self.cog._get_active_definition_id(self.selected_mode) == definition["id"]
         if is_active:
             self.cog.registry["modes"][self.selected_mode]["active_definition_id"] = None
-            self.cog._save_registry()
+            await self.cog._save_registry()
             await interaction.response.defer(ephemeral=True)
             await self.refresh_message()
             await interaction.followup.send(
@@ -1629,18 +1848,19 @@ class RaidBuilderPanelView(View):
             return
 
         if definition.get("status") != "published":
-            definition["status"] = "published"
-            self.cog._save_registry()
+            published_id = self.cog._publish_personal(definition, interaction.user.id)
+            await self.cog._save_registry()
+            self.selected_definition_id = published_id
             await interaction.response.defer(ephemeral=True)
             await self.refresh_message()
             await interaction.followup.send(
-                f"Published `{definition['id']}`.",
+                f"Published `{published_id}`.",
                 ephemeral=True,
             )
             return
 
         self.cog.registry["modes"][self.selected_mode]["active_definition_id"] = definition["id"]
-        self.cog._save_registry()
+        await self.cog._save_registry()
         await interaction.response.defer(ephemeral=True)
         await self.refresh_message()
         await interaction.followup.send(
@@ -1649,18 +1869,100 @@ class RaidBuilderPanelView(View):
         )
 
 
-class RaidBuilder(commands.Cog):
+class RaidBuilder(AdvancedBuilderMixin, commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.registry_path = Path("assets/data/raid_builder_registry.json")
-        self.registry = self._load_registry()
+        self.registry_path = (
+            Path(__file__).resolve().parents[2]
+            / "assets/data/raid_builder_registry.json"
+        )
+        self.registry = self.default_registry()
+        self.registry_revision = 0
+        self._edit_lock = asyncio.Lock()
+        self.store = RaidStore(bot.pool)
+
+    async def cog_load(self):
+        raw, self.registry_revision = await self.store.initialize(self._load_registry)
+        self.registry = self.normalize_registry(raw)
+
+    async def _refresh_registry_unlocked(self):
+        raw, revision = await self.store.load()
+        if revision != self.registry_revision:
+            self.registry = self.normalize_registry(raw)
+            self.registry_revision = revision
+
+    async def cog_before_invoke(self, ctx):
+        async with self._edit_lock:
+            await self._refresh_registry_unlocked()
+
+    def _assert_owned(self, definition, user_id, *, draft=False):
+        if definition is None:
+            raise ValueError("That raid no longer exists.")
+        if definition.get("creator_id") != user_id:
+            raise ValueError("Copy this template to your own draft before editing it.")
+        if draft and definition.get("status") == "published":
+            raise ValueError(
+                "Use Revise to create an editable draft of this saved raid."
+            )
+
+    def _new_personal_draft(self, mode, definition_id, skeleton, user_id, source=None):
+        require_slot(self.registry, user_id, "draft")
+        if definition_id in self.registry["definitions"]:
+            raise ValueError(f"Definition `{definition_id}` already exists.")
+        if source is None:
+            draft = self.build_draft_from_starter(
+                mode, definition_id, skeleton_key=skeleton
+            )
+        else:
+            draft = copy.deepcopy(source)
+            draft.update(id=definition_id, status="draft")
+            draft.pop("replaces_definition_id", None)
+            if (
+                source.get("creator_id") == user_id
+                and source.get("status") == "published"
+            ):
+                draft["replaces_definition_id"] = source["id"]
+                draft["source_revision"] = source.get("content_revision", 1)
+        draft["creator_id"] = user_id
+        self.registry["definitions"][definition_id] = draft
+        return draft
+
+    def _publish_personal(self, definition, user_id):
+        self._assert_owned(definition, user_id)
+        if definition.get("status") == "published":
+            return definition["id"]
+        if definition.get("skeleton") == "encounter":
+            validate_encounter(definition["config"]["encounter"])
+        replacement_id = definition.get("replaces_definition_id")
+        previous = self._get_definition(replacement_id) if replacement_id else None
+        if previous is not None:
+            self._assert_owned(previous, user_id)
+            if previous.get("status") != "published" or previous.get(
+                "content_revision", 1
+            ) != definition.get("source_revision"):
+                raise ValueError(
+                    "The saved raid changed since this draft was created. Copy it to a new draft and merge your changes."
+                )
+        else:
+            require_slot(self.registry, user_id, "published")
+        published = copy.deepcopy(definition)
+        published["id"] = previous["id"] if previous else definition["id"]
+        published["status"] = "published"
+        published["content_revision"] = (
+            previous.get("content_revision", 1) if previous else 0
+        ) + 1
+        published.pop("replaces_definition_id", None)
+        published.pop("source_revision", None)
+        del self.registry["definitions"][definition["id"]]
+        self.registry["definitions"][published["id"]] = published
+        return published["id"]
 
     @classmethod
     def default_registry(cls) -> dict[str, Any]:
         return {
+            "schema_version": 2,
             "modes": {
-                mode_key: {"active_definition_id": None}
-                for mode_key in MODE_SPECS
+                mode_key: {"active_definition_id": None} for mode_key in MODE_SPECS
             },
             "definitions": copy.deepcopy(STARTER_DEFINITIONS),
         }
@@ -1692,11 +1994,26 @@ class RaidBuilder(commands.Cog):
         if skeleton is not None:
             definition["skeleton"] = skeleton
 
+        if skeleton == "encounter":
+            definition["config"]["encounter"] = upgrade_encounter(definition["config"]["encounter"])
+            return definition
+        collections = {}
+        for section, collection in (
+            ("champion", "actions"),
+            ("priest", "actions"),
+            ("followers", "actions"),
+            ("guardian", "abilities"),
+        ):
+            current = definition.get("config", {}).get(section, {}).get(collection)
+            if isinstance(current, dict):
+                collections[(section, collection)] = copy.deepcopy(current)
         starter_id = SKELETON_STARTER_DEFINITION_IDS.get(skeleton)
         if starter_id:
             cls._fill_missing(definition, copy.deepcopy(STARTER_DEFINITIONS[starter_id]))
 
         config = definition.setdefault("config", {})
+        for (section, collection), items in collections.items():
+            config[section][collection] = items
         announce = config.setdefault("announce", {})
         if skeleton == "trial":
             cls._fill_missing(config.setdefault("presentation", {}), _good_presentation())
@@ -1911,6 +2228,8 @@ class RaidBuilder(commands.Cog):
         normalized_skeleton = cls._normalize_skeleton_key(skeleton_key, mode_key=normalized_mode)
         if normalized_skeleton is None:
             raise ValueError(f"Unknown skeleton `{skeleton_key}`.")
+        if normalized_skeleton == "encounter":
+            return advanced_starter(normalized_mode, definition_id)
         starter_definition_id = SKELETON_STARTER_DEFINITION_IDS[normalized_skeleton]
         starter_definition = copy.deepcopy(STARTER_DEFINITIONS[starter_definition_id])
         starter_definition["mode"] = normalized_mode
@@ -1923,24 +2242,19 @@ class RaidBuilder(commands.Cog):
         return starter_definition
 
     def _load_registry(self) -> dict[str, Any]:
-        raw: Any = None
-        if self.registry_path.exists():
-            try:
-                raw = json.loads(self.registry_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                raw = None
+        # Import only. Never rewrite the legacy source, including on failure.
+        if not self.registry_path.exists():
+            return self.default_registry()
+        raw = json.loads(self.registry_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict) or not isinstance(raw.get("definitions"), dict):
+            raise ValueError(
+                "Legacy raid registry is invalid; repair it before importing."
+            )
+        return self.normalize_registry(raw)
 
-        registry = self.normalize_registry(raw)
-        self._save_registry(registry)
-        return registry
-
-    def _save_registry(self, registry: dict[str, Any] | None = None) -> None:
-        data = registry or self.registry
-        self.registry_path.parent.mkdir(parents=True, exist_ok=True)
-        self.registry_path.write_text(
-            json.dumps(data, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
+    async def _save_registry(self, registry: dict[str, Any] | None = None) -> None:
+        data = self.registry if registry is None else registry
+        self.registry_revision = await self.store.save(data, self.registry_revision)
 
     def _get_mode_spec(self, mode_key: str) -> RaidModeSpec | None:
         return MODE_SPECS.get(mode_key.casefold())
@@ -1959,6 +2273,8 @@ class RaidBuilder(commands.Cog):
         if not isinstance(value, str):
             return None
         normalized = value.casefold().strip()
+        if normalized in {"advanced", "encounter"}:
+            return "encounter"
         if normalized in SKELETON_STARTER_DEFINITION_IDS:
             return normalized
         spec = MODE_SPECS.get(normalized)
@@ -1994,7 +2310,7 @@ class RaidBuilder(commands.Cog):
     def _can_delete_definition(self, definition_id: str) -> bool:
         return definition_id not in STARTER_DEFINITION_IDS.values()
 
-    def _delete_definition(self, definition_id: str) -> list[str]:
+    async def _delete_definition(self, definition_id: str) -> list[str]:
         normalized_definition_id = definition_id.casefold()
         if normalized_definition_id not in self.registry["definitions"]:
             raise ValueError(f"Definition `{normalized_definition_id}` does not exist.")
@@ -2006,7 +2322,7 @@ class RaidBuilder(commands.Cog):
             self.registry["modes"][mode_key]["active_definition_id"] = None
 
         del self.registry["definitions"][normalized_definition_id]
-        self._save_registry()
+        await self._save_registry()
         return cleared_modes
 
     def _get_definition(self, definition_id: str) -> dict[str, Any] | None:
@@ -2271,7 +2587,7 @@ class RaidBuilder(commands.Cog):
             return
 
         try:
-            await self._run_custom_definition(ctx, definition, **kwargs)
+            await self._run_custom_definition(ctx, copy.deepcopy(definition), **kwargs)
         except Exception as exc:
             await ctx.send(
                 f"Custom raid definition `{definition['id']}` failed before completion: {exc}"
@@ -2284,6 +2600,9 @@ class RaidBuilder(commands.Cog):
         **kwargs: Any,
     ) -> None:
         skeleton = self._definition_skeleton_key(definition)
+        if skeleton == "encounter":
+            await self._run_encounter_definition(ctx, definition)
+            return
         if skeleton == "trial":
             await self._run_trial_definition(ctx, definition)
             return
@@ -4024,6 +4343,8 @@ class RaidBuilder(commands.Cog):
         page_key: str | None,
         item_key: str | None,
     ) -> dict[str, Any]:
+        if definition and definition.get("skeleton") == "encounter":
+            return self._advanced_structure_state(definition, page_key, item_key)
         if definition is None or page_key is None:
             return {"supported": False, "reason": "Choose a list page first."}
 
@@ -4123,7 +4444,7 @@ class RaidBuilder(commands.Cog):
 
         return {"supported": False, "reason": "This skeleton does not expose structural editing here."}
 
-    def _builder_structure_action(
+    async def _builder_structure_action(
         self,
         definition: dict[str, Any],
         page_key: str,
@@ -4133,6 +4454,10 @@ class RaidBuilder(commands.Cog):
         delta: int = 0,
     ) -> tuple[str | None, str | None, str]:
         config = definition["config"]
+        if definition.get("skeleton") == "encounter":
+            return await self._advanced_structure_action(
+                definition, page_key, item_key, action, delta=delta
+            )
         normalized_page = "guardian_ability" if page_key == "guardian_ability_copy" else page_key
         skeleton = self._definition_skeleton_key(definition)
 
@@ -4145,20 +4470,20 @@ class RaidBuilder(commands.Cog):
             if action == "add":
                 new_key = self._unique_builder_key(phase_keys, "phase")
                 phases.append(self._new_good_phase(new_key))
-                self._save_registry()
+                await self._save_registry()
                 return "phase", new_key, f"Added phase `{new_key}`. Use `Edit` to customize it."
             if action == "duplicate":
                 source = copy.deepcopy(phases[current_index])
                 source["key"] = self._unique_builder_key(phase_keys, f"{current_key}_copy")
                 phases.insert(current_index + 1, source)
-                self._save_registry()
+                await self._save_registry()
                 return "phase", source["key"], f"Duplicated phase `{current_key}`."
             if action == "delete":
                 if len(phases) <= 1:
                     raise ValueError("At least one phase must remain.")
                 del phases[current_index]
                 next_index = max(0, min(current_index, len(phases) - 1))
-                self._save_registry()
+                await self._save_registry()
                 return "phase", phases[next_index]["key"], f"Deleted phase `{current_key}`."
             if action == "move":
                 target_index = max(0, min(len(phases) - 1, current_index + delta))
@@ -4166,7 +4491,7 @@ class RaidBuilder(commands.Cog):
                     raise ValueError("That phase cannot move any further.")
                 phase = phases.pop(current_index)
                 phases.insert(target_index, phase)
-                self._save_registry()
+                await self._save_registry()
                 return "phase", phase["key"], f"Moved phase `{phase['key']}`."
 
         if skeleton == "trial" and normalized_page == "event":
@@ -4180,18 +4505,18 @@ class RaidBuilder(commands.Cog):
             event_index = max(0, min(int(raw_index), len(events) - 1))
             if action == "add":
                 events.insert(event_index + 1, self._new_good_event())
-                self._save_registry()
+                await self._save_registry()
                 return "event", f"{phase_key}:{event_index + 1}", f"Added a new event to `{phase_key}`."
             if action == "duplicate":
                 events.insert(event_index + 1, copy.deepcopy(events[event_index]))
-                self._save_registry()
+                await self._save_registry()
                 return "event", f"{phase_key}:{event_index + 1}", f"Duplicated an event in `{phase_key}`."
             if action == "delete":
                 if len(events) <= 1:
                     raise ValueError("At least one event must remain in a phase.")
                 del events[event_index]
                 next_index = max(0, min(event_index, len(events) - 1))
-                self._save_registry()
+                await self._save_registry()
                 return "event", f"{phase_key}:{next_index}", f"Deleted an event from `{phase_key}`."
             if action == "move":
                 target_index = max(0, min(len(events) - 1, event_index + delta))
@@ -4199,7 +4524,7 @@ class RaidBuilder(commands.Cog):
                     raise ValueError("That event cannot move any further.")
                 event = events.pop(event_index)
                 events.insert(target_index, event)
-                self._save_registry()
+                await self._save_registry()
                 return "event", f"{phase_key}:{target_index}", f"Moved an event within `{phase_key}`."
 
         if skeleton == "ritual" and normalized_page in {
@@ -4235,7 +4560,7 @@ class RaidBuilder(commands.Cog):
                 rebuilt = self._insert_after_dict_item(container, keys[-1], new_key, new_value)
                 container.clear()
                 container.update(rebuilt)
-                self._save_registry()
+                await self._save_registry()
                 return page_key, new_key, f"Added {entity_name} `{new_key}`."
             if action == "duplicate":
                 new_key = self._unique_builder_key(keys, f"{current_key}_copy")
@@ -4244,7 +4569,7 @@ class RaidBuilder(commands.Cog):
                 rebuilt = self._insert_after_dict_item(container, current_key, new_key, new_value)
                 container.clear()
                 container.update(rebuilt)
-                self._save_registry()
+                await self._save_registry()
                 return page_key, new_key, f"Duplicated {entity_name} `{current_key}`."
             if action == "delete":
                 if len(keys) <= 1:
@@ -4254,7 +4579,7 @@ class RaidBuilder(commands.Cog):
                 container.update(rebuilt)
                 next_keys = list(container.keys())
                 next_index = max(0, min(current_index, len(next_keys) - 1))
-                self._save_registry()
+                await self._save_registry()
                 return page_key, next_keys[next_index], f"Deleted {entity_name} `{current_key}`."
             if action == "move":
                 rebuilt = self._reordered_dict(container, current_key, delta)
@@ -4262,7 +4587,7 @@ class RaidBuilder(commands.Cog):
                     raise ValueError("That item cannot move any further.")
                 container.clear()
                 container.update(rebuilt)
-                self._save_registry()
+                await self._save_registry()
                 return page_key, current_key, f"Moved {entity_name} `{current_key}`."
 
         if skeleton == "ritual" and normalized_page == "guardian_phase":
@@ -4281,18 +4606,18 @@ class RaidBuilder(commands.Cog):
                         next_threshold,
                     ),
                 )
-                self._save_registry()
+                await self._save_registry()
                 return "guardian_phase", str(phase_index + 1), "Added a guardian phase."
             if action == "duplicate":
                 phases.insert(phase_index + 1, copy.deepcopy(phases[phase_index]))
-                self._save_registry()
+                await self._save_registry()
                 return "guardian_phase", str(phase_index + 1), "Duplicated a guardian phase."
             if action == "delete":
                 if len(phases) <= 1:
                     raise ValueError("At least one guardian phase must remain.")
                 del phases[phase_index]
                 next_index = max(0, min(phase_index, len(phases) - 1))
-                self._save_registry()
+                await self._save_registry()
                 return "guardian_phase", str(next_index), "Deleted a guardian phase."
             if action == "move":
                 target_index = max(0, min(len(phases) - 1, phase_index + delta))
@@ -4300,7 +4625,7 @@ class RaidBuilder(commands.Cog):
                     raise ValueError("That guardian phase cannot move any further.")
                 phase = phases.pop(phase_index)
                 phases.insert(target_index, phase)
-                self._save_registry()
+                await self._save_registry()
                 return "guardian_phase", str(target_index), "Moved a guardian phase."
 
         raise ValueError("This page does not support structural editing yet.")
@@ -4340,6 +4665,8 @@ class RaidBuilder(commands.Cog):
         return embed
 
     def _builder_page_specs(self, skeleton_key: str) -> list[dict[str, str]]:
+        if skeleton_key == "encounter":
+            return self._advanced_page_specs()
         if skeleton_key == "trial":
             return [
                 {"key": "overview", "label": "Overview", "description": "Name, description, join settings"},
@@ -4392,6 +4719,8 @@ class RaidBuilder(commands.Cog):
         ]
 
     def _builder_item_options(self, definition: dict[str, Any], page_key: str) -> list[dict[str, str]]:
+        if definition.get("skeleton") == "encounter":
+            return self._advanced_item_options(definition, page_key)
         config = definition["config"]
         skeleton = self._definition_skeleton_key(definition)
         if skeleton == "trial":
@@ -4579,6 +4908,8 @@ class RaidBuilder(commands.Cog):
                 "submit_handler": None,
             }
         skeleton = self._definition_skeleton_key(definition)
+        if skeleton == "encounter":
+            return self._advanced_page_payload(definition, page_key, item_key)
         if skeleton == "trial":
             return self._good_builder_page_payload(definition, page_key, item_key)
         if skeleton == "ritual":
@@ -4599,7 +4930,7 @@ class RaidBuilder(commands.Cog):
         async def submit(values):
             slot["image_url"] = self._parse_optional_text(values["image_url"])
             slot["thumbnail_url"] = self._parse_optional_text(values["thumbnail_url"])
-            self._save_registry()
+            await self._save_registry()
             return f"Updated media slot `{slot_key}`."
 
         return {
@@ -4642,7 +4973,7 @@ class RaidBuilder(commands.Cog):
         async def submit(values):
             for key, label in fields_spec:
                 colors[key] = self._parse_hex_color(values[key], label)
-            self._save_registry()
+            await self._save_registry()
             return "Updated theme colors."
 
         return {
@@ -4698,7 +5029,7 @@ class RaidBuilder(commands.Cog):
                 values["crate_pool"],
                 "Crate pool",
             )
-            self._save_registry()
+            await self._save_registry()
             return submit_message
 
         fields = [
@@ -4812,7 +5143,7 @@ class RaidBuilder(commands.Cog):
                 config["join_timeout"] = self._parse_int(values["join_timeout"], "Join timeout", min_value=30)
                 config["min_survivors"] = self._parse_int(values["min_survivors"], "Minimum survivors", min_value=1)
                 config["max_rounds"] = self._parse_int(values["max_rounds"], "Maximum rounds", min_value=1)
-                self._save_registry()
+                await self._save_registry()
                 return "Updated good raid overview."
 
             return {
@@ -4841,7 +5172,7 @@ class RaidBuilder(commands.Cog):
                 announce["description"] = self._require_text(values["description"], "Description")
                 announce["join_label"] = self._require_text(values["join_label"], "Join label")
                 announce["joined_message"] = self._require_text(values["joined_message"], "Joined message")
-                self._save_registry()
+                await self._save_registry()
                 return "Updated good raid announce copy."
 
             return {
@@ -4873,7 +5204,7 @@ class RaidBuilder(commands.Cog):
             if item_key == "start_message":
                 async def submit(values):
                     announce["start_message"] = self._require_text(values["message"], "Start message")
-                    self._save_registry()
+                    await self._save_registry()
                     return "Updated trial start message."
 
                 return {
@@ -4914,7 +5245,7 @@ class RaidBuilder(commands.Cog):
                     key=lambda entry: int(entry.get("remaining", 0)),
                     reverse=True,
                 )
-                self._save_registry()
+                await self._save_registry()
                 return f"Updated trial countdown `{countdown_entry.get('label', countdown_key)}`."
 
             return {
@@ -4943,7 +5274,7 @@ class RaidBuilder(commands.Cog):
             if item_key == "no_valid":
                 async def submit(values):
                     config["no_valid_text"] = self._require_text(values["message"], "No valid text")
-                    self._save_registry()
+                    await self._save_registry()
                     return "Updated trial no-valid copy."
 
                 return {
@@ -4967,7 +5298,7 @@ class RaidBuilder(commands.Cog):
             if item_key == "defeat":
                 async def submit(values):
                     config["defeat_text"] = self._require_text(values["message"], "Defeat text")
-                    self._save_registry()
+                    await self._save_registry()
                     return "Updated trial defeat copy."
 
                 return {
@@ -4990,7 +5321,7 @@ class RaidBuilder(commands.Cog):
 
             async def submit(values):
                 config["winner_text"] = self._require_text(values["message"], "Victory text")
-                self._save_registry()
+                await self._save_registry()
                 return "Updated trial victory copy."
 
             return {
@@ -5050,7 +5381,7 @@ class RaidBuilder(commands.Cog):
                 config["result_delay"] = self._parse_int(values["result_delay"], "Result delay", min_value=0)
                 config["eligibility"]["god"] = self._require_text(values["eligibility_god"], "Eligibility god")
                 config["winner_text"] = self._require_text(values["winner_text"], "Winner text")
-                self._save_registry()
+                await self._save_registry()
                 return "Updated good raid timing settings."
 
             return {
@@ -5087,7 +5418,7 @@ class RaidBuilder(commands.Cog):
                 phase["title"] = self._require_text(values["title"], "Phase title")
                 phase["description"] = self._require_text(values["description"], "Phase description")
                 phase["weight"] = self._parse_int(values["weight"], "Phase weight", min_value=1)
-                self._save_registry()
+                await self._save_registry()
                 return f"Updated phase `{phase['key']}`."
 
             return {
@@ -5117,7 +5448,7 @@ class RaidBuilder(commands.Cog):
             event["mercy_chance"] = self._parse_int(values["mercy_chance"], "Mercy chance", min_value=0, max_value=100)
             event["win_text"] = self._require_text(values["win_text"], "Win text")
             event["lose_text"] = self._require_text(values["lose_text"], "Lose text")
-            self._save_registry()
+            await self._save_registry()
             return f"Updated `{phase['key']}` event `{event['text']}`."
 
         return {
@@ -5156,7 +5487,7 @@ class RaidBuilder(commands.Cog):
                 config["eligibility"]["god"] = self._require_text(values["eligibility_god"], "Eligibility god")
                 config["join_timeout"] = self._parse_int(values["join_timeout"], "Join timeout", min_value=30)
                 config["max_rounds"] = self._parse_int(values["max_rounds"], "Max rounds", min_value=1)
-                self._save_registry()
+                await self._save_registry()
                 return "Updated chaos raid overview."
 
             return {
@@ -5184,7 +5515,7 @@ class RaidBuilder(commands.Cog):
                 announce["description"] = self._require_text(values["description"], "Description")
                 announce["join_label"] = self._require_text(values["join_label"], "Join label")
                 announce["joined_message"] = self._require_text(values["joined_message"], "Joined message")
-                self._save_registry()
+                await self._save_registry()
                 return "Updated chaos raid announce copy."
 
             return {
@@ -5229,7 +5560,7 @@ class RaidBuilder(commands.Cog):
 
             async def submit(values):
                 messages[bucket_key] = self._require_text(values["message"], label)
-                self._save_registry()
+                await self._save_registry()
                 return f"Updated chaos outcome copy `{bucket_key}`."
 
             return {
@@ -5265,7 +5596,7 @@ class RaidBuilder(commands.Cog):
                 config["boss_name"] = self._require_text(values["boss_name"], "Boss name")
                 config["boss_hp"] = self._parse_int(values["boss_hp"], "Boss HP", min_value=1)
                 config["player_hp"] = self._parse_int(values["player_hp"], "Player HP", min_value=1)
-                self._save_registry()
+                await self._save_registry()
                 return "Updated chaos boss core."
 
             return {
@@ -5294,7 +5625,7 @@ class RaidBuilder(commands.Cog):
                 attack["normal_max"] = self._parse_int(values["normal_max"], "Normal max", min_value=attack["normal_min"])
                 attack["critical_min"] = self._parse_int(values["critical_min"], "Critical min", min_value=0)
                 attack["critical_max"] = self._parse_int(values["critical_max"], "Critical max", min_value=attack["critical_min"])
-                self._save_registry()
+                await self._save_registry()
                 return "Updated chaos boss attack tuning."
 
             return {
@@ -5323,7 +5654,7 @@ class RaidBuilder(commands.Cog):
                 event["heal_chance"] = self._parse_float(values["heal_chance"], "Heal chance", min_value=0.0, max_value=1.0)
                 event["heal_min"] = self._parse_int(values["heal_min"], "Heal min", min_value=0)
                 event["heal_max"] = self._parse_int(values["heal_max"], "Heal max", min_value=event["heal_min"])
-                self._save_registry()
+                await self._save_registry()
                 return "Updated chaos heal event."
 
             return {
@@ -5349,7 +5680,7 @@ class RaidBuilder(commands.Cog):
                 event["pulse_chance"] = self._parse_float(values["pulse_chance"], "Pulse chance", min_value=0.0, max_value=1.0)
                 event["pulse_damage"] = self._parse_int(values["pulse_damage"], "Pulse damage", min_value=0)
                 event["pulse_targets"] = self._parse_int(values["pulse_targets"], "Pulse targets", min_value=1)
-                self._save_registry()
+                await self._save_registry()
                 return "Updated chaos pulse event."
 
             return {
@@ -5378,7 +5709,7 @@ class RaidBuilder(commands.Cog):
                 player_damage["normal_max"] = self._parse_int(values["normal_max"], "Normal max", min_value=player_damage["normal_min"])
                 player_damage["critical_min"] = self._parse_int(values["critical_min"], "Critical min", min_value=0)
                 player_damage["critical_max"] = self._parse_int(values["critical_max"], "Critical max", min_value=player_damage["critical_min"])
-                self._save_registry()
+                await self._save_registry()
                 return "Updated follower damage tuning."
 
             return {
@@ -5411,7 +5742,7 @@ class RaidBuilder(commands.Cog):
                 messages[bucket_key] = self._parse_message_lines(values["messages"])
             else:
                 messages[bucket_key] = self._require_text(values["messages"], "Message text")
-            self._save_registry()
+            await self._save_registry()
             return f"Updated message bucket `{bucket_key}`."
 
         return {
@@ -5446,7 +5777,7 @@ class RaidBuilder(commands.Cog):
                 config["eligibility"]["god"] = self._require_text(values["eligibility_god"], "Eligibility god")
                 config["join_timeout"] = self._parse_int(values["join_timeout"], "Join timeout", min_value=30)
                 config["decision_timeout"] = self._parse_int(values["decision_timeout"], "Decision timeout", min_value=10)
-                self._save_registry()
+                await self._save_registry()
                 return "Updated evil raid overview."
 
             return {
@@ -5475,7 +5806,7 @@ class RaidBuilder(commands.Cog):
                 announce["leader_label"] = self._require_text(values["leader_label"], "Leader button label")
                 announce["follower_label"] = self._require_text(values["follower_label"], "Follower button label")
                 announce["leader_joined_message"] = self._require_text(values["leader_joined_message"], "Leader joined message")
-                self._save_registry()
+                await self._save_registry()
                 return "Updated ritual announce copy."
 
             return {
@@ -5510,7 +5841,7 @@ class RaidBuilder(commands.Cog):
             if item_key == "start_message":
                 async def submit(values):
                     announce["start_message"] = self._require_text(values["message"], "Start message")
-                    self._save_registry()
+                    await self._save_registry()
                     return "Updated ritual start message."
 
                 return {
@@ -5534,7 +5865,7 @@ class RaidBuilder(commands.Cog):
             if item_key == "eligibility_message":
                 async def submit(values):
                     announce["eligibility_message"] = self._require_text(values["message"], "Eligibility message")
-                    self._save_registry()
+                    await self._save_registry()
                     return "Updated ritual eligibility check message."
 
                 return {
@@ -5571,7 +5902,7 @@ class RaidBuilder(commands.Cog):
                     min_value=1,
                 )
                 countdown_entry["message"] = self._require_text(values["message"], "Message")
-                self._save_registry()
+                await self._save_registry()
                 return f"Updated countdown `{countdown_entry.get('label', countdown_key)}`."
 
             return {
@@ -5631,7 +5962,7 @@ class RaidBuilder(commands.Cog):
                 labels["priest"] = self._require_text(values["priest"], "Priest label")
                 labels["followers"] = self._require_text(values["followers"], "Followers label")
                 labels["guardian"] = self._require_text(values["guardian"], "Guardian label")
-                self._save_registry()
+                await self._save_registry()
                 return "Updated ritual role labels."
 
             return {
@@ -5667,7 +5998,7 @@ class RaidBuilder(commands.Cog):
 
             async def submit(values, text_key=text_key, label=label):
                 texts[text_key] = self._require_text(values["message"], label)
-                self._save_registry()
+                await self._save_registry()
                 return f"Updated ritual outcome copy `{text_key}`."
 
             return {
@@ -5699,7 +6030,7 @@ class RaidBuilder(commands.Cog):
             async def submit(values, prompt=prompt):
                 prompt["title"] = self._require_text(values["title"], "Title")
                 prompt["description"] = self._require_text(values["description"], "Description")
-                self._save_registry()
+                await self._save_registry()
                 return f"Updated ritual prompt `{prompt_key}`."
 
             return {
@@ -5726,7 +6057,7 @@ class RaidBuilder(commands.Cog):
                 ritual["max_turns"] = self._parse_int(values["max_turns"], "Max turns", min_value=1)
                 ritual["guardian_collapse_progress"] = self._parse_int(values["guardian_collapse_progress"], "Guardian collapse progress", min_value=0)
                 config["allow_ai_fallback"] = self._parse_bool(values["allow_ai_fallback"], "Allow AI fallback")
-                self._save_registry()
+                await self._save_registry()
                 return "Updated ritual core."
 
             return {
@@ -5759,7 +6090,7 @@ class RaidBuilder(commands.Cog):
                 champion["heal_amount"] = self._parse_int(values["heal_amount"], "Heal amount", min_value=0)
                 champion["haste_progress"] = self._parse_int(values["haste_progress"], "Haste progress", min_value=0)
                 champion["haste_cooldown"] = self._parse_int(values["haste_cooldown"], "Haste cooldown", min_value=0)
-                self._save_registry()
+                await self._save_registry()
                 return "Updated champion core."
 
             return {
@@ -5795,7 +6126,7 @@ class RaidBuilder(commands.Cog):
                 action["display_name"] = self._require_text(values["display_name"], "Display name")
                 action["description"] = self._require_text(values["description"], "Description")
                 action["result_text"] = self._require_text(values["result_text"], "Result text")
-                self._save_registry()
+                await self._save_registry()
                 return f"Updated champion action `{action_name}`."
 
             return {
@@ -5831,7 +6162,7 @@ class RaidBuilder(commands.Cog):
                 champion["sacrifice_progress"] = self._parse_int(values["sacrifice_progress"], "Sacrifice progress", min_value=0)
                 champion["defend_multiplier"] = self._parse_float(values["defend_multiplier"], "Defend multiplier", min_value=0.0)
                 champion["vulnerable_multiplier"] = self._parse_float(values["vulnerable_multiplier"], "Vulnerable multiplier", min_value=0.0)
-                self._save_registry()
+                await self._save_registry()
                 return "Updated champion risk settings."
 
             return {
@@ -5859,7 +6190,7 @@ class RaidBuilder(commands.Cog):
             async def submit(values):
                 priest["max_mana"] = self._parse_int(values["max_mana"], "Max mana", min_value=0)
                 priest["mana_regen"] = self._parse_int(values["mana_regen"], "Mana regen", min_value=0)
-                self._save_registry()
+                await self._save_registry()
                 return "Updated priest core."
 
             return {
@@ -5898,7 +6229,7 @@ class RaidBuilder(commands.Cog):
                             action[key] = self._parse_float(values[key], field_name, min_value=0.0)
                         else:
                             action[key] = self._parse_int(values[key], field_name, min_value=0)
-                self._save_registry()
+                await self._save_registry()
                 return f"Updated priest action `{action_name}`."
 
             form_fields = [
@@ -5949,7 +6280,7 @@ class RaidBuilder(commands.Cog):
                             action[key] = self._parse_float(values[key], field_name, min_value=0.0)
                         else:
                             action[key] = self._parse_int(values[key], field_name, min_value=0)
-                self._save_registry()
+                await self._save_registry()
                 return f"Updated follower action `{action_name}`."
 
             form_fields = [
@@ -5985,7 +6316,7 @@ class RaidBuilder(commands.Cog):
             async def submit(values):
                 guardian["max_hp"] = self._parse_int(values["max_hp"], "Max HP", min_value=1)
                 guardian["respawn_hp_ratio"] = self._parse_float(values["respawn_hp_ratio"], "Respawn HP ratio", min_value=0.0, max_value=1.0)
-                self._save_registry()
+                await self._save_registry()
                 return "Updated guardian core."
 
             return {
@@ -6013,7 +6344,7 @@ class RaidBuilder(commands.Cog):
                 phase["description"] = self._require_text(values["description"], "Phase description")
                 phase["image_url"] = self._parse_optional_text(values["image_url"])
                 phase["abilities"] = self._parse_csv_list(values["abilities"])
-                self._save_registry()
+                await self._save_registry()
                 return f"Updated guardian phase `{phase['name']}`."
 
             return {
@@ -6049,7 +6380,7 @@ class RaidBuilder(commands.Cog):
                     ability["shield_text"] = self._require_text(values["shield_text"], "Shield text")
                 if "progress_down" in ability:
                     ability["progress_text"] = self._require_text(values["progress_text"], "Progress text")
-                self._save_registry()
+                await self._save_registry()
                 return f"Updated guardian copy `{ability_name}`."
 
             form_fields = [
@@ -6104,7 +6435,7 @@ class RaidBuilder(commands.Cog):
                 ability["damage_down"] = self._parse_int(values["damage_down"], "Damage down", min_value=0)
             if "heal_ratio" in ability:
                 ability["heal_ratio"] = self._parse_float(values["heal_ratio"], "Heal ratio", min_value=0.0)
-            self._save_registry()
+            await self._save_registry()
             return f"Updated guardian ability `{ability_name}`."
 
         form_fields = []
@@ -6140,7 +6471,9 @@ class RaidBuilder(commands.Cog):
         embed = discord.Embed(
             title="Raid Builder Modes",
             description=(
-                "This cog is the skeleton registry for remastered god raids. "
+                "Open `raidmode builder` to resume editing. Each GM has 5 saved raids "
+                "and 10 drafts shared across normal and advanced mode. "
+                "Create an Advanced draft for branching encounters, custom actions and rules. "
                 "Unset modes route to the current live raid commands."
             ),
             color=discord.Color.orange(),
@@ -6251,7 +6584,7 @@ class RaidBuilder(commands.Cog):
             value=", ".join(f"`{mode_key}`" for mode_key in active_on_modes) if active_on_modes else "`none`",
             inline=False,
         )
-        embed.set_footer(text=f"Registry file: {self.registry_path.as_posix()}")
+        embed.set_footer(text="Saved raids and drafts persist across bot restarts.")
         return embed
 
     @commands.check_any(is_gm(), is_god())
@@ -6323,12 +6656,19 @@ class RaidBuilder(commands.Cog):
             color=discord.Color.blurple(),
         )
         for definition_id, definition in sorted(self.registry["definitions"].items()):
+            if definition.get("creator_id") not in (None, ctx.author.id):
+                continue
             definition_mode = definition.get("mode", "unknown")
             if filtered_mode and definition_mode != filtered_mode:
                 continue
             active_marker = ""
             if self._get_active_definition_id(definition_mode) == definition_id:
                 active_marker = " [active]"
+            if len(embed.fields) >= 20 or len(embed) > 4800:
+                await ctx.send(embed=embed)
+                embed = discord.Embed(
+                    title="Raid Definitions (continued)", color=discord.Color.blurple()
+                )
             embed.add_field(
                 name=f"{definition_id}{active_marker}",
                 value=(
@@ -6353,7 +6693,12 @@ class RaidBuilder(commands.Cog):
             return
         await ctx.send(embed=self._build_definition_embed(definition))
 
-    @raidmode.command(name="create", hidden=True, brief=_("Create a draft definition from a skeleton starter."))
+    @raidmode.command(
+        name="create",
+        hidden=True,
+        brief=_("Create a draft definition from a skeleton starter."),
+    )
+    @registry_edit
     async def raidmode_create(self, ctx, mode: str, definition_id: str, skeleton: str = None):
         spec = self._get_mode_spec(mode)
         if spec is None:
@@ -6371,45 +6716,59 @@ class RaidBuilder(commands.Cog):
         skeleton_key = self._coerce_skeleton_key(skeleton) if skeleton is not None else spec.skeleton
         if skeleton_key is None:
             await ctx.send(
-                "Valid skeletons are `good`, `evil`, `chaos`, `trial`, `ritual`, and `attrition`."
+                "Valid skeletons are `trial`, `ritual`, `attrition`, and `advanced`."
             )
             return
 
-        self.registry["definitions"][normalized_definition_id] = self.build_draft_from_starter(
-            spec.key,
-            normalized_definition_id,
-            skeleton_key=skeleton_key,
+        self._new_personal_draft(
+            spec.key, normalized_definition_id, skeleton_key, ctx.author.id
         )
-        self._save_registry()
+        await self._save_registry()
         await ctx.send(
             f"Created draft `{normalized_definition_id}` for `{spec.key}` from "
-            f"`{SKELETON_STARTER_DEFINITION_IDS[skeleton_key]}`. "
+            f"`{skeleton_key}`. "
             f"Open `raidmode builder {spec.key} {normalized_definition_id}` to customize it, then publish it."
         )
 
-    @raidmode.command(name="publish", hidden=True, brief=_("Publish a draft definition."))
+    @raidmode.command(
+        name="publish", hidden=True, brief=_("Publish a draft definition.")
+    )
+    @registry_edit
     async def raidmode_publish(self, ctx, definition_id: str):
         normalized_definition_id = definition_id.casefold()
         definition = self._get_definition(normalized_definition_id)
         if definition is None:
             await ctx.send(f"Definition `{normalized_definition_id}` does not exist.")
             return
-        definition["status"] = "published"
-        self._save_registry()
+        normalized_definition_id = self._publish_personal(definition, ctx.author.id)
+        await self._save_registry()
         await ctx.send(f"Published `{normalized_definition_id}`.")
 
-    @raidmode.command(name="unpublish", hidden=True, brief=_("Return a definition to draft status."))
+    @raidmode.command(
+        name="unpublish", hidden=True, brief=_("Return a definition to draft status.")
+    )
+    @registry_edit
     async def raidmode_unpublish(self, ctx, definition_id: str):
         normalized_definition_id = definition_id.casefold()
         definition = self._get_definition(normalized_definition_id)
         if definition is None:
             await ctx.send(f"Definition `{normalized_definition_id}` does not exist.")
             return
+        self._assert_owned(definition, ctx.author.id)
+        if definition.get("status") == "published":
+            require_slot(self.registry, ctx.author.id, "draft")
+            for mode_key in self._definition_active_modes(definition["id"]):
+                self.registry["modes"][mode_key]["active_definition_id"] = None
         definition["status"] = "draft"
-        self._save_registry()
+        await self._save_registry()
         await ctx.send(f"`{normalized_definition_id}` is now a draft again.")
 
-    @raidmode.command(name="activate", hidden=True, brief=_("Activate a published definition for a mode."))
+    @raidmode.command(
+        name="activate",
+        hidden=True,
+        brief=_("Activate a published definition for a mode."),
+    )
+    @registry_edit
     async def raidmode_activate(self, ctx, mode: str, definition_id: str):
         spec = self._get_mode_spec(mode)
         if spec is None:
@@ -6421,6 +6780,8 @@ class RaidBuilder(commands.Cog):
         if definition is None:
             await ctx.send(f"Definition `{normalized_definition_id}` does not exist.")
             return
+        if definition.get("creator_id") not in (None, ctx.author.id):
+            raise ValueError("Only the raid creator can activate it.")
         if definition.get("mode") != spec.key:
             await ctx.send(
                 f"`{normalized_definition_id}` belongs to `{definition.get('mode', 'unknown')}`, not `{spec.key}`."
@@ -6431,12 +6792,17 @@ class RaidBuilder(commands.Cog):
             return
 
         self.registry["modes"][spec.key]["active_definition_id"] = normalized_definition_id
-        self._save_registry()
+        await self._save_registry()
         await ctx.send(
             f"Activated `{normalized_definition_id}` for `{spec.key}`. `raidmode {spec.key}` will now use the custom runtime."
         )
 
-    @raidmode.command(name="deactivate", hidden=True, brief=_("Deactivate the custom definition for a mode."))
+    @raidmode.command(
+        name="deactivate",
+        hidden=True,
+        brief=_("Deactivate the custom definition for a mode."),
+    )
+    @registry_edit
     async def raidmode_deactivate(self, ctx, mode: str):
         spec = self._get_mode_spec(mode)
         if spec is None:
@@ -6444,10 +6810,44 @@ class RaidBuilder(commands.Cog):
             return
 
         self.registry["modes"][spec.key]["active_definition_id"] = None
-        self._save_registry()
+        await self._save_registry()
         await ctx.send(
             f"Cleared the active definition for `{spec.key}`. It now routes to `{spec.legacy_command}`."
         )
+
+    @raidmode.command(name="canvas", hidden=True, brief=_("Download the Advanced raid canvas."))
+    async def raidmode_canvas(self, ctx, definition_id: str):
+        definition = self._get_definition(definition_id.casefold())
+        try:
+            self._assert_owned(definition, ctx.author.id, draft=True)
+            content = editor_html(definition)
+        except ValueError as exc:
+            return await ctx.send(str(exc))
+        await ctx.send(
+            "Open this HTML file in your browser. Drag steps and edit mechanics with the controls. "
+            f"Download Save File, then attach it to `raidmode import {definition['id']}`. "
+            "Browser saves remain local until imported; publish from the Discord builder.",
+            file=discord.File(io.BytesIO(content), filename=f"raid_canvas_{definition['id']}.html"),
+        )
+
+    @raidmode.command(name="import", hidden=True, brief=_("Save an edited canvas into your Advanced draft."))
+    @registry_edit
+    async def raidmode_import(self, ctx, definition_id: str):
+        definition = self._get_definition(definition_id.casefold())
+        self._assert_owned(definition, ctx.author.id, draft=True)
+        if definition.get("skeleton") != "encounter":
+            raise ValueError("Choose an Advanced draft for canvas imports.")
+        attachments = ctx.message.attachments
+        if len(attachments) != 1:
+            raise ValueError("Attach exactly one canvas Save File to this command.")
+        attachment = attachments[0]
+        if attachment.size > MAX_PACKAGE_BYTES:
+            raise ValueError("Canvas files must be smaller than 1 MB.")
+        content = await attachment.read()
+        imported = import_package(content, definition)
+        self.registry["definitions"][definition["id"]] = imported
+        await self._save_registry()
+        await ctx.send(f"Saved Advanced draft `{definition['id']}`. Open `raidmode builder {definition['mode']} {definition['id']}` to simulate and publish. Export a fresh canvas for further edits.")
 
     @is_god()
     @raidmode.command(name="good", hidden=True, brief=_("Launch the good raid mode."))
@@ -6461,7 +6861,7 @@ class RaidBuilder(commands.Cog):
 
     @is_gm()
     @raidmode.command(name="chaos", hidden=True, brief=_("Launch the chaos raid mode."))
-    async def raidmode_chaos(self, ctx, boss_hp: IntGreaterThan(0)):
+    async def raidmode_chaos(self, ctx, boss_hp: IntGreaterThan(0) = None):
         await self._launch_mode(ctx, "chaos", boss_hp=boss_hp)
 
 

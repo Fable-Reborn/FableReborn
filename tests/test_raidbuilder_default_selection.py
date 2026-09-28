@@ -16,7 +16,9 @@ class DummyRaidBuilderCog:
     _good_builder_page_payload = RaidBuilder._good_builder_page_payload
     _evil_builder_page_payload = RaidBuilder._evil_builder_page_payload
     _chaos_builder_page_payload = RaidBuilder._chaos_builder_page_payload
-    _normalize_reward_amount_spec = staticmethod(RaidBuilder._normalize_reward_amount_spec)
+    _normalize_reward_amount_spec = staticmethod(
+        RaidBuilder._normalize_reward_amount_spec
+    )
     _parse_reward_amount_spec = staticmethod(RaidBuilder._parse_reward_amount_spec)
     _roll_reward_amount_spec = staticmethod(RaidBuilder._roll_reward_amount_spec)
     _format_reward_amount_spec = staticmethod(RaidBuilder._format_reward_amount_spec)
@@ -27,7 +29,7 @@ class DummyRaidBuilderCog:
         self.registry = registry
         self.saved = False
 
-    def _save_registry(self, registry=None):
+    async def _save_registry(self, registry=None):
         self.saved = True
 
 
@@ -130,7 +132,9 @@ class TestRaidBuilderSkeletonVariants(unittest.TestCase):
         page_keys = [page["key"] for page in view._page_specs()]
         item_keys = [
             item["key"]
-            for item in cog._builder_item_options(registry["definitions"]["sep_custom"], "countdown_copy")
+            for item in cog._builder_item_options(
+                registry["definitions"]["sep_custom"], "countdown_copy"
+            )
         ]
 
         self.assertIn("countdown_copy", page_keys)
@@ -163,7 +167,9 @@ class TestRaidBuilderSkeletonVariants(unittest.TestCase):
         page_keys = [page["key"] for page in view._page_specs()]
         item_keys = [
             item["key"]
-            for item in cog._builder_item_options(registry["definitions"]["ely_custom"], "countdown_copy")
+            for item in cog._builder_item_options(
+                registry["definitions"]["ely_custom"], "countdown_copy"
+            )
         ]
 
         self.assertIn("countdown_copy", page_keys)
@@ -190,15 +196,21 @@ class TestRaidBuilderSkeletonVariants(unittest.TestCase):
 
         good_items = [
             item["key"]
-            for item in cog._builder_item_options(registry["definitions"]["good_trial_remaster"], "outcome_copy")
+            for item in cog._builder_item_options(
+                registry["definitions"]["good_trial_remaster"], "outcome_copy"
+            )
         ]
         evil_items = [
             item["key"]
-            for item in cog._builder_item_options(registry["definitions"]["sep_custom"], "outcome_copy")
+            for item in cog._builder_item_options(
+                registry["definitions"]["sep_custom"], "outcome_copy"
+            )
         ]
         chaos_items = [
             item["key"]
-            for item in cog._builder_item_options(registry["definitions"]["chaos_attrition_remaster"], "outcome_copy")
+            for item in cog._builder_item_options(
+                registry["definitions"]["chaos_attrition_remaster"], "outcome_copy"
+            )
         ]
 
         self.assertEqual(good_items, ["no_valid", "victory", "defeat"])
@@ -214,7 +226,9 @@ class TestRaidBuilderSkeletonVariants(unittest.TestCase):
         self.assertIn("rewards", good_definition["config"])
         self.assertEqual(good_definition["config"]["rewards"]["participant_gold"], 0)
         self.assertIn("crate_pool", good_definition["config"]["rewards"])
-        self.assertEqual(evil_definition["config"]["rewards"]["participant_gold"], 35000)
+        self.assertEqual(
+            evil_definition["config"]["rewards"]["participant_gold"], 35000
+        )
         self.assertIn("crate_pool", evil_definition["config"]["rewards"])
         self.assertIn("winner_gold_bonus", chaos_definition["config"]["rewards"])
         self.assertIn("crate_pool", chaos_definition["config"]["rewards"])
@@ -263,14 +277,19 @@ class TestRaidBuilderSkeletonVariants(unittest.TestCase):
             "2-5",
         )
         self.assertEqual(
-            RaidBuilder._format_reward_amount_spec({"min": 20000, "max": 50000}, currency=True),
+            RaidBuilder._format_reward_amount_spec(
+                {"min": 20000, "max": 50000}, currency=True
+            ),
             "$20,000-$50,000",
         )
 
     def test_reward_page_payload_displays_range_defaults(self):
         registry = RaidBuilder.default_registry()
         definition = registry["definitions"]["evil_ritual_remaster"]
-        definition["config"]["rewards"]["participant_gold"] = {"min": 20000, "max": 50000}
+        definition["config"]["rewards"]["participant_gold"] = {
+            "min": 20000,
+            "max": 50000,
+        }
         definition["config"]["rewards"]["dragon_coins"] = 0
         cog = DummyRaidBuilderCog(registry)
 
@@ -292,8 +311,8 @@ class TestRaidBuilderSkeletonVariants(unittest.TestCase):
         self.assertEqual(payload["fields"][3]["name"], "Format Help")
 
 
-class TestRaidBuilderDeletion(unittest.TestCase):
-    def test_delete_definition_removes_custom_entry_and_clears_active_modes(self):
+class TestRaidBuilderDeletion(unittest.IsolatedAsyncioTestCase):
+    async def test_delete_definition_removes_custom_entry_and_clears_active_modes(self):
         registry = RaidBuilder.default_registry()
         registry["definitions"]["sep_trial"] = RaidBuilder.build_draft_from_starter(
             "evil",
@@ -303,19 +322,19 @@ class TestRaidBuilderDeletion(unittest.TestCase):
         registry["modes"]["evil"]["active_definition_id"] = "sep_trial"
         cog = DummyRaidBuilderCog(registry)
 
-        cleared_modes = cog._delete_definition("sep_trial")
+        cleared_modes = await cog._delete_definition("sep_trial")
 
         self.assertEqual(cleared_modes, ["evil"])
         self.assertNotIn("sep_trial", registry["definitions"])
         self.assertIsNone(registry["modes"]["evil"]["active_definition_id"])
         self.assertTrue(cog.saved)
 
-    def test_delete_definition_rejects_starter_templates(self):
+    async def test_delete_definition_rejects_starter_templates(self):
         registry = RaidBuilder.default_registry()
         cog = DummyRaidBuilderCog(registry)
 
         with self.assertRaisesRegex(ValueError, "Starter templates cannot be deleted"):
-            cog._delete_definition("evil_ritual_remaster")
+            await cog._delete_definition("evil_ritual_remaster")
 
 
 if __name__ == "__main__":
