@@ -177,6 +177,11 @@ def insert_pack(spec, package, after=None):
     """
     pack = validate_pack(package)
     result = upgrade_encounter(spec)
+    if not result["nodes"] and not after:
+        # An empty canvas has no host destinations for the pack's exit ports.
+        result["nodes"] = [default_node("victory", "ending"),
+                           dict(default_node("defeat", "ending"), outcome="defeat")]
+        result["start"] = "victory"
     nodes = {n["id"]: n for n in result["nodes"]}
     anchor = nodes.get(after) if after else None
     if after and (anchor is None or anchor["kind"] in {"ending", "choice"}):

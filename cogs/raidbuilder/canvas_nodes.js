@@ -107,6 +107,10 @@ function sameData(a, b) {
 
 function compileNodePack(candidate, after) {
   const template = normalizeNodePack(candidate), result = clone(spec());
+  if (!result.nodes.length && !after) {
+    result.nodes = [nodeDefault('victory', 'ending'), { ...nodeDefault('defeat', 'ending'), outcome: 'defeat' }];
+    result.start = 'victory';
+  }
   const anchor = after ? result.nodes.find(n => n.id === after) : null;
   if (after && (!anchor || ['choice', 'ending'].includes(anchor.kind))) throw new Error('Choose a step with a Next output.');
   const success = anchor ? anchor.next : result.start;
@@ -165,6 +169,7 @@ function nodeOperation(fn) { try { fn(); } catch (error) { report('Node library'
 function draftControl(label, control) { control.setAttribute('aria-label', label); return el('label', { class: 'field' }, el('span', { text: label }), control); }
 function renderNodeLibrary(box) {
   nodeDraft.selected = nodeDraft.selected.filter(id => nodes().some(n => n.id === id));
+  if (!nodes().some(n => n.id === nodeDraft.after && !['choice', 'ending'].includes(n.kind))) nodeDraft.after = '';
   box.append(el('h2', { text: 'Node Library' }), hint('Build a mechanic from one or more steps, save it, and reuse it in another Advanced raid. Saved copies include teams, roles, statuses, actions and meters.'));
   box.append(el('div', { class: 'row' }, btn('Import Node File', () => $('node-file-input').click(), 'small'),
     btn('Download AI Prompt', () => downloadText('Fable-Node-Authoring-Prompt.txt', promptText, 'text/plain'), 'small')));
