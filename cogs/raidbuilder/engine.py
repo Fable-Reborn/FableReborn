@@ -4,10 +4,11 @@ import copy
 import random
 
 from dataclasses import dataclass, field
+from .integrations import SYSTEM_SOURCES
 from .mechanics import (upgrade_encounter, team_default, role_default, condition_subjects,
     validate_condition, evaluate_condition, validate_actor_catalogues, valid_target, safe_id)
 
-NODE_KINDS = ("scene", "battle", "choice", "trial", "check", "ending")
+NODE_KINDS = ("scene", "battle", "choice", "trial", "check", "system", "ending")
 TRIGGERS = ("enter", "round_start", "round_end", "choice")
 EFFECTS = (
     "damage",
@@ -46,6 +47,9 @@ def default_node(key, kind="scene"):
         "choices": [],
         "rules": [],
         "outcome": "victory",
+        "source": "party_level_total",
+        "output_resource": "",
+        "simulation_value": 0,
     }
 
 
@@ -305,7 +309,7 @@ def validate_encounter(spec):
             targets = [c.get("next") for c in choices] + [node.get("failure")]
         else:
             targets = [node.get("next")]
-            if kind in {"battle", "trial", "check"}:
+            if kind in {"battle", "trial", "check", "system"}:
                 targets.append(node.get("failure"))
         if any(target not in keys for target in targets):
             raise ValueError(
@@ -329,6 +333,12 @@ def validate_encounter(spec):
             _integer(node.get("chance"), "Trial success chance", 0, 100)
         elif kind == "check":
             condition(node, node)
+        elif kind == "system":
+            if node.get("source") not in SYSTEM_SOURCES:
+                raise ValueError("Choose a supported Fable System source.")
+            if node.get("output_resource") not in resource_keys:
+                raise ValueError("Fable System nodes need an existing output meter.")
+            _integer(node.get("simulation_value", 0), "Simulated system value")
     reachable = set()
     pending = [spec["start"]]
     while pending:
@@ -374,10 +384,13 @@ class Frame:
 
 
 class EncounterEngine:
-    def __init__(self, spec, player_ids, *, seed=None, role_choices=None):
+    def __init__(self, spec, player_ids, *, seed=None, role_choices=None,
+                 system_values=None, simulation=False):
         validate_encounter(spec)
         self.spec = upgrade_encounter(spec)
         spec = self.spec
+        self.system_values = dict(system_values or {})
+        self.simulation = simulation
         self.nodes = {n["id"]: n for n in spec["nodes"]}
         self.roles = {r["id"]: r for r in spec["roles"]}
         self.status_specs = {r["id"]: r for r in spec["statuses"]}
@@ -594,6 +607,19 @@ class EncounterEngine:
             self._goto(node["next"])
         elif kind == "check":
             self._goto(node["next"] if self._condition(node) else node["failure"])
+        elif kind == "system":
+            value = (node.get("simulation_value", 0) if self.simulation
+                     else self.system_values.get(node["source"]))
+            if type(value) is not int or value < 0:
+                frame.events.append("Fable data unavailable; taking the failure path.")
+                self._goto(node["failure"])
+            else:
+                key = node["output_resource"]
+                bounds = self.resource_specs[key]
+                self.resources[key] = max(bounds["min"], min(bounds["max"], value))
+                label = "Simulation" if self.simulation else "Fable snapshot"
+                frame.events.append(f"{label}: {bounds.get('label', key)} = {self.resources[key]}.")
+                self._goto(node["next"])
         elif kind == "trial":
             success = self.rng.randint(1, 100) <= node["chance"]
             frame.events.append("The trial succeeds." if success else "The trial fails.")

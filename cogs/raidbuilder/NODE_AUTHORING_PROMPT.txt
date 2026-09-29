@@ -1,0 +1,132 @@
+FABLE REBORN — CUSTOM RAID NODE AUTHORING PROMPT (v1)
+
+Copy this file into your AI chat and replace the request below:
+MY MECHANIC: [Describe the encounter, choices, win/failure conditions, difficulty,
+texts, and any character-level or guild connection you want.]
+
+You are creating a portable Fable Reborn Advanced raid node pack. Return ONE valid
+JSON document, suitable to save as my_mechanic.node.json. Do not return Python,
+JavaScript, SQL, URLs, bot commands, or a full raid save. Never invent runtime
+effects or integrations. If the request needs a new engine capability, explain
+the missing adapter and suggest the closest supported mechanic before generating.
+The GM can hand-edit the same file or build steps visually without using AI.
+
+FORMAT
+{
+  "schema": "fablereborn.raid-node",
+  "version": 1,
+  "name": "Readable mechanic name",
+  "description": "How to play, what is included and what the output ports mean",
+  "entry": "first_step",
+  "nodes": [...],
+  "catalogues": {"teams": [...], "roles": [...], "statuses": [...],
+                 "resources": [...], "actions": [...]}
+}
+Name: 1-100 chars. Description: at most 1000 chars. 1-30 connected steps; every
+step must be reachable from entry and must have a path to an exit/ending.
+IDs start with a lowercase letter, followed by lowercase letters, digits, _ or -;
+maximum 64 chars. Each collection has unique IDs. Files must be under 250 KB.
+Do not use reserved step IDs pack_success or pack_failure.
+
+PORTS AND INSERTION
+Flow destinations are a step ID inside this pack, "$next", or "$failure".
+$next continues the host raid; $failure takes its failure path. A GM can insert
+before the raid start or after a step with a Next output. All step IDs, meters,
+statuses and actions are copied/remapped per insertion. Identical teams/roles can
+be reused. Do not refer to host raid IDs, global variables, or other packs.
+Prefer exits to ending nodes; an ending terminates the whole raid.
+
+STEP TYPES AND FIELDS
+Every step: id, kind, title (1-256 chars), text (at most 3500 chars), rules ([]).
+scene: next
+battle: next, failure, boss_hp (1-1000000), boss_damage (0-1000000),
+        max_rounds (1-100), enemies ([] uses the legacy single boss).
+        Each enemy: {"id":"guard","label":"Guard","hp":100,"damage":10,
+        "target":"random","on_hit_status":""}. Max 25 enemies per battle.
+choice: choices (2-25 entries {"id":"left","label":"Go left","next":"$next"}),
+        failure (tie/no-vote path).
+trial: chance (0-100), next, failure. Party-wide random success roll.
+check: condition, next, failure. Evaluates nested conditions below.
+system: source, output_resource, simulation_value (0-1000000), next, failure.
+        Reads an approved Fable snapshot into a meter, clamped to meter bounds.
+        Sources: party_level_total, party_level_average (floor),
+        party_guild_members (number of guild members), party_guild_count
+        (distinct guilds). Live values come from joined characters at raid start.
+        No player data is embedded in the file. Simulations use simulation_value.
+        Missing live data takes failure; live play never uses the simulated value.
+ending: outcome (victory or defeat). No transition rules allowed.
+Omitted standard step fields receive engine defaults; explicitly set all relevant
+fields. A check can alternatively use subject/operator/value as a single condition.
+
+CONDITIONS
+Leaf: {"subject":"pressure","operator":">=","value":3}
+Always: {"operator":"always"}
+AND: {"all":[<condition>,<condition>]}
+OR: {"any":[<condition>,<condition>]}
+NOT: {"not":<condition>}
+One group per object, nonempty children, at most 8 nested levels and 64 parts.
+Operators: always, <=, >=, ==, !=, <, >. Values: integers -1000000..1000000.
+Subjects: round, alive, boss_hp, boss_hp_percent, enemies_alive, a meter ID,
+team_alive:<id>, role_alive:<id>, status_count:<id>, enemy_hp:<id>.
+enemy_hp refers to enemies in the current step (boss for a legacy single boss).
+Do not name meters after built-in subjects.
+
+RULES
+At most 100 per step. Every rule includes:
+{"id":"warning","trigger":"enter","condition":{"operator":"always"},
+ "effect":"announce","target":"all","amount":0,"resource":"",
+ "status":"","destination":"","limit":1,"text":"The gate opens."}
+Triggers: enter; round_start/round_end on battles only; choice on choice steps only.
+limit: 1-100 firings per raid. Rules run in order; transitions stop that rule batch.
+Effects: damage, heal, shield, resource, boss_damage, boss_heal, announce,
+transition, apply_status, remove_status.
+amount: integer 0-1000000; resource changes may be -1000000..1000000.
+resource effects require a resource ID. apply_status/remove_status require a
+status ID; applying stacks requires amount 1-25. transition requires destination.
+Target: self, all, random, lowest, allies, enemy, enemies, enemy_random,
+enemy_lowest, team:<id>, role:<id>, enemy:<id>. Targets are alive actors only.
+Enemy attacks may target players/teams/roles, not enemies. Boss effects target
+enemies. self uses the acting player (or first survivor for rules).
+
+CATALOGUES (max 25 entries each)
+teams: [{"id":"party","label":"Party"}]
+roles: [{"id":"adventurer","label":"Adventurer","team":"party","hp":0,"slots":0}]
+At least one team, one role, and an unlimited fallback role (slots 0). hp 0 uses
+host raid health; otherwise 1-1000000. slots 0-1000.
+statuses: [{"id":"burn","label":"Burn","duration":3,"max_stacks":3,
+ "damage_per_round":5,"heal_per_round":0,"damage_dealt_pct":100,
+ "damage_taken_pct":100,"stun":false}]
+duration 1-100 combat rounds, max_stacks 1-25, damage/heal 0-1000000, percentages
+0-1000 (100 = neutral), stun boolean. Reapplication adds stacks and refreshes
+duration. Ticks begin at the end of the next combat round.
+resources: [{"id":"pressure","label":"Pressure","initial":0,"min":0,"max":100}]
+All values integers -1000000..1000000; min <= initial <= max. Raid-shared meters
+can represent an entirely new puzzle/system: pressure, reputation, ritual progress,
+keys, votes, etc. State is scoped to this raid, not permanent character progress.
+actions: [{"id":"strike","label":"Strike","effect":"boss_damage","target":"enemy",
+ "amount":20,"resource":"","status":"","cost_resource":"","cost":0,"roles":[]}]
+Same effects as rules except transition. cost 0-1000000; positive costs require a
+meter ID in cost_resource. roles [] means everyone. Every role needs at least one
+free action if the pack has a battle. First eligible free action is the timeout fallback.
+Action labels: 1-80 chars. Team/role/status/meter labels: 1-100 chars.
+Omitted catalogue collections use defaults (Party, Adventurer, no statuses,
+Corruption meter, free Strike/Mend actions). Include explicit catalogues when
+building a mechanic and include only the dependencies it needs.
+
+EXAMPLE (smallest reusable scene)
+{"schema":"fablereborn.raid-node","version":1,"name":"A Quiet Shrine",
+ "description":"Restores 15 HP to living players, then continues the raid.",
+ "entry":"shrine","nodes":[{"id":"shrine","kind":"scene","title":"A Quiet Shrine",
+ "text":"Warm light fills the shrine.","next":"$next","rules":[
+ {"id":"restore","trigger":"enter","condition":{"operator":"always"},
+ "effect":"heal","target":"all","amount":15,"resource":"","status":"",
+ "destination":"","limit":1,"text":"The shrine restores the party."}]}]}
+
+FINAL CHECK
+Check every reference, required field, limit, and path. Return valid JSON only.
+The bot validates the full engine schema on import; Canvas validation is a preview.
+The GM imports with raidmode node import <unique_node_id> and the .node.json
+attachment, inserts it into an Advanced draft with raidmode node add, simulates,
+and explicitly uses raidmode node publish <node_id> to share with other GMs.
+Never include creator IDs, publication state, rewards, credentials, executable code,
+or claims that unsupported Fable systems are already connected.

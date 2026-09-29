@@ -23,6 +23,7 @@ from .engine import (
 from .storage import registry_edit
 from .mechanics import upgrade_encounter
 from .runtime_ui import RoleAssignmentView, BattleDecisionView
+from .integrations import SYSTEM_SOURCES, load_system_values
 
 
 def _options(values):
@@ -173,6 +174,8 @@ class AdvancedBuilderMixin:
                     "Boss stats, round limits and trial chance",
                 ),
                 ("check", "Step Condition", "Conditions for branching check steps"),
+                ("system", "Fable System", "Read character levels and guild membership into a meter"),
+                ("node_library", "Node Library", "Save, import and share reusable custom mechanics"),
                 ("resources", "Resources", "Named shared meters with bounds"),
                 (
                     "actions",
@@ -197,7 +200,7 @@ class AdvancedBuilderMixin:
 
     def _advanced_item_options(self, definition, page):
         spec = definition["config"]["encounter"]
-        if page in {"steps", "links", "battle", "check"}:
+        if page in {"steps", "links", "battle", "check", "system"}:
             items = spec["nodes"]
         elif page in {"resources", "actions"}:
             items = spec[page]
@@ -331,6 +334,8 @@ class AdvancedBuilderMixin:
         config, spec = definition["config"], definition["config"]["encounter"]
         if page == "canvas":
             return {"title": "Advanced Raid Canvas", "description": "Press Edit to download your visual editor. Arrange steps, add roles and teams, define statuses and enemies, and build nested AND/OR conditions without code. Save the file, then upload it with `raidmode import " + definition["id"] + "`.", "fields": [], "form_fields": [], "submit_handler": None}
+        if page == "node_library":
+            return {"title": "Reusable Node Library", "description": "Use the Canvas Node Library tab to save selected steps, import .node.json files, and insert private or published packs. In Discord: `raidmode node` lists every command; `raidmode node prompt` downloads AI authoring instructions. Publishing a node shares a version with all GMs; it does not publish a raid. Node packs have separate library slots.", "fields": [], "form_fields": [], "submit_handler": None}
         fields, option_fields = [], []
         description = "Use Edit for details and selectors; Structure adds, copies and removes entries. Drafts autosave."
         target = spec
@@ -403,7 +408,7 @@ class AdvancedBuilderMixin:
             option("start", "Starting step", node_options)
             number("max_steps", "Maximum engine steps", spec["max_steps"], 1, 1000)
             number("step_delay", "Scene delay (seconds)", config["step_delay"], 1, 30)
-        elif page in {"steps", "links", "battle", "check"}:
+        elif page in {"steps", "links", "battle", "check", "system"}:
             target = next((n for n in spec["nodes"] if n["id"] == item_key), None)
             if target:
                 if page == "steps":
@@ -419,6 +424,11 @@ class AdvancedBuilderMixin:
                     option("next", "Success / next step", node_options)
                     option("failure", "Failure / tie / timeout", node_options)
                     field("text", "Narration", target["text"])
+                elif page == "system":
+                    description = "Set the step type to System on the Steps page. Reads a snapshot of joined characters at raid start into a meter. Simulations use the sample below; unavailable live data uses the failure link."
+                    option("source", "Fable data source", list(SYSTEM_SOURCES.items()))
+                    option("output_resource", "Output meter", resource_options)
+                    number("simulation_value", "Simulated value", target.get("simulation_value", 0))
                 elif page == "battle":
                     number("boss_hp", "Boss health", target["boss_hp"], 1)
                     number(
@@ -501,7 +511,7 @@ class AdvancedBuilderMixin:
                 submit_message="Updated advanced raid rewards.",
             )
         elif page == "simulate":
-            description = "Runs the same engine with simulated players and a repeatable random seed. No real players or rewards."
+            description = "Runs the same engine with simulated players and a repeatable random seed. No real players or rewards. Fable System nodes use their configured simulated values."
             number("players", "Simulated player count", 5, 1, 100)
             number("seed", "Random seed", 42, 0, 1_000_000)
 
@@ -515,7 +525,7 @@ class AdvancedBuilderMixin:
             parsed = {f["key"]: f["parser"](values[f["key"]]) for f in fields}
             if page == "simulate":
                 engine = EncounterEngine(
-                    spec, range(parsed["players"]), seed=parsed["seed"]
+                    spec, range(parsed["players"]), seed=parsed["seed"], simulation=True
                 )
                 frames = engine.simulate()
                 trace = "\n".join(
@@ -617,7 +627,14 @@ class AdvancedBuilderMixin:
             await roles.wait()
             await role_message.edit(view=None)
             role_choices = roles.choices
-        engine = EncounterEngine(spec, [u.id for u in sorted(users, key=lambda u: u.id)], role_choices=role_choices)
+        system_values = {}
+        if any(n["kind"] == "system" for n in spec["nodes"]):
+            try:
+                system_values = await load_system_values(self.bot.pool, [u.id for u in users])
+            except Exception:
+                self.bot.logger.exception("Could not load raid Fable System snapshot")
+                await ctx.send("Fable data is unavailable. System nodes will use their configured failure paths.")
+        engine = EncounterEngine(spec, [u.id for u in sorted(users, key=lambda u: u.id)], role_choices=role_choices, system_values=system_values)
         while engine.outcome is None:
             options = engine.prompt()
             decisions = {}

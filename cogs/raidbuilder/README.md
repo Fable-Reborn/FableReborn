@@ -1,5 +1,9 @@
 # Persistent GM raid builder
 
+Custom reusable nodes: see [Node Library](NODE_LIBRARY.md) for creation, AI prompts,
+private saves, versioned community publishing, and supported Fable System steps.
+Open `$raidmode node` for the command guide or use the Canvas **Node Library** tab.
+
 Each GM has **5 saved (published) raids and 10 drafts total**, shared across Normal
 and Advanced, and across Good/Evil/Chaos. Limits are per Discord user, not per
 server. A draft consumes a draft slot; publishing it moves it into a saved slot.
@@ -130,17 +134,17 @@ The revision check covers the complete registry, so edits from different cluster
 (even to different raids) can cause a safe stale-edit rejection. Preferences are
 stored independently and do not invalidate content forms.
 
-This first version does not checkpoint running raids across bot restarts, implement
-reward replay/recovery, expose historical revision restore, provide a browser canvas,
-or add custom teams/roles/status effects. It supplies a working bounded encounter
-engine and Discord authoring interface that can be extended with those capabilities.
+Running raids are not checkpointed across bot restarts; reward replay/recovery and
+historical revision restore remain outside this builder. The offline browser canvas
+supports custom teams, roles, statuses, multiple enemies, nested conditions, reusable
+node packs and the approved read-only Fable System sources.
 
 ## Verification
 
 Automated coverage:
 
 ```text
-python -m pytest tests/test_raidbuilder_default_selection.py tests/test_raidbuilder_engine.py tests/test_raidbuilder_persistence.py -q
+python -m pytest tests/test_raidbuilder_default_selection.py tests/test_raidbuilder_engine.py tests/test_raidbuilder_persistence.py tests/test_raidbuilder_mechanics.py tests/test_raidbuilder_nodes.py -q
 ```
 
 Tests cover normal regression behavior, combined quotas, preserved ordering/deletions,

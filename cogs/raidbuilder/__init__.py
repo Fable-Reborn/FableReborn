@@ -25,6 +25,10 @@ from .advanced import AdvancedBuilderMixin, AdvancedOptionsView
 from .engine import advanced_starter, validate_encounter
 from .mechanics import upgrade_encounter
 from .canvas import editor_html, import_package, MAX_PACKAGE_BYTES
+from .node_library import (
+    MAX_BYTES as MAX_NODE_BYTES, extract_pack, get_node, insert_pack,
+    read_pack, save_node, set_published, visible_nodes, example_pack,
+)
 from .storage import (
     RaidStore,
     library_counts,
@@ -1779,7 +1783,7 @@ class RaidBuilderPanelView(View):
             )
             return
         if definition and definition.get("skeleton") == "encounter" and self.current_page_key == "canvas":
-            content = editor_html(definition)
+            content = editor_html(definition, visible_nodes(self.cog.registry, interaction.user.id))
             await interaction.response.send_message(
                 f"Open this canvas in your browser. Download Save File when finished and attach it to `raidmode import {definition['id']}`.",
                 file=discord.File(io.BytesIO(content), filename=f"raid_canvas_{definition['id']}.html"), ephemeral=True)
@@ -1885,6 +1889,11 @@ class RaidBuilder(AdvancedBuilderMixin, commands.Cog):
         raw, self.registry_revision = await self.store.initialize(self._load_registry)
         self.registry = self.normalize_registry(raw)
 
+    async def cog_check(self, ctx):
+        # invoke_without_command groups skip their checks when dispatching a child.
+        # Keep every builder/library command behind the same GM-or-god gate.
+        return await commands.check_any(is_gm(), is_god()).predicate(ctx)
+
     async def _refresh_registry_unlocked(self):
         raw, revision = await self.store.load()
         if revision != self.registry_revision:
@@ -1965,6 +1974,7 @@ class RaidBuilder(AdvancedBuilderMixin, commands.Cog):
                 mode_key: {"active_definition_id": None} for mode_key in MODE_SPECS
             },
             "definitions": copy.deepcopy(STARTER_DEFINITIONS),
+            "node_library": {},
         }
 
     @classmethod
@@ -2205,6 +2215,10 @@ class RaidBuilder(AdvancedBuilderMixin, commands.Cog):
                 registry["definitions"][definition_id] = merged_definition
 
         modes = raw.get("modes", {})
+        library = raw.get("node_library", {})
+        if not isinstance(library, dict):
+            raise ValueError("Node library storage is invalid; existing data was preserved.")
+        registry["node_library"] = copy.deepcopy(library)
         if isinstance(modes, dict):
             for mode_key in MODE_SPECS:
                 mode_state = modes.get(mode_key, {})
@@ -6587,7 +6601,6 @@ class RaidBuilder(AdvancedBuilderMixin, commands.Cog):
         embed.set_footer(text="Saved raids and drafts persist across bot restarts.")
         return embed
 
-    @commands.check_any(is_gm(), is_god())
     @commands.group(
         name="raidmode",
         aliases=["raidbuilder"],
@@ -6815,20 +6828,184 @@ class RaidBuilder(AdvancedBuilderMixin, commands.Cog):
             f"Cleared the active definition for `{spec.key}`. It now routes to `{spec.legacy_command}`."
         )
 
+    @raidmode.group(name="node", hidden=True, invoke_without_command=True)
+    async def raidmode_node(self, ctx):
+        await ctx.send(
+            "**GM Node Library** — reusable mechanics for Advanced raids\n"
+            "`raidmode node list` — your private nodes and published community nodes\n"
+            "`raidmode node prompt` — AI instructions and an example .node.json\n"
+            "`raidmode node save <draft_id> <step_id,step_id> <node_id>` — save steps; first is the entry\n"
+            "`raidmode node import <node_id>` + one .node.json attachment — save privately\n"
+            "`raidmode node add <draft_id> <node_id> [after_step]` — insert into your draft\n"
+            "`raidmode node export <node_id>` — download a node pack\n"
+            "`raidmode node publish <node_id>` / `unpublish <node_id>` — manage sharing\n"
+            "`raidmode node delete <node_id>` — remove your library entry\n"
+            "Use your usual command prefix. Canvas also has a Node Library tab. "
+            "Node packs have their own 100-pack library; raid limits remain 5 saved and 10 drafts."
+        )
+
+    @raidmode_node.command(name="list", hidden=True)
+    async def raidmode_node_list(self, ctx, page: int = 1):
+        entries = visible_nodes(self.registry, ctx.author.id)
+        pages = max(1, (len(entries) + 9) // 10)
+        if not 1 <= page <= pages:
+            return await ctx.send(f"Choose a library page from 1 to {pages}.")
+        embed = discord.Embed(title=f"GM Node Library • {page}/{pages}")
+        embed.description = "Insert with `raidmode node add <draft_id> <node_id> [after_step]`. Omit after_step to insert before the raid start."
+        for entry in entries[(page - 1) * 10 : page * 10]:
+            own = entry["creator_id"] == ctx.author.id
+            state = ("Yours • " if own else "Community • ") + entry["visibility"]
+            if entry["has_unpublished_changes"]:
+                state += " • unpublished edits"
+            package = entry["package"]
+            embed.add_field(
+                name=f"{entry['id']} • v{entry['version']}",
+                value=f"{package['name']}\n{state}\n{package['description'][:250]}",
+                inline=False,
+            )
+        if not entries:
+            embed.description += "\nYour library is empty. Save steps or use `raidmode node prompt` to get started."
+        await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    @raidmode_node.command(name="prompt", hidden=True)
+    async def raidmode_node_prompt(self, ctx):
+        await ctx.send(
+            "Give the prompt to your AI with your mechanic idea. Import the returned .node.json "
+            "with `raidmode node import <new_node_id>`. Review and simulate before publishing.",
+            files=[
+                discord.File(Path(__file__).with_name("NODE_AUTHORING_PROMPT.txt")),
+                discord.File(
+                    io.BytesIO(json.dumps(example_pack(), indent=2).encode()),
+                    filename="guild_beacon.node.json",
+                ),
+            ],
+        )
+
+    @raidmode_node.command(name="save", hidden=True)
+    @registry_edit
+    async def raidmode_node_save(
+        self, ctx, definition_id: str, step_ids: str, node_id: str
+    ):
+        definition = self._get_definition(definition_id.casefold())
+        self._assert_owned(definition, ctx.author.id)
+        if definition.get("skeleton") != "encounter":
+            raise ValueError("Node packs are created from Advanced raids.")
+        package = extract_pack(
+            definition["config"]["encounter"],
+            step_ids.casefold().split(","),
+            node_id.replace("_", " ").title(),
+        )
+        save_node(self.registry, ctx.author.id, node_id.casefold(), package)
+        await self._save_registry()
+        await ctx.send(
+            f"Saved your node `{node_id}`. Publish it explicitly to share this version with other GMs."
+        )
+
+    @raidmode_node.command(name="import", hidden=True)
+    @registry_edit
+    async def raidmode_node_import(self, ctx, node_id: str):
+        attachments = ctx.message.attachments
+        if len(attachments) != 1 or attachments[0].size > MAX_NODE_BYTES:
+            raise ValueError("Attach one .node.json file smaller than 250 KB.")
+        entry = save_node(
+            self.registry,
+            ctx.author.id,
+            node_id.casefold(),
+            read_pack(await attachments[0].read()),
+        )
+        await self._save_registry()
+        await ctx.send(
+            f"Saved `{entry['id']}` v{entry['revision']}. Use `raidmode node add <draft_id> {entry['id']}` to try it, or `raidmode node publish {entry['id']}` to share this version."
+        )
+
+    @raidmode_node.command(name="add", hidden=True)
+    @registry_edit
+    async def raidmode_node_add(
+        self, ctx, definition_id: str, node_id: str, after_step: str = None
+    ):
+        definition = self._get_definition(definition_id.casefold())
+        self._assert_owned(definition, ctx.author.id, draft=True)
+        if definition.get("skeleton") != "encounter":
+            raise ValueError("Insert node packs into an Advanced draft.")
+        entry = get_node(self.registry, ctx.author.id, node_id.casefold())
+        package = (
+            entry["package"]
+            if entry["creator_id"] == ctx.author.id
+            else entry["published_package"]
+        )
+        spec, start = insert_pack(
+            definition["config"]["encounter"],
+            package,
+            after_step.casefold() if after_step else None,
+        )
+        definition["config"]["encounter"] = spec
+        await self._save_registry()
+        await ctx.send(
+            f"Inserted `{node_id}` at `{start}` and saved draft `{definition['id']}`. Open the builder to review links and simulate."
+        )
+
+    @raidmode_node.command(name="export", hidden=True)
+    @registry_edit
+    async def raidmode_node_export(self, ctx, node_id: str):
+        entry = get_node(self.registry, ctx.author.id, node_id.casefold())
+        package = (
+            entry["package"]
+            if entry["creator_id"] == ctx.author.id
+            else entry["published_package"]
+        )
+        await ctx.send(
+            file=discord.File(
+                io.BytesIO(json.dumps(package, indent=2).encode()),
+                filename=f"{entry['id']}.node.json",
+            )
+        )
+
+    @raidmode_node.command(name="publish", hidden=True)
+    @registry_edit
+    async def raidmode_node_publish(self, ctx, node_id: str):
+        entry = set_published(self.registry, ctx.author.id, node_id.casefold(), True)
+        await self._save_registry()
+        await ctx.send(
+            f"Published `{entry['id']}` v{entry['published_version']} to the GM library. Existing raid copies keep their current mechanics."
+        )
+
+    @raidmode_node.command(name="unpublish", hidden=True)
+    @registry_edit
+    async def raidmode_node_unpublish(self, ctx, node_id: str):
+        set_published(self.registry, ctx.author.id, node_id.casefold(), False)
+        await self._save_registry()
+        await ctx.send(
+            f"`{node_id}` is now private. Copies already inserted in raids remain available there."
+        )
+
+    @raidmode_node.command(name="delete", hidden=True)
+    @registry_edit
+    async def raidmode_node_delete(self, ctx, node_id: str):
+        entry = get_node(self.registry, ctx.author.id, node_id.casefold(), owned=True)
+        del self.registry["node_library"][entry["id"]]
+        await self._save_registry()
+        await ctx.send(
+            f"Deleted node library entry `{entry['id']}`. Existing raid copies are unchanged."
+        )
+
     @raidmode.command(name="canvas", hidden=True, brief=_("Download the Advanced raid canvas."))
     async def raidmode_canvas(self, ctx, definition_id: str):
         definition = self._get_definition(definition_id.casefold())
         try:
             self._assert_owned(definition, ctx.author.id, draft=True)
-            content = editor_html(definition)
+            content = editor_html(definition, visible_nodes(self.registry, ctx.author.id))
         except ValueError as exc:
             return await ctx.send(str(exc))
-        await ctx.send(
-            "Open this HTML file in your browser. Drag steps and edit mechanics with the controls. "
-            f"Download Save File, then attach it to `raidmode import {definition['id']}`. "
-            "Browser saves remain local until imported; publish from the Discord builder.",
-            file=discord.File(io.BytesIO(content), filename=f"raid_canvas_{definition['id']}.html"),
-        )
+        try:
+            await ctx.author.send(
+                "Open this HTML file in your browser. It includes your private node library. "
+                f"Download Save File, then attach it to `raidmode import {definition['id']}`. "
+                "Browser saves remain local until imported; publish from the Discord builder.",
+                file=discord.File(io.BytesIO(content), filename=f"raid_canvas_{definition['id']}.html"),
+            )
+        except discord.Forbidden:
+            return await ctx.send("I couldn't DM the canvas. Open the builder's Visual Canvas page and press Edit for a private download.")
+        await ctx.send("Your raid canvas and node library were sent by DM.")
 
     @raidmode.command(name="import", hidden=True, brief=_("Save an edited canvas into your Advanced draft."))
     @registry_edit
