@@ -1,0 +1,772 @@
+{
+  "schema": "fablereborn.raid-node",
+  "version": 1,
+  "name": "Dragon's Hoard Heist",
+  "description": "Stealth heist through three rooms. Each vote adds Noise; greedy options add Dragon Gold, and a tie adds 4 Noise. Noise 5 or lower escapes cleanly, 6-9 is a 50/50 roll and 10+ wakes the dragon. Stealing her egg is the loudest option. If she wakes while you hold it, the party can return it and lose all gold. Otherwise they flee for 5 rounds from fire that hits everyone. Dive for Cover blocks the flames; Toss Stolen Gold stuns her for two rounds. Next: every outcome.",
+  "entry": "heist_intro",
+  "nodes": [
+    {
+      "id": "heist_intro",
+      "kind": "scene",
+      "title": "The Dragon's Hoard",
+      "text": "Somewhere below, something enormous is snoring. The cavern floor is a sea of gold.\n\nEvery choice makes **noise**. Greed makes more. Stay quiet and you slip out rich; make too much noise and the dragon wakes. Stolen **Dragon Gold** can be tossed to distract her in battle.",
+      "next": "coin_sea",
+      "rules": []
+    },
+    {
+      "id": "coin_sea",
+      "kind": "choice",
+      "title": "The Coin Sea",
+      "text": "A river of coins between you and the inner chamber. Every step clinks.",
+      "choices": [
+        {
+          "id": "edge",
+          "label": "Tiptoe along the cave wall",
+          "next": "coin_sea_edge"
+        },
+        {
+          "id": "greedy",
+          "label": "Fill our pockets as we wade through",
+          "next": "coin_sea_greedy"
+        }
+      ],
+      "failure": "coin_sea_argue",
+      "rules": []
+    },
+    {
+      "id": "coin_sea_edge",
+      "kind": "scene",
+      "title": "The Coin Sea",
+      "text": "Painfully slow, painfully quiet. Not a single coin shifts.",
+      "next": "sleeping_head",
+      "rules": [
+        {
+          "id": "edge_heist_noise",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "heist_noise",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Noise +1."
+        }
+      ]
+    },
+    {
+      "id": "coin_sea_greedy",
+      "kind": "scene",
+      "title": "The Coin Sea",
+      "text": "Coins pour into every pocket, boot and helmet. So. Much. Clinking.",
+      "next": "sleeping_head",
+      "rules": [
+        {
+          "id": "greedy_heist_noise",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 3,
+          "resource": "heist_noise",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Noise +3."
+        },
+        {
+          "id": "greedy_dragon_gold",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 2,
+          "resource": "dragon_gold",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "+2 Dragon Gold."
+        }
+      ]
+    },
+    {
+      "id": "coin_sea_argue",
+      "kind": "scene",
+      "title": "The Coin Sea",
+      "text": "Nobody can agree. The whispered argument gets louder... and louder... until someone hisses **SHHH** at full volume.",
+      "next": "sleeping_head",
+      "rules": [
+        {
+          "id": "argue_heist_noise",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 4,
+          "resource": "heist_noise",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Noise +4."
+        }
+      ]
+    },
+    {
+      "id": "sleeping_head",
+      "kind": "choice",
+      "title": "The Sleeping Head",
+      "text": "The dragon's head blocks the passage, each breath a warm gale. A jeweled collar glitters around her neck.",
+      "choices": [
+        {
+          "id": "crawl",
+          "label": "Crawl beneath her chin",
+          "next": "sleeping_head_crawl"
+        },
+        {
+          "id": "collar",
+          "label": "Pry a gem from her collar",
+          "next": "sleeping_head_collar"
+        }
+      ],
+      "failure": "sleeping_head_argue",
+      "rules": []
+    },
+    {
+      "id": "sleeping_head_crawl",
+      "kind": "scene",
+      "title": "The Sleeping Head",
+      "text": "You crawl through the hot, sulfurous dark under her jaw. She sighs in her sleep.",
+      "next": "hoard_peak",
+      "rules": [
+        {
+          "id": "crawl_heist_noise",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "heist_noise",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Noise +1."
+        }
+      ]
+    },
+    {
+      "id": "sleeping_head_collar",
+      "kind": "scene",
+      "title": "The Sleeping Head",
+      "text": "The gem comes loose with a *pop*. One great eyelid twitches... and stays shut.",
+      "next": "hoard_peak",
+      "rules": [
+        {
+          "id": "collar_heist_noise",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 3,
+          "resource": "heist_noise",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Noise +3."
+        },
+        {
+          "id": "collar_dragon_gold",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 3,
+          "resource": "dragon_gold",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "+3 Dragon Gold."
+        }
+      ]
+    },
+    {
+      "id": "sleeping_head_argue",
+      "kind": "scene",
+      "title": "The Sleeping Head",
+      "text": "Nobody can agree. The whispered argument gets louder... and louder... until someone hisses **SHHH** at full volume.",
+      "next": "hoard_peak",
+      "rules": [
+        {
+          "id": "argue_heist_noise",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 4,
+          "resource": "heist_noise",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Noise +4."
+        }
+      ]
+    },
+    {
+      "id": "hoard_peak",
+      "kind": "choice",
+      "title": "The Peak of the Hoard",
+      "text": "At the summit: a crown of black gold, and a single dragon egg, warm and humming.",
+      "choices": [
+        {
+          "id": "leave",
+          "label": "Take nothing. Leave now.",
+          "next": "hoard_peak_leave"
+        },
+        {
+          "id": "crown",
+          "label": "Take the black-gold crown",
+          "next": "hoard_peak_crown"
+        },
+        {
+          "id": "egg",
+          "label": "Steal the dragon egg",
+          "next": "hoard_peak_egg"
+        }
+      ],
+      "failure": "hoard_peak_argue",
+      "rules": []
+    },
+    {
+      "id": "hoard_peak_leave",
+      "kind": "scene",
+      "title": "The Peak of the Hoard",
+      "text": "Discipline. You back away from the peak without touching a thing.",
+      "next": "noise_check",
+      "rules": [
+        {
+          "id": "leave_heist_noise",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 0,
+          "resource": "heist_noise",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Not a sound."
+        }
+      ]
+    },
+    {
+      "id": "hoard_peak_crown",
+      "kind": "scene",
+      "title": "The Peak of the Hoard",
+      "text": "The crown is heavier than it looks and rings like a bell when it bumps your shield.",
+      "next": "noise_check",
+      "rules": [
+        {
+          "id": "crown_heist_noise",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 2,
+          "resource": "heist_noise",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Noise +2."
+        },
+        {
+          "id": "crown_dragon_gold",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 2,
+          "resource": "dragon_gold",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "+2 Dragon Gold."
+        }
+      ]
+    },
+    {
+      "id": "hoard_peak_egg",
+      "kind": "scene",
+      "title": "The Peak of the Hoard",
+      "text": "The egg is warm and heavier than a child. Somewhere far below, something stops snoring.",
+      "next": "noise_check",
+      "rules": [
+        {
+          "id": "egg_heist_noise",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 4,
+          "resource": "heist_noise",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Noise +4."
+        },
+        {
+          "id": "stolen_egg",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "stolen_egg",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "You have the egg. Something far below stops snoring."
+        }
+      ]
+    },
+    {
+      "id": "hoard_peak_argue",
+      "kind": "scene",
+      "title": "The Peak of the Hoard",
+      "text": "Nobody can agree. The whispered argument gets louder... and louder... until someone hisses **SHHH** at full volume.",
+      "next": "noise_check",
+      "rules": [
+        {
+          "id": "argue_heist_noise",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 4,
+          "resource": "heist_noise",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Noise +4."
+        }
+      ]
+    },
+    {
+      "id": "noise_check",
+      "kind": "check",
+      "title": "Listening...",
+      "text": "You freeze at the exit tunnel and listen to the dark.",
+      "condition": {
+        "subject": "heist_noise",
+        "operator": "<=",
+        "value": 5
+      },
+      "next": "clean_escape",
+      "failure": "stir_check",
+      "rules": []
+    },
+    {
+      "id": "stir_check",
+      "kind": "check",
+      "title": "The Snoring Stops",
+      "text": "The snoring stops. A long, slow inhale fills the cavern.",
+      "condition": {
+        "subject": "heist_noise",
+        "operator": "<=",
+        "value": 9
+      },
+      "next": "dragon_stirs",
+      "failure": "dragon_wakes",
+      "rules": []
+    },
+    {
+      "id": "dragon_stirs",
+      "kind": "trial",
+      "title": "She Stirs...",
+      "text": "One enormous golden eye opens a sliver. Nobody breathes. (50%)",
+      "chance": 50,
+      "next": "clean_escape",
+      "failure": "dragon_wakes",
+      "rules": []
+    },
+    {
+      "id": "dragon_wakes",
+      "kind": "check",
+      "title": "SHE WAKES",
+      "text": "The mountain shudders. \"THIEVES.\"",
+      "condition": {
+        "subject": "stolen_egg",
+        "operator": ">=",
+        "value": 1
+      },
+      "next": "mothers_fury",
+      "failure": "dragon_battle",
+      "rules": []
+    },
+    {
+      "id": "mothers_fury",
+      "kind": "choice",
+      "title": "A Mother's Fury",
+      "text": "Her eyes find the egg in your arms, and the heat in the cavern doubles. \"GIVE. IT. BACK.\"\n\nReturn it and she will let you leave, taking every coin as her price. Keep it, and she fights with a mother's rage.",
+      "choices": [
+        {
+          "id": "return",
+          "label": "Return the egg (lose all gold)",
+          "next": "egg_returned"
+        },
+        {
+          "id": "keep",
+          "label": "Keep it and run!",
+          "next": "dragon_battle"
+        }
+      ],
+      "failure": "dragon_battle",
+      "rules": []
+    },
+    {
+      "id": "egg_returned",
+      "kind": "scene",
+      "title": "A Fair Trade",
+      "text": "You set the egg down gently. She curls around it and watches, unblinking, as you empty your pockets and back out of her home.",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "stolen_egg",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -1,
+          "resource": "stolen_egg",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The egg is safe with its mother."
+        },
+        {
+          "id": "dragon_gold",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -100,
+          "resource": "dragon_gold",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The dragon reclaims every coin."
+        }
+      ]
+    },
+    {
+      "id": "dragon_battle",
+      "kind": "battle",
+      "title": "Flee the Dragon!",
+      "text": "Fire fills the cavern. You can't win this, but you only need to survive until you reach the tunnel (**5 rounds**). **Dive for Cover** to block the flames, or **Toss Stolen Gold** to distract her.",
+      "enemies": [
+        {
+          "id": "hoard_dragon",
+          "label": "The Hoard Mother",
+          "hp": 1500,
+          "damage": 22,
+          "target": "all",
+          "on_hit_status": "scorched"
+        }
+      ],
+      "boss_hp": 1500,
+      "boss_damage": 22,
+      "max_rounds": 6,
+      "next": "dragonslayers",
+      "failure": "escaped_burning",
+      "rules": [
+        {
+          "id": "mothers_rage",
+          "trigger": "enter",
+          "condition": {
+            "subject": "stolen_egg",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "apply_status",
+          "target": "enemies",
+          "amount": 1,
+          "resource": "",
+          "status": "mothers_rage",
+          "destination": "",
+          "limit": 1,
+          "text": "She protects her egg with a mother's rage!"
+        },
+        {
+          "id": "tunnel_close",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "round",
+            "operator": "==",
+            "value": 3
+          },
+          "effect": "announce",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The tunnel mouth is close! Two more rounds!"
+        },
+        {
+          "id": "into_the_tunnel",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "round",
+            "operator": ">=",
+            "value": 5
+          },
+          "effect": "transition",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "escaped_burning",
+          "limit": 1,
+          "text": "You dive into the tunnel as fire washes over the entrance!"
+        }
+      ]
+    },
+    {
+      "id": "clean_escape",
+      "kind": "scene",
+      "title": "Clean Getaway",
+      "text": "Out into the cold night air, hearts hammering, the snoring resuming behind you.",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "rich_escape",
+          "trigger": "enter",
+          "condition": {
+            "subject": "dragon_gold",
+            "operator": ">=",
+            "value": 3
+          },
+          "effect": "announce",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Your pockets are heavy with Dragon Gold. Save it for a rainy day, or a dragon."
+        },
+        {
+          "id": "egg_hatches",
+          "trigger": "enter",
+          "condition": {
+            "subject": "stolen_egg",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "apply_status",
+          "target": "all",
+          "amount": 1,
+          "resource": "",
+          "status": "hatchling_warmth",
+          "destination": "",
+          "limit": 1,
+          "text": "The egg cracks in your arms and a hatchling tumbles out, bonding with the party!"
+        }
+      ]
+    },
+    {
+      "id": "escaped_burning",
+      "kind": "scene",
+      "title": "Singed but Alive",
+      "text": "You tumble out of the tunnel smoking and coughing. Behind you, a roar shakes the stars.",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "hatchling_forgives",
+          "trigger": "enter",
+          "condition": {
+            "subject": "stolen_egg",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "apply_status",
+          "target": "all",
+          "amount": 1,
+          "resource": "",
+          "status": "hatchling_warmth",
+          "destination": "",
+          "limit": 1,
+          "text": "The egg survived the flames and hatches, glaring, into your care."
+        }
+      ]
+    },
+    {
+      "id": "dragonslayers",
+      "kind": "scene",
+      "title": "DRAGONSLAYERS",
+      "text": "Impossible. The Hoard Mother crashes into her own gold and does not rise. Songs will be sung of this.",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "dragon_gold",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 10,
+          "resource": "dragon_gold",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The entire hoard is yours to plunder!"
+        },
+        {
+          "id": "legend_is_born",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 50,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Legends don't bleed. Not much, anyway."
+        }
+      ]
+    }
+  ],
+  "catalogues": {
+    "resources": [
+      {
+        "id": "heist_noise",
+        "label": "Noise",
+        "initial": 0,
+        "min": 0,
+        "max": 20
+      },
+      {
+        "id": "dragon_gold",
+        "label": "Dragon Gold",
+        "initial": 0,
+        "min": 0,
+        "max": 10
+      },
+      {
+        "id": "stolen_egg",
+        "label": "Stolen Egg",
+        "initial": 0,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "statuses": [
+      {
+        "id": "distracted",
+        "label": "Distracted by Gold",
+        "duration": 1,
+        "max_stacks": 1,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 100,
+        "damage_taken_pct": 100,
+        "stun": true
+      },
+      {
+        "id": "scorched",
+        "label": "Scorched",
+        "duration": 3,
+        "max_stacks": 2,
+        "damage_per_round": 5,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 100,
+        "damage_taken_pct": 100,
+        "stun": false
+      },
+      {
+        "id": "mothers_rage",
+        "label": "Mother's Rage",
+        "duration": 10,
+        "max_stacks": 1,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 140,
+        "damage_taken_pct": 100,
+        "stun": false
+      },
+      {
+        "id": "hatchling_warmth",
+        "label": "Hatchling's Warmth",
+        "duration": 6,
+        "max_stacks": 1,
+        "damage_per_round": 0,
+        "heal_per_round": 8,
+        "damage_dealt_pct": 100,
+        "damage_taken_pct": 100,
+        "stun": false
+      }
+    ],
+    "actions": [
+      {
+        "id": "dive_for_cover",
+        "label": "Dive for Cover (shield self)",
+        "effect": "shield",
+        "target": "self",
+        "amount": 25,
+        "resource": "",
+        "status": "",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": []
+      },
+      {
+        "id": "toss_gold",
+        "label": "Toss Stolen Gold (1 gold: stun)",
+        "effect": "apply_status",
+        "target": "enemy",
+        "amount": 1,
+        "resource": "",
+        "status": "distracted",
+        "cost_resource": "dragon_gold",
+        "cost": 1,
+        "roles": []
+      }
+    ]
+  }
+}

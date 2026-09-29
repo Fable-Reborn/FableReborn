@@ -67,8 +67,10 @@ NOT: {"not":<condition>}
 One group per object, nonempty children, at most 8 nested levels and 64 parts.
 Operators: always, <=, >=, ==, !=, <, >. Values: integers -1000000..1000000.
 Subjects: round, alive, boss_hp, boss_hp_percent, enemies_alive, a meter ID,
-team_alive:<id>, role_alive:<id>, status_count:<id>, enemy_hp:<id>.
+team_alive:<id>, role_alive:<id>, status_count:<id>, enemy_hp:<id>, votes:<id>.
 enemy_hp refers to enemies in the current step (boss for a legacy single boss).
+votes:<choice id> exists only on its own choice step: the number of living
+players who voted for that option (read it with trigger "choice").
 Do not name meters after built-in subjects.
 
 RULES
@@ -81,6 +83,11 @@ limit: 1-100 firings per raid. Rules run in order; transitions stop that rule ba
 Effects: damage, heal, shield, resource, boss_damage, boss_heal, announce,
 transition, apply_status, remove_status.
 amount: integer 0-1000000; resource changes may be -1000000..1000000.
+Optional "scale": a subject ID; the effective amount is amount x that subject's
+current value (negatives count as 0). Examples: 10 x a "soldiers" meter,
+3 x enemies_alive, or +2 soldiers per vote with scale "votes:soldiers" on a
+choice rule (every vote allocates, not just the winner). Actions may only scale
+by raid-wide subjects (no enemy_hp or votes). Status stacks scaled to 0 are skipped.
 resource effects require a resource ID. apply_status/remove_status require a
 status ID; applying stacks requires amount 1-25. transition requires destination.
 Target: self, all, random, lowest, allies, enemy, enemies, enemy_random,

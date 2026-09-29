@@ -1,0 +1,347 @@
+{
+  "schema": "fablereborn.raid-node",
+  "version": 1,
+  "name": "The Titan's Gaze",
+  "description": "Tank/healer/damage boss with role selection. Vanguards (2 slots, 300 HP) are the Titan's only targets; Hold the Line halves incoming damage. Menders (2 slots) Mend the lowest hero or Renew all Vanguards. Strikers gain Fury each round and spend 3 to Sunder (+25% damage taken per stack, up to 4). Earthsplitter hits everyone every 3rd round, with a warning the round before. If every Vanguard is down, Sweeping Gaze hits the whole raid each round. At 30% HP the Titan enrages (+60% damage). Its stone-skin shield scales with party size. 18-round limit. Next: Titan felled. Failure: time runs out.",
+  "entry": "titan_approach",
+  "nodes": [
+    {
+      "id": "titan_approach",
+      "kind": "scene",
+      "title": "The Titan Wakes",
+      "text": "The mountain stands up.\n\nA **Stone Titan** turns its burning gaze on the raid. It will only strike those who stand in front of it... for now.\n\n🛡️ **Vanguards** (max 2, 300 HP): the Titan only attacks you. **Hold the Line** to halve the damage.\n💚 **Menders** (max 2): keep the Vanguards standing with **Renew**, and heal the raid after each Earthsplitter.\n⚔️ **Strikers**: deal damage, and spend Fury to **Sunder** its stone skin.\n\nIf every Vanguard falls, the Titan's **Sweeping Gaze** turns on everyone.",
+      "next": "titan_battle",
+      "rules": []
+    },
+    {
+      "id": "titan_battle",
+      "kind": "battle",
+      "title": "The Stone Titan",
+      "text": "It attacks Vanguards only. **Earthsplitter** hits everyone every 3rd round. It **enrages** at 30%.",
+      "enemies": [
+        {
+          "id": "titan",
+          "label": "The Stone Titan",
+          "hp": 600,
+          "damage": 30,
+          "target": "role:vanguard",
+          "on_hit_status": ""
+        }
+      ],
+      "boss_hp": 600,
+      "boss_damage": 30,
+      "max_rounds": 20,
+      "next": "titan_falls",
+      "failure": "$failure",
+      "rules": [
+        {
+          "id": "stone_skin",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "shield",
+          "target": "enemy:titan",
+          "amount": 25,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Stone skin hardens over the Titan, thicker for every challenger.",
+          "scale": "alive"
+        },
+        {
+          "id": "charge",
+          "trigger": "round_end",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "titan_charge",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": ""
+        },
+        {
+          "id": "charge_warn",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "titan_charge",
+            "operator": "==",
+            "value": 2
+          },
+          "effect": "announce",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "⚠️ The Titan raises both fists. **Earthsplitter next round!**"
+        },
+        {
+          "id": "earthsplitter",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "titan_charge",
+            "operator": ">=",
+            "value": 3
+          },
+          "effect": "damage",
+          "target": "all",
+          "amount": 25,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "🌋 **EARTHSPLITTER!** The ground erupts under the entire raid!"
+        },
+        {
+          "id": "charge_reset",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "titan_charge",
+            "operator": ">=",
+            "value": 3
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -3,
+          "resource": "titan_charge",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": ""
+        },
+        {
+          "id": "sweeping_gaze",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "role_alive:vanguard",
+            "operator": "==",
+            "value": 0
+          },
+          "effect": "damage",
+          "target": "all",
+          "amount": 25,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "👁️ With no Vanguard standing, the Titan's **Sweeping Gaze** scorches everyone!"
+        },
+        {
+          "id": "fury_builds",
+          "trigger": "round_end",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "fury",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": ""
+        },
+        {
+          "id": "enrage",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "boss_hp_percent",
+            "operator": "<=",
+            "value": 30
+          },
+          "effect": "apply_status",
+          "target": "enemy:titan",
+          "amount": 1,
+          "resource": "",
+          "status": "titan_rage",
+          "destination": "",
+          "limit": 1,
+          "text": "🔥 The Titan's core cracks open and it **ENRAGES** (+60% damage). Menders, now's the time!"
+        }
+      ]
+    },
+    {
+      "id": "titan_falls",
+      "kind": "scene",
+      "title": "The Mountain Sleeps",
+      "text": "The Titan topples, and for a mile in every direction the earth shudders. Where it fell, the stone is warm.",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "warm_stone",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 40,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Warmth rises from the fallen stone."
+        }
+      ]
+    }
+  ],
+  "catalogues": {
+    "teams": [
+      {
+        "id": "party",
+        "label": "Party"
+      }
+    ],
+    "roles": [
+      {
+        "id": "vanguard",
+        "label": "Vanguard",
+        "team": "party",
+        "hp": 300,
+        "slots": 2
+      },
+      {
+        "id": "mender",
+        "label": "Mender",
+        "team": "party",
+        "hp": 0,
+        "slots": 2
+      },
+      {
+        "id": "striker",
+        "label": "Striker",
+        "team": "party",
+        "hp": 0,
+        "slots": 0
+      }
+    ],
+    "statuses": [
+      {
+        "id": "guarded",
+        "label": "Holding the Line",
+        "duration": 1,
+        "max_stacks": 1,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 100,
+        "damage_taken_pct": 50,
+        "stun": false
+      },
+      {
+        "id": "sundered",
+        "label": "Sundered",
+        "duration": 3,
+        "max_stacks": 4,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 100,
+        "damage_taken_pct": 125,
+        "stun": false
+      },
+      {
+        "id": "titan_rage",
+        "label": "Titan's Rage",
+        "duration": 100,
+        "max_stacks": 1,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 160,
+        "damage_taken_pct": 100,
+        "stun": false
+      }
+    ],
+    "resources": [
+      {
+        "id": "titan_charge",
+        "label": "Earthsplitter Charge",
+        "initial": 0,
+        "min": 0,
+        "max": 3
+      },
+      {
+        "id": "fury",
+        "label": "Fury",
+        "initial": 0,
+        "min": 0,
+        "max": 30
+      }
+    ],
+    "actions": [
+      {
+        "id": "mend",
+        "label": "Mend (heal lowest 40)",
+        "effect": "heal",
+        "target": "lowest",
+        "amount": 40,
+        "resource": "",
+        "status": "",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": [
+          "mender"
+        ]
+      },
+      {
+        "id": "renew",
+        "label": "Renew (heal Vanguards 30)",
+        "effect": "heal",
+        "target": "role:vanguard",
+        "amount": 30,
+        "resource": "",
+        "status": "",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": [
+          "mender"
+        ]
+      },
+      {
+        "id": "hold_the_line",
+        "label": "Hold the Line (take 50% less)",
+        "effect": "apply_status",
+        "target": "self",
+        "amount": 1,
+        "resource": "",
+        "status": "guarded",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": [
+          "vanguard"
+        ]
+      },
+      {
+        "id": "titan_strike",
+        "label": "Strike",
+        "effect": "boss_damage",
+        "target": "enemy",
+        "amount": 25,
+        "resource": "",
+        "status": "",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": []
+      },
+      {
+        "id": "sunder",
+        "label": "Sunder (3 Fury: +25% damage taken)",
+        "effect": "apply_status",
+        "target": "enemy",
+        "amount": 1,
+        "resource": "",
+        "status": "sundered",
+        "cost_resource": "fury",
+        "cost": 3,
+        "roles": [
+          "striker"
+        ]
+      }
+    ]
+  }
+}

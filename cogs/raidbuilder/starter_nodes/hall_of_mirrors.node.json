@@ -1,0 +1,245 @@
+{
+  "schema": "fablereborn.raid-node",
+  "version": 1,
+  "name": "Hall of Mirrors",
+  "description": "A deduction battle against three reflections of the party. Only one is real; the two fakes have 999 HP, deal 0 damage and leave Glass Splinters. Players who read the combat log can see which reflection draws blood. Cracking a fake curses the whole party with Seven Years' Bad Luck. Shattering the real one ends the fight. Default targeting picks a fake, so pay attention! Next: shattered, or escaped after 8 rounds.",
+  "entry": "mirror_hall",
+  "nodes": [
+    {
+      "id": "mirror_hall",
+      "kind": "scene",
+      "title": "The Hall of Mirrors",
+      "text": "Endless silver corridors. Your reflections stop copying you, then smile and step out of the glass.\n\n*Only one of them is real. The glass never lies; watch closely who draws blood.*",
+      "next": "reflections",
+      "rules": []
+    },
+    {
+      "id": "reflections",
+      "kind": "battle",
+      "title": "Your Reflections",
+      "text": "Three versions of your party stare back. One of them is flesh. Choose your target carefully. Striking a false mirror is *very* bad luck.",
+      "enemies": [
+        {
+          "id": "left_reflection",
+          "label": "The Left Reflection",
+          "hp": 999,
+          "damage": 0,
+          "target": "random",
+          "on_hit_status": "glass_splinters"
+        },
+        {
+          "id": "center_reflection",
+          "label": "The Center Reflection",
+          "hp": 999,
+          "damage": 0,
+          "target": "random",
+          "on_hit_status": "glass_splinters"
+        },
+        {
+          "id": "right_reflection",
+          "label": "The Right Reflection",
+          "hp": 240,
+          "damage": 16,
+          "target": "random",
+          "on_hit_status": ""
+        }
+      ],
+      "boss_hp": 2238,
+      "boss_damage": 16,
+      "max_rounds": 8,
+      "next": "mirrors_shattered",
+      "failure": "lost_in_glass",
+      "rules": [
+        {
+          "id": "cracked_left",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "enemy_hp:left_reflection",
+            "operator": "<",
+            "value": 999
+          },
+          "effect": "apply_status",
+          "target": "all",
+          "amount": 1,
+          "resource": "",
+          "status": "bad_luck",
+          "destination": "",
+          "limit": 1,
+          "text": "CRACK! The Left Reflection was a fake! Seven Years' Bad Luck falls on the party."
+        },
+        {
+          "id": "cracked_center",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "enemy_hp:center_reflection",
+            "operator": "<",
+            "value": 999
+          },
+          "effect": "apply_status",
+          "target": "all",
+          "amount": 1,
+          "resource": "",
+          "status": "bad_luck",
+          "destination": "",
+          "limit": 1,
+          "text": "CRACK! The Center Reflection was a fake! Seven Years' Bad Luck falls on the party."
+        },
+        {
+          "id": "mirrors_multiply",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "round",
+            "operator": "==",
+            "value": 4
+          },
+          "effect": "announce",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The corridors multiply. Your own faces jeer at you from every wall."
+        },
+        {
+          "id": "shards_rain",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "round",
+            "operator": ">=",
+            "value": 5
+          },
+          "effect": "apply_status",
+          "target": "all",
+          "amount": 1,
+          "resource": "",
+          "status": "glass_splinters",
+          "destination": "",
+          "limit": 4,
+          "text": "Mirror shards rain from the ceiling!"
+        },
+        {
+          "id": "true_reflection_breaks",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "enemy_hp:right_reflection",
+            "operator": "<=",
+            "value": 0
+          },
+          "effect": "transition",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "mirrors_shattered",
+          "limit": 1,
+          "text": "The true reflection shatters, and every false one dies with it."
+        }
+      ]
+    },
+    {
+      "id": "mirrors_shattered",
+      "kind": "scene",
+      "title": "Seven Hundred Pieces",
+      "text": "Silence, and a floor ankle-deep in glittering glass. The way forward is just an ordinary door.",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "clean_break",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "remove_status",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "glass_splinters",
+          "destination": "",
+          "limit": 1,
+          "text": "The splinters work their way out."
+        },
+        {
+          "id": "catch_your_breath",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 15,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "You catch your breath."
+        }
+      ]
+    },
+    {
+      "id": "lost_in_glass",
+      "kind": "scene",
+      "title": "Lost in the Glass",
+      "text": "The reflections fade back into the mirrors, laughing. It takes hours of bloody-knuckled searching to find the exit.",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "bloody_knuckles",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "damage",
+          "target": "all",
+          "amount": 25,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The maze takes its toll."
+        }
+      ]
+    }
+  ],
+  "catalogues": {
+    "resources": [],
+    "statuses": [
+      {
+        "id": "glass_splinters",
+        "label": "Glass Splinters",
+        "duration": 3,
+        "max_stacks": 5,
+        "damage_per_round": 4,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 100,
+        "damage_taken_pct": 100,
+        "stun": false
+      },
+      {
+        "id": "bad_luck",
+        "label": "Seven Years' Bad Luck",
+        "duration": 7,
+        "max_stacks": 1,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 90,
+        "damage_taken_pct": 125,
+        "stun": false
+      }
+    ],
+    "actions": [
+      {
+        "id": "shatter",
+        "label": "Shatter (heavy single hit)",
+        "effect": "boss_damage",
+        "target": "enemy",
+        "amount": 30,
+        "resource": "",
+        "status": "",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": []
+      }
+    ]
+  }
+}

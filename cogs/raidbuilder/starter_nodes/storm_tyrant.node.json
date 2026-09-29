@@ -1,0 +1,801 @@
+{
+  "schema": "fablereborn.raid-node",
+  "version": 1,
+  "name": "The Storm Tyrant",
+  "description": "A boss where you read the telegraph. Fight 3 Storm Avatars (4 rounds each; a kill shatters one of 3 Storm Crowns). After each, the party votes where to shelter from a Cataclysm. The right answer is hinted in the narration: first obvious, then subtle, then cryptic. A wrong pick or tie does heavy damage, applies Static (+25% damage taken) and adds 1 Wrath. The final Tyrant fight starts with a 150 shield per surviving Crown, gains Tempest stacks equal to Wrath, and Thunderclaps every round. Plant a Lightning Rod halves incoming damage. Rewrite the riddles freely. Next: storm broken. Failure: final fight times out.",
+  "entry": "tyrant_peak",
+  "nodes": [
+    {
+      "id": "tyrant_peak",
+      "kind": "scene",
+      "title": "The Storm Tyrant's Peak",
+      "text": "At the summit, a giant crowned with **three Storm Crowns** holds the sky in his fist.\n\nHe fights through **Storm Avatars**. Between avatars he calls down a **Cataclysm**, and the only warning is *how he summons it*. **Read the narration** and vote for where to shelter.\n\nEvery shattered Crown weakens his final form. Every wrong shelter feeds his **Wrath**.",
+      "next": "tyrant_1",
+      "rules": []
+    },
+    {
+      "id": "tyrant_1",
+      "kind": "battle",
+      "title": "Storm Avatar 1 of 3",
+      "text": "The first avatar coalesces from a thunderhead.\n\nDestroy the avatar within **4 rounds** to shatter one of the Tyrant's **Storm Crowns**.",
+      "enemies": [
+        {
+          "id": "avatar_1",
+          "label": "Storm Avatar 1",
+          "hp": 200,
+          "damage": 10,
+          "target": "random",
+          "on_hit_status": ""
+        }
+      ],
+      "boss_hp": 200,
+      "boss_damage": 10,
+      "max_rounds": 4,
+      "next": "crown_1",
+      "failure": "cataclysm_1",
+      "rules": [
+        {
+          "id": "avatar_1_shield",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "shield",
+          "target": "enemy:avatar_1",
+          "amount": 15,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Wind wraps the avatar in a howling barrier.",
+          "scale": "alive"
+        },
+        {
+          "id": "avatar_1_bolt",
+          "trigger": "round_end",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "damage",
+          "target": "random",
+          "amount": 15,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "A bolt leaps from the avatar!"
+        }
+      ]
+    },
+    {
+      "id": "crown_1",
+      "kind": "scene",
+      "title": "A Crown Shatters",
+      "text": "The avatar bursts into rain. High above, one of the Tyrant's **Storm Crowns** cracks and goes dark.",
+      "next": "cataclysm_1",
+      "rules": [
+        {
+          "id": "crown_1_lost",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -1,
+          "resource": "storm_crowns",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": ""
+        }
+      ]
+    },
+    {
+      "id": "cataclysm_1",
+      "kind": "choice",
+      "title": "Cataclysm I: Lightning",
+      "text": "The Tyrant points his spear at the **eastern spire**. Lightning crawls up its stone, crackling brighter every second. Behind you, the ravine howls with wind strong enough to lift a horse.\n\n**Where do you shelter?**",
+      "choices": [
+        {
+          "id": "east",
+          "label": "Behind the eastern spire",
+          "next": "struck_1"
+        },
+        {
+          "id": "west",
+          "label": "Behind the western spire",
+          "next": "safe_1"
+        },
+        {
+          "id": "ravine",
+          "label": "Down in the ravine",
+          "next": "struck_1"
+        }
+      ],
+      "failure": "struck_1",
+      "rules": []
+    },
+    {
+      "id": "safe_1",
+      "kind": "scene",
+      "title": "You Read the Storm",
+      "text": "Lightning hammers the eastern spire into gravel. Behind the dark western spire, you are untouched.",
+      "next": "tyrant_2",
+      "rules": [
+        {
+          "id": "safe_1_heal",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 30,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Sheltered, the raid catches its breath."
+        }
+      ]
+    },
+    {
+      "id": "struck_1",
+      "kind": "scene",
+      "title": "The Cataclysm Hits",
+      "text": "You chose poorly. The storm finds you exactly where he said it would.",
+      "next": "tyrant_2",
+      "rules": [
+        {
+          "id": "struck_1_hit",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "damage",
+          "target": "all",
+          "amount": 30,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The Cataclysm tears through the raid!"
+        },
+        {
+          "id": "struck_1_static",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "apply_status",
+          "target": "all",
+          "amount": 1,
+          "resource": "",
+          "status": "static",
+          "destination": "",
+          "limit": 1,
+          "text": "Static crawls over everyone (+25% damage taken)."
+        },
+        {
+          "id": "struck_1_wrath",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "wrath",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The Tyrant laughs. Your mistake feeds his **Wrath**."
+        }
+      ]
+    },
+    {
+      "id": "tyrant_2",
+      "kind": "battle",
+      "title": "Storm Avatar 2 of 3",
+      "text": "The second avatar tears itself out of the clouds, hail rattling off its body.\n\nDestroy the avatar within **4 rounds** to shatter one of the Tyrant's **Storm Crowns**.",
+      "enemies": [
+        {
+          "id": "avatar_2",
+          "label": "Storm Avatar 2",
+          "hp": 250,
+          "damage": 12,
+          "target": "random",
+          "on_hit_status": ""
+        }
+      ],
+      "boss_hp": 250,
+      "boss_damage": 12,
+      "max_rounds": 4,
+      "next": "crown_2",
+      "failure": "cataclysm_2",
+      "rules": [
+        {
+          "id": "avatar_2_shield",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "shield",
+          "target": "enemy:avatar_2",
+          "amount": 15,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Wind wraps the avatar in a howling barrier.",
+          "scale": "alive"
+        },
+        {
+          "id": "avatar_2_bolt",
+          "trigger": "round_end",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "damage",
+          "target": "random",
+          "amount": 20,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "A bolt leaps from the avatar!"
+        }
+      ]
+    },
+    {
+      "id": "crown_2",
+      "kind": "scene",
+      "title": "A Crown Shatters",
+      "text": "The avatar bursts into rain. High above, one of the Tyrant's **Storm Crowns** cracks and goes dark.",
+      "next": "cataclysm_2",
+      "rules": [
+        {
+          "id": "crown_2_lost",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -1,
+          "resource": "storm_crowns",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": ""
+        }
+      ]
+    },
+    {
+      "id": "cataclysm_2",
+      "kind": "choice",
+      "title": "Cataclysm II: Hail",
+      "text": "The Tyrant raises his palm to the **sky**, not the ground. The air tastes of copper and cold. Far upstream, you hear rain drumming on the mountains.\n\n**Where do you shelter?**",
+      "choices": [
+        {
+          "id": "arch",
+          "label": "Under the rock arch",
+          "next": "safe_2"
+        },
+        {
+          "id": "field",
+          "label": "Out in the open field",
+          "next": "struck_2"
+        },
+        {
+          "id": "gully",
+          "label": "In the dry riverbed",
+          "next": "struck_2"
+        }
+      ],
+      "failure": "struck_2",
+      "rules": []
+    },
+    {
+      "id": "safe_2",
+      "kind": "scene",
+      "title": "You Read the Storm",
+      "text": "Hailstones the size of fists shatter against the arch. Minutes later, a flash flood roars down the riverbed you almost chose.",
+      "next": "tyrant_3",
+      "rules": [
+        {
+          "id": "safe_2_heal",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 30,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Sheltered, the raid catches its breath."
+        }
+      ]
+    },
+    {
+      "id": "struck_2",
+      "kind": "scene",
+      "title": "The Cataclysm Hits",
+      "text": "Hail and flood. The sky and the mountain punish you together.",
+      "next": "tyrant_3",
+      "rules": [
+        {
+          "id": "struck_2_hit",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "damage",
+          "target": "all",
+          "amount": 35,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The Cataclysm tears through the raid!"
+        },
+        {
+          "id": "struck_2_static",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "apply_status",
+          "target": "all",
+          "amount": 1,
+          "resource": "",
+          "status": "static",
+          "destination": "",
+          "limit": 1,
+          "text": "Static crawls over everyone (+25% damage taken)."
+        },
+        {
+          "id": "struck_2_wrath",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "wrath",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The Tyrant laughs. Your mistake feeds his **Wrath**."
+        }
+      ]
+    },
+    {
+      "id": "tyrant_3",
+      "kind": "battle",
+      "title": "Storm Avatar 3 of 3",
+      "text": "The final avatar descends, dragging the storm down with it.\n\nDestroy the avatar within **4 rounds** to shatter one of the Tyrant's **Storm Crowns**.",
+      "enemies": [
+        {
+          "id": "avatar_3",
+          "label": "Storm Avatar 3",
+          "hp": 300,
+          "damage": 14,
+          "target": "random",
+          "on_hit_status": ""
+        }
+      ],
+      "boss_hp": 300,
+      "boss_damage": 14,
+      "max_rounds": 4,
+      "next": "crown_3",
+      "failure": "cataclysm_3",
+      "rules": [
+        {
+          "id": "avatar_3_shield",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "shield",
+          "target": "enemy:avatar_3",
+          "amount": 15,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Wind wraps the avatar in a howling barrier.",
+          "scale": "alive"
+        },
+        {
+          "id": "avatar_3_bolt",
+          "trigger": "round_end",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "damage",
+          "target": "random",
+          "amount": 25,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "A bolt leaps from the avatar!"
+        }
+      ]
+    },
+    {
+      "id": "crown_3",
+      "kind": "scene",
+      "title": "A Crown Shatters",
+      "text": "The avatar bursts into rain. High above, one of the Tyrant's **Storm Crowns** cracks and goes dark.",
+      "next": "cataclysm_3",
+      "rules": [
+        {
+          "id": "crown_3_lost",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -1,
+          "resource": "storm_crowns",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": ""
+        }
+      ]
+    },
+    {
+      "id": "cataclysm_3",
+      "kind": "choice",
+      "title": "Cataclysm III: Silence",
+      "text": "The Tyrant falls **silent**. The wind stops. Every hair on your arms stands on end, and your weapons begin to *hum*.\n\n**What do you do?**",
+      "choices": [
+        {
+          "id": "raise",
+          "label": "Raise your weapons to the sky",
+          "next": "struck_3"
+        },
+        {
+          "id": "flat",
+          "label": "Drop your weapons and lie flat",
+          "next": "safe_3"
+        },
+        {
+          "id": "bridge",
+          "label": "Shelter under the iron bridge",
+          "next": "struck_3"
+        }
+      ],
+      "failure": "struck_3",
+      "rules": []
+    },
+    {
+      "id": "safe_3",
+      "kind": "scene",
+      "title": "You Read the Storm",
+      "text": "The strike lands on the iron bridge and the raised blades of your own discarded weapons. Flat on the stone, you feel only a tingle.",
+      "next": "tyrant_final_intro",
+      "rules": [
+        {
+          "id": "safe_3_heal",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 30,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Sheltered, the raid catches its breath."
+        }
+      ]
+    },
+    {
+      "id": "struck_3",
+      "kind": "scene",
+      "title": "The Cataclysm Hits",
+      "text": "Metal sings, then screams. The lightning takes the path you gave it.",
+      "next": "tyrant_final_intro",
+      "rules": [
+        {
+          "id": "struck_3_hit",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "damage",
+          "target": "all",
+          "amount": 40,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The Cataclysm tears through the raid!"
+        },
+        {
+          "id": "struck_3_static",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "apply_status",
+          "target": "all",
+          "amount": 1,
+          "resource": "",
+          "status": "static",
+          "destination": "",
+          "limit": 1,
+          "text": "Static crawls over everyone (+25% damage taken)."
+        },
+        {
+          "id": "struck_3_wrath",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "wrath",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The Tyrant laughs. Your mistake feeds his **Wrath**."
+        }
+      ]
+    },
+    {
+      "id": "tyrant_final_intro",
+      "kind": "scene",
+      "title": "The Tyrant Descends",
+      "text": "Out of avatars and out of patience, the Storm Tyrant steps down from the sky himself.\n\nEach **Storm Crown** still burning shields him. Each point of **Wrath** makes him hit harder. **Plant a Lightning Rod** to take 50% less from his Thunderclaps.",
+      "next": "tyrant_final",
+      "rules": []
+    },
+    {
+      "id": "tyrant_final",
+      "kind": "battle",
+      "title": "The Storm Tyrant",
+      "text": "Thunderclap hits everyone each round. At 40% HP he calls the Eye of the Storm.",
+      "enemies": [
+        {
+          "id": "storm_tyrant",
+          "label": "The Storm Tyrant",
+          "hp": 600,
+          "damage": 12,
+          "target": "random",
+          "on_hit_status": ""
+        }
+      ],
+      "boss_hp": 600,
+      "boss_damage": 12,
+      "max_rounds": 12,
+      "next": "storm_breaks",
+      "failure": "$failure",
+      "rules": [
+        {
+          "id": "crown_barrier",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "shield",
+          "target": "enemy:storm_tyrant",
+          "amount": 150,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The surviving Storm Crowns wrap the Tyrant in lightning.",
+          "scale": "storm_crowns"
+        },
+        {
+          "id": "crown_scaling",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "shield",
+          "target": "enemy:storm_tyrant",
+          "amount": 20,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The storm thickens around him.",
+          "scale": "alive"
+        },
+        {
+          "id": "wrath_empowers",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "apply_status",
+          "target": "enemy:storm_tyrant",
+          "amount": 1,
+          "resource": "",
+          "status": "tempest",
+          "destination": "",
+          "limit": 1,
+          "text": "Your mistakes echo in his voice. **Wrath** empowers the Tyrant!",
+          "scale": "wrath"
+        },
+        {
+          "id": "thunderclap",
+          "trigger": "round_end",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "damage",
+          "target": "all",
+          "amount": 10,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "⚡ **THUNDERCLAP!**"
+        },
+        {
+          "id": "eye_of_storm",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "boss_hp_percent",
+            "operator": "<=",
+            "value": 40
+          },
+          "effect": "apply_status",
+          "target": "enemy:storm_tyrant",
+          "amount": 2,
+          "resource": "",
+          "status": "tempest",
+          "destination": "",
+          "limit": 1,
+          "text": "🌀 **Eye of the Storm.** The Tyrant draws the whole sky into himself!"
+        }
+      ]
+    },
+    {
+      "id": "storm_breaks",
+      "kind": "scene",
+      "title": "The Storm Breaks",
+      "text": "The Tyrant's last crown falls from his head and rolls to your feet, cold and dark. Above you, for the first time in a century, the sky is clear.",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "clear_sky",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 50,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Sunlight. Actual sunlight."
+        }
+      ]
+    }
+  ],
+  "catalogues": {
+    "teams": [
+      {
+        "id": "party",
+        "label": "Party"
+      }
+    ],
+    "roles": [
+      {
+        "id": "adventurer",
+        "label": "Adventurer",
+        "team": "party",
+        "hp": 0,
+        "slots": 0
+      }
+    ],
+    "statuses": [
+      {
+        "id": "static",
+        "label": "Static",
+        "duration": 3,
+        "max_stacks": 3,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 100,
+        "damage_taken_pct": 125,
+        "stun": false
+      },
+      {
+        "id": "grounded",
+        "label": "Grounded",
+        "duration": 1,
+        "max_stacks": 1,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 100,
+        "damage_taken_pct": 50,
+        "stun": false
+      },
+      {
+        "id": "tempest",
+        "label": "Tempest",
+        "duration": 100,
+        "max_stacks": 8,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 120,
+        "damage_taken_pct": 100,
+        "stun": false
+      }
+    ],
+    "resources": [
+      {
+        "id": "storm_crowns",
+        "label": "Storm Crowns",
+        "initial": 3,
+        "min": 0,
+        "max": 3
+      },
+      {
+        "id": "wrath",
+        "label": "Wrath",
+        "initial": 0,
+        "min": 0,
+        "max": 3
+      }
+    ],
+    "actions": [
+      {
+        "id": "storm_strike",
+        "label": "Strike",
+        "effect": "boss_damage",
+        "target": "enemy",
+        "amount": 25,
+        "resource": "",
+        "status": "",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": []
+      },
+      {
+        "id": "lightning_rod",
+        "label": "Plant a Lightning Rod (take 50% less)",
+        "effect": "apply_status",
+        "target": "self",
+        "amount": 1,
+        "resource": "",
+        "status": "grounded",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": []
+      },
+      {
+        "id": "rally_cry",
+        "label": "Rally (heal lowest 30)",
+        "effect": "heal",
+        "target": "lowest",
+        "amount": 30,
+        "resource": "",
+        "status": "",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": []
+      }
+    ]
+  }
+}

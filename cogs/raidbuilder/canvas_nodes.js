@@ -134,9 +134,9 @@ function compileNodePack(candidate, after) {
     for (const [key, collection] of [['resource','resources'],['cost_resource','resources'],['output_resource','resources'],['status','statuses'],['on_hit_status','statuses'],['team','teams']])
       if (key in out) out[key] = maps[collection].get(out[key]) ?? out[key];
     if (out.roles) out.roles = out.roles.map(r => maps.roles.get(r) ?? r);
-    for (const key of ['subject','target']) {
+    for (const key of ['subject','target','scale']) {
       const v = out[key]; if (typeof v !== 'string') continue;
-      if (key === 'subject' && maps.resources.has(v)) out[key] = maps.resources.get(v);
+      if (key !== 'target' && maps.resources.has(v)) out[key] = maps.resources.get(v);
       else if (v.includes(':')) {
         const [prefix, id] = v.split(':');
         const mapping = { team: maps.teams, team_alive: maps.teams, role: maps.roles, role_alive: maps.roles,

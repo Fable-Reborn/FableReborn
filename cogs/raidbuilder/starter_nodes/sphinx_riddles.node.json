@@ -1,0 +1,488 @@
+{
+  "schema": "fablereborn.raid-node",
+  "version": 1,
+  "name": "The Sphinx's Riddles",
+  "description": "A riddle quiz decided by party vote. The Sphinx has 3 patience; every wrong answer or tie costs 1, claws the party and applies Addled, then she asks again. Solve all three for the Sphinx's Blessing (+60 shield for a flawless run). Run out of patience and she attacks: 8 rounds, and she yields at 30% HP. Next: blessed or yielded. Failure: lost the fight. Edit the riddles freely!",
+  "entry": "sphinx_intro",
+  "nodes": [
+    {
+      "id": "sphinx_intro",
+      "kind": "scene",
+      "title": "The Sphinx of the Sealed Road",
+      "text": "A lion the size of a house lies across the road, wings folded, a woman's face calm and ancient.\n\n\"Three riddles. Answer, and I will bless your road. Answer wrongly, and my **patience** thins. I have *three* patience. When it is gone... I dine.\"\n\n*Wrong answers and indecision both cost patience, and the Sphinx will simply ask again.*",
+      "next": "riddle_1",
+      "rules": []
+    },
+    {
+      "id": "riddle_1",
+      "kind": "choice",
+      "title": "The First Riddle",
+      "text": "\"The more of me you take, the more you leave behind. What am I?\"\n\nThe party must agree on one answer.",
+      "choices": [
+        {
+          "id": "footsteps",
+          "label": "Footsteps",
+          "next": "correct_1"
+        },
+        {
+          "id": "memories",
+          "label": "Memories",
+          "next": "wrong_1"
+        },
+        {
+          "id": "breaths",
+          "label": "Breaths",
+          "next": "wrong_1"
+        },
+        {
+          "id": "coins",
+          "label": "Coins",
+          "next": "wrong_1"
+        }
+      ],
+      "failure": "wrong_1",
+      "rules": []
+    },
+    {
+      "id": "wrong_1",
+      "kind": "check",
+      "title": "Wrong.",
+      "text": "The Sphinx's tail lashes once. \"No. Again.\"",
+      "condition": {
+        "subject": "sphinx_patience",
+        "operator": ">=",
+        "value": 1
+      },
+      "next": "riddle_1",
+      "failure": "sphinx_pounces",
+      "rules": [
+        {
+          "id": "patience_thins",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -1,
+          "resource": "sphinx_patience",
+          "status": "",
+          "destination": "",
+          "limit": 3,
+          "text": "The Sphinx's patience wears thin."
+        },
+        {
+          "id": "claw_swipe_1",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "damage",
+          "target": "all",
+          "amount": 10,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 3,
+          "text": "A lazy claw swipe rakes the party."
+        },
+        {
+          "id": "addled_1",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "apply_status",
+          "target": "all",
+          "amount": 1,
+          "resource": "",
+          "status": "addled",
+          "destination": "",
+          "limit": 3,
+          "text": "Your thoughts go foggy."
+        }
+      ]
+    },
+    {
+      "id": "correct_1",
+      "kind": "scene",
+      "title": "Correct.",
+      "text": "\"...Correct.\" The Sphinx's eyes narrow with something like respect.",
+      "next": "riddle_2",
+      "rules": []
+    },
+    {
+      "id": "riddle_2",
+      "kind": "choice",
+      "title": "The Second Riddle",
+      "text": "\"Feed me and I live. Give me a drink and I die. What am I?\"\n\nThe party must agree on one answer.",
+      "choices": [
+        {
+          "id": "plant",
+          "label": "A plant",
+          "next": "wrong_2"
+        },
+        {
+          "id": "vampire",
+          "label": "A vampire",
+          "next": "wrong_2"
+        },
+        {
+          "id": "fire",
+          "label": "Fire",
+          "next": "correct_2"
+        },
+        {
+          "id": "hunger",
+          "label": "Hunger",
+          "next": "wrong_2"
+        }
+      ],
+      "failure": "wrong_2",
+      "rules": []
+    },
+    {
+      "id": "wrong_2",
+      "kind": "check",
+      "title": "Wrong.",
+      "text": "The Sphinx's tail lashes once. \"No. Again.\"",
+      "condition": {
+        "subject": "sphinx_patience",
+        "operator": ">=",
+        "value": 1
+      },
+      "next": "riddle_2",
+      "failure": "sphinx_pounces",
+      "rules": [
+        {
+          "id": "patience_thins",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -1,
+          "resource": "sphinx_patience",
+          "status": "",
+          "destination": "",
+          "limit": 3,
+          "text": "The Sphinx's patience wears thin."
+        },
+        {
+          "id": "claw_swipe_2",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "damage",
+          "target": "all",
+          "amount": 10,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 3,
+          "text": "A lazy claw swipe rakes the party."
+        },
+        {
+          "id": "addled_2",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "apply_status",
+          "target": "all",
+          "amount": 1,
+          "resource": "",
+          "status": "addled",
+          "destination": "",
+          "limit": 3,
+          "text": "Your thoughts go foggy."
+        }
+      ]
+    },
+    {
+      "id": "correct_2",
+      "kind": "scene",
+      "title": "Correct.",
+      "text": "\"...Correct.\" The Sphinx's eyes narrow with something like respect.",
+      "next": "riddle_3",
+      "rules": []
+    },
+    {
+      "id": "riddle_3",
+      "kind": "choice",
+      "title": "The Final Riddle",
+      "text": "\"What walks on four legs at dawn, on two at noon, and on three at dusk?\"\n\nThe party must agree on one answer.",
+      "choices": [
+        {
+          "id": "wolf",
+          "label": "A wolf in disguise",
+          "next": "wrong_3"
+        },
+        {
+          "id": "human",
+          "label": "A human, from cradle to cane",
+          "next": "sphinx_boon"
+        },
+        {
+          "id": "shadow",
+          "label": "A shadow",
+          "next": "wrong_3"
+        },
+        {
+          "id": "sphinx",
+          "label": "A sphinx",
+          "next": "wrong_3"
+        }
+      ],
+      "failure": "wrong_3",
+      "rules": []
+    },
+    {
+      "id": "wrong_3",
+      "kind": "check",
+      "title": "Wrong.",
+      "text": "The Sphinx's tail lashes once. \"No. Again.\"",
+      "condition": {
+        "subject": "sphinx_patience",
+        "operator": ">=",
+        "value": 1
+      },
+      "next": "riddle_3",
+      "failure": "sphinx_pounces",
+      "rules": [
+        {
+          "id": "patience_thins",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -1,
+          "resource": "sphinx_patience",
+          "status": "",
+          "destination": "",
+          "limit": 3,
+          "text": "The Sphinx's patience wears thin."
+        },
+        {
+          "id": "claw_swipe_3",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "damage",
+          "target": "all",
+          "amount": 10,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 3,
+          "text": "A lazy claw swipe rakes the party."
+        },
+        {
+          "id": "addled_3",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "apply_status",
+          "target": "all",
+          "amount": 1,
+          "resource": "",
+          "status": "addled",
+          "destination": "",
+          "limit": 3,
+          "text": "Your thoughts go foggy."
+        }
+      ]
+    },
+    {
+      "id": "sphinx_boon",
+      "kind": "scene",
+      "title": "The Sphinx's Blessing",
+      "text": "The Sphinx rises, stretches, and bows her head.\n\n\"Clever little things. Go. Carry my wisdom into the dark.\"",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "wisdom_of_ages",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "apply_status",
+          "target": "all",
+          "amount": 1,
+          "resource": "",
+          "status": "sphinx_blessing",
+          "destination": "",
+          "limit": 1,
+          "text": "The party receives the Sphinx's Blessing."
+        },
+        {
+          "id": "restored_minds",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "remove_status",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "addled",
+          "destination": "",
+          "limit": 1,
+          "text": "The fog lifts from your thoughts."
+        },
+        {
+          "id": "flawless",
+          "trigger": "enter",
+          "condition": {
+            "subject": "sphinx_patience",
+            "operator": "==",
+            "value": 3
+          },
+          "effect": "shield",
+          "target": "all",
+          "amount": 60,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "FLAWLESS. The Sphinx laughs and wraps you in golden wind."
+        }
+      ]
+    },
+    {
+      "id": "sphinx_pounces",
+      "kind": "battle",
+      "title": "The Sphinx Pounces",
+      "text": "\"Enough.\" The Sphinx unfolds to her full height, and the road becomes a hunting ground. Bring her low enough and she may yet yield.",
+      "enemies": [
+        {
+          "id": "sphinx",
+          "label": "The Sphinx",
+          "hp": 450,
+          "damage": 16,
+          "target": "random",
+          "on_hit_status": "addled"
+        }
+      ],
+      "boss_hp": 450,
+      "boss_damage": 16,
+      "max_rounds": 8,
+      "next": "sphinx_yields",
+      "failure": "$failure",
+      "rules": [
+        {
+          "id": "hunting_ground",
+          "trigger": "round_start",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "announce",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The Sphinx circles, wings wide."
+        },
+        {
+          "id": "wing_buffet",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "round",
+            "operator": "==",
+            "value": 3
+          },
+          "effect": "damage",
+          "target": "all",
+          "amount": 20,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "A wing buffet slams into the whole party!"
+        },
+        {
+          "id": "she_yields",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "boss_hp_percent",
+            "operator": "<=",
+            "value": 30
+          },
+          "effect": "transition",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "sphinx_yields",
+          "limit": 1,
+          "text": "\"ENOUGH! You answer with steel instead of wit. Go.\""
+        }
+      ]
+    },
+    {
+      "id": "sphinx_yields",
+      "kind": "scene",
+      "title": "The Sphinx Yields",
+      "text": "Bloodied and furious, the Sphinx takes to the air. \"Remember that I let you pass.\"",
+      "next": "$next",
+      "rules": []
+    }
+  ],
+  "catalogues": {
+    "resources": [
+      {
+        "id": "sphinx_patience",
+        "label": "Sphinx's Patience",
+        "initial": 3,
+        "min": 0,
+        "max": 3
+      }
+    ],
+    "statuses": [
+      {
+        "id": "addled",
+        "label": "Addled",
+        "duration": 3,
+        "max_stacks": 3,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 90,
+        "damage_taken_pct": 100,
+        "stun": false
+      },
+      {
+        "id": "sphinx_blessing",
+        "label": "Sphinx's Blessing",
+        "duration": 6,
+        "max_stacks": 1,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 125,
+        "damage_taken_pct": 85,
+        "stun": false
+      }
+    ],
+    "actions": [
+      {
+        "id": "sun_spear",
+        "label": "Sun Spear",
+        "effect": "boss_damage",
+        "target": "enemy",
+        "amount": 22,
+        "resource": "",
+        "status": "",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": []
+      }
+    ]
+  }
+}

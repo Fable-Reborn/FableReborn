@@ -488,6 +488,9 @@ class AdvancedBuilderMixin:
                         option("status", "Status", [("", "Choose a status in Canvas")] + [(s["id"], s["label"]) for s in spec.get("statuses", [])])
                     else:
                         option("resource", "Resource to change", resource_options)
+                    if target.get("scale"):
+                        # Discord views have no row left for another selector; scaling is edited in Canvas.
+                        description += f" Amount is multiplied by `{target['scale']}`; change scaling in Visual Canvas."
                     if page == "actions":
                         option("cost_resource", "Resource to spend", resource_options)
                         field("label", "Action label", target["label"])

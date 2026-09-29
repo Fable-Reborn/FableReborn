@@ -221,13 +221,21 @@ def validate_encounter(spec):
                 raise ValueError("Enemy on-hit status does not exist.")
     enemy_ids.add("boss")
 
-    def condition(rule, node):
+    def node_subjects(node):
         enemies = node.get("enemies") or [{"id": "boss"}]
-        validate_condition(rule["condition"] if rule.get("condition") is not None else rule, condition_subjects(spec, enemies))
+        choices = node.get("choices", []) if node.get("kind") == "choice" else ()
+        return condition_subjects(spec, enemies, choices)
 
-    def effect(rule):
+    def condition(rule, node):
+        validate_condition(rule["condition"] if rule.get("condition") is not None else rule, node_subjects(node))
+
+    def effect(rule, node=None):
         if rule.get("effect") not in EFFECTS or not valid_target(rule.get("target"), teams, roles, enemy_ids):
             raise ValueError("Choose a supported effect and target.")
+        # Actions run in any battle, so they may only scale by raid-wide subjects.
+        scale = rule.get("scale", "")
+        if scale and scale not in (node_subjects(node) if node else condition_subjects(spec)):
+            raise ValueError(f"Unknown scaling subject: {scale}.")
         _integer(
             rule.get("amount"),
             "Effect amount",
@@ -287,7 +295,7 @@ def validate_encounter(spec):
             if rule["trigger"] == "choice" and kind != "choice":
                 raise ValueError("Choice rules belong on choice steps.")
             condition(rule, node)
-            effect(rule)
+            effect(rule, node)
             _integer(rule.get("limit"), "Rule repeat limit", 1, 100)
         if kind == "ending":
             if node.get("outcome") not in {"victory", "defeat"}:
@@ -417,6 +425,7 @@ class EncounterEngine:
         self.rule_counts = {}
         self.outcome = None
         self.pending_transition = None
+        self.votes = {}
 
     @property
     def alive(self):
@@ -443,14 +452,24 @@ class EncounterEngine:
         return [(e["id"], e["label"]) for e in node.get("enemies", [])] or [("boss", node["title"])]
 
     def _condition(self, rule):
-        values = {**self.resources, "round": self.round, "alive": len(self.alive),
+        return evaluate_condition(rule["condition"] if rule.get("condition") is not None else rule, self._values())
+
+    def _amount(self, rule):
+        """Effect amount, multiplied by its optional scale subject (negatives count as 0)."""
+        amount = rule["amount"]
+        if rule.get("scale"):
+            amount *= max(0, self._values().get(rule["scale"], 0))
+        return max(-1_000_000, min(1_000_000, amount))
+
+    def _values(self):
+        values = {**self.resources, **self.votes, "round": self.round, "alive": len(self.alive),
                   "boss_hp": self.boss_hp, "boss_hp_percent": self.boss_hp * 100 // max(1, self.boss_max_hp),
                   "enemies_alive": len(self.living_enemies)}
         values.update({"team_alive:" + t["id"]: sum(p.hp > 0 and p.team == t["id"] for p in self.players.values()) for t in self.spec["teams"]})
         values.update({"role_alive:" + r: sum(p.hp > 0 and p.role == r for p in self.players.values()) for r in self.roles})
         values.update({"enemy_hp:" + key: e.hp for key, e in self.enemies.items()})
         values.update({"status_count:" + key: sum(p.hp > 0 and key in p.statuses for p in [*self.players.values(), *self.enemies.values()]) for key in self.status_specs})
-        return evaluate_condition(rule["condition"] if rule.get("condition") is not None else rule, values)
+        return values
 
     def _targets(self, target, actor=None, chosen=None, force_enemy=False):
         if force_enemy and not target.startswith("enem"):
@@ -529,7 +548,7 @@ class EncounterEngine:
                     del actor.statuses[key]
 
     def _effect(self, rule, events, actor=None, chosen=None):
-        effect, amount = rule["effect"], rule["amount"]
+        effect, amount = rule["effect"], self._amount(rule)
         if effect == "resource":
             key = rule["resource"]
             bounds = self.resource_specs[key]
@@ -550,7 +569,8 @@ class EncounterEngine:
                 elif effect == "shield":
                     victim.shield = min(1_000_000, victim.shield + amount)
                 elif effect == "apply_status":
-                    self._apply_status(victim, rule["status"], amount)
+                    if amount > 0:
+                        self._apply_status(victim, rule["status"], amount)
                 elif effect == "remove_status":
                     victim.statuses.pop(rule["status"], None)
             events.append(f"{effect.replace('_', ' ').title()} {amount} applied to {len(targets)} target(s).")
@@ -569,6 +589,7 @@ class EncounterEngine:
         self.node_id = key
         self.entered = False
         self.pending_transition = None
+        self.votes = {}
 
     def available_actions(self, actor):
         role = self.players[str(actor)].role
@@ -628,6 +649,8 @@ class EncounterEngine:
             options = {c["id"]: c for c in node["choices"]}
             votes = {key: sum(v == key for actor, v in decisions.items() if actor in self.alive) for key in options}
             winners = [key for key, count in votes.items() if count and count == max(votes.values())]
+            # Choice rules can read (or scale by) each option's tally, e.g. split supplies per vote.
+            self.votes = {"votes:" + key: count for key, count in votes.items()}
             self._rules("choice", frame.events)
             if not self.alive:
                 self.outcome = frame.outcome = "defeat"

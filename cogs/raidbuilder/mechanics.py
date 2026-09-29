@@ -35,13 +35,19 @@ def upgrade_encounter(spec):
     return result
 
 
-def condition_subjects(spec, enemies=()):
+def condition_subjects(spec, enemies=(), choices=()):
+    """Subjects readable by conditions and effect scaling.
+
+    votes:<choice> counts the living votes for that option; it exists only on
+    the choice step that owns it and is 0 until the vote closes.
+    """
     return {"round", "alive", "boss_hp", "boss_hp_percent", "enemies_alive",
             *[r["id"] for r in spec.get("resources", [])],
             *["team_alive:" + t["id"] for t in spec.get("teams", [])],
             *["role_alive:" + r["id"] for r in spec.get("roles", [])],
             *["status_count:" + s["id"] for s in spec.get("statuses", [])],
-            *["enemy_hp:" + e["id"] for e in enemies]}
+            *["enemy_hp:" + e["id"] for e in enemies],
+            *["votes:" + c["id"] for c in choices]}
 
 
 def validate_condition(expression, subjects, *, depth=0, budget=None):

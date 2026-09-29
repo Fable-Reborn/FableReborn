@@ -249,11 +249,11 @@ def insert_pack(spec, package, after=None):
                 out[key] = maps[collection].get(out[key], out[key])
         if "roles" in out:
             out["roles"] = [maps["roles"].get(r, r) for r in out["roles"]]
-        for key in ("target", "subject"):
+        for key in ("target", "subject", "scale"):
             value = out.get(key)
             if not isinstance(value, str):
                 continue
-            if key == "subject" and value in maps["resources"]:
+            if key in {"subject", "scale"} and value in maps["resources"]:
                 out[key] = maps["resources"][value]
             elif ":" in value:
                 prefix, ident = value.split(":", 1)

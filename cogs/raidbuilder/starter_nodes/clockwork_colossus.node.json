@@ -1,0 +1,248 @@
+{
+  "schema": "fablereborn.raid-node",
+  "version": 1,
+  "name": "The Clockwork Colossus",
+  "description": "Doom-clock boss. Doom rises by 1 each round (2 below 50% HP). At 4 Doom the Grand Chime hits everyone for 45 and the clock resets. At 2+ Doom, brass plates shield the boss each round. Jam the Gears lowers Doom, so players balance damage against control. The Colossus sheds a Loose Cog each round; spend 2 to stun it with Hurl a Loose Cog. 12-round limit. Next: destroyed. Failure: it marches on.",
+  "entry": "workshop",
+  "nodes": [
+    {
+      "id": "workshop",
+      "kind": "scene",
+      "title": "The Abandoned Workshop",
+      "text": "Gears the size of houses. In the center, a brass giant with a clock for a heart shudders to life. *Tick.*\n\nWhen the clock strikes **4**, it chimes, and the chime *hurts*. Jam its gears to turn the hands back.",
+      "next": "colossus",
+      "rules": []
+    },
+    {
+      "id": "colossus",
+      "kind": "battle",
+      "title": "The Clockwork Colossus",
+      "text": "**Doom** rises every round. At 4, the Grand Chime. **Jam the Gears** to lower it. Collect **Loose Cogs** and hurl 2 to stun the giant.",
+      "enemies": [
+        {
+          "id": "colossus",
+          "label": "The Clockwork Colossus",
+          "hp": 750,
+          "damage": 14,
+          "target": "random",
+          "on_hit_status": ""
+        }
+      ],
+      "boss_hp": 750,
+      "boss_damage": 14,
+      "max_rounds": 12,
+      "next": "colossus_falls",
+      "failure": "$failure",
+      "rules": [
+        {
+          "id": "brass_plating",
+          "trigger": "round_start",
+          "condition": {
+            "subject": "clock_doom",
+            "operator": ">=",
+            "value": 2
+          },
+          "effect": "shield",
+          "target": "enemies",
+          "amount": 40,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 20,
+          "text": "Brass plates slam shut over the Colossus' core!"
+        },
+        {
+          "id": "clock_ticks",
+          "trigger": "round_end",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "clock_doom",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "*Tick.* The Doom clock advances."
+        },
+        {
+          "id": "overclock_warning",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "boss_hp_percent",
+            "operator": "<=",
+            "value": 50
+          },
+          "effect": "announce",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The Colossus OVERCLOCKS. Its gears spin twice as fast!"
+        },
+        {
+          "id": "overclocked_tick",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "boss_hp_percent",
+            "operator": "<=",
+            "value": 50
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "clock_doom",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "*Tick-tick.* Overclocked!"
+        },
+        {
+          "id": "grand_chime",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "clock_doom",
+            "operator": ">=",
+            "value": 4
+          },
+          "effect": "damage",
+          "target": "all",
+          "amount": 45,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "**BONG.** THE GRAND CHIME! The shockwave hits everyone!"
+        },
+        {
+          "id": "clock_resets",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "clock_doom",
+            "operator": ">=",
+            "value": 4
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -10,
+          "resource": "clock_doom",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "The clock resets to zero... and begins again."
+        },
+        {
+          "id": "cog_falls",
+          "trigger": "round_end",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "loose_cogs",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "A cog clatters loose onto the floor."
+        }
+      ]
+    },
+    {
+      "id": "colossus_falls",
+      "kind": "scene",
+      "title": "The Clock Stops",
+      "text": "The Colossus kneels, its heart-clock grinding to a halt at eleven fifty-nine. The silence is deafening.",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "wind_down",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 25,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "You sit among the gears and breathe."
+        }
+      ]
+    }
+  ],
+  "catalogues": {
+    "resources": [
+      {
+        "id": "clock_doom",
+        "label": "Doom",
+        "initial": 0,
+        "min": 0,
+        "max": 10
+      },
+      {
+        "id": "loose_cogs",
+        "label": "Loose Cogs",
+        "initial": 0,
+        "min": 0,
+        "max": 20
+      }
+    ],
+    "statuses": [
+      {
+        "id": "jammed",
+        "label": "Jammed Gears",
+        "duration": 1,
+        "max_stacks": 1,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 100,
+        "damage_taken_pct": 100,
+        "stun": true
+      }
+    ],
+    "actions": [
+      {
+        "id": "pry_plating",
+        "label": "Pry at the Plating",
+        "effect": "boss_damage",
+        "target": "enemy",
+        "amount": 20,
+        "resource": "",
+        "status": "",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": []
+      },
+      {
+        "id": "jam_gears",
+        "label": "Jam the Gears (-1 Doom)",
+        "effect": "resource",
+        "target": "self",
+        "amount": -1,
+        "resource": "clock_doom",
+        "status": "",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": []
+      },
+      {
+        "id": "hurl_cog",
+        "label": "Hurl a Loose Cog (2 cogs: stun)",
+        "effect": "apply_status",
+        "target": "enemy",
+        "amount": 1,
+        "resource": "",
+        "status": "jammed",
+        "cost_resource": "loose_cogs",
+        "cost": 2,
+        "roles": []
+      }
+    ]
+  }
+}

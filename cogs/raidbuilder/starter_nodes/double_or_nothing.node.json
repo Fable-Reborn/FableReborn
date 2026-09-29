@@ -1,0 +1,449 @@
+{
+  "schema": "fablereborn.raid-node",
+  "version": 1,
+  "name": "Double or Nothing",
+  "description": "Push-your-luck gambling den. The party votes to roll or cash out across four escalating tables (60% / 50% / 40% / 25%). Wins pay Lucky Chips, spendable in any later battle with the Lucky Chip action for a 50-damage strike. A loss takes every chip and Jinxes the party. The last table bets the party's souls: a jackpot on win, the Failure port on a loss. Next: cashed out, bust or jackpot. Failure: lost the soul wager.",
+  "entry": "den",
+  "nodes": [
+    {
+      "id": "den",
+      "kind": "scene",
+      "title": "The Grinning Croupier",
+      "text": "A velvet tent that was not here a moment ago. Inside, a croupier with too many teeth shuffles a deck made of old contracts.\n\n\"Welcome, welcome! Every wager you win pays out in **Lucky Chips**. Flick one at your enemies in battle and watch what luck can do. Walk away whenever you like... but lose a roll, and the House keeps *everything*.\"",
+      "next": "table_1",
+      "rules": []
+    },
+    {
+      "id": "table_1",
+      "kind": "choice",
+      "title": "Table 1: The Bones",
+      "text": "Two knucklebone dice, carved with little screaming faces.\n\n**Odds:** 60% • **Win:** +1 Lucky Chip • **Lose:** the House takes every chip and leaves you Jinxed.",
+      "choices": [
+        {
+          "id": "roll",
+          "label": "Roll! (60% to win)",
+          "next": "roll_1"
+        },
+        {
+          "id": "walk",
+          "label": "Cash out and walk away",
+          "next": "cash_out"
+        }
+      ],
+      "failure": "cash_out",
+      "rules": []
+    },
+    {
+      "id": "roll_1",
+      "kind": "trial",
+      "title": "The Bones: the roll",
+      "text": "The croupier's grin widens as it spins...",
+      "chance": 60,
+      "next": "win_1",
+      "failure": "bust",
+      "rules": []
+    },
+    {
+      "id": "win_1",
+      "kind": "scene",
+      "title": "Winner!",
+      "text": "The croupier's smile flickers for just a moment. Chips slide across the felt.",
+      "next": "table_2",
+      "rules": [
+        {
+          "id": "lucky_chips",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "lucky_chips",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "+1 Lucky Chips!"
+        }
+      ]
+    },
+    {
+      "id": "table_2",
+      "kind": "choice",
+      "title": "Table 2: The Wheel",
+      "text": "A roulette wheel whose numbers rearrange themselves when you blink.\n\n**Odds:** 50% • **Win:** +2 Lucky Chips • **Lose:** the House takes every chip and leaves you Jinxed.",
+      "choices": [
+        {
+          "id": "roll",
+          "label": "Roll! (50% to win)",
+          "next": "roll_2"
+        },
+        {
+          "id": "walk",
+          "label": "Cash out and walk away",
+          "next": "cash_out"
+        }
+      ],
+      "failure": "cash_out",
+      "rules": []
+    },
+    {
+      "id": "roll_2",
+      "kind": "trial",
+      "title": "The Wheel: the roll",
+      "text": "The croupier's grin widens as it spins...",
+      "chance": 50,
+      "next": "win_2",
+      "failure": "bust",
+      "rules": []
+    },
+    {
+      "id": "win_2",
+      "kind": "scene",
+      "title": "Winner!",
+      "text": "The croupier's smile flickers for just a moment. Chips slide across the felt.",
+      "next": "table_3",
+      "rules": [
+        {
+          "id": "lucky_chips",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 2,
+          "resource": "lucky_chips",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "+2 Lucky Chips!"
+        }
+      ]
+    },
+    {
+      "id": "table_3",
+      "kind": "choice",
+      "title": "Table 3: The Serpent's Cups",
+      "text": "Three cups. One pearl. The cups have fangs.\n\n**Odds:** 40% • **Win:** +3 Lucky Chips • **Lose:** the House takes every chip and leaves you Jinxed.",
+      "choices": [
+        {
+          "id": "roll",
+          "label": "Roll! (40% to win)",
+          "next": "roll_3"
+        },
+        {
+          "id": "walk",
+          "label": "Cash out and walk away",
+          "next": "cash_out"
+        }
+      ],
+      "failure": "cash_out",
+      "rules": []
+    },
+    {
+      "id": "roll_3",
+      "kind": "trial",
+      "title": "The Serpent's Cups: the roll",
+      "text": "The croupier's grin widens as it spins...",
+      "chance": 40,
+      "next": "win_3",
+      "failure": "bust",
+      "rules": []
+    },
+    {
+      "id": "win_3",
+      "kind": "scene",
+      "title": "Winner!",
+      "text": "The croupier's smile flickers for just a moment. Chips slide across the felt.",
+      "next": "table_4",
+      "rules": [
+        {
+          "id": "lucky_chips",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 3,
+          "resource": "lucky_chips",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "+3 Lucky Chips!"
+        }
+      ]
+    },
+    {
+      "id": "table_4",
+      "kind": "choice",
+      "title": "The Final Wager",
+      "text": "The croupier leans in, and the tent goes silent.\n\n\"One last game. The stakes? **Your souls.** Win, and the House pays out everything it has. Lose... and this expedition ends here, at my table.\"\n\n**Odds:** 25% • **Win:** jackpot • **Lose:** the raid is over.",
+      "choices": [
+        {
+          "id": "souls",
+          "label": "Wager our souls (25%; lose = raid over)",
+          "next": "roll_4"
+        },
+        {
+          "id": "walk",
+          "label": "Cash out while we still can",
+          "next": "cash_out"
+        }
+      ],
+      "failure": "cash_out",
+      "rules": []
+    },
+    {
+      "id": "roll_4",
+      "kind": "trial",
+      "title": "The Soul Wager",
+      "text": "A single coin tumbles through the air, end over end...",
+      "chance": 25,
+      "next": "jackpot",
+      "failure": "soul_lost",
+      "rules": []
+    },
+    {
+      "id": "jackpot",
+      "kind": "scene",
+      "title": "JACKPOT!",
+      "text": "The coin lands on its edge. The croupier stares at it, then screams, and the tent collapses into a shower of gold. You are standing in an empty field, pockets heavy.",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "lucky_chips",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 4,
+          "resource": "lucky_chips",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "+4 Lucky Chips! The House is broke."
+        },
+        {
+          "id": "house_pays_out",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 100,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Luck floods your veins."
+        },
+        {
+          "id": "golden_aegis",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "shield",
+          "target": "all",
+          "amount": 50,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "A golden shimmer settles over the party."
+        },
+        {
+          "id": "lady_luck",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "apply_status",
+          "target": "all",
+          "amount": 1,
+          "resource": "",
+          "status": "lucky",
+          "destination": "",
+          "limit": 1,
+          "text": "Lady Luck is smiling on you."
+        }
+      ]
+    },
+    {
+      "id": "soul_lost",
+      "kind": "scene",
+      "title": "The House Always Wins",
+      "text": "The coin lands. The croupier snaps a ledger shut with your names freshly inked inside.\n\n\"Pleasure doing business.\"",
+      "next": "$failure",
+      "rules": []
+    },
+    {
+      "id": "bust",
+      "kind": "scene",
+      "title": "The House Wins",
+      "text": "Snake eyes. The croupier sweeps every chip off the table with one long, jointed finger and taps each of you on the forehead. You feel... unlucky.",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "lucky_chips",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -100,
+          "resource": "lucky_chips",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The House takes every Lucky Chip."
+        },
+        {
+          "id": "sore_losers",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "damage",
+          "target": "all",
+          "amount": 15,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The tent spits you out onto hard ground."
+        },
+        {
+          "id": "jinxed_by_the_house",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "apply_status",
+          "target": "all",
+          "amount": 1,
+          "resource": "",
+          "status": "jinxed",
+          "destination": "",
+          "limit": 1,
+          "text": "The party is Jinxed."
+        }
+      ]
+    },
+    {
+      "id": "cash_out",
+      "kind": "scene",
+      "title": "Cashing Out",
+      "text": "\"Leaving so soon?\" The croupier pouts as you gather your winnings. The tent folds in on itself and vanishes.",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "empty_pockets",
+          "trigger": "enter",
+          "condition": {
+            "subject": "lucky_chips",
+            "operator": "==",
+            "value": 0
+          },
+          "effect": "announce",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "You leave with nothing but your dignity. Mostly."
+        },
+        {
+          "id": "small_winnings",
+          "trigger": "enter",
+          "condition": {
+            "subject": "lucky_chips",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 20,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "A small win still lifts the spirits."
+        },
+        {
+          "id": "high_roller",
+          "trigger": "enter",
+          "condition": {
+            "subject": "lucky_chips",
+            "operator": ">=",
+            "value": 3
+          },
+          "effect": "apply_status",
+          "target": "all",
+          "amount": 1,
+          "resource": "",
+          "status": "lucky",
+          "destination": "",
+          "limit": 1,
+          "text": "High rollers! Lady Luck walks out with you."
+        }
+      ]
+    }
+  ],
+  "catalogues": {
+    "resources": [
+      {
+        "id": "lucky_chips",
+        "label": "Lucky Chips",
+        "initial": 0,
+        "min": 0,
+        "max": 10
+      }
+    ],
+    "statuses": [
+      {
+        "id": "lucky",
+        "label": "Lady Luck",
+        "duration": 5,
+        "max_stacks": 1,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 130,
+        "damage_taken_pct": 100,
+        "stun": false
+      },
+      {
+        "id": "jinxed",
+        "label": "Jinxed",
+        "duration": 4,
+        "max_stacks": 3,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 100,
+        "damage_taken_pct": 120,
+        "stun": false
+      }
+    ],
+    "actions": [
+      {
+        "id": "flip_lucky_chip",
+        "label": "Flick a Lucky Chip (1 chip)",
+        "effect": "boss_damage",
+        "target": "enemy",
+        "amount": 50,
+        "resource": "",
+        "status": "",
+        "cost_resource": "lucky_chips",
+        "cost": 1,
+        "roles": []
+      }
+    ]
+  }
+}

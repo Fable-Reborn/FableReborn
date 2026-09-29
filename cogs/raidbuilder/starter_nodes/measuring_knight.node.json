@@ -1,0 +1,482 @@
+{
+  "schema": "fablereborn.raid-node",
+  "version": 1,
+  "name": "The Measuring Knight",
+  "description": "A duel that scales to the party. A System step reads the party's live average level: below 30 fights a blunted squire trial, 30-69 a true duel, and 70+ the Knight Unhelmed with a second wind. First the party votes to accept the challenge or ambush him. An ambush opens with 25% of his HP but ends in Dishonor. He yields at 40% HP (bested) or after 6 rounds (impressed). Parry lets anyone endure. Honor earns the Knight's Favor. Next: every outcome.",
+  "entry": "knight_arrives",
+  "nodes": [
+    {
+      "id": "knight_arrives",
+      "kind": "scene",
+      "title": "The Measuring Knight",
+      "text": "A knight in silver armor blocks the bridge, a measuring tape (yes, really) hanging from his belt beside his sword.\n\n\"Halt. None cross until I have taken your measure. I shall fight you as you *deserve* to be fought.\"",
+      "next": "honor_choice",
+      "rules": []
+    },
+    {
+      "id": "honor_choice",
+      "kind": "choice",
+      "title": "Honor or Ambush?",
+      "text": "He turns to fetch his shield, leaving his back wide open...",
+      "choices": [
+        {
+          "id": "accept",
+          "label": "Accept his challenge with honor",
+          "next": "take_measure"
+        },
+        {
+          "id": "ambush",
+          "label": "Ambush him while his back is turned",
+          "next": "ambush"
+        }
+      ],
+      "failure": "take_measure",
+      "rules": []
+    },
+    {
+      "id": "ambush",
+      "kind": "scene",
+      "title": "A Dishonorable Plan",
+      "text": "Someone creeps up behind him, weapon raised. It will work. It will also be remembered.",
+      "next": "take_measure",
+      "rules": [
+        {
+          "id": "knight_dishonor",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "knight_dishonor",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Dishonor +1. Knights keep ledgers too."
+        }
+      ]
+    },
+    {
+      "id": "take_measure",
+      "kind": "system",
+      "title": "Taking Your Measure",
+      "text": "He squints at you along the length of his blade, sizing up every scar and callus. (Reads the party's average character level.)",
+      "source": "party_level_average",
+      "output_resource": "knight_measure",
+      "simulation_value": 45,
+      "next": "legend_check",
+      "failure": "duel_knight",
+      "rules": []
+    },
+    {
+      "id": "legend_check",
+      "kind": "check",
+      "title": "The Measure Is Taken",
+      "text": "\"Hm.\" He adjusts his grip.",
+      "condition": {
+        "subject": "knight_measure",
+        "operator": ">=",
+        "value": 70
+      },
+      "next": "duel_legend",
+      "failure": "knight_check",
+      "rules": []
+    },
+    {
+      "id": "knight_check",
+      "kind": "check",
+      "title": "The Measure Is Taken",
+      "text": "\"Hm.\" He adjusts his grip.",
+      "condition": {
+        "subject": "knight_measure",
+        "operator": ">=",
+        "value": 30
+      },
+      "next": "duel_knight",
+      "failure": "duel_squire",
+      "rules": []
+    },
+    {
+      "id": "duel_squire",
+      "kind": "battle",
+      "title": "A Squire's Trial",
+      "text": "\"Fledglings.\" He sheathes his sword and fights you with the flat of a wooden practice blade. It still hurts.",
+      "enemies": [
+        {
+          "id": "knight",
+          "label": "The Measuring Knight",
+          "hp": 280,
+          "damage": 8,
+          "target": "random",
+          "on_hit_status": ""
+        }
+      ],
+      "boss_hp": 280,
+      "boss_damage": 8,
+      "max_rounds": 10,
+      "next": "knight_bested",
+      "failure": "knight_impressed",
+      "rules": [
+        {
+          "id": "duel_squire_ambushed",
+          "trigger": "enter",
+          "condition": {
+            "subject": "knight_dishonor",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "boss_damage",
+          "target": "enemies",
+          "amount": 70,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "AMBUSH! You strike before he can raise his shield!"
+        },
+        {
+          "id": "duel_squire_bested",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "boss_hp_percent",
+            "operator": "<=",
+            "value": 40
+          },
+          "effect": "transition",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "knight_bested",
+          "limit": 1,
+          "text": "The Knight drops to one knee. \"...Enough. You have measured up.\""
+        },
+        {
+          "id": "duel_squire_endured",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "round",
+            "operator": ">=",
+            "value": 6
+          },
+          "effect": "transition",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "knight_impressed",
+          "limit": 1,
+          "text": "The Knight lowers his blade. \"You endure. That is its own kind of strength.\""
+        }
+      ]
+    },
+    {
+      "id": "duel_knight",
+      "kind": "battle",
+      "title": "A True Duel",
+      "text": "\"Worthy.\" He salutes and draws steel. This is a real fight.",
+      "enemies": [
+        {
+          "id": "knight",
+          "label": "The Measuring Knight",
+          "hp": 520,
+          "damage": 14,
+          "target": "random",
+          "on_hit_status": ""
+        }
+      ],
+      "boss_hp": 520,
+      "boss_damage": 14,
+      "max_rounds": 10,
+      "next": "knight_bested",
+      "failure": "knight_impressed",
+      "rules": [
+        {
+          "id": "duel_knight_ambushed",
+          "trigger": "enter",
+          "condition": {
+            "subject": "knight_dishonor",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "boss_damage",
+          "target": "enemies",
+          "amount": 130,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "AMBUSH! You strike before he can raise his shield!"
+        },
+        {
+          "id": "duel_knight_bested",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "boss_hp_percent",
+            "operator": "<=",
+            "value": 40
+          },
+          "effect": "transition",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "knight_bested",
+          "limit": 1,
+          "text": "The Knight drops to one knee. \"...Enough. You have measured up.\""
+        },
+        {
+          "id": "duel_knight_endured",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "round",
+            "operator": ">=",
+            "value": 6
+          },
+          "effect": "transition",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "knight_impressed",
+          "limit": 1,
+          "text": "The Knight lowers his blade. \"You endure. That is its own kind of strength.\""
+        }
+      ]
+    },
+    {
+      "id": "duel_legend",
+      "kind": "battle",
+      "title": "The Knight Unhelmed",
+      "text": "\"Legends.\" He removes his helm. Beneath it: a face from the history books. \"Then I shall fight as one.\"",
+      "enemies": [
+        {
+          "id": "knight",
+          "label": "The Measuring Knight",
+          "hp": 900,
+          "damage": 22,
+          "target": "random",
+          "on_hit_status": ""
+        }
+      ],
+      "boss_hp": 900,
+      "boss_damage": 22,
+      "max_rounds": 10,
+      "next": "knight_bested",
+      "failure": "knight_impressed",
+      "rules": [
+        {
+          "id": "duel_legend_ambushed",
+          "trigger": "enter",
+          "condition": {
+            "subject": "knight_dishonor",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "boss_damage",
+          "target": "enemies",
+          "amount": 225,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "AMBUSH! You strike before he can raise his shield!"
+        },
+        {
+          "id": "second_wind",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "boss_hp_percent",
+            "operator": "<=",
+            "value": 50
+          },
+          "effect": "boss_heal",
+          "target": "enemies",
+          "amount": 180,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The Knight roars and finds his SECOND WIND!"
+        },
+        {
+          "id": "duel_legend_bested",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "boss_hp_percent",
+            "operator": "<=",
+            "value": 40
+          },
+          "effect": "transition",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "knight_bested",
+          "limit": 1,
+          "text": "The Knight drops to one knee. \"...Enough. You have measured up.\""
+        },
+        {
+          "id": "duel_legend_endured",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "round",
+            "operator": ">=",
+            "value": 6
+          },
+          "effect": "transition",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "knight_impressed",
+          "limit": 1,
+          "text": "The Knight lowers his blade. \"You endure. That is its own kind of strength.\""
+        }
+      ]
+    },
+    {
+      "id": "knight_bested",
+      "kind": "scene",
+      "title": "Measured and Found Worthy",
+      "text": "The Knight rises, bows, and steps aside.",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "knights_favor",
+          "trigger": "enter",
+          "condition": {
+            "subject": "knight_dishonor",
+            "operator": "==",
+            "value": 0
+          },
+          "effect": "apply_status",
+          "target": "all",
+          "amount": 1,
+          "resource": "",
+          "status": "knights_favor",
+          "destination": "",
+          "limit": 1,
+          "text": "\"Fight well, champions.\" He grants you the Knight's Favor."
+        },
+        {
+          "id": "dishonored",
+          "trigger": "enter",
+          "condition": {
+            "subject": "knight_dishonor",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "apply_status",
+          "target": "all",
+          "amount": 1,
+          "resource": "",
+          "status": "dishonored",
+          "destination": "",
+          "limit": 1,
+          "text": "He spits at your feet. \"Cowards win fights. They never win glory.\" You are Dishonored."
+        }
+      ]
+    },
+    {
+      "id": "knight_impressed",
+      "kind": "scene",
+      "title": "An Honest Draw",
+      "text": "Neither side falls. The Knight laughs, sheathes his sword and waves you across the bridge.",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "knights_salute",
+          "trigger": "enter",
+          "condition": {
+            "subject": "knight_dishonor",
+            "operator": "==",
+            "value": 0
+          },
+          "effect": "shield",
+          "target": "all",
+          "amount": 30,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "He salutes you. A soldier's respect steadies your nerves."
+        },
+        {
+          "id": "cold_shoulder",
+          "trigger": "enter",
+          "condition": {
+            "subject": "knight_dishonor",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "apply_status",
+          "target": "all",
+          "amount": 1,
+          "resource": "",
+          "status": "dishonored",
+          "destination": "",
+          "limit": 1,
+          "text": "He will not meet your eyes. You are Dishonored."
+        }
+      ]
+    }
+  ],
+  "catalogues": {
+    "resources": [
+      {
+        "id": "knight_measure",
+        "label": "Party Measure (avg level)",
+        "initial": 0,
+        "min": 0,
+        "max": 1000
+      },
+      {
+        "id": "knight_dishonor",
+        "label": "Dishonor",
+        "initial": 0,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "statuses": [
+      {
+        "id": "knights_favor",
+        "label": "Knight's Favor",
+        "duration": 6,
+        "max_stacks": 1,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 125,
+        "damage_taken_pct": 90,
+        "stun": false
+      },
+      {
+        "id": "dishonored",
+        "label": "Dishonored",
+        "duration": 6,
+        "max_stacks": 1,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 85,
+        "damage_taken_pct": 100,
+        "stun": false
+      }
+    ],
+    "actions": [
+      {
+        "id": "parry",
+        "label": "Parry (shield self)",
+        "effect": "shield",
+        "target": "self",
+        "amount": 20,
+        "resource": "",
+        "status": "",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": []
+      }
+    ]
+  }
+}

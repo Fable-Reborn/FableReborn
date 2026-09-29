@@ -197,6 +197,60 @@ class EncounterTests(unittest.TestCase):
         self.assertEqual(engine.boss_hp, 300)
         self.assertEqual(engine.outcome, "defeat")
 
+    def test_choice_rules_scale_by_each_options_votes(self):
+        council = default_node("council", "choice")
+        council.update(
+            choices=[
+                {"id": "soldiers", "label": "Soldiers", "next": "guardian"},
+                {"id": "walls", "label": "Walls", "next": "guardian"},
+            ],
+            failure="guardian",
+        )
+        allocate = default_rule("allocate")
+        allocate.update(trigger="choice", effect="resource", resource="corruption",
+                        amount=10, scale="votes:soldiers")
+        council["rules"] = [allocate]
+        self.spec["nodes"].append(council)
+        self.spec["nodes"][0]["next"] = "council"
+        validate_encounter(self.spec)
+        engine = EncounterEngine(self.spec, [1, 2, 3])
+        engine.advance()
+        # The minority vote still allocates: 2 votes for soldiers -> 20.
+        engine.advance({1: "soldiers", 2: "soldiers", 3: "walls"})
+        self.assertEqual(engine.resources["corruption"], 20)
+        self.assertEqual(engine.node_id, "guardian")
+
+    def test_effects_scale_by_meters_and_skip_zero_status_stacks(self):
+        self.spec["resources"][0]["initial"] = 3
+        self.spec["statuses"] = [{"id": "hex", "label": "Hex", "duration": 3, "max_stacks": 5,
+                                  "damage_per_round": 0, "heal_per_round": 0, "damage_dealt_pct": 100,
+                                  "damage_taken_pct": 100, "stun": False}]
+        volley = default_rule("volley")
+        volley.update(trigger="round_start", effect="boss_damage", target="enemies", amount=10,
+                      scale="corruption", limit=100)
+        curse = default_rule("curse")
+        curse.update(trigger="round_start", effect="apply_status", target="all", amount=1,
+                     status="hex", scale="alive", limit=100)
+        self.spec["nodes"][1]["rules"] = [volley, curse]
+        engine = EncounterEngine(self.spec, [1, 2])
+        engine.advance()
+        engine.advance()
+        # 30 volley + 2 player strikes of 20.
+        self.assertEqual(engine.boss_hp, 300 - 30 - 40)
+        self.assertEqual(engine.players["1"].statuses["hex"]["stacks"], 2)
+        engine.resources["corruption"] = 0
+        before = engine.boss_hp
+        engine.advance()
+        self.assertEqual(engine.boss_hp, before - 40)
+
+    def test_invalid_scaling_subjects_rejected(self):
+        self.spec["actions"][0]["scale"] = "votes:nowhere"
+        with self.assertRaises(ValueError):
+            validate_encounter(self.spec)
+        self.spec["actions"][0]["scale"] = "enemy_hp:boss"
+        with self.assertRaises(ValueError):
+            validate_encounter(self.spec)
+
 
 if __name__ == "__main__":
     unittest.main()

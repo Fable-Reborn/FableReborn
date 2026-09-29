@@ -1,0 +1,963 @@
+{
+  "schema": "fablereborn.raid-node",
+  "version": 1,
+  "name": "Drakath, Champion of Chaos",
+  "description": "Three-phase chaos finale. Phase I: Drakath cycles Bulwark (75% damage reduction; Shatter the Armor removes it), Leech (heals 25 per living hero at round end unless someone Severs the Tether) and Storm (40 to all; Brace takes 70% less). At 50% HP his armor shatters. Phase II: kill the Flame, Madness and Stone Shards, which burn, weaken and petrify on hit. While any Shard lives, Drakath has a 90% Chaos Ward, and Shatter can strip it for a burst. Phase III: survive 6 rounds of an escalating Drakath using harsher forms, or kill him for a bigger reward. His shields scale with party size. Next: survived or destroyed. Failure: any phase times out.",
+  "entry": "chaos_gate",
+  "nodes": [
+    {
+      "id": "chaos_gate",
+      "kind": "scene",
+      "title": "The Chaos Rift",
+      "text": "The sky tears open. From the wound steps **Drakath, Champion of Chaos**, armor shifting between shapes that should not exist.\n\n\"You came without your precious elements to hide behind? *Delightful.*\"\n\nHe cycles through three **Chaos Forms**, one per round:\n🛡️ **Bulwark**: his armor turns aside most damage. One hero should **Shatter the Armor**.\n🩸 **Leech**: he heals at round end unless someone **Severs the Tether**.\n🌪️ **Storm**: a storm hits everyone at round end. **Brace**!",
+      "next": "drakath_p1",
+      "rules": []
+    },
+    {
+      "id": "drakath_p1",
+      "kind": "battle",
+      "title": "Phase I: The Shifting Champion",
+      "text": "Read the form each round and answer it. At half health, Drakath's armor shatters.",
+      "enemies": [
+        {
+          "id": "drakath",
+          "label": "Drakath, Champion of Chaos",
+          "hp": 700,
+          "damage": 12,
+          "target": "random",
+          "on_hit_status": ""
+        }
+      ],
+      "boss_hp": 700,
+      "boss_damage": 12,
+      "max_rounds": 16,
+      "next": "drakath_shatters",
+      "failure": "$failure",
+      "rules": [
+        {
+          "id": "chaos_armor",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "shield",
+          "target": "enemy:drakath",
+          "amount": 25,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Chaos armor knits itself around Drakath, thicker for every hero who dares face him.",
+          "scale": "alive"
+        },
+        {
+          "id": "p1_first_form",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "announce",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "⏭️ **This round Drakath takes 🛡️ BULWARK form.** Shatter the Armor!"
+        },
+        {
+          "id": "p1_bulwark_fades",
+          "trigger": "round_start",
+          "condition": {
+            "subject": "chaos_form",
+            "operator": "!=",
+            "value": 1
+          },
+          "effect": "remove_status",
+          "target": "enemy:drakath",
+          "amount": 0,
+          "resource": "",
+          "status": "chaos_bulwark",
+          "destination": "",
+          "limit": 100,
+          "text": ""
+        },
+        {
+          "id": "p1_bulwark",
+          "trigger": "round_start",
+          "condition": {
+            "subject": "chaos_form",
+            "operator": "==",
+            "value": 1
+          },
+          "effect": "apply_status",
+          "target": "enemy:drakath",
+          "amount": 1,
+          "resource": "",
+          "status": "chaos_bulwark",
+          "destination": "",
+          "limit": 100,
+          "text": "Drakath's armor turns aside 75% of damage."
+        },
+        {
+          "id": "p1_leech",
+          "trigger": "round_end",
+          "condition": {
+            "all": [
+              {
+                "subject": "chaos_form",
+                "operator": "==",
+                "value": 2
+              },
+              {
+                "subject": "status_count:severed",
+                "operator": "==",
+                "value": 0
+              }
+            ]
+          },
+          "effect": "boss_heal",
+          "target": "enemy:drakath",
+          "amount": 20,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "The tethers pulse. Drakath drinks deep from every hero.",
+          "scale": "alive"
+        },
+        {
+          "id": "p1_storm",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "chaos_form",
+            "operator": "==",
+            "value": 3
+          },
+          "effect": "damage",
+          "target": "all",
+          "amount": 30,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "The Chaos Storm breaks over the arena!"
+        },
+        {
+          "id": "p1_form_advance",
+          "trigger": "round_end",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "chaos_form",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": ""
+        },
+        {
+          "id": "p1_form_wrap",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "chaos_form",
+            "operator": ">=",
+            "value": 4
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -3,
+          "resource": "chaos_form",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": ""
+        },
+        {
+          "id": "p1_next_1",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "chaos_form",
+            "operator": "==",
+            "value": 1
+          },
+          "effect": "announce",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "⏭️ **Next round Drakath takes 🛡️ **BULWARK**: **Shatter the Armor** or deal almost nothing.**"
+        },
+        {
+          "id": "p1_next_2",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "chaos_form",
+            "operator": "==",
+            "value": 2
+          },
+          "effect": "announce",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "⏭️ **Next round Drakath takes 🩸 **LEECH**: **Sever the Tether** or he heals at round end.**"
+        },
+        {
+          "id": "p1_next_3",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "chaos_form",
+            "operator": "==",
+            "value": 3
+          },
+          "effect": "announce",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "⏭️ **Next round Drakath takes 🌪️ **STORM**: **Brace** before the storm breaks at round end.**"
+        },
+        {
+          "id": "p1_break",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "boss_hp_percent",
+            "operator": "<=",
+            "value": 50
+          },
+          "effect": "transition",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "drakath_shatters",
+          "limit": 1,
+          "text": "Drakath's armor CRACKS!"
+        }
+      ]
+    },
+    {
+      "id": "drakath_shatters",
+      "kind": "scene",
+      "title": "The Armor Shatters",
+      "text": "Drakath's armor explodes into three screaming **Chaos Shards**. He laughs, bleeding light.\n\n\"Oh, you've made them *angry*.\"\n\nWhile any Shard survives, a **Chaos Ward** protects Drakath (90% less damage). Kill the Shards, or spend a turn to **Shatter the Armor** and burst through the ward.",
+      "next": "drakath_p2",
+      "rules": [
+        {
+          "id": "breather",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 45,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "You catch your breath."
+        },
+        {
+          "id": "form_reset",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -10,
+          "resource": "chaos_form",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The chaos stills for a moment."
+        }
+      ]
+    },
+    {
+      "id": "drakath_p2",
+      "kind": "battle",
+      "title": "Phase II: The Chaos Shards",
+      "text": "🔥 The **Flame Shard** burns. 🌀 The **Madness Shard** weakens attacks. 🪨 The **Stone Shard** petrifies. Drakath hides behind his ward until they fall.",
+      "enemies": [
+        {
+          "id": "drakath_core",
+          "label": "Drakath (Warded)",
+          "hp": 400,
+          "damage": 10,
+          "target": "random",
+          "on_hit_status": ""
+        },
+        {
+          "id": "flame_shard",
+          "label": "Flame Shard",
+          "hp": 110,
+          "damage": 6,
+          "target": "random",
+          "on_hit_status": "chaos_burn"
+        },
+        {
+          "id": "madness_shard",
+          "label": "Madness Shard",
+          "hp": 110,
+          "damage": 5,
+          "target": "random",
+          "on_hit_status": "madness"
+        },
+        {
+          "id": "stone_shard",
+          "label": "Stone Shard",
+          "hp": 130,
+          "damage": 4,
+          "target": "random",
+          "on_hit_status": "petrified"
+        }
+      ],
+      "boss_hp": 400,
+      "boss_damage": 10,
+      "max_rounds": 16,
+      "next": "unleashed_intro",
+      "failure": "$failure",
+      "rules": [
+        {
+          "id": "core_armor",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "shield",
+          "target": "enemy:drakath_core",
+          "amount": 20,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Drakath gathers what armor remains.",
+          "scale": "alive"
+        },
+        {
+          "id": "ward",
+          "trigger": "round_start",
+          "condition": {
+            "any": [
+              {
+                "subject": "enemy_hp:flame_shard",
+                "operator": ">",
+                "value": 0
+              },
+              {
+                "subject": "enemy_hp:madness_shard",
+                "operator": ">",
+                "value": 0
+              },
+              {
+                "subject": "enemy_hp:stone_shard",
+                "operator": ">",
+                "value": 0
+              }
+            ]
+          },
+          "effect": "apply_status",
+          "target": "enemy:drakath_core",
+          "amount": 1,
+          "resource": "",
+          "status": "chaos_ward",
+          "destination": "",
+          "limit": 100,
+          "text": ""
+        },
+        {
+          "id": "exposed",
+          "trigger": "round_start",
+          "condition": {
+            "all": [
+              {
+                "subject": "enemy_hp:flame_shard",
+                "operator": "<=",
+                "value": 0
+              },
+              {
+                "subject": "enemy_hp:madness_shard",
+                "operator": "<=",
+                "value": 0
+              },
+              {
+                "subject": "enemy_hp:stone_shard",
+                "operator": "<=",
+                "value": 0
+              }
+            ]
+          },
+          "effect": "announce",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "💥 The last Shard dies. **Drakath is EXPOSED!**"
+        },
+        {
+          "id": "shard_pulse",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "enemies_alive",
+            "operator": ">=",
+            "value": 3
+          },
+          "effect": "damage",
+          "target": "random",
+          "amount": 8,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "The Shards resonate together and a pulse of chaos lashes out!",
+          "scale": "enemies_alive"
+        }
+      ]
+    },
+    {
+      "id": "unleashed_intro",
+      "kind": "scene",
+      "title": "Chaos Unleashed",
+      "text": "Drakath rises, no longer bothering with a body. He is a storm of every Form at once, and he grows stronger every round.\n\n**Survive 6 rounds** until the Rift collapses, or destroy him outright for glory. The Chaos Forms return, faster and meaner.",
+      "next": "drakath_p3",
+      "rules": [
+        {
+          "id": "form_reset_2",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -10,
+          "resource": "chaos_form",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": ""
+        },
+        {
+          "id": "second_wind",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 40,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Desperation gives you a second wind."
+        }
+      ]
+    },
+    {
+      "id": "drakath_p3",
+      "kind": "battle",
+      "title": "Phase III: Chaos Unleashed",
+      "text": "Survive until the Rift collapses (6 rounds), or bring him down. He gets stronger every round.",
+      "enemies": [
+        {
+          "id": "drakath_unleashed",
+          "label": "Drakath Unleashed",
+          "hp": 700,
+          "damage": 8,
+          "target": "all",
+          "on_hit_status": ""
+        }
+      ],
+      "boss_hp": 700,
+      "boss_damage": 8,
+      "max_rounds": 7,
+      "next": "drakath_destroyed",
+      "failure": "$failure",
+      "rules": [
+        {
+          "id": "frenzy",
+          "trigger": "round_start",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "apply_status",
+          "target": "enemy:drakath_unleashed",
+          "amount": 1,
+          "resource": "",
+          "status": "chaos_frenzy",
+          "destination": "",
+          "limit": 100,
+          "text": "Drakath's power swells (+20% damage)."
+        },
+        {
+          "id": "p3_first_form",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "announce",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "⏭️ **This round: 🛡️ BULWARK.** The forms return!"
+        },
+        {
+          "id": "p3_bulwark_fades",
+          "trigger": "round_start",
+          "condition": {
+            "subject": "chaos_form",
+            "operator": "!=",
+            "value": 1
+          },
+          "effect": "remove_status",
+          "target": "enemy:drakath_unleashed",
+          "amount": 0,
+          "resource": "",
+          "status": "chaos_bulwark",
+          "destination": "",
+          "limit": 100,
+          "text": ""
+        },
+        {
+          "id": "p3_bulwark",
+          "trigger": "round_start",
+          "condition": {
+            "subject": "chaos_form",
+            "operator": "==",
+            "value": 1
+          },
+          "effect": "apply_status",
+          "target": "enemy:drakath_unleashed",
+          "amount": 1,
+          "resource": "",
+          "status": "chaos_bulwark",
+          "destination": "",
+          "limit": 100,
+          "text": "Drakath's armor turns aside 75% of damage."
+        },
+        {
+          "id": "p3_leech",
+          "trigger": "round_end",
+          "condition": {
+            "all": [
+              {
+                "subject": "chaos_form",
+                "operator": "==",
+                "value": 2
+              },
+              {
+                "subject": "status_count:severed",
+                "operator": "==",
+                "value": 0
+              }
+            ]
+          },
+          "effect": "boss_heal",
+          "target": "enemy:drakath_unleashed",
+          "amount": 25,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "The tethers pulse. Drakath drinks deep from every hero.",
+          "scale": "alive"
+        },
+        {
+          "id": "p3_storm",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "chaos_form",
+            "operator": "==",
+            "value": 3
+          },
+          "effect": "damage",
+          "target": "all",
+          "amount": 40,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "The Chaos Storm breaks over the arena!"
+        },
+        {
+          "id": "p3_form_advance",
+          "trigger": "round_end",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "chaos_form",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": ""
+        },
+        {
+          "id": "p3_form_wrap",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "chaos_form",
+            "operator": ">=",
+            "value": 4
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -3,
+          "resource": "chaos_form",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": ""
+        },
+        {
+          "id": "p3_next_1",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "chaos_form",
+            "operator": "==",
+            "value": 1
+          },
+          "effect": "announce",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "⏭️ **Next round Drakath takes 🛡️ **BULWARK**: **Shatter the Armor** or deal almost nothing.**"
+        },
+        {
+          "id": "p3_next_2",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "chaos_form",
+            "operator": "==",
+            "value": 2
+          },
+          "effect": "announce",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "⏭️ **Next round Drakath takes 🩸 **LEECH**: **Sever the Tether** or he heals at round end.**"
+        },
+        {
+          "id": "p3_next_3",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "chaos_form",
+            "operator": "==",
+            "value": 3
+          },
+          "effect": "announce",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "⏭️ **Next round Drakath takes 🌪️ **STORM**: **Brace** before the storm breaks at round end.**"
+        },
+        {
+          "id": "rift_collapses",
+          "trigger": "round_end",
+          "condition": {
+            "all": [
+              {
+                "subject": "round",
+                "operator": ">=",
+                "value": 6
+              },
+              {
+                "subject": "boss_hp",
+                "operator": ">",
+                "value": 0
+              }
+            ]
+          },
+          "effect": "transition",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "chaos_collapses",
+          "limit": 1,
+          "text": "The Rift begins to collapse!"
+        }
+      ]
+    },
+    {
+      "id": "drakath_destroyed",
+      "kind": "scene",
+      "title": "Champion No More",
+      "text": "You tear Drakath apart before the Rift can save him. For one perfect moment, the world is perfectly *ordered*.\n\nHis laughter echoes anyway. \"*Well played.*\"",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "glory",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 60,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Victory fills you with strength."
+        },
+        {
+          "id": "glory_shield",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "shield",
+          "target": "all",
+          "amount": 40,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "A trace of order clings to you."
+        }
+      ]
+    },
+    {
+      "id": "chaos_collapses",
+      "kind": "scene",
+      "title": "The Rift Collapses",
+      "text": "The Rift folds shut, dragging Drakath back into the chaos between worlds. \"*Next time,*\" his voice promises.\n\nYou survived the Champion of Chaos.",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "relief",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 40,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The silence heals."
+        }
+      ]
+    }
+  ],
+  "catalogues": {
+    "teams": [
+      {
+        "id": "party",
+        "label": "Party"
+      }
+    ],
+    "roles": [
+      {
+        "id": "adventurer",
+        "label": "Adventurer",
+        "team": "party",
+        "hp": 0,
+        "slots": 0
+      }
+    ],
+    "statuses": [
+      {
+        "id": "chaos_bulwark",
+        "label": "Chaos Bulwark",
+        "duration": 1,
+        "max_stacks": 1,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 100,
+        "damage_taken_pct": 25,
+        "stun": false
+      },
+      {
+        "id": "severed",
+        "label": "Severed Tether",
+        "duration": 1,
+        "max_stacks": 1,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 100,
+        "damage_taken_pct": 100,
+        "stun": false
+      },
+      {
+        "id": "braced",
+        "label": "Braced",
+        "duration": 1,
+        "max_stacks": 1,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 100,
+        "damage_taken_pct": 30,
+        "stun": false
+      },
+      {
+        "id": "chaos_ward",
+        "label": "Chaos Ward",
+        "duration": 1,
+        "max_stacks": 1,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 100,
+        "damage_taken_pct": 10,
+        "stun": false
+      },
+      {
+        "id": "chaos_burn",
+        "label": "Chaos Burn",
+        "duration": 3,
+        "max_stacks": 3,
+        "damage_per_round": 6,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 100,
+        "damage_taken_pct": 100,
+        "stun": false
+      },
+      {
+        "id": "madness",
+        "label": "Madness",
+        "duration": 2,
+        "max_stacks": 2,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 70,
+        "damage_taken_pct": 100,
+        "stun": false
+      },
+      {
+        "id": "petrified",
+        "label": "Petrified",
+        "duration": 1,
+        "max_stacks": 1,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 100,
+        "damage_taken_pct": 100,
+        "stun": true
+      },
+      {
+        "id": "chaos_frenzy",
+        "label": "Chaos Frenzy",
+        "duration": 10,
+        "max_stacks": 6,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 120,
+        "damage_taken_pct": 100,
+        "stun": false
+      }
+    ],
+    "resources": [
+      {
+        "id": "chaos_form",
+        "label": "Chaos Form",
+        "initial": 1,
+        "min": 1,
+        "max": 4
+      }
+    ],
+    "actions": [
+      {
+        "id": "chaos_strike",
+        "label": "Strike",
+        "effect": "boss_damage",
+        "target": "enemy",
+        "amount": 25,
+        "resource": "",
+        "status": "",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": []
+      },
+      {
+        "id": "shatter_armor",
+        "label": "Shatter the Armor (strip Bulwark / Ward)",
+        "effect": "remove_status",
+        "target": "enemy",
+        "amount": 0,
+        "resource": "",
+        "status": "chaos_bulwark",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": []
+      },
+      {
+        "id": "shatter_ward",
+        "label": "Break the Ward (strip Chaos Ward)",
+        "effect": "remove_status",
+        "target": "enemy",
+        "amount": 0,
+        "resource": "",
+        "status": "chaos_ward",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": []
+      },
+      {
+        "id": "sever_tether",
+        "label": "Sever the Tether (stop Leech)",
+        "effect": "apply_status",
+        "target": "enemy",
+        "amount": 1,
+        "resource": "",
+        "status": "severed",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": []
+      },
+      {
+        "id": "brace",
+        "label": "Brace (take 70% less this round)",
+        "effect": "apply_status",
+        "target": "self",
+        "amount": 1,
+        "resource": "",
+        "status": "braced",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": []
+      },
+      {
+        "id": "chaos_rally",
+        "label": "Rally (heal the lowest hero 35)",
+        "effect": "heal",
+        "target": "lowest",
+        "amount": 35,
+        "resource": "",
+        "status": "",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": []
+      }
+    ]
+  }
+}

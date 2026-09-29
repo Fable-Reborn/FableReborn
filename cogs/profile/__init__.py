@@ -1493,7 +1493,7 @@ class PresetManagerView(discord.ui.View):
             for row in self.rows:
                 marker = "▶" if str(row["preset_id"]) == self.selected_id else "•"
                 lines.append(f"{marker} **{row['preset_id']}** — {self.describe_row(row)}")
-            embed.add_field(name=f"Saved ({len(self.rows)}/5)", value="\n".join(lines), inline=False)
+            embed.add_field(name=f"Saved ({len(self.rows)}/{self.cog.MAX_PRESETS})", value="\n".join(lines), inline=False)
         selected = self.selected_row()
         if selected:
             item_ids, has_amulet, amulet_id = self.cog._split_preset_saved_ids(selected["item_ids"] or [])
@@ -1576,6 +1576,7 @@ class PresetManagerView(discord.ui.View):
 
 class Profile(commands.Cog):
     _PRESET_AMULET_MARKER_OFFSET = 1_000_000_000
+    MAX_PRESETS = 6
     _VETERAN_BADGE_IDS_PATH = Path("assets") / "data" / "veteran_badge_ids.txt"
     _AUTO_DEVELOPER_BADGE_IDS = frozenset(
         {
@@ -5712,7 +5713,7 @@ class Profile(commands.Cog):
         Optional mode:
           - items (default): only equipment from inventory
           - all: equipment + current amulet state
-        Enforces a maximum of 5 total presets per user.
+        Enforces a maximum of MAX_PRESETS (6) total presets per user.
         Usage:
             $preset create raid_loadout
             $preset create raid_loadout all
@@ -5788,10 +5789,10 @@ class Profile(commands.Cog):
                 preset_id
             )
 
-            # If user is at max (5) and we are not overwriting an existing preset, block
-            if preset_count >= 5 and not existing_preset:
+            # If user is at max and we are not overwriting an existing preset, block
+            if preset_count >= self.MAX_PRESETS and not existing_preset:
                 return await ctx.send(
-                    "You already have 5 presets. Please delete one first or use the same name to overwrite."
+                    f"You already have {self.MAX_PRESETS} presets. Please delete one first or use the same name to overwrite."
                 )
 
             # 4) Insert or update the preset in the DB

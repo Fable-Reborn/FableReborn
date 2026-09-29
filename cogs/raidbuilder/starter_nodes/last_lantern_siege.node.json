@@ -1,0 +1,583 @@
+{
+  "schema": "fablereborn.raid-node",
+  "version": 1,
+  "name": "Siege of the Last Lantern",
+  "description": "Wave defence. Protect the Lantern (100 light) through 3 waves of 4 Gloom Crawlers, then the Gloom Warlord, who hunts the lowest-HP player. Light drains 4 per round while enemies live and 8 against 3+. Later waves are Gloom-Maddened. Between waves the party votes to rebuild the barricade (shield), tend the wounded (heal), set traps (30 AoE) or refill the Lantern (+30 light). Volley hits every enemy; Burn Lantern Oil spends 15 light on a big AoE. Next: dawn. Failure: the Lantern dies.",
+  "entry": "lantern_intro",
+  "nodes": [
+    {
+      "id": "lantern_intro",
+      "kind": "scene",
+      "title": "The Last Lantern",
+      "text": "A frozen village. One great lantern in the square holds back an endless dark, and things are crawling out of that dark.\n\nSurvive **three waves** and the **Warlord**. The **Lantern's light** drains while enemies live, faster against a swarm. If it goes out, all is lost. Between waves, choose how to prepare.",
+      "next": "wave",
+      "rules": []
+    },
+    {
+      "id": "wave",
+      "kind": "battle",
+      "title": "The Horde Comes",
+      "text": "Gloom Crawlers pour out of the dark! Kill them fast; the Lantern dims while they live.",
+      "enemies": [
+        {
+          "id": "crawler_1",
+          "label": "Gloom Crawler A",
+          "hp": 50,
+          "damage": 6,
+          "target": "random",
+          "on_hit_status": ""
+        },
+        {
+          "id": "crawler_2",
+          "label": "Gloom Crawler B",
+          "hp": 50,
+          "damage": 6,
+          "target": "random",
+          "on_hit_status": ""
+        },
+        {
+          "id": "crawler_3",
+          "label": "Gloom Crawler C",
+          "hp": 50,
+          "damage": 6,
+          "target": "random",
+          "on_hit_status": ""
+        },
+        {
+          "id": "crawler_4",
+          "label": "Gloom Crawler D",
+          "hp": 50,
+          "damage": 6,
+          "target": "random",
+          "on_hit_status": ""
+        }
+      ],
+      "boss_hp": 200,
+      "boss_damage": 6,
+      "max_rounds": 8,
+      "next": "wave_check",
+      "failure": "lantern_dies",
+      "rules": [
+        {
+          "id": "lantern_wave",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "lantern_wave",
+          "status": "",
+          "destination": "",
+          "limit": 5,
+          "text": "A new wave emerges from the dark!"
+        },
+        {
+          "id": "wave_traps_spring",
+          "trigger": "enter",
+          "condition": {
+            "subject": "lantern_traps",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "boss_damage",
+          "target": "enemies",
+          "amount": 30,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 5,
+          "text": "The spike traps spring! The horde staggers."
+        },
+        {
+          "id": "wave_traps_spent",
+          "trigger": "enter",
+          "condition": {
+            "subject": "lantern_traps",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -1,
+          "resource": "lantern_traps",
+          "status": "",
+          "destination": "",
+          "limit": 5,
+          "text": "The traps are spent."
+        },
+        {
+          "id": "maddened_2",
+          "trigger": "enter",
+          "condition": {
+            "subject": "lantern_wave",
+            "operator": "==",
+            "value": 2
+          },
+          "effect": "apply_status",
+          "target": "enemies",
+          "amount": 1,
+          "resource": "",
+          "status": "gloom_maddened",
+          "destination": "",
+          "limit": 1,
+          "text": "This wave is Gloom-Maddened!"
+        },
+        {
+          "id": "maddened_3",
+          "trigger": "enter",
+          "condition": {
+            "subject": "lantern_wave",
+            "operator": ">=",
+            "value": 3
+          },
+          "effect": "apply_status",
+          "target": "enemies",
+          "amount": 2,
+          "resource": "",
+          "status": "gloom_maddened",
+          "destination": "",
+          "limit": 1,
+          "text": "This wave is DEEPLY Gloom-Maddened!"
+        },
+        {
+          "id": "gloom_gnaws",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "enemies_alive",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -4,
+          "resource": "lantern_light",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "The gloom gnaws at the Lantern's light."
+        },
+        {
+          "id": "horde_swarms",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "enemies_alive",
+            "operator": ">=",
+            "value": 3
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -4,
+          "resource": "lantern_light",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "The horde swarms the Lantern!"
+        },
+        {
+          "id": "lantern_gutters",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "lantern_light",
+            "operator": "<=",
+            "value": 0
+          },
+          "effect": "transition",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "lantern_dies",
+          "limit": 1,
+          "text": "The Last Lantern gutters... and goes out."
+        }
+      ]
+    },
+    {
+      "id": "wave_check",
+      "kind": "check",
+      "title": "The Wave Breaks",
+      "text": "The last crawler dissolves into smoke. The dark goes quiet... for now.",
+      "condition": {
+        "subject": "lantern_wave",
+        "operator": ">=",
+        "value": 3
+      },
+      "next": "warlord",
+      "failure": "breather",
+      "rules": []
+    },
+    {
+      "id": "breather",
+      "kind": "choice",
+      "title": "A Moment's Breath",
+      "text": "You have a few precious minutes before the next wave. How do you prepare?",
+      "choices": [
+        {
+          "id": "barricade",
+          "label": "Rebuild the barricade",
+          "next": "fix_barricade"
+        },
+        {
+          "id": "wounds",
+          "label": "Tend the wounded",
+          "next": "tend_wounded"
+        },
+        {
+          "id": "traps",
+          "label": "Set spike traps",
+          "next": "set_traps"
+        },
+        {
+          "id": "oil",
+          "label": "Refill the lantern",
+          "next": "refill_oil"
+        }
+      ],
+      "failure": "bicker",
+      "rules": []
+    },
+    {
+      "id": "fix_barricade",
+      "kind": "scene",
+      "title": "Rebuilding the Barricade",
+      "text": "Splintered doors, overturned carts, anything heavy. The wall rises again.",
+      "next": "wave",
+      "rules": [
+        {
+          "id": "barricade_up",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "shield",
+          "target": "all",
+          "amount": 35,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 5,
+          "text": "The barricade shields everyone."
+        }
+      ]
+    },
+    {
+      "id": "tend_wounded",
+      "kind": "scene",
+      "title": "Tending the Wounded",
+      "text": "Bandages, bitter tea and bad jokes.",
+      "next": "wave",
+      "rules": [
+        {
+          "id": "bandaged",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 30,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 5,
+          "text": "The party is patched up."
+        }
+      ]
+    },
+    {
+      "id": "set_traps",
+      "kind": "scene",
+      "title": "Setting Traps",
+      "text": "Sharpened stakes hidden under the snow. The next wave will walk right into them.",
+      "next": "wave",
+      "rules": [
+        {
+          "id": "lantern_traps",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "lantern_traps",
+          "status": "",
+          "destination": "",
+          "limit": 5,
+          "text": "Spike traps armed for the next wave."
+        }
+      ]
+    },
+    {
+      "id": "refill_oil",
+      "kind": "scene",
+      "title": "Refilling the Lantern",
+      "text": "Every last drop of lamp oil in the village goes into the Last Lantern. It blazes.",
+      "next": "wave",
+      "rules": [
+        {
+          "id": "lantern_light",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 30,
+          "resource": "lantern_light",
+          "status": "",
+          "destination": "",
+          "limit": 5,
+          "text": "The Lantern flares brighter."
+        }
+      ]
+    },
+    {
+      "id": "bicker",
+      "kind": "scene",
+      "title": "Squabbling",
+      "text": "Everyone argues about what to do, and the next wave arrives mid-sentence.",
+      "next": "wave",
+      "rules": []
+    },
+    {
+      "id": "warlord",
+      "kind": "battle",
+      "title": "The Gloom Warlord",
+      "text": "The dark parts, and something tall steps out wearing a crown of dead lanterns. It hunts the **weakest** among you.",
+      "enemies": [
+        {
+          "id": "warlord",
+          "label": "The Gloom Warlord",
+          "hp": 420,
+          "damage": 18,
+          "target": "lowest",
+          "on_hit_status": ""
+        },
+        {
+          "id": "warlord_guard_1",
+          "label": "Warlord's Guard",
+          "hp": 60,
+          "damage": 6,
+          "target": "random",
+          "on_hit_status": ""
+        },
+        {
+          "id": "warlord_guard_2",
+          "label": "Warlord's Guard",
+          "hp": 60,
+          "damage": 6,
+          "target": "random",
+          "on_hit_status": ""
+        }
+      ],
+      "boss_hp": 540,
+      "boss_damage": 18,
+      "max_rounds": 10,
+      "next": "dawn",
+      "failure": "lantern_dies",
+      "rules": [
+        {
+          "id": "warlord_traps_spring",
+          "trigger": "enter",
+          "condition": {
+            "subject": "lantern_traps",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "boss_damage",
+          "target": "enemies",
+          "amount": 30,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 5,
+          "text": "The spike traps spring! The horde staggers."
+        },
+        {
+          "id": "warlord_traps_spent",
+          "trigger": "enter",
+          "condition": {
+            "subject": "lantern_traps",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -1,
+          "resource": "lantern_traps",
+          "status": "",
+          "destination": "",
+          "limit": 5,
+          "text": "The traps are spent."
+        },
+        {
+          "id": "snuff_the_light",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "boss_hp_percent",
+            "operator": "<=",
+            "value": 50
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -15,
+          "resource": "lantern_light",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The Warlord points at the Lantern and it dims sharply!"
+        },
+        {
+          "id": "warlord_gloom_gnaws",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "enemies_alive",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -4,
+          "resource": "lantern_light",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "The gloom gnaws at the Lantern's light."
+        },
+        {
+          "id": "warlord_horde_swarms",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "enemies_alive",
+            "operator": ">=",
+            "value": 3
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -4,
+          "resource": "lantern_light",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "The horde swarms the Lantern!"
+        },
+        {
+          "id": "warlord_lantern_gutters",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "lantern_light",
+            "operator": "<=",
+            "value": 0
+          },
+          "effect": "transition",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "lantern_dies",
+          "limit": 1,
+          "text": "The Last Lantern gutters... and goes out."
+        }
+      ]
+    },
+    {
+      "id": "lantern_dies",
+      "kind": "scene",
+      "title": "Darkness Falls",
+      "text": "The Last Lantern goes out. In the dark, something laughs.",
+      "next": "$failure",
+      "rules": []
+    },
+    {
+      "id": "dawn",
+      "kind": "scene",
+      "title": "Dawn",
+      "text": "The Warlord shatters like black ice. Behind you, the Lantern blazes, and on the horizon the sun finally rises.",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "sunrise",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 40,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Warm sunlight restores the party."
+        }
+      ]
+    }
+  ],
+  "catalogues": {
+    "resources": [
+      {
+        "id": "lantern_light",
+        "label": "Lantern Light",
+        "initial": 100,
+        "min": 0,
+        "max": 150
+      },
+      {
+        "id": "lantern_wave",
+        "label": "Wave",
+        "initial": 0,
+        "min": 0,
+        "max": 5
+      },
+      {
+        "id": "lantern_traps",
+        "label": "Spike Traps",
+        "initial": 0,
+        "min": 0,
+        "max": 5
+      }
+    ],
+    "statuses": [
+      {
+        "id": "gloom_maddened",
+        "label": "Gloom-Maddened",
+        "duration": 20,
+        "max_stacks": 3,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 135,
+        "damage_taken_pct": 100,
+        "stun": false
+      }
+    ],
+    "actions": [
+      {
+        "id": "volley",
+        "label": "Loose a Volley (hits all enemies)",
+        "effect": "boss_damage",
+        "target": "enemies",
+        "amount": 9,
+        "resource": "",
+        "status": "",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": []
+      },
+      {
+        "id": "burn_lantern_oil",
+        "label": "Burn Lantern Oil (15 light: big AoE)",
+        "effect": "boss_damage",
+        "target": "enemies",
+        "amount": 35,
+        "resource": "",
+        "status": "",
+        "cost_resource": "lantern_light",
+        "cost": 15,
+        "roles": []
+      }
+    ]
+  }
+}

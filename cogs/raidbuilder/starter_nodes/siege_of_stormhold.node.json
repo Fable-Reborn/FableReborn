@@ -1,0 +1,1503 @@
+{
+  "schema": "fablereborn.raid-node",
+  "version": 1,
+  "name": "Siege of Stormhold: War Council",
+  "description": "Siege defence where the party allocates supplies by vote. Before each of 3 assaults, a War Council runs and every hero's vote is applied: +2 Soldiers, +2 Archers, +15 Gate, +1 Medic or +4 Supplies each. The garrison fights on its own: Soldiers hit a random enemy (10 each), Archers volley all enemies (3 each), Medics heal all (3 each). Enemies batter the Gate (4 each per round) and Siege Rams add 12. The Warlord's catapult kills Soldiers. Roles: Captain (1) spends Supplies to Rally soldiers or sound the War Horn; Engineers (2) repair the Gate or fire the Ballista; Defenders brace the Gate. At Gate 0 the walls are breached; a second breach, or any in the final assault, leads to Failure. Next: dawn (bonus if Gate is 80+). Failure: Stormhold falls.",
+  "entry": "siege_intro",
+  "nodes": [
+    {
+      "id": "siege_intro",
+      "kind": "scene",
+      "title": "The Siege of Stormhold",
+      "text": "Torches stretch to the horizon. The Warlord's army has come for **Stormhold**, and you are all that stands between them and the keep.\n\nBefore each assault you hold a **War Council**. **Each hero allocates their own wagon of supplies**: soldiers, archers, masons, medics or stockpiled supplies. Build the defence together.\n\n**Roles:** 🎖️ one **Captain** (rallies soldiers, sounds the War Horn), up to two **Engineers** (repair the Gate, fire the Ballista), and everyone else is a **Defender** holding the wall.\n\nIf the **Gate** falls to 0, the walls are breached. Two breaches, or any breach in the final assault, and Stormhold falls.",
+      "next": "council_1",
+      "rules": []
+    },
+    {
+      "id": "council_1",
+      "kind": "choice",
+      "title": "War Council: Dusk",
+      "text": "Scouts report raiders probing the walls. A first taste of the army to come.\n\n**Every hero commands one wagon of supplies.** Each vote is carried out, even the minority ones. Wagons without a vote are lost in the chaos.\n\n⚔️ Soldiers strike a random enemy every round (10 each).\n🏹 Archers volley every enemy every round (3 each).\n🧱 Masons repair the Gate. At 0 the walls are breached.\n💚 Medics heal every hero every round (3 each).\n📦 Supplies fuel the Captain's and Engineers' abilities.",
+      "choices": [
+        {
+          "id": "soldiers",
+          "label": "⚔️ Arm Soldiers (+2 Soldiers)",
+          "next": "wave_1"
+        },
+        {
+          "id": "archers",
+          "label": "🏹 Train Archers (+2 Archers)",
+          "next": "wave_1"
+        },
+        {
+          "id": "masons",
+          "label": "🧱 Send Masons (+15 Gate)",
+          "next": "wave_1"
+        },
+        {
+          "id": "medics",
+          "label": "💚 Staff the Infirmary (+1 Medic)",
+          "next": "wave_1"
+        },
+        {
+          "id": "stockpile",
+          "label": "📦 Stockpile (+4 Supplies)",
+          "next": "wave_1"
+        }
+      ],
+      "failure": "wave_1",
+      "rules": [
+        {
+          "id": "council_1_tally",
+          "trigger": "choice",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "announce",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "📜 The quartermaster divides the wagons: **one per hero, as each of you voted.**"
+        },
+        {
+          "id": "council_1_soldiers",
+          "trigger": "choice",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 2,
+          "resource": "soldiers",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "",
+          "scale": "votes:soldiers"
+        },
+        {
+          "id": "council_1_archers",
+          "trigger": "choice",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 2,
+          "resource": "archers",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "",
+          "scale": "votes:archers"
+        },
+        {
+          "id": "council_1_masons",
+          "trigger": "choice",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 15,
+          "resource": "gate",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "",
+          "scale": "votes:masons"
+        },
+        {
+          "id": "council_1_medics",
+          "trigger": "choice",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "medics",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "",
+          "scale": "votes:medics"
+        },
+        {
+          "id": "council_1_stockpile",
+          "trigger": "choice",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 4,
+          "resource": "supplies",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "",
+          "scale": "votes:stockpile"
+        }
+      ]
+    },
+    {
+      "id": "wave_1",
+      "kind": "battle",
+      "title": "First Assault: The Raiders",
+      "text": "Raiders swarm the walls. Every living enemy batters the Gate each round.",
+      "enemies": [
+        {
+          "id": "raider_1",
+          "label": "Raider 1",
+          "hp": 90,
+          "damage": 8,
+          "target": "random",
+          "on_hit_status": ""
+        },
+        {
+          "id": "raider_2",
+          "label": "Raider 2",
+          "hp": 90,
+          "damage": 8,
+          "target": "random",
+          "on_hit_status": ""
+        },
+        {
+          "id": "raider_3",
+          "label": "Raider 3",
+          "hp": 90,
+          "damage": 8,
+          "target": "random",
+          "on_hit_status": ""
+        },
+        {
+          "id": "raider_4",
+          "label": "Raider 4",
+          "hp": 90,
+          "damage": 8,
+          "target": "random",
+          "on_hit_status": ""
+        },
+        {
+          "id": "raider_5",
+          "label": "Raider 5",
+          "hp": 90,
+          "damage": 8,
+          "target": "random",
+          "on_hit_status": ""
+        }
+      ],
+      "boss_hp": 90,
+      "boss_damage": 8,
+      "max_rounds": 8,
+      "next": "council_2",
+      "failure": "breach_1",
+      "rules": [
+        {
+          "id": "w1_soldiers",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "soldiers",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "boss_damage",
+          "target": "enemy_random",
+          "amount": 10,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "⚔️ The garrison surges forward!",
+          "scale": "soldiers"
+        },
+        {
+          "id": "w1_archers",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "archers",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "boss_damage",
+          "target": "enemies",
+          "amount": 3,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "🏹 Arrows darken the sky!",
+          "scale": "archers"
+        },
+        {
+          "id": "w1_medics",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "medics",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 3,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "💚 Medics drag the wounded to safety.",
+          "scale": "medics"
+        },
+        {
+          "id": "w1_casualties",
+          "trigger": "round_end",
+          "condition": {
+            "all": [
+              {
+                "subject": "enemies_alive",
+                "operator": ">=",
+                "value": 3
+              },
+              {
+                "subject": "soldiers",
+                "operator": ">=",
+                "value": 1
+              }
+            ]
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -1,
+          "resource": "soldiers",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "A soldier falls on the wall."
+        },
+        {
+          "id": "w1_gate_pressure",
+          "trigger": "round_end",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -4,
+          "resource": "gate",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "🚪 The enemy hammers at the Gate.",
+          "scale": "enemies_alive"
+        },
+        {
+          "id": "w1_supply_trickle",
+          "trigger": "round_end",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "supplies",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": ""
+        },
+        {
+          "id": "w1_breach",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "gate",
+            "operator": "<=",
+            "value": 0
+          },
+          "effect": "transition",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "breach_1",
+          "limit": 1,
+          "text": "💥 **THE GATE IS BREACHED!**"
+        }
+      ]
+    },
+    {
+      "id": "breach_1",
+      "kind": "scene",
+      "title": "The Walls Are Breached!",
+      "text": "Raiders pour through the shattered gate. You drive them back at a terrible cost, and the survivors wedge a wagon into the gap.",
+      "next": "breach_1_check",
+      "rules": [
+        {
+          "id": "b1_count",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "breaches",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Breaches: the keep can survive only one."
+        },
+        {
+          "id": "b1_hurt",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "damage",
+          "target": "all",
+          "amount": 35,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The melee in the gatehouse is brutal."
+        },
+        {
+          "id": "b1_losses",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -4,
+          "resource": "soldiers",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Soldiers are lost holding the gap."
+        },
+        {
+          "id": "b1_patch",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 40,
+          "resource": "gate",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "A makeshift barricade: Gate restored to 40."
+        }
+      ]
+    },
+    {
+      "id": "breach_1_check",
+      "kind": "check",
+      "title": "Can Stormhold Hold?",
+      "text": "",
+      "condition": {
+        "subject": "breaches",
+        "operator": "<=",
+        "value": 1
+      },
+      "next": "council_2",
+      "failure": "$failure",
+      "rules": []
+    },
+    {
+      "id": "council_2",
+      "kind": "choice",
+      "title": "War Council: Midnight",
+      "text": "Siege rams are coming up the road. They ignore the defenders and go straight for the Gate.\n\n**Every hero commands one wagon of supplies.** Each vote is carried out, even the minority ones. Wagons without a vote are lost in the chaos.\n\n⚔️ Soldiers strike a random enemy every round (10 each).\n🏹 Archers volley every enemy every round (3 each).\n🧱 Masons repair the Gate. At 0 the walls are breached.\n💚 Medics heal every hero every round (3 each).\n📦 Supplies fuel the Captain's and Engineers' abilities.",
+      "choices": [
+        {
+          "id": "soldiers",
+          "label": "⚔️ Arm Soldiers (+2 Soldiers)",
+          "next": "wave_2"
+        },
+        {
+          "id": "archers",
+          "label": "🏹 Train Archers (+2 Archers)",
+          "next": "wave_2"
+        },
+        {
+          "id": "masons",
+          "label": "🧱 Send Masons (+15 Gate)",
+          "next": "wave_2"
+        },
+        {
+          "id": "medics",
+          "label": "💚 Staff the Infirmary (+1 Medic)",
+          "next": "wave_2"
+        },
+        {
+          "id": "stockpile",
+          "label": "📦 Stockpile (+4 Supplies)",
+          "next": "wave_2"
+        }
+      ],
+      "failure": "wave_2",
+      "rules": [
+        {
+          "id": "council_2_tally",
+          "trigger": "choice",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "announce",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "📜 The quartermaster divides the wagons: **one per hero, as each of you voted.**"
+        },
+        {
+          "id": "council_2_soldiers",
+          "trigger": "choice",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 2,
+          "resource": "soldiers",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "",
+          "scale": "votes:soldiers"
+        },
+        {
+          "id": "council_2_archers",
+          "trigger": "choice",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 2,
+          "resource": "archers",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "",
+          "scale": "votes:archers"
+        },
+        {
+          "id": "council_2_masons",
+          "trigger": "choice",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 15,
+          "resource": "gate",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "",
+          "scale": "votes:masons"
+        },
+        {
+          "id": "council_2_medics",
+          "trigger": "choice",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "medics",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "",
+          "scale": "votes:medics"
+        },
+        {
+          "id": "council_2_stockpile",
+          "trigger": "choice",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 4,
+          "resource": "supplies",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "",
+          "scale": "votes:stockpile"
+        }
+      ]
+    },
+    {
+      "id": "wave_2",
+      "kind": "battle",
+      "title": "Second Assault: The Rams",
+      "text": "Two **Siege Rams** pound the Gate for 12 each round while they stand. Kill them fast. Raiders cover them.",
+      "enemies": [
+        {
+          "id": "ram_a",
+          "label": "Siege Ram",
+          "hp": 220,
+          "damage": 0,
+          "target": "random",
+          "on_hit_status": ""
+        },
+        {
+          "id": "ram_b",
+          "label": "Siege Ram",
+          "hp": 220,
+          "damage": 0,
+          "target": "random",
+          "on_hit_status": ""
+        },
+        {
+          "id": "brute_1",
+          "label": "Raider Brute 1",
+          "hp": 110,
+          "damage": 10,
+          "target": "random",
+          "on_hit_status": ""
+        },
+        {
+          "id": "brute_2",
+          "label": "Raider Brute 2",
+          "hp": 110,
+          "damage": 10,
+          "target": "random",
+          "on_hit_status": ""
+        },
+        {
+          "id": "brute_3",
+          "label": "Raider Brute 3",
+          "hp": 110,
+          "damage": 10,
+          "target": "random",
+          "on_hit_status": ""
+        },
+        {
+          "id": "brute_4",
+          "label": "Raider Brute 4",
+          "hp": 110,
+          "damage": 10,
+          "target": "random",
+          "on_hit_status": ""
+        }
+      ],
+      "boss_hp": 220,
+      "boss_damage": 0,
+      "max_rounds": 9,
+      "next": "council_3",
+      "failure": "breach_2",
+      "rules": [
+        {
+          "id": "w2_soldiers",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "soldiers",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "boss_damage",
+          "target": "enemy_random",
+          "amount": 10,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "⚔️ The garrison surges forward!",
+          "scale": "soldiers"
+        },
+        {
+          "id": "w2_archers",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "archers",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "boss_damage",
+          "target": "enemies",
+          "amount": 3,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "🏹 Arrows darken the sky!",
+          "scale": "archers"
+        },
+        {
+          "id": "w2_medics",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "medics",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 3,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "💚 Medics drag the wounded to safety.",
+          "scale": "medics"
+        },
+        {
+          "id": "w2_casualties",
+          "trigger": "round_end",
+          "condition": {
+            "all": [
+              {
+                "subject": "enemies_alive",
+                "operator": ">=",
+                "value": 3
+              },
+              {
+                "subject": "soldiers",
+                "operator": ">=",
+                "value": 1
+              }
+            ]
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -1,
+          "resource": "soldiers",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "A soldier falls on the wall."
+        },
+        {
+          "id": "w2_gate_pressure",
+          "trigger": "round_end",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -4,
+          "resource": "gate",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "🚪 The enemy hammers at the Gate.",
+          "scale": "enemies_alive"
+        },
+        {
+          "id": "w2_supply_trickle",
+          "trigger": "round_end",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "supplies",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": ""
+        },
+        {
+          "id": "ram_a_hits",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "enemy_hp:ram_a",
+            "operator": ">",
+            "value": 0
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -12,
+          "resource": "gate",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "🐏 BOOM. A Siege Ram hits the Gate!"
+        },
+        {
+          "id": "ram_b_hits",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "enemy_hp:ram_b",
+            "operator": ">",
+            "value": 0
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -12,
+          "resource": "gate",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "🐏 BOOM. The second Ram hits the Gate!"
+        },
+        {
+          "id": "w2_breach",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "gate",
+            "operator": "<=",
+            "value": 0
+          },
+          "effect": "transition",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "breach_2",
+          "limit": 1,
+          "text": "💥 **THE GATE IS BREACHED!**"
+        }
+      ]
+    },
+    {
+      "id": "breach_2",
+      "kind": "scene",
+      "title": "The Walls Are Breached!",
+      "text": "The rams break through. The fighting in the gatehouse is desperate.",
+      "next": "breach_2_check",
+      "rules": [
+        {
+          "id": "b2_count",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "breaches",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": ""
+        },
+        {
+          "id": "b2_hurt",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "damage",
+          "target": "all",
+          "amount": 40,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The gatehouse runs red."
+        },
+        {
+          "id": "b2_losses",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -4,
+          "resource": "soldiers",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Soldiers are lost holding the gap."
+        },
+        {
+          "id": "b2_patch",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 40,
+          "resource": "gate",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "A makeshift barricade: Gate restored to 40."
+        }
+      ]
+    },
+    {
+      "id": "breach_2_check",
+      "kind": "check",
+      "title": "Can Stormhold Hold?",
+      "text": "",
+      "condition": {
+        "subject": "breaches",
+        "operator": "<=",
+        "value": 1
+      },
+      "next": "council_3",
+      "failure": "$failure",
+      "rules": []
+    },
+    {
+      "id": "council_3",
+      "kind": "choice",
+      "title": "War Council: Before Dawn",
+      "text": "The Warlord himself rides to the gate, with shieldbearers and a **catapult** that hurls fire at your garrison. This is the last council. Everything goes on the wall.\n\n**Every hero commands one wagon of supplies.** Each vote is carried out, even the minority ones. Wagons without a vote are lost in the chaos.\n\n⚔️ Soldiers strike a random enemy every round (10 each).\n🏹 Archers volley every enemy every round (3 each).\n🧱 Masons repair the Gate. At 0 the walls are breached.\n💚 Medics heal every hero every round (3 each).\n📦 Supplies fuel the Captain's and Engineers' abilities.",
+      "choices": [
+        {
+          "id": "soldiers",
+          "label": "⚔️ Arm Soldiers (+2 Soldiers)",
+          "next": "wave_3"
+        },
+        {
+          "id": "archers",
+          "label": "🏹 Train Archers (+2 Archers)",
+          "next": "wave_3"
+        },
+        {
+          "id": "masons",
+          "label": "🧱 Send Masons (+15 Gate)",
+          "next": "wave_3"
+        },
+        {
+          "id": "medics",
+          "label": "💚 Staff the Infirmary (+1 Medic)",
+          "next": "wave_3"
+        },
+        {
+          "id": "stockpile",
+          "label": "📦 Stockpile (+4 Supplies)",
+          "next": "wave_3"
+        }
+      ],
+      "failure": "wave_3",
+      "rules": [
+        {
+          "id": "council_3_tally",
+          "trigger": "choice",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "announce",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "📜 The quartermaster divides the wagons: **one per hero, as each of you voted.**"
+        },
+        {
+          "id": "council_3_soldiers",
+          "trigger": "choice",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 2,
+          "resource": "soldiers",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "",
+          "scale": "votes:soldiers"
+        },
+        {
+          "id": "council_3_archers",
+          "trigger": "choice",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 2,
+          "resource": "archers",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "",
+          "scale": "votes:archers"
+        },
+        {
+          "id": "council_3_masons",
+          "trigger": "choice",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 15,
+          "resource": "gate",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "",
+          "scale": "votes:masons"
+        },
+        {
+          "id": "council_3_medics",
+          "trigger": "choice",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "medics",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "",
+          "scale": "votes:medics"
+        },
+        {
+          "id": "council_3_stockpile",
+          "trigger": "choice",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 4,
+          "resource": "supplies",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "",
+          "scale": "votes:stockpile"
+        }
+      ]
+    },
+    {
+      "id": "wave_3",
+      "kind": "battle",
+      "title": "Final Assault: The Warlord",
+      "text": "The **Warlord** hunts the weakest hero. His **Catapult** kills 2 Soldiers and burns a hero every round until it is destroyed. **A breach now means the keep falls.**",
+      "enemies": [
+        {
+          "id": "warlord",
+          "label": "The Warlord",
+          "hp": 900,
+          "damage": 20,
+          "target": "lowest",
+          "on_hit_status": ""
+        },
+        {
+          "id": "catapult",
+          "label": "Fire Catapult",
+          "hp": 260,
+          "damage": 0,
+          "target": "random",
+          "on_hit_status": ""
+        },
+        {
+          "id": "shieldbearer_a",
+          "label": "Shieldbearer",
+          "hp": 200,
+          "damage": 9,
+          "target": "random",
+          "on_hit_status": ""
+        },
+        {
+          "id": "shieldbearer_b",
+          "label": "Shieldbearer",
+          "hp": 200,
+          "damage": 9,
+          "target": "random",
+          "on_hit_status": ""
+        }
+      ],
+      "boss_hp": 900,
+      "boss_damage": 20,
+      "max_rounds": 12,
+      "next": "siege_won",
+      "failure": "breach_3",
+      "rules": [
+        {
+          "id": "warlord_guard",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "shield",
+          "target": "enemy:warlord",
+          "amount": 50,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The Warlord's elite guard locks shields around him.",
+          "scale": "alive"
+        },
+        {
+          "id": "w3_soldiers",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "soldiers",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "boss_damage",
+          "target": "enemy_random",
+          "amount": 10,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "⚔️ The garrison surges forward!",
+          "scale": "soldiers"
+        },
+        {
+          "id": "w3_archers",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "archers",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "boss_damage",
+          "target": "enemies",
+          "amount": 3,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "🏹 Arrows darken the sky!",
+          "scale": "archers"
+        },
+        {
+          "id": "w3_medics",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "medics",
+            "operator": ">=",
+            "value": 1
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 3,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "💚 Medics drag the wounded to safety.",
+          "scale": "medics"
+        },
+        {
+          "id": "w3_casualties",
+          "trigger": "round_end",
+          "condition": {
+            "all": [
+              {
+                "subject": "enemies_alive",
+                "operator": ">=",
+                "value": 3
+              },
+              {
+                "subject": "soldiers",
+                "operator": ">=",
+                "value": 1
+              }
+            ]
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -1,
+          "resource": "soldiers",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "A soldier falls on the wall."
+        },
+        {
+          "id": "w3_gate_pressure",
+          "trigger": "round_end",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -4,
+          "resource": "gate",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "🚪 The enemy hammers at the Gate.",
+          "scale": "enemies_alive"
+        },
+        {
+          "id": "w3_supply_trickle",
+          "trigger": "round_end",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": 1,
+          "resource": "supplies",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": ""
+        },
+        {
+          "id": "catapult_garrison",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "enemy_hp:catapult",
+            "operator": ">",
+            "value": 0
+          },
+          "effect": "resource",
+          "target": "all",
+          "amount": -2,
+          "resource": "soldiers",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "☄️ The catapult hurls fire onto the garrison!"
+        },
+        {
+          "id": "catapult_hero",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "enemy_hp:catapult",
+            "operator": ">",
+            "value": 0
+          },
+          "effect": "damage",
+          "target": "random",
+          "amount": 25,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 100,
+          "text": "☄️ A fireball strikes a hero!"
+        },
+        {
+          "id": "warlord_rage",
+          "trigger": "round_end",
+          "condition": {
+            "all": [
+              {
+                "subject": "enemy_hp:warlord",
+                "operator": "<=",
+                "value": 450
+              },
+              {
+                "subject": "enemy_hp:warlord",
+                "operator": ">",
+                "value": 0
+              }
+            ]
+          },
+          "effect": "apply_status",
+          "target": "enemy:warlord",
+          "amount": 1,
+          "resource": "",
+          "status": "warlord_fury",
+          "destination": "",
+          "limit": 1,
+          "text": "The Warlord roars and throws down his shield (+50% damage)."
+        },
+        {
+          "id": "w3_breach",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "gate",
+            "operator": "<=",
+            "value": 0
+          },
+          "effect": "transition",
+          "target": "all",
+          "amount": 0,
+          "resource": "",
+          "status": "",
+          "destination": "breach_3",
+          "limit": 1,
+          "text": "💥 **THE GATE IS BREACHED!**"
+        }
+      ]
+    },
+    {
+      "id": "breach_3",
+      "kind": "scene",
+      "title": "Stormhold Falls",
+      "text": "The gate gives way in the final assault. There is no barricade this time, only the long retreat into the hills as the keep burns behind you.",
+      "next": "$failure",
+      "rules": []
+    },
+    {
+      "id": "siege_won",
+      "kind": "check",
+      "title": "Dawn Over Stormhold",
+      "text": "",
+      "condition": {
+        "subject": "gate",
+        "operator": ">=",
+        "value": 80
+      },
+      "next": "walls_unbroken",
+      "failure": "walls_scarred",
+      "rules": []
+    },
+    {
+      "id": "walls_unbroken",
+      "kind": "scene",
+      "title": "The Walls Stand Unbroken",
+      "text": "Dawn finds the Warlord dead and the Gate still standing proud. The garrison raises your names on the battlements.",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "unbroken_heal",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 60,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The keep's healers tend to you."
+        },
+        {
+          "id": "unbroken_shield",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "shield",
+          "target": "all",
+          "amount": 40,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Stormhold's smiths reforge your armor."
+        }
+      ]
+    },
+    {
+      "id": "walls_scarred",
+      "kind": "scene",
+      "title": "Stormhold Endures",
+      "text": "The Warlord is dead. The Gate is splinters and the walls are scarred, but Stormhold endures.",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "scarred_heal",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 30,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "You bind your wounds among the rubble."
+        }
+      ]
+    }
+  ],
+  "catalogues": {
+    "teams": [
+      {
+        "id": "party",
+        "label": "Party"
+      }
+    ],
+    "roles": [
+      {
+        "id": "captain",
+        "label": "Captain",
+        "team": "party",
+        "hp": 0,
+        "slots": 1
+      },
+      {
+        "id": "engineer",
+        "label": "Engineer",
+        "team": "party",
+        "hp": 0,
+        "slots": 2
+      },
+      {
+        "id": "defender",
+        "label": "Defender",
+        "team": "party",
+        "hp": 0,
+        "slots": 0
+      }
+    ],
+    "statuses": [
+      {
+        "id": "inspired",
+        "label": "Inspired",
+        "duration": 2,
+        "max_stacks": 1,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 150,
+        "damage_taken_pct": 100,
+        "stun": false
+      },
+      {
+        "id": "warlord_fury",
+        "label": "Warlord's Fury",
+        "duration": 100,
+        "max_stacks": 1,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 150,
+        "damage_taken_pct": 100,
+        "stun": false
+      }
+    ],
+    "resources": [
+      {
+        "id": "gate",
+        "label": "Gate",
+        "initial": 100,
+        "min": 0,
+        "max": 200
+      },
+      {
+        "id": "soldiers",
+        "label": "Soldiers",
+        "initial": 4,
+        "min": 0,
+        "max": 40
+      },
+      {
+        "id": "archers",
+        "label": "Archers",
+        "initial": 2,
+        "min": 0,
+        "max": 30
+      },
+      {
+        "id": "medics",
+        "label": "Medics",
+        "initial": 0,
+        "min": 0,
+        "max": 15
+      },
+      {
+        "id": "supplies",
+        "label": "Supplies",
+        "initial": 3,
+        "min": 0,
+        "max": 60
+      },
+      {
+        "id": "breaches",
+        "label": "Breaches",
+        "initial": 0,
+        "min": 0,
+        "max": 3
+      }
+    ],
+    "actions": [
+      {
+        "id": "siege_strike",
+        "label": "Strike",
+        "effect": "boss_damage",
+        "target": "enemy",
+        "amount": 22,
+        "resource": "",
+        "status": "",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": []
+      },
+      {
+        "id": "brace_gate",
+        "label": "Brace the Gate (+5 Gate)",
+        "effect": "resource",
+        "target": "self",
+        "amount": 5,
+        "resource": "gate",
+        "status": "",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": [
+          "defender"
+        ]
+      },
+      {
+        "id": "repair_gate",
+        "label": "Repair the Gate (+10 Gate)",
+        "effect": "resource",
+        "target": "self",
+        "amount": 10,
+        "resource": "gate",
+        "status": "",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": [
+          "engineer"
+        ]
+      },
+      {
+        "id": "fire_ballista",
+        "label": "Fire the Ballista (3 Supplies: 70 dmg)",
+        "effect": "boss_damage",
+        "target": "enemy",
+        "amount": 70,
+        "resource": "",
+        "status": "",
+        "cost_resource": "supplies",
+        "cost": 3,
+        "roles": [
+          "engineer"
+        ]
+      },
+      {
+        "id": "rally",
+        "label": "Rally the Garrison (2 Supplies: +2 Soldiers)",
+        "effect": "resource",
+        "target": "self",
+        "amount": 2,
+        "resource": "soldiers",
+        "status": "",
+        "cost_resource": "supplies",
+        "cost": 2,
+        "roles": [
+          "captain"
+        ]
+      },
+      {
+        "id": "war_horn",
+        "label": "Sound the War Horn (4 Supplies: all heroes +50% dmg)",
+        "effect": "apply_status",
+        "target": "all",
+        "amount": 1,
+        "resource": "",
+        "status": "inspired",
+        "cost_resource": "supplies",
+        "cost": 4,
+        "roles": [
+          "captain"
+        ]
+      }
+    ]
+  }
+}

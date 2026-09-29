@@ -1,0 +1,246 @@
+{
+  "schema": "fablereborn.raid-node",
+  "version": 1,
+  "name": "The Sunken Hydra",
+  "description": "Three-headed kill-order boss. Whenever the Hydra loses a head, the survivors heal 60 and gain Frenzy. Kill both side heads in the SAME round to skip one surge. The armored Crown Head (600 HP) becomes Exposed and takes 2.5x damage only after both side heads fall. Cleave hits every head evenly; focused attacks finish one head. Every 4th round the Hydra drags someone under. Next: slain. Failure: 12-round limit.",
+  "entry": "well_descent",
+  "nodes": [
+    {
+      "id": "well_descent",
+      "kind": "scene",
+      "title": "The Sunken Well",
+      "text": "The well has no bottom, only black water. Then the water rises, and three heads rise with it.\n\n*Old sailors' wisdom: every head you cut makes the others angrier. Cut two at once and the beast barely notices. The crowned head is armored until it stands alone.*",
+      "next": "hydra",
+      "rules": []
+    },
+    {
+      "id": "hydra",
+      "kind": "battle",
+      "title": "The Sunken Hydra",
+      "text": "Three heads, one hunger. **Each lost head heals and frenzies the rest**. Finish the side heads in the same round!",
+      "enemies": [
+        {
+          "id": "left_head",
+          "label": "Left Head",
+          "hp": 180,
+          "damage": 11,
+          "target": "random",
+          "on_hit_status": ""
+        },
+        {
+          "id": "right_head",
+          "label": "Right Head",
+          "hp": 180,
+          "damage": 11,
+          "target": "random",
+          "on_hit_status": ""
+        },
+        {
+          "id": "crown_head",
+          "label": "Crown Head",
+          "hp": 600,
+          "damage": 15,
+          "target": "lowest",
+          "on_hit_status": ""
+        }
+      ],
+      "boss_hp": 960,
+      "boss_damage": 15,
+      "max_rounds": 12,
+      "next": "hydra_slain",
+      "failure": "$failure",
+      "rules": [
+        {
+          "id": "surge_one",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "enemies_alive",
+            "operator": "==",
+            "value": 2
+          },
+          "effect": "boss_heal",
+          "target": "enemies",
+          "amount": 60,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "A head falls! The others SURGE, regrowing flesh!"
+        },
+        {
+          "id": "frenzy_one",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "enemies_alive",
+            "operator": "==",
+            "value": 2
+          },
+          "effect": "apply_status",
+          "target": "enemies",
+          "amount": 1,
+          "resource": "",
+          "status": "hydra_frenzy",
+          "destination": "",
+          "limit": 1,
+          "text": "The remaining heads frenzy!"
+        },
+        {
+          "id": "surge_two",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "enemies_alive",
+            "operator": "==",
+            "value": 1
+          },
+          "effect": "boss_heal",
+          "target": "enemies",
+          "amount": 60,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "The last head shrieks and surges with stolen life!"
+        },
+        {
+          "id": "frenzy_two",
+          "trigger": "round_end",
+          "condition": {
+            "subject": "enemies_alive",
+            "operator": "==",
+            "value": 1
+          },
+          "effect": "apply_status",
+          "target": "enemies",
+          "amount": 1,
+          "resource": "",
+          "status": "hydra_frenzy",
+          "destination": "",
+          "limit": 1,
+          "text": "The last head is in a total frenzy!"
+        },
+        {
+          "id": "crown_exposed",
+          "trigger": "round_end",
+          "condition": {
+            "all": [
+              {
+                "subject": "enemy_hp:left_head",
+                "operator": "<=",
+                "value": 0
+              },
+              {
+                "subject": "enemy_hp:right_head",
+                "operator": "<=",
+                "value": 0
+              }
+            ]
+          },
+          "effect": "apply_status",
+          "target": "enemy:crown_head",
+          "amount": 1,
+          "resource": "",
+          "status": "exposed",
+          "destination": "",
+          "limit": 1,
+          "text": "Both side heads are gone! The Crown Head's scales split open. It's EXPOSED!"
+        },
+        {
+          "id": "dragged_under",
+          "trigger": "round_start",
+          "condition": {
+            "any": [
+              {
+                "subject": "round",
+                "operator": "==",
+                "value": 4
+              },
+              {
+                "subject": "round",
+                "operator": "==",
+                "value": 8
+              },
+              {
+                "subject": "round",
+                "operator": "==",
+                "value": 12
+              }
+            ]
+          },
+          "effect": "damage",
+          "target": "random",
+          "amount": 35,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 3,
+          "text": "A tail lashes out of the water and drags someone under!"
+        }
+      ]
+    },
+    {
+      "id": "hydra_slain",
+      "kind": "scene",
+      "title": "The Well Falls Still",
+      "text": "The last head sinks beneath the black water. The well drains, revealing a floor of old bones and older treasure.",
+      "next": "$next",
+      "rules": [
+        {
+          "id": "dry_land",
+          "trigger": "enter",
+          "condition": {
+            "operator": "always"
+          },
+          "effect": "heal",
+          "target": "all",
+          "amount": 30,
+          "resource": "",
+          "status": "",
+          "destination": "",
+          "limit": 1,
+          "text": "Dry land, at last."
+        }
+      ]
+    }
+  ],
+  "catalogues": {
+    "resources": [],
+    "statuses": [
+      {
+        "id": "hydra_frenzy",
+        "label": "Frenzy",
+        "duration": 4,
+        "max_stacks": 2,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 150,
+        "damage_taken_pct": 100,
+        "stun": false
+      },
+      {
+        "id": "exposed",
+        "label": "Exposed",
+        "duration": 100,
+        "max_stacks": 1,
+        "damage_per_round": 0,
+        "heal_per_round": 0,
+        "damage_dealt_pct": 100,
+        "damage_taken_pct": 250,
+        "stun": false
+      }
+    ],
+    "actions": [
+      {
+        "id": "cleave",
+        "label": "Cleave (hits every head)",
+        "effect": "boss_damage",
+        "target": "enemies",
+        "amount": 9,
+        "resource": "",
+        "status": "",
+        "cost_resource": "",
+        "cost": 0,
+        "roles": []
+      }
+    ]
+  }
+}
