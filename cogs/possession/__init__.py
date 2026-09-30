@@ -1210,8 +1210,9 @@ class PossessionSession:
             embed.add_field(name="🎁 Rewards", value="\n".join(reward_lines), inline=False)
         await self._safe_send(self.channel, embed=embed)
 
-        guesses, correct, names = await self._guess_vote(participants)
-        await self._reveal(participants, guesses, correct, names)
+        guesses, correct, names, held = await self._guess_vote(participants)
+        hidden = held and not correct  # Nobody named them, so the Possessor stays secret.
+        await self._reveal(participants, guesses, correct, names, hidden)
         guess_crate = None
         if correct:
             guess_crate, chosen = await self._pick_guess_reward(len(correct))
@@ -1219,6 +1220,8 @@ class PossessionSession:
 
         farewell = self.underling["defeat"] if victorious else self.underling["victory"]
         await self.say_to_gm(f"*{self.underling['name']}:* {farewell}")
+        if hidden:
+            await self.say_to_gm(f"*{self.underling['name']}:* Not one of them named you, {self.underling['master']}. Your secret is safe.")
         await self._log(enc, payouts, crate_winner, guesses, correct, guess_crate)
 
     async def _gm_candidates(self):
@@ -1238,14 +1241,16 @@ class PossessionSession:
         return sorted(candidates, key=lambda c: c[1].lower())
 
     async def _guess_vote(self, participants):
-        """Let the raiders name the Possessor. Returns (guesses, correct guessers, candidate names)."""
+        """Let the raiders name the Possessor.
+
+        Returns (guesses, correct guessers, candidate names, whether the vote was held)."""
         try:
             candidates = await self._gm_candidates()
         except Exception:
             self.bot.logger.exception("Could not load Game Masters for the possession vote")
-            return {}, [], {}
+            return {}, [], {}, False
         if len(candidates) < 2:
-            return {}, [], dict(candidates)
+            return {}, [], dict(candidates), False
 
         deadline = datetime.now(timezone.utc) + timedelta(seconds=GUESS_SECONDS)
         view = GuessView(participants, candidates)
@@ -1263,7 +1268,7 @@ class PossessionSession:
         view.embed = embed
         view.message = await self._safe_send(self.channel, embed=embed, view=view)
         if view.message is None:
-            return {}, [], view.names
+            return {}, [], view.names, False
         try:
             await asyncio.wait_for(view.all_in.wait(), GUESS_SECONDS)
         except asyncio.TimeoutError:
@@ -1279,19 +1284,20 @@ class PossessionSession:
 
         guesses = dict(view.guesses)
         correct = [uid for uid, guess in guesses.items() if guess == self.gm.id]
-        return guesses, correct, view.names
+        return guesses, correct, view.names, True
 
-    def vote_breakdown(self, participants, guesses, names):
-        """Who voted for whom, the Possessor first, then by votes."""
-        by_candidate = {self.gm.id: []}
+    def vote_breakdown(self, participants, guesses, names, hidden=False):
+        """Who voted for whom. Revealed: the Possessor first, marked right or wrong.
+        Hidden: just the votes, most popular first, with nothing marking the Possessor."""
+        by_candidate = {} if hidden else {self.gm.id: []}
         for voter, pick in guesses.items():
             by_candidate.setdefault(pick, []).append(voter)
-        order = sorted(by_candidate, key=lambda c: (c != self.gm.id, -len(by_candidate[c])))
+        order = sorted(by_candidate, key=lambda c: (not hidden and c != self.gm.id, -len(by_candidate[c])))
         lines = []
         for candidate in order:
             voters = by_candidate[candidate]
-            mark = "✅" if candidate == self.gm.id else "❌"
-            label = discord.utils.escape_markdown(names.get(candidate, self.gm.display_name))
+            mark = "🗳️" if hidden else "✅" if candidate == self.gm.id else "❌"
+            label = discord.utils.escape_markdown(names.get(candidate, "someone"))
             who = ", ".join(self.name(uid, 20) for uid in voters) or "*no one*"
             lines.append(f"{mark} **{label}** · {len(voters)} vote(s)\n╰ {who}")
         silent = [uid for uid in participants if uid not in guesses]
@@ -1299,14 +1305,27 @@ class PossessionSession:
             lines.append(f"🤐 **Didn't vote:** {', '.join(self.name(uid, 20) for uid in silent)}")
         return lines
 
-    async def _reveal(self, participants, guesses, correct, names):
-        embed = discord.Embed(
-            title=f"{self.vessel['emoji']} The Possessor is revealed",
-            description=f"The will behind {self.vessel['name']} was **{self.gm.mention}**.",
-            color=self.vessel["color"],
-        )
+    async def _reveal(self, participants, guesses, correct, names, hidden=False):
+        if hidden:
+            embed = discord.Embed(
+                title=f"{self.vessel['emoji']} The Possessor remains hidden",
+                description=(
+                    f"No one saw through {self.vessel['name']}. Whoever wore it slips away "
+                    "unnamed… for now."
+                    if guesses else
+                    f"No one dared to name the will behind {self.vessel['name']}. It slips away unnamed."
+                ),
+                color=self.vessel["color"],
+            )
+        else:
+            embed = discord.Embed(
+                title=f"{self.vessel['emoji']} The Possessor is revealed",
+                description=f"The will behind {self.vessel['name']} was **{self.gm.mention}**.",
+                color=self.vessel["color"],
+            )
         if guesses:
-            for index, chunk in enumerate(chunk_lines(self.vote_breakdown(participants, guesses, names))):
+            breakdown = self.vote_breakdown(participants, guesses, names, hidden)
+            for index, chunk in enumerate(chunk_lines(breakdown)):
                 embed.add_field(name="🗳️ The votes" if index == 0 else "​", value=chunk, inline=False)
             if correct:
                 value = (
@@ -1314,7 +1333,7 @@ class PossessionSession:
                     "📦 The Possessor is choosing their reward…"
                 )
             else:
-                value = f"None of the {len(guesses)} guess(es) were right. The Possessor hid well."
+                value = f"None of the {len(guesses)} guess(es) were right. The Possessor keeps their secret."
             embed.add_field(name="🎭 The verdict", value=value, inline=False)
         if correct:
             await self._safe_send(
