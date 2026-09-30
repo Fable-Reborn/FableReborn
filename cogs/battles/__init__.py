@@ -8,7 +8,11 @@ import random
 import traceback
 from decimal import Decimal, ROUND_HALF_UP
 from collections import deque
+from functools import lru_cache
+from io import BytesIO
 from pathlib import Path
+
+from PIL import Image
 
 import discord
 from utils import misc as rpgtools
@@ -700,12 +704,32 @@ class OmnithroneCinematicView(View):
         await interaction.response.defer()
         await self.show_current_scene()
 
+@lru_cache(maxsize=64)
+def _dialogue_portrait_thumbnail(path: str, modified: float) -> bytes:
+    """Thumbnail-sized JPEG of a local portrait. Embeds show these at ~80px, so
+    re-uploading one on each page turn stays small. `modified` refreshes edited art."""
+    with Image.open(path) as source:
+        image = source.convert("RGB")
+        image.thumbnail((256, 256), Image.Resampling.LANCZOS)
+        output = BytesIO()
+        image.save(output, format="JPEG", quality=88)
+        return output.getvalue()
+
+
+def dialogue_portrait_file(path: Path) -> tuple[str, discord.File]:
+    """(attachment name, file) for one page's local portrait."""
+    name = f"{path.stem}.jpg"
+    data = _dialogue_portrait_thumbnail(str(path), path.stat().st_mtime)
+    return name, discord.File(BytesIO(data), filename=name)
+
+
 class DialogueView(discord.ui.View):
     def __init__(
         self,
         pages: list[discord.Embed],
         author: discord.User,
         allowed_user_ids: set[int] | None = None,
+        page_portraits: list[Path | None] | None = None,
     ):
         super().__init__(timeout=60)
         self.pages = pages
@@ -713,19 +737,26 @@ class DialogueView(discord.ui.View):
         self.author = author
         self.allowed_user_ids = set(allowed_user_ids or {author.id})
         self.allowed_user_ids.add(int(author.id))
+        # One optional local portrait per page. Only the current page's file stays on
+        # the message: Discord shows any attachment an embed doesn't use as a full image.
+        self.page_portraits = page_portraits
+
+    def page_files(self, page: int) -> list[discord.File]:
+        path = self.page_portraits[page] if self.page_portraits else None
+        return [dialogue_portrait_file(path)[1]] if path else []
 
     async def update_message(self, interaction: discord.Interaction):
+        content = {"embed": self.pages[self.current_page], "view": self}
+        if self.page_portraits is not None:
+            # Replaces every attachment; an empty list clears the previous page's portrait.
+            content["attachments"] = self.page_files(self.current_page)
         # If the response hasn't been sent yet, use response.edit_message.
         # Otherwise, use followup.edit_message.
         if not interaction.response.is_done():
-            await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
+            await interaction.response.edit_message(**content)
         else:
             # You must supply the message ID of the message that contains the view.
-            await interaction.followup.edit_message(
-                message_id=interaction.message.id,
-                embed=self.pages[self.current_page],
-                view=self
-            )
+            await interaction.followup.edit_message(message_id=interaction.message.id, **content)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         # Only allow permitted users (author or alt invoker when applicable).
@@ -2345,7 +2376,8 @@ class Battles(commands.Cog):
         if isinstance(thumbnail, str) and thumbnail.startswith("ART:"):
             asset = self._tower_portrait_asset(thumbnail)
             if asset is not None:
-                return f"attachment://{asset.name}"
+                # Matches dialogue_portrait_file(): pages attach a small JPEG copy.
+                return f"attachment://{asset.stem}.jpg"
             url = (self.dialogue_data.get("portraits") or {}).get(thumbnail[4:])
             if isinstance(url, str) and url.startswith("assets/"):
                 return self.BATTLE_TOWER_THUMBNAIL_TOKENS["SYSTEM"]
@@ -3861,7 +3893,7 @@ class Battles(commands.Cog):
 
         # Process dialogue lines
         processed_lines = []
-        portrait_assets = {}
+        page_portraits = []
         player_god = god_value if isinstance(god_value, str) and god_value else "an unknown god"
         for line in dialogue_info["lines"]:
             speaker = line["speaker"]
@@ -3877,6 +3909,7 @@ class Battles(commands.Cog):
                         speaker = random_user_objects[index].display_name
 
             # Replace placeholder thumbnails
+            portrait = None
             if thumbnail == "PLAYER_AVATAR":
                 thumbnail = ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url
             elif thumbnail in ("RANDOM_USER_1_AVATAR", "RANDOM_USER_2_AVATAR"):
@@ -3884,10 +3917,9 @@ class Battles(commands.Cog):
                 face = random_user_objects[index] if index < len(random_user_objects) else None
                 thumbnail = face.avatar.url if face and face.avatar else self.DEFAULT_DIALOGUE_AVATAR
             else:
-                asset = self._tower_portrait_asset(thumbnail)
-                if asset is not None:
-                    portrait_assets[asset.name] = asset
+                portrait = self._tower_portrait_asset(thumbnail)
                 thumbnail = self._resolve_tower_portrait(thumbnail)
+            page_portraits.append(portrait)
 
             processed_lines.append({
                 "speaker": speaker,
@@ -3919,11 +3951,12 @@ class Battles(commands.Cog):
             pages,
             ctx.author,
             allowed_user_ids=allowed_dialogue_users,
+            page_portraits=page_portraits,
         )
-        # Each retry opens fresh files; all page portraits stay on the message
-        # while the view switches embeds without replacing attachments.
+        # Only the first page's portrait is attached; the view swaps attachments per
+        # page. Each retry builds fresh file objects.
         async def send_dialogue():
-            files = [discord.File(str(path), filename=name) for name, path in portrait_assets.items()]
+            files = view.page_files(0)
             try:
                 send = getattr(ctx, "_battle_original_send", ctx.send)
                 return await send(embed=pages[0], view=view, **({"files": files} if files else {}))
