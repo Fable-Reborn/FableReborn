@@ -39,6 +39,7 @@ VESSELS = {
         ),
         "abilities": {
             "smite": ("Doomblade", "🗡️", "The Husk raises its black blade and brings it down on {target}."),
+            "execute": ("Headsman's Verdict", "⚰️", "The Husk seizes {target} by the throat and passes sentence."),
             "sweep": ("Shadow Cleave", "🌑", "A crescent of shadow tears across the line."),
             "siphon": ("Soul Tithe", "🩸", "Chains of red light hook into {target}. The Husk drinks."),
             "dominate": ("Black Chains of Will", "⛓️", "Invisible chains snap tight around {target}'s wrists."),
@@ -46,6 +47,12 @@ VESSELS = {
             "cataclysm": ("The Final Night", "🌘", "The sky goes out. For one breath there is only the dark, and it is hungry."),
         },
         "cataclysm_variance": None,
+        "omen": "The torches die. The stars above the Husk go out one by one. **The Final Night is gathering.**",
+        "interrupted": "The Husk staggers mid-invocation. The gathered dark bleeds away into nothing.",
+        "phases": {
+            2: "Cracks race across the black plate, and red light leaks from within. **The Husk's armor is broken.**",
+            3: "The Husk tears off its own helm. There is no face beneath, only hunger. **It fights with everything it has left.**",
+        },
         "endings": {
             "slain": "The Husk buckles. Black smoke pours from the joints of its armor, and whatever wore it screams as it is torn loose. The plate falls empty to the floor.",
             "exorcised": "The Severance closes like a fist. The Husk's visor flares white, and the will inside is *expelled*, flung back into Sepulchure's dark to answer for its failure.",
@@ -89,6 +96,7 @@ VESSELS = {
                 "*Something small and nervous whispers from the visor:* \"Er. My liege said… *this* one. Yes.\"",
             ],
             "improvise_private": "You were silent, my liege, so I chose for you. I do hope I chose well.",
+            "charging": "The dark is gathering, my liege. It falls at the end of this turn, unless they break it first.",
             "victory": "*Grimvale closes the Ledger with trembling reverence.* Magnificent, my liege. Every debt collected.",
             "defeat": "*Grimvale is scrubbing your name from the Ledger before you have fully faded.* It was an honor, my liege. Mostly.",
         },
@@ -108,6 +116,7 @@ VESSELS = {
         ),
         "abilities": {
             "smite": ("Fracture Bolt", "⚡", "A jagged bolt of wrong-colored lightning finds {target}."),
+            "execute": ("Last Laugh", "🃏", "The Colossus picks {target} up like a toy, and giggles."),
             "sweep": ("Riot of Shards", "🔮", "The Colossus shakes itself like a wet dog. Shards everywhere."),
             "siphon": ("Entropic Feast", "🌪️", "The air around {target} unravels, and the Colossus slurps the loose threads."),
             "dominate": ("Puppet Strings", "🪆", "Glittering strings drop from nowhere and loop around {target}'s limbs."),
@@ -115,7 +124,13 @@ VESSELS = {
             "cataclysm": ("The Great Unmaking", "🎲", "Drakath rolls the dice of the world. Nobody knows what the numbers mean."),
         },
         "cataclysm_variance": (0.3, 2.5),
-        "endings": {
+        "omen": "Every die in the world starts rolling at once. **The Great Unmaking is gathering.**",
+        "interrupted": "The dice clatter to the floor, every face blank. The Colossus pouts.",
+        "phases": {
+            2: "Chunks of marble and bell-bronze rain from the Colossus. **Its shell is broken.**",
+            3: "The Colossus's mask spins so fast it screams. **It has stopped playing.**",
+        },
+                "endings": {
             "slain": "The Colossus shatters into ten thousand pieces, each one still giggling. The giggling fades. The pieces are just rocks now. Probably.",
             "exorcised": "The Severance snaps shut, and the mind inside the Colossus is spat out like a cherry pit. The shards fall down in a heap, bored.",
             "wiped": "Silence. Then the Colossus claps its mismatched hands, delighted. *Again,* it says. *Again, again, AGAIN.*",
@@ -157,6 +172,7 @@ VESSELS = {
                 "*The Colossus's face spins and briefly shows a purple imp grinning:* \"Pip's turn!\"",
             ],
             "improvise_private": "You were quiet so I pulled a random lever!! Was that the good one? It felt like the good one.",
+            "charging": "The dice are ROLLING, boss!! End of this turn: BOOM. Unless they stop it. Don't let them stop it.",
             "victory": "*Pip is sobbing with joy.* Best. Boss. EVER. Can we do it again tomorrow?",
             "defeat": "*Pip pats your hand consolingly as you fade.* It's okay boss. Drakath says losing is just winning in a funny hat.",
         },
@@ -176,6 +192,7 @@ VESSELS = {
         ),
         "abilities": {
             "smite": ("Hollow Radiance", "✴️", "A lance of cold, colorless light pierces {target}."),
+            "execute": ("Last Rites", "🪦", "The Seraph kneels beside {target} and begins the last rites."),
             "sweep": ("Wings of Ash", "🪶", "Six wings beat once. Every feather is a blade of cinder."),
             "siphon": ("Mercy Inverted", "💧", "The Seraph lays a gentle hand on {target}, and takes rather than gives."),
             "dominate": ("Sermon of Obedience", "📿", "The Seraph speaks {target}'s true name, and {target} kneels."),
@@ -183,6 +200,12 @@ VESSELS = {
             "cataclysm": ("Judgment Without Grace", "⚖️", "The Seraph lifts its hands and passes sentence on *everyone*."),
         },
         "cataclysm_variance": None,
+        "omen": "The choir falls silent. Six wings rise to blot out the sun. **Judgment Without Grace is gathering.**",
+        "interrupted": "The Seraph's raised hands falter. The sentence goes unspoken.",
+        "phases": {
+            2: "Feathers of light peel away, showing ash beneath. **The Seraph's halo is shattered.**",
+            3: "The Seraph screams a hymn in a voice that is not Elysia's. **The mask is slipping.**",
+        },
         "endings": {
             "slain": "The Seraph's wings fold. The light drains from its crown, and for one moment its eyes are its own again. *Thank you,* it whispers, and becomes dust.",
             "exorcised": "The Severance rings out like a bell. The foreign will is burned out of the Seraph, and it rises, whole and weeping, back toward Elysia's light.",
@@ -226,6 +249,7 @@ VESSELS = {
                 "*The Seraph's lips move, but the voice is a zealous acolyte's:* \"By the will of the Holy One!\"",
             ],
             "improvise_private": "You did not speak, Holy One, so I spoke for you. Forgive me if I erred.",
+            "charging": "The sentence is being written, Holy One. It falls at the end of this turn, unless they silence it.",
             "victory": "*Maren weeps with joy.* I knew it. I *knew* someone was listening.",
             "defeat": "*Maren clutches your fading sleeve.* Don't go. Please. Not you too.",
         },
@@ -233,25 +257,78 @@ VESSELS = {
 }
 
 ABILITY_RULES = {
-    "smite": "Heavy blow on one target. Breaks the circle if they are chanting.",
-    "sweep": "Hits several random raiders; cannot break the circle. 1-turn cooldown.",
-    "siphon": "Hit one target, heal the vessel, break their chant. 2-turn cooldown.",
-    "dominate": "Hijack a raider's action this turn. 3-turn cooldown.",
-    "ward": "Halve all damage the vessel takes this turn. 3-turn cooldown.",
-    "cataclysm": "Hit every raider and break the circle. Costs 100 Dread.",
+    "smite": "Heavy blow on one raider. Shatters their chant.",
+    "sweep": "Hits about a third of the raid at random. Can't shatter chants. 1-turn cooldown.",
+    "siphon": "Hit one raider and heal the vessel. Shatters their chant. 2-turn cooldown.",
+    "dominate": "Hijack one raider's action this turn. 3-turn cooldown.",
+    "ward": "Halve the damage the vessel takes this turn. 3-turn cooldown.",
+    "execute": "Phase III only. Slays a raider under 25% health unless they are guarded; "
+               "otherwise a heavy blow. 3-turn cooldown.",
+    "cataclysm": "Costs 100 Dread. Gathers for a turn while everyone is warned, then hits the whole raid. "
+                 "Heavy damage or a Thief's Pilfer can break it.",
 }
 
 PLAYER_ACTION_FLAVOR = {
     "strike": ("Strike", "⚔️", "You ready your weapon."),
-    "guard": ("Guard", "🛡️", "You brace yourself. Incoming harm is halved."),
-    "mend": ("Mend", "✨", "You prepare to tend the most wounded."),
+    "guard": ("Guard", "🛡️", "You brace to protect {target}."),
+    "mend": ("Mend", "✨", "You prepare to tend {target}."),
     "rite": ("Rite", "🕯️", "You join the Severance chant."),
+    "signature": ("Signature", "💫", "You gather yourself for **{target}**."),
+}
+
+PLAYER_ACTION_RULES = {
+    "strike": "Damage the vessel.",
+    "guard": "Guard yourself (half damage) or an ally: blows aimed at them hit you instead, halved.",
+    "mend": "Heal an ally, or the most wounded, for 25% of their health.",
+    "rite": "Advance the Severance. Only a few voices fit in the circle each turn.",
+    "signature": "Your class's once-per-fight power.",
+}
+
+SPIRIT_FLAVOR = {
+    "haunt": ("Haunt", "👻", "Drain 5 Dread from the vessel.", "You coil around the vessel, feeding on its dread."),
+    "echo": ("Echo", "🔔", "Chant from beyond. Every 2 echoes add 1 to the Severance.",
+             "Your voice joins the circle from the other side."),
+    "foresee": ("Foresee", "👁️", "Glimpse the vessel's choice this turn, once its master decides.", ""),
+}
+
+# name, emoji, rule, result narration ({actor} {target} {amount})
+SIGNATURE_LORE = {
+    "rampage": ("Rampage", "🪓", "Strike for 2.5× damage.",
+                "{actor} goes berserk and carves **{amount}** out of the vessel!"),
+    "bulwark": ("Bulwark", "🏰", "The whole raid takes half damage this turn.",
+                "{actor} plants their shield, and the whole raid shelters behind it."),
+    "pilfer": ("Pilfer", "🗝️", "Steal up to 40 Dread. Breaks a gathering Cataclysm.",
+               "{actor} slips a hand into the vessel's shadow and steals **{amount}** Dread!"),
+    "arcane_surge": ("Arcane Surge", "🔮", "1.5× damage that ignores armor and wards.",
+                     "{actor} unleashes raw arcana for **{amount}**, straight through every defense!"),
+    "paragons_will": ("Paragon's Will", "🌟", "Strike, mend the most wounded and chant, all at once.",
+                      "{actor} does it all at once: strikes for **{amount}**, mends, and joins the chant."),
+    "resurrection": ("Resurrection", "🔆", "Raise a fallen ally at 40% health.",
+                     "{actor} calls {target} back from beyond the veil!"),
+    "hunters_mark": ("Hunter's Mark", "🏹", "Every strike deals +30% this turn and next.",
+                     "{actor} marks the vessel's weak point. Every blade knows where to land."),
+    "sunder": ("Sunder", "⚓", "1.5× strike, and the vessel takes +10% damage for the rest of the fight.",
+               "{actor} tears a rent in the vessel for **{amount}**. It will not close."),
+    "unbroken_circle": ("Unbroken Circle", "🪬", "+2 Severance, and no blow can shatter the circle this turn.",
+                        "{actor} seals the circle in blood. The Severance surges and holds!"),
+    "harvest": ("Harvest", "🌒", "Strike harder for every fallen raider (up to 3×).",
+                "{actor} gathers the grief of the fallen into one swing: **{amount}**!"),
+    "ballad": ("Rallying Ballad", "🎻", "Heal every living raider for 15% of their health.",
+               "{actor} strikes up a ballad. The raid recovers **{amount}** health in all."),
+    "pack_hunt": ("Pack Hunt", "🐺", "2× strike that ignores wards.",
+                  "{actor} and their pack tear in together for **{amount}**!"),
+    "gift": ("Gift of Cheer", "🎁", "Fully heal one ally.",
+             "{actor} hands {target} a gift, restoring **{amount}** health!"),
+    "last_stand": ("Last Stand", "✊", "Strike for 2× damage.",
+                   "{actor} throws everything into one blow: **{amount}**!"),
 }
 
 DOMINATE_OUTCOMES = {
     "strike": "{target}'s weapon turns in their hands and strikes **{victim}** for **{amount}**!",
     "mend": "{target}'s healing light bends toward the vessel, restoring **{amount}** of its strength!",
     "rite": "{target}'s voice cracks mid-chant, and the words come out *backwards*. The Severance slips by **{amount}**!",
-    "guard": "{target}'s guard falls slack. They stand open to whatever comes next.",
+    "guard": "{target}'s guard falls slack. Whoever they meant to protect stands exposed.",
+    "mend_wasted": "{target}'s healing light bends toward the vessel, but it has no wounds to close.",
+    "signature": "{target}'s signature power sputters out in their hands, wasted!",
     None: "{target} fights the pull, and nothing happens.",
 }
